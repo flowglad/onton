@@ -16,7 +16,7 @@ let gen_op =
   QCheck2.Gen.oneof_list
     Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
 
-let print_agent = Onton.Patch_agent.show
+let _print_agent = Onton.Patch_agent.show
 
 let () =
   let open QCheck2 in
@@ -33,20 +33,14 @@ let () =
           && t.ci_failure_count = 0 && (not t.session_failed)
           && List.is_empty t.pending_comments);
       (* -- enqueue is idempotent -- *)
-      Test.make ~name:"enqueue is idempotent" ~print:print_agent
-        Gen.(
-          map3
-            (fun pid br k ->
-              let a = create pid |> fun a -> start a ~base_branch:br in
-              let a = complete a in
-              let a = enqueue a k in
-              enqueue a k)
-            gen_pid gen_branch gen_op)
-        (fun a ->
-          let unique =
-            List.dedup_and_sort a.queue ~compare:Operation_kind.compare
-          in
-          List.length unique = List.length a.queue);
+      Test.make ~name:"enqueue is idempotent"
+        Gen.(triple gen_pid gen_branch gen_op)
+        (fun (pid, br, k) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a1 = enqueue a k in
+          let a2 = enqueue a1 k in
+          equal a1 a2);
       (* -- enqueue adds operation -- *)
       Test.make ~name:"enqueue adds operation to queue"
         Gen.(pair (pair gen_pid gen_branch) gen_op)
@@ -61,7 +55,7 @@ let () =
         (fun (pid, br) ->
           let a = create pid |> fun a -> start a ~base_branch:br in
           a.has_pr && a.has_session && a.busy && a.satisfies
-          && Option.is_some a.base_branch);
+          && Option.equal Branch.equal a.base_branch (Some br));
       (* -- start twice raises -- *)
       Test.make ~name:"start on already-started raises"
         Gen.(pair gen_pid gen_branch)
@@ -115,12 +109,8 @@ let () =
           let a = create pid |> fun a -> start a ~base_branch:br in
           let a = complete a in
           let a = enqueue a k in
-          let hp = highest_priority a in
-          match hp with
-          | Some hp_k when Operation_kind.equal hp_k k ->
-              let a = respond a k in
-              a.busy && a.has_session
-          | _ -> true);
+          let a = respond a k in
+          a.busy && a.has_session);
       (* -- respond removes op from queue -- *)
       Test.make ~name:"respond removes op from queue"
         Gen.(triple gen_pid gen_branch gen_op)
@@ -128,12 +118,8 @@ let () =
           let a = create pid |> fun a -> start a ~base_branch:br in
           let a = complete a in
           let a = enqueue a k in
-          let hp = highest_priority a in
-          match hp with
-          | Some hp_k when Operation_kind.equal hp_k k ->
-              let a = respond a k in
-              not (List.mem a.queue k ~equal:Operation_kind.equal)
-          | _ -> true);
+          let a = respond a k in
+          not (List.mem a.queue k ~equal:Operation_kind.equal));
       (* -- mark_merged sets merged -- *)
       Test.make ~name:"mark_merged sets merged" gen_pid (fun pid ->
           let a = create pid in
