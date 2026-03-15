@@ -24,6 +24,7 @@ type error =
   | Http_error of int * string
   | Json_parse_error of string
   | Graphql_error of string list
+  | Transport_error of string
 [@@deriving show, eq]
 
 type t

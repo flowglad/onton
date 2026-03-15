@@ -18,6 +18,7 @@ type error =
   | Http_error of int * string
   | Json_parse_error of string
   | Graphql_error of string list
+  | Transport_error of string
 [@@deriving show, eq]
 
 type t = { token : string; owner : string; repo : string }
@@ -148,11 +149,11 @@ let parse_response body =
 
 let https_config () =
   match Ca_certs.authenticator () with
-  | Error (`Msg msg) -> Stdlib.failwith ("TLS CA setup failed: " ^ msg)
+  | Error (`Msg msg) -> Error ("TLS CA setup failed: " ^ msg)
   | Ok authenticator -> (
       match Tls.Config.client ~authenticator () with
-      | Ok cfg -> cfg
-      | Error (`Msg msg) -> Stdlib.failwith ("TLS config failed: " ^ msg))
+      | Ok cfg -> Ok cfg
+      | Error (`Msg msg) -> Error ("TLS config failed: " ^ msg))
 
 let https_fun tls_config uri flow =
   let host =
@@ -161,31 +162,40 @@ let https_fun tls_config uri flow =
   in
   (Tls_eio.client_of_flow tls_config ?host flow :> _ Eio.Flow.two_way)
 
+let max_response_size = 1_000_000
+
 let pr_state ~net t pr =
-  Mirage_crypto_rng_unix.use_default ();
-  let tls_config = https_config () in
-  let client =
-    Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
-  in
-  let request_body = build_request_body t pr in
-  let uri = Uri.of_string "https://api.github.com/graphql" in
-  let headers =
-    Http.Header.of_list
-      [
-        ("Authorization", "Bearer " ^ t.token);
-        ("Content-Type", "application/json");
-        ("User-Agent", "onton/0.1.0");
-      ]
-  in
-  let body = Cohttp_eio.Body.of_string request_body in
-  Eio.Switch.run @@ fun sw ->
-  let resp, resp_body = Cohttp_eio.Client.post client ~sw ~headers ~body uri in
-  let status = Http.Response.status resp |> Http.Status.to_int in
-  let resp_str =
-    Eio.Buf_read.(of_flow ~max_size:Int.max_value resp_body |> take_all)
-  in
-  if status >= 200 && status < 300 then parse_response resp_str
-  else Error (Http_error (status, resp_str))
+  try
+    Mirage_crypto_rng_unix.use_default ();
+    Result.bind
+      (Result.map_error (https_config ()) ~f:(fun msg -> Transport_error msg))
+      ~f:(fun tls_config ->
+        let client =
+          Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
+        in
+        let request_body = build_request_body t pr in
+        let uri = Uri.of_string "https://api.github.com/graphql" in
+        let headers =
+          Http.Header.of_list
+            [
+              ("Authorization", "Bearer " ^ t.token);
+              ("Content-Type", "application/json");
+              ("User-Agent", "onton/0.1.0");
+            ]
+        in
+        let body = Cohttp_eio.Body.of_string request_body in
+        Eio.Switch.run @@ fun sw ->
+        let resp, resp_body =
+          Cohttp_eio.Client.post client ~sw ~headers ~body uri
+        in
+        let status = Http.Response.status resp |> Http.Status.to_int in
+        let resp_str =
+          Eio.Buf_read.(
+            of_flow ~max_size:max_response_size resp_body |> take_all)
+        in
+        if status >= 200 && status < 300 then parse_response resp_str
+        else Error (Http_error (status, resp_str)))
+  with exn -> Error (Transport_error (Exn.to_string exn))
 
 (* WorldCtx predicate accessors *)
 
