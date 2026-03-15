@@ -49,7 +49,7 @@ end
 
 (** Discover PR number for a branch by calling [gh pr list]. Returns [Ok] with
     the PR number or [Error] with a diagnostic message. *)
-let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch =
+let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch ~base_branch =
   let args =
     [
       "gh";
@@ -59,6 +59,8 @@ let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch =
       Printf.sprintf "%s/%s" owner repo;
       "--head";
       Branch.to_string branch;
+      "--base";
+      Branch.to_string base_branch;
       "--json";
       "number";
       "--limit";
@@ -314,7 +316,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                       (Activity_log.Event.create
                          ~timestamp:(Unix.gettimeofday ()) ~patch_id
                          "runner: patch not found in gameplan, skipping"))
-            | Some patch ->
+            | Some patch -> (
                 let prompt =
                   Prompt.render_patch_prompt patch gameplan
                     ~base_branch:(Branch.to_string base_branch)
@@ -330,44 +332,58 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                 in
                 let cwd = Eio.Path.(fs / worktree_path) in
                 let result =
-                  Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
-                    ~session_id:None
+                  try
+                    Ok
+                      (Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
+                         ~session_id:None)
+                  with exn -> Error (Printexc.to_string exn)
                 in
-                if result.Claude_runner.exit_code = 0 then (
-                  (* Discover and register PR number after Claude creates it *)
-                  match
-                    discover_pr_number ~process_mgr ~token:config.github_token
-                      ~owner:config.github_owner ~repo:config.github_repo
-                      ~branch:patch.Patch.branch
-                  with
-                  | Ok pr_number ->
-                      Pr_registry.register pr_registry ~patch_id ~pr_number;
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id)
-                  | Error msg ->
-                      Runtime.update_activity_log runtime (fun log ->
-                          Activity_log.add_event log
-                            (Activity_log.Event.create
-                               ~timestamp:(Unix.gettimeofday ()) ~patch_id
-                               (Printf.sprintf "PR discovery failed: %s" msg)));
-                      (* Don't complete — leave action open for retry *)
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.set_session_failed orch patch_id))
-                else (
-                  Runtime.update_activity_log runtime (fun log ->
-                      Activity_log.add_event log
-                        (Activity_log.Event.create
-                           ~timestamp:(Unix.gettimeofday ()) ~patch_id
-                           (Printf.sprintf
-                              "Claude exited with code %d, marking session \
-                               failed"
-                              result.Claude_runner.exit_code)));
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      let orch =
-                        Orchestrator.set_session_failed orch patch_id
-                      in
-                      Orchestrator.complete orch patch_id)))
-        | Orchestrator.Respond (patch_id, kind) ->
+                match result with
+                | Error msg ->
+                    Runtime.update_activity_log runtime (fun log ->
+                        Activity_log.add_event log
+                          (Activity_log.Event.create
+                             ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                             (Printf.sprintf "Claude process error: %s" msg)));
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        let orch =
+                          Orchestrator.set_session_failed orch patch_id
+                        in
+                        Orchestrator.complete orch patch_id)
+                | Ok r when r.Claude_runner.exit_code = 0 -> (
+                    (* Discover and register PR number after Claude creates it *)
+                    match
+                      discover_pr_number ~process_mgr ~token:config.github_token
+                        ~owner:config.github_owner ~repo:config.github_repo
+                        ~branch:patch.Patch.branch ~base_branch
+                    with
+                    | Ok pr_number ->
+                        Pr_registry.register pr_registry ~patch_id ~pr_number;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.complete orch patch_id)
+                    | Error msg ->
+                        Runtime.update_activity_log runtime (fun log ->
+                            Activity_log.add_event log
+                              (Activity_log.Event.create
+                                 ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                                 (Printf.sprintf "PR discovery failed: %s" msg)));
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.set_session_failed orch patch_id))
+                | Ok r ->
+                    Runtime.update_activity_log runtime (fun log ->
+                        Activity_log.add_event log
+                          (Activity_log.Event.create
+                             ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                             (Printf.sprintf
+                                "Claude exited with code %d, marking session \
+                                 failed"
+                                r.Claude_runner.exit_code)));
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        let orch =
+                          Orchestrator.set_session_failed orch patch_id
+                        in
+                        Orchestrator.complete orch patch_id)))
+        | Orchestrator.Respond (patch_id, kind) -> (
             let agent =
               Runtime.read runtime (fun snap ->
                   Orchestrator.agent (snap_orch snap) patch_id)
@@ -406,24 +422,37 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
             in
             let cwd = Eio.Path.(fs / worktree_path) in
             let result =
-              Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
-                ~session_id:None
+              try
+                Ok
+                  (Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
+                     ~session_id:None)
+              with exn -> Error (Printexc.to_string exn)
             in
-            if result.Claude_runner.exit_code = 0 then
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Orchestrator.complete orch patch_id)
-            else (
-              Runtime.update_activity_log runtime (fun log ->
-                  Activity_log.add_event log
-                    (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ())
-                       ~patch_id
-                       (Printf.sprintf
-                          "Claude respond exited with code %d, marking session \
-                           failed"
-                          result.Claude_runner.exit_code)));
-              Runtime.update_orchestrator runtime (fun orch ->
-                  let orch = Orchestrator.set_session_failed orch patch_id in
-                  Orchestrator.complete orch patch_id)));
+            match result with
+            | Error msg ->
+                Runtime.update_activity_log runtime (fun log ->
+                    Activity_log.add_event log
+                      (Activity_log.Event.create
+                         ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                         (Printf.sprintf "Claude process error: %s" msg)));
+                Runtime.update_orchestrator runtime (fun orch ->
+                    let orch = Orchestrator.set_session_failed orch patch_id in
+                    Orchestrator.complete orch patch_id)
+            | Ok r when r.Claude_runner.exit_code = 0 ->
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Orchestrator.complete orch patch_id)
+            | Ok r ->
+                Runtime.update_activity_log runtime (fun log ->
+                    Activity_log.add_event log
+                      (Activity_log.Event.create
+                         ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                         (Printf.sprintf
+                            "Claude respond exited with code %d, marking \
+                             session failed"
+                            r.Claude_runner.exit_code)));
+                Runtime.update_orchestrator runtime (fun orch ->
+                    let orch = Orchestrator.set_session_failed orch patch_id in
+                    Orchestrator.complete orch patch_id)));
     Eio.Time.sleep clock 1.0;
     loop ()
   in
@@ -431,7 +460,16 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
 
 (** {1 Main entry point} *)
 
+let normalize_config config =
+  {
+    config with
+    github_token = Base.String.strip config.github_token;
+    github_owner = Base.String.strip config.github_owner;
+    github_repo = Base.String.strip config.github_repo;
+  }
+
 let run config =
+  let config = normalize_config config in
   match validate_config config with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
