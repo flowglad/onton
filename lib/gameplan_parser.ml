@@ -265,3 +265,145 @@ let parse_file path =
     in
     parse_string contents
   with Sys_error msg -> Error (Printf.sprintf "Cannot read file: %s" msg)
+
+let%test_module "Gameplan_parser" =
+  (module struct
+    let%test "slugify lowercase and strip" =
+      String.equal (slugify "My Project") "my-project"
+
+    let%test "slugify special chars" =
+      String.equal (slugify "foo@bar!baz") "foo-bar-baz"
+
+    let%test "slugify already clean" =
+      String.equal (slugify "clean-name") "clean-name"
+
+    let%test "parse_project_name from gameplan header" =
+      let lines = [ "# Gameplan: My Project"; "## Problem" ] in
+      match parse_project_name lines with
+      | Ok name -> String.equal name "My Project"
+      | Error _ -> false
+
+    let%test "parse_project_name from h1" =
+      let lines = [ "# Simple Name" ] in
+      match parse_project_name lines with
+      | Ok name -> String.equal name "Simple Name"
+      | Error _ -> false
+
+    let%test "parse_project_name missing" =
+      let lines = [ "no heading here" ] in
+      match parse_project_name lines with Ok _ -> false | Error _ -> true
+
+    let%test "extract_section finds section" =
+      let lines =
+        [
+          "## Problem Statement";
+          "The problem is X.";
+          "";
+          "## Solution Summary";
+          "We fix it.";
+        ]
+      in
+      match extract_section ~header:"Problem Statement" lines with
+      | Some s -> String.is_substring s ~substring:"problem is X"
+      | None -> false
+
+    let%test "extract_section missing" =
+      let lines = [ "## Other"; "stuff" ] in
+      Option.is_none (extract_section ~header:"Problem Statement" lines)
+
+    let%test "parse_dep_graph_line valid" =
+      match parse_dep_graph_line "- Patch 1 [CORE] -> [2, 3]" with
+      | Some (id, deps) ->
+          String.equal (Types.Patch_id.to_string id) "1" && List.length deps = 2
+      | None -> false
+
+    let%test "parse_dep_graph_line no deps" =
+      match parse_dep_graph_line "- Patch 1 [CORE] -> []" with
+      | Some (_, deps) -> List.is_empty deps
+      | None -> false
+
+    let%test "detect_cycle finds cycle" =
+      let dep_graph =
+        Map.of_alist_exn
+          (module Types.Patch_id)
+          [
+            (Types.Patch_id.of_string "a", [ Types.Patch_id.of_string "b" ]);
+            (Types.Patch_id.of_string "b", [ Types.Patch_id.of_string "a" ]);
+          ]
+      in
+      Option.is_some (detect_cycle dep_graph)
+
+    let%test "detect_cycle no cycle" =
+      let dep_graph =
+        Map.of_alist_exn
+          (module Types.Patch_id)
+          [
+            (Types.Patch_id.of_string "a", []);
+            (Types.Patch_id.of_string "b", [ Types.Patch_id.of_string "a" ]);
+          ]
+      in
+      Option.is_none (detect_cycle dep_graph)
+
+    let%test "validate rejects self-dep" =
+      let pid = Types.Patch_id.of_string "a" in
+      let patches =
+        [
+          Types.Patch.
+            {
+              id = pid;
+              title = "A";
+              branch = Types.Branch.of_string "ba";
+              dependencies = [ pid ];
+            };
+        ]
+      in
+      let dep_graph =
+        Map.of_alist_exn (module Types.Patch_id) [ (pid, [ pid ]) ]
+      in
+      match validate ~patches ~dep_graph with Ok () -> false | Error _ -> true
+
+    let%test "validate rejects duplicate ids" =
+      let pid = Types.Patch_id.of_string "a" in
+      let patch =
+        Types.Patch.
+          {
+            id = pid;
+            title = "A";
+            branch = Types.Branch.of_string "ba";
+            dependencies = [];
+          }
+      in
+      let dep_graph = Map.of_alist_exn (module Types.Patch_id) [ (pid, []) ] in
+      match validate ~patches:[ patch; patch ] ~dep_graph with
+      | Ok () -> false
+      | Error _ -> true
+
+    let%test "parse_string roundtrip" =
+      let input =
+        {|# Gameplan: Test Project
+
+## Problem Statement
+A problem.
+
+## Solution Summary
+A solution.
+
+## Dependency Graph
+- Patch 1 [CORE] -> []
+- Patch 2 [CORE] -> [1]
+
+## Patches
+
+### Patch 1 [CORE]: First patch
+Do thing 1.
+
+### Patch 2 [CORE]: Second patch
+Do thing 2.
+|}
+      in
+      match parse_string input with
+      | Ok result ->
+          List.length result.gameplan.patches = 2
+          && String.equal result.gameplan.project_name "Test Project"
+      | Error _ -> false
+  end)
