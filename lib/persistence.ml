@@ -255,36 +255,42 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
     ]
 
 let orchestrator_of_yojson ~gameplan json =
-  let graph = Graph.of_patches gameplan.Gameplan.patches in
-  let main_branch = Branch.of_string (string_member "main_branch" json) in
-  Result.bind
-    (result_all
-       (Yojson.Safe.Util.member "agents" json
-       |> Yojson.Safe.Util.to_assoc
-       |> List.map ~f:(fun (key, value) ->
-           Result.bind (patch_agent_of_yojson value) ~f:(fun agent ->
-               let payload_id = Patch_id.to_string agent.patch_id in
-               if String.equal key payload_id then
-                 Ok (Patch_id.of_string key, agent)
-               else
-                 Error
-                   (Printf.sprintf
-                      "agent key/payload mismatch: key=%s payload=%s" key
-                      payload_id)))))
-    ~f:(fun agents ->
-      let agents_map =
-        List.fold agents
-          ~init:(Map.empty (module Patch_id))
-          ~f:(fun acc (k, v) -> Map.set acc ~key:k ~data:v)
-      in
-      let graph_pids =
-        Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
-      in
-      let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
-      if not (Set.equal graph_pids agent_pids) then
-        Error
-          "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
-      else Ok (Orchestrator.restore ~graph ~agents:agents_map ~main_branch))
+  try
+    let graph = Graph.of_patches gameplan.Gameplan.patches in
+    let main_branch = Branch.of_string (string_member "main_branch" json) in
+    Result.bind
+      (result_all
+         (Yojson.Safe.Util.member "agents" json
+         |> Yojson.Safe.Util.to_assoc
+         |> List.map ~f:(fun (key, value) ->
+             Result.bind (patch_agent_of_yojson value) ~f:(fun agent ->
+                 let payload_id = Patch_id.to_string agent.patch_id in
+                 if String.equal key payload_id then
+                   Ok (Patch_id.of_string key, agent)
+                 else
+                   Error
+                     (Printf.sprintf
+                        "agent key/payload mismatch: key=%s payload=%s" key
+                        payload_id)))))
+      ~f:(fun agents ->
+        let agents_map =
+          List.fold agents
+            ~init:(Map.empty (module Patch_id))
+            ~f:(fun acc (k, v) -> Map.set acc ~key:k ~data:v)
+        in
+        let graph_pids =
+          Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
+        in
+        let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
+        if not (Set.equal graph_pids agent_pids) then
+          Error
+            "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
+        else Ok (Orchestrator.restore ~graph ~agents:agents_map ~main_branch))
+  with
+  | Yojson.Safe.Util.Type_error (msg, _) ->
+      Error (Printf.sprintf "malformed orchestrator: %s" msg)
+  | Invalid_argument msg ->
+      Error (Printf.sprintf "malformed orchestrator: %s" msg)
 
 (* ---------- Gameplan ---------- *)
 
@@ -321,17 +327,24 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
     ]
 
 let snapshot_of_yojson ~gameplan json =
-  let version = int_member "version" json in
-  if version <> 1 then Error (Printf.sprintf "unsupported version: %d" version)
-  else
-    Result.bind
-      (orchestrator_of_yojson ~gameplan
-         (Yojson.Safe.Util.member "orchestrator" json))
-      ~f:(fun orchestrator ->
-        Result.map
-          (activity_log_of_yojson (Yojson.Safe.Util.member "activity_log" json))
-          ~f:(fun activity_log ->
-            { Runtime.orchestrator; activity_log; gameplan }))
+  try
+    let version = int_member "version" json in
+    if version <> 1 then
+      Error (Printf.sprintf "unsupported version: %d" version)
+    else
+      Result.bind
+        (orchestrator_of_yojson ~gameplan
+           (Yojson.Safe.Util.member "orchestrator" json))
+        ~f:(fun orchestrator ->
+          Result.map
+            (activity_log_of_yojson
+               (Yojson.Safe.Util.member "activity_log" json))
+            ~f:(fun activity_log ->
+              { Runtime.orchestrator; activity_log; gameplan }))
+  with
+  | Yojson.Safe.Util.Type_error (msg, _) ->
+      Error (Printf.sprintf "malformed snapshot: %s" msg)
+  | Invalid_argument msg -> Error (Printf.sprintf "malformed snapshot: %s" msg)
 
 (* ---------- File I/O ---------- *)
 
