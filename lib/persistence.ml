@@ -262,8 +262,15 @@ let orchestrator_of_yojson ~gameplan json =
        (Yojson.Safe.Util.member "agents" json
        |> Yojson.Safe.Util.to_assoc
        |> List.map ~f:(fun (key, value) ->
-           Result.map (patch_agent_of_yojson value) ~f:(fun agent ->
-               (Patch_id.of_string key, agent)))))
+           Result.bind (patch_agent_of_yojson value) ~f:(fun agent ->
+               let payload_id = Patch_id.to_string agent.patch_id in
+               if String.equal key payload_id then
+                 Ok (Patch_id.of_string key, agent)
+               else
+                 Error
+                   (Printf.sprintf
+                      "agent key/payload mismatch: key=%s payload=%s" key
+                      payload_id)))))
     ~f:(fun agents ->
       let agents_map =
         List.fold agents
@@ -329,17 +336,23 @@ let snapshot_of_yojson ~gameplan json =
 (* ---------- File I/O ---------- *)
 
 let save ~path (snap : Runtime.snapshot) =
+  let dir = Stdlib.Filename.dirname path in
+  let base = Stdlib.Filename.basename path in
+  let tmp_path = Stdlib.Filename.temp_file ~temp_dir:dir (base ^ ".") ".tmp" in
   try
     let json = snapshot_to_yojson snap in
     let content = Yojson.Safe.pretty_to_string json in
-    let tmp_path = path ^ ".tmp" in
-    let oc = Stdlib.open_out tmp_path in
+    let oc = Stdlib.open_out_bin tmp_path in
     Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_out_noerr oc)
-      (fun () -> Stdlib.output_string oc content);
+      ~finally:(fun () -> Stdlib.close_out oc)
+      (fun () ->
+        Stdlib.output_string oc content;
+        Stdlib.flush oc);
     Stdlib.Sys.rename tmp_path path;
     Ok ()
-  with exn -> Error (Stdlib.Printexc.to_string exn)
+  with exn ->
+    (try Stdlib.Sys.remove tmp_path with _ -> ());
+    Error (Stdlib.Printexc.to_string exn)
 
 let load ~path ~gameplan =
   try
