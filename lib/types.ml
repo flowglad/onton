@@ -2,14 +2,14 @@ open Base
 
 module Patch_id = struct
   module T = struct
-    type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash]
   end
 
   include T
   include Comparator.Make (T)
 
-  let of_int n = n
-  let to_int t = t
+  let of_string s = s
+  let to_string t = t
 end
 
 module Pr_number = struct

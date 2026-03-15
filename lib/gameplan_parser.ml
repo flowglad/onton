@@ -42,42 +42,36 @@ let parse_project_name lines =
   find lines
 
 let parse_dep_graph_line line =
-  (* Format: "- Patch N [CLASS] -> [deps]" *)
+  (* Format: "- Patch ID [CLASS] -> [deps]" *)
   let line = String.strip line in
   match String.chop_prefix line ~prefix:"- Patch " with
   | None -> None
   | Some rest -> (
-      (* Extract patch number *)
       let parts = String.lsplit2 rest ~on:' ' in
       match parts with
       | None -> None
-      | Some (num_str, after_num) -> (
-          match Int.of_string_opt num_str with
+      | Some (patch_id, after_id) -> (
+          (* Find the -> *)
+          match String.substr_index after_id ~pattern:"->" with
           | None -> None
-          | Some patch_num -> (
-              (* Find the -> *)
-              match String.substr_index after_num ~pattern:"->" with
-              | None -> None
-              | Some arrow_idx ->
-                  let deps_str =
-                    String.drop_prefix after_num (arrow_idx + 2) |> String.strip
-                  in
-                  (* Parse [1, 2, 3] or [] *)
-                  let deps_str =
-                    deps_str
-                    |> String.chop_prefix_if_exists ~prefix:"["
-                    |> String.chop_suffix_if_exists ~suffix:"]"
-                    |> String.strip
-                  in
-                  let deps =
-                    if String.is_empty deps_str then []
-                    else
-                      String.split deps_str ~on:','
-                      |> List.filter_map ~f:(fun s ->
-                          Int.of_string_opt (String.strip s))
-                      |> List.map ~f:Types.Patch_id.of_int
-                  in
-                  Some (Types.Patch_id.of_int patch_num, deps))))
+          | Some arrow_idx ->
+              let deps_str =
+                String.drop_prefix after_id (arrow_idx + 2) |> String.strip
+              in
+              let deps_str =
+                deps_str
+                |> String.chop_prefix_if_exists ~prefix:"["
+                |> String.chop_suffix_if_exists ~suffix:"]"
+                |> String.strip
+              in
+              let deps =
+                if String.is_empty deps_str then []
+                else
+                  String.split deps_str ~on:','
+                  |> List.map ~f:(fun s ->
+                      Types.Patch_id.of_string (String.strip s))
+              in
+              Some (Types.Patch_id.of_string patch_id, deps)))
 
 let parse_dep_graph lines =
   let _in_graph, result =
@@ -105,30 +99,27 @@ let parse_patch_header line =
   | Some rest -> (
       match String.lsplit2 rest ~on:' ' with
       | None -> None
-      | Some (num_str, after_num) -> (
-          match Int.of_string_opt num_str with
+      | Some (patch_id, after_id) -> (
+          (* Skip [CLASS]: and get title *)
+          match String.substr_index after_id ~pattern:"]: " with
           | None -> None
-          | Some patch_num -> (
-              (* Skip [CLASS]: and get title *)
-              match String.substr_index after_num ~pattern:"]: " with
-              | None -> None
-              | Some idx ->
-                  let title =
-                    String.drop_prefix after_num (idx + 3) |> String.strip
-                  in
-                  Some (patch_num, title))))
+          | Some idx ->
+              let title =
+                String.drop_prefix after_id (idx + 3) |> String.strip
+              in
+              Some (patch_id, title)))
 
 let parse_patches lines dep_graph ~project_name =
   List.filter_map lines ~f:(fun line ->
       match parse_patch_header line with
       | None -> None
-      | Some (num, title) ->
-          let id = Types.Patch_id.of_int num in
+      | Some (patch_id_str, title) ->
+          let id = Types.Patch_id.of_string patch_id_str in
           let dependencies =
             Map.find dep_graph id |> Option.value ~default:[]
           in
           let branch =
-            Types.Branch.of_string (project_name ^ "/patch-" ^ Int.to_string num)
+            Types.Branch.of_string (project_name ^ "/patch-" ^ patch_id_str)
           in
           Some { Types.Patch.id; title; branch; dependencies })
 
@@ -142,8 +133,8 @@ let detect_cycle dep_graph =
     else if Hashtbl.mem in_stack node then
       found_cycle :=
         Some
-          (Printf.sprintf "Cycle detected involving patch %d"
-             (Types.Patch_id.to_int node))
+          (Printf.sprintf "Cycle detected involving patch %s"
+             (Types.Patch_id.to_string node))
     else if not (Hashtbl.mem visited node) then (
       Hashtbl.set visited ~key:node ~data:();
       Hashtbl.set in_stack ~key:node ~data:();
@@ -164,8 +155,8 @@ let validate ~patches ~dep_graph =
     Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:_ acc ->
         if Set.mem patch_ids from then acc
         else
-          Printf.sprintf "Dependency graph references nonexistent patch %d"
-            (Types.Patch_id.to_int from)
+          Printf.sprintf "Dependency graph references nonexistent patch %s"
+            (Types.Patch_id.to_string from)
           :: acc)
   in
   if not (List.is_empty orphan_sources) then Error (List.hd_exn orphan_sources)
@@ -176,9 +167,9 @@ let validate ~patches ~dep_graph =
           List.fold deps ~init:acc ~f:(fun acc dep ->
               if Set.mem patch_ids dep then acc
               else
-                Printf.sprintf "Patch %d depends on nonexistent patch %d"
-                  (Types.Patch_id.to_int from)
-                  (Types.Patch_id.to_int dep)
+                Printf.sprintf "Patch %s depends on nonexistent patch %s"
+                  (Types.Patch_id.to_string from)
+                  (Types.Patch_id.to_string dep)
                 :: acc))
     in
     if not (List.is_empty missing) then Error (List.hd_exn missing)
@@ -187,8 +178,8 @@ let validate ~patches ~dep_graph =
       let self_deps =
         Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
             if List.mem deps from ~equal:Types.Patch_id.equal then
-              Printf.sprintf "Patch %d depends on itself"
-                (Types.Patch_id.to_int from)
+              Printf.sprintf "Patch %s depends on itself"
+                (Types.Patch_id.to_string from)
               :: acc
             else acc)
       in
