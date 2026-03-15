@@ -49,7 +49,7 @@ end
 
 (** Discover PR number for a branch by calling [gh pr list]. Returns [Ok] with
     the PR number or [Error] with a diagnostic message. *)
-let discover_pr_number ~process_mgr ~owner ~repo ~branch =
+let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch =
   let args =
     [
       "gh";
@@ -65,9 +65,13 @@ let discover_pr_number ~process_mgr ~owner ~repo ~branch =
       "1";
     ]
   in
+  (* Inherit the current environment and inject GH_TOKEN so gh authenticates
+     even in headless/CI environments without cached credentials. *)
+  let base_env = Unix.environment () in
+  let env = Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] base_env in
   try
     let buf = Buffer.create 256 in
-    Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) process_mgr args;
+    Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) ~env process_mgr args;
     let output = Buffer.contents buf in
     match Yojson.Basic.from_string output with
     | `List (`Assoc fields :: _) -> (
@@ -98,31 +102,39 @@ let snap_with_orch (snap : Runtime.snapshot) orch =
 (** {1 Activity log → TUI conversion} *)
 
 let activity_entries_of_log (log : Activity_log.t) =
+  (* Collect both kinds with timestamps for chronological merge *)
   let transitions =
     Base.List.map (Activity_log.recent_transitions log ~limit:10)
       ~f:(fun (t : Activity_log.Transition_entry.t) ->
-        Tui.Transition
-          {
-            patch_id =
-              Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
-            from_label = Tui.label t.Activity_log.Transition_entry.from_status;
-            to_status = t.Activity_log.Transition_entry.to_status;
-            to_label = Tui.label t.Activity_log.Transition_entry.to_status;
-            action = t.Activity_log.Transition_entry.action;
-          })
+        ( t.Activity_log.Transition_entry.timestamp,
+          Tui.Transition
+            {
+              patch_id =
+                Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
+              from_label = Tui.label t.Activity_log.Transition_entry.from_status;
+              to_status = t.Activity_log.Transition_entry.to_status;
+              to_label = Tui.label t.Activity_log.Transition_entry.to_status;
+              action = t.Activity_log.Transition_entry.action;
+            } ))
   in
   let events =
     Base.List.map (Activity_log.recent_events log ~limit:10)
       ~f:(fun (e : Activity_log.Event.t) ->
-        Tui.Event
-          {
-            patch_id =
-              Base.Option.map e.Activity_log.Event.patch_id
-                ~f:Patch_id.to_string;
-            message = e.Activity_log.Event.message;
-          })
+        ( e.Activity_log.Event.timestamp,
+          Tui.Event
+            {
+              patch_id =
+                Base.Option.map e.Activity_log.Event.patch_id
+                  ~f:Patch_id.to_string;
+              message = e.Activity_log.Event.message;
+            } ))
   in
-  transitions @ events
+  (* Sort newest-first by timestamp, then strip timestamps *)
+  let merged =
+    Base.List.sort (transitions @ events) ~compare:(fun (t1, _) (t2, _) ->
+        Base.Float.descending t1 t2)
+  in
+  Base.List.map merged ~f:snd
 
 (** {1 Fibers} *)
 
@@ -323,20 +335,24 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                 in
                 if result.Claude_runner.exit_code = 0 then (
                   (* Discover and register PR number after Claude creates it *)
-                  (match
-                     discover_pr_number ~process_mgr ~owner:config.github_owner
-                       ~repo:config.github_repo ~branch:patch.Patch.branch
-                   with
+                  match
+                    discover_pr_number ~process_mgr ~token:config.github_token
+                      ~owner:config.github_owner ~repo:config.github_repo
+                      ~branch:patch.Patch.branch
+                  with
                   | Ok pr_number ->
-                      Pr_registry.register pr_registry ~patch_id ~pr_number
+                      Pr_registry.register pr_registry ~patch_id ~pr_number;
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.complete orch patch_id)
                   | Error msg ->
                       Runtime.update_activity_log runtime (fun log ->
                           Activity_log.add_event log
                             (Activity_log.Event.create
                                ~timestamp:(Unix.gettimeofday ()) ~patch_id
-                               (Printf.sprintf "PR discovery failed: %s" msg))));
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      Orchestrator.complete orch patch_id))
+                               (Printf.sprintf "PR discovery failed: %s" msg)));
+                      (* Don't complete — leave action open for retry *)
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.set_session_failed orch patch_id))
                 else (
                   Runtime.update_activity_log runtime (fun log ->
                       Activity_log.add_event log
