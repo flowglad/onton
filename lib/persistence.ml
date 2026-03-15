@@ -104,11 +104,14 @@ let pending_comment_to_yojson (pc : Patch_agent.pending_comment) =
     [ ("comment", comment_to_yojson pc.comment); ("valid", `Bool pc.valid) ]
 
 let pending_comment_of_yojson json =
-  Result.map
-    (comment_of_yojson (Yojson.Safe.Util.member "comment" json))
-    ~f:(fun comment ->
-      Patch_agent.restore_pending_comment ~comment
-        ~valid:(bool_member "valid" json))
+  try
+    Result.map
+      (comment_of_yojson (Yojson.Safe.Util.member "comment" json))
+      ~f:(fun comment ->
+        Patch_agent.restore_pending_comment ~comment
+          ~valid:(bool_member "valid" json))
+  with Yojson.Safe.Util.Type_error (msg, _) ->
+    Error (Printf.sprintf "malformed pending_comment: %s" msg)
 
 (* ---------- Patch_agent ---------- *)
 
