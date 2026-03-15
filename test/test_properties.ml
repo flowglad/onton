@@ -8,51 +8,62 @@ let () =
   let prop_all_ids_preserved =
     Test.make ~name:"graph: all ids preserved"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let g = Graph.of_patches patches in
-        let ids = Graph.all_patch_ids g in
-        List.length ids = List.length patches
-        && List.for_all patches ~f:(fun (p : Types.Patch.t) ->
-            List.mem ids p.id ~equal:Types.Patch_id.equal))
+        try
+          let g = Graph.of_patches patches in
+          let ids = Graph.all_patch_ids g in
+          List.length ids = List.length patches
+          && List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              List.mem ids p.id ~equal:Types.Patch_id.equal)
+        with _ -> false)
   in
   let prop_deps_match =
     Test.make ~name:"graph: deps match declared"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let g = Graph.of_patches patches in
-        List.for_all patches ~f:(fun (p : Types.Patch.t) ->
-            let d = Graph.deps g p.id in
-            List.for_all p.dependencies ~f:(fun dep ->
-                List.mem d dep ~equal:Types.Patch_id.equal)))
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              let d = Graph.deps g p.id in
+              List.for_all p.dependencies ~f:(fun dep ->
+                  List.mem d dep ~equal:Types.Patch_id.equal))
+        with _ -> false)
   in
   let prop_dependents_inverse =
     Test.make ~name:"graph: dependents inverse of deps"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let g = Graph.of_patches patches in
-        List.for_all patches ~f:(fun (p : Types.Patch.t) ->
-            List.for_all (Graph.deps g p.id) ~f:(fun dep_id ->
-                List.mem
-                  (Graph.dependents g dep_id)
-                  p.id ~equal:Types.Patch_id.equal)))
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              List.for_all (Graph.deps g p.id) ~f:(fun dep_id ->
+                  List.mem
+                    (Graph.dependents g dep_id)
+                    p.id ~equal:Types.Patch_id.equal))
+        with _ -> false)
   in
   let prop_no_dep_satisfiable =
     Test.make ~name:"graph: no-dep patch always satisfiable"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let g = Graph.of_patches patches in
-        List.for_all patches ~f:(fun (p : Types.Patch.t) ->
-            if List.is_empty p.dependencies then
-              Graph.deps_satisfied g p.id
-                ~has_merged:(fun _ -> false)
-                ~has_pr:(fun _ -> false)
-            else true))
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              if List.is_empty p.dependencies then
+                Graph.deps_satisfied g p.id
+                  ~has_merged:(fun _ -> false)
+                  ~has_pr:(fun _ -> false)
+              else true)
+        with _ -> false)
   in
   let prop_depends_on_consistent =
     Test.make ~name:"graph: depends_on consistent with deps"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let g = Graph.of_patches patches in
-        List.for_all patches ~f:(fun (p : Types.Patch.t) ->
-            List.for_all (Graph.deps g p.id) ~f:(fun dep ->
-                Graph.depends_on g p.id ~dep)))
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              List.for_all (Graph.deps g p.id) ~f:(fun dep ->
+                  Graph.depends_on g p.id ~dep))
+        with _ -> false)
   in
-  List.iter ~f:QCheck2.Test.check_exn
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
     [
       prop_all_ids_preserved;
       prop_deps_match;
@@ -139,7 +150,8 @@ let () =
           (List.mem result.queue Types.Operation_kind.Rebase
              ~equal:Types.Operation_kind.equal))
   in
-  List.iter ~f:QCheck2.Test.check_exn
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
     [
       prop_merged_sticky;
       prop_merged_from_pr;
@@ -158,60 +170,68 @@ let () =
   let prop_agent_count =
     Test.make ~name:"orchestrator: one agent per patch"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        List.length (Orchestrator.all_agents orch) = List.length patches)
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          List.length (Orchestrator.all_agents orch) = List.length patches
+        with _ -> false)
   in
   let prop_root_starts =
     Test.make ~name:"orchestrator: tick fires Start for root"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let _orch, actions = Orchestrator.tick orch ~patches in
-        match patches with
-        | [] -> true
-        | first :: _ ->
-            List.exists actions ~f:(function
-              | Orchestrator.Start (pid, _) ->
-                  Types.Patch_id.equal pid first.Types.Patch.id
-              | Orchestrator.Respond _ -> false))
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let _orch, actions = Orchestrator.tick orch ~patches in
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              List.exists actions ~f:(function
+                | Orchestrator.Start (pid, _) ->
+                    Types.Patch_id.equal pid first.Types.Patch.id
+                | Orchestrator.Respond (_, _) -> false)
+        with _ -> false)
   in
   let prop_tick_convergence =
     Test.make ~name:"orchestrator: repeated tick converges"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let rec loop o n =
-          if n = 0 then o
-          else
-            let o, _ = Orchestrator.tick o ~patches in
-            loop o (n - 1)
-        in
-        let orch_stable = loop orch (List.length patches + 1) in
-        let _orch_final, actions = Orchestrator.tick orch_stable ~patches in
-        not
-          (List.exists actions ~f:(function
-            | Orchestrator.Start _ -> true
-            | Orchestrator.Respond _ -> false)))
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let rec loop o n =
+            if n = 0 then o
+            else
+              let o, _ = Orchestrator.tick o ~patches in
+              loop o (n - 1)
+          in
+          let orch_stable = loop orch (List.length patches + 1) in
+          let _orch_final, actions = Orchestrator.tick orch_stable ~patches in
+          not
+            (List.exists actions ~f:(function
+              | Orchestrator.Start (_, _) -> true
+              | Orchestrator.Respond (_, _) -> false))
+        with _ -> false)
   in
   let prop_no_merged_actions =
     Test.make ~name:"orchestrator: no actions for all started+merged"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        (* Start all patches first via ticks, then mark merged *)
-        let rec tick_all o n =
-          if n = 0 then o
-          else
-            let o, _ = Orchestrator.tick o ~patches in
-            tick_all o (n - 1)
-        in
-        let orch = tick_all orch (List.length patches + 1) in
-        let orch =
-          List.fold patches ~init:orch ~f:(fun o (p : Types.Patch.t) ->
-              let o = Orchestrator.complete o p.id in
-              Orchestrator.mark_merged o p.id)
-        in
-        let _, actions = Orchestrator.tick orch ~patches in
-        List.is_empty actions)
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let rec tick_all o n =
+            if n = 0 then o
+            else
+              let o, _ = Orchestrator.tick o ~patches in
+              tick_all o (n - 1)
+          in
+          let orch = tick_all orch (List.length patches + 1) in
+          let orch =
+            List.fold patches ~init:orch ~f:(fun o (p : Types.Patch.t) ->
+                let o = Orchestrator.complete o p.id in
+                Orchestrator.mark_merged o p.id)
+          in
+          let _, actions = Orchestrator.tick orch ~patches in
+          List.is_empty actions
+        with _ -> false)
   in
-  List.iter ~f:QCheck2.Test.check_exn
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
     [
       prop_agent_count;
       prop_root_starts;
@@ -242,7 +262,7 @@ let () =
       | Orchestrator.Respond (p, k) ->
           Types.Patch_id.equal p pid
           && Types.Operation_kind.equal k Types.Operation_kind.Ci
-      | _ -> false));
+      | Orchestrator.Start (_, _) -> false));
 
   (* orchestrator: mark_merged makes has_merged true *)
   let orch2 = Orchestrator.create ~patches ~main_branch:main in
@@ -294,7 +314,8 @@ let () =
   assert (
     List.exists actions ~f:(function
       | Reconciler.Mark_merged p -> Types.Patch_id.equal p pid
-      | _ -> false));
+      | Reconciler.Enqueue_rebase _ -> false
+      | Reconciler.Start_operation _ -> false));
 
   (* plan_operations skips busy *)
   let g = Graph.of_patches [ mk_patch pid ] in
@@ -331,10 +352,12 @@ let () =
       ~branch_of:(fun _ -> Types.Branch.of_string "b1")
       ~graph:g ~main
   in
-  (match actions with
-  | [ Reconciler.Start_operation { kind = Types.Operation_kind.Rebase; _ } ] ->
-      ()
-  | _ -> assert false);
+  assert (List.length actions = 1);
+  (match List.hd_exn actions with
+  | Reconciler.Start_operation { kind; _ } ->
+      assert (Types.Operation_kind.equal kind Types.Operation_kind.Rebase)
+  | Reconciler.Mark_merged _ -> assert false
+  | Reconciler.Enqueue_rebase _ -> assert false);
 
   (* non-rebase ops get new_base = None *)
   let actions =
@@ -344,13 +367,13 @@ let () =
       ~branch_of:(fun _ -> Types.Branch.of_string "b1")
       ~graph:g ~main
   in
-  (match actions with
-  | [
-   Reconciler.Start_operation
-     { kind = Types.Operation_kind.Ci; new_base = None; _ };
-  ] ->
-      ()
-  | _ -> assert false);
+  assert (List.length actions = 1);
+  (match List.hd_exn actions with
+  | Reconciler.Start_operation { kind; new_base; _ } ->
+      assert (Types.Operation_kind.equal kind Types.Operation_kind.Ci);
+      assert (Option.is_none new_base)
+  | Reconciler.Mark_merged _ -> assert false
+  | Reconciler.Enqueue_rebase _ -> assert false);
 
   (* reconcile: merged patch produces Mark_merged *)
   let actions =
@@ -361,7 +384,8 @@ let () =
   assert (
     List.exists actions ~f:(function
       | Reconciler.Mark_merged p -> Types.Patch_id.equal p pid
-      | _ -> false));
+      | Reconciler.Enqueue_rebase _ -> false
+      | Reconciler.Start_operation _ -> false));
 
   (* reconcile: merge triggers rebase for dependents *)
   let p1 = Types.Patch_id.of_string "p1" in
@@ -396,7 +420,8 @@ let () =
   assert (
     List.exists actions ~f:(function
       | Reconciler.Enqueue_rebase p -> Types.Patch_id.equal p p2
-      | _ -> false));
+      | Reconciler.Mark_merged _ -> false
+      | Reconciler.Start_operation _ -> false));
 
   Stdlib.print_endline "reconciler: all properties passed"
 
