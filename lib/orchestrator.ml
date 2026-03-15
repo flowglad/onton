@@ -46,7 +46,12 @@ let branch_map_of_patches patches =
   List.fold patches
     ~init:(Map.empty (module Patch_id))
     ~f:(fun acc (p : Patch.t) ->
-      Map.set acc ~key:p.Patch.id ~data:p.Patch.branch)
+      match Map.add acc ~key:p.Patch.id ~data:p.Patch.branch with
+      | `Ok m -> m
+      | `Duplicate ->
+          invalid_arg
+            (Printf.sprintf "Orchestrator: duplicate patch id in tick input %s"
+               (Patch_id.to_string p.Patch.id)))
 
 (** {2 Liveness: fire all actions whose preconditions hold} *)
 
@@ -88,6 +93,16 @@ let respondable_patches t =
 
 let pending_actions t ~patches =
   let branch_map = branch_map_of_patches patches in
+  let missing =
+    Graph.all_patch_ids t.graph
+    |> List.filter ~f:(fun pid -> not (Map.mem branch_map pid))
+  in
+  if not (List.is_empty missing) then
+    invalid_arg
+      (Printf.sprintf
+         "Orchestrator.pending_actions: tick input missing %d patch id(s) from \
+          graph"
+         (List.length missing));
   startable_patches t ~branch_map @ respondable_patches t
 
 let fire t action =
