@@ -42,9 +42,17 @@ let operation_kind_of_yojson json =
 let display_status_to_yojson = function
   | Tui.Merged -> `String "Merged"
   | Needs_help -> `String "Needs_help"
-  | Approved -> `String "Approved"
+  | Approved_idle -> `String "Approved_idle"
+  | Approved_running -> `String "Approved_running"
+  | Fixing_ci -> `String "Fixing_ci"
+  | Addressing_review -> `String "Addressing_review"
+  | Resolving_conflict -> `String "Resolving_conflict"
+  | Responding_to_human -> `String "Responding_to_human"
   | Rebasing -> `String "Rebasing"
-  | Running -> `String "Running"
+  | Starting -> `String "Starting"
+  | Ci_queued -> `String "Ci_queued"
+  | Review_queued -> `String "Review_queued"
+  | Awaiting_ci -> `String "Awaiting_ci"
   | Awaiting_review -> `String "Awaiting_review"
   | Pending -> `String "Pending"
 
@@ -52,9 +60,17 @@ let display_status_of_yojson json =
   match Yojson.Safe.Util.to_string json with
   | "Merged" -> Ok Tui.Merged
   | "Needs_help" -> Ok Needs_help
-  | "Approved" -> Ok Approved
+  | "Approved_idle" -> Ok Approved_idle
+  | "Approved_running" -> Ok Approved_running
+  | "Fixing_ci" -> Ok Fixing_ci
+  | "Addressing_review" -> Ok Addressing_review
+  | "Resolving_conflict" -> Ok Resolving_conflict
+  | "Responding_to_human" -> Ok Responding_to_human
   | "Rebasing" -> Ok Rebasing
-  | "Running" -> Ok Running
+  | "Starting" -> Ok Starting
+  | "Ci_queued" -> Ok Ci_queued
+  | "Review_queued" -> Ok Review_queued
+  | "Awaiting_ci" -> Ok Awaiting_ci
   | "Awaiting_review" -> Ok Awaiting_review
   | "Pending" -> Ok Pending
   | s -> Error (Printf.sprintf "unknown display status: %s" s)
