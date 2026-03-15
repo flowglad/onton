@@ -137,6 +137,17 @@ let%test "approved running" =
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
        ~current_op:(Some Rebase))
 
+let%test "approved running ignores current_op" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_approved ~patch_id:(Patch_id.of_string "1")
+         ~value:true
+    |> State.Patch_ctx.set_busy ~patch_id:(Patch_id.of_string "1") ~value:true
+  in
+  equal_display_status Approved_running
+    (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
+       ~current_op:None)
+
 let%test "busy with ci op" =
   let ctx =
     State.Patch_ctx.empty
