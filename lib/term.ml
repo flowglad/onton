@@ -170,3 +170,180 @@ let%test "fit_width truncation preserves ANSI" =
 
 let%test "hrule default" = String.equal (hrule 3) "───"
 let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
+
+type size = { rows : int; cols : int } [@@deriving show, eq]
+(** Terminal size as rows × cols. *)
+
+(** Query terminal size via ioctl. Returns None if stdout is not a tty. *)
+let get_size () =
+  try
+    let ic = Unix.open_process_in "stty size 2>/dev/null </dev/tty" in
+    let line = In_channel.input_line ic in
+    let _ = Unix.close_process_in ic in
+    match line with
+    | Some s -> (
+        match String.split s ~on:' ' with
+        | [ rows; cols ] ->
+            Some { rows = Int.of_string rows; cols = Int.of_string cols }
+        | _ -> None)
+    | None -> None
+  with _ -> None
+
+(** Raw mode management. Saves/restores original termios settings. *)
+module Raw = struct
+  type state = { original : Unix.terminal_io }
+
+  let enter () =
+    let fd = Unix.stdin in
+    let original = Unix.tcgetattr fd in
+    let raw =
+      {
+        original with
+        Unix.c_icanon = false;
+        c_echo = false;
+        c_vmin = 1;
+        c_vtime = 0;
+        c_isig = false;
+      }
+    in
+    Unix.tcsetattr fd Unix.TCSAFLUSH raw;
+    { original }
+
+  let leave state = Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH state.original
+end
+
+(** Keyboard input types and parsing. *)
+module Key = struct
+  type t =
+    | Char of char
+    | Enter
+    | Tab
+    | Backspace
+    | Escape
+    | Up
+    | Down
+    | Left
+    | Right
+    | Home
+    | End
+    | Page_up
+    | Page_down
+    | Delete
+    | F of int
+    | Ctrl of char
+    | Unknown of string
+  [@@deriving show, eq]
+
+  (** Read a single byte from stdin, returning None on EOF/error. *)
+  let read_byte () =
+    let buf = Bytes.create 1 in
+    try
+      let n = Unix.read Unix.stdin buf 0 1 in
+      if n = 0 then None else Some (Bytes.get buf 0)
+    with _ -> None
+
+  (** Try to read a byte with a short timeout (for escape sequence detection).
+      Uses Unix.select with a 50ms timeout. *)
+  let read_byte_timeout () =
+    let ready, _, _ = Unix.select [ Unix.stdin ] [] [] 0.05 in
+    match ready with [] -> None | _ -> read_byte ()
+
+  (** Parse a CSI escape sequence (after ESC and bracket have been read). *)
+  let parse_csi () =
+    match read_byte_timeout () with
+    | None -> Escape
+    | Some c -> (
+        match c with
+        | 'A' -> Up
+        | 'B' -> Down
+        | 'C' -> Right
+        | 'D' -> Left
+        | 'H' -> Home
+        | 'F' -> End
+        | '1' -> (
+            match read_byte_timeout () with
+            | Some '~' -> Home
+            | Some ';' ->
+                (* skip modifier + final byte *)
+                let _ = read_byte_timeout () in
+                let _ = read_byte_timeout () in
+                Unknown "modified"
+            | Some c2 -> (
+                (* Could be F5-F8: 1 5~ through 1 9~ *)
+                match read_byte_timeout () with
+                | Some '~' -> (
+                    match c2 with
+                    | '5' -> F 5
+                    | '7' -> F 6
+                    | '8' -> F 7
+                    | '9' -> F 8
+                    | _ -> Unknown (Printf.sprintf "1%c~" c2))
+                | _ -> Unknown (Printf.sprintf "1%c" c2))
+            | None -> Unknown "1")
+        | '2' -> (
+            match read_byte_timeout () with
+            | Some '~' -> Unknown "insert"
+            | Some '0' -> (
+                match read_byte_timeout () with
+                | Some '~' -> F 9
+                | _ -> Unknown "20")
+            | Some '1' -> (
+                match read_byte_timeout () with
+                | Some '~' -> F 10
+                | _ -> Unknown "21")
+            | Some '3' -> (
+                match read_byte_timeout () with
+                | Some '~' -> F 11
+                | _ -> Unknown "23")
+            | Some '4' -> (
+                match read_byte_timeout () with
+                | Some '~' -> F 12
+                | _ -> Unknown "24")
+            | _ -> Unknown "2")
+        | '3' -> (
+            match read_byte_timeout () with
+            | Some '~' -> Delete
+            | _ -> Unknown "3")
+        | '4' -> (
+            match read_byte_timeout () with Some '~' -> End | _ -> Unknown "4")
+        | '5' -> (
+            match read_byte_timeout () with
+            | Some '~' -> Page_up
+            | _ -> Unknown "5")
+        | '6' -> (
+            match read_byte_timeout () with
+            | Some '~' -> Page_down
+            | _ -> Unknown "6")
+        | _ -> Unknown (Printf.sprintf "[%c" c))
+
+  (** Parse an escape sequence after ESC has been read. *)
+  let parse_escape () =
+    match read_byte_timeout () with
+    | None -> Escape (* bare escape *)
+    | Some '[' -> parse_csi ()
+    | Some 'O' -> (
+        (* SS3 sequences: F1-F4 *)
+        match read_byte_timeout () with
+        | Some 'P' -> F 1
+        | Some 'Q' -> F 2
+        | Some 'R' -> F 3
+        | Some 'S' -> F 4
+        | Some c -> Unknown (Printf.sprintf "O%c" c)
+        | None -> Unknown "O")
+    | Some c -> Unknown (Printf.sprintf "\\e%c" c)
+
+  (** Read and parse a single key press. Blocks until input is available. Must
+      be called while in raw mode. *)
+  let read () =
+    match read_byte () with
+    | None -> None
+    | Some '\027' -> Some (parse_escape ())
+    | Some '\r' | Some '\n' -> Some Enter
+    | Some '\t' -> Some Tab
+    | Some '\127' -> Some Backspace
+    | Some c ->
+        let code = Char.to_int c in
+        if code >= 1 && code <= 26 then
+          Some (Ctrl (Char.of_int_exn (code + 96)))
+        else Some (Char c)
+end
