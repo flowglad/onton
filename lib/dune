@@ -1,6 +1,6 @@
 (library
  (name onton)
- (libraries base)
+ (libraries base eio eio_main cohttp-eio yojson qcheck-core)
  (inline_tests)
  (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord
                   ppx_sexp_conv ppx_compare ppx_hash
