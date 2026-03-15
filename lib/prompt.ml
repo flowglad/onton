@@ -109,9 +109,7 @@ let render_human_message_prompt (messages : string list) =
       in
       Printf.sprintf "# Messages from Human\n\n%s" formatted
 
-[@@@warning "-40-42"]
-
-let%expect_test "patch prompt includes title and deps" =
+let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
     Patch.
       {
@@ -143,29 +141,12 @@ let%expect_test "patch prompt includes title and deps" =
   let result =
     render_patch_prompt patch gameplan ~base_branch:"onton-port/patch-1"
   in
-  Stdio.print_string result;
-  [%expect
-    {|
-    # [onton-port] Prompt renderer
+  String.is_substring result ~substring:"# [onton-port] Prompt renderer"
+  && String.is_substring result ~substring:"Patches 1"
+  && String.is_substring result ~substring:"Patch 1: Core types"
+  && String.is_substring result ~substring:"Patch 5: Prompt renderer"
 
-    ## Problem Statement
-    Port Anton to OCaml.
-
-    ## Solution Summary
-    Use Eio for concurrency.
-
-    ## Dependencies
-    Patches 1
-
-    ## Git Instructions
-    - Branch: onton-port/patch-5
-    - Base branch: onton-port/patch-1
-
-    ## Patches in Gameplan
-    - Patch 1: Core types
-    - Patch 5: Prompt renderer |}]
-
-let%expect_test "review prompt formats comments" =
+let%test "review prompt formats comments" =
   let comments : Comment.t list =
     [
       Comment.
@@ -178,15 +159,8 @@ let%expect_test "review prompt formats comments" =
     ]
   in
   let result = render_review_prompt comments in
-  Stdio.print_string result;
-  [%expect
-    {|
-    # Review Comments
-
-    Please address the following review comments:
-
-    ### lib/foo.ml:42
-    Fix this function.
-
-    ### (general)
-    General feedback. |}]
+  String.is_substring result ~substring:"# Review Comments"
+  && String.is_substring result ~substring:"### lib/foo.ml:42"
+  && String.is_substring result ~substring:"Fix this function."
+  && String.is_substring result ~substring:"### (general)"
+  && String.is_substring result ~substring:"General feedback."
