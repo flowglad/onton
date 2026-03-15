@@ -86,13 +86,16 @@ let comment_to_yojson (c : Comment.t) =
     ]
 
 let comment_of_yojson json =
-  let open Yojson.Safe.Util in
-  Ok
-    {
-      Comment.body = member "body" json |> to_string;
-      path = member "path" json |> to_string_option;
-      line = member "line" json |> to_int_option;
-    }
+  try
+    let open Yojson.Safe.Util in
+    Ok
+      {
+        Comment.body = member "body" json |> to_string;
+        path = member "path" json |> to_string_option;
+        line = member "line" json |> to_int_option;
+      }
+  with Yojson.Safe.Util.Type_error (msg, _) ->
+    Error (Printf.sprintf "malformed comment: %s" msg)
 
 (* ---------- pending_comment ---------- *)
 
@@ -251,7 +254,7 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
 let orchestrator_of_yojson ~gameplan json =
   let graph = Graph.of_patches gameplan.Gameplan.patches in
   let main_branch = Branch.of_string (string_member "main_branch" json) in
-  Result.map
+  Result.bind
     (result_all
        (Yojson.Safe.Util.member "agents" json
        |> Yojson.Safe.Util.to_assoc
@@ -264,7 +267,14 @@ let orchestrator_of_yojson ~gameplan json =
           ~init:(Map.empty (module Patch_id))
           ~f:(fun acc (k, v) -> Map.set acc ~key:k ~data:v)
       in
-      Orchestrator.restore ~graph ~agents:agents_map ~main_branch)
+      let graph_pids =
+        Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
+      in
+      let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
+      if not (Set.equal graph_pids agent_pids) then
+        Error
+          "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
+      else Ok (Orchestrator.restore ~graph ~agents:agents_map ~main_branch))
 
 (* ---------- Gameplan ---------- *)
 
@@ -319,10 +329,12 @@ let save ~path (snap : Runtime.snapshot) =
   try
     let json = snapshot_to_yojson snap in
     let content = Yojson.Safe.pretty_to_string json in
-    let oc = Stdlib.open_out path in
+    let tmp_path = path ^ ".tmp" in
+    let oc = Stdlib.open_out tmp_path in
     Stdlib.Fun.protect
       ~finally:(fun () -> Stdlib.close_out_noerr oc)
       (fun () -> Stdlib.output_string oc content);
+    Stdlib.Sys.rename tmp_path path;
     Ok ()
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
