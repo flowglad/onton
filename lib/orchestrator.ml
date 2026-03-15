@@ -21,17 +21,23 @@ let create ~patches ~main_branch =
     List.fold patches
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc (p : Patch.t) ->
-        Map.set acc ~key:p.Patch.id ~data:(Patch_agent.create p.Patch.id))
+        match
+          Map.add acc ~key:p.Patch.id ~data:(Patch_agent.create p.Patch.id)
+        with
+        | `Ok m -> m
+        | `Duplicate ->
+            invalid_arg
+              (Printf.sprintf "Orchestrator.create: duplicate patch id %s"
+                 (Patch_id.to_string p.Patch.id)))
   in
   { graph; agents; main_branch }
 
 let agent t patch_id = Map.find_exn t.agents patch_id
 
 let update_agent t patch_id ~f =
-  {
-    t with
-    agents = Map.update t.agents patch_id ~f:(fun a -> f (Option.value_exn a));
-  }
+  match Map.find t.agents patch_id with
+  | None -> t
+  | Some a -> { t with agents = Map.set t.agents ~key:patch_id ~data:(f a) }
 
 let has_merged t pid = (agent t pid).Patch_agent.merged
 let has_pr t pid = (agent t pid).Patch_agent.has_pr
