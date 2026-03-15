@@ -3,7 +3,7 @@ let () =
     [
       Onton.Types.Patch.
         {
-          id = Onton.Types.Patch_id.of_int 1;
+          id = Onton.Types.Patch_id.of_string "1";
           title = "First patch";
           branch = Onton.Types.Branch.of_string "patch-1";
           dependencies = [];
@@ -17,7 +17,7 @@ let () =
   let agents = Onton.Orchestrator.all_agents orch in
   List.iter
     (fun a ->
-      Printf.printf "patch %d: has_pr=%b busy=%b\n"
-        (Onton.Types.Patch_id.to_int a.Onton.Patch_agent.patch_id)
+      Printf.printf "patch %s: has_pr=%b busy=%b\n"
+        (Onton.Types.Patch_id.to_string a.Onton.Patch_agent.patch_id)
         a.Onton.Patch_agent.has_pr a.Onton.Patch_agent.busy)
     agents

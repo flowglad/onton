@@ -3,7 +3,7 @@ let () =
     [
       Onton.Types.Patch.
         {
-          id = Onton.Types.Patch_id.of_int 1;
+          id = Onton.Types.Patch_id.of_string "1";
           title = "Test patch";
           branch = Onton.Types.Branch.of_string "test-1";
           dependencies = [];
