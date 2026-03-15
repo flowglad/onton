@@ -23,6 +23,7 @@ depends: [
   "ppx_assert" {with-test & >= "v0.17.0"}
   "qcheck-core" {with-test & >= "0.21"}
 
+
   "ocamlformat" {with-dev-setup & = "0.28.1"}
 ]
 build: [
