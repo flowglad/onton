@@ -47,3 +47,23 @@ module Patch = struct
   }
   [@@deriving show, eq, sexp_of, compare]
 end
+
+module Ci_check = struct
+  type t = {
+    name : string;
+    conclusion : string;
+    details_url : string option;
+    description : string option;
+  }
+  [@@deriving show, eq, sexp_of, compare]
+end
+
+module Gameplan = struct
+  type t = {
+    project_name : string;
+    problem_statement : string;
+    solution_summary : string;
+    patches : Patch.t list;
+  }
+  [@@deriving show, eq, sexp_of, compare]
+end
