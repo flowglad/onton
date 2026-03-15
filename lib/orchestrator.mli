@@ -50,3 +50,14 @@ val clear_needs_intervention : t -> Patch_id.t -> t
 val agent : t -> Patch_id.t -> Patch_agent.t
 val all_agents : t -> Patch_agent.t list
 val graph : t -> Graph.t
+val main_branch : t -> Branch.t
+val agents_map : t -> Patch_agent.t Map.M(Patch_id).t
+
+(** {2 Persistence support} *)
+
+val restore :
+  graph:Graph.t ->
+  agents:Patch_agent.t Map.M(Patch_id).t ->
+  main_branch:Branch.t ->
+  t
+(** Reconstruct orchestrator from persisted components. *)

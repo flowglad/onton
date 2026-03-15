@@ -77,3 +77,28 @@ val clear_needs_intervention : t -> t
 
 val highest_priority : t -> Types.Operation_kind.t option
 (** The highest-priority operation in the queue, or [None] if empty. *)
+
+(** {2 Persistence support} *)
+
+val restore :
+  patch_id:Types.Patch_id.t ->
+  has_pr:bool ->
+  has_session:bool ->
+  busy:bool ->
+  merged:bool ->
+  needs_intervention:bool ->
+  queue:Types.Operation_kind.t list ->
+  satisfies:bool ->
+  changed:bool ->
+  has_conflict:bool ->
+  base_branch:Types.Branch.t option ->
+  ci_failure_count:int ->
+  session_failed:bool ->
+  pending_comments:pending_comment list ->
+  t
+(** Reconstruct agent state from persisted field values. Bypasses precondition
+    checks — use only for deserialization. *)
+
+val restore_pending_comment :
+  comment:Types.Comment.t -> valid:bool -> pending_comment
+(** Reconstruct a pending comment from persisted values. *)
