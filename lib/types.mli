@@ -3,6 +3,8 @@ open Base
 module Patch_id : sig
   type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
 
+  include Comparator.S with type t := t
+
   val of_int : int -> t
   val to_int : t -> int
 end
@@ -36,6 +38,8 @@ end
 module Comment : sig
   type t = { body : string; path : string option; line : int option }
   [@@deriving show, eq, sexp_of, compare]
+
+  include Comparator.S with type t := t
 end
 
 module Patch : sig

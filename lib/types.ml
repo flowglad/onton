@@ -1,7 +1,12 @@
 open Base
 
 module Patch_id = struct
-  type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  module T = struct
+    type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  end
+
+  include T
+  include Comparator.Make (T)
 
   let of_int n = n
   let to_int t = t
@@ -34,8 +39,13 @@ module Operation_kind = struct
 end
 
 module Comment = struct
-  type t = { body : string; path : string option; line : int option }
-  [@@deriving show, eq, sexp_of, compare]
+  module T = struct
+    type t = { body : string; path : string option; line : int option }
+    [@@deriving show, eq, sexp_of, compare]
+  end
+
+  include T
+  include Comparator.Make (T)
 end
 
 module Patch = struct
