@@ -27,16 +27,11 @@ let is_feedback (kind : Operation_kind.t) =
       true
   | Operation_kind.Rebase -> false
 
-let is_feedback_busy (ctx : State.Patch_ctx.t) ~patch_id ~kind =
-  State.Patch_ctx.is_busy ctx ~patch_id && is_feedback kind
-
-let approved ctx ~patch_id = State.Patch_ctx.is_approved ctx ~patch_id
-
 let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     ~(current_op : Operation_kind.t option) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
   else if State.Patch_ctx.needs_intervention ctx ~patch_id then Needs_help
-  else if approved ctx ~patch_id then Approved
+  else if State.Patch_ctx.is_approved ctx ~patch_id then Approved
   else if State.Patch_ctx.is_busy ctx ~patch_id then
     match current_op with
     | Some kind when is_feedback kind -> Running
