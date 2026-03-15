@@ -86,9 +86,8 @@ let respondable_patches t =
         && (not a.Patch_agent.busy)
         && not a.Patch_agent.needs_intervention
       then
-        match Patch_agent.highest_priority a with
-        | Some k -> Some (Respond (pid, k))
-        | None -> None
+        Patch_agent.highest_priority a
+        |> Option.map ~f:(fun k -> Respond (pid, k))
       else None)
 
 let pending_actions t ~patches =
