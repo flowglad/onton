@@ -31,18 +31,51 @@ let validate_config config =
 
     Maps patch_id -> Pr_number.t. The current data model does not persist PR
     numbers on Patch_agent.t (it only tracks [has_pr : bool]), so we maintain a
-    separate table populated when PRs are created and used for polling. *)
+    separate table populated when PRs are created and used for polling.
+
+    PR numbers are discovered by querying GitHub for open PRs matching the
+    patch's branch name after Claude completes work. *)
 
 module Pr_registry = struct
   type t = (string, Pr_number.t) Hashtbl.t
 
   let create () : t = Hashtbl.create 64
 
-  let _register (t : t) ~patch_id ~pr_number =
+  let register (t : t) ~patch_id ~pr_number =
     Hashtbl.replace t (Patch_id.to_string patch_id) pr_number
 
   let find (t : t) ~patch_id = Hashtbl.find_opt t (Patch_id.to_string patch_id)
 end
+
+(** Discover PR number for a branch by calling [gh pr list]. *)
+let discover_pr_number ~process_mgr ~owner ~repo ~branch =
+  let args =
+    [
+      "gh";
+      "pr";
+      "list";
+      "--repo";
+      Printf.sprintf "%s/%s" owner repo;
+      "--head";
+      Branch.to_string branch;
+      "--json";
+      "number";
+      "--limit";
+      "1";
+    ]
+  in
+  try
+    let buf = Buffer.create 256 in
+    Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) process_mgr args;
+    let output = Buffer.contents buf in
+    (* Parse JSON like [{"number":42}] *)
+    match Yojson.Basic.from_string output with
+    | `List (`Assoc fields :: _) -> (
+        match Base.List.Assoc.find fields ~equal:String.equal "number" with
+        | Some (`Int n) -> Some (Pr_number.of_int n)
+        | _ -> None)
+    | _ -> None
+  with _ -> None
 
 (** {1 Helper: extract snapshot fields} *)
 
@@ -55,6 +88,35 @@ let snap_with_orch (snap : Runtime.snapshot) orch =
     activity_log = snap.Runtime.activity_log;
     gameplan = snap.Runtime.gameplan;
   }
+
+(** {1 Activity log → TUI conversion} *)
+
+let activity_entries_of_log (log : Activity_log.t) =
+  let transitions =
+    Base.List.map (Activity_log.recent_transitions log ~limit:10)
+      ~f:(fun (t : Activity_log.Transition_entry.t) ->
+        Tui.Transition
+          {
+            patch_id =
+              Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
+            from_label = Tui.label t.Activity_log.Transition_entry.from_status;
+            to_status = t.Activity_log.Transition_entry.to_status;
+            to_label = Tui.label t.Activity_log.Transition_entry.to_status;
+            action = t.Activity_log.Transition_entry.action;
+          })
+  in
+  let events =
+    Base.List.map (Activity_log.recent_events log ~limit:10)
+      ~f:(fun (e : Activity_log.Event.t) ->
+        Tui.Event
+          {
+            patch_id =
+              Base.Option.map e.Activity_log.Event.patch_id
+                ~f:Patch_id.to_string;
+            message = e.Activity_log.Event.message;
+          })
+  in
+  transitions @ events
 
 (** {1 Fibers} *)
 
@@ -74,8 +136,9 @@ let tui_fiber ~runtime ~clock ~stdout =
             | None -> 80
           in
           let gp = snap_gameplan snap in
+          let activity = activity_entries_of_log snap.Runtime.activity_log in
           let frame =
-            Tui._render_frame ~width ~activity:[]
+            Tui._render_frame ~width ~activity
               ~project_name:gp.Gameplan.project_name views
           in
           Tui._paint_frame frame)
@@ -86,118 +149,122 @@ let tui_fiber ~runtime ~clock ~stdout =
   in
   loop ()
 
+(** Per-agent poll intent, collected inside [read] and executed outside. *)
+type poll_intent =
+  | Skip_no_pr of Patch_id.t
+  | Poll of {
+      patch_id : Patch_id.t;
+      pr_number : Pr_number.t;
+      was_merged : bool;
+    }
+
 (** Poller fiber — periodically polls GitHub for PR state changes and
-    reconciles. *)
+    reconciles. Collects intents inside [read], executes mutations outside to
+    avoid deadlock (Eio.Mutex cannot upgrade from read to write lock). *)
 let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry =
   let main = Branch.of_string config.main_branch in
   let rec loop () =
-    Runtime.read runtime (fun snap ->
+    (* Phase 1: collect poll intents under read lock *)
+    let intents =
+      Runtime.read runtime (fun snap ->
+          let agents = Orchestrator.all_agents (snap_orch snap) in
+          Base.List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
+              if agent.Patch_agent.has_pr && not agent.Patch_agent.merged then
+                match
+                  Pr_registry.find pr_registry
+                    ~patch_id:agent.Patch_agent.patch_id
+                with
+                | None -> Some (Skip_no_pr agent.Patch_agent.patch_id)
+                | Some pr_number ->
+                    Some
+                      (Poll
+                         {
+                           patch_id = agent.Patch_agent.patch_id;
+                           pr_number;
+                           was_merged = agent.Patch_agent.merged;
+                         })
+              else None))
+    in
+    (* Phase 2: execute intents outside read lock *)
+    Base.List.iter intents ~f:(fun intent ->
+        match intent with
+        | Skip_no_pr patch_id ->
+            Runtime.update_activity_log runtime (fun log ->
+                Activity_log.add_event log
+                  (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ())
+                     ~patch_id "skipping poll: no PR number registered"))
+        | Poll { patch_id; pr_number; was_merged } -> (
+            match Github.pr_state ~net github pr_number with
+            | Error err ->
+                Runtime.update_activity_log runtime (fun log ->
+                    Activity_log.add_event log
+                      (Activity_log.Event.create
+                         ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                         (Printf.sprintf "poll error: %s"
+                            (Github.show_error err))))
+            | Ok pr_state ->
+                let poll_result = Poller.poll ~was_merged pr_state in
+                Runtime.update_orchestrator runtime (fun orch ->
+                    let orch =
+                      if poll_result.Poller.merged then
+                        Orchestrator.mark_merged orch patch_id
+                      else orch
+                    in
+                    let orch =
+                      if poll_result.Poller.has_conflict then
+                        Orchestrator.set_has_conflict orch patch_id
+                      else orch
+                    in
+                    Base.List.fold poll_result.Poller.queue ~init:orch
+                      ~f:(fun acc kind ->
+                        Orchestrator.enqueue acc patch_id kind))));
+    (* Phase 3: reconcile — separate write lock, no nesting *)
+    Runtime.update runtime (fun snap ->
         let agents = Orchestrator.all_agents (snap_orch snap) in
-        Base.List.iter agents ~f:(fun (agent : Patch_agent.t) ->
-            if agent.Patch_agent.has_pr && not agent.Patch_agent.merged then
-              match
-                Pr_registry.find pr_registry
-                  ~patch_id:agent.Patch_agent.patch_id
-              with
-              | None ->
-                  Runtime.update_activity_log runtime (fun log ->
-                      Activity_log.add_event log
-                        (Activity_log.Event.create
-                           ~timestamp:(Unix.gettimeofday ())
-                           ~patch_id:agent.Patch_agent.patch_id
-                           "skipping poll: no PR number registered"))
-              | Some pr_number -> (
-                  match Github.pr_state ~net github pr_number with
-                  | Error err ->
-                      Runtime.update_activity_log runtime (fun log ->
-                          Activity_log.add_event log
-                            (Activity_log.Event.create
-                               ~timestamp:(Unix.gettimeofday ())
-                               ~patch_id:agent.Patch_agent.patch_id
-                               (Printf.sprintf "poll error: %s"
-                                  (Github.show_error err))))
-                  | Ok pr_state ->
-                      let poll_result =
-                        Poller.poll ~was_merged:agent.Patch_agent.merged
-                          pr_state
-                      in
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          let orch =
-                            if poll_result.Poller.merged then
-                              Orchestrator.mark_merged orch
-                                agent.Patch_agent.patch_id
-                            else orch
-                          in
-                          let orch =
-                            if poll_result.Poller.has_conflict then
-                              Orchestrator.set_has_conflict orch
-                                agent.Patch_agent.patch_id
-                            else orch
-                          in
-                          Base.List.fold poll_result.Poller.queue ~init:orch
-                            ~f:(fun acc kind ->
-                              Orchestrator.enqueue acc
-                                agent.Patch_agent.patch_id kind));
-                      (* Reconcile after polling *)
-                      Runtime.update runtime (fun snap ->
-                          let agents =
-                            Orchestrator.all_agents (snap_orch snap)
-                          in
-                          let patch_views =
-                            Base.List.map agents ~f:(fun (a : Patch_agent.t) ->
-                                Reconciler.
-                                  {
-                                    id = a.Patch_agent.patch_id;
-                                    has_pr = a.Patch_agent.has_pr;
-                                    merged = a.Patch_agent.merged;
-                                    busy = a.Patch_agent.busy;
-                                    needs_intervention =
-                                      a.Patch_agent.needs_intervention;
-                                    queue = a.Patch_agent.queue;
-                                    base_branch =
-                                      Base.Option.value
-                                        a.Patch_agent.base_branch ~default:main;
-                                  })
-                          in
-                          let merged_patches =
-                            Base.List.filter_map agents
-                              ~f:(fun (a : Patch_agent.t) ->
-                                if a.Patch_agent.merged then
-                                  Some a.Patch_agent.patch_id
-                                else None)
-                          in
-                          let gp = snap_gameplan snap in
-                          let branch_of pid =
-                            match
-                              Base.List.find gp.Gameplan.patches
-                                ~f:(fun (p : Patch.t) ->
-                                  Patch_id.equal p.Patch.id pid)
-                            with
-                            | Some p -> p.Patch.branch
-                            | None -> main
-                          in
-                          let actions =
-                            Reconciler.reconcile
-                              ~graph:(Orchestrator.graph (snap_orch snap))
-                              ~main ~merged_pr_patches:merged_patches ~branch_of
-                              patch_views
-                          in
-                          let orch =
-                            Base.List.fold actions ~init:(snap_orch snap)
-                              ~f:(fun orch action ->
-                                match action with
-                                | Reconciler.Mark_merged pid ->
-                                    Orchestrator.mark_merged orch pid
-                                | Reconciler.Enqueue_rebase pid ->
-                                    Orchestrator.enqueue orch pid
-                                      Operation_kind.Rebase
-                                | Reconciler.Start_operation _ -> orch)
-                          in
-                          let orch, _actions =
-                            Orchestrator.tick orch
-                              ~patches:(snap_gameplan snap).Gameplan.patches
-                          in
-                          snap_with_orch snap orch))));
+        let patch_views =
+          Base.List.map agents ~f:(fun (a : Patch_agent.t) ->
+              Reconciler.
+                {
+                  id = a.Patch_agent.patch_id;
+                  has_pr = a.Patch_agent.has_pr;
+                  merged = a.Patch_agent.merged;
+                  busy = a.Patch_agent.busy;
+                  needs_intervention = a.Patch_agent.needs_intervention;
+                  queue = a.Patch_agent.queue;
+                  base_branch =
+                    Base.Option.value a.Patch_agent.base_branch ~default:main;
+                })
+        in
+        let merged_patches =
+          Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
+              if a.Patch_agent.merged then Some a.Patch_agent.patch_id else None)
+        in
+        let gp = snap_gameplan snap in
+        let branch_of pid =
+          match
+            Base.List.find gp.Gameplan.patches ~f:(fun (p : Patch.t) ->
+                Patch_id.equal p.Patch.id pid)
+          with
+          | Some p -> p.Patch.branch
+          | None -> main
+        in
+        let actions =
+          Reconciler.reconcile
+            ~graph:(Orchestrator.graph (snap_orch snap))
+            ~main ~merged_pr_patches:merged_patches ~branch_of patch_views
+        in
+        let orch =
+          Base.List.fold actions ~init:(snap_orch snap) ~f:(fun orch action ->
+              match action with
+              | Reconciler.Mark_merged pid -> Orchestrator.mark_merged orch pid
+              | Reconciler.Enqueue_rebase pid ->
+                  Orchestrator.enqueue orch pid Operation_kind.Rebase
+              | Reconciler.Start_operation _ -> orch)
+        in
+        let orch, _actions =
+          Orchestrator.tick orch ~patches:(snap_gameplan snap).Gameplan.patches
+        in
+        snap_with_orch snap orch);
     Eio.Time.sleep clock config.poll_interval;
     loop ()
   in
@@ -205,7 +272,7 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry =
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes.
 *)
-let runner_fiber ~runtime ~env ~config ~pr_registry:_ =
+let runner_fiber ~runtime ~env ~config ~pr_registry =
   let main = Branch.of_string config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
@@ -218,34 +285,49 @@ let runner_fiber ~runtime ~env ~config ~pr_registry:_ =
     in
     Base.List.iter actions ~f:(fun action ->
         match action with
-        | Orchestrator.Start (patch_id, base_branch) ->
+        | Orchestrator.Start (patch_id, base_branch) -> (
             let gameplan =
               Runtime.read runtime (fun snap -> snap_gameplan snap)
             in
-            let patch =
-              Base.List.find_exn gameplan.Gameplan.patches
-                ~f:(fun (p : Patch.t) -> Patch_id.equal p.Patch.id patch_id)
-            in
-            let prompt =
-              Prompt.render_patch_prompt patch gameplan
-                ~base_branch:(Branch.to_string base_branch)
-            in
-            Runtime.update runtime (fun snap ->
-                let orch, _actions =
-                  Orchestrator.tick (snap_orch snap)
-                    ~patches:(snap_gameplan snap).Gameplan.patches
+            match
+              Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+                  Patch_id.equal p.Patch.id patch_id)
+            with
+            | None ->
+                Runtime.update_activity_log runtime (fun log ->
+                    Activity_log.add_event log
+                      (Activity_log.Event.create
+                         ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                         "runner: patch not found in gameplan, skipping"))
+            | Some patch ->
+                let prompt =
+                  Prompt.render_patch_prompt patch gameplan
+                    ~base_branch:(Branch.to_string base_branch)
                 in
-                snap_with_orch snap orch);
-            let worktree_path =
-              Worktree.worktree_dir ~repo_root:config.repo_root ~patch_id
-            in
-            let cwd = Eio.Path.(fs / worktree_path) in
-            let _result =
-              Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
-                ~session_id:None
-            in
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.complete orch patch_id)
+                Runtime.update runtime (fun snap ->
+                    let orch, _actions =
+                      Orchestrator.tick (snap_orch snap)
+                        ~patches:(snap_gameplan snap).Gameplan.patches
+                    in
+                    snap_with_orch snap orch);
+                let worktree_path =
+                  Worktree.worktree_dir ~repo_root:config.repo_root ~patch_id
+                in
+                let cwd = Eio.Path.(fs / worktree_path) in
+                let _result =
+                  Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
+                    ~session_id:None
+                in
+                (* Discover and register PR number after Claude creates it *)
+                (match
+                   discover_pr_number ~process_mgr ~owner:config.github_owner
+                     ~repo:config.github_repo ~branch:patch.Patch.branch
+                 with
+                | Some pr_number ->
+                    Pr_registry.register pr_registry ~patch_id ~pr_number
+                | None -> ());
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Orchestrator.complete orch patch_id))
         | Orchestrator.Respond (patch_id, kind) ->
             let agent =
               Runtime.read runtime (fun snap ->
