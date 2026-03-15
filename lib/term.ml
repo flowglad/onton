@@ -97,12 +97,45 @@ let strip_ansi s =
 (** Visible character width of a string (strips ANSI codes). *)
 let visible_length s = String.length (strip_ansi s)
 
-(** Pad or truncate to fit a visible width. *)
+(** Pad or truncate to fit a visible width, preserving ANSI formatting.
+    Truncation walks the original string, copying escape sequences verbatim and
+    counting only visible characters until [width] is reached. *)
 let fit_width width s =
-  let vis = strip_ansi s in
-  let vlen = String.length vis in
+  let vlen = visible_length s in
   if vlen <= width then s ^ String.make (width - vlen) ' '
-  else String.prefix vis width
+  else
+    let buf = Buffer.create (width * 2) in
+    let len = String.length s in
+    let rec loop i visible =
+      if visible >= width || i >= len then Buffer.contents buf
+      else if Char.equal (String.get s i) '\027' then
+        copy_escape (i + 1) visible
+      else begin
+        Buffer.add_char buf (String.get s i);
+        loop (i + 1) (visible + 1)
+      end
+    and copy_escape i visible =
+      Buffer.add_char buf '\027';
+      if i >= len then Buffer.contents buf
+      else if Char.equal (String.get s i) '[' then begin
+        Buffer.add_char buf '[';
+        copy_params (i + 1) visible
+      end
+      else begin
+        Buffer.add_char buf (String.get s i);
+        loop (i + 1) visible
+      end
+    and copy_params i visible =
+      if i >= len then Buffer.contents buf
+      else
+        let c = String.get s i in
+        Buffer.add_char buf c;
+        if Char.to_int c >= 0x20 && Char.to_int c <= 0x3F then
+          copy_params (i + 1) visible
+        else loop (i + 1) visible
+    in
+    let result = loop 0 0 in
+    result ^ Sgr.reset
 
 (** Repeat a string n times. *)
 let repeat n s =
@@ -128,7 +161,12 @@ let%test "fit_width pads short strings" =
   String.equal (fit_width 10 "hi") "hi        "
 
 let%test "fit_width truncates long strings" =
-  String.equal (fit_width 3 "hello") "hel"
+  String.equal (strip_ansi (fit_width 3 "hello")) "hel"
+
+let%test "fit_width truncation preserves ANSI" =
+  let s = styled [ Sgr.bold ] "hello" in
+  let result = fit_width 3 s in
+  String.equal (strip_ansi result) "hel" && not (String.equal result "hel")
 
 let%test "hrule default" = String.equal (hrule 3) "───"
 let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
