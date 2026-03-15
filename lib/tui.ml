@@ -62,6 +62,13 @@ let styled_label status =
   let c = color status in
   Term.styled [ c ] (label status)
 
+(** Derive the display status for a patch from its current state context.
+
+    [current_op] should be [Some op] when the patch is busy — it determines
+    which specific "running" status to show. When [is_busy] is true but
+    [current_op] is [None] (e.g. during startup before the first operation is
+    tracked), we fall back to [Starting] or [Rebasing] based on whether a PR
+    exists. *)
 let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     ~(current_op : Operation_kind.t option) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
