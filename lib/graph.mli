@@ -56,7 +56,7 @@ val initial_base :
     [p]:
     - If there are no open deps, returns [main].
     - If there is exactly one open dep, returns [branch_of (sole_open_dep ...)].
-*)
+    - Raises [Invalid_argument] if more than one open dep exists. *)
 
 val dependents : t -> Types.Patch_id.t -> Types.Patch_id.t list
 (** [dependents t p] returns all patches that directly depend on [p]. *)
