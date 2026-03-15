@@ -62,6 +62,28 @@ let increment_ci_failure_count t =
 
 let clear_needs_intervention t = { t with needs_intervention = false }
 
+let restore ~patch_id ~has_pr ~has_session ~busy ~merged ~needs_intervention
+    ~queue ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
+    ~session_failed ~pending_comments =
+  {
+    patch_id;
+    has_pr;
+    has_session;
+    busy;
+    merged;
+    needs_intervention;
+    queue;
+    satisfies;
+    changed;
+    has_conflict;
+    base_branch;
+    ci_failure_count;
+    session_failed;
+    pending_comments;
+  }
+
+let restore_pending_comment ~comment ~valid = { comment; valid }
+
 let start t ~base_branch =
   if t.has_pr then invalid_arg "Patch_agent.start: patch already has a PR";
   {
