@@ -1,3 +1,7 @@
 (test
  (name test_onton)
  (libraries onton))
+
+(test
+ (name test_patch_agent)
+ (libraries onton qcheck-core))
