@@ -9,13 +9,19 @@ type result = {
 [@@deriving show, eq, sexp_of, compare]
 
 let generate_session_id () =
+  (* Random.bits() yields 30 bits per call; combine calls for full-width fields *)
+  let r1 = Random.bits () in
+  let r2 = Random.bits () in
+  let r3 = Random.bits () in
+  let r4 = Random.bits () in
+  let r5 = Random.bits () in
+  let last_raw = (r4 lsr 16) lor (r5 lsl 14) in
+  let last_field = last_raw land 0xFFFFFFFFFFFF in
   let uuid =
     Printf.sprintf "%08x-%04x-%04x-%04x-%012x"
-      (Random.bits () land 0xFFFFFFFF)
-      (Random.bits () land 0xFFFF)
-      (Random.bits () land 0xFFFF)
-      (Random.bits () land 0xFFFF)
-      (Random.bits () land 0xFFFFFFFFFFFF)
+      ((r1 lsl 2) lor (r2 land 0x3))
+      ((r2 lsr 2) land 0xFFFF)
+      (r3 land 0xFFFF) (r4 land 0xFFFF) last_field
   in
   Types.Session_id.of_string uuid
 
@@ -28,7 +34,8 @@ let build_args ~prompt ~session_id =
   in
   base @ session_args @ [ "--"; prompt ]
 
-let run ~process_mgr ~cwd ~patch_id:_ ~prompt ~session_id =
+let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
+  ignore (patch_id : Types.Patch_id.t);
   let fallback_id =
     match session_id with Some id -> id | None -> generate_session_id ()
   in
@@ -45,8 +52,11 @@ let run ~process_mgr ~cwd ~patch_id:_ ~prompt ~session_id =
     Eio.Flow.close stderr_w;
     let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
     let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
-    let out = Eio.Buf_read.take_all stdout_buf in
-    let err = Eio.Buf_read.take_all stderr_buf in
+    let out, err =
+      Eio.Fiber.pair
+        (fun () -> Eio.Buf_read.take_all stdout_buf)
+        (fun () -> Eio.Buf_read.take_all stderr_buf)
+    in
     let status = Eio.Process.await child in
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (out, err, code)
@@ -82,10 +92,10 @@ let%test "generate_session_id produces non-empty string" =
   let id = generate_session_id () in
   not (String.is_empty (Types.Session_id.to_string id))
 
-let%test "generate_session_id produces unique values" =
-  let id1 = generate_session_id () in
-  let id2 = generate_session_id () in
-  not
-    (String.equal
-       (Types.Session_id.to_string id1)
-       (Types.Session_id.to_string id2))
+let%test "generate_session_id produces unique values across many calls" =
+  let ids =
+    List.init 1000 ~f:(fun _ ->
+        Types.Session_id.to_string (generate_session_id ()))
+  in
+  let unique_count = Set.length (Set.of_list (module String) ids) in
+  unique_count = 1000
