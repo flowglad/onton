@@ -180,6 +180,8 @@ type poll_intent =
     avoid deadlock (Eio.Mutex cannot upgrade from read to write lock). *)
 let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry =
   let main = Branch.of_string config.main_branch in
+  (* Track which patches have already logged a skip event to avoid flooding *)
+  let skip_logged : (string, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
     (* Phase 1: collect poll intents under read lock *)
     let intents =
@@ -206,10 +208,13 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry =
     Base.List.iter intents ~f:(fun intent ->
         match intent with
         | Skip_no_pr patch_id ->
-            Runtime.update_activity_log runtime (fun log ->
-                Activity_log.add_event log
-                  (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ())
-                     ~patch_id "skipping poll: no PR number registered"))
+            let key = Patch_id.to_string patch_id in
+            if not (Hashtbl.mem skip_logged key) then (
+              Hashtbl.replace skip_logged key true;
+              Runtime.update_activity_log runtime (fun log ->
+                  Activity_log.add_event log
+                    (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ())
+                       ~patch_id "skipping poll: no PR number registered")))
         | Poll { patch_id; pr_number; was_merged } -> (
             match Github.pr_state ~net github pr_number with
             | Error err ->
@@ -351,12 +356,22 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                         in
                         Orchestrator.complete orch patch_id)
                 | Ok r when r.Claude_runner.exit_code = 0 -> (
-                    (* Discover and register PR number after Claude creates it *)
-                    match
-                      discover_pr_number ~process_mgr ~token:config.github_token
-                        ~owner:config.github_owner ~repo:config.github_repo
-                        ~branch:patch.Patch.branch ~base_branch
-                    with
+                    (* Discover and register PR number after Claude creates it.
+                       Retry briefly to tolerate GitHub indexing lag. *)
+                    let rec discover attempts =
+                      match
+                        discover_pr_number ~process_mgr
+                          ~token:config.github_token ~owner:config.github_owner
+                          ~repo:config.github_repo ~branch:patch.Patch.branch
+                          ~base_branch
+                      with
+                      | Ok _ as ok -> ok
+                      | Error _ as err when attempts <= 1 -> err
+                      | Error _ ->
+                          Eio.Time.sleep clock 2.0;
+                          discover (attempts - 1)
+                    in
+                    match discover 3 with
                     | Ok pr_number ->
                         Pr_registry.register pr_registry ~patch_id ~pr_number;
                         Runtime.update_orchestrator runtime (fun orch ->
