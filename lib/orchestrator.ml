@@ -144,3 +144,6 @@ let clear_needs_intervention t patch_id =
 
 let all_agents t = Map.data t.agents
 let graph t = t.graph
+let restore ~graph ~agents ~main_branch = { graph; agents; main_branch }
+let main_branch t = t.main_branch
+let agents_map t = t.agents
