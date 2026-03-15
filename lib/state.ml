@@ -3,8 +3,7 @@ open Types
 
 module Queue_key = struct
   module T = struct
-    type t = Patch_id.t * Operation_kind.t
-    [@@deriving sexp_of, compare, hash]
+    type t = Patch_id.t * Operation_kind.t [@@deriving sexp_of, compare, hash]
   end
 
   include T
@@ -137,16 +136,11 @@ module Comments = struct
     Map.find t.pending (comment, patch_id) |> Option.value ~default:false
 
   let set_pending t ~comment ~patch_id ~value =
-    {
-      t with
-      pending = Map.set t.pending ~key:(comment, patch_id) ~data:value;
-    }
+    { t with pending = Map.set t.pending ~key:(comment, patch_id) ~data:value }
 end
 
-type t = { patch_ctx : Patch_ctx.t; comments : Comments.t }
-[@@deriving sexp_of]
+type t = { patch_ctx : Patch_ctx.t; comments : Comments.t } [@@deriving sexp_of]
 
 let empty = { patch_ctx = Patch_ctx.empty; comments = Comments.empty }
-
 let update_patch_ctx t ~f = { t with patch_ctx = f t.patch_ctx }
 let update_comments t ~f = { t with comments = f t.comments }

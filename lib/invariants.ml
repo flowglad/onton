@@ -9,19 +9,18 @@ let patch_ctx (state : State.t) = state.State.patch_ctx
 let check_ci_failure_count_non_negative (state : State.t) =
   State.Patch_ctx.known_patch_ids (patch_ctx state)
   |> List.filter_map ~f:(fun patch_id ->
-         let count =
-           State.Patch_ctx.ci_failure_count (patch_ctx state) ~patch_id
-         in
-         if count < 0 then
-           Some
-             {
-               invariant = "ci_failure_count_non_negative";
-               details =
-                 Printf.sprintf "patch %d has ci_failure_count=%d"
-                   (Patch_id.to_int patch_id)
-                   count;
-             }
-         else None)
+      let count =
+        State.Patch_ctx.ci_failure_count (patch_ctx state) ~patch_id
+      in
+      if count < 0 then
+        Some
+          {
+            invariant = "ci_failure_count_non_negative";
+            details =
+              Printf.sprintf "patch %d has ci_failure_count=%d"
+                (Patch_id.to_int patch_id) count;
+          }
+      else None)
 
 let check_resolved_not_pending (state : State.t) =
   (* A resolved comment should not be pending for any patch *)
@@ -39,19 +38,19 @@ let check_resolved_not_pending (state : State.t) =
 let check_busy_implies_has_session (state : State.t) =
   State.Patch_ctx.known_patch_ids (patch_ctx state)
   |> List.filter_map ~f:(fun patch_id ->
-         let busy = State.Patch_ctx.is_busy (patch_ctx state) ~patch_id in
-         let has_session =
-           State.Patch_ctx.has_session (patch_ctx state) ~patch_id
-         in
-         if busy && not has_session then
-           Some
-             {
-               invariant = "busy_implies_has_session";
-               details =
-                 Printf.sprintf "patch %d is busy but has no session"
-                   (Patch_id.to_int patch_id);
-             }
-         else None)
+      let busy = State.Patch_ctx.is_busy (patch_ctx state) ~patch_id in
+      let has_session =
+        State.Patch_ctx.has_session (patch_ctx state) ~patch_id
+      in
+      if busy && not has_session then
+        Some
+          {
+            invariant = "busy_implies_has_session";
+            details =
+              Printf.sprintf "patch %d is busy but has no session"
+                (Patch_id.to_int patch_id);
+          }
+      else None)
 
 let all_checks =
   [

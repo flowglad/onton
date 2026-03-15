@@ -13,13 +13,17 @@ module Comment_patch_key : sig
   include Comparator.S with type t := t
 end
 
-(** Per-patch mutable state context, corresponding to the PatchCtx spec context. *)
+(** Per-patch mutable state context, corresponding to the PatchCtx spec context.
+*)
 module Patch_ctx : sig
   type t [@@deriving sexp_of]
 
   val empty : t
   val is_queued : t -> patch_id:Patch_id.t -> kind:Operation_kind.t -> bool
-  val set_queued : t -> patch_id:Patch_id.t -> kind:Operation_kind.t -> value:bool -> t
+
+  val set_queued :
+    t -> patch_id:Patch_id.t -> kind:Operation_kind.t -> value:bool -> t
+
   val is_busy : t -> patch_id:Patch_id.t -> bool
   val set_busy : t -> patch_id:Patch_id.t -> value:bool -> t
   val has_pr : t -> patch_id:Patch_id.t -> bool
@@ -44,11 +48,12 @@ module Comments : sig
   val is_resolved : t -> comment:Comment.t -> bool
   val set_resolved : t -> comment:Comment.t -> value:bool -> t
   val is_pending : t -> comment:Comment.t -> patch_id:Patch_id.t -> bool
-  val set_pending : t -> comment:Comment.t -> patch_id:Patch_id.t -> value:bool -> t
+
+  val set_pending :
+    t -> comment:Comment.t -> patch_id:Patch_id.t -> value:bool -> t
 end
 
-type t = { patch_ctx : Patch_ctx.t; comments : Comments.t }
-[@@deriving sexp_of]
+type t = { patch_ctx : Patch_ctx.t; comments : Comments.t } [@@deriving sexp_of]
 
 val empty : t
 val update_patch_ctx : t -> f:(Patch_ctx.t -> Patch_ctx.t) -> t
