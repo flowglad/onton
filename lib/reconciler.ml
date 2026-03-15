@@ -45,20 +45,24 @@ let detect_merges views ~merged_pr_patches =
       else None)
 
 let detect_rebases graph views ~newly_merged =
+  let newly_merged_set = Set.of_list (module Patch_id) newly_merged in
   let view_by_id =
     Map.of_alist_exn (module Patch_id) (List.map views ~f:(fun v -> (v.id, v)))
   in
-  List.concat_map newly_merged ~f:(fun merged_id ->
-      Graph.dependents graph merged_id
-      |> List.filter_map ~f:(fun dep_id ->
-          match Map.find view_by_id dep_id with
-          | Some v
-            when v.has_pr && (not v.merged)
-                 && not
-                      (List.mem v.queue Operation_kind.Rebase
-                         ~equal:Operation_kind.equal) ->
-              Some (Enqueue_rebase dep_id)
-          | _ -> None))
+  newly_merged
+  |> List.concat_map ~f:(Graph.dependents graph)
+  |> Set.of_list (module Patch_id)
+  |> Set.to_list
+  |> List.filter_map ~f:(fun dep_id ->
+      match Map.find view_by_id dep_id with
+      | Some v
+        when (not (Set.mem newly_merged_set dep_id))
+             && v.has_pr && (not v.merged)
+             && not
+                  (List.mem v.queue Operation_kind.Rebase
+                     ~equal:Operation_kind.equal) ->
+          Some (Enqueue_rebase dep_id)
+      | _ -> None)
 
 let plan_operations views ~has_merged ~branch_of ~graph ~main =
   List.filter_map views ~f:(fun v ->
@@ -80,11 +84,33 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
 
 let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
   let merges = detect_merges views ~merged_pr_patches in
-  (* After merges are applied, compute the new merged set for rebase detection *)
+  let newly_merged =
+    List.filter_map merges ~f:(function
+      | Mark_merged pid -> Some pid
+      | Enqueue_rebase _ | Start_operation _ -> None)
+  in
   let has_merged pid =
     List.exists views ~f:(fun v -> Patch_id.equal v.id pid && v.merged)
     || List.exists merged_pr_patches ~f:(Patch_id.equal pid)
   in
-  let rebases = detect_rebases graph views ~newly_merged:merged_pr_patches in
-  let operations = plan_operations views ~has_merged ~branch_of ~graph ~main in
+  let rebases = detect_rebases graph views ~newly_merged in
+  let rebase_set =
+    List.filter_map rebases ~f:(function
+      | Enqueue_rebase pid -> Some pid
+      | Mark_merged _ | Start_operation _ -> None)
+    |> Set.of_list (module Patch_id)
+  in
+  let effective_views =
+    List.map views ~f:(fun v ->
+        {
+          v with
+          merged = has_merged v.id;
+          queue =
+            (if Set.mem rebase_set v.id then Operation_kind.Rebase :: v.queue
+             else v.queue);
+        })
+  in
+  let operations =
+    plan_operations effective_views ~has_merged ~branch_of ~graph ~main
+  in
   merges @ rebases @ operations
