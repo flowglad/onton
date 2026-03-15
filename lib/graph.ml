@@ -8,22 +8,27 @@ type t = {
 }
 [@@deriving sexp_of]
 
+let dedup_deps deps = List.dedup_and_sort deps ~compare:Patch_id.compare
+
 let of_patches (patches : Patch.t list) =
   let deps_map =
     List.fold patches
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc { Patch.id; dependencies; _ } ->
-        Map.set acc ~key:id ~data:dependencies)
+        let deps = dedup_deps dependencies in
+        match Map.add acc ~key:id ~data:deps with
+        | `Ok m -> m
+        | `Duplicate -> invalid_arg "of_patches: duplicate patch id")
   in
   let dependents_map =
-    List.fold patches
+    Map.fold deps_map
       ~init:(Map.empty (module Patch_id))
-      ~f:(fun acc { Patch.id; dependencies; _ } ->
-        List.fold dependencies ~init:acc ~f:(fun acc dep_id ->
+      ~f:(fun ~key:patch_id ~data:deps acc ->
+        List.fold deps ~init:acc ~f:(fun acc dep_id ->
             Map.update acc dep_id ~f:(fun existing ->
-                id :: Option.value existing ~default:[])))
+                patch_id :: Option.value existing ~default:[])))
   in
-  let all_ids = List.map patches ~f:(fun { Patch.id; _ } -> id) in
+  let all_ids = Map.keys deps_map in
   { deps_map; dependents_map; all_ids }
 
 let deps t patch_id = Map.find t.deps_map patch_id |> Option.value ~default:[]

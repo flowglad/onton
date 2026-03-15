@@ -8,9 +8,10 @@ open Base
 type t [@@deriving sexp_of]
 
 val of_patches : Types.Patch.t list -> t
-(** Build a graph from a list of patches. Patches not in the list have no deps
-    (per spec: "Added patches have no deps. all p | ~in-gameplan p -> #(deps p)
-    = 0"). *)
+(** Build a graph from a list of patches. Duplicate dependency edges within a
+    patch are deduplicated. Raises [Invalid_argument] if the list contains
+    duplicate patch ids. Patches not in the list have no deps (per spec: "Added
+    patches have no deps. all p | ~in-gameplan p -> #(deps p) = 0"). *)
 
 val deps : t -> Types.Patch_id.t -> Types.Patch_id.t list
 (** [deps t p] returns the direct dependencies of [p]. Returns [[]] if [p] is
