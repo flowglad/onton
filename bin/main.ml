@@ -15,11 +15,11 @@ type config = {
 
 let validate_config config =
   let errors = ref [] in
-  if Base.String.is_empty config.github_token then
+  if Base.String.is_empty (Base.String.strip config.github_token) then
     errors := "--token / GITHUB_TOKEN is required" :: !errors;
-  if Base.String.is_empty config.github_owner then
+  if Base.String.is_empty (Base.String.strip config.github_owner) then
     errors := "--owner / GITHUB_OWNER is required" :: !errors;
-  if Base.String.is_empty config.github_repo then
+  if Base.String.is_empty (Base.String.strip config.github_repo) then
     errors := "--repo / GITHUB_REPO is required" :: !errors;
   if Float.compare config.poll_interval 0.0 <= 0 then
     errors :=
@@ -47,7 +47,8 @@ module Pr_registry = struct
   let find (t : t) ~patch_id = Hashtbl.find_opt t (Patch_id.to_string patch_id)
 end
 
-(** Discover PR number for a branch by calling [gh pr list]. *)
+(** Discover PR number for a branch by calling [gh pr list]. Returns [Ok] with
+    the PR number or [Error] with a diagnostic message. *)
 let discover_pr_number ~process_mgr ~owner ~repo ~branch =
   let args =
     [
@@ -68,14 +69,19 @@ let discover_pr_number ~process_mgr ~owner ~repo ~branch =
     let buf = Buffer.create 256 in
     Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) process_mgr args;
     let output = Buffer.contents buf in
-    (* Parse JSON like [{"number":42}] *)
     match Yojson.Basic.from_string output with
     | `List (`Assoc fields :: _) -> (
         match Base.List.Assoc.find fields ~equal:String.equal "number" with
-        | Some (`Int n) -> Some (Pr_number.of_int n)
-        | _ -> None)
-    | _ -> None
-  with _ -> None
+        | Some (`Int n) -> Ok (Pr_number.of_int n)
+        | _ -> Error (Printf.sprintf "unexpected JSON shape: %s" output))
+    | `List [] -> Error "no PRs found for branch"
+    | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
+  with
+  | Eio.Exn.Io _ as e ->
+      Error (Printf.sprintf "gh command failed: %s" (Printexc.to_string e))
+  | Yojson.Json_error msg -> Error (Printf.sprintf "JSON parse error: %s" msg)
+  | exn ->
+      Error (Printf.sprintf "unexpected error: %s" (Printexc.to_string exn))
 
 (** {1 Helper: extract snapshot fields} *)
 
@@ -124,25 +130,22 @@ let activity_entries_of_log (log : Activity_log.t) =
 let tui_fiber ~runtime ~clock ~stdout =
   Eio.Flow.copy_string (Tui._enter_tui ()) stdout;
   let rec loop () =
-    let frame_str =
+    (* Snapshot minimal state under read lock *)
+    let orch, gp, log =
       Runtime.read runtime (fun snap ->
-          let views =
-            Tui._views_of_orchestrator ~orchestrator:(snap_orch snap)
-              ~gameplan:(snap_gameplan snap)
-          in
-          let width =
-            match Term.get_size () with
-            | Some size -> size.Term.cols
-            | None -> 80
-          in
-          let gp = snap_gameplan snap in
-          let activity = activity_entries_of_log snap.Runtime.activity_log in
-          let frame =
-            Tui._render_frame ~width ~activity
-              ~project_name:gp.Gameplan.project_name views
-          in
-          Tui._paint_frame frame)
+          (snap_orch snap, snap_gameplan snap, snap.Runtime.activity_log))
     in
+    (* Render outside the lock to minimize contention *)
+    let views = Tui._views_of_orchestrator ~orchestrator:orch ~gameplan:gp in
+    let width =
+      match Term.get_size () with Some size -> size.Term.cols | None -> 80
+    in
+    let activity = activity_entries_of_log log in
+    let frame =
+      Tui._render_frame ~width ~activity ~project_name:gp.Gameplan.project_name
+        views
+    in
+    let frame_str = Tui._paint_frame frame in
     Eio.Flow.copy_string frame_str stdout;
     Eio.Time.sleep clock 0.1;
     loop ()
@@ -314,20 +317,40 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                   Worktree.worktree_dir ~repo_root:config.repo_root ~patch_id
                 in
                 let cwd = Eio.Path.(fs / worktree_path) in
-                let _result =
+                let result =
                   Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
                     ~session_id:None
                 in
-                (* Discover and register PR number after Claude creates it *)
-                (match
-                   discover_pr_number ~process_mgr ~owner:config.github_owner
-                     ~repo:config.github_repo ~branch:patch.Patch.branch
-                 with
-                | Some pr_number ->
-                    Pr_registry.register pr_registry ~patch_id ~pr_number
-                | None -> ());
-                Runtime.update_orchestrator runtime (fun orch ->
-                    Orchestrator.complete orch patch_id))
+                if result.Claude_runner.exit_code = 0 then (
+                  (* Discover and register PR number after Claude creates it *)
+                  (match
+                     discover_pr_number ~process_mgr ~owner:config.github_owner
+                       ~repo:config.github_repo ~branch:patch.Patch.branch
+                   with
+                  | Ok pr_number ->
+                      Pr_registry.register pr_registry ~patch_id ~pr_number
+                  | Error msg ->
+                      Runtime.update_activity_log runtime (fun log ->
+                          Activity_log.add_event log
+                            (Activity_log.Event.create
+                               ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                               (Printf.sprintf "PR discovery failed: %s" msg))));
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.complete orch patch_id))
+                else (
+                  Runtime.update_activity_log runtime (fun log ->
+                      Activity_log.add_event log
+                        (Activity_log.Event.create
+                           ~timestamp:(Unix.gettimeofday ()) ~patch_id
+                           (Printf.sprintf
+                              "Claude exited with code %d, marking session \
+                               failed"
+                              result.Claude_runner.exit_code)));
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      let orch =
+                        Orchestrator.set_session_failed orch patch_id
+                      in
+                      Orchestrator.complete orch patch_id)))
         | Orchestrator.Respond (patch_id, kind) ->
             let agent =
               Runtime.read runtime (fun snap ->
@@ -366,12 +389,25 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
               Worktree.worktree_dir ~repo_root:config.repo_root ~patch_id
             in
             let cwd = Eio.Path.(fs / worktree_path) in
-            let _result =
+            let result =
               Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt
                 ~session_id:None
             in
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.complete orch patch_id));
+            if result.Claude_runner.exit_code = 0 then
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.complete orch patch_id)
+            else (
+              Runtime.update_activity_log runtime (fun log ->
+                  Activity_log.add_event log
+                    (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ())
+                       ~patch_id
+                       (Printf.sprintf
+                          "Claude respond exited with code %d, marking session \
+                           failed"
+                          result.Claude_runner.exit_code)));
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch = Orchestrator.set_session_failed orch patch_id in
+                  Orchestrator.complete orch patch_id)));
     Eio.Time.sleep clock 1.0;
     loop ()
   in
