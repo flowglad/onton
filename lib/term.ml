@@ -174,7 +174,8 @@ let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
 type size = { rows : int; cols : int } [@@deriving show, eq]
 (** Terminal size as rows × cols. *)
 
-(** Query terminal size via ioctl. Returns None if stdout is not a tty. *)
+(** Query terminal size via stty. Returns None if the terminal size cannot be
+    determined. *)
 let get_size () =
   try
     let ic = Unix.open_process_in "stty size 2>/dev/null </dev/tty" in
@@ -201,6 +202,8 @@ module Raw = struct
         original with
         Unix.c_icanon = false;
         c_echo = false;
+        c_icrnl = false;
+        c_ixon = false;
         c_vmin = 1;
         c_vtime = 0;
         c_isig = false;
@@ -210,6 +213,10 @@ module Raw = struct
     { original }
 
   let leave state = Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH state.original
+
+  let with_raw f =
+    let state = enter () in
+    Exn.protect ~f ~finally:(fun () -> leave state)
 end
 
 (** Keyboard input types and parsing. *)
@@ -340,7 +347,7 @@ module Key = struct
     | Some '\027' -> Some (parse_escape ())
     | Some '\r' | Some '\n' -> Some Enter
     | Some '\t' -> Some Tab
-    | Some '\127' -> Some Backspace
+    | Some '\127' | Some '\008' -> Some Backspace
     | Some c ->
         let code = Char.to_int c in
         if code >= 1 && code <= 26 then
