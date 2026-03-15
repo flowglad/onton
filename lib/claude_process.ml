@@ -52,7 +52,9 @@ let mark_failed = function
 *)
 let restart session_id = function
   | No_session -> No_session
-  | Has_session _ -> Has_session { id = session_id; status = Idle }
+  | Has_session { status = Failed; _ } ->
+      Has_session { id = session_id; status = Idle }
+  | Has_session { status = Idle | Busy; _ } as session -> session
 
 (** Check the "sessions are never lost" invariant: if [before] has a session,
     [after] must also have a session. *)
@@ -90,11 +92,25 @@ let%test "failed detection" =
   let s = start (Types.Session_id.of_string "s1") in
   (not (is_failed s)) && is_failed (mark_failed s)
 
-let%test "restart replaces session id" =
-  let s = start (Types.Session_id.of_string "s1") in
+let%test "restart replaces session id on failed session" =
+  let s = start (Types.Session_id.of_string "s1") |> mark_failed in
   let s' = restart (Types.Session_id.of_string "s2") s in
   match session_id s' with
   | Some id -> String.equal (Types.Session_id.to_string id) "s2"
+  | None -> false
+
+let%test "restart is no-op on idle session" =
+  let s = start (Types.Session_id.of_string "s1") in
+  let s' = restart (Types.Session_id.of_string "s2") s in
+  match session_id s' with
+  | Some id -> String.equal (Types.Session_id.to_string id) "s1"
+  | None -> false
+
+let%test "restart is no-op on busy session" =
+  let s = start (Types.Session_id.of_string "s1") |> mark_busy in
+  let s' = restart (Types.Session_id.of_string "s2") s in
+  match session_id s' with
+  | Some id -> String.equal (Types.Session_id.to_string id) "s1"
   | None -> false
 
 let%test "no_session operations are no-ops" =
