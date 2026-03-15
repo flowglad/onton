@@ -83,15 +83,18 @@ let () =
         (fun (pid, k) ->
           let a = create pid in
           match respond a k with
-          | exception Invalid_argument _ -> true
+          | exception Invalid_argument msg ->
+              String.is_substring msg ~substring:"no PR"
           | _ -> false);
       (* -- respond requires not busy -- *)
       Test.make ~name:"respond requires not busy"
         Gen.(triple gen_pid gen_branch gen_op)
         (fun (pid, br, k) ->
+          (* start sets busy=true; enqueue k so "op not in queue" won't fire *)
           let a = create pid |> fun a -> start a ~base_branch:br in
           match respond a k with
-          | exception Invalid_argument _ -> true
+          | exception Invalid_argument msg ->
+              String.is_substring msg ~substring:"busy"
           | _ -> false);
       (* -- respond requires op in queue -- *)
       Test.make ~name:"respond requires op in queue"
