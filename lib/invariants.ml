@@ -17,8 +17,9 @@ let check_ci_failure_count_non_negative (state : State.t) =
           {
             invariant = "ci_failure_count_non_negative";
             details =
-              Printf.sprintf "patch %d has ci_failure_count=%d"
-                (Patch_id.to_int patch_id) count;
+              Printf.sprintf "patch %s has ci_failure_count=%d"
+                (Patch_id.to_string patch_id)
+                count;
           }
       else None)
 
@@ -47,8 +48,8 @@ let check_busy_implies_has_session (state : State.t) =
           {
             invariant = "busy_implies_has_session";
             details =
-              Printf.sprintf "patch %d is busy but has no session"
-                (Patch_id.to_int patch_id);
+              Printf.sprintf "patch %s is busy but has no session"
+                (Patch_id.to_string patch_id);
           }
       else None)
 

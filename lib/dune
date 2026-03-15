@@ -1,6 +1,6 @@
 (library
  (name onton)
- (libraries base)
+ (libraries base eio eio_main yojson)
  (inline_tests)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42))
