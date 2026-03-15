@@ -80,22 +80,22 @@ let parse_dep_graph_line line =
                   Some (Types.Patch_id.of_int patch_num, deps))))
 
 let parse_dep_graph lines =
-  let in_graph = ref false in
-  List.fold lines
-    ~init:(Map.empty (module Types.Patch_id))
-    ~f:(fun acc line ->
-      let stripped = String.strip line in
-      if String.is_prefix stripped ~prefix:"## Dependency Graph" then (
-        in_graph := true;
-        acc)
-      else if !in_graph && String.is_prefix stripped ~prefix:"## " then (
-        in_graph := false;
-        acc)
-      else if !in_graph then
-        match parse_dep_graph_line line with
-        | Some (id, deps) -> Map.set acc ~key:id ~data:deps
-        | None -> acc
-      else acc)
+  let _in_graph, result =
+    List.fold lines
+      ~init:(false, Map.empty (module Types.Patch_id))
+      ~f:(fun (in_graph, acc) line ->
+        let stripped = String.strip line in
+        if String.is_prefix stripped ~prefix:"## Dependency Graph" then
+          (true, acc)
+        else if in_graph && String.is_prefix stripped ~prefix:"## " then
+          (false, acc)
+        else if in_graph then
+          match parse_dep_graph_line line with
+          | Some (id, deps) -> (true, Map.set acc ~key:id ~data:deps)
+          | None -> (in_graph, acc)
+        else (in_graph, acc))
+  in
+  result
 
 let parse_patch_header line =
   (* Format: "### Patch N [CLASS]: Title" *)
@@ -159,31 +159,44 @@ let validate ~patches ~dep_graph =
     List.map patches ~f:(fun p -> p.Types.Patch.id)
     |> Set.of_list (module Types.Patch_id)
   in
-  (* Check all dep targets exist *)
-  let missing =
-    Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
-        List.fold deps ~init:acc ~f:(fun acc dep ->
-            if Set.mem patch_ids dep then acc
-            else
-              Printf.sprintf "Patch %d depends on nonexistent patch %d"
-                (Types.Patch_id.to_int from)
-                (Types.Patch_id.to_int dep)
-              :: acc))
+  (* Check all dep graph keys (source patches) exist *)
+  let orphan_sources =
+    Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:_ acc ->
+        if Set.mem patch_ids from then acc
+        else
+          Printf.sprintf "Dependency graph references nonexistent patch %d"
+            (Types.Patch_id.to_int from)
+          :: acc)
   in
-  if not (List.is_empty missing) then Error (List.hd_exn missing)
+  if not (List.is_empty orphan_sources) then Error (List.hd_exn orphan_sources)
   else
-    (* Check no self-deps *)
-    let self_deps =
+    (* Check all dep targets exist *)
+    let missing =
       Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
-          if List.mem deps from ~equal:Types.Patch_id.equal then
-            Printf.sprintf "Patch %d depends on itself"
-              (Types.Patch_id.to_int from)
-            :: acc
-          else acc)
+          List.fold deps ~init:acc ~f:(fun acc dep ->
+              if Set.mem patch_ids dep then acc
+              else
+                Printf.sprintf "Patch %d depends on nonexistent patch %d"
+                  (Types.Patch_id.to_int from)
+                  (Types.Patch_id.to_int dep)
+                :: acc))
     in
-    if not (List.is_empty self_deps) then Error (List.hd_exn self_deps)
+    if not (List.is_empty missing) then Error (List.hd_exn missing)
     else
-      match detect_cycle dep_graph with Some msg -> Error msg | None -> Ok ()
+      (* Check no self-deps *)
+      let self_deps =
+        Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
+            if List.mem deps from ~equal:Types.Patch_id.equal then
+              Printf.sprintf "Patch %d depends on itself"
+                (Types.Patch_id.to_int from)
+              :: acc
+            else acc)
+      in
+      if not (List.is_empty self_deps) then Error (List.hd_exn self_deps)
+      else
+        match detect_cycle dep_graph with
+        | Some msg -> Error msg
+        | None -> Ok ()
 
 let parse_string input =
   let lines = String.split_lines input in
