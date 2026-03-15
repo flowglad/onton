@@ -24,7 +24,7 @@ Port Anton to OCaml 5.4 using Eio for structured concurrency. Replace OTP GenSer
 
 The OCaml project has: dune 3.21, OCaml 5.4, `open Base`, ppx ecosystem (deriving, sexp, compare, hash, expect, inline_test, assert), strict warnings. The `lib/onton.ml` has a placeholder `point` type. We need to replace this with the full module set.
 
-New opam dependencies needed: `eio_main eio cohttp-eio tls-eio yojson ppx_yojson_conv qcheck-core bisect_ppx` (cmdliner and yojson already installed). No TUI library — raw ANSI + Eio (see Explicit Opinions).
+New opam dependencies needed: `eio_main eio cohttp-eio tls-eio yojson ppx_yojson_conv qcheck-core` (cmdliner and yojson already installed). bisect_ppx deferred — incompatible with OCaml 5.4, revisit when updated. No TUI library — raw ANSI + Eio (see Explicit Opinions).
 
 ## Required Changes
 
@@ -51,7 +51,7 @@ New opam dependencies needed: `eio_main eio cohttp-eio tls-eio yojson ppx_yojson
 
 ### Modifications
 
-- `lib/dune` — add libraries, instrumentation: `(libraries base eio eio_main cohttp-eio yojson qcheck-core)`, `(instrumentation (backend bisect_ppx))`
+- `lib/dune` — add `(libraries base eio eio_main cohttp-eio yojson qcheck-core)`
 - `lib/onton.ml` — replace placeholder with re-export module
 - `bin/main.ml` — cmdliner CLI entry point
 - `dune-project` — add opam deps
@@ -64,7 +64,7 @@ New opam dependencies needed: `eio_main eio cohttp-eio tls-eio yojson ppx_yojson
 - [ ] Every module with invariants has an `.mli` file enforcing its public interface
 - [ ] `Patch_status.t` is `private` — only smart constructors can create values
 - [ ] Newtype wrappers (`Patch_id`, `Pr_number`, `Session_id`, `Branch`) prevent type confusion
-- [ ] Bisect_ppx coverage report shows no untested code paths in pure logic modules
+- [ ] (Deferred) Coverage gating once bisect_ppx supports OCaml 5.4
 
 ### Functional correctness
 - [ ] Can parse the sample gameplan from `../orchestrate-gameplan/test/fixtures/sample_gameplan.md`
@@ -107,7 +107,7 @@ None — all resolved:
 7. **Newtype wrappers everywhere**: `Patch_id.t`, `Pr_number.t`, `Session_id.t`, `Branch.t` are all private newtypes — prevents mixing up stringly/intly-typed values. The compiler catches misuse.
 8. **QCheck2 state machine tests**: The Pantagruel spec's actions and invariants are encoded directly as a QCheck2 state machine model. Random command sequences verify properties like "sessions are never lost", "merged is absorbing", "queue isolation".
 9. **`check_invariants` after every mutation**: A single function encoding all spec invariants, called from property tests and optionally at runtime (via `ONTON_CHECK_INVARIANTS` env var).
-10. **Bisect_ppx coverage gating**: Untested code paths fail the build. Critical for agentic programming — if the LLM adds code with no test coverage, the build catches it.
+10. **Coverage gating (deferred)**: bisect_ppx incompatible with OCaml 5.4. Revisit when updated. In the meantime, QCheck2 properties + exhaustive unit tests + `.mli` enforcement provide strong coverage guarantees.
 
 ## Patches
 
@@ -127,9 +127,8 @@ ci => OperationKind.
 review-comments => OperationKind.
 ```
 
-**Prerequisites:** `opam install eio_main eio cohttp-eio tls-eio ppx_yojson_conv qcheck-core bisect_ppx` and update `lib/dune`:
+**Prerequisites:** `opam install eio_main eio cohttp-eio tls-eio ppx_yojson_conv qcheck-core` and update `lib/dune`:
 - Add `(libraries base eio eio_main cohttp-eio yojson qcheck-core)`
-- Add `(instrumentation (backend bisect_ppx))`
 
 **Files to create:**
 - `lib/types.ml` — type definitions

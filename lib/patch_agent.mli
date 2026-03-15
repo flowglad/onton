@@ -75,11 +75,5 @@ val clear_needs_intervention : t -> t
 
 (** {2 Queries} *)
 
-val priority : Types.Operation_kind.t -> int
-(** Priority ordering for operation kinds. Higher is more urgent. *)
-
 val highest_priority : t -> Types.Operation_kind.t option
 (** The highest-priority operation in the queue, or [None] if empty. *)
-
-val is_feedback : Types.Operation_kind.t -> bool
-(** All operation kinds are feedback kinds. *)

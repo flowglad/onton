@@ -22,18 +22,9 @@ type action =
     }
 [@@deriving sexp_of]
 
-(** Operation_kind priority: lower number = higher priority. rebase=0, human=1,
-    merge_conflict=2, ci=3, review_comments=4. *)
-let operation_priority = function
-  | Operation_kind.Rebase -> 0
-  | Operation_kind.Human -> 1
-  | Operation_kind.Merge_conflict -> 2
-  | Operation_kind.Ci -> 3
-  | Operation_kind.Review_comments -> 4
-
 let highest_priority_op queue =
   List.min_elt queue ~compare:(fun a b ->
-      Int.compare (operation_priority a) (operation_priority b))
+      Int.compare (Priority.priority a) (Priority.priority b))
 
 let merge_target graph patch_id ~has_merged ~branch_of ~main =
   Graph.initial_base graph patch_id ~has_merged ~branch_of ~main

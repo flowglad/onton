@@ -20,13 +20,6 @@ let label = function
   | Awaiting_review -> "awaiting-review"
   | Pending -> "pending"
 
-let is_feedback (kind : Operation_kind.t) =
-  match kind with
-  | Operation_kind.Human | Operation_kind.Merge_conflict | Operation_kind.Ci
-  | Operation_kind.Review_comments ->
-      true
-  | Operation_kind.Rebase -> false
-
 let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     ~(current_op : Operation_kind.t option) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
@@ -34,7 +27,7 @@ let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
   else if State.Patch_ctx.is_approved ctx ~patch_id then Approved
   else if State.Patch_ctx.is_busy ctx ~patch_id then
     match current_op with
-    | Some kind when is_feedback kind -> Running
+    | Some kind when Priority.is_feedback kind -> Running
     | _ -> Rebasing
   else if State.Patch_ctx.has_pr ctx ~patch_id then Awaiting_review
   else Pending

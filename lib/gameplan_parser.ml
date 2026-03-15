@@ -1,10 +1,7 @@
 open Base
 
 type t = {
-  project_name : string;
-  problem_statement : string;
-  solution_summary : string;
-  patches : Types.Patch.t list;
+  gameplan : Types.Gameplan.t;
   dependency_graph : Types.Patch_id.t list Map.M(Types.Patch_id).t;
 }
 
@@ -175,13 +172,15 @@ let validate ~patches ~dep_graph =
     let unique_ids = Set.of_list (module Types.Patch_id) all_ids in
     if Set.length unique_ids <> List.length all_ids then
       let dup =
+        let seen = Hashtbl.create (module Types.Patch_id) in
         List.find_map_exn all_ids ~f:(fun id ->
-            let count = List.count all_ids ~f:(Types.Patch_id.equal id) in
-            if count > 1 then
+            if Hashtbl.mem seen id then
               Some
                 (Printf.sprintf "Duplicate patch ID: %s"
                    (Types.Patch_id.to_string id))
-            else None)
+            else (
+              Hashtbl.set seen ~key:id ~data:();
+              None))
       in
       Error dup
     else
@@ -246,10 +245,13 @@ let parse_string input =
       | Ok () ->
           Ok
             {
-              project_name;
-              problem_statement;
-              solution_summary;
-              patches;
+              gameplan =
+                {
+                  Types.Gameplan.project_name;
+                  problem_statement;
+                  solution_summary;
+                  patches;
+                };
               dependency_graph = dep_graph;
             })
 

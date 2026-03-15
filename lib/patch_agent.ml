@@ -41,18 +41,9 @@ let create patch_id =
     pending_comments = [];
   }
 
-let priority = function
-  | Human -> 5
-  | Merge_conflict -> 4
-  | Ci -> 3
-  | Review_comments -> 2
-  | Rebase -> 1
-
 let highest_priority t =
-  List.max_elt t.queue ~compare:(fun a b ->
-      Int.compare (priority a) (priority b))
-
-let is_feedback _ = true
+  List.min_elt t.queue ~compare:(fun a b ->
+      Int.compare (Priority.priority a) (Priority.priority b))
 
 let enqueue t k =
   if List.mem t.queue k ~equal:Operation_kind.equal then t

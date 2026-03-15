@@ -40,9 +40,10 @@ let open_pr_deps t patch_id ~has_merged =
   deps t patch_id |> List.filter ~f:(fun d -> not (has_merged d))
 
 let deps_satisfied t patch_id ~has_merged ~has_pr =
-  let open_deps = open_pr_deps t patch_id ~has_merged in
+  let all_deps = deps t patch_id in
+  let open_deps = List.filter all_deps ~f:(fun d -> not (has_merged d)) in
   List.length open_deps <= 1
-  && List.for_all (deps t patch_id) ~f:(fun d -> has_merged d || has_pr d)
+  && List.for_all all_deps ~f:(fun d -> has_merged d || has_pr d)
 
 let sole_open_dep t patch_id ~has_merged =
   match open_pr_deps t patch_id ~has_merged with
