@@ -24,6 +24,7 @@ type error =
   | Http_error of int * string
   | Json_parse_error of string
   | Graphql_error of string list
+  | Transport_error of string
 [@@deriving show, eq]
 
 type t
@@ -31,9 +32,11 @@ type t
 val create : token:string -> owner:string -> repo:string -> t
 (** [create ~token ~owner ~repo] creates a GitHub API client. *)
 
-val pr_state : t -> Pr_number.t -> (Pr_state.t, error) Result.t
-(** [pr_state client pr] fetches the current state of a pull request. This is
-    the primary data source for WorldCtx predicates. *)
+val pr_state :
+  net:_ Eio.Net.t -> t -> Pr_number.t -> (Pr_state.t, error) Result.t
+(** [pr_state ~net client pr] fetches the current state of a pull request via
+    the GitHub GraphQL API over HTTPS. This is the primary data source for
+    WorldCtx predicates. *)
 
 val merged : Pr_state.t -> bool
 val mergeable : Pr_state.t -> bool

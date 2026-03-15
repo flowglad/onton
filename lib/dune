@@ -1,6 +1,6 @@
 (library
  (name onton)
- (libraries base unix eio eio_main yojson)
+ (libraries base unix eio eio_main yojson cohttp-eio tls-eio mirage-crypto-rng.unix ca-certs)
  (inline_tests)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42))

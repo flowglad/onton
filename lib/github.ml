@@ -18,6 +18,7 @@ type error =
   | Http_error of int * string
   | Json_parse_error of string
   | Graphql_error of string list
+  | Transport_error of string
 [@@deriving show, eq]
 
 type t = { token : string; owner : string; repo : string }
@@ -146,11 +147,55 @@ let parse_response body =
   | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
   | Yojson.Json_error msg -> Error (Json_parse_error msg)
 
-let pr_state t pr =
-  let body = build_request_body t pr in
-  ignore (t.token, body, parse_response);
-  (* TODO: Wire up cohttp-eio HTTP call in orchestration patch *)
-  Error (Http_error (0, "not yet wired to HTTP client"))
+let https_config () =
+  match Ca_certs.authenticator () with
+  | Error (`Msg msg) -> Error ("TLS CA setup failed: " ^ msg)
+  | Ok authenticator -> (
+      match Tls.Config.client ~authenticator () with
+      | Ok cfg -> Ok cfg
+      | Error (`Msg msg) -> Error ("TLS config failed: " ^ msg))
+
+let https_fun tls_config uri flow =
+  let host =
+    Uri.host uri
+    |> Option.map ~f:(fun h -> Domain_name.(of_string_exn h |> host_exn))
+  in
+  (Tls_eio.client_of_flow tls_config ?host flow :> _ Eio.Flow.two_way)
+
+let max_response_size = 1_000_000
+
+let pr_state ~net t pr =
+  try
+    Mirage_crypto_rng_unix.use_default ();
+    Result.bind
+      (Result.map_error (https_config ()) ~f:(fun msg -> Transport_error msg))
+      ~f:(fun tls_config ->
+        let client =
+          Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
+        in
+        let request_body = build_request_body t pr in
+        let uri = Uri.of_string "https://api.github.com/graphql" in
+        let headers =
+          Http.Header.of_list
+            [
+              ("Authorization", "Bearer " ^ t.token);
+              ("Content-Type", "application/json");
+              ("User-Agent", "onton/0.1.0");
+            ]
+        in
+        let body = Cohttp_eio.Body.of_string request_body in
+        Eio.Switch.run @@ fun sw ->
+        let resp, resp_body =
+          Cohttp_eio.Client.post client ~sw ~headers ~body uri
+        in
+        let status = Http.Response.status resp |> Http.Status.to_int in
+        let resp_str =
+          Eio.Buf_read.(
+            of_flow ~max_size:max_response_size resp_body |> take_all)
+        in
+        if status >= 200 && status < 300 then parse_response resp_str
+        else Error (Http_error (status, resp_str)))
+  with exn -> Error (Transport_error (Exn.to_string exn))
 
 (* WorldCtx predicate accessors *)
 
