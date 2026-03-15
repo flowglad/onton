@@ -33,3 +33,6 @@ let add_transition t entry = { t with transitions = entry :: t.transitions }
 let add_event t event = { t with events = event :: t.events }
 let recent_transitions t ~limit = List.take t.transitions limit
 let recent_events t ~limit = List.take t.events limit
+
+let trim t ~max =
+  { transitions = List.take t.transitions max; events = List.take t.events max }

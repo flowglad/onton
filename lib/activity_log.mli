@@ -47,7 +47,15 @@ val add_event : t -> Event.t -> t
 (** Prepend an event to the log. *)
 
 val recent_transitions : t -> limit:int -> Transition_entry.t list
-(** Return the most recent [limit] transitions (newest first). *)
+(** Return the most recent [limit] transitions (newest first). Returns an empty
+    list if [limit <= 0]. Returns all transitions if [limit] exceeds the number
+    of entries. *)
 
 val recent_events : t -> limit:int -> Event.t list
-(** Return the most recent [limit] events (newest first). *)
+(** Return the most recent [limit] events (newest first). Returns an empty list
+    if [limit <= 0]. Returns all events if [limit] exceeds the number of
+    entries. *)
+
+val trim : t -> max:int -> t
+(** Truncate both transitions and events to at most [max] entries, keeping the
+    most recent. Use periodically to bound memory in long-running sessions. *)
