@@ -42,12 +42,11 @@ let update_agent t patch_id ~f =
 let has_merged t pid = (agent t pid).Patch_agent.merged
 let has_pr t pid = (agent t pid).Patch_agent.has_pr
 
-let branch_of ~patches pid =
-  let p =
-    List.find_exn patches ~f:(fun (p : Patch.t) ->
-        Patch_id.equal p.Patch.id pid)
-  in
-  p.Patch.branch
+let branch_map_of_patches patches =
+  List.fold patches
+    ~init:(Map.empty (module Patch_id))
+    ~f:(fun acc (p : Patch.t) ->
+      Map.set acc ~key:p.Patch.id ~data:p.Patch.branch)
 
 (** {2 Liveness: fire all actions whose preconditions hold} *)
 
@@ -56,7 +55,7 @@ type action =
   | Respond of Patch_id.t * Operation_kind.t
 [@@deriving sexp_of]
 
-let startable_patches t ~patches =
+let startable_patches t ~branch_map =
   Graph.all_patch_ids t.graph
   |> List.filter_map ~f:(fun pid ->
       let a = agent t pid in
@@ -65,9 +64,10 @@ let startable_patches t ~patches =
         && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
              ~has_pr:(has_pr t)
       then
+        let branch_of pid = Map.find_exn branch_map pid in
         let base =
-          Graph.initial_base t.graph pid ~has_merged:(has_merged t)
-            ~branch_of:(branch_of ~patches) ~main:t.main_branch
+          Graph.initial_base t.graph pid ~has_merged:(has_merged t) ~branch_of
+            ~main:t.main_branch
         in
         Some (Start (pid, base))
       else None)
@@ -87,7 +87,8 @@ let respondable_patches t =
       else None)
 
 let pending_actions t ~patches =
-  startable_patches t ~patches @ respondable_patches t
+  let branch_map = branch_map_of_patches patches in
+  startable_patches t ~branch_map @ respondable_patches t
 
 let fire t action =
   match action with
