@@ -10,7 +10,7 @@ let normalize_path path =
 
 let worktree_dir ~repo_root ~patch_id =
   let repo_root = normalize_path repo_root in
-  let id_str = Int.to_string (Types.Patch_id.to_int patch_id) in
+  let id_str = Types.Patch_id.to_string patch_id in
   Stdlib.Filename.concat repo_root ("worktrees/patch-" ^ id_str)
 
 let create ~process_mgr ~repo_root ~patch =

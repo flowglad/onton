@@ -1,12 +1,12 @@
 open Base
 
 module Patch_id : sig
-  type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  type t = private string [@@deriving show, eq, ord, sexp_of, compare, hash]
 
   include Comparator.S with type t := t
 
-  val of_int : int -> t
-  val to_int : t -> int
+  val of_string : string -> t
+  val to_string : t -> string
 end
 
 module Pr_number : sig
