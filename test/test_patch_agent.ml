@@ -2,6 +2,9 @@ open Base
 open Onton.Types
 open Onton.Patch_agent
 
+let all_ops =
+  Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
+
 let gen_pid =
   QCheck2.Gen.(
     map Patch_id.of_string
@@ -12,14 +15,14 @@ let gen_branch =
     map Branch.of_string
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
-let gen_op =
-  QCheck2.Gen.oneof_list
-    Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
-
-let _print_agent = Onton.Patch_agent.show
+let gen_op = QCheck2.Gen.oneof_list all_ops
 
 let () =
   let open QCheck2 in
+  let pid0 = Patch_id.of_string "p" in
+  let br0 = Branch.of_string "main" in
+  let c_valid = Comment.{ body = "fix"; path = None; line = None } in
+  let c_invalid = Comment.{ body = "nit"; path = None; line = None } in
   let tests =
     [
       (* -- create -- *)
@@ -90,7 +93,6 @@ let () =
       Test.make ~name:"respond requires not busy"
         Gen.(triple gen_pid gen_branch gen_op)
         (fun (pid, br, k) ->
-          (* start sets busy=true; enqueue k so "op not in queue" won't fire *)
           let a = create pid |> fun a -> start a ~base_branch:br in
           match respond a k with
           | exception Invalid_argument msg ->
@@ -128,15 +130,11 @@ let () =
           let a = create pid in
           let a = mark_merged a in
           a.merged);
-      (* -- respond with multiple ops: only highest priority accepted -- *)
-      (* Test all pairs where low_pri has strictly lower priority than high_pri *)
-      Test.make ~name:"respond rejects non-highest-priority op for all pairs"
+      (* -- priority: low rejected AND high accepted for all pairs -- *)
+      Test.make
+        ~name:"priority enforced: low rejected and high accepted for all pairs"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let all_ops =
-            Operation_kind.
-              [ Rebase; Human; Merge_conflict; Ci; Review_comments ]
-          in
           let rank = Onton.Priority.priority in
           List.for_all all_ops ~f:(fun high ->
               List.for_all all_ops ~f:(fun low ->
@@ -146,147 +144,175 @@ let () =
                     let a = complete a in
                     let a = enqueue a high in
                     let a = enqueue a low in
-                    match respond a low with
-                    | exception Invalid_argument _ -> true
-                    | _ -> false)));
+                    let low_rejected =
+                      match respond a low with
+                      | exception Invalid_argument _ -> true
+                      | _ -> false
+                    in
+                    let high_accepted =
+                      match respond a high with
+                      | exception _ -> false
+                      | a' ->
+                          a'.busy
+                          && (not
+                                (List.mem a'.queue high
+                                   ~equal:Operation_kind.equal))
+                          && List.mem a'.queue low ~equal:Operation_kind.equal
+                    in
+                    low_rejected && high_accepted)));
       (* -- full lifecycle -- *)
       Test.make ~name:"full lifecycle"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = create pid in
           let a = start a ~base_branch:br in
-          assert a.busy;
+          let busy_after_start = a.busy in
           let a = complete a in
-          assert (not a.busy);
+          let idle_after_complete = not a.busy in
           let a = enqueue a Operation_kind.Rebase in
           let a = respond a Operation_kind.Rebase in
-          assert a.busy;
+          let busy_after_respond = a.busy in
           let a = complete a in
-          assert (not a.busy);
-          assert (not a.needs_intervention);
-          true);
+          busy_after_start && idle_after_complete && busy_after_respond
+          && (not a.busy) && not a.needs_intervention);
+      (* -- respond Human clears satisfies -- *)
+      Test.make ~name:"respond Human clears satisfies" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = enqueue a Operation_kind.Human in
+          let a = respond a Operation_kind.Human in
+          not a.satisfies);
+      (* -- respond Ci sets changed -- *)
+      Test.make ~name:"respond Ci sets changed" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          a.changed);
+      (* -- respond Merge_conflict clears has_conflict -- *)
+      Test.make ~name:"respond Merge_conflict clears has_conflict" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = set_has_conflict a in
+          let a = enqueue a Operation_kind.Merge_conflict in
+          let a = respond a Operation_kind.Merge_conflict in
+          not a.has_conflict);
+      (* -- respond Review_comments clears pending_comments -- *)
+      Test.make ~name:"respond Review_comments clears pending_comments" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = add_pending_comment a c_valid ~valid:true in
+          let a = enqueue a Operation_kind.Review_comments in
+          let a = respond a Operation_kind.Review_comments in
+          List.is_empty a.pending_comments);
+      (* -- respond Review_comments sets changed with valid comment -- *)
+      Test.make ~name:"respond Review_comments sets changed with valid comment"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = add_pending_comment a c_valid ~valid:true in
+          let a = enqueue a Operation_kind.Review_comments in
+          let a = respond a Operation_kind.Review_comments in
+          a.changed);
+      (* -- respond Review_comments does not set changed without valid comment -- *)
+      Test.make ~name:"respond Review_comments no changed without valid comment"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = add_pending_comment a c_invalid ~valid:false in
+          let a = enqueue a Operation_kind.Review_comments in
+          let a = respond a Operation_kind.Review_comments in
+          not a.changed);
+      (* -- 2 ci failures does NOT trigger needs_intervention (boundary) -- *)
+      Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = increment_ci_failure_count a in
+          let a = increment_ci_failure_count a in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          let a = complete a in
+          not a.needs_intervention);
+      (* -- 3 ci failures triggers needs_intervention -- *)
+      Test.make ~name:"3 ci failures triggers intervention" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = increment_ci_failure_count a in
+          let a = increment_ci_failure_count a in
+          let a = increment_ci_failure_count a in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          let a = complete a in
+          a.needs_intervention);
+      (* -- session_failed triggers needs_intervention -- *)
+      Test.make ~name:"session_failed triggers intervention" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = set_session_failed a in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          let a = complete a in
+          a.needs_intervention);
+      (* -- Human queued suppresses intervention from session_failed -- *)
+      Test.make ~name:"Human queued suppresses intervention (session_failed)"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = set_session_failed a in
+          let a = enqueue a Operation_kind.Human in
+          let a = enqueue a Operation_kind.Rebase in
+          let a = respond a Operation_kind.Rebase in
+          let a = complete a in
+          not a.needs_intervention);
+      (* -- Human queued suppresses intervention from 3 ci failures -- *)
+      Test.make ~name:"Human queued suppresses intervention (3 ci failures)"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = increment_ci_failure_count a in
+          let a = increment_ci_failure_count a in
+          let a = increment_ci_failure_count a in
+          let a = enqueue a Operation_kind.Human in
+          let a = enqueue a Operation_kind.Rebase in
+          let a = respond a Operation_kind.Rebase in
+          let a = complete a in
+          not a.needs_intervention);
+      (* -- clear_needs_intervention resets flag -- *)
+      Test.make ~name:"clear_needs_intervention resets flag" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = complete a in
+          let a = set_session_failed a in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          let a = complete a in
+          let triggered = a.needs_intervention in
+          let a = clear_needs_intervention a in
+          triggered && not a.needs_intervention);
     ]
   in
-  let () =
-    (* Specific unit-style property tests *)
-
-    (* respond Human clears satisfies *)
-    let pid = Patch_id.of_string "p" in
-    let br = Branch.of_string "main" in
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = enqueue a Operation_kind.Human in
-    let a = respond a Operation_kind.Human in
-    assert (not a.satisfies);
-
-    (* respond Ci sets changed *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = enqueue a Operation_kind.Ci in
-    let a = respond a Operation_kind.Ci in
-    assert a.changed;
-
-    (* respond Merge_conflict clears has_conflict *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = set_has_conflict a in
-    let a = enqueue a Operation_kind.Merge_conflict in
-    let a = respond a Operation_kind.Merge_conflict in
-    assert (not a.has_conflict);
-
-    (* respond Review_comments clears pending_comments *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let c = Comment.{ body = "fix"; path = None; line = None } in
-    let a = add_pending_comment a c ~valid:true in
-    let a = enqueue a Operation_kind.Review_comments in
-    let a = respond a Operation_kind.Review_comments in
-    assert (List.is_empty a.pending_comments);
-
-    (* respond Review_comments sets changed with valid comment *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = add_pending_comment a c ~valid:true in
-    let a = enqueue a Operation_kind.Review_comments in
-    let a = respond a Operation_kind.Review_comments in
-    assert a.changed;
-
-    (* respond Review_comments does not set changed without valid comment *)
-    (* After start+complete, changed is false. Adding only invalid comments
-       should keep changed false after responding to Review_comments. *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let c_invalid = Comment.{ body = "nit"; path = None; line = None } in
-    let a = add_pending_comment a c_invalid ~valid:false in
-    let a = enqueue a Operation_kind.Review_comments in
-    let a = respond a Operation_kind.Review_comments in
-    assert (not a.changed);
-
-    (* 2 ci failures does NOT trigger needs_intervention (boundary) *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = increment_ci_failure_count a in
-    let a = increment_ci_failure_count a in
-    let a = enqueue a Operation_kind.Ci in
-    let a = respond a Operation_kind.Ci in
-    let a = complete a in
-    assert (not a.needs_intervention);
-
-    (* 3 ci failures triggers needs_intervention *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = increment_ci_failure_count a in
-    let a = increment_ci_failure_count a in
-    let a = increment_ci_failure_count a in
-    let a = enqueue a Operation_kind.Ci in
-    let a = respond a Operation_kind.Ci in
-    let a = complete a in
-    assert a.needs_intervention;
-
-    (* complete sets needs_intervention on session_failed *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = set_session_failed a in
-    let a = enqueue a Operation_kind.Ci in
-    let a = respond a Operation_kind.Ci in
-    let a = complete a in
-    assert a.needs_intervention;
-
-    (* Human queued suppresses needs_intervention from session_failed *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = set_session_failed a in
-    let a = enqueue a Operation_kind.Human in
-    let a = enqueue a Operation_kind.Rebase in
-    let a = respond a Operation_kind.Rebase in
-    let a = complete a in
-    assert (not a.needs_intervention);
-
-    (* Human queued suppresses needs_intervention from 3 ci failures *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = increment_ci_failure_count a in
-    let a = increment_ci_failure_count a in
-    let a = increment_ci_failure_count a in
-    let a = enqueue a Operation_kind.Human in
-    let a = enqueue a Operation_kind.Rebase in
-    let a = respond a Operation_kind.Rebase in
-    let a = complete a in
-    assert (not a.needs_intervention);
-
-    (* clear_needs_intervention resets flag *)
-    let a = create pid |> fun a -> start a ~base_branch:br in
-    let a = complete a in
-    let a = set_session_failed a in
-    let a = enqueue a Operation_kind.Ci in
-    let a = respond a Operation_kind.Ci in
-    let a = complete a in
-    assert a.needs_intervention;
-    let a = clear_needs_intervention a in
-    assert (not a.needs_intervention)
-  in
-  let ok =
-    List.for_all tests ~f:(fun t ->
-        match QCheck2.Test.check_exn t with () -> true)
-  in
-  if ok then Stdlib.print_endline "patch_agent: all tests passed"
+  List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
+  Stdlib.print_endline "patch_agent: all tests passed"
