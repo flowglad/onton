@@ -2,7 +2,8 @@ open Base
 open Types
 
 let render_patch_prompt (patch : Patch.t) (gameplan : Gameplan.t)
-    ~(base_branch : string) ~(project_name : string) =
+    ~(base_branch : string) =
+  let project_name = gameplan.Gameplan.project_name in
   let deps =
     match patch.Patch.dependencies with
     | [] -> "None"
@@ -141,7 +142,6 @@ let%expect_test "patch prompt includes title and deps" =
   in
   let result =
     render_patch_prompt patch gameplan ~base_branch:"onton-port/patch-1"
-      ~project_name:"onton-port"
   in
   Stdio.print_string result;
   [%expect
