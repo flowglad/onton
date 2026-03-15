@@ -1,0 +1,49 @@
+open Base
+
+module Patch_id : sig
+  type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  val of_int : int -> t
+  val to_int : t -> int
+end
+
+module Pr_number : sig
+  type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  val of_int : int -> t
+  val to_int : t -> int
+end
+
+module Session_id : sig
+  type t = private string [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  val of_string : string -> t
+  val to_string : t -> string
+end
+
+module Branch : sig
+  type t = private string [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  val of_string : string -> t
+  val to_string : t -> string
+end
+
+module Operation_kind : sig
+  type t = Rebase | Human | Merge_conflict | Ci | Review_comments
+  [@@deriving show, eq, ord, sexp_of, compare, hash]
+end
+
+module Comment : sig
+  type t = { body : string; path : string option; line : int option }
+  [@@deriving show, eq, sexp_of, compare]
+end
+
+module Patch : sig
+  type t = {
+    id : Patch_id.t;
+    title : string;
+    branch : Branch.t;
+    dependencies : Patch_id.t list;
+  }
+  [@@deriving show, eq, sexp_of, compare]
+end
