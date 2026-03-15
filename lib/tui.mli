@@ -31,3 +31,44 @@ val derive_display_status :
   patch_id:Patch_id.t ->
   current_op:Operation_kind.t option ->
   display_status
+
+(** {2 Patch view} *)
+
+type patch_view = {
+  patch_id : Patch_id.t;
+  title : string;
+  status : display_status;
+  queue_len : int;
+  current_op : Operation_kind.t option;
+  ci_failures : int;
+  dep_count : int;
+}
+
+(** {2 Frame rendering} *)
+
+type frame
+
+type activity_entry =
+  | Transition of {
+      patch_id : string;
+      from_label : string;
+      to_status : display_status;
+      to_label : string;
+      action : string;
+    }
+  | Event of { patch_id : string option; message : string }
+
+val _views_of_orchestrator :
+  orchestrator:Orchestrator.t -> gameplan:Gameplan.t -> patch_view list
+
+val _render_frame :
+  width:int ->
+  activity:activity_entry list ->
+  project_name:string ->
+  patch_view list ->
+  frame
+
+val _paint_frame : frame -> string
+val _frame_to_string : frame -> string
+val _enter_tui : unit -> string
+val _exit_tui : unit -> string
