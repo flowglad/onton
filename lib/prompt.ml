@@ -8,7 +8,7 @@ let render_patch_prompt (patch : Patch.t) (gameplan : Gameplan.t)
     match patch.Patch.dependencies with
     | [] -> "None"
     | ids ->
-        List.map ids ~f:(fun id -> Int.to_string (Patch_id.to_int id))
+        List.map ids ~f:(fun id -> Patch_id.to_string id)
         |> String.concat ~sep:", "
         |> Printf.sprintf "Patches %s"
   in
@@ -35,8 +35,8 @@ let render_patch_prompt (patch : Patch.t) (gameplan : Gameplan.t)
     (Branch.to_string patch.Patch.branch)
     base_branch
     (List.map gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
-         Printf.sprintf "- Patch %d: %s"
-           (Patch_id.to_int p.Patch.id)
+         Printf.sprintf "- Patch %s: %s"
+           (Patch_id.to_string p.Patch.id)
            p.Patch.title)
     |> String.concat ~sep:"\n")
 
@@ -113,10 +113,10 @@ let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
     Patch.
       {
-        id = Patch_id.of_int 5;
+        id = Patch_id.of_string "5";
         title = "Prompt renderer";
         branch = Branch.of_string "onton-port/patch-5";
-        dependencies = [ Patch_id.of_int 1 ];
+        dependencies = [ Patch_id.of_string "1" ];
       }
   in
   let gameplan : Gameplan.t =
@@ -129,7 +129,7 @@ let%test "patch prompt includes title and deps" =
           [
             Patch.
               {
-                id = Patch_id.of_int 1;
+                id = Patch_id.of_string "1";
                 title = "Core types";
                 branch = Branch.of_string "onton-port/patch-1";
                 dependencies = [];
