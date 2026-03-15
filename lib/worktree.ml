@@ -12,11 +12,14 @@ let create ~process_mgr ~repo_root ~patch =
   let path = worktree_dir ~repo_root ~patch_id:patch.Patch.id in
   let branch_str = Branch.to_string patch.Patch.branch in
   Eio.Process.run process_mgr
-    [ "git"; "worktree"; "add"; "-b"; branch_str; path; "HEAD" ];
+    [
+      "git"; "-C"; repo_root; "worktree"; "add"; "-b"; branch_str; path; "HEAD";
+    ];
   { patch_id = patch.Patch.id; branch = patch.Patch.branch; path }
 
-let remove ~process_mgr t =
-  Eio.Process.run process_mgr [ "git"; "worktree"; "remove"; "--force"; t.path ]
+let remove ~process_mgr ~repo_root t =
+  Eio.Process.run process_mgr
+    [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
 
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
