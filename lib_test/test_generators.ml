@@ -1,5 +1,5 @@
 open Base
-open Types
+open Onton.Types
 
 (** QCheck2 generators for all core types.
 
@@ -47,10 +47,11 @@ let gen_comment =
 let gen_patch =
   QCheck2.Gen.(
     let gen_deps = list_small gen_patch_id in
-    map3
-      (fun id branch dependencies ->
-        Patch.{ id; title = Patch_id.to_string id; branch; dependencies })
-      gen_patch_id gen_branch gen_deps)
+    let gen_title = string_size ~gen:printable (int_range 5 50) in
+    map4
+      (fun id title branch dependencies ->
+        Patch.{ id; title; branch; dependencies })
+      gen_patch_id gen_title gen_branch gen_deps)
 
 let gen_ci_check =
   QCheck2.Gen.(
@@ -93,19 +94,20 @@ let gen_gameplan =
           })
       gen_patch_list_unique)
 
-let gen_graph = QCheck2.Gen.(map Graph.of_patches gen_patch_list_unique)
+let gen_graph = QCheck2.Gen.(map Onton.Graph.of_patches gen_patch_list_unique)
 
 (* -- Github types -- *)
 
 let gen_merge_state =
-  QCheck2.Gen.oneof_list Github.Pr_state.[ Mergeable; Conflicting; Unknown ]
+  QCheck2.Gen.oneof_list
+    Onton.Github.Pr_state.[ Mergeable; Conflicting; Unknown ]
 
 let gen_check_status =
-  QCheck2.Gen.oneof_list Github.Pr_state.[ Passing; Failing; Pending ]
+  QCheck2.Gen.oneof_list Onton.Github.Pr_state.[ Passing; Failing; Pending ]
 
 let gen_pr_state =
   QCheck2.Gen.(
-    let open Github.Pr_state in
+    let open Onton.Github.Pr_state in
     map3
       (fun (merged, merge_state) check_status
            (comments, unresolved_comment_count) ->
@@ -125,14 +127,14 @@ let gen_github_error =
     oneof
       [
         map2
-          (fun code msg -> Github.Http_error (code, msg))
+          (fun code msg -> Onton.Github.Http_error (code, msg))
           (int_range 400 599)
           (string_size ~gen:printable (int_range 5 30));
         map
-          (fun msg -> Github.Json_parse_error msg)
+          (fun msg -> Onton.Github.Json_parse_error msg)
           (string_size ~gen:printable (int_range 5 30));
         map
-          (fun msgs -> Github.Graphql_error msgs)
+          (fun msgs -> Onton.Github.Graphql_error msgs)
           (list_small (string_size ~gen:printable (int_range 5 30)));
       ])
 
@@ -142,33 +144,47 @@ let gen_poller =
   QCheck2.Gen.(
     map3
       (fun queue (merged, has_conflict) (mergeable, checks_passing) ->
-        Poller.{ queue; merged; has_conflict; mergeable; checks_passing })
+        Onton.Poller.{ queue; merged; has_conflict; mergeable; checks_passing })
       gen_operation_kind_queue (pair bool bool) (pair bool bool))
 
 (* -- Patch_agent -- *)
 
-let gen_pending_comment =
-  QCheck2.Gen.(map2 (fun comment valid -> (comment, valid)) gen_comment bool)
-
-let gen_patch_agent_fresh = QCheck2.Gen.(map Patch_agent.create gen_patch_id)
+let gen_patch_agent_fresh =
+  QCheck2.Gen.(map Onton.Patch_agent.create gen_patch_id)
 
 let gen_patch_agent_started =
   QCheck2.Gen.(
     map2
       (fun pid branch ->
-        Patch_agent.create pid |> fun a ->
-        Patch_agent.start a ~base_branch:branch)
+        let a = Onton.Patch_agent.create pid in
+        Onton.Patch_agent.start a ~base_branch:branch)
       gen_patch_id gen_branch)
 
 let gen_patch_agent_with_queue =
   QCheck2.Gen.(
     map3
       (fun pid branch ops ->
-        let a = Patch_agent.create pid in
-        let a = Patch_agent.start a ~base_branch:branch in
-        let a = Patch_agent.complete a in
-        List.fold ops ~init:a ~f:Patch_agent.enqueue)
+        let a = Onton.Patch_agent.create pid in
+        let a = Onton.Patch_agent.start a ~base_branch:branch in
+        let a = Onton.Patch_agent.complete a in
+        List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
       gen_patch_id gen_branch gen_operation_kind_queue)
+
+let gen_patch_agent_with_comments =
+  QCheck2.Gen.(
+    map4
+      (fun pid branch comments ops ->
+        let a = Onton.Patch_agent.create pid in
+        let a = Onton.Patch_agent.start a ~base_branch:branch in
+        let a =
+          List.fold comments ~init:a ~f:(fun a (comment, valid) ->
+              Onton.Patch_agent.add_pending_comment a comment ~valid)
+        in
+        let a = Onton.Patch_agent.complete a in
+        List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
+      gen_patch_id gen_branch
+      (list_small (pair gen_comment bool))
+      gen_operation_kind_queue)
 
 (* -- Reconciler -- *)
 
@@ -177,7 +193,7 @@ let gen_patch_view =
     map3
       (fun (id, base_branch) (has_pr, merged, busy) (needs_intervention, queue)
          ->
-        Reconciler.
+        Onton.Reconciler.
           { id; has_pr; merged; busy; needs_intervention; queue; base_branch })
       (pair gen_patch_id gen_branch)
       (triple bool bool bool)
@@ -187,11 +203,11 @@ let gen_reconciler_action =
   QCheck2.Gen.(
     oneof
       [
-        map (fun pid -> Reconciler.Mark_merged pid) gen_patch_id;
-        map (fun pid -> Reconciler.Enqueue_rebase pid) gen_patch_id;
+        map (fun pid -> Onton.Reconciler.Mark_merged pid) gen_patch_id;
+        map (fun pid -> Onton.Reconciler.Enqueue_rebase pid) gen_patch_id;
         map3
           (fun patch_id kind new_base ->
-            Reconciler.Start_operation { patch_id; kind; new_base })
+            Onton.Reconciler.Start_operation { patch_id; kind; new_base })
           gen_patch_id gen_operation_kind (option gen_branch);
       ])
 
@@ -200,7 +216,8 @@ let gen_reconciler_action =
 let gen_orchestrator =
   QCheck2.Gen.(
     map2
-      (fun patches main_branch -> Orchestrator.create ~patches ~main_branch)
+      (fun patches main_branch ->
+        Onton.Orchestrator.create ~patches ~main_branch)
       gen_patch_list_unique gen_branch)
 
 let gen_orchestrator_action =
@@ -208,10 +225,10 @@ let gen_orchestrator_action =
     oneof
       [
         map2
-          (fun pid branch -> Orchestrator.Start (pid, branch))
+          (fun pid branch -> Onton.Orchestrator.Start (pid, branch))
           gen_patch_id gen_branch;
         map2
-          (fun pid kind -> Orchestrator.Respond (pid, kind))
+          (fun pid kind -> Onton.Orchestrator.Respond (pid, kind))
           gen_patch_id gen_operation_kind;
       ])
 
@@ -220,7 +237,7 @@ let gen_orchestrator_action =
 let gen_violation =
   QCheck2.Gen.(
     map2
-      (fun invariant details -> Invariants.{ invariant; details })
+      (fun invariant details -> Onton.Invariants.{ invariant; details })
       (string_size ~gen:(char_range 'a' 'z') (int_range 5 30))
       (string_size ~gen:printable (int_range 5 50)))
 
@@ -229,6 +246,11 @@ let gen_violation =
 let print_patch_id = Patch_id.to_string
 let print_branch = Branch.to_string
 let print_operation_kind = Operation_kind.show
-let print_patch_agent = Patch_agent.show
-let print_poller = Poller.show
-let print_pr_state = Github.Pr_state.show
+let print_comment = Comment.show
+let print_patch = Patch.show
+let print_ci_check = Ci_check.show
+let print_gameplan = Gameplan.show
+let print_patch_agent = Onton.Patch_agent.show
+let print_poller = Onton.Poller.show
+let print_pr_state = Onton.Github.Pr_state.show
+let print_github_error = Onton.Github.show_error
