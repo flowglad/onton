@@ -321,12 +321,11 @@ let patch_view_of_agent (agent : Patch_agent.t) ~(patches : Patch.t list)
     |> State.Patch_ctx.set_has_pr ~patch_id ~value:agent.has_pr
     |> State.Patch_ctx.set_ci_failure_count ~patch_id
          ~count:agent.ci_failure_count
-    |> (fun ctx ->
-         List.fold agent.queue ~init:ctx ~f:(fun acc kind ->
-             State.Patch_ctx.set_queued acc ~patch_id ~kind ~value:true))
+    |> fun ctx ->
+    List.fold agent.queue ~init:ctx ~f:(fun acc kind ->
+        State.Patch_ctx.set_queued acc ~patch_id ~kind ~value:true)
   in
-  let status = derive_display_status ctx ~patch_id ~current_op
-  in
+  let status = derive_display_status ctx ~patch_id ~current_op in
   let dep_count = List.length (Graph.deps graph patch_id) in
   {
     patch_id;
@@ -415,9 +414,7 @@ let render_summary (views : patch_view list) =
     | Awaiting_ci | Awaiting_review | Pending ->
         false
   in
-  let running =
-    List.count views ~f:(fun v -> is_running v.status)
-  in
+  let running = List.count views ~f:(fun v -> is_running v.status) in
   let needs_help = count Needs_help in
   let parts =
     [
@@ -483,7 +480,8 @@ let _render_frame ~width ~(activity : activity_entry list) ~project_name
   in
   { lines; width }
 
-let _frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
+let _frame_to_string (frame : frame) =
+  String.concat ~sep:"\n" frame.lines ^ "\n"
 
 let _paint_frame (frame : frame) =
   let buf = Buffer.create 4096 in
