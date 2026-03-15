@@ -129,17 +129,26 @@ let () =
           let a = mark_merged a in
           a.merged);
       (* -- respond with multiple ops: only highest priority accepted -- *)
-      Test.make ~name:"respond rejects non-highest-priority op"
+      (* Test all pairs where low_pri has strictly lower priority than high_pri *)
+      Test.make ~name:"respond rejects non-highest-priority op for all pairs"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
-          let a = complete a in
-          (* Ci has lower priority than Rebase *)
-          let a = enqueue a Operation_kind.Rebase in
-          let a = enqueue a Operation_kind.Ci in
-          match respond a Operation_kind.Ci with
-          | exception Invalid_argument _ -> true
-          | _ -> false);
+          let all_ops =
+            Operation_kind.
+              [ Rebase; Human; Merge_conflict; Ci; Review_comments ]
+          in
+          let rank = Onton.Priority.priority in
+          List.for_all all_ops ~f:(fun high ->
+              List.for_all all_ops ~f:(fun low ->
+                  if rank high >= rank low then true
+                  else
+                    let a = create pid |> fun a -> start a ~base_branch:br in
+                    let a = complete a in
+                    let a = enqueue a high in
+                    let a = enqueue a low in
+                    match respond a low with
+                    | exception Invalid_argument _ -> true
+                    | _ -> false)));
       (* -- full lifecycle -- *)
       Test.make ~name:"full lifecycle"
         Gen.(pair gen_pid gen_branch)
@@ -213,7 +222,17 @@ let () =
     let a = respond a Operation_kind.Review_comments in
     assert (not a.changed);
 
-    (* complete sets needs_intervention after 3 ci failures *)
+    (* 2 ci failures does NOT trigger needs_intervention (boundary) *)
+    let a = create pid |> fun a -> start a ~base_branch:br in
+    let a = complete a in
+    let a = increment_ci_failure_count a in
+    let a = increment_ci_failure_count a in
+    let a = enqueue a Operation_kind.Ci in
+    let a = respond a Operation_kind.Ci in
+    let a = complete a in
+    assert (not a.needs_intervention);
+
+    (* 3 ci failures triggers needs_intervention *)
     let a = create pid |> fun a -> start a ~base_branch:br in
     let a = complete a in
     let a = increment_ci_failure_count a in
@@ -233,16 +252,25 @@ let () =
     let a = complete a in
     assert a.needs_intervention;
 
-    (* complete does not set needs_intervention if Human queued *)
-    (* Human must still be in the queue at complete time to suppress *)
+    (* Human queued suppresses needs_intervention from session_failed *)
     let a = create pid |> fun a -> start a ~base_branch:br in
     let a = complete a in
     let a = set_session_failed a in
     let a = enqueue a Operation_kind.Human in
-    (* enqueue Rebase (higher priority than Human) so we can respond to it *)
     let a = enqueue a Operation_kind.Rebase in
     let a = respond a Operation_kind.Rebase in
-    (* Human is still in queue *)
+    let a = complete a in
+    assert (not a.needs_intervention);
+
+    (* Human queued suppresses needs_intervention from 3 ci failures *)
+    let a = create pid |> fun a -> start a ~base_branch:br in
+    let a = complete a in
+    let a = increment_ci_failure_count a in
+    let a = increment_ci_failure_count a in
+    let a = increment_ci_failure_count a in
+    let a = enqueue a Operation_kind.Human in
+    let a = enqueue a Operation_kind.Rebase in
+    let a = respond a Operation_kind.Rebase in
     let a = complete a in
     assert (not a.needs_intervention);
 
