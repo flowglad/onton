@@ -2,6 +2,8 @@
  (name onton)
  (libraries base)
  (inline_tests)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42))
  (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord
                   ppx_sexp_conv ppx_compare ppx_hash
                   ppx_expect ppx_inline_test ppx_assert)))
