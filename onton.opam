@@ -18,7 +18,7 @@ depends: [
   "ppx_inline_test" {with-test & >= "v0.17.0"}
   "ppx_assert" {with-test & >= "v0.17.0"}
   "qcheck-core" {with-test & >= "0.21"}
-  "bisect_ppx" {with-test & >= "2.8.0"}
+  "bisect_ppx" {with-dev-setup & >= "2.8.0"}
   "ocamlformat" {with-dev-setup & = "0.28.1"}
 ]
 build: [
