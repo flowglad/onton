@@ -15,7 +15,7 @@ let create ~gameplan ~(main_branch : Branch.t) =
   let snap = { orchestrator; activity_log = Activity_log.empty; gameplan } in
   { mutex = Eio.Mutex.create (); snap }
 
-let read t f = Eio.Mutex.use_rw ~protect:true t.mutex (fun () -> f t.snap)
+let read t f = Eio.Mutex.use_ro t.mutex (fun () -> f t.snap)
 
 let update t f =
   Eio.Mutex.use_rw ~protect:true t.mutex (fun () -> t.snap <- f t.snap)
