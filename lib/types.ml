@@ -1,7 +1,12 @@
 open Base
 
 module Patch_id = struct
-  type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  module T = struct
+    type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  end
+
+  include T
+  include Comparator.Make (T)
 
   let of_int n = n
   let to_int t = t
