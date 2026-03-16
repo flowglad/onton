@@ -336,13 +336,14 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
               | None -> ());
               loop ()
           | Term.Key.Down ->
-              (match Tui_input.History.newer history with
-              | Tui_input.History.Entry s ->
-                  Buffer.clear buf;
-                  Buffer.add_string buf s
-              | Tui_input.History.At_fresh ->
-                  Buffer.clear buf;
-                  Buffer.add_string buf !saved_draft);
+              (if Tui_input.History.is_browsing history then
+                 match Tui_input.History.newer history with
+                 | Tui_input.History.Entry s ->
+                     Buffer.clear buf;
+                     Buffer.add_string buf s
+                 | Tui_input.History.At_fresh ->
+                     Buffer.clear buf;
+                     Buffer.add_string buf !saved_draft);
               loop ()
           | Term.Key.Left | Term.Key.Right | Term.Key.Home | Term.Key.End
           | Term.Key.Page_up | Term.Key.Page_down | Term.Key.Tab | Term.Key.F _
