@@ -680,8 +680,12 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
             | Ok pr_state ->
                 let addressed_ids =
                   Runtime.read runtime (fun snap ->
-                      (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                        .Patch_agent.addressed_comment_ids)
+                      match
+                        Orchestrator.find_agent snap.Runtime.orchestrator
+                          patch_id
+                      with
+                      | None -> Base.Set.empty (module Types.Comment_id)
+                      | Some a -> a.Patch_agent.addressed_comment_ids)
                 in
                 let poll_result =
                   Poller.poll ~was_merged ~addressed_ids pr_state
