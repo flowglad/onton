@@ -290,26 +290,41 @@ let status_indicator = function
   | Awaiting_ci | Awaiting_review -> "◎"
   | Pending -> "·"
 
+(** {1 View mode — list vs detail} *)
+
+type view_mode = List_view | Detail_view of Patch_id.t [@@deriving show, eq]
+
 (** {1 Patch view — derived per-patch rendering data} *)
 
 type patch_view = {
   patch_id : Patch_id.t;
   title : string;
+  branch : Branch.t;
   status : display_status;
   queue_len : int;
   current_op : Operation_kind.t option;
   ci_failures : int;
   dep_count : int;
+  has_pr : bool;
+  has_conflict : bool;
+  needs_intervention : bool;
+  pending_comments : int;
 }
 [@@warning "-69"]
 
-let patch_view_of_agent (agent : Patch_agent.t) ~(patches : Patch.t list)
-    ~(graph : Graph.t) =
+let patch_view_of_agent (agent : Patch_agent.t)
+    ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t) =
   let patch_id = agent.patch_id in
+  let patch_opt = Map.find patches_by_id patch_id in
   let title =
-    match List.find patches ~f:(fun p -> Patch_id.equal p.id patch_id) with
+    match patch_opt with
     | Some p -> p.Patch.title
     | None -> Patch_id.to_string patch_id
+  in
+  let branch =
+    match patch_opt with
+    | Some p -> p.Patch.branch
+    | None -> Branch.of_string (Patch_id.to_string patch_id)
   in
   let current_op = Patch_agent.highest_priority agent in
   let ctx =
@@ -330,11 +345,16 @@ let patch_view_of_agent (agent : Patch_agent.t) ~(patches : Patch.t list)
   {
     patch_id;
     title;
+    branch;
     status;
     queue_len = List.length agent.queue;
     current_op;
     ci_failures = agent.ci_failure_count;
     dep_count;
+    has_pr = agent.has_pr;
+    has_conflict = agent.has_conflict;
+    needs_intervention = agent.needs_intervention;
+    pending_comments = List.length agent.pending_comments;
   }
 
 (** {1 Render helpers} *)
@@ -371,7 +391,7 @@ let render_header ~project_name ~width =
   let rule = Term.hrule width in
   [ title; rule ]
 
-let render_patch_row ~width (pv : patch_view) =
+let render_patch_row ~width ~selected (pv : patch_view) =
   let badge = render_status_badge pv.status in
   let title_max = width - 30 in
   let title_display = Term.fit_width (max title_max 10) pv.title in
@@ -392,12 +412,47 @@ let render_patch_row ~width (pv : patch_view) =
           (Printf.sprintf " [%s]" (Operation_kind.show op))
     | None -> ""
   in
-  Printf.sprintf " %s  %s%s%s%s" badge title_display queue_info ci_info op_info
+  let cursor = if selected then "▸" else " " in
+  let row =
+    Printf.sprintf "%s%s  %s%s%s%s" cursor badge title_display queue_info
+      ci_info op_info
+  in
+  if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
+  else row
 
-let render_patches ~width (views : patch_view list) =
+(** Compute visible window: returns (offset, count) for scrolling. *)
+let visible_window ~selected ~total ~max_visible =
+  if total <= max_visible then (0, total)
+  else
+    let half = max_visible / 2 in
+    let offset =
+      if selected < half then 0
+      else if selected > total - max_visible + half then total - max_visible
+      else selected - half
+    in
+    (offset, max_visible)
+
+let render_patches ~width ~selected ~max_visible (views : patch_view list) =
+  let total = List.length views in
+  let offset, count = visible_window ~selected ~total ~max_visible in
   let section_header = Term.styled [ Term.Sgr.bold ] " Patches" in
-  let rows = List.map views ~f:(render_patch_row ~width) in
-  section_header :: rows
+  let visible = List.sub views ~pos:offset ~len:(min count (total - offset)) in
+  let rows =
+    List.mapi visible ~f:(fun i pv ->
+        render_patch_row ~width ~selected:(offset + i = selected) pv)
+  in
+  let scroll_up =
+    if offset > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↑ %d more" offset) ]
+    else []
+  in
+  let remaining = total - offset - count in
+  let scroll_down =
+    if remaining > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↓ %d more" remaining) ]
+    else []
+  in
+  (section_header :: scroll_up) @ rows @ scroll_down
 
 let render_summary (views : patch_view list) =
   let count status =
@@ -453,8 +508,59 @@ let render_activity (entries : activity_entry list) =
     in
     header :: lines
 
-let render_footer ~width =
-  let help = Term.styled [ Term.Sgr.dim ] " q:quit  r:refresh  h:help" in
+let render_detail (pv : patch_view) ~width =
+  let fit_value prefix value =
+    prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
+  in
+  let header =
+    Term.styled [ Term.Sgr.bold ]
+      (Term.fit_width (Int.max 1 (width - 1)) (" " ^ pv.title))
+  in
+  let rule = Term.hrule width in
+  let badge = render_status_badge pv.status in
+  let lines =
+    [
+      header;
+      rule;
+      Printf.sprintf "  Status:      %s" badge;
+      fit_value "  Patch ID:    " (Patch_id.to_string pv.patch_id);
+      fit_value "  Branch:      " (Branch.to_string pv.branch);
+      Printf.sprintf "  PR:          %s" (if pv.has_pr then "yes" else "no");
+      Printf.sprintf "  Dependencies: %d" pv.dep_count;
+      Printf.sprintf "  CI failures: %d" pv.ci_failures;
+      Printf.sprintf "  Queue depth: %d" pv.queue_len;
+      Printf.sprintf "  Conflict:    %s"
+        (if pv.has_conflict then "yes" else "no");
+      Printf.sprintf "  Comments:    %d pending" pv.pending_comments;
+    ]
+  in
+  let op_line =
+    match pv.current_op with
+    | Some op -> [ Printf.sprintf "  Current op:  %s" (Operation_kind.show op) ]
+    | None -> []
+  in
+  let intervention =
+    if pv.needs_intervention then
+      [
+        "";
+        Term.styled
+          [ Term.Sgr.fg_red; Term.Sgr.bold ]
+          "  ⚠ Needs manual intervention";
+      ]
+    else []
+  in
+  lines @ op_line @ intervention
+
+let render_footer ~width ~view_mode =
+  let help =
+    match view_mode with
+    | List_view ->
+        Term.styled [ Term.Sgr.dim ]
+          " q:quit  r:refresh  ↑/↓:navigate  enter:detail  h:help"
+    | Detail_view _ ->
+        Term.styled [ Term.Sgr.dim ]
+          " q:quit  esc/backspace:back  r:refresh  h:help"
+  in
   [ Term.hrule width; help ]
 
 (** {1 Public API} *)
@@ -463,22 +569,56 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
     ~(gameplan : Gameplan.t) =
   let agents = Orchestrator.all_agents orchestrator in
   let graph = Orchestrator.graph orchestrator in
+  let patches_by_id =
+    List.fold gameplan.patches
+      ~init:(Map.empty (module Patch_id))
+      ~f:(fun acc (p : Patch.t) -> Map.set acc ~key:p.Patch.id ~data:p)
+  in
   List.map agents ~f:(fun agent ->
-      patch_view_of_agent agent ~patches:gameplan.patches ~graph)
+      patch_view_of_agent agent ~patches_by_id ~graph)
 
-let render_frame ~width ~(activity : activity_entry list) ~project_name
-    (views : patch_view list) =
+let render_frame ~width ~height ~selected ~view_mode
+    ~(activity : activity_entry list) ~project_name (views : patch_view list) =
   let header = render_header ~project_name ~width in
   let summary = [ render_summary views ] in
-  let patches = render_patches ~width views in
-  let activity_lines = render_activity activity in
-  let footer = render_footer ~width in
-  let lines =
-    header @ [ "" ] @ summary @ [ "" ] @ patches
-    @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
-    @ [ "" ] @ footer
-  in
-  { lines; width }
+  let footer = render_footer ~width ~view_mode in
+  match view_mode with
+  | Detail_view patch_id ->
+      let detail =
+        match
+          List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
+        with
+        | Some pv -> render_detail pv ~width
+        | None -> [ " (patch not found)" ]
+      in
+      (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
+         + footer(2) = 7 fixed lines *)
+      let max_detail = Int.max 0 (height - 7) in
+      let detail = List.take detail max_detail in
+      let lines =
+        header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
+      in
+      { lines; width }
+  | List_view ->
+      let activity_lines = render_activity activity in
+      let activity_height =
+        if List.is_empty activity_lines then 0
+        else 1 + List.length activity_lines
+      in
+      (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
+         + scroll indicators(2) + blank before footer + footer(2) +
+         activity block *)
+      let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + activity_height in
+      let max_patch_rows = Int.max 0 (height - reserved) in
+      let patches =
+        render_patches ~width ~selected ~max_visible:max_patch_rows views
+      in
+      let lines =
+        header @ [ "" ] @ summary @ [ "" ] @ patches
+        @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
+        @ [ "" ] @ footer
+      in
+      { lines; width }
 
 let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
 
