@@ -60,3 +60,12 @@ let dependents t patch_id =
   Map.find t.dependents_map patch_id |> Option.value ~default:[]
 
 let all_patch_ids t = t.all_ids
+
+let add_patch t patch_id =
+  if Map.mem t.deps_map patch_id then t
+  else
+    {
+      deps_map = Map.set t.deps_map ~key:patch_id ~data:[];
+      dependents_map = t.dependents_map;
+      all_ids = t.all_ids @ [ patch_id ];
+    }

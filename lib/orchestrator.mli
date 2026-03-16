@@ -70,6 +70,11 @@ val graph : t -> Graph.t
 val main_branch : t -> Branch.t
 val agents_map : t -> Patch_agent.t Map.M(Patch_id).t
 
+val add_agent : t -> patch_id:Patch_id.t -> pr_number:Pr_number.t -> t
+(** Add an ad-hoc agent for a PR not in the gameplan. No-op if the patch_id
+    already exists. The agent starts with [has_pr = true] and no dependencies.
+    Corresponds to the spec's Add action. *)
+
 (** {2 Persistence support} *)
 
 val restore :

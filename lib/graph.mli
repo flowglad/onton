@@ -64,3 +64,7 @@ val dependents : t -> Types.Patch_id.t -> Types.Patch_id.t list
 
 val all_patch_ids : t -> Types.Patch_id.t list
 (** [all_patch_ids t] returns every patch id in the graph. *)
+
+val add_patch : t -> Types.Patch_id.t -> t
+(** [add_patch t pid] registers an ad-hoc patch with no dependencies. No-op if
+    [pid] is already in the graph. Per spec: "Added patches have no deps." *)

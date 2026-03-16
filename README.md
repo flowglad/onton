@@ -29,6 +29,7 @@ opam install . --deps-only
 ```sh
 onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   # Start a new project
 onton PROJECT [OPTIONS]                         # Resume a saved project
+onton --owner OWNER --repo REPO [OPTIONS]       # Ad-hoc mode (no gameplan)
 ```
 
 | Flag | Default | Description |
@@ -45,6 +46,8 @@ onton PROJECT [OPTIONS]                         # Resume a saved project
 | `--headless` | off | Run without TUI (plain log output to stdout) |
 
 Project config and state are persisted to `~/.local/share/onton/<project>/`. Resuming a project reloads the saved snapshot and reconciles against GitHub.
+
+In ad-hoc mode (no `PROJECT` or `--gameplan`), onton starts with an empty patch list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each `+N` creates a new agent that polls and responds to the given PR.
 
 ## Build & test
 

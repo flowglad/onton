@@ -456,35 +456,28 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                       (Printf.sprintf
                          "Cannot send human message: unknown patch %s"
                          (Patch_id.to_string patch_id))
-              | Some (Tui_input.Add_pr pr_number) -> (
-                  let patch_id_opt =
-                    Runtime.read runtime (fun snap ->
-                        let agents =
-                          Orchestrator.all_agents snap.Runtime.orchestrator
-                        in
-                        let count = Base.List.length agents in
-                        if count = 0 then None
-                        else
-                          let idx =
-                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
-                          in
-                          Some
-                            (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+              | Some (Tui_input.Add_pr pr_number) ->
+                  let patch_id =
+                    Patch_id.of_string
+                      (Int.to_string (Pr_number.to_int pr_number))
                   in
-                  match patch_id_opt with
-                  | None ->
-                      log_event runtime
-                        "Cannot register ad-hoc PR: no selectable patch"
-                  | Some patch_id ->
-                      Pr_registry.register pr_registry ~patch_id ~pr_number;
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          let orch =
-                            Orchestrator.set_pr_number orch patch_id pr_number
-                          in
-                          Orchestrator.clear_needs_intervention orch patch_id);
-                      log_event runtime ~patch_id
-                        (Printf.sprintf "Ad-hoc PR #%d registered"
-                           (Pr_number.to_int pr_number)))
+                  let already_exists =
+                    Runtime.read runtime (fun snap ->
+                        Base.Option.is_some
+                          (Orchestrator.find_agent snap.Runtime.orchestrator
+                             patch_id))
+                  in
+                  if already_exists then
+                    log_event runtime ~patch_id
+                      (Printf.sprintf "Ad-hoc PR #%d already registered"
+                         (Pr_number.to_int pr_number))
+                  else (
+                    Pr_registry.register pr_registry ~patch_id ~pr_number;
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        Orchestrator.add_agent orch ~patch_id ~pr_number);
+                    log_event runtime ~patch_id
+                      (Printf.sprintf "Ad-hoc PR #%d added"
+                         (Pr_number.to_int pr_number)))
               | Some (Tui_input.Add_worktree path) -> (
                   let info_opt =
                     Runtime.read runtime (fun snap ->
@@ -1208,7 +1201,36 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
     ~headless =
   match (project, gameplan_path) with
   | None, None ->
-      Error [ "Provide a PROJECT name to resume or --gameplan to start new." ]
+      let token = Base.String.strip github_token in
+      let owner = Base.String.strip github_owner in
+      let repo = Base.String.strip github_repo in
+      let project_name =
+        if Base.String.is_empty owner || Base.String.is_empty repo then "adhoc"
+        else Printf.sprintf "%s-%s" owner repo
+      in
+      let gameplan =
+        Gameplan.
+          {
+            project_name;
+            problem_statement = "";
+            solution_summary = "";
+            patches = [];
+          }
+      in
+      Ok
+        ( {
+            project = Some project_name;
+            github_token = token;
+            github_owner = owner;
+            github_repo = repo;
+            main_branch;
+            poll_interval;
+            repo_root;
+            max_concurrency;
+            headless;
+          },
+          gameplan,
+          None )
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]

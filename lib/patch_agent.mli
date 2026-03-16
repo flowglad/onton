@@ -38,6 +38,12 @@ type t = private {
 val create : Types.Patch_id.t -> t
 (** Initial state for a patch: no PR, not busy, empty queue. *)
 
+val create_adhoc : patch_id:Types.Patch_id.t -> pr_number:Types.Pr_number.t -> t
+(** Initial state for an ad-hoc patch: has PR, not busy, empty queue.
+    Corresponds to the spec's Add action:
+    {v PatchCtx ~> Add | p: Patch. --- has-pr' p. ~busy' p. ~in-gameplan' p. v}
+*)
+
 (** {2 Spec actions} *)
 
 val start : t -> base_branch:Types.Branch.t -> t

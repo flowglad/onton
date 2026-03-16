@@ -117,9 +117,12 @@ let respondable_patches t =
 
 let pending_actions t ~patches =
   let branch_map = branch_map_of_patches patches in
+  (* Only validate patches that could be started (no PR yet). Ad-hoc patches
+     already have PRs and are not in the gameplan's patch list. *)
   let missing =
     Graph.all_patch_ids t.graph
-    |> List.filter ~f:(fun pid -> not (Map.mem branch_map pid))
+    |> List.filter ~f:(fun pid ->
+        (not (Map.mem branch_map pid)) && not (has_pr t pid))
   in
   if not (List.is_empty missing) then
     invalid_arg
@@ -211,3 +214,10 @@ let graph t = t.graph
 let restore ~graph ~agents ~main_branch = { graph; agents; main_branch }
 let main_branch t = t.main_branch
 let agents_map t = t.agents
+
+let add_agent t ~patch_id ~pr_number =
+  if Map.mem t.agents patch_id then t
+  else
+    let agent = Patch_agent.create_adhoc ~patch_id ~pr_number in
+    let graph = Graph.add_patch t.graph patch_id in
+    { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }

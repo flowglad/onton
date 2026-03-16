@@ -60,6 +60,29 @@ let create patch_id =
     removed = false;
   }
 
+let create_adhoc ~patch_id ~pr_number =
+  {
+    patch_id;
+    has_pr = true;
+    pr_number = Some pr_number;
+    has_session = false;
+    busy = false;
+    merged = false;
+    needs_intervention = false;
+    queue = [];
+    satisfies = false;
+    changed = false;
+    has_conflict = false;
+    base_branch = None;
+    ci_failure_count = 0;
+    session_fallback = Fresh_available;
+    pending_comments = [];
+    last_session_id = None;
+    ci_checks = [];
+    addressed_comment_ids = Set.empty (module Comment_id);
+    removed = false;
+  }
+
 let highest_priority t =
   List.min_elt t.queue ~compare:(fun a b ->
       Int.compare (Priority.priority a) (Priority.priority b))
