@@ -288,6 +288,9 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   | Some patch_id ->
                       Pr_registry.register pr_registry ~patch_id ~pr_number;
                       Runtime.update_orchestrator runtime (fun orch ->
+                          let orch =
+                            Orchestrator.set_pr_number orch patch_id pr_number
+                          in
                           Orchestrator.clear_needs_intervention orch patch_id);
                       log_event runtime ~patch_id
                         (Printf.sprintf "Ad-hoc PR #%d registered"
@@ -609,6 +612,9 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Pr_registry.register pr_registry ~patch_id
                                   ~pr_number;
                                 Runtime.update_orchestrator runtime (fun orch ->
+                                    Orchestrator.set_pr_number orch patch_id
+                                      pr_number);
+                                Runtime.update_orchestrator runtime (fun orch ->
                                     Orchestrator.complete orch patch_id)
                             | Error _ when remaining > 0 ->
                                 Eio.Time.sleep clock 2.0;
@@ -872,6 +878,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
               let orch =
                 Orchestrator.fire orch (Orchestrator.Start (pid, base))
               in
+              let orch = Orchestrator.set_pr_number orch pid pr in
               let orch = Orchestrator.complete orch pid in
               if merged then Orchestrator.mark_merged orch pid else orch));
       let clock = Eio.Stdenv.clock env in
