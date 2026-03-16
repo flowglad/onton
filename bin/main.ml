@@ -4,7 +4,7 @@ open Onton.Types
 (** {1 Configuration} *)
 
 type config = {
-  gameplan_path : string;
+  project : string option;
   github_token : string;
   github_owner : string;
   github_repo : string;
@@ -15,25 +15,24 @@ type config = {
   headless : bool;
 }
 
-let validate_config config =
+let validate_resolved_config ~github_token ~github_owner ~github_repo
+    ~main_branch ~poll_interval ~max_concurrency =
   let errors =
     Base.List.filter_map
       [
-        ( Base.String.is_empty (Base.String.strip config.github_token),
+        ( Base.String.is_empty (Base.String.strip github_token),
           "--token / GITHUB_TOKEN is required" );
-        ( Base.String.is_empty (Base.String.strip config.github_owner),
+        ( Base.String.is_empty (Base.String.strip github_owner),
           "--owner / GITHUB_OWNER is required" );
-        ( Base.String.is_empty (Base.String.strip config.github_repo),
+        ( Base.String.is_empty (Base.String.strip github_repo),
           "--repo / GITHUB_REPO is required" );
-        ( Base.String.is_empty
-            (Base.String.strip (Branch.to_string config.main_branch)),
+        ( Base.String.is_empty (Base.String.strip (Branch.to_string main_branch)),
           "--main-branch cannot be empty" );
-        ( Float.compare config.poll_interval 0.0 <= 0,
-          Printf.sprintf "--poll-interval must be > 0 (got %g)"
-            config.poll_interval );
-        ( config.max_concurrency < 1,
+        ( Float.compare poll_interval 0.0 <= 0,
+          Printf.sprintf "--poll-interval must be > 0 (got %g)" poll_interval );
+        ( max_concurrency < 1,
           Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
-            config.max_concurrency );
+            max_concurrency );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
@@ -687,96 +686,262 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
   in
   loop ()
 
+(** {1 Persistence fiber} *)
+
+(** Periodic persistence fiber — saves runtime snapshot every 5 seconds. *)
+let persistence_fiber ~runtime ~clock ~project_name =
+  let path = Project_store.snapshot_path project_name in
+  Project_store.ensure_dir (Stdlib.Filename.dirname path);
+  let rec loop () =
+    Eio.Time.sleep clock 5.0;
+    let snap = Runtime.read runtime (fun s -> s) in
+    (match Persistence.save ~path snap with
+    | Ok () -> ()
+    | Error msg ->
+        log_event runtime (Printf.sprintf "persistence save error: %s" msg));
+    loop ()
+  in
+  loop ()
+
 (** {1 Main entry point} *)
 
-let run config =
-  match validate_config config with
+(** Try to load a persisted snapshot for a project. *)
+let load_snapshot ~project_name ~gameplan =
+  let path = Project_store.snapshot_path project_name in
+  if Stdlib.Sys.file_exists path then
+    match Persistence.load ~path ~gameplan with
+    | Ok snap -> Some snap
+    | Error _ -> None
+  else None
+
+(** Resolve CLI args into a config ready to run.
+    - [--gameplan] provided: parse it, persist config + gameplan source, derive
+      project name.
+    - [PROJECT] only: load stored config + gameplan. CLI flags override stored
+      values. *)
+let resolve_config ~project ~gameplan_path ~github_token ~github_owner
+    ~github_repo ~main_branch ~poll_interval ~repo_root ~max_concurrency
+    ~headless =
+  match (project, gameplan_path) with
+  | None, None ->
+      Error [ "Provide a PROJECT name to resume or --gameplan to start new." ]
+  | _, Some gp_path -> (
+      match Gameplan_parser.parse_file gp_path with
+      | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
+      | Ok parsed ->
+          let gameplan = parsed.Gameplan_parser.gameplan in
+          let project_name =
+            match project with
+            | Some p -> p
+            | None -> gameplan.Gameplan.project_name
+          in
+          let token = Base.String.strip github_token in
+          let owner = Base.String.strip github_owner in
+          let repo = Base.String.strip github_repo in
+          Project_store.save_config ~project_name ~github_token:token
+            ~github_owner:owner ~github_repo:repo
+            ~main_branch:(Branch.to_string main_branch)
+            ~poll_interval ~repo_root ~max_concurrency;
+          Project_store.save_gameplan_source ~project_name ~source_path:gp_path;
+          let existing_snapshot = load_snapshot ~project_name ~gameplan in
+          Ok
+            ( {
+                project = Some project_name;
+                github_token = token;
+                github_owner = owner;
+                github_repo = repo;
+                main_branch;
+                poll_interval;
+                repo_root;
+                max_concurrency;
+                headless;
+              },
+              gameplan,
+              existing_snapshot ))
+  | Some proj, None -> (
+      if not (Project_store.project_exists proj) then
+        Error
+          [
+            Printf.sprintf
+              "No stored project %S. Use --gameplan to start a new project."
+              proj;
+          ]
+      else
+        let stored_gp_path = Project_store.gameplan_path proj in
+        if not (Stdlib.Sys.file_exists stored_gp_path) then
+          Error
+            [ Printf.sprintf "Stored gameplan not found for project %S." proj ]
+        else
+          match Gameplan_parser.parse_file stored_gp_path with
+          | Error msg ->
+              Error [ Printf.sprintf "Error parsing stored gameplan: %s" msg ]
+          | Ok parsed -> (
+              let gameplan = parsed.Gameplan_parser.gameplan in
+              match Project_store.load_config ~project_name:proj with
+              | Error msg ->
+                  Error [ Printf.sprintf "Error loading config: %s" msg ]
+              | Ok stored ->
+                  let token =
+                    if Base.String.is_empty (Base.String.strip github_token)
+                    then stored.Project_store.github_token
+                    else Base.String.strip github_token
+                  in
+                  let owner =
+                    if Base.String.is_empty (Base.String.strip github_owner)
+                    then stored.Project_store.github_owner
+                    else Base.String.strip github_owner
+                  in
+                  let repo =
+                    if Base.String.is_empty (Base.String.strip github_repo) then
+                      stored.Project_store.github_repo
+                    else Base.String.strip github_repo
+                  in
+                  let branch =
+                    if Base.String.equal (Branch.to_string main_branch) "main"
+                    then Branch.of_string stored.Project_store.main_branch
+                    else main_branch
+                  in
+                  let existing_snapshot =
+                    load_snapshot ~project_name:proj ~gameplan
+                  in
+                  Ok
+                    ( {
+                        project = Some proj;
+                        github_token = token;
+                        github_owner = owner;
+                        github_repo = repo;
+                        main_branch = branch;
+                        poll_interval = stored.Project_store.poll_interval;
+                        repo_root = stored.Project_store.repo_root;
+                        max_concurrency = stored.Project_store.max_concurrency;
+                        headless;
+                      },
+                      gameplan,
+                      existing_snapshot )))
+
+let run_with_config (config : config) gameplan existing_snapshot =
+  let project_name =
+    match config.project with Some p -> p | None -> assert false
+  in
+  match
+    validate_resolved_config ~github_token:config.github_token
+      ~github_owner:config.github_owner ~github_repo:config.github_repo
+      ~main_branch:config.main_branch ~poll_interval:config.poll_interval
+      ~max_concurrency:config.max_concurrency
+  with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
-  | Ok () -> (
-      match Gameplan_parser.parse_file config.gameplan_path with
-      | Error msg ->
-          Printf.eprintf "Error parsing gameplan: %s\n" msg;
-          Stdlib.exit 1
-      | Ok parsed ->
-          let gameplan = parsed.Gameplan_parser.gameplan in
-          let runtime =
+  | Ok () ->
+      let runtime =
+        match existing_snapshot with
+        | Some snap ->
+            Printf.eprintf "Resuming project %S from saved state.\n%!"
+              project_name;
+            let rt = Runtime.create ~gameplan ~main_branch:config.main_branch in
+            Runtime.update rt (fun _ -> snap);
+            rt
+        | None ->
+            Printf.eprintf "Starting new project %S.\n%!" project_name;
             Runtime.create ~gameplan ~main_branch:config.main_branch
-          in
-          let github =
-            Github.create ~token:config.github_token ~owner:config.github_owner
-              ~repo:config.github_repo
-          in
-          let pr_registry = Pr_registry.create () in
-          let branch_of =
-            build_branch_map gameplan ~default:config.main_branch
-          in
-          Eio_main.run @@ fun env ->
-          let process_mgr = Eio.Stdenv.process_mgr env in
-          (* Startup reconciliation: discover existing PRs before main loop *)
-          let startup =
-            Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
-              ~owner:config.github_owner ~repo:config.github_repo
-              ~patches:gameplan.Gameplan.patches
-          in
-          Base.List.iter startup.Startup_reconciler.errors
-            ~f:(fun (patch_id, err) ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "startup discovery error: %s" err));
-          Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
-              let pid = d.Startup_reconciler.patch_id in
-              let pr = d.Startup_reconciler.pr_number in
-              let base = d.Startup_reconciler.base_branch in
-              let merged = d.Startup_reconciler.merged in
-              Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-              Runtime.update_orchestrator runtime (fun orch ->
-                  let orch =
-                    Orchestrator.fire orch (Orchestrator.Start (pid, base))
-                  in
-                  let orch = Orchestrator.complete orch pid in
-                  if merged then Orchestrator.mark_merged orch pid else orch));
-          let clock = Eio.Stdenv.clock env in
-          let net = Eio.Stdenv.net env in
-          let stdout = Eio.Stdenv.stdout env in
-          let common_fibers =
-            [
+      in
+      let github =
+        Github.create ~token:config.github_token ~owner:config.github_owner
+          ~repo:config.github_repo
+      in
+      let pr_registry = Pr_registry.create () in
+      let branch_of = build_branch_map gameplan ~default:config.main_branch in
+      Eio_main.run @@ fun env ->
+      let process_mgr = Eio.Stdenv.process_mgr env in
+      let startup =
+        Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
+          ~owner:config.github_owner ~repo:config.github_repo
+          ~patches:gameplan.Gameplan.patches
+      in
+      Base.List.iter startup.Startup_reconciler.errors
+        ~f:(fun (patch_id, err) ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "startup discovery error: %s" err));
+      Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
+          let pid = d.Startup_reconciler.patch_id in
+          let pr = d.Startup_reconciler.pr_number in
+          let base = d.Startup_reconciler.base_branch in
+          let merged = d.Startup_reconciler.merged in
+          Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch =
+                Orchestrator.fire orch (Orchestrator.Start (pid, base))
+              in
+              let orch = Orchestrator.complete orch pid in
+              if merged then Orchestrator.mark_merged orch pid else orch));
+      let clock = Eio.Stdenv.clock env in
+      let net = Eio.Stdenv.net env in
+      let stdout = Eio.Stdenv.stdout env in
+      let common_fibers =
+        [
+          (fun () ->
+            poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
+              ~branch_of);
+          (fun () -> runner_fiber ~runtime ~env ~config ~pr_registry);
+          (fun () -> persistence_fiber ~runtime ~clock ~project_name);
+        ]
+      in
+      if config.headless then
+        Eio.Fiber.all
+          ((fun () -> headless_fiber ~runtime ~clock ~stdout) :: common_fibers)
+      else
+        let selected = ref 0 in
+        let view_mode = ref Tui.List_view in
+        Term.Raw.with_raw (fun () ->
+            Fun.protect
+              ~finally:(fun () ->
+                Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
+                let snap = Runtime.read runtime (fun s -> s) in
+                ignore
+                  (Persistence.save
+                     ~path:(Project_store.snapshot_path project_name)
+                     snap))
               (fun () ->
-                poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
-                  ~branch_of);
-              (fun () -> runner_fiber ~runtime ~env ~config ~pr_registry);
-            ]
-          in
-          if config.headless then
-            Eio.Fiber.all
-              ((fun () -> headless_fiber ~runtime ~clock ~stdout)
-              :: common_fibers)
-          else
-            let selected = ref 0 in
-            let view_mode = ref Tui.List_view in
-            Term.Raw.with_raw (fun () ->
-                Fun.protect
-                  ~finally:(fun () ->
-                    Eio.Flow.copy_string (Tui.exit_tui ()) stdout)
-                  (fun () ->
-                    try
-                      Eio.Fiber.all
-                        ((fun () ->
-                           tui_fiber ~runtime ~clock ~stdout ~selected
-                             ~view_mode)
-                        :: (fun () ->
-                          input_fiber ~runtime ~selected ~view_mode ~pr_registry)
-                        :: common_fibers)
-                    with Quit_tui -> ())))
+                try
+                  Eio.Fiber.all
+                    ((fun () ->
+                       tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
+                    :: (fun () ->
+                      input_fiber ~runtime ~selected ~view_mode ~pr_registry)
+                    :: common_fibers)
+                with Quit_tui -> ()))
+
+let run ~project ~gameplan_path ~github_token ~github_owner ~github_repo
+    ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless =
+  match
+    resolve_config ~project ~gameplan_path ~github_token ~github_owner
+      ~github_repo ~main_branch ~poll_interval ~repo_root ~max_concurrency
+      ~headless
+  with
+  | Error errs ->
+      Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
+      Stdlib.exit 1
+  | Ok (config, gameplan, existing_snapshot) ->
+      run_with_config config gameplan existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
+
+let project_arg =
+  let open Cmdliner in
+  Arg.(
+    value
+    & pos 0 (some string) None
+    & info [] ~docv:"PROJECT"
+        ~doc:
+          "Project name to resume. If omitted, derived from --gameplan's \
+           project name.")
 
 let gameplan_path_arg =
   let open Cmdliner in
   Arg.(
-    required
-    & pos 0 (some string) None
-    & info [] ~docv:"GAMEPLAN" ~doc:"Path to the gameplan file.")
+    value
+    & opt (some string) None
+    & info [ "gameplan" ] ~docv:"GAMEPLAN" ~doc:"Path to the gameplan file.")
 
 let github_token_arg =
   let open Cmdliner in
@@ -836,32 +1001,26 @@ let headless_arg =
 
 let main_cmd =
   let open Cmdliner in
-  let run_cmd gameplan_path github_token github_owner github_repo main_branch
-      poll_interval repo_root max_concurrency headless =
-    let config =
-      {
-        gameplan_path;
-        github_token = Base.String.strip github_token;
-        github_owner = Base.String.strip github_owner;
-        github_repo = Base.String.strip github_repo;
-        main_branch = Branch.of_string (Base.String.strip main_branch);
-        poll_interval;
-        repo_root;
-        max_concurrency;
-        headless;
-      }
-    in
-    run config
+  let run_cmd project gameplan_path github_token github_owner github_repo
+      main_branch poll_interval repo_root max_concurrency headless =
+    run ~project ~gameplan_path ~github_token ~github_owner ~github_repo
+      ~main_branch:(Branch.of_string (Base.String.strip main_branch))
+      ~poll_interval ~repo_root ~max_concurrency ~headless
   in
   let term =
     Term.(
-      const run_cmd $ gameplan_path_arg $ github_token_arg $ github_owner_arg
-      $ github_repo_arg $ main_branch_arg $ poll_interval_arg $ repo_root_arg
-      $ max_concurrency_arg $ headless_arg)
+      const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
+      $ github_owner_arg $ github_repo_arg $ main_branch_arg $ poll_interval_arg
+      $ repo_root_arg $ max_concurrency_arg $ headless_arg)
   in
   let info =
     Cmd.info "onton" ~version:"0.1.0"
-      ~doc:"Orchestrate parallel patch development with Claude."
+      ~doc:
+        "Orchestrate parallel patch development with Claude.\n\n\
+         Usage:\n\
+        \  onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   Start a new project\n\
+        \  onton PROJECT [OPTIONS]                         Resume a saved \
+         project"
   in
   Cmd.v info term
 

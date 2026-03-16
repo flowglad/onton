@@ -19,3 +19,4 @@ module Activity_log = Activity_log
 module Tui_input = Tui_input
 module Persistence = Persistence
 module Startup_reconciler = Startup_reconciler
+module Project_store = Project_store
