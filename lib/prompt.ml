@@ -26,7 +26,10 @@ let substitute_variables (template : string) (vars : (string * string) list) :
           Buffer.add_char buf '{';
           scan (i + 2)
       | Some close_pos ->
-          let key = String.sub template ~pos:(i + 2) ~len:(close_pos - i - 2) in
+          let key =
+            String.strip
+              (String.sub template ~pos:(i + 2) ~len:(close_pos - i - 2))
+          in
           (match Map.find var_map key with
           | Some value -> Buffer.add_string buf value
           | None ->
@@ -65,7 +68,10 @@ let load_override ~(project_name : string) (name : string) : string option =
       in
       Exn.protect
         ~finally:(fun () -> Stdlib.In_channel.close ic)
-        ~f:(fun () -> Some (Stdlib.In_channel.input_all ic))
+        ~f:(fun () ->
+          match Stdlib.In_channel.input_all ic with
+          | content -> Some content
+          | exception Sys_error _ -> None)
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
