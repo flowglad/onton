@@ -37,6 +37,12 @@ let add_existing ~patch_id ~branch ~path =
   let git_file = Stdlib.Filename.concat path ".git" in
   if (not (Stdlib.Sys.file_exists git_file)) || Stdlib.Sys.is_directory git_file
   then failwith ("Path is not a git worktree (no .git file): " ^ path);
+  (let ic = Stdlib.open_in git_file in
+   let first_line = try Stdlib.input_line ic with End_of_file -> "" in
+   Stdlib.close_in ic;
+   if not (String.is_prefix first_line ~prefix:"gitdir: ") then
+     failwith
+       ("Path is not a git worktree (.git file has unexpected format): " ^ path));
   { patch_id; branch; path }
 
 let detect_branch ~process_mgr ~path =
