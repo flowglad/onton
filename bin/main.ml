@@ -402,9 +402,11 @@ let headless_fiber ~runtime ~clock ~stdout =
       Base.List.filter entries ~f:(fun (ts, _) ->
           Float.compare ts !last_seen_ts > 0)
     in
-    Base.List.iter new_entries ~f:(fun (ts, msg) ->
-        Eio.Flow.copy_string (msg ^ "\n") stdout;
-        if Float.compare ts !last_seen_ts > 0 then last_seen_ts := ts);
+    Base.List.iter new_entries ~f:(fun (_ts, msg) ->
+        Eio.Flow.copy_string (msg ^ "\n") stdout);
+    (match Base.List.last new_entries with
+    | Some (ts, _) -> last_seen_ts := ts
+    | None -> ());
     Eio.Time.sleep clock 1.0;
     loop ()
   in
