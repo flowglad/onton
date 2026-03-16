@@ -226,6 +226,16 @@ module Raw = struct
       TUI render loop should check and clear this each iteration. *)
   let redraw_needed : bool Atomic.t = Atomic.make false
 
+  (** Write a string to stdout, retrying on short writes. *)
+  let write_stdout_all s =
+    let len = String.length s in
+    let rec go off =
+      if off < len then
+        let n = Unix.write_substring Unix.stdout s off (len - off) in
+        go (off + n)
+    in
+    go 0
+
   (** Suspend the terminal: restore original settings, show cursor, then send
       SIGSTOP to ourselves. A SIGCONT handler (installed via
       {!install_suspend_handlers}) re-enters raw mode automatically. *)
@@ -235,12 +245,8 @@ module Raw = struct
     | Some state ->
         leave state;
         _saved_state := None;
-        let exit_seq =
-          Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show
-        in
-        let (_ : int) =
-          Unix.write_substring Unix.stdout exit_seq 0 (String.length exit_seq)
-        in
+        write_stdout_all
+          (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show);
         Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop
 
   (** Install SIGTSTP/SIGCONT handlers for proper terminal suspend/resume. Must
@@ -264,13 +270,8 @@ module Raw = struct
                Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH
                  (make_raw_settings state.original);
                _saved_state := Some state;
-               let enter_seq =
-                 Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.hide
-               in
-               let (_ : int) =
-                 Unix.write_substring Unix.stdout enter_seq 0
-                   (String.length enter_seq)
-               in
+               write_stdout_all
+                 (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.hide);
                Atomic.set redraw_needed true)))
     in
     _saved_handlers := Some (prev_tstp, prev_cont)
