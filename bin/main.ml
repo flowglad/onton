@@ -106,7 +106,8 @@ let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch ~base_branch =
     timestamp-tagged list. [compare] controls sort direction. *)
 let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
     ~(map_event : Activity_log.Event.t -> 'a)
-    ~(map_transition : Activity_log.Transition_entry.t -> 'a) =
+    ~(map_transition : Activity_log.Transition_entry.t -> 'a)
+    ~(map_stream : Activity_log.Stream_entry.t -> 'a) =
   let events =
     Base.List.map (Activity_log.recent_events log ~limit) ~f:(fun e ->
         (e.Activity_log.Event.timestamp, map_event e))
@@ -115,7 +116,20 @@ let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
     Base.List.map (Activity_log.recent_transitions log ~limit) ~f:(fun t ->
         (t.Activity_log.Transition_entry.timestamp, map_transition t))
   in
-  Base.List.sort (events @ transitions) ~compare
+  let stream =
+    Base.List.map (Activity_log.recent_stream_entries log ~limit) ~f:(fun s ->
+        (s.Activity_log.Stream_entry.timestamp, map_stream s))
+  in
+  Base.List.sort (events @ transitions @ stream) ~compare
+
+let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
+  match kind with
+  | Activity_log.Stream_entry.Tool_use name -> Printf.sprintf "Tool: %s" name
+  | Activity_log.Stream_entry.Text_chunk text -> text
+  | Activity_log.Stream_entry.Finished reason ->
+      Printf.sprintf "Finished (%s)" reason
+  | Activity_log.Stream_entry.Stream_error msg ->
+      Printf.sprintf "Stream error: %s" msg
 
 let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
   merged_log_entries ~log ~limit
@@ -135,6 +149,13 @@ let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
           to_status = t.Activity_log.Transition_entry.to_status;
           to_label = Tui.label t.Activity_log.Transition_entry.to_status;
           action = t.Activity_log.Transition_entry.action;
+        })
+    ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
+      Tui.Event
+        {
+          patch_id =
+            Some (Patch_id.to_string s.Activity_log.Stream_entry.patch_id);
+          message = format_stream_kind s.Activity_log.Stream_entry.kind;
         })
   |> Base.List.map ~f:snd
 
@@ -535,7 +556,11 @@ let headless_fiber ~runtime ~clock ~stdout =
       Runtime.read runtime (fun snap ->
           merged_log_entries ~log:snap.Runtime.activity_log ~limit:50
             ~compare:(fun (t1, _) (t2, _) -> Base.Float.ascending t1 t2)
-            ~map_event:format_event ~map_transition:format_transition)
+            ~map_event:format_event ~map_transition:format_transition
+            ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
+              Printf.sprintf "[%s] %s"
+                (Patch_id.to_string s.Activity_log.Stream_entry.patch_id)
+                (format_stream_kind s.Activity_log.Stream_entry.kind)))
     in
     let total = Base.List.length entries in
     if total > !seen_count then (
@@ -732,12 +757,11 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Prompt.render_patch_prompt patch gameplan
                                   ~base_branch:(Branch.to_string base_branch)
                               in
+                              let stream_pr_hint = ref None in
                               let on_pr_detected pr_number =
-                                Pr_registry.register pr_registry ~patch_id
-                                  ~pr_number;
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.set_pr_number orch patch_id
-                                      pr_number)
+                                (* Store as hint only — verified after Claude
+                                   finishes via gh pr list *)
+                                stream_pr_hint := Some pr_number
                               in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
@@ -747,48 +771,34 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                       match result with
                       | `Stale | `Failed -> ()
                       | `Ok ->
-                          (* If PR was already detected from stream, just complete *)
-                          let already_found =
-                            Runtime.read runtime (fun snap ->
-                                let a =
-                                  Orchestrator.agent snap.Runtime.orchestrator
-                                    patch_id
-                                in
-                                Base.Option.is_some a.Patch_agent.pr_number)
+                          (* Always confirm via gh pr list; use stream hint to
+                             skip retries on first success *)
+                          let rec discover remaining =
+                            match
+                              discover_pr_number ~process_mgr
+                                ~token:config.github_token
+                                ~owner:config.github_owner
+                                ~repo:config.github_repo
+                                ~branch:patch.Patch.branch ~base_branch
+                            with
+                            | Ok pr_number ->
+                                Pr_registry.register pr_registry ~patch_id
+                                  ~pr_number;
+                                Runtime.update_orchestrator runtime (fun orch ->
+                                    let orch =
+                                      Orchestrator.set_pr_number orch patch_id
+                                        pr_number
+                                    in
+                                    Orchestrator.complete orch patch_id)
+                            | Error _ when remaining > 0 ->
+                                Eio.Time.sleep clock 2.0;
+                                discover (remaining - 1)
+                            | Error msg ->
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf "PR discovery failed: %s" msg);
+                                mark_session_failed runtime patch_id
                           in
-                          if already_found then
-                            Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator.complete orch patch_id)
-                          else
-                            (* Fall back to gh pr list discovery *)
-                            let rec discover remaining =
-                              match
-                                discover_pr_number ~process_mgr
-                                  ~token:config.github_token
-                                  ~owner:config.github_owner
-                                  ~repo:config.github_repo
-                                  ~branch:patch.Patch.branch ~base_branch
-                              with
-                              | Ok pr_number ->
-                                  Pr_registry.register pr_registry ~patch_id
-                                    ~pr_number;
-                                  Runtime.update_orchestrator runtime
-                                    (fun orch ->
-                                      let orch =
-                                        Orchestrator.set_pr_number orch patch_id
-                                          pr_number
-                                      in
-                                      Orchestrator.complete orch patch_id)
-                              | Error _ when remaining > 0 ->
-                                  Eio.Time.sleep clock 2.0;
-                                  discover (remaining - 1)
-                              | Error msg ->
-                                  log_event runtime ~patch_id
-                                    (Printf.sprintf "PR discovery failed: %s"
-                                       msg);
-                                  mark_session_failed runtime patch_id
-                            in
-                            discover 2))
+                          discover 2))
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
@@ -840,13 +850,9 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Prompt.render_merge_conflict_prompt
                                   ~base_branch:base
                           in
-                          let on_pr_detected pr_number =
-                            Pr_registry.register pr_registry ~patch_id
-                              ~pr_number;
-                            Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator.set_pr_number orch patch_id
-                                  pr_number)
-                          in
+                          (* Respond patches already have a PR — ignore
+                             streamed PR detections *)
+                          let on_pr_detected _pr_number = () in
                           run_claude_and_handle ~runtime ~process_mgr ~fs
                             ~repo_root:config.repo_root ~patch_id ~prompt
                             ~session_id:None ~owner:config.github_owner
