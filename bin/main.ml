@@ -328,6 +328,9 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           | Term.Key.Char c ->
               Buffer.add_char buf c;
               loop ()
+          | Term.Key.Ctrl 'z' ->
+              Term.Raw.suspend ();
+              loop ()
           | Term.Key.Up ->
               let was_browsing = Tui_input.History.is_browsing history in
               (match Tui_input.History.older history with
@@ -976,24 +979,27 @@ let run_with_config (config : config) gameplan existing_snapshot =
       else
         let selected = ref 0 in
         let view_mode = ref Tui.List_view in
-        Term.Raw.with_raw (fun () ->
-            Fun.protect
-              ~finally:(fun () ->
-                Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
-                let snap = Runtime.read runtime (fun s -> s) in
-                ignore
-                  (Persistence.save
-                     ~path:(Project_store.snapshot_path project_name)
-                     snap))
-              (fun () ->
-                try
-                  Eio.Fiber.all
-                    ((fun () ->
-                       tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
-                    :: (fun () ->
-                      input_fiber ~runtime ~selected ~view_mode ~pr_registry)
-                    :: common_fibers)
-                with Quit_tui -> ()))
+        let raw_state = Term.Raw.enter () in
+        Term.Raw.install_suspend_handlers raw_state;
+        Fun.protect
+          ~finally:(fun () ->
+            Term.Raw.clear_suspend_handlers ();
+            Term.Raw.leave raw_state;
+            Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
+            let snap = Runtime.read runtime (fun s -> s) in
+            ignore
+              (Persistence.save
+                 ~path:(Project_store.snapshot_path project_name)
+                 snap))
+          (fun () ->
+            try
+              Eio.Fiber.all
+                ((fun () ->
+                   tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
+                :: (fun () ->
+                  input_fiber ~runtime ~selected ~view_mode ~pr_registry)
+                :: common_fibers)
+            with Quit_tui -> ())
 
 let run ~project ~gameplan_path ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless =

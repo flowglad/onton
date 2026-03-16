@@ -217,6 +217,63 @@ module Raw = struct
   let with_raw f =
     let state = enter () in
     Exn.protect ~f ~finally:(fun () -> leave state)
+
+  (** Shared mutable state for suspend/resume across signal boundaries. *)
+  let _saved_state : state option ref = ref None
+
+  (** Suspend the terminal: restore original settings, show cursor, then send
+      SIGSTOP to ourselves. A SIGCONT handler (installed via
+      {!install_suspend_handlers}) re-enters raw mode automatically. *)
+  let suspend () =
+    match !_saved_state with
+    | None -> () (* not in raw mode, nothing to do *)
+    | Some state ->
+        leave state;
+        let (_ : int) =
+          Unix.write_substring Unix.stdout Cursor.show 0
+            (String.length Cursor.show)
+        in
+        Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop
+
+  (** Install SIGTSTP/SIGCONT handlers for proper terminal suspend/resume. Must
+      be called inside {!with_raw} — pass the {!state} so we can restore and
+      re-enter raw mode around the stop. *)
+  let install_suspend_handlers (state : state) =
+    _saved_state := Some state;
+    let _prev_cont =
+      Stdlib.Sys.signal Stdlib.Sys.sigcont
+        (Stdlib.Sys.Signal_handle
+           (fun _signum ->
+             (* Re-enter raw mode after resume *)
+             let fd = Unix.stdin in
+             let raw =
+               {
+                 state.original with
+                 Unix.c_icanon = false;
+                 c_echo = false;
+                 c_icrnl = false;
+                 c_ixon = false;
+                 c_vmin = 1;
+                 c_vtime = 0;
+                 c_isig = false;
+               }
+             in
+             Unix.tcsetattr fd Unix.TCSAFLUSH raw;
+             let (_ : int) =
+               Unix.write_substring Unix.stdout Cursor.hide 0
+                 (String.length Cursor.hide)
+             in
+             ()))
+    in
+    ()
+
+  (** Clean up suspend handlers, clearing saved state. *)
+  let clear_suspend_handlers () =
+    _saved_state := None;
+    let _prev =
+      Stdlib.Sys.signal Stdlib.Sys.sigcont Stdlib.Sys.Signal_default
+    in
+    ()
 end
 
 (** Keyboard input types and parsing. *)
