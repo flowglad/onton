@@ -757,12 +757,10 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Prompt.render_patch_prompt patch gameplan
                                   ~base_branch:(Branch.to_string base_branch)
                               in
-                              let stream_pr_hint = ref None in
-                              let on_pr_detected pr_number =
-                                (* Store as hint only — verified after Claude
-                                   finishes via gh pr list *)
-                                stream_pr_hint := Some pr_number
-                              in
+                              (* PR detection from stream text is a hint only —
+                                 always confirmed via gh pr list after Claude
+                                 finishes *)
+                              let on_pr_detected _pr_number = () in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
                                 ~session_id:None ~owner:config.github_owner
@@ -771,8 +769,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                       match result with
                       | `Stale | `Failed -> ()
                       | `Ok ->
-                          (* Always confirm via gh pr list; use stream hint to
-                             skip retries on first success *)
+                          (* Always confirm via gh pr list *)
                           let rec discover remaining =
                             match
                               discover_pr_number ~process_mgr
