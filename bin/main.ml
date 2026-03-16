@@ -237,10 +237,22 @@ let input_fiber ~runtime ~selected ~pr_registry =
               text_mode := false;
               (match Tui_input.parse_line line with
               | Some (Tui_input.Send_message (patch_id, msg)) ->
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      Orchestrator.send_human_message orch patch_id msg);
-                  log_event runtime ~patch_id
-                    (Printf.sprintf "Human message sent: %s" msg)
+                  let patch_exists =
+                    Runtime.read runtime (fun snap ->
+                        Base.Map.mem
+                          (Orchestrator.agents_map snap.Runtime.orchestrator)
+                          patch_id)
+                  in
+                  if patch_exists then (
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        Orchestrator.send_human_message orch patch_id msg);
+                    log_event runtime ~patch_id
+                      (Printf.sprintf "Human message sent: %s" msg))
+                  else
+                    log_event runtime
+                      (Printf.sprintf
+                         "Cannot send human message: unknown patch %s"
+                         (Patch_id.to_string patch_id))
               | Some (Tui_input.Add_pr pr_number) -> (
                   (* Use the currently selected patch for ad-hoc PR registration *)
                   let patch_id_opt =
