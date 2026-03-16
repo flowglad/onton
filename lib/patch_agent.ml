@@ -62,11 +62,12 @@ let add_pending_comment t comment ~valid =
     let is_synthetic id = Comment_id.to_int id < 0 in
     List.exists t.pending_comments ~f:(fun pc ->
         Comment_id.equal pc.comment.Comment.id comment.Comment.id
-        (* Content-match fallback for migration: a legacy comment loaded with
-           a synthetic ID and re-polled with its real databaseId is caught here.
-           Only check the pending side — if the incoming comment is synthetic
-           (human message), we want duplicates with different IDs to both queue. *)
+        (* Content-match fallback for migration only: a legacy comment loaded
+           with a synthetic ID and re-polled with its real databaseId is caught
+           here. Guard: pending must be synthetic AND incoming must be real, so
+           two synthetic human messages with the same body both queue. *)
         || is_synthetic pc.comment.Comment.id
+           && (not (is_synthetic comment.Comment.id))
            && String.equal pc.comment.Comment.body comment.Comment.body
            && Option.equal String.equal pc.comment.Comment.path
                 comment.Comment.path
