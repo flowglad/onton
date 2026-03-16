@@ -101,8 +101,8 @@ module Stop_reason : sig
   val of_string : string -> t option
 end
 
-(** Server-sent events from Claude Code's NDJSON stdout (--output-format json),
-    not the raw Anthropic streaming API. *)
+(** Events from Claude Code's NDJSON stdout (--output-format stream-json), not
+    the raw Anthropic streaming API. *)
 module Stream_event : sig
   type t =
     | Text_delta of string

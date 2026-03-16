@@ -58,8 +58,7 @@ module Comment_id = struct
        and 0 is never issued. seed_synthetic_counter relies on this: seeding to
        min_id causes the next call to return min_id-1, safely below all existing
        IDs. *)
-    let n = Atomic.fetch_and_add counter (-1) - 1 in
-    n
+    Atomic.fetch_and_add counter (-1) - 1
 
   let seed_synthetic_counter ids =
     let min_id =
@@ -142,8 +141,8 @@ module Stop_reason = struct
     | _ -> None
 end
 
-(* Models server-sent events from Claude Code's NDJSON stdout
-   (--output-format json), not the raw Anthropic streaming API. *)
+(* Models events from Claude Code's NDJSON stdout
+   (--output-format stream-json), not the raw Anthropic streaming API. *)
 module Stream_event = struct
   type t =
     | Text_delta of string
