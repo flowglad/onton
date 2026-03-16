@@ -226,7 +226,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
           | Some pr_number ->
               pr_found := true;
               log_stream_entry runtime ~patch_id
-                (Activity_log.Stream_entry.Finished
+                (Activity_log.Stream_entry.Text_chunk
                    (Printf.sprintf "PR #%d detected"
                       (Pr_number.to_int pr_number)));
               on_pr_detected pr_number
