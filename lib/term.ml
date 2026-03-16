@@ -256,10 +256,17 @@ module Raw = struct
            handler races with a Ctrl+Z suspend, the loser's CAS fails and it
            returns without sending a second SIGSTOP. *)
         if Atomic.compare_and_set _saved_state current None then (
+          (* Block SIGCONT during leave/kill to prevent the SIGCONT handler
+             from re-entering raw mode before SIGSTOP is sent. *)
+          let old_mask =
+            Unix.sigprocmask Unix.SIG_BLOCK [ Stdlib.Sys.sigcont ]
+          in
           leave state;
           write_stdout_all
             (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show);
-          Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop)
+          Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop;
+          (* SIGCONT is unblocked here — handler runs and re-enters raw mode *)
+          ignore (Unix.sigprocmask Unix.SIG_SETMASK old_mask))
 
   (** Install SIGTSTP/SIGCONT handlers for proper terminal suspend/resume. Must
       be called after {!enter} — pass the {!state} so we can restore and
