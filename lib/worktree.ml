@@ -9,7 +9,8 @@ let normalize_path path =
       Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
     else path
   in
-  if String.is_suffix p ~suffix:"/" then String.chop_suffix_exn p ~suffix:"/"
+  if String.length p > 1 && String.is_suffix p ~suffix:"/" then
+    String.chop_suffix_exn p ~suffix:"/"
   else p
 
 let worktree_dir ~repo_root ~patch_id =
