@@ -33,6 +33,7 @@ let create ~patches ~main_branch =
   { graph; agents; main_branch }
 
 let agent t patch_id = Map.find_exn t.agents patch_id
+let find_agent t patch_id = Map.find t.agents patch_id
 
 let update_agent t patch_id ~f =
   match Map.find t.agents patch_id with
