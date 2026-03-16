@@ -173,11 +173,26 @@ let () =
         let result =
           Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
         in
+        let all_ids =
+          Set.of_list
+            (module Types.Comment_id)
+            (List.map pr.Github.Pr_state.comments ~f:(fun c ->
+                 c.Types.Comment.id))
+        in
+        let result_all_addressed =
+          Poller.poll ~was_merged:false ~addressed_ids:all_ids pr
+        in
         let in_queue =
           List.mem result.queue Types.Operation_kind.Review_comments
             ~equal:Types.Operation_kind.equal
         in
-        Bool.equal in_queue (not (List.is_empty pr.Github.Pr_state.comments)))
+        (* when addressed_ids is empty: in_queue iff there are comments *)
+        (* when addressed_ids covers all comments: never in_queue *)
+        Bool.equal in_queue (not (List.is_empty pr.Github.Pr_state.comments))
+        && not
+             (List.mem result_all_addressed.queue
+                Types.Operation_kind.Review_comments
+                ~equal:Types.Operation_kind.equal))
   in
   let prop_no_rebase =
     Test.make ~name:"poller: rebase never in poll queue"
