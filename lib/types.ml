@@ -125,11 +125,12 @@ module Stop_reason = struct
     | _ -> None
 end
 
+(* Models server-sent events from Claude Code's NDJSON stdout
+   (--output-format json), not the raw Anthropic streaming API. *)
 module Stream_event = struct
   type t =
     | Text_delta of string
     | Tool_use of { name : string; input : string }
-    | Tool_result of { tool_use_id : string; content : string }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
   [@@deriving show, eq, sexp_of, compare]
