@@ -228,7 +228,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
         (fun () -> Eio.Time.sleep clock 0.1)
         (fun () ->
           while not Term.Raw.redraw_needed.contents do
-            Eio.Fiber.yield ()
+            Eio.Time.sleep clock 0.005
           done;
           Term.Raw.redraw_needed := false);
     loop ()
