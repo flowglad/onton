@@ -177,7 +177,7 @@ let () =
           List.mem result.queue Types.Operation_kind.Review_comments
             ~equal:Types.Operation_kind.equal
         in
-        Bool.equal in_queue (not (List.is_empty result.new_comments)))
+        Bool.equal in_queue (not (List.is_empty pr.Github.Pr_state.comments)))
   in
   let prop_no_rebase =
     Test.make ~name:"poller: rebase never in poll queue"
