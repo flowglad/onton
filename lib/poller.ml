@@ -7,6 +7,7 @@ type t = {
   has_conflict : bool;
   mergeable : bool;
   checks_passing : bool;
+  ci_checks : Types.Ci_check.t list;
 }
 [@@deriving show, eq]
 
@@ -36,4 +37,5 @@ let poll ~was_merged (pr : Github.Pr_state.t) =
     has_conflict = Github.has_conflict pr;
     mergeable = Github.mergeable pr;
     checks_passing = Github.checks_passing pr;
+    ci_checks = pr.Github.Pr_state.ci_checks;
   }

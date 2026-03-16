@@ -8,6 +8,8 @@ module Pr_state = struct
     merged : bool;
     merge_state : merge_state;
     check_status : check_status;
+    ci_checks : Types.Ci_check.t list;
+    ci_checks_truncated : bool;
     comments : Types.Comment.t list;
     unresolved_comment_count : int;
   }
@@ -36,6 +38,25 @@ let graphql_query =
           commit {
             statusCheckRollup {
               state
+              contexts(first: 100) {
+                pageInfo { hasNextPage }
+                nodes {
+                  ... on CheckRun {
+                    __typename
+                    name
+                    conclusion
+                    detailsUrl
+                    text
+                  }
+                  ... on StatusContext {
+                    __typename
+                    context
+                    state
+                    targetUrl
+                    description
+                  }
+                }
+              }
             }
           }
         }
@@ -79,6 +100,36 @@ let parse_check_status = function
   | "FAILURE" | "ERROR" -> Pr_state.Failing
   | _ -> Pr_state.Pending
 
+let parse_check_context_node node =
+  let open Yojson.Safe.Util in
+  let typename = node |> member "__typename" |> to_string_option in
+  match typename with
+  | Some "CheckRun" -> (
+      match node |> member "name" |> to_string_option with
+      | None -> None
+      | Some name ->
+          let conclusion =
+            match node |> member "conclusion" |> to_string_option with
+            | Some c -> String.lowercase c
+            | None -> "pending"
+          in
+          let details_url = node |> member "detailsUrl" |> to_string_option in
+          let description = node |> member "text" |> to_string_option in
+          Some Types.Ci_check.{ name; conclusion; details_url; description })
+  | Some "StatusContext" -> (
+      match node |> member "context" |> to_string_option with
+      | None -> None
+      | Some name ->
+          let conclusion =
+            match node |> member "state" |> to_string_option with
+            | Some s -> String.lowercase s
+            | None -> "pending"
+          in
+          let details_url = node |> member "targetUrl" |> to_string_option in
+          let description = node |> member "description" |> to_string_option in
+          Some Types.Ci_check.{ name; conclusion; details_url; description })
+  | _ -> None
+
 let parse_comment_node node =
   let open Yojson.Safe.Util in
   let id =
@@ -108,19 +159,32 @@ let parse_response body =
             let merge_state =
               pr |> member "mergeable" |> to_string |> parse_merge_state
             in
-            let check_status =
+            let check_status, ci_checks, ci_checks_truncated =
               let commits = pr |> member "commits" |> member "nodes" in
               match commits |> to_list with
-              | [] -> Pr_state.Pending
+              | [] -> (Pr_state.Pending, [], false)
               | node :: _ -> (
                   let rollup =
                     node |> member "commit" |> member "statusCheckRollup"
                   in
                   match rollup with
-                  | `Null -> Pr_state.Pending
+                  | `Null -> (Pr_state.Pending, [], false)
                   | rollup ->
-                      rollup |> member "state" |> to_string
-                      |> parse_check_status)
+                      let status =
+                        rollup |> member "state" |> to_string
+                        |> parse_check_status
+                      in
+                      let contexts = rollup |> member "contexts" in
+                      let truncated =
+                        contexts |> member "pageInfo" |> member "hasNextPage"
+                        |> to_bool_option
+                        |> Option.value ~default:false
+                      in
+                      let checks =
+                        contexts |> member "nodes" |> to_list
+                        |> List.filter_map ~f:parse_check_context_node
+                      in
+                      (status, checks, truncated))
             in
             let review_threads =
               pr |> member "reviewThreads" |> member "nodes" |> to_list
@@ -142,6 +206,8 @@ let parse_response body =
                   merged;
                   merge_state;
                   check_status;
+                  ci_checks;
+                  ci_checks_truncated;
                   comments;
                   unresolved_comment_count;
                 })
