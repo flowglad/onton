@@ -71,11 +71,18 @@ module Ci_check : sig
   [@@deriving show, eq, sexp_of, compare]
 end
 
+module Stop_reason : sig
+  type t = End_turn | Tool_use | Max_tokens | Stop_sequence
+  [@@deriving show, eq, sexp_of, compare]
+
+  val of_string : string -> t option
+end
+
 module Stream_event : sig
   type t =
     | Text_delta of string
     | Tool_use of { name : string; input : string }
-    | Final_result of { text : string; stop_reason : string }
+    | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
   [@@deriving show, eq, sexp_of, compare]
 end

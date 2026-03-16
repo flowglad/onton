@@ -80,11 +80,23 @@ module Ci_check = struct
   [@@deriving show, eq, sexp_of, compare]
 end
 
+module Stop_reason = struct
+  type t = End_turn | Tool_use | Max_tokens | Stop_sequence
+  [@@deriving show, eq, sexp_of, compare]
+
+  let of_string = function
+    | "end_turn" -> Some End_turn
+    | "tool_use" -> Some Tool_use
+    | "max_tokens" -> Some Max_tokens
+    | "stop_sequence" -> Some Stop_sequence
+    | _ -> None
+end
+
 module Stream_event = struct
   type t =
     | Text_delta of string
     | Tool_use of { name : string; input : string }
-    | Final_result of { text : string; stop_reason : string }
+    | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
   [@@deriving show, eq, sexp_of, compare]
 end
