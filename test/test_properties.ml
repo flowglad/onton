@@ -581,7 +581,10 @@ let () =
                (List.exists result.new_comments ~f:(fun (c : Types.Comment.t) ->
                     Types.Comment_id.equal c.id first.id)))
             && List.length result.new_comments
-               >= List.length pr.Github.Pr_state.comments - 1)
+               = List.length pr.Github.Pr_state.comments
+                 - List.count pr.Github.Pr_state.comments
+                     ~f:(fun (c : Types.Comment.t) ->
+                       Types.Comment_id.equal c.id first.id))
   in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
