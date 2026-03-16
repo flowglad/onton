@@ -85,6 +85,18 @@ module Ci_check = struct
   [@@deriving show, eq, sexp_of, compare]
 end
 
+module Pr_url = struct
+  module T = struct
+    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash]
+  end
+
+  include T
+  include Comparator.Make (T)
+
+  let of_string s = s
+  let to_string t = t
+end
+
 module Stop_reason = struct
   type t =
     | End_turn

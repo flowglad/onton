@@ -76,6 +76,15 @@ module Ci_check : sig
   [@@deriving show, eq, sexp_of, compare]
 end
 
+module Pr_url : sig
+  type t = private string [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  include Comparator.S with type t := t
+
+  val of_string : string -> t
+  val to_string : t -> string
+end
+
 module Stop_reason : sig
   type t =
     | End_turn
