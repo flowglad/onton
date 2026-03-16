@@ -8,6 +8,7 @@ type pending_comment = { comment : Comment.t; valid : bool }
 type t = {
   patch_id : Patch_id.t;
   has_pr : bool;
+  pr_number : Pr_number.t option;
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -29,6 +30,7 @@ let create patch_id =
   {
     patch_id;
     has_pr = false;
+    pr_number = None;
     has_session = false;
     busy = false;
     merged = false;
@@ -83,12 +85,14 @@ let clear_needs_intervention t =
     session_failed = false;
   }
 
-let restore ~patch_id ~has_pr ~has_session ~busy ~merged ~needs_intervention
-    ~queue ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
-    ~session_failed ~pending_comments ~last_session_id ~tried_fresh =
+let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
+    ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
+    ~ci_failure_count ~session_failed ~pending_comments ~last_session_id
+    ~tried_fresh =
   {
     patch_id;
     has_pr;
+    pr_number;
     has_session;
     busy;
     merged;
@@ -106,6 +110,7 @@ let restore ~patch_id ~has_pr ~has_session ~busy ~merged ~needs_intervention
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }
+let set_pr_number t pr_number = { t with pr_number = Some pr_number }
 
 let start t ~base_branch =
   if t.has_pr then invalid_arg "Patch_agent.start: patch already has a PR";

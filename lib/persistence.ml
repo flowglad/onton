@@ -18,6 +18,12 @@ let bool_member_opt key json =
 
 let float_member key json = Yojson.Safe.Util.(member key json |> to_float)
 let list_member key json = Yojson.Safe.Util.(member key json |> to_list)
+
+let int_member_opt key json =
+  match Yojson.Safe.Util.member key json with
+  | `Null -> None
+  | v -> Some (Yojson.Safe.Util.to_int v)
+
 let nullable_string = function None -> `Null | Some s -> `String s
 let nullable_int = function None -> `Null | Some n -> `Int n
 
@@ -126,6 +132,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
     [
       ("patch_id", `String (Patch_id.to_string a.patch_id));
       ("has_pr", `Bool a.has_pr);
+      ( "pr_number",
+        match a.pr_number with
+        | None -> `Null
+        | Some n -> `Int (Pr_number.to_int n) );
       ("has_session", `Bool a.has_session);
       ("busy", `Bool a.busy);
       ("merged", `Bool a.merged);
@@ -163,6 +173,8 @@ let patch_agent_of_yojson json =
           Patch_agent.restore
             ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
             ~has_pr:(bool_member "has_pr" json)
+            ~pr_number:
+              (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
             ~has_session:(bool_member "has_session" json)
             ~busy:(bool_member "busy" json)
             ~merged:(bool_member "merged" json)
