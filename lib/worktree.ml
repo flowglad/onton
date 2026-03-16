@@ -50,6 +50,8 @@ let add_existing ~patch_id ~branch ~path =
         ^ path)
    | Some gitdir_path ->
        let gitdir_path = String.strip gitdir_path in
+       if String.is_empty gitdir_path then
+         failwith ("Worktree .git file has empty gitdir path: " ^ path);
        let resolved =
          if Stdlib.Filename.is_relative gitdir_path then
            Stdlib.Filename.concat path gitdir_path
