@@ -316,7 +316,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                         (Printf.sprintf "Ad-hoc PR #%d registered"
                            (Pr_number.to_int pr_number)))
               | Some (Tui_input.Add_worktree path) -> (
-                  let patch_id_opt =
+                  let info_opt =
                     Runtime.read runtime (fun snap ->
                         let agents =
                           Orchestrator.all_agents snap.Runtime.orchestrator
@@ -327,14 +327,19 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                           let idx =
                             Base.Int.max 0 (Base.Int.min !selected (count - 1))
                           in
+                          let agent = Base.List.nth_exn agents idx in
                           Some
-                            (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+                            (agent.Patch_agent.patch_id, agent.Patch_agent.busy))
                   in
-                  match patch_id_opt with
+                  match info_opt with
                   | None ->
                       log_event runtime
                         "Cannot add worktree: no selectable patch"
-                  | Some patch_id -> (
+                  | Some (patch_id, busy) -> (
+                      if busy then
+                        log_event runtime ~patch_id
+                          "Warning: patch is currently running — changing \
+                           worktree may affect the live session";
                       let expected =
                         Worktree.worktree_dir ~repo_root ~patch_id
                       in
