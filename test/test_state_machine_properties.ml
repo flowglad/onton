@@ -77,22 +77,38 @@ let apply_command orch patches cmd =
         Orchestrator.clear_needs_intervention orch (pid_of_idx patches i)
   with Invalid_argument _ -> orch
 
+(** Check per-agent invariants mirroring [Invariants.all_checks].
+
+    The canonical [Invariants] module operates on [State.t] which is not
+    available at the orchestrator test level. These checks replicate the same
+    conditions against [Patch_agent.t] directly so they stay in sync as
+    invariants evolve. When adding a new check to [lib/invariants.ml], add the
+    corresponding agent-level check here. *)
+let check_agent_invariants (a : Patch_agent.t) =
+  (* Mirrors Invariants.check_busy_implies_has_session *)
+  if a.busy && not a.has_session then
+    failwith
+      (Printf.sprintf "busy_implies_has_session violated for %s"
+         (Patch_id.to_string a.patch_id));
+  (* Mirrors Invariants.check_ci_failure_count_non_negative *)
+  if a.ci_failure_count < 0 then
+    failwith
+      (Printf.sprintf "ci_failure_count_non_negative violated for %s"
+         (Patch_id.to_string a.patch_id))
+
 (** Run a command sequence and check invariants after every step. Returns the
     final orchestrator state or raises on invariant violation. *)
 let run_sequence orch patches cmds =
   List.fold cmds ~init:orch ~f:(fun o cmd ->
       let o = apply_command o patches cmd in
-      (* Check agent-level invariants *)
-      List.iter (Orchestrator.all_agents o) ~f:(fun (a : Patch_agent.t) ->
-          if a.busy && not a.has_session then
-            failwith
-              (Printf.sprintf "busy_implies_has_session violated for %s"
-                 (Patch_id.to_string a.patch_id));
-          if a.ci_failure_count < 0 then
-            failwith
-              (Printf.sprintf "ci_failure_count_non_negative violated for %s"
-                 (Patch_id.to_string a.patch_id)));
+      List.iter (Orchestrator.all_agents o) ~f:check_agent_invariants;
       o)
+
+(** Wrap a property predicate so unexpected exceptions falsify cleanly instead
+    of aborting the QCheck run. [Invalid_argument] from precondition violations
+    is expected in random sequences; all other exceptions indicate real bugs but
+    should still produce a QCheck counterexample rather than a crash. *)
+let safe f = try f () with _ -> false
 
 (* ========== Properties ========== *)
 
@@ -118,21 +134,22 @@ let () =
   let prop_p2 =
     QCheck2.Test.make ~name:"P2: tick idempotent after convergence" ~count:300
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let rec stabilize o n =
-          if n = 0 then o
-          else
-            let o, _ = Orchestrator.tick o ~patches in
-            stabilize o (n - 1)
-        in
-        let stable = stabilize orch (List.length patches + 2) in
-        let _, actions1 = Orchestrator.tick stable ~patches in
-        let starts1 =
-          List.count actions1 ~f:(function
-            | Orchestrator.Start _ -> true
-            | Orchestrator.Respond _ -> false)
-        in
-        starts1 = 0)
+        safe (fun () ->
+            let orch = Orchestrator.create ~patches ~main_branch:main in
+            let rec stabilize o n =
+              if n = 0 then o
+              else
+                let o, _ = Orchestrator.tick o ~patches in
+                stabilize o (n - 1)
+            in
+            let stable = stabilize orch (List.length patches + 2) in
+            let _, actions1 = Orchestrator.tick stable ~patches in
+            let starts1 =
+              List.count actions1 ~f:(function
+                | Orchestrator.Start _ -> true
+                | Orchestrator.Respond _ -> false)
+            in
+            starts1 = 0))
   in
   QCheck2.Test.check_exn prop_p2;
   Stdlib.print_endline "P2 passed"
@@ -148,29 +165,26 @@ let () =
         pair Onton_test_support.Test_generators.gen_patch_list_unique
           Onton_test_support.Test_generators.gen_operation_kind)
       (fun (patches, kind) ->
-        match patches with
-        | [] -> true
-        | first :: _ ->
-            let pid = first.Patch.id in
-            let orch = Orchestrator.create ~patches ~main_branch:main in
-            (* Tick to start all eligible patches *)
-            let rec tick_all o n =
-              if n = 0 then o
-              else
-                let o, _ = Orchestrator.tick o ~patches in
-                tick_all o (n - 1)
-            in
-            let orch = tick_all orch (List.length patches + 1) in
-            (* Complete the first patch *)
-            let orch = Orchestrator.complete orch pid in
-            (* Enqueue an operation *)
-            let orch = Orchestrator.enqueue orch pid kind in
-            (* Tick and check for Respond *)
-            let _, actions = Orchestrator.tick orch ~patches in
-            List.exists actions ~f:(function
-              | Orchestrator.Respond (p, k) ->
-                  Patch_id.equal p pid && Operation_kind.equal k kind
-              | Orchestrator.Start _ -> false))
+        safe (fun () ->
+            match patches with
+            | [] -> true
+            | first :: _ ->
+                let pid = first.Patch.id in
+                let orch = Orchestrator.create ~patches ~main_branch:main in
+                let rec tick_all o n =
+                  if n = 0 then o
+                  else
+                    let o, _ = Orchestrator.tick o ~patches in
+                    tick_all o (n - 1)
+                in
+                let orch = tick_all orch (List.length patches + 1) in
+                let orch = Orchestrator.complete orch pid in
+                let orch = Orchestrator.enqueue orch pid kind in
+                let _, actions = Orchestrator.tick orch ~patches in
+                List.exists actions ~f:(function
+                  | Orchestrator.Respond (p, k) ->
+                      Patch_id.equal p pid && Operation_kind.equal k kind
+                  | Orchestrator.Start _ -> false)))
   in
   QCheck2.Test.check_exn prop_p3;
   Stdlib.print_endline "P3 passed"
@@ -185,24 +199,24 @@ let () =
         pair Onton_test_support.Test_generators.gen_patch_list_unique
           Onton_test_support.Test_generators.gen_operation_kind_queue)
       (fun (patches, ops) ->
-        match patches with
-        | [] -> true
-        | first :: _ ->
-            let pid = first.Patch.id in
-            let orch = Orchestrator.create ~patches ~main_branch:main in
-            let orch, _ = Orchestrator.tick orch ~patches in
-            let orch = Orchestrator.complete orch pid in
-            let orch = Orchestrator.mark_merged orch pid in
-            (* Enqueue various operations after merge *)
-            let orch =
-              List.fold ops ~init:orch ~f:(fun o k ->
-                  Orchestrator.enqueue o pid k)
-            in
-            let _, actions = Orchestrator.tick orch ~patches in
-            not
-              (List.exists actions ~f:(function
-                  | Orchestrator.Start (p, _) | Orchestrator.Respond (p, _) ->
-                  Patch_id.equal p pid)))
+        safe (fun () ->
+            match patches with
+            | [] -> true
+            | first :: _ ->
+                let pid = first.Patch.id in
+                let orch = Orchestrator.create ~patches ~main_branch:main in
+                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch = Orchestrator.complete orch pid in
+                let orch = Orchestrator.mark_merged orch pid in
+                let orch =
+                  List.fold ops ~init:orch ~f:(fun o k ->
+                      Orchestrator.enqueue o pid k)
+                in
+                let _, actions = Orchestrator.tick orch ~patches in
+                not
+                  (List.exists actions ~f:(function
+                      | Orchestrator.Start (p, _) | Orchestrator.Respond (p, _)
+                      -> Patch_id.equal p pid))))
   in
   QCheck2.Test.check_exn prop_p4;
   Stdlib.print_endline "P4 passed"
@@ -215,41 +229,36 @@ let () =
     QCheck2.Test.make
       ~name:"P5: needs_intervention blocks respond until cleared" ~count:300
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
-        match patches with
-        | [] -> true
-        | first :: _ ->
-            let pid = first.Patch.id in
-            let orch = Orchestrator.create ~patches ~main_branch:main in
-            let orch, _ = Orchestrator.tick orch ~patches in
-            (* Push ci_failure_count to 3 *)
-            let orch = Orchestrator.increment_ci_failure_count orch pid in
-            let orch = Orchestrator.increment_ci_failure_count orch pid in
-            let orch = Orchestrator.increment_ci_failure_count orch pid in
-            (* Complete — should set needs_intervention *)
-            let orch = Orchestrator.complete orch pid in
-            let agent = Orchestrator.agent orch pid in
-            if not agent.Patch_agent.needs_intervention then
-              (* Human in queue can suppress; skip test in that case *)
-              true
-            else
-              (* Enqueue Ci and tick — should NOT respond *)
-              let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
-              let _, actions = Orchestrator.tick orch ~patches in
-              let blocked =
-                not
-                  (List.exists actions ~f:(function
-                    | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                    | Orchestrator.Start _ -> false))
-              in
-              (* Clear and tick — should respond now *)
-              let orch = Orchestrator.clear_needs_intervention orch pid in
-              let _, actions2 = Orchestrator.tick orch ~patches in
-              let unblocked =
-                List.exists actions2 ~f:(function
-                  | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                  | Orchestrator.Start _ -> false)
-              in
-              blocked && unblocked)
+        safe (fun () ->
+            match patches with
+            | [] -> true
+            | first :: _ ->
+                let pid = first.Patch.id in
+                let orch = Orchestrator.create ~patches ~main_branch:main in
+                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch = Orchestrator.increment_ci_failure_count orch pid in
+                let orch = Orchestrator.increment_ci_failure_count orch pid in
+                let orch = Orchestrator.increment_ci_failure_count orch pid in
+                let orch = Orchestrator.complete orch pid in
+                let agent = Orchestrator.agent orch pid in
+                if not agent.Patch_agent.needs_intervention then true
+                else
+                  let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+                  let _, actions = Orchestrator.tick orch ~patches in
+                  let blocked =
+                    not
+                      (List.exists actions ~f:(function
+                        | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
+                        | Orchestrator.Start _ -> false))
+                  in
+                  let orch = Orchestrator.clear_needs_intervention orch pid in
+                  let _, actions2 = Orchestrator.tick orch ~patches in
+                  let unblocked =
+                    List.exists actions2 ~f:(function
+                      | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
+                      | Orchestrator.Start _ -> false)
+                  in
+                  blocked && unblocked))
   in
   QCheck2.Test.check_exn prop_p5;
   Stdlib.print_endline "P5 passed"
@@ -263,19 +272,19 @@ let () =
         pair Onton_test_support.Test_generators.gen_patch_list_unique
           Onton_test_support.Test_generators.gen_operation_kind)
       (fun (patches, kind) ->
-        match patches with
-        | [] -> true
-        | first :: _ ->
-            let pid = first.Patch.id in
-            let orch = Orchestrator.create ~patches ~main_branch:main in
-            let orch, _ = Orchestrator.tick orch ~patches in
-            let orch = Orchestrator.complete orch pid in
-            let orch1 = Orchestrator.enqueue orch pid kind in
-            let orch2 = Orchestrator.enqueue orch1 pid kind in
-            (* Agents should be identical after single vs double enqueue *)
-            let a1 = Orchestrator.agent orch1 pid in
-            let a2 = Orchestrator.agent orch2 pid in
-            Patch_agent.equal a1 a2)
+        safe (fun () ->
+            match patches with
+            | [] -> true
+            | first :: _ ->
+                let pid = first.Patch.id in
+                let orch = Orchestrator.create ~patches ~main_branch:main in
+                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch = Orchestrator.complete orch pid in
+                let orch1 = Orchestrator.enqueue orch pid kind in
+                let orch2 = Orchestrator.enqueue orch1 pid kind in
+                let a1 = Orchestrator.agent orch1 pid in
+                let a2 = Orchestrator.agent orch2 pid in
+                Patch_agent.equal a1 a2))
   in
   QCheck2.Test.check_exn prop_p6;
   Stdlib.print_endline "P6 passed"
@@ -291,32 +300,31 @@ let () =
           (list_size (int_range 2 5)
              Onton_test_support.Test_generators.gen_operation_kind))
       (fun (patches, ops) ->
-        match patches with
-        | [] -> true
-        | first :: _ -> (
-            let pid = first.Patch.id in
-            let orch = Orchestrator.create ~patches ~main_branch:main in
-            let orch, _ = Orchestrator.tick orch ~patches in
-            let orch = Orchestrator.complete orch pid in
-            (* Enqueue multiple operations *)
-            let orch =
-              List.fold ops ~init:orch ~f:(fun o k ->
-                  Orchestrator.enqueue o pid k)
-            in
-            let agent = Orchestrator.agent orch pid in
-            let expected_hp = Patch_agent.highest_priority agent in
-            let _, actions = Orchestrator.tick orch ~patches in
-            let responded_kind =
-              List.find_map actions ~f:(function
-                | Orchestrator.Respond (p, k) ->
-                    if Patch_id.equal p pid then Some k else None
-                | Orchestrator.Start _ -> None)
-            in
-            (* If queue is non-empty we must get a respond with the HP op *)
-            match (expected_hp, responded_kind) with
-            | Some hp, Some rk -> Operation_kind.equal hp rk
-            | None, None -> true
-            | _ -> false))
+        safe (fun () ->
+            match patches with
+            | [] -> true
+            | first :: _ -> (
+                let pid = first.Patch.id in
+                let orch = Orchestrator.create ~patches ~main_branch:main in
+                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch = Orchestrator.complete orch pid in
+                let orch =
+                  List.fold ops ~init:orch ~f:(fun o k ->
+                      Orchestrator.enqueue o pid k)
+                in
+                let agent = Orchestrator.agent orch pid in
+                let expected_hp = Patch_agent.highest_priority agent in
+                let _, actions = Orchestrator.tick orch ~patches in
+                let responded_kind =
+                  List.find_map actions ~f:(function
+                    | Orchestrator.Respond (p, k) ->
+                        if Patch_id.equal p pid then Some k else None
+                    | Orchestrator.Start _ -> None)
+                in
+                match (expected_hp, responded_kind) with
+                | Some hp, Some rk -> Operation_kind.equal hp rk
+                | None, None -> true
+                | _ -> false)))
   in
   QCheck2.Test.check_exn prop_p7;
   Stdlib.print_endline "P7 passed"
