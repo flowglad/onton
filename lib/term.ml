@@ -226,13 +226,17 @@ module Raw = struct
       TUI render loop should check and clear this each iteration. *)
   let redraw_needed : bool Atomic.t = Atomic.make false
 
-  (** Write a string to stdout, retrying on short writes. *)
+  (** Write a string to stdout, handling short writes and EINTR. Uses
+      [single_write_substring] which maps directly to [write(2)] — safe to call
+      from signal handlers unlike buffered I/O. *)
   let write_stdout_all s =
     let len = String.length s in
     let rec go off =
       if off < len then
-        let n = Unix.write_substring Unix.stdout s off (len - off) in
-        go (off + n)
+        try
+          let n = Unix.single_write_substring Unix.stdout s off (len - off) in
+          go (off + n)
+        with Unix.Unix_error (Unix.EINTR, _, _) -> go off
     in
     go 0
 
