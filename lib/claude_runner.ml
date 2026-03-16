@@ -34,6 +34,66 @@ let build_args ~prompt ~session_id =
   in
   base @ session_args @ [ "--"; prompt ]
 
+let build_stream_args ~prompt ~session_id =
+  let base = [ "claude"; "--print"; "--output-format"; "stream-json" ] in
+  let session_args =
+    match session_id with
+    | Some id -> [ "--resume"; Types.Session_id.to_string id ]
+    | None -> []
+  in
+  base @ session_args @ [ "--"; prompt ]
+
+let parse_stream_event (line : string) : Types.Stream_event.t option =
+  match Yojson.Safe.from_string line with
+  | json -> (
+      let open Yojson.Safe.Util in
+      let typ = member "type" json |> to_string_option in
+      match typ with
+      | Some "content_block_delta" -> (
+          let delta = member "delta" json in
+          let delta_type = member "type" delta |> to_string_option in
+          match delta_type with
+          | Some "text_delta" ->
+              let text = member "text" delta |> to_string in
+              Some (Types.Stream_event.Text_delta text)
+          | _ -> None)
+      | Some "content_block_start" -> (
+          let content_block = member "content_block" json in
+          let block_type = member "type" content_block |> to_string_option in
+          match block_type with
+          | Some "tool_use" ->
+              let name = member "name" content_block |> to_string in
+              Some (Types.Stream_event.Tool_use { name; input = "" })
+          | _ -> None)
+      | Some "message_stop" | Some "message_delta" -> (
+          let delta = member "delta" json in
+          let stop_reason =
+            member "stop_reason" delta |> to_string_option
+            |> Option.value ~default:""
+          in
+          match stop_reason with
+          | "" -> None
+          | reason ->
+              Some
+                (Types.Stream_event.Result { text = ""; stop_reason = reason }))
+      | Some "result" ->
+          let text =
+            member "result" json |> to_string_option |> Option.value ~default:""
+          in
+          let stop_reason =
+            member "stop_reason" json |> to_string_option
+            |> Option.value ~default:"end_turn"
+          in
+          Some (Types.Stream_event.Result { text; stop_reason })
+      | Some "error" ->
+          let err =
+            member "error" json |> member "message" |> to_string_option
+            |> Option.value ~default:"unknown error"
+          in
+          Some (Types.Stream_event.Error err)
+      | _ -> None)
+  | exception Yojson.Json_error _ -> None
+
 let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
   ignore (patch_id : Types.Patch_id.t);
   let fallback_id =
@@ -68,6 +128,46 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
     stderr = stderr_content;
   }
 
+let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
+  ignore (patch_id : Types.Patch_id.t);
+  let fallback_id =
+    match session_id with Some id -> id | None -> generate_session_id ()
+  in
+  let args = build_stream_args ~prompt ~session_id in
+  let stderr_content, exit_code =
+    Eio.Switch.run @@ fun sw ->
+    let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
+    let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
+    let child =
+      Eio.Process.spawn ~sw process_mgr ~cwd ~stdout:stdout_w ~stderr:stderr_w
+        args
+    in
+    Eio.Flow.close stdout_w;
+    Eio.Flow.close stderr_w;
+    let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
+    let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
+    let err_ref = ref "" in
+    Eio.Fiber.both
+      (fun () ->
+        let rec read_lines () =
+          match Eio.Buf_read.line stdout_buf with
+          | line ->
+              let trimmed = String.strip line in
+              (if not (String.is_empty trimmed) then
+                 match parse_stream_event trimmed with
+                 | Some event -> on_event event
+                 | None -> ());
+              read_lines ()
+          | exception End_of_file -> ()
+        in
+        read_lines ())
+      (fun () -> err_ref := Eio.Buf_read.take_all stderr_buf);
+    let status = Eio.Process.await child in
+    let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
+    (!err_ref, code)
+  in
+  { session_id = fallback_id; exit_code; stdout = ""; stderr = stderr_content }
+
 let%test "build_args without session" =
   let args = build_args ~prompt:"do stuff" ~session_id:None in
   List.equal String.equal args
@@ -99,3 +199,59 @@ let%test "generate_session_id produces unique values across many calls" =
   in
   let unique_count = Set.length (Set.of_list (module String) ids) in
   unique_count = 1000
+
+let%test "build_stream_args without session" =
+  let args = build_stream_args ~prompt:"do stuff" ~session_id:None in
+  List.equal String.equal args
+    [ "claude"; "--print"; "--output-format"; "stream-json"; "--"; "do stuff" ]
+
+let%test "build_stream_args with session" =
+  let sid = Types.Session_id.of_string "abc-123" in
+  let args = build_stream_args ~prompt:"do stuff" ~session_id:(Some sid) in
+  List.equal String.equal args
+    [
+      "claude";
+      "--print";
+      "--output-format";
+      "stream-json";
+      "--resume";
+      "abc-123";
+      "--";
+      "do stuff";
+    ]
+
+let%test "parse_stream_event text_delta" =
+  let line =
+    {|{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}|}
+  in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Text_delta "hello"))
+
+let%test "parse_stream_event tool_use" =
+  let line =
+    {|{"type":"content_block_start","content_block":{"type":"tool_use","name":"write_file"}}|}
+  in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Tool_use { name = "write_file"; input = "" }))
+
+let%test "parse_stream_event error" =
+  let line = {|{"type":"error","error":{"message":"rate limited"}}|} in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Error "rate limited"))
+
+let%test "parse_stream_event result" =
+  let line = {|{"type":"result","result":"done","stop_reason":"end_turn"}|} in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some
+       (Types.Stream_event.Result { text = "done"; stop_reason = "end_turn" }))
+
+let%test "parse_stream_event message_delta with stop_reason" =
+  let line = {|{"type":"message_delta","delta":{"stop_reason":"end_turn"}}|} in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Result { text = ""; stop_reason = "end_turn" }))
+
+let%test "parse_stream_event invalid json returns None" =
+  Option.is_none (parse_stream_event "not json at all")
+
+let%test "parse_stream_event unknown type returns None" =
+  Option.is_none (parse_stream_event {|{"type":"ping"}|})
