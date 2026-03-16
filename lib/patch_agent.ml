@@ -80,8 +80,8 @@ let add_pending_comment t comment ~valid =
         then (
           migration_matched := true;
           {
-            pc with
             comment = { pc.comment with Comment.id = comment.Comment.id };
+            valid;
           })
         else pc)
   in

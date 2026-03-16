@@ -132,7 +132,10 @@ let parse_response body =
                     thread |> member "comments" |> member "nodes" |> to_list
                     |> List.map ~f:parse_comment_node)
             in
-            let unresolved_comment_count = List.length comments in
+            let unresolved_comment_count =
+              List.count review_threads ~f:(fun thread ->
+                  not (thread |> member "isResolved" |> to_bool))
+            in
             Ok
               Pr_state.
                 {
