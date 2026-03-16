@@ -43,6 +43,11 @@ val complete : t -> Patch_id.t -> t
 val enqueue : t -> Patch_id.t -> Operation_kind.t -> t
 val mark_merged : t -> Patch_id.t -> t
 val add_pending_comment : t -> Patch_id.t -> Comment.t -> valid:bool -> t
+
+val send_human_message : t -> Patch_id.t -> string -> t
+(** Convenience: add a human message as a pending comment and enqueue
+    [Operation_kind.Human] for the given patch. *)
+
 val set_session_failed : t -> Patch_id.t -> t
 val set_last_session_id : t -> Patch_id.t -> Session_id.t -> t
 val set_tried_fresh : t -> Patch_id.t -> t
