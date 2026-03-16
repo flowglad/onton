@@ -39,7 +39,12 @@ module Operation_kind = struct
 end
 
 module Comment_id = struct
-  type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  module T = struct
+    type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  end
+
+  include T
+  include Comparator.Make (T)
 
   let of_int n = n
   let to_int t = t
@@ -79,7 +84,7 @@ module Stream_event = struct
   type t =
     | Text_delta of string
     | Tool_use of { name : string; input : string }
-    | Result of { text : string; stop_reason : string }
+    | Final_result of { text : string; stop_reason : string }
     | Error of string
   [@@deriving show, eq, sexp_of, compare]
 end
