@@ -418,8 +418,7 @@ let load ~path ~gameplan =
         let ids =
           Orchestrator.all_agents snap.orchestrator
           |> List.concat_map ~f:(fun (a : Patch_agent.t) ->
-              List.map a.pending_comments ~f:(fun pc ->
-                  Comment_id.to_int pc.comment.Comment.id))
+              List.map a.pending_comments ~f:(fun pc -> pc.comment.Comment.id))
         in
         Comment_id.seed_synthetic_counter ids
     | Error _ -> ());

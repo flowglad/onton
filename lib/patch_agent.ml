@@ -89,7 +89,9 @@ let add_pending_comment t comment ~valid =
   let already_present =
     !migration_matched
     || List.exists t.pending_comments ~f:(fun pc ->
-        Comment_id.equal pc.comment.Comment.id comment.Comment.id)
+        if is_synthetic pc.comment.Comment.id then
+          is_content_match pc.comment comment
+        else Comment_id.equal pc.comment.Comment.id comment.Comment.id)
   in
   if already_present then t
   else { t with pending_comments = { comment; valid } :: t.pending_comments }

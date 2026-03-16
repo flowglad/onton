@@ -62,7 +62,9 @@ module Comment_id = struct
     n
 
   let seed_synthetic_counter ids =
-    let min_id = List.fold ids ~init:0 ~f:Int.min in
+    let min_id =
+      List.fold ids ~init:0 ~f:(fun acc id -> Int.min acc (to_int id))
+    in
     let rec try_seed () =
       let current = Atomic.get counter in
       if min_id < current then
