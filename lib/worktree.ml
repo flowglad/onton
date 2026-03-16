@@ -87,14 +87,11 @@ let list_with_branches ~process_mgr ~repo_root =
            repo_root (Exn.to_string exn) msg));
   let raw = Buffer.contents buf in
   let lines = String.split_lines raw in
-  let is_linked_worktree p =
-    let git_path = Stdlib.Filename.concat p ".git" in
-    Stdlib.Sys.file_exists git_path && not (Stdlib.Sys.is_directory git_path)
-  in
+  let repo_root = normalize_path repo_root in
   let flush_entry acc p branch =
     match branch with
     | None -> acc (* skip detached-HEAD worktrees *)
-    | Some b -> if is_linked_worktree p then (p, b) :: acc else acc
+    | Some b -> if String.( <> ) p repo_root then (p, b) :: acc else acc
   in
   let rec parse acc current_path current_branch = function
     | [] ->
