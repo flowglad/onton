@@ -956,12 +956,16 @@ let run_with_config (config : config) gameplan existing_snapshot =
             { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
           Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
           Runtime.update_orchestrator runtime (fun orch ->
-              let orch =
-                Orchestrator.fire orch (Orchestrator.Start (pid, base))
-              in
-              let orch = Orchestrator.set_pr_number orch pid pr in
-              let orch = Orchestrator.complete orch pid in
-              if merged then Orchestrator.mark_merged orch pid else orch));
+              let agent = Orchestrator.agent orch pid in
+              if agent.Patch_agent.has_pr then
+                if merged then Orchestrator.mark_merged orch pid else orch
+              else
+                let orch =
+                  Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                in
+                let orch = Orchestrator.set_pr_number orch pid pr in
+                let orch = Orchestrator.complete orch pid in
+                if merged then Orchestrator.mark_merged orch pid else orch));
       Base.List.iter startup.reset_pending ~f:(fun patch_id ->
           log_event runtime ~patch_id
             "reset stale busy agent from crashed session";
