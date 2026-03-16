@@ -55,25 +55,27 @@ let load_override ~(project_name : string) (name : string) : string option =
   validate_name "prompt name" name;
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Unix.openfile path [ Unix.O_RDONLY ] 0 with
-  | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR | Unix.EISDIR), _, _)
-    ->
-      None
-  | fd ->
-      let ic =
-        match Unix.in_channel_of_descr fd with
-        | exception exn ->
-            Unix.close fd;
-            raise exn
-        | ic -> ic
-      in
-      Exn.protect
-        ~finally:(fun () -> Stdlib.In_channel.close ic)
-        ~f:(fun () ->
-          match Stdlib.In_channel.input_all ic with
-          | content -> Some content
-          | exception (Sys_error msg as exn) ->
-              if String.is_substring msg ~substring:"Is a directory" then None
-              else raise exn)
+  | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
+  | fd -> (
+      match (Unix.fstat fd).Unix.st_kind with
+      | Unix.S_DIR ->
+          Unix.close fd;
+          None
+      | Unix.S_REG | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
+      | Unix.S_SOCK ->
+          let ic =
+            match Unix.in_channel_of_descr fd with
+            | exception exn ->
+                Unix.close fd;
+                raise exn
+            | ic -> ic
+          in
+          Exn.protect
+            ~finally:(fun () -> Stdlib.In_channel.close ic)
+            ~f:(fun () -> Some (Stdlib.In_channel.input_all ic))
+      | exception exn ->
+          Unix.close fd;
+          raise exn)
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
