@@ -55,10 +55,10 @@ let load_override ~(project_name : string) (name : string) : string option =
   match Unix.openfile path [ Unix.O_RDONLY ] 0 with
   | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
   | fd ->
+      let ic = Unix.in_channel_of_descr fd in
       Exn.protect
-        ~finally:(fun () -> Unix.close fd)
+        ~finally:(fun () -> Stdlib.In_channel.close ic)
         ~f:(fun () ->
-          let ic = Unix.in_channel_of_descr fd in
           let content = Stdlib.In_channel.input_all ic in
           Some content)
 
