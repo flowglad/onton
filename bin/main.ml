@@ -558,7 +558,6 @@ let run config =
                       ]
                   with Quit_tui -> ())))
 
-
 (** {1 CLI via Cmdliner} *)
 
 let gameplan_path_arg =
