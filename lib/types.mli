@@ -43,6 +43,7 @@ module Comment_id : sig
   val of_int : int -> t
   val to_int : t -> int
   val next_synthetic : unit -> t
+  val seed_synthetic_counter : int list -> unit
 end
 
 module Comment : sig

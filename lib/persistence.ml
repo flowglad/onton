@@ -409,5 +409,16 @@ let load ~path ~gameplan =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    snapshot_of_yojson ~gameplan json
+    let result = snapshot_of_yojson ~gameplan json in
+    (match result with
+    | Ok snap ->
+        let ids =
+          Orchestrator.all_agents snap.orchestrator
+          |> List.concat_map ~f:(fun (a : Patch_agent.t) ->
+              List.map a.pending_comments ~f:(fun pc ->
+                  Comment_id.to_int pc.comment.Comment.id))
+        in
+        Comment_id.seed_synthetic_counter ids
+    | Error _ -> ());
+    result
   with exn -> Error (Stdlib.Printexc.to_string exn)

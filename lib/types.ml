@@ -48,12 +48,16 @@ module Comment_id = struct
 
   let of_int n = n
   let to_int t = t
+  let counter = Atomic.make 0
 
-  let next_synthetic =
-    let counter = Atomic.make 0 in
-    fun () ->
-      let n = Atomic.fetch_and_add counter (-1) - 1 in
-      n
+  let next_synthetic () =
+    let n = Atomic.fetch_and_add counter (-1) - 1 in
+    n
+
+  let seed_synthetic_counter ids =
+    let min_id = List.fold ids ~init:0 ~f:Int.min in
+    let current = Atomic.get counter in
+    if min_id < current then Atomic.set counter min_id
 end
 
 module Comment = struct
