@@ -239,9 +239,11 @@ module Raw = struct
     | Some state ->
         _saved_state := None;
         leave state;
+        let exit_seq =
+          Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show
+        in
         let (_ : int) =
-          Unix.write_substring Unix.stdout Cursor.show 0
-            (String.length Cursor.show)
+          Unix.write_substring Unix.stdout exit_seq 0 (String.length exit_seq)
         in
         Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop
 
@@ -266,9 +268,12 @@ module Raw = struct
                Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH
                  (make_raw_settings state.original);
                _saved_state := Some state;
+               let enter_seq =
+                 Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.hide
+               in
                let (_ : int) =
-                 Unix.write_substring Unix.stdout Cursor.hide 0
-                   (String.length Cursor.hide)
+                 Unix.write_substring Unix.stdout enter_seq 0
+                   (String.length enter_seq)
                in
                redraw_needed := true)))
     in
