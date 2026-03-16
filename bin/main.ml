@@ -411,24 +411,29 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                           Some
                             ( agent.Patch_agent.patch_id,
                               agent.Patch_agent.busy,
-                              agent.Patch_agent.merged ))
+                              agent.Patch_agent.merged,
+                              agent.Patch_agent.removed ))
                   in
                   match info_opt with
                   | None ->
                       log_event runtime
                         "Cannot remove patch: no selectable patch"
-                  | Some (patch_id, _busy, true) ->
+                  | Some (patch_id, _busy, true, _) ->
                       log_event runtime ~patch_id
                         "Patch is already merged — nothing to do"
-                  | Some (patch_id, busy, false) ->
+                  | Some (patch_id, _busy, _, true) ->
+                      log_event runtime ~patch_id
+                        "Patch is already removed — nothing to do"
+                  | Some (patch_id, busy, false, false) ->
                       if busy then
                         log_event runtime ~patch_id
                           "Warning: patch is currently running — it may create \
                            a GitHub PR before stopping";
                       Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.mark_merged orch patch_id);
+                          Orchestrator.mark_removed orch patch_id);
                       log_event runtime ~patch_id
-                        "Patch removed from orchestration")
+                        "Patch removed from orchestration (dependents remain \
+                         blocked)")
               | Some
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
