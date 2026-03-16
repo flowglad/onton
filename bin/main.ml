@@ -376,7 +376,10 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
               | Tui.Timeline_view -> loop ())
           | Tui_input.Back -> (
               match !view_mode with
-              | Tui.Detail_view _ | Tui.Timeline_view ->
+              | Tui.Detail_view _ ->
+                  view_mode := Tui.List_view;
+                  loop ()
+              | Tui.Timeline_view ->
                   view_mode := Tui.List_view;
                   selected := 0;
                   loop ()
