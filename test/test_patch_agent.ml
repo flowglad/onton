@@ -319,6 +319,109 @@ let () =
           let triggered = a.needs_intervention in
           let a = clear_needs_intervention a in
           triggered && not a.needs_intervention);
+      (* -- create has no pr_number -- *)
+      Test.make ~name:"create has no pr_number" gen_pid (fun pid ->
+          let a = create pid in
+          Option.is_none a.pr_number);
+      (* -- set_pr_number stores pr_number -- *)
+      Test.make ~name:"set_pr_number stores pr_number"
+        Gen.(pair gen_pid (map Pr_number.of_int (int_range 1 9999)))
+        (fun (pid, pr) ->
+          let a = create pid in
+          let a = set_pr_number a pr in
+          Option.equal Pr_number.equal a.pr_number (Some pr));
+      (* -- start clears ci_checks and addressed_comment_ids -- *)
+      Test.make ~name:"start clears ci_checks and addressed_comment_ids"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = create pid in
+          let a = start a ~base_branch:br in
+          let check =
+            Ci_check.
+              {
+                name = "build";
+                conclusion = "success";
+                details_url = None;
+                description = None;
+              }
+          in
+          let cid = Comment_id.of_int 1 in
+          let a = set_ci_checks a [ check ] in
+          let a = add_addressed_comment_id a cid in
+          let a = complete a in
+          let a = mark_merged a in
+          let a =
+            Onton.Patch_agent.restore ~patch_id:a.patch_id ~has_pr:false
+              ~pr_number:None ~has_session:false ~busy:false ~merged:false
+              ~needs_intervention:false ~queue:[] ~satisfies:false
+              ~changed:false ~has_conflict:false ~base_branch:None
+              ~ci_failure_count:0 ~session_fallback:Fresh_available
+              ~pending_comments:[] ~last_session_id:None ~ci_checks:a.ci_checks
+              ~addressed_comment_ids:a.addressed_comment_ids ~removed:false
+          in
+          let a = start a ~base_branch:br in
+          List.is_empty a.ci_checks && Set.is_empty a.addressed_comment_ids);
+      (* -- set_ci_checks stores checks -- *)
+      Test.make ~name:"set_ci_checks stores checks" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let check =
+            Ci_check.
+              {
+                name = "build";
+                conclusion = "success";
+                details_url = None;
+                description = None;
+              }
+          in
+          let a = set_ci_checks a [ check ] in
+          List.length a.ci_checks = 1);
+      (* -- add_addressed_comment_id is idempotent -- *)
+      Test.make ~name:"add_addressed_comment_id is idempotent"
+        Gen.(pair gen_pid (map Comment_id.of_int (int_range 1 100)))
+        (fun (pid, cid) ->
+          let a = create pid in
+          let a = add_addressed_comment_id a cid in
+          let a = add_addressed_comment_id a cid in
+          Set.length a.addressed_comment_ids = 1);
+      (* -- is_comment_addressed reflects add -- *)
+      Test.make ~name:"is_comment_addressed reflects add"
+        Gen.(pair gen_pid (map Comment_id.of_int (int_range 1 100)))
+        (fun (pid, cid) ->
+          let a = create pid in
+          let before = is_comment_addressed a cid in
+          let a = add_addressed_comment_id a cid in
+          let after = is_comment_addressed a cid in
+          (not before) && after);
+      (* -- set_last_session_id stores session id -- *)
+      Test.make ~name:"set_last_session_id stores session id"
+        Gen.(
+          pair gen_pid
+            (map Session_id.of_string
+               (string_size ~gen:(char_range 'a' 'z') (int_range 8 16))))
+        (fun (pid, sid) ->
+          let a = create pid in
+          let a = set_last_session_id a sid in
+          Option.equal Session_id.equal a.last_session_id (Some sid));
+      (* -- set_tried_fresh from Fresh_available -> Tried_fresh -- *)
+      Test.make ~name:"set_tried_fresh from Fresh_available" gen_pid (fun pid ->
+          let a = create pid in
+          let a = set_tried_fresh a in
+          equal_session_fallback a.session_fallback Tried_fresh);
+      (* -- set_tried_fresh is no-op from Tried_fresh or Given_up -- *)
+      Test.make ~name:"set_tried_fresh idempotent from Tried_fresh" gen_pid
+        (fun pid ->
+          let a = create pid in
+          let a = set_tried_fresh a in
+          let a = set_tried_fresh a in
+          equal_session_fallback a.session_fallback Tried_fresh);
+      (* -- set_tried_fresh is no-op from Given_up -- *)
+      Test.make ~name:"set_tried_fresh no-op from Given_up" gen_pid (fun pid ->
+          let a = create pid in
+          let a = set_session_failed a in
+          let a = set_tried_fresh a in
+          equal_session_fallback a.session_fallback Given_up);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
