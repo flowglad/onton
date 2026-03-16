@@ -149,18 +149,6 @@ let () =
         | None -> false)
   in
 
-  (* Property: invalid JSON never crashes, always returns None *)
-  let prop_invalid_json =
-    Test.make ~name:"stream: invalid json returns None"
-      Gen.(string_size ~gen:printable (int_range 0 100))
-      (fun s ->
-        match Onton.Claude_runner.parse_stream_event s with
-        | None -> true
-        | Some _ ->
-            (* Could parse as valid JSON with a recognized type — that's OK *)
-            true)
-  in
-
   (* Property: unknown type returns None *)
   let prop_unknown_type =
     Test.make ~name:"stream: unknown type returns None"
@@ -202,7 +190,6 @@ let () =
       prop_result;
       prop_message_delta;
       prop_error;
-      prop_invalid_json;
       prop_unknown_type;
       prop_total;
     ];
