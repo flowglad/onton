@@ -67,24 +67,27 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
           | _ -> None)
       | Some "message_stop" | Some "message_delta" -> (
           let delta = member "delta" json in
-          let stop_reason =
+          let raw_reason =
             member "stop_reason" delta |> to_string_option
             |> Option.value ~default:""
           in
-          match stop_reason with
-          | "" -> None
-          | reason ->
-              Some
-                (Types.Stream_event.Result { text = ""; stop_reason = reason }))
+          match Types.Stop_reason.of_string raw_reason with
+          | None -> None
+          | Some stop_reason ->
+              Some (Types.Stream_event.Final_result { text = ""; stop_reason }))
       | Some "result" ->
           let text =
             member "result" json |> to_string_option |> Option.value ~default:""
           in
-          let stop_reason =
+          let raw_reason =
             member "stop_reason" json |> to_string_option
             |> Option.value ~default:"end_turn"
           in
-          Some (Types.Stream_event.Result { text; stop_reason })
+          let stop_reason =
+            Types.Stop_reason.of_string raw_reason
+            |> Option.value ~default:Types.Stop_reason.End_turn
+          in
+          Some (Types.Stream_event.Final_result { text; stop_reason })
       | Some "error" ->
           let err =
             member "error" json |> member "message" |> to_string_option
@@ -243,12 +246,15 @@ let%test "parse_stream_event result" =
   let line = {|{"type":"result","result":"done","stop_reason":"end_turn"}|} in
   Option.equal Types.Stream_event.equal (parse_stream_event line)
     (Some
-       (Types.Stream_event.Result { text = "done"; stop_reason = "end_turn" }))
+       (Types.Stream_event.Final_result
+          { text = "done"; stop_reason = Types.Stop_reason.End_turn }))
 
 let%test "parse_stream_event message_delta with stop_reason" =
   let line = {|{"type":"message_delta","delta":{"stop_reason":"end_turn"}}|} in
   Option.equal Types.Stream_event.equal (parse_stream_event line)
-    (Some (Types.Stream_event.Result { text = ""; stop_reason = "end_turn" }))
+    (Some
+       (Types.Stream_event.Final_result
+          { text = ""; stop_reason = Types.Stop_reason.End_turn }))
 
 let%test "parse_stream_event invalid json returns None" =
   Option.is_none (parse_stream_event "not json at all")
