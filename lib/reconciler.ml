@@ -38,7 +38,14 @@ let detect_merges views ~merged_pr_patches =
 let detect_rebases graph views ~newly_merged =
   let newly_merged_set = Set.of_list (module Patch_id) newly_merged in
   let view_by_id =
-    Map.of_alist_exn (module Patch_id) (List.map views ~f:(fun v -> (v.id, v)))
+    match
+      Map.of_alist (module Patch_id) (List.map views ~f:(fun v -> (v.id, v)))
+    with
+    | `Ok m -> m
+    | `Duplicate_key pid ->
+        invalid_arg
+          (Printf.sprintf "Reconciler.detect_rebases: duplicate patch view %s"
+             (Patch_id.to_string pid))
   in
   newly_merged
   |> List.concat_map ~f:(Graph.dependents graph)
