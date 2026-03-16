@@ -624,7 +624,8 @@ type poll_intent =
 
 (** Poller fiber — periodically polls GitHub for PR state changes and
     reconciles. *)
-let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
+let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
+    ~ci_checks_cache =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
@@ -678,6 +679,17 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
                         ~f:(fun acc kind ->
                           Orchestrator.enqueue acc patch_id kind)
                     in
+                    let _ci_store =
+                      let failed =
+                        Base.List.filter poll_result.Poller.ci_checks
+                          ~f:(fun (c : Ci_check.t) ->
+                            not
+                              (Base.String.equal c.Ci_check.conclusion "success"))
+                      in
+                      if not (Base.List.is_empty failed) then
+                        Hashtbl.replace ci_checks_cache patch_id failed
+                      else Hashtbl.remove ci_checks_cache patch_id
+                    in
                     Base.List.fold pr_state.Github.Pr_state.comments ~init:orch
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
@@ -728,7 +740,8 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
+let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+    ~ci_checks_cache =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
@@ -861,13 +874,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
                           in
                           let prompt =
                             match kind with
-                            | Operation_kind.Ci ->
-                                (* TODO: Patch_agent doesn't store Ci_check.t
-                                   details yet — only ci_failure_count.
-                                   Propagate check details from Poller to
-                                   surface them here. *)
-                                Prompt.render_ci_failure_unknown_prompt
-                                  ~project_name
+                            | Operation_kind.Ci -> (
+                                match
+                                  Hashtbl.find_opt ci_checks_cache patch_id
+                                with
+                                | Some checks
+                                  when not (Base.List.is_empty checks) ->
+                                    Prompt.render_ci_failure_prompt
+                                      ~project_name checks
+                                | _ ->
+                                    Prompt.render_ci_failure_unknown_prompt
+                                      ~project_name)
                             | Operation_kind.Review_comments ->
                                 Prompt.render_review_prompt ~project_name
                                   pending_comments
@@ -1133,13 +1150,17 @@ let run_with_config (config : config) gameplan existing_snapshot =
       let clock = Eio.Stdenv.clock env in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
+      let ci_checks_cache : (Patch_id.t, Ci_check.t list) Hashtbl.t =
+        Hashtbl.create 16
+      in
       let common_fibers =
         [
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
-              ~branch_of);
+              ~branch_of ~ci_checks_cache);
           (fun () ->
-            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry);
+            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+              ~ci_checks_cache);
           (fun () -> persistence_fiber ~runtime ~clock ~project_name);
         ]
       in

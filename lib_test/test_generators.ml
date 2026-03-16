@@ -113,18 +113,19 @@ let gen_check_status =
 let gen_pr_state =
   QCheck2.Gen.(
     let open Onton.Github.Pr_state in
-    map3
-      (fun (merged, merge_state) check_status
+    map4
+      (fun (merged, merge_state) check_status ci_checks
            (comments, unresolved_comment_count) ->
         {
           merged;
           merge_state;
           check_status;
+          ci_checks;
           comments;
           unresolved_comment_count;
         })
       (pair bool gen_merge_state)
-      gen_check_status
+      gen_check_status (list_small gen_ci_check)
       (pair (list_small gen_comment) (int_range 0 10)))
 
 let gen_github_error =
@@ -147,10 +148,12 @@ let gen_github_error =
 
 let gen_poller =
   QCheck2.Gen.(
-    map3
-      (fun queue (merged, has_conflict) (mergeable, checks_passing) ->
-        Onton.Poller.{ queue; merged; has_conflict; mergeable; checks_passing })
-      gen_operation_kind_queue (pair bool bool) (pair bool bool))
+    map4
+      (fun queue (merged, has_conflict) (mergeable, checks_passing) ci_checks ->
+        Onton.Poller.
+          { queue; merged; has_conflict; mergeable; checks_passing; ci_checks })
+      gen_operation_kind_queue (pair bool bool) (pair bool bool)
+      (list_small gen_ci_check))
 
 (* -- Patch_agent -- *)
 

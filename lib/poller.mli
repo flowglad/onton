@@ -23,6 +23,8 @@ type t = {
   has_conflict : bool;  (** [true] if the PR has a merge conflict. *)
   mergeable : bool;  (** [true] if the PR is currently mergeable. *)
   checks_passing : bool;  (** [true] if CI checks are currently passing. *)
+  ci_checks : Ci_check.t list;
+      (** Individual CI check results from the most recent poll. *)
 }
 [@@deriving show, eq]
 (** The result of polling a single patch's PR state. *)

@@ -14,6 +14,7 @@ module Pr_state : sig
     merged : bool;
     merge_state : merge_state;
     check_status : check_status;
+    ci_checks : Ci_check.t list;
     comments : Comment.t list;
     unresolved_comment_count : int;
   }
