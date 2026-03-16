@@ -968,9 +968,15 @@ let run_with_config (config : config) gameplan existing_snapshot =
                   let orch = Orchestrator.complete orch pid in
                   if merged then Orchestrator.mark_merged orch pid else orch
               | Some _ ->
-                  (* busy=true, has_pr=false: register PR, let reset_pending
-                     handle busy cleanup; next tick will fire Start fresh *)
+                  (* busy=true, has_pr=false: inconsistent state (start sets both
+                     atomically); advance state machine to avoid spurious
+                     re-creation of the already-discovered PR *)
                   Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                  let orch =
+                    Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                  in
+                  let orch = Orchestrator.set_pr_number orch pid pr in
+                  let orch = Orchestrator.complete orch pid in
                   if merged then Orchestrator.mark_merged orch pid else orch
               | None -> orch));
       Base.List.iter startup.reset_pending ~f:(fun patch_id ->
