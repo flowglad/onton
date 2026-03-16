@@ -58,17 +58,17 @@ type activity_entry =
     }
   | Event of { patch_id : string option; message : string }
 
-val _views_of_orchestrator :
+val views_of_orchestrator :
   orchestrator:Orchestrator.t -> gameplan:Gameplan.t -> patch_view list
 
-val _render_frame :
+val render_frame :
   width:int ->
   activity:activity_entry list ->
   project_name:string ->
   patch_view list ->
   frame
 
-val _paint_frame : frame -> string
-val _frame_to_string : frame -> string
-val _enter_tui : unit -> string
-val _exit_tui : unit -> string
+val paint_frame : frame -> string
+val frame_to_string : frame -> string
+val enter_tui : unit -> string
+val exit_tui : unit -> string

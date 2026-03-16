@@ -34,6 +34,9 @@ val tick : t -> patches:Patch.t list -> t * action list
 val pending_actions : t -> patches:Patch.t list -> action list
 (** Compute actions that would fire without executing them. *)
 
+val fire : t -> action -> t
+(** Apply a single action to the orchestrator state. *)
+
 (** {2 External event application} *)
 
 val complete : t -> Patch_id.t -> t

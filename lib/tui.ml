@@ -459,14 +459,14 @@ let render_footer ~width =
 
 (** {1 Public API} *)
 
-let _views_of_orchestrator ~(orchestrator : Orchestrator.t)
+let views_of_orchestrator ~(orchestrator : Orchestrator.t)
     ~(gameplan : Gameplan.t) =
   let agents = Orchestrator.all_agents orchestrator in
   let graph = Orchestrator.graph orchestrator in
   List.map agents ~f:(fun agent ->
       patch_view_of_agent agent ~patches:gameplan.patches ~graph)
 
-let _render_frame ~width ~(activity : activity_entry list) ~project_name
+let render_frame ~width ~(activity : activity_entry list) ~project_name
     (views : patch_view list) =
   let header = render_header ~project_name ~width in
   let summary = [ render_summary views ] in
@@ -480,10 +480,9 @@ let _render_frame ~width ~(activity : activity_entry list) ~project_name
   in
   { lines; width }
 
-let _frame_to_string (frame : frame) =
-  String.concat ~sep:"\n" frame.lines ^ "\n"
+let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
 
-let _paint_frame (frame : frame) =
+let paint_frame (frame : frame) =
   let buf = Buffer.create 4096 in
   Buffer.add_string buf (Term.Cursor.move_to ~row:1 ~col:1);
   List.iter frame.lines ~f:(fun line ->
@@ -493,8 +492,8 @@ let _paint_frame (frame : frame) =
   Buffer.add_string buf Term.Clear.to_end;
   Buffer.contents buf
 
-let _enter_tui () =
+let enter_tui () =
   Term.Cursor.hide ^ Term.Clear.screen ^ Term.Cursor.move_to ~row:1 ~col:1
 
-let _exit_tui () =
+let exit_tui () =
   Term.Clear.screen ^ Term.Cursor.move_to ~row:1 ~col:1 ^ Term.Cursor.show
