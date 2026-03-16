@@ -23,4 +23,5 @@ val apply_move : count:int -> selected:int -> command -> int
 (** Apply a navigation command to the selected index.
 
     Returns the new selected index, clamped to [[0, count-1]]. Non-navigation
-    commands return [selected] unchanged. *)
+    commands clamp [selected] to the valid range (guarding against asynchronous
+    count shrinkage). Returns [0] when [count <= 0]. *)

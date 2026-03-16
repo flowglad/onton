@@ -38,12 +38,15 @@ let apply_move ~count ~selected (cmd : command) =
   if count <= 0 then 0
   else
     let clamp n = Int.max 0 (Int.min (count - 1) n) in
-    match cmd with
-    | Move_up -> clamp (selected - 1)
-    | Move_down -> clamp (selected + 1)
-    | Page_up -> clamp (selected - 5)
-    | Page_down -> clamp (selected + 5)
-    | Quit | Refresh | Help | Select | Back | Noop -> selected
+    let next =
+      match cmd with
+      | Move_up -> selected - 1
+      | Move_down -> selected + 1
+      | Page_up -> selected - 5
+      | Page_down -> selected + 5
+      | Quit | Refresh | Help | Select | Back | Noop -> selected
+    in
+    clamp next
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
 let%test "ctrl-c maps to Quit" = equal_command (of_key (Ctrl 'c')) Quit

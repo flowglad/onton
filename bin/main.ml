@@ -26,6 +26,9 @@ let validate_config config =
         ( Float.compare config.poll_interval 0.0 <= 0,
           Printf.sprintf "--poll-interval must be > 0 (got %g)"
             config.poll_interval );
+        ( Base.String.is_empty
+            (Base.String.strip (Branch.to_string config.main_branch)),
+          "--main-branch must be non-empty" );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
@@ -184,7 +187,7 @@ exception Quit_tui
 (** TUI rendering fiber — redraws the terminal at ~10 fps.
 
     [selected] is a shared mutable ref updated by the input fiber. *)
-let tui_fiber ~runtime ~clock ~stdout ~selected =
+let tui_fiber ~runtime ~clock ~stdout =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let rec loop () =
     let orch, gp, log =
@@ -202,8 +205,6 @@ let tui_fiber ~runtime ~clock ~stdout ~selected =
       Tui.render_frame ~width ~activity ~project_name:gp.Gameplan.project_name
         views
     in
-    (* Highlight the selected patch row *)
-    let _ = !selected in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     Eio.Time.sleep clock 0.1;
     loop ()
@@ -214,7 +215,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected =
 let input_fiber ~runtime ~selected =
   let rec loop () =
     match Term.Key.read () with
-    | None -> ()
+    | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
     | Some key -> (
         let cmd = Tui_input.of_key key in
         match cmd with
@@ -503,7 +504,7 @@ let run config =
                   try
                     Eio.Fiber.all
                       [
-                        (fun () -> tui_fiber ~runtime ~clock ~stdout ~selected);
+                        (fun () -> tui_fiber ~runtime ~clock ~stdout);
                         (fun () -> input_fiber ~runtime ~selected);
                         (fun () ->
                           poller_fiber ~runtime ~clock ~net ~github ~config
