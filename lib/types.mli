@@ -35,6 +35,10 @@ module Operation_kind : sig
   [@@deriving show, eq, ord, sexp_of, compare, hash]
 end
 
+(** Wrapper for GitHub comment [databaseId]. Synthetic IDs are always negative;
+    real GitHub IDs are always positive. When restoring persisted comments, call
+    {!seed_synthetic_counter} before any call to {!next_synthetic} so newly
+    minted IDs stay below the existing minimum. *)
 module Comment_id : sig
   type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
 
