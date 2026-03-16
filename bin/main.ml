@@ -339,11 +339,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                         Worktree.worktree_dir ~repo_root ~patch_id
                       in
                       try
-                        let real_path = Worktree.normalize_path path in
-                        if not (Stdlib.Sys.is_directory real_path) then
+                        let raw_path = Worktree.normalize_path path in
+                        if not (Stdlib.Sys.is_directory raw_path) then
                           failwith
-                            ("Worktree path is not a directory: " ^ real_path);
-                        if not (String.equal real_path expected) then (
+                            ("Worktree path is not a directory: " ^ raw_path);
+                        let canonical_real = Unix.realpath raw_path in
+                        let canonical_expected =
+                          try Unix.realpath expected
+                          with Unix.Unix_error (Unix.ENOENT, _, _) -> expected
+                        in
+                        if not (String.equal canonical_real canonical_expected)
+                        then (
                           let parent = Stdlib.Filename.dirname expected in
                           (try Unix.mkdir parent 0o755 with
                           | Unix.Unix_error (Unix.ENOENT, _, _) ->
@@ -363,18 +369,19 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                               failwith
                                 (Printf.sprintf
                                    "Cannot overwrite non-symlink at %s" expected));
-                          Unix.symlink real_path expected);
+                          Unix.symlink canonical_real expected);
                         Runtime.update_orchestrator runtime (fun orch ->
                             Orchestrator.clear_needs_intervention orch patch_id);
-                        if String.equal real_path expected then
+                        if String.equal canonical_real canonical_expected then
                           log_event runtime ~patch_id
                             (Printf.sprintf
-                               "Worktree already at expected path %s" real_path)
+                               "Worktree already at expected path %s"
+                               canonical_real)
                         else
                           log_event runtime ~patch_id
                             (Printf.sprintf
                                "Worktree registered: symlinked %s → %s" expected
-                               real_path)
+                               canonical_real)
                       with exn ->
                         log_event runtime ~patch_id
                           (Printf.sprintf "Failed to add worktree: %s"
