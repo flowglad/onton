@@ -68,7 +68,8 @@ let startable_patches t ~branch_map =
         (not a.Patch_agent.has_pr) && (not a.Patch_agent.merged)
         && (not a.Patch_agent.removed)
         && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
-             ~has_pr:(has_pr t)
+             ~has_pr:(fun pid ->
+               has_pr t pid && not (agent t pid).Patch_agent.removed)
       then
         let branch_of pid = Map.find_exn branch_map pid in
         let base =

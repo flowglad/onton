@@ -353,6 +353,14 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                           failwith
                             ("Worktree path is not a directory: " ^ raw_path);
                         let canonical_real = Unix.realpath raw_path in
+                        let git_file = Stdlib.Filename.concat raw_path ".git" in
+                        if
+                          (not (Stdlib.Sys.file_exists git_file))
+                          || Stdlib.Sys.is_directory git_file
+                        then
+                          failwith
+                            ("Path is not a git worktree (no .git file): "
+                           ^ raw_path);
                         let canonical_expected =
                           try Unix.realpath expected
                           with Unix.Unix_error (Unix.ENOENT, _, _) -> expected
