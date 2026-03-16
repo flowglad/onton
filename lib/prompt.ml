@@ -44,11 +44,9 @@ let substitute_variables (template : string) (vars : (string * string) list) :
 
 let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
-  match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
-  | content -> Some content
-  | exception Stdlib.Sys_error msg ->
-      if String.is_substring msg ~substring:"No such file" then None
-      else raise (Stdlib.Sys_error msg)
+  if Stdlib.Sys.file_exists path then
+    Some (Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all)
+  else None
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
