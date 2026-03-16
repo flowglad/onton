@@ -959,13 +959,18 @@ let run_with_config (config : config) gameplan existing_snapshot =
               | Some agent when agent.Patch_agent.has_pr ->
                   Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
                   if merged then Orchestrator.mark_merged orch pid else orch
-              | Some _ ->
+              | Some agent when not agent.Patch_agent.busy ->
                   Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
                   let orch =
                     Orchestrator.fire orch (Orchestrator.Start (pid, base))
                   in
                   let orch = Orchestrator.set_pr_number orch pid pr in
                   let orch = Orchestrator.complete orch pid in
+                  if merged then Orchestrator.mark_merged orch pid else orch
+              | Some _ ->
+                  (* busy=true, has_pr=false: register PR, let reset_pending
+                     handle busy cleanup; next tick will fire Start fresh *)
+                  Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
                   if merged then Orchestrator.mark_merged orch pid else orch
               | None -> orch));
       Base.List.iter startup.reset_pending ~f:(fun patch_id ->
