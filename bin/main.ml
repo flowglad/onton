@@ -166,7 +166,7 @@ let mark_session_failed runtime patch_id =
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
-let extract_pr_number_from_text ~owner ~repo text =
+let extract_pr_number_from_text ~owner ~repo ?(offset = 0) text =
   let needle = Printf.sprintf "github.com/%s/%s/pull/" owner repo in
   let needle_len = String.length needle in
   let text_len = String.length text in
@@ -190,7 +190,7 @@ let extract_pr_number_from_text ~owner ~repo text =
       else scan (i + 1)
     else scan (i + 1)
   in
-  scan 0
+  scan offset
 
 (** Log a stream entry to the activity log. *)
 let log_stream_entry runtime ~patch_id kind =
@@ -208,14 +208,20 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
   let cwd = Eio.Path.(fs / worktree_path) in
   let text_buf = Buffer.create 4096 in
   let pr_found = ref false in
+  let needle_len =
+    String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
+  in
   let on_event (event : Types.Stream_event.t) =
     match event with
     | Types.Stream_event.Text_delta text -> (
+        let prev_len = Buffer.length text_buf in
         Buffer.add_string text_buf text;
-        (* Check for PR number in accumulated text *)
+        (* Only re-scan from where new text could begin a fresh match *)
         if not !pr_found then
+          let offset = max 0 (prev_len - needle_len) in
           match
-            extract_pr_number_from_text ~owner ~repo (Buffer.contents text_buf)
+            extract_pr_number_from_text ~owner ~repo ~offset
+              (Buffer.contents text_buf)
           with
           | Some pr_number ->
               pr_found := true;
@@ -726,9 +732,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Prompt.render_patch_prompt patch gameplan
                                   ~base_branch:(Branch.to_string base_branch)
                               in
-                              let stream_pr = ref None in
                               let on_pr_detected pr_number =
-                                stream_pr := Some pr_number;
                                 Pr_registry.register pr_registry ~patch_id
                                   ~pr_number;
                                 Runtime.update_orchestrator runtime (fun orch ->
