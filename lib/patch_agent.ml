@@ -65,7 +65,11 @@ let add_pending_comment t comment ~valid =
         (* Content-match fallback for migration only: a legacy comment loaded
            with a synthetic ID and re-polled with its real databaseId is caught
            here. Guard: pending must be synthetic AND incoming must be real, so
-           two synthetic human messages with the same body both queue. *)
+           two synthetic human messages with the same body both queue.
+           Assumption: the GraphQL query only fetches review-thread comments,
+           which always have path/line set. If PR-level comments (path=None,
+           line=None) are ever fetched, this could falsely match a human message
+           with the same body. *)
         || is_synthetic pc.comment.Comment.id
            && (not (is_synthetic comment.Comment.id))
            && String.equal pc.comment.Comment.body comment.Comment.body
