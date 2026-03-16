@@ -32,16 +32,25 @@ val derive_display_status :
   current_op:Operation_kind.t option ->
   display_status
 
+(** {2 View mode} *)
+
+type view_mode = List_view | Detail_view of Patch_id.t [@@deriving show, eq]
+
 (** {2 Patch view} *)
 
 type patch_view = {
   patch_id : Patch_id.t;
   title : string;
+  branch : Branch.t;
   status : display_status;
   queue_len : int;
   current_op : Operation_kind.t option;
   ci_failures : int;
   dep_count : int;
+  has_pr : bool;
+  has_conflict : bool;
+  needs_intervention : bool;
+  pending_comments : int;
 }
 
 (** {2 Frame rendering} *)
@@ -63,6 +72,9 @@ val views_of_orchestrator :
 
 val render_frame :
   width:int ->
+  height:int ->
+  selected:int ->
+  view_mode:view_mode ->
   activity:activity_entry list ->
   project_name:string ->
   patch_view list ->

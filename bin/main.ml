@@ -184,8 +184,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
 exception Quit_tui
 (** Raised by the input fiber to signal a clean exit. *)
 
-(** TUI rendering fiber — redraws the terminal at ~10 fps. *)
-let tui_fiber ~runtime ~clock ~stdout =
+(** TUI rendering fiber — redraws the terminal at ~10 fps.
+
+    [selected] and [view_mode] are shared mutable refs updated by the input
+    fiber. *)
+let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let rec loop () =
     let orch, gp, log =
@@ -195,13 +198,13 @@ let tui_fiber ~runtime ~clock ~stdout =
             snap.Runtime.activity_log ))
     in
     let views = Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp in
-    let width =
-      match Term.get_size () with Some size -> size.Term.cols | None -> 80
-    in
+    let size = Term.get_size () in
+    let width = match size with Some s -> s.Term.cols | None -> 80 in
+    let height = match size with Some s -> s.Term.rows | None -> 24 in
     let activity = activity_entries_of_log log in
     let frame =
-      Tui.render_frame ~width ~activity ~project_name:gp.Gameplan.project_name
-        views
+      Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
+        ~activity ~project_name:gp.Gameplan.project_name views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     Eio.Time.sleep clock 0.1;
@@ -210,7 +213,7 @@ let tui_fiber ~runtime ~clock ~stdout =
   loop ()
 
 (** Input fiber — reads keypresses and dispatches TUI commands. *)
-let input_fiber ~runtime ~selected =
+let input_fiber ~runtime ~selected ~view_mode =
   let rec loop () =
     match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
@@ -218,16 +221,34 @@ let input_fiber ~runtime ~selected =
         let cmd = Tui_input.of_key key in
         match cmd with
         | Tui_input.Quit -> raise Quit_tui
-        | Tui_input.Refresh | Tui_input.Help | Tui_input.Select | Tui_input.Back
-        | Tui_input.Noop | Tui_input.Move_up | Tui_input.Move_down
-        | Tui_input.Page_up | Tui_input.Page_down ->
+        | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
+        | Tui_input.Page_down ->
             let count =
               Runtime.read runtime (fun snap ->
                   Base.List.length
                     (Orchestrator.all_agents snap.Runtime.orchestrator))
             in
             selected := Tui_input.apply_move ~count ~selected:!selected cmd;
-            loop ())
+            loop ()
+        | Tui_input.Select -> (
+            match !view_mode with
+            | Tui.List_view ->
+                let agents =
+                  Runtime.read runtime (fun snap ->
+                      Orchestrator.all_agents snap.Runtime.orchestrator)
+                in
+                (if !selected < Base.List.length agents then
+                   let agent = Base.List.nth_exn agents !selected in
+                   view_mode := Tui.Detail_view agent.Patch_agent.patch_id);
+                loop ()
+            | Tui.Detail_view _ -> loop ())
+        | Tui_input.Back -> (
+            match !view_mode with
+            | Tui.Detail_view _ ->
+                view_mode := Tui.List_view;
+                loop ()
+            | Tui.List_view -> loop ())
+        | Tui_input.Refresh | Tui_input.Help | Tui_input.Noop -> loop ())
   in
   loop ()
 
@@ -492,6 +513,7 @@ let run config =
           let net = Eio.Stdenv.net env in
           let stdout = Eio.Stdenv.stdout env in
           let selected = ref 0 in
+          let view_mode = ref Tui.List_view in
           Term.Raw.with_raw (fun () ->
               Fun.protect
                 ~finally:(fun () ->
@@ -500,8 +522,9 @@ let run config =
                   try
                     Eio.Fiber.all
                       [
-                        (fun () -> tui_fiber ~runtime ~clock ~stdout);
-                        (fun () -> input_fiber ~runtime ~selected);
+                        (fun () ->
+                          tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode);
+                        (fun () -> input_fiber ~runtime ~selected ~view_mode);
                         (fun () ->
                           poller_fiber ~runtime ~clock ~net ~github ~config
                             ~pr_registry ~branch_of);
