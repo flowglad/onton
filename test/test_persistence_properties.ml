@@ -118,12 +118,14 @@ let () =
   let snapshot_json_structure =
     QCheck2.Test.make ~name:"snapshot JSON has version field" ~count:100
       gen_snapshot (fun snap ->
-        let json = Onton.Persistence.snapshot_to_yojson snap in
-        match json with
-        | `Assoc fields ->
-            List.exists fields ~f:(fun (k, v) ->
-                String.equal k "version" && Yojson.Safe.equal v (`Int 1))
-        | _ -> false)
+        try
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          match json with
+          | `Assoc fields ->
+              List.exists fields ~f:(fun (k, v) ->
+                  String.equal k "version" && Yojson.Safe.equal v (`Int 1))
+          | _ -> false
+        with _ -> false)
   in
   let file_roundtrip =
     QCheck2.Test.make ~name:"snapshot file I/O round-trip" ~count:50
