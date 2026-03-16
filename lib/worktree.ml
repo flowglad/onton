@@ -29,8 +29,8 @@ let remove ~process_mgr ~repo_root t =
 
 let add_existing ~patch_id ~branch ~path =
   let path = normalize_path path in
-  if not (Stdlib.Sys.file_exists path) then
-    failwith ("Worktree path does not exist: " ^ path);
+  if not (Stdlib.Sys.is_directory path) then
+    failwith ("Worktree path is not a directory: " ^ path);
   { patch_id; branch; path }
 
 let detect_branch ~process_mgr ~path =
@@ -39,7 +39,10 @@ let detect_branch ~process_mgr ~path =
   Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
     [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ];
   let raw = Buffer.contents buf in
-  Types.Branch.of_string (String.strip raw)
+  let branch_str = String.strip raw in
+  if String.equal branch_str "HEAD" then
+    failwith ("Worktree at " ^ path ^ " has detached HEAD; cannot detect branch");
+  Types.Branch.of_string branch_str
 
 let list_with_branches ~process_mgr ~repo_root =
   let buf = Buffer.create 512 in
