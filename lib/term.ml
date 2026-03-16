@@ -238,7 +238,9 @@ module Raw = struct
         try
           let n = Unix.single_write_substring Unix.stdout s off (len - off) in
           go (off + n)
-        with Unix.Unix_error (Unix.EINTR, _, _) -> go off
+        with
+        | Unix.Unix_error (Unix.EINTR, _, _) -> go off
+        | Unix.Unix_error (_, _, _) -> ()
     in
     go 0
 
