@@ -22,8 +22,9 @@ let substitute_variables (template : string) (vars : (string * string) list) :
     then (
       match String.substr_index template ~pos:(i + 2) ~pattern:"}}" with
       | None ->
-          Buffer.add_char buf (String.get template i);
-          scan (i + 1)
+          Buffer.add_char buf '{';
+          Buffer.add_char buf '{';
+          scan (i + 2)
       | Some close_pos ->
           let key = String.sub template ~pos:(i + 2) ~len:(close_pos - i - 2) in
           (match Map.find var_map key with
@@ -55,12 +56,16 @@ let load_override ~(project_name : string) (name : string) : string option =
   match Unix.openfile path [ Unix.O_RDONLY ] 0 with
   | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
   | fd ->
-      let ic = Unix.in_channel_of_descr fd in
+      let ic =
+        match Unix.in_channel_of_descr fd with
+        | exception exn ->
+            Unix.close fd;
+            raise exn
+        | ic -> ic
+      in
       Exn.protect
         ~finally:(fun () -> Stdlib.In_channel.close ic)
-        ~f:(fun () ->
-          let content = Stdlib.In_channel.input_all ic in
-          Some content)
+        ~f:(fun () -> Some (Stdlib.In_channel.input_all ic))
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
