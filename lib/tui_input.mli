@@ -17,6 +17,8 @@ type command =
   | Timeline
   | Send_message of Types.Patch_id.t * string
   | Add_pr of Types.Pr_number.t
+  | Add_worktree of string
+  | Remove_patch
 [@@deriving show, eq]
 
 val of_key : Term.Key.t -> command
@@ -34,7 +36,9 @@ val parse_line : string -> command option
 
     Supported formats:
     - ["N> message"] — send a human message to patch N
-    - ["+123"] — register ad-hoc PR for the currently selected patch *)
+    - ["+123"] — register ad-hoc PR for the currently selected patch
+    - ["w /path"] — register existing worktree directory for the selected patch
+    - ["-"] — remove the selected patch from orchestration *)
 
 (** Bounded input history with up/down browsing.
 

@@ -239,8 +239,10 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
 
     Text-mode commands (parsed by {!Tui_input.parse_line}):
     - ["N> message"] — send human message to patch N
-    - ["+123"] — register ad-hoc PR #123 for the selected patch *)
-let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
+    - ["+123"] — register ad-hoc PR #123 for the selected patch
+    - ["w /path"] — register existing worktree directory for the selected patch
+    - ["-"] — remove the selected patch from orchestration *)
+let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let saved_list_selected = ref 0 in
@@ -313,6 +315,131 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                       log_event runtime ~patch_id
                         (Printf.sprintf "Ad-hoc PR #%d registered"
                            (Pr_number.to_int pr_number)))
+              | Some (Tui_input.Add_worktree path) -> (
+                  let info_opt =
+                    Runtime.read runtime (fun snap ->
+                        let agents =
+                          Orchestrator.all_agents snap.Runtime.orchestrator
+                        in
+                        let count = Base.List.length agents in
+                        if count = 0 then None
+                        else
+                          let idx =
+                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                          in
+                          let agent = Base.List.nth_exn agents idx in
+                          Some
+                            (agent.Patch_agent.patch_id, agent.Patch_agent.busy))
+                  in
+                  match info_opt with
+                  | None ->
+                      log_event runtime
+                        "Cannot add worktree: no selectable patch"
+                  | Some (patch_id, busy) -> (
+                      if busy then
+                        log_event runtime ~patch_id
+                          "Warning: patch is currently running — changing \
+                           worktree may affect the live session";
+                      let expected =
+                        Worktree.worktree_dir ~repo_root ~patch_id
+                      in
+                      try
+                        let raw_path = Worktree.normalize_path path in
+                        if not (Stdlib.Sys.file_exists raw_path) then
+                          failwith ("Worktree path does not exist: " ^ raw_path);
+                        if not (Stdlib.Sys.is_directory raw_path) then
+                          failwith
+                            ("Worktree path is not a directory: " ^ raw_path);
+                        let canonical_real = Unix.realpath raw_path in
+                        let git_file = Stdlib.Filename.concat raw_path ".git" in
+                        if
+                          (not (Stdlib.Sys.file_exists git_file))
+                          || Stdlib.Sys.is_directory git_file
+                        then
+                          failwith
+                            ("Path is not a git worktree (no .git file): "
+                           ^ raw_path);
+                        let canonical_expected =
+                          try Unix.realpath expected
+                          with Unix.Unix_error (Unix.ENOENT, _, _) -> expected
+                        in
+                        if not (String.equal canonical_real canonical_expected)
+                        then (
+                          let parent = Stdlib.Filename.dirname expected in
+                          (try Unix.mkdir parent 0o755 with
+                          | Unix.Unix_error (Unix.ENOENT, _, _) ->
+                              failwith
+                                ("Cannot create parent directory: " ^ parent)
+                          | Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+                          (match Unix.lstat expected with
+                          | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+                          | { Unix.st_kind = Unix.S_LNK; _ } ->
+                              Unix.unlink expected
+                          | {
+                           Unix.st_kind =
+                             ( Unix.S_REG | Unix.S_DIR | Unix.S_CHR | Unix.S_BLK
+                             | Unix.S_FIFO | Unix.S_SOCK );
+                           _;
+                          } ->
+                              failwith
+                                (Printf.sprintf
+                                   "Cannot overwrite non-symlink at %s" expected));
+                          Unix.symlink canonical_real expected);
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.clear_needs_intervention orch patch_id);
+                        if String.equal canonical_real canonical_expected then
+                          log_event runtime ~patch_id
+                            (Printf.sprintf
+                               "Worktree already at expected path %s"
+                               canonical_real)
+                        else
+                          log_event runtime ~patch_id
+                            (Printf.sprintf
+                               "Worktree registered: symlinked %s → %s" expected
+                               canonical_real)
+                      with exn ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "Failed to add worktree: %s"
+                             (Printexc.to_string exn))))
+              | Some Tui_input.Remove_patch -> (
+                  let info_opt =
+                    Runtime.read runtime (fun snap ->
+                        let agents =
+                          Orchestrator.all_agents snap.Runtime.orchestrator
+                        in
+                        let count = Base.List.length agents in
+                        if count = 0 then None
+                        else
+                          let idx =
+                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                          in
+                          let agent = Base.List.nth_exn agents idx in
+                          Some
+                            ( agent.Patch_agent.patch_id,
+                              agent.Patch_agent.busy,
+                              agent.Patch_agent.merged,
+                              agent.Patch_agent.removed ))
+                  in
+                  match info_opt with
+                  | None ->
+                      log_event runtime
+                        "Cannot remove patch: no selectable patch"
+                  | Some (patch_id, _busy, true, _) ->
+                      log_event runtime ~patch_id
+                        "Patch is already merged — nothing to do"
+                  | Some (patch_id, _busy, _, true) ->
+                      log_event runtime ~patch_id
+                        "Patch is already removed — nothing to do"
+                  | Some (patch_id, busy, false, false) ->
+                      if busy then
+                        log_event runtime ~patch_id
+                          "Warning: patch is currently running — it may create \
+                           a GitHub PR before stopping";
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_removed orch patch_id);
+                      log_event runtime ~patch_id
+                        "Patch removed from orchestration (dependents remain \
+                         blocked)")
               | Some
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
@@ -436,7 +563,8 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   selected := 0;
                   loop ())
           | Tui_input.Refresh | Tui_input.Help | Tui_input.Noop
-          | Tui_input.Send_message _ | Tui_input.Add_pr _ ->
+          | Tui_input.Send_message _ | Tui_input.Add_pr _
+          | Tui_input.Add_worktree _ | Tui_input.Remove_patch ->
               loop ())
   in
   loop ()
@@ -1035,7 +1163,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
                 :: (fun () ->
-                  input_fiber ~runtime ~selected ~view_mode ~pr_registry)
+                  input_fiber ~runtime ~selected ~view_mode ~pr_registry
+                    ~repo_root:config.repo_root)
                 :: common_fibers)
             with Quit_tui -> ())
 

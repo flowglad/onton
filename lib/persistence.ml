@@ -157,6 +157,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | None -> `Null
         | Some id -> `String (Session_id.to_string id) );
       ("tried_fresh", `Bool a.tried_fresh);
+      ("removed", `Bool a.removed);
     ]
 
 let patch_agent_of_yojson json =
@@ -193,7 +194,9 @@ let patch_agent_of_yojson json =
               (string_member_opt "last_session_id" json
               |> Option.map ~f:Session_id.of_string)
             ~tried_fresh:
-              (bool_member_opt "tried_fresh" json |> Option.value ~default:false)))
+              (bool_member_opt "tried_fresh" json |> Option.value ~default:false)
+            ~removed:
+              (bool_member_opt "removed" json |> Option.value ~default:false)))
 
 (* ---------- Transition_entry ---------- *)
 

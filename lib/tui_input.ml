@@ -19,6 +19,8 @@ type command =
   | Timeline
   | Send_message of Types.Patch_id.t * string
   | Add_pr of Types.Pr_number.t
+  | Add_worktree of string
+  | Remove_patch
 [@@deriving show, eq]
 
 let of_key (key : Term.Key.t) : command =
@@ -49,7 +51,7 @@ let apply_move ~count ~selected (cmd : command) =
       | Page_up -> selected - 5
       | Page_down -> selected + 5
       | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
-      | Add_pr _ ->
+      | Add_pr _ | Add_worktree _ | Remove_patch ->
           selected
     in
     clamp next
@@ -66,6 +68,10 @@ let equal_command_option = Option.equal equal_command
 let parse_line (line : string) : command option =
   let line = String.strip line in
   if String.is_empty line then None
+  else if String.equal line "-" then Some Remove_patch
+  else if String.is_prefix line ~prefix:"w " then
+    let path = String.strip (String.drop_prefix line 2) in
+    if String.is_empty path then None else Some (Add_worktree path)
   else if String.is_prefix line ~prefix:"+" then
     let rest = String.drop_prefix line 1 in
     match Int.of_string_opt rest with
@@ -100,6 +106,25 @@ let%test "parse_line: message with spaces in number" =
   equal_command_option
     (parse_line " 5 > rewrite module")
     (Some (Send_message (Types.Patch_id.of_string "5", "rewrite module")))
+
+let%test "parse_line: add worktree" =
+  equal_command_option
+    (parse_line "w /tmp/my-worktree")
+    (Some (Add_worktree "/tmp/my-worktree"))
+
+let%test "parse_line: add worktree strips whitespace" =
+  equal_command_option
+    (parse_line "w   /tmp/wt  ")
+    (Some (Add_worktree "/tmp/wt"))
+
+let%test "parse_line: w with no path rejected" =
+  Option.is_none (parse_line "w ")
+
+let%test "parse_line: remove patch" =
+  equal_command_option (parse_line "-") (Some Remove_patch)
+
+let%test "parse_line: remove patch with surrounding whitespace" =
+  equal_command_option (parse_line "  -  ") (Some Remove_patch)
 
 let%test "parse_line: zero PR rejected" = Option.is_none (parse_line "+0")
 let%test "parse_line: negative PR rejected" = Option.is_none (parse_line "+-1")

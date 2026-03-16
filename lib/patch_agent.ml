@@ -23,6 +23,7 @@ type t = {
   pending_comments : pending_comment list;
   last_session_id : Session_id.t option;
   tried_fresh : bool;
+  removed : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -45,6 +46,7 @@ let create patch_id =
     pending_comments = [];
     last_session_id = None;
     tried_fresh = false;
+    removed = false;
   }
 
 let highest_priority t =
@@ -56,6 +58,7 @@ let enqueue t k =
   else { t with queue = k :: t.queue }
 
 let mark_merged t = { t with merged = true }
+let mark_removed t = { t with removed = true }
 
 let add_pending_comment t comment ~valid =
   let already_present =
@@ -98,7 +101,7 @@ let reset_busy t =
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_failed ~pending_comments ~last_session_id
-    ~tried_fresh =
+    ~tried_fresh ~removed =
   {
     patch_id;
     has_pr;
@@ -117,6 +120,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     pending_comments;
     last_session_id;
     tried_fresh;
+    removed;
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }
@@ -137,6 +141,7 @@ let start t ~base_branch =
 let respond t k =
   if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
+  if t.removed then invalid_arg "Patch_agent.respond: patch is removed";
   if t.busy then invalid_arg "Patch_agent.respond: patch is busy";
   if t.needs_intervention then
     invalid_arg "Patch_agent.respond: patch needs intervention";

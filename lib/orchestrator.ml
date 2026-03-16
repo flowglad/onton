@@ -66,13 +66,21 @@ let startable_patches t ~branch_map =
   |> List.filter_map ~f:(fun pid ->
       let a = agent t pid in
       if
-        (not a.Patch_agent.has_pr)
-        && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
-             ~has_pr:(has_pr t)
+        (not a.Patch_agent.has_pr) && (not a.Patch_agent.merged)
+        && (not a.Patch_agent.removed)
+        && Graph.deps_satisfied t.graph pid
+             ~has_merged:(fun pid ->
+               has_merged t pid && not (agent t pid).Patch_agent.removed)
+             ~has_pr:(fun pid ->
+               has_pr t pid && not (agent t pid).Patch_agent.removed)
       then
+        let has_merged_excluding_removed pid =
+          has_merged t pid && not (agent t pid).Patch_agent.removed
+        in
         let branch_of pid = Map.find_exn branch_map pid in
         let base =
-          Graph.initial_base t.graph pid ~has_merged:(has_merged t) ~branch_of
+          Graph.initial_base t.graph pid
+            ~has_merged:has_merged_excluding_removed ~branch_of
             ~main:t.main_branch
         in
         Some (Start (pid, base))
@@ -84,6 +92,7 @@ let respondable_patches t =
       let (a : Patch_agent.t) = agent t pid in
       if
         a.Patch_agent.has_pr && (not a.Patch_agent.merged)
+        && (not a.Patch_agent.removed)
         && (not a.Patch_agent.busy)
         && not a.Patch_agent.needs_intervention
       then
@@ -124,6 +133,9 @@ let enqueue t patch_id kind =
   update_agent t patch_id ~f:(fun a -> Patch_agent.enqueue a kind)
 
 let mark_merged t patch_id = update_agent t patch_id ~f:Patch_agent.mark_merged
+
+let mark_removed t patch_id =
+  update_agent t patch_id ~f:Patch_agent.mark_removed
 
 let add_pending_comment t patch_id comment ~valid =
   update_agent t patch_id ~f:(fun a ->

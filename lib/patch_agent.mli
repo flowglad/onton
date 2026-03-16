@@ -27,6 +27,7 @@ type t = private {
   pending_comments : pending_comment list;
   last_session_id : Types.Session_id.t option;
   tried_fresh : bool;
+  removed : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -60,6 +61,11 @@ val enqueue : t -> Types.Operation_kind.t -> t
 
 val mark_merged : t -> t
 (** Mark the patch as merged. *)
+
+val mark_removed : t -> t
+(** Mark the patch as removed from orchestration. Unlike [mark_merged], removed
+    patches are not treated as satisfied dependencies — dependents remain
+    blocked. *)
 
 val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
 (** Add a pending review comment. *)
@@ -120,6 +126,7 @@ val restore :
   pending_comments:pending_comment list ->
   last_session_id:Types.Session_id.t option ->
   tried_fresh:bool ->
+  removed:bool ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)
