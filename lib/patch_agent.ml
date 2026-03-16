@@ -70,7 +70,13 @@ let set_has_conflict t = { t with has_conflict = true }
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
-let clear_needs_intervention t = { t with needs_intervention = false }
+let clear_needs_intervention t =
+  {
+    t with
+    needs_intervention = false;
+    tried_fresh = false;
+    session_failed = false;
+  }
 
 let restore ~patch_id ~has_pr ~has_session ~busy ~merged ~needs_intervention
     ~queue ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
