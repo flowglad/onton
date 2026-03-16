@@ -167,6 +167,7 @@ module History = struct
   }
 
   let create ?(capacity = 100) () =
+    if capacity < 1 then invalid_arg "History.create: capacity must be >= 1";
     {
       entries = Array.create ~len:capacity "";
       capacity;
