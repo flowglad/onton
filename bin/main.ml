@@ -159,29 +159,79 @@ let log_event runtime ?patch_id msg =
         (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
            msg))
 
+(** Extract a PR number from Claude's stdout by matching GitHub PR URLs.
+
+    Scans for [/pull/N] patterns in the output. Returns the first match found,
+    or [None]. *)
+let extract_pr_number_from_output output =
+  let needle = "/pull/" in
+  let needle_len = String.length needle in
+  let output_len = String.length output in
+  let rec scan i =
+    if i > output_len - needle_len then None
+    else if Base.String.is_substring_at output ~pos:i ~substring:needle then
+      let start = i + needle_len in
+      let rec digits j =
+        if
+          j < output_len
+          && Char.code output.[j] >= Char.code '0'
+          && Char.code output.[j] <= Char.code '9'
+        then digits (j + 1)
+        else j
+      in
+      let stop = digits start in
+      if stop > start then
+        let n = Base.Int.of_string (String.sub output start (stop - start)) in
+        Some (Pr_number.of_int n)
+      else scan (i + 1)
+    else scan (i + 1)
+  in
+  scan 0
+
+(** Log stream events extracted from Claude process output. Posts a
+    [Process_start] before the run, and [Process_end] plus optional
+    [Pr_detected] afterward. *)
+let log_stream_event runtime ~patch_id ~kind content =
+  Runtime.update_activity_log runtime (fun log ->
+      Activity_log.add_stream_event log
+        (Activity_log.Stream_event.create ~timestamp:(Unix.gettimeofday ())
+           ~patch_id ~kind content))
+
 let mark_session_failed runtime patch_id =
   Runtime.update_orchestrator runtime (fun orch ->
       let orch = Orchestrator.set_session_failed orch patch_id in
       Orchestrator.complete orch patch_id)
 
-(** Run a Claude process and handle the result. Returns [`Ok] on successful
-    Claude exit (code 0), otherwise [`Failed]. *)
+(** Run a Claude process and handle the result. Returns [`Ok result] on
+    successful Claude exit (code 0), otherwise [`Failed]. Stream events are
+    logged to the activity log for the patch. *)
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
     ~session_id =
   let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
   let cwd = Eio.Path.(fs / worktree_path) in
+  log_stream_event runtime ~patch_id
+    ~kind:Activity_log.Stream_event.Process_start "Claude process starting";
   let result =
     try Ok (Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt ~session_id)
     with exn -> Error (Printexc.to_string exn)
   in
   match result with
   | Error msg ->
+      log_stream_event runtime ~patch_id
+        ~kind:(Activity_log.Stream_event.Process_end 1) msg;
       log_event runtime ~patch_id
         (Printf.sprintf "Claude process error: %s" msg);
       mark_session_failed runtime patch_id;
       `Failed
-  | Ok r when r.Claude_runner.exit_code = 0 -> `Ok
+  | Ok r when r.Claude_runner.exit_code = 0 ->
+      log_stream_event runtime ~patch_id
+        ~kind:(Activity_log.Stream_event.Process_end 0)
+        "Claude process completed";
+      `Ok r
   | Ok r ->
+      log_stream_event runtime ~patch_id
+        ~kind:(Activity_log.Stream_event.Process_end r.Claude_runner.exit_code)
+        (Printf.sprintf "Claude exited with code %d" r.Claude_runner.exit_code);
       log_event runtime ~patch_id
         (Printf.sprintf "Claude exited with code %d, marking session failed"
            r.Claude_runner.exit_code);
@@ -596,29 +646,53 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                       in
                       match result with
                       | `Stale | `Failed -> ()
-                      | `Ok ->
-                          let rec discover remaining =
-                            match
-                              discover_pr_number ~process_mgr
-                                ~token:config.github_token
-                                ~owner:config.github_owner
-                                ~repo:config.github_repo
-                                ~branch:patch.Patch.branch ~base_branch
-                            with
-                            | Ok pr_number ->
-                                Pr_registry.register pr_registry ~patch_id
-                                  ~pr_number;
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.complete orch patch_id)
-                            | Error _ when remaining > 0 ->
-                                Eio.Time.sleep clock 2.0;
-                                discover (remaining - 1)
-                            | Error msg ->
-                                log_event runtime ~patch_id
-                                  (Printf.sprintf "PR discovery failed: %s" msg);
-                                mark_session_failed runtime patch_id
+                      | `Ok r -> (
+                          (* Try auto-detecting PR number from Claude output *)
+                          let auto_pr =
+                            extract_pr_number_from_output r.Claude_runner.stdout
                           in
-                          discover 2))
+                          match auto_pr with
+                          | Some pr_number ->
+                              log_stream_event runtime ~patch_id
+                                ~kind:
+                                  (Activity_log.Stream_event.Pr_detected
+                                     (Pr_number.to_int pr_number))
+                                (Printf.sprintf
+                                   "Auto-detected PR #%d from output"
+                                   (Pr_number.to_int pr_number));
+                              log_event runtime ~patch_id
+                                (Printf.sprintf "Auto-detected PR #%d"
+                                   (Pr_number.to_int pr_number));
+                              Pr_registry.register pr_registry ~patch_id
+                                ~pr_number;
+                              Runtime.update_orchestrator runtime (fun orch ->
+                                  Orchestrator.complete orch patch_id)
+                          | None ->
+                              (* Fall back to gh pr list discovery *)
+                              let rec discover remaining =
+                                match
+                                  discover_pr_number ~process_mgr
+                                    ~token:config.github_token
+                                    ~owner:config.github_owner
+                                    ~repo:config.github_repo
+                                    ~branch:patch.Patch.branch ~base_branch
+                                with
+                                | Ok pr_number ->
+                                    Pr_registry.register pr_registry ~patch_id
+                                      ~pr_number;
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.complete orch patch_id)
+                                | Error _ when remaining > 0 ->
+                                    Eio.Time.sleep clock 2.0;
+                                    discover (remaining - 1)
+                                | Error msg ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "PR discovery failed: %s"
+                                         msg);
+                                    mark_session_failed runtime patch_id
+                              in
+                              discover 2)))
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
@@ -676,7 +750,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                   in
                   match result with
                   | `Stale | `Failed -> ()
-                  | `Ok ->
+                  | `Ok _r ->
                       Runtime.update_orchestrator runtime (fun orch ->
                           Orchestrator.complete orch patch_id)))
     in
