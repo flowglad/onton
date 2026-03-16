@@ -47,8 +47,8 @@ module History : sig
   (** Create a history buffer. Default capacity is 100. *)
 
   val push : t -> string -> unit
-  (** Record a line. Resets browse position to the bottom. Empty lines and
-      consecutive duplicates are ignored. *)
+  (** Record a line. Empty lines are ignored (browse position unchanged);
+      consecutive duplicates reset the browse position but are not stored. *)
 
   val older : t -> string option
   (** Move toward older entries. Returns [None] at the oldest. *)

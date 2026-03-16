@@ -186,9 +186,9 @@ module History = struct
         t.entries.(t.cursor) <- line;
         t.cursor <- (t.cursor + 1) % t.capacity;
         t.size <- Int.min (t.size + 1) t.capacity
-      end
-    end;
-    t.browse_depth <- 0
+      end;
+      t.browse_depth <- 0
+    end
 
   let older t =
     if t.browse_depth >= t.size then None
