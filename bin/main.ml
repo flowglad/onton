@@ -327,10 +327,10 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
               Buffer.add_char buf c;
               loop ()
           | Term.Key.Up ->
-              if not (Tui_input.History.is_browsing history) then
-                saved_draft := Buffer.contents buf;
+              let was_browsing = Tui_input.History.is_browsing history in
               (match Tui_input.History.older history with
               | Some s ->
+                  if not was_browsing then saved_draft := Buffer.contents buf;
                   Buffer.clear buf;
                   Buffer.add_string buf s
               | None -> ());
