@@ -35,6 +35,7 @@ type command =
 [@@deriving show]
 
 let gen_command ~n =
+  if n <= 0 then invalid_arg "gen_command: n must be positive";
   QCheck2.Gen.(
     let gen_idx = int_range 0 (n - 1) in
     oneof
