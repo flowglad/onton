@@ -231,7 +231,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     Text-mode commands (parsed by {!Tui_input.parse_line}):
     - ["N> message"] — send human message to patch N
     - ["+123"] — register ad-hoc PR #123 for the selected patch *)
-let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
+let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~stdout ~raw_state =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let rec loop () =
@@ -316,6 +316,12 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           | Term.Key.Tab | Term.Key.F _ | Term.Key.Ctrl _ | Term.Key.Unknown _
             ->
               loop ()
+        else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
+          Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
+          Term.Raw.suspend !raw_state;
+          raw_state := Term.Raw.resume ();
+          Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
+          loop ())
         else
           let cmd = Tui_input.of_key key in
           match cmd with
@@ -892,24 +898,26 @@ let run_with_config (config : config) gameplan existing_snapshot =
       else
         let selected = ref 0 in
         let view_mode = ref Tui.List_view in
-        Term.Raw.with_raw (fun () ->
-            Fun.protect
-              ~finally:(fun () ->
-                Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
-                let snap = Runtime.read runtime (fun s -> s) in
-                ignore
-                  (Persistence.save
-                     ~path:(Project_store.snapshot_path project_name)
-                     snap))
-              (fun () ->
-                try
-                  Eio.Fiber.all
-                    ((fun () ->
-                       tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
-                    :: (fun () ->
-                      input_fiber ~runtime ~selected ~view_mode ~pr_registry)
-                    :: common_fibers)
-                with Quit_tui -> ()))
+        let raw_state = ref (Term.Raw.enter ()) in
+        Fun.protect
+          ~finally:(fun () ->
+            Term.Raw.leave !raw_state;
+            Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
+            let snap = Runtime.read runtime (fun s -> s) in
+            ignore
+              (Persistence.save
+                 ~path:(Project_store.snapshot_path project_name)
+                 snap))
+          (fun () ->
+            try
+              Eio.Fiber.all
+                ((fun () ->
+                   tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
+                :: (fun () ->
+                  input_fiber ~runtime ~selected ~view_mode ~pr_registry ~stdout
+                    ~raw_state)
+                :: common_fibers)
+            with Quit_tui -> ())
 
 let run ~project ~gameplan_path ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless =

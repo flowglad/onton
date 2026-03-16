@@ -217,6 +217,17 @@ module Raw = struct
   let with_raw f =
     let state = enter () in
     Exn.protect ~f ~finally:(fun () -> leave state)
+
+  (** Suspend the terminal for SIGTSTP: restore original settings, show cursor,
+      then send SIGTSTP to self. When the process resumes (SIGCONT), re-enter
+      raw mode. Returns the new raw state. *)
+  let suspend state =
+    leave state;
+    Unix.kill (Unix.getpid ()) Stdlib.Sys.sigtstp
+
+  let resume () =
+    let new_state = enter () in
+    new_state
 end
 
 (** Keyboard input types and parsing. *)
