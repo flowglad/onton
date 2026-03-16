@@ -326,8 +326,12 @@ let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
           in
           (actions, snap.Runtime.gameplan))
     in
-    (* Fire all actions in the orchestrator to mark agents busy, preventing
-       re-dispatch on the next loop iteration. *)
+    (* Fire all actions to mark agents busy, preventing re-dispatch on the next
+       loop iteration. Note: there is a benign TOCTOU gap between reading
+       pending_actions and firing — if another fiber modifies state between
+       these calls, fire may encounter already-started patches (Start is a
+       no-op on has_pr=true agents) or stale Respond targets (the agent
+       preconditions are re-checked by Patch_agent.respond). *)
     if not (Base.List.is_empty actions) then
       Runtime.update_orchestrator runtime (fun orch ->
           Base.List.fold actions ~init:orch ~f:(fun orch action ->
@@ -378,9 +382,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
                             | Error msg ->
                                 log_event runtime ~patch_id
                                   (Printf.sprintf "PR discovery failed: %s" msg);
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.set_session_failed orch
-                                      patch_id)
+                                mark_session_failed runtime patch_id
                           in
                           discover 2
                       | `Failed -> ()))
