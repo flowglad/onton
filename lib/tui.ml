@@ -651,8 +651,9 @@ let render_frame ~width ~height ~selected ~view_mode
       { lines; width }
   | Timeline_view ->
       (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
-         + scroll indicators(2) + blank before footer + footer(2) = 10 *)
+         + scroll indicators(2) + blank before footer + footer(2) = 11 *)
       let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 in
+      (* = 11 *)
       let max_rows = Int.max 0 (height - reserved) in
       let timeline =
         render_timeline ~width ~selected ~max_visible:max_rows activity

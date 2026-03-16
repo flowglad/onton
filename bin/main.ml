@@ -239,6 +239,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
 let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
+  let saved_list_selected = ref 0 in
   let rec loop () =
     match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
@@ -381,16 +382,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   loop ()
               | Tui.Timeline_view ->
                   view_mode := Tui.List_view;
-                  selected := 0;
+                  selected := !saved_list_selected;
                   loop ()
               | Tui.List_view -> loop ())
           | Tui_input.Timeline -> (
               match !view_mode with
               | Tui.Timeline_view ->
                   view_mode := Tui.List_view;
-                  selected := 0;
+                  selected := !saved_list_selected;
                   loop ()
               | Tui.List_view | Tui.Detail_view _ ->
+                  saved_list_selected := !selected;
                   view_mode := Tui.Timeline_view;
                   selected := 0;
                   loop ())
