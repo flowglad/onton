@@ -148,3 +148,161 @@ let%test "apply_move noop preserves" = apply_move ~count:5 ~selected:3 Noop = 3
 
 let%test "apply_move noop clamps stale selection" =
   apply_move ~count:3 ~selected:9 Noop = 2
+
+(** Input history for the text-mode prompt.
+
+    Stores previously entered lines and supports up/down navigation. The history
+    is bounded; oldest entries are dropped when the capacity is exceeded. *)
+module History = struct
+  type t = {
+    entries : string array;
+    capacity : int;
+    mutable size : int;
+    mutable cursor : int;
+        (** Points one past the newest entry (the slot where the next entry will
+            be written). *)
+    mutable browse_depth : int;
+        (** How many steps back from [cursor] the user has browsed. 0 means at
+            the fresh-input position (not browsing). *)
+  }
+
+  type newer_result = At_fresh | Entry of string
+
+  let create ?(capacity = 50) () =
+    if capacity < 1 then invalid_arg "History.create: capacity must be >= 1";
+    {
+      entries = Array.create ~len:capacity "";
+      capacity;
+      size = 0;
+      cursor = 0;
+      browse_depth = 0;
+    }
+
+  let push t line =
+    let line = String.strip line in
+    if String.is_empty line then ()
+    else begin
+      (* Don't push duplicates of the most recent entry *)
+      let last_idx = (t.cursor - 1 + t.capacity) % t.capacity in
+      if t.size > 0 && String.equal t.entries.(last_idx) line then ()
+      else begin
+        t.entries.(t.cursor) <- line;
+        t.cursor <- (t.cursor + 1) % t.capacity;
+        t.size <- Int.min (t.size + 1) t.capacity
+      end;
+      t.browse_depth <- 0
+    end
+
+  let older t =
+    if t.browse_depth >= t.size then None
+    else begin
+      t.browse_depth <- t.browse_depth + 1;
+      let idx = (t.cursor - t.browse_depth + t.capacity) % t.capacity in
+      Some t.entries.(idx)
+    end
+
+  let newer t =
+    if t.browse_depth <= 0 then At_fresh
+    else begin
+      t.browse_depth <- t.browse_depth - 1;
+      if t.browse_depth = 0 then At_fresh
+      else
+        let idx = (t.cursor - t.browse_depth + t.capacity) % t.capacity in
+        Entry t.entries.(idx)
+    end
+
+  let reset_browse t = t.browse_depth <- 0
+  let is_browsing t = t.browse_depth > 0
+
+  let%test "zero capacity raises" =
+    try
+      let _ = create ~capacity:0 () in
+      false
+    with Invalid_argument _ -> true
+
+  let%test "negative capacity raises" =
+    try
+      let _ = create ~capacity:(-1) () in
+      false
+    with Invalid_argument _ -> true
+
+  let%test "empty history returns None for older" =
+    let h = create ~capacity:5 () in
+    Option.is_none (older h)
+
+  let%test "push and recall" =
+    let h = create ~capacity:5 () in
+    push h "hello";
+    match older h with Some s -> String.equal s "hello" | None -> false
+
+  let%test "duplicate suppression" =
+    let h = create ~capacity:5 () in
+    push h "hello";
+    push h "hello";
+    match older h with
+    | Some s ->
+        String.equal s "hello"
+        &&
+        (* only one entry, so next older is None *)
+        Option.is_none (older h)
+    | None -> false
+
+  let%test "empty line ignored" =
+    let h = create ~capacity:5 () in
+    push h "   ";
+    Option.is_none (older h)
+
+  let%test "newer returns At_fresh at bottom" =
+    let h = create ~capacity:5 () in
+    push h "a";
+    match newer h with At_fresh -> true | Entry _ -> false
+
+  let%test "older then newer round-trips" =
+    let h = create ~capacity:5 () in
+    push h "a";
+    push h "b";
+    let _ = older h in
+    (* at "b" *)
+    let _ = older h in
+    (* at "a" *)
+    match newer h with
+    | Entry s -> String.equal s "b"
+    | At_fresh -> false
+
+  let%test "newer past newest returns At_fresh" =
+    let h = create ~capacity:5 () in
+    push h "a";
+    push h "b";
+    let _ = older h in
+    let _ = older h in
+    let _ = newer h in
+    (* at "b" *)
+    match newer h with
+    | At_fresh -> true
+    | Entry _ -> false
+
+  let%test "capacity overflow drops oldest" =
+    let h = create ~capacity:3 () in
+    push h "a";
+    push h "b";
+    push h "c";
+    push h "d";
+    (* should have b, c, d — "a" dropped *)
+    let e1 = older h in
+    let e2 = older h in
+    let e3 = older h in
+    let e4 = older h in
+    Option.is_none e4
+    && Option.value_map e1 ~default:false ~f:(String.equal "d")
+    && Option.value_map e2 ~default:false ~f:(String.equal "c")
+    && Option.value_map e3 ~default:false ~f:(String.equal "b")
+
+  let%test "push resets browse position" =
+    let h = create ~capacity:5 () in
+    push h "a";
+    push h "b";
+    let _ = older h in
+    push h "c";
+    (* browse should be reset *)
+    not (is_browsing h)
+end

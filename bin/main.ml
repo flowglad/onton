@@ -240,6 +240,8 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let saved_list_selected = ref 0 in
+  let history = Tui_input.History.create () in
+  let saved_draft = ref "" in
   let rec loop () =
     match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
@@ -248,11 +250,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           match key with
           | Term.Key.Escape ->
               Buffer.clear buf;
+              saved_draft := "";
+              Tui_input.History.reset_browse history;
               text_mode := false;
               loop ()
           | Term.Key.Enter ->
               let line = Buffer.contents buf in
+              Tui_input.History.push history line;
+              (* Always exit browse mode on Enter, even for empty input that push ignores *)
+              Tui_input.History.reset_browse history;
               Buffer.clear buf;
+              saved_draft := "";
               text_mode := false;
               (match Tui_input.parse_line line with
               | Some (Tui_input.Send_message (patch_id, msg)) ->
@@ -320,10 +328,28 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           | Term.Key.Char c ->
               Buffer.add_char buf c;
               loop ()
-          | Term.Key.Up | Term.Key.Down | Term.Key.Left | Term.Key.Right
-          | Term.Key.Home | Term.Key.End | Term.Key.Page_up | Term.Key.Page_down
-          | Term.Key.Tab | Term.Key.F _ | Term.Key.Ctrl _ | Term.Key.Unknown _
-            ->
+          | Term.Key.Up ->
+              let was_browsing = Tui_input.History.is_browsing history in
+              (match Tui_input.History.older history with
+              | Some s ->
+                  if not was_browsing then saved_draft := Buffer.contents buf;
+                  Buffer.clear buf;
+                  Buffer.add_string buf s
+              | None -> ());
+              loop ()
+          | Term.Key.Down ->
+              (if Tui_input.History.is_browsing history then
+                 match Tui_input.History.newer history with
+                 | Tui_input.History.Entry s ->
+                     Buffer.clear buf;
+                     Buffer.add_string buf s
+                 | Tui_input.History.At_fresh ->
+                     Buffer.clear buf;
+                     Buffer.add_string buf !saved_draft);
+              loop ()
+          | Term.Key.Left | Term.Key.Right | Term.Key.Home | Term.Key.End
+          | Term.Key.Page_up | Term.Key.Page_down | Term.Key.Tab | Term.Key.F _
+          | Term.Key.Ctrl _ | Term.Key.Unknown _ ->
               loop ()
         else
           let cmd = Tui_input.of_key key in
