@@ -277,13 +277,13 @@ module Raw = struct
   (** Clean up suspend handlers, restoring previous handlers and clearing saved
       state. *)
   let clear_suspend_handlers () =
-    _saved_state := None;
     (match !_saved_handlers with
     | None -> ()
     | Some (prev_tstp, prev_cont) ->
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp prev_tstp);
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont prev_cont));
-    _saved_handlers := None
+    _saved_handlers := None;
+    _saved_state := None
 end
 
 (** Keyboard input types and parsing. *)
