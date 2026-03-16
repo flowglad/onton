@@ -24,6 +24,9 @@ let validate_config config =
           "--owner / GITHUB_OWNER is required" );
         ( Base.String.is_empty (Base.String.strip config.github_repo),
           "--repo / GITHUB_REPO is required" );
+        ( Base.String.is_empty
+            (Base.String.strip (Branch.to_string config.main_branch)),
+          "--main-branch cannot be empty" );
         ( Float.compare config.poll_interval 0.0 <= 0,
           Printf.sprintf "--poll-interval must be > 0 (got %g)"
             config.poll_interval );
@@ -633,12 +636,7 @@ let main_cmd =
         github_token = Base.String.strip github_token;
         github_owner = Base.String.strip github_owner;
         github_repo = Base.String.strip github_repo;
-        main_branch =
-          Branch.of_string
-            (let s = Base.String.strip main_branch in
-             if Base.String.is_empty s then
-               failwith "main_branch cannot be empty"
-             else s);
+        main_branch = Branch.of_string (Base.String.strip main_branch);
         poll_interval;
         repo_root;
         max_concurrency;
