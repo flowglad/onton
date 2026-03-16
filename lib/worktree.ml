@@ -34,6 +34,9 @@ let add_existing ~patch_id ~branch ~path =
   | true ->
       if not (Stdlib.Sys.is_directory path) then
         failwith ("Worktree path is not a directory: " ^ path));
+  let git_file = Stdlib.Filename.concat path ".git" in
+  if (not (Stdlib.Sys.file_exists git_file)) || Stdlib.Sys.is_directory git_file
+  then failwith ("Path is not a git worktree (no .git file): " ^ path);
   { patch_id; branch; path }
 
 let detect_branch ~process_mgr ~path =
