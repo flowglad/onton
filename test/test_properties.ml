@@ -72,28 +72,54 @@ let () =
       prop_depends_on_consistent;
     ];
 
-  (* graph: initial_base with no deps returns main *)
-  let main = Types.Branch.of_string "main" in
-  let patches =
+  let prop_initial_base_all_merged_returns_main =
+    Test.make ~name:"graph: initial_base returns main when all deps merged"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let main = Types.Branch.of_string "main" in
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              let base =
+                Graph.initial_base g p.id
+                  ~has_merged:(fun _ -> true)
+                  ~branch_of:(fun _ -> Types.Branch.of_string "x")
+                  ~main
+              in
+              Types.Branch.equal base main)
+        with _ -> false)
+  in
+  let prop_initial_base_open_dep_returns_dep_branch =
+    Test.make ~name:"graph: initial_base returns dep branch when dep is open"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let main = Types.Branch.of_string "main" in
+          let g = Graph.of_patches patches in
+          let branch_of pid =
+            match
+              List.find patches ~f:(fun (p : Types.Patch.t) ->
+                  Types.Patch_id.equal p.id pid)
+            with
+            | Some p -> p.Types.Patch.branch
+            | None -> main
+          in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              match p.dependencies with
+              | [ dep_id ] ->
+                  let base =
+                    Graph.initial_base g p.id
+                      ~has_merged:(fun _ -> false)
+                      ~branch_of ~main
+                  in
+                  Types.Branch.equal base (branch_of dep_id)
+              | _ -> true)
+        with _ -> false)
+  in
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
     [
-      Types.Patch.
-        {
-          id = Types.Patch_id.of_string "solo";
-          title = "Solo";
-          branch = Types.Branch.of_string "bsolo";
-          dependencies = [];
-        };
-    ]
-  in
-  let g = Graph.of_patches patches in
-  let base =
-    Graph.initial_base g
-      (Types.Patch_id.of_string "solo")
-      ~has_merged:(fun _ -> false)
-      ~branch_of:(fun _ -> Types.Branch.of_string "x")
-      ~main
-  in
-  assert (Types.Branch.equal base main);
+      prop_initial_base_all_merged_returns_main;
+      prop_initial_base_open_dep_returns_dep_branch;
+    ];
   Stdlib.print_endline "graph: all properties passed"
 
 (* ========== Poller properties ========== *)

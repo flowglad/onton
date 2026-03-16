@@ -100,6 +100,22 @@ let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch ~base_branch =
   | exn ->
       Error (Printf.sprintf "unexpected error: %s" (Printexc.to_string exn))
 
+(** Set or unset draft status on a PR. [draft:true] converts to draft,
+    [draft:false] marks ready for review. Errors are logged but not fatal. *)
+let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
+  let pr_str = Int.to_string (Pr_number.to_int pr_number) in
+  let args =
+    [ "gh"; "pr"; "ready"; pr_str; "--repo"; Printf.sprintf "%s/%s" owner repo ]
+    @ if draft then [ "--undo" ] else []
+  in
+  let env =
+    Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
+  in
+  try Eio.Process.run ~env process_mgr args
+  with exn ->
+    Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str draft
+      (Printexc.to_string exn)
+
 (** {1 Activity log helpers} *)
 
 (** Merge events and transitions from an activity log into a single
@@ -814,6 +830,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
                             | Ok pr_number ->
                                 Pr_registry.register pr_registry ~patch_id
                                   ~pr_number;
+                                if not (Branch.equal base_branch main) then
+                                  set_pr_draft ~process_mgr
+                                    ~token:config.github_token
+                                    ~owner:config.github_owner
+                                    ~repo:config.github_repo ~pr_number
+                                    ~draft:true;
                                 Runtime.update_orchestrator runtime (fun orch ->
                                     let orch =
                                       Orchestrator.set_pr_number orch patch_id
@@ -888,9 +910,48 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
                   in
                   match result with
                   | `Stale | `Failed -> ()
-                  | `Ok ->
+                  | `Ok -> (
                       Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id)))
+                          Orchestrator.complete orch patch_id);
+                      match kind with
+                      | Operation_kind.Rebase -> (
+                          let orch_snap, patches =
+                            Runtime.read runtime (fun snap ->
+                                ( snap.Runtime.orchestrator,
+                                  snap.Runtime.gameplan.Gameplan.patches ))
+                          in
+                          let agent = Orchestrator.agent orch_snap patch_id in
+                          let graph = Orchestrator.graph orch_snap in
+                          let has_merged pid =
+                            (Orchestrator.agent orch_snap pid)
+                              .Patch_agent.merged
+                          in
+                          let branch_of pid =
+                            match
+                              Base.List.find patches ~f:(fun (p : Patch.t) ->
+                                  Patch_id.equal p.Patch.id pid)
+                            with
+                            | Some p -> p.Patch.branch
+                            | None -> main
+                          in
+                          let new_base =
+                            match
+                              Graph.open_pr_deps graph patch_id ~has_merged
+                            with
+                            | [] -> Some main
+                            | [ d ] -> Some (branch_of d)
+                            | _ -> None
+                          in
+                          match (agent.Patch_agent.pr_number, new_base) with
+                          | Some pr_number, Some b when Branch.equal b main ->
+                              set_pr_draft ~process_mgr
+                                ~token:config.github_token
+                                ~owner:config.github_owner
+                                ~repo:config.github_repo ~pr_number ~draft:false
+                          | _ -> ())
+                      | Operation_kind.Ci | Operation_kind.Review_comments
+                      | Operation_kind.Merge_conflict | Operation_kind.Human ->
+                          ())))
     in
     if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
     Eio.Time.sleep clock 1.0;
