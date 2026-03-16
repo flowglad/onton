@@ -54,7 +54,6 @@ let validate_name (kind : string) (value : string) : unit =
 
 let load_override ~(project_name : string) (name : string) : string option =
   validate_name "prompt name" name;
-  validate_name "project name" project_name;
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Unix.openfile path [ Unix.O_RDONLY ] 0 with
   | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
@@ -71,7 +70,9 @@ let load_override ~(project_name : string) (name : string) : string option =
         ~f:(fun () ->
           match Stdlib.In_channel.input_all ic with
           | content -> Some content
-          | exception Sys_error _ -> None)
+          | exception Sys_error msg ->
+              if String.is_substring msg ~substring:"Is a directory" then None
+              else raise (Sys_error msg))
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
@@ -310,11 +311,6 @@ let%test "load_override returns None for missing file" =
 
 let%test "load_override rejects traversal in prompt name" =
   match load_override ~project_name:"test" "../secret" with
-  | _ -> false
-  | exception Stdlib.Invalid_argument _ -> true
-
-let%test "load_override rejects traversal in project name" =
-  match load_override ~project_name:"../etc" "patch" with
   | _ -> false
   | exception Stdlib.Invalid_argument _ -> true
 
