@@ -246,14 +246,18 @@ module Raw = struct
       SIGSTOP to ourselves. A SIGCONT handler (installed via
       {!install_suspend_handlers}) re-enters raw mode automatically. *)
   let suspend () =
-    match Atomic.get _saved_state with
+    let current = Atomic.get _saved_state in
+    match current with
     | None -> () (* not in raw mode, nothing to do *)
     | Some state ->
-        leave state;
-        Atomic.set _saved_state None;
-        write_stdout_all
-          (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show);
-        Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop
+        (* CAS ensures only one concurrent suspend() proceeds — if the SIGTSTP
+           handler races with a Ctrl+Z suspend, the loser's CAS fails and it
+           returns without sending a second SIGSTOP. *)
+        if Atomic.compare_and_set _saved_state current None then (
+          leave state;
+          write_stdout_all
+            (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show);
+          Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop)
 
   (** Install SIGTSTP/SIGCONT handlers for proper terminal suspend/resume. Must
       be called after {!enter} — pass the {!state} so we can restore and
