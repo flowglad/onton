@@ -87,9 +87,9 @@ val clear_needs_intervention : t -> t
 (** Clear the needs-intervention flag (e.g., after manual resolution). *)
 
 val reset_busy : t -> t
-(** Reset a stale [busy] flag from a crashed session. If [busy], clears it and
-    clears [session_failed] so the retry evaluates its own outcome from a clean
-    slate. No-op if not busy. *)
+(** Reset a stale [busy] flag from a crashed session. If [busy], clears it.
+    Leaves [session_failed] untouched so prior failure state is preserved for
+    [complete] to evaluate. No-op if not busy. *)
 
 (** {2 Queries} *)
 
