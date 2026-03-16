@@ -557,18 +557,14 @@ let render_detail (pv : patch_view) ~width =
   let ci_section =
     if List.is_empty pv.ci_checks then []
     else
+      let failure_conclusions =
+        [
+          "failure"; "error"; "action_required"; "timed_out"; "startup_failure";
+        ]
+      in
       let ci_header = [ ""; Term.styled [ Term.Sgr.bold ] "  CI Checks" ] in
       let ci_rows =
         List.map pv.ci_checks ~f:(fun (c : Ci_check.t) ->
-            let failure_conclusions =
-              [
-                "failure";
-                "error";
-                "action_required";
-                "timed_out";
-                "startup_failure";
-              ]
-            in
             let icon =
               if String.equal c.conclusion "success" then
                 Term.styled [ Term.Sgr.fg_green ] "✓"
