@@ -25,10 +25,12 @@ type pr_discovery = {
 
 type worktree_recovery = {
   worktree_patch_id : Patch_id.t;
-  worktree : Worktree.t;
+  worktree_path : string;
 }
 [@@deriving show, eq]
-(** A recovered worktree matched to a patch by branch name. *)
+(** A recovered worktree matched to a patch by branch name. The path is logged
+    for diagnostics; worktrees are not tracked in orchestrator state since they
+    are always derived from [Worktree.worktree_dir] at runtime. *)
 
 type t = {
   discovered : pr_discovery list;

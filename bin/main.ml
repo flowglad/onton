@@ -969,8 +969,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
               Orchestrator.reset_busy orch patch_id));
       Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
           log_event runtime ~patch_id:wr.worktree_patch_id
-            (Printf.sprintf "recovered worktree at %s"
-               (Worktree.path wr.worktree)));
+            (Printf.sprintf "recovered worktree at %s" wr.worktree_path));
       let clock = Eio.Stdenv.clock env in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
