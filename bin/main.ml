@@ -184,9 +184,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
 exception Quit_tui
 (** Raised by the input fiber to signal a clean exit. *)
 
-(** TUI rendering fiber — redraws the terminal at ~10 fps.
-
-    [selected] is a shared mutable ref updated by the input fiber. *)
+(** TUI rendering fiber — redraws the terminal at ~10 fps. *)
 let tui_fiber ~runtime ~clock ~stdout =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let rec loop () =
@@ -220,17 +218,15 @@ let input_fiber ~runtime ~selected =
         let cmd = Tui_input.of_key key in
         match cmd with
         | Tui_input.Quit -> raise Quit_tui
-        | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
-        | Tui_input.Page_down ->
+        | Tui_input.Refresh | Tui_input.Help | Tui_input.Select | Tui_input.Back
+        | Tui_input.Noop | Tui_input.Move_up | Tui_input.Move_down
+        | Tui_input.Page_up | Tui_input.Page_down ->
             let count =
               Runtime.read runtime (fun snap ->
                   Base.List.length
                     (Orchestrator.all_agents snap.Runtime.orchestrator))
             in
             selected := Tui_input.apply_move ~count ~selected:!selected cmd;
-            loop ()
-        | Tui_input.Refresh | Tui_input.Help | Tui_input.Select | Tui_input.Back
-        | Tui_input.Noop ->
             loop ())
   in
   loop ()

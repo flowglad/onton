@@ -86,3 +86,6 @@ let%test "apply_move with count 0" =
   apply_move ~count:0 ~selected:0 Move_down = 0
 
 let%test "apply_move noop preserves" = apply_move ~count:5 ~selected:3 Noop = 3
+
+let%test "apply_move noop clamps stale selection" =
+  apply_move ~count:3 ~selected:9 Noop = 2
