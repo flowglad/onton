@@ -44,8 +44,10 @@ let substitute_variables (template : string) (vars : (string * string) list) :
 
 let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
-  match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
-  | contents -> Some contents
+  match Stdlib.Sys.file_exists path with
+  | false -> None
+  | true ->
+      Some (Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all)
   | exception Stdlib.Sys_error _ -> None
 
 let render_with_override ~(project_name : string) ~(name : string)
@@ -185,23 +187,28 @@ Resolve any conflicts, then continue with `git rebase --continue`.|}
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
-  let formatted =
-    match messages with
-    | [] -> ""
-    | [ msg ] -> msg
-    | _ ->
-        List.mapi messages ~f:(fun i msg -> Printf.sprintf "%d. %s" (i + 1) msg)
-        |> String.concat ~sep:"\n"
-  in
-  let vars =
-    [ ("messages", formatted); ("count", Int.to_string (List.length messages)) ]
-  in
-  render_with_override ~project_name ~name:"human_message" ~vars
-    ~default:(fun () ->
-      match messages with
-      | [] -> "No messages."
-      | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
-      | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted)
+  match messages with
+  | [] -> "No messages."
+  | _ ->
+      let formatted =
+        match messages with
+        | [ msg ] -> msg
+        | _ ->
+            List.mapi messages ~f:(fun i msg ->
+                Printf.sprintf "%d. %s" (i + 1) msg)
+            |> String.concat ~sep:"\n"
+      in
+      let vars =
+        [
+          ("messages", formatted);
+          ("count", Int.to_string (List.length messages));
+        ]
+      in
+      render_with_override ~project_name ~name:"human_message" ~vars
+        ~default:(fun () ->
+          match messages with
+          | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
+          | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted)
 
 let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
