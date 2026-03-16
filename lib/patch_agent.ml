@@ -20,6 +20,8 @@ type t = {
   ci_failure_count : int;
   session_failed : bool;
   pending_comments : pending_comment list;
+  last_session_id : Session_id.t option;
+  tried_fresh : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -39,6 +41,8 @@ let create patch_id =
     ci_failure_count = 0;
     session_failed = false;
     pending_comments = [];
+    last_session_id = None;
+    tried_fresh = false;
   }
 
 let highest_priority t =
@@ -55,16 +59,28 @@ let add_pending_comment t comment ~valid =
   { t with pending_comments = { comment; valid } :: t.pending_comments }
 
 let set_session_failed t = { t with session_failed = true }
+let set_last_session_id t id = { t with last_session_id = Some id }
+let set_tried_fresh t = { t with tried_fresh = true }
+
+let clear_session_fallback t =
+  { t with tried_fresh = false; session_failed = false }
+
 let set_has_conflict t = { t with has_conflict = true }
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
-let clear_needs_intervention t = { t with needs_intervention = false }
+let clear_needs_intervention t =
+  {
+    t with
+    needs_intervention = false;
+    tried_fresh = false;
+    session_failed = false;
+  }
 
 let restore ~patch_id ~has_pr ~has_session ~busy ~merged ~needs_intervention
     ~queue ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
-    ~session_failed ~pending_comments =
+    ~session_failed ~pending_comments ~last_session_id ~tried_fresh =
   {
     patch_id;
     has_pr;
@@ -80,6 +96,8 @@ let restore ~patch_id ~has_pr ~has_session ~busy ~merged ~needs_intervention
     ci_failure_count;
     session_failed;
     pending_comments;
+    last_session_id;
+    tried_fresh;
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }
@@ -93,6 +111,7 @@ let start t ~base_branch =
     busy = true;
     satisfies = true;
     base_branch = Some base_branch;
+    tried_fresh = false;
   }
 
 let respond t k =

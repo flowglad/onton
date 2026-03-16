@@ -44,6 +44,9 @@ val enqueue : t -> Patch_id.t -> Operation_kind.t -> t
 val mark_merged : t -> Patch_id.t -> t
 val add_pending_comment : t -> Patch_id.t -> Comment.t -> valid:bool -> t
 val set_session_failed : t -> Patch_id.t -> t
+val set_last_session_id : t -> Patch_id.t -> Session_id.t -> t
+val set_tried_fresh : t -> Patch_id.t -> t
+val clear_session_fallback : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val clear_needs_intervention : t -> Patch_id.t -> t

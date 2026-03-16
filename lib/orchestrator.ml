@@ -131,6 +131,16 @@ let add_pending_comment t patch_id comment ~valid =
 let set_session_failed t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_session_failed
 
+let set_last_session_id t patch_id session_id =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_last_session_id a session_id)
+
+let set_tried_fresh t patch_id =
+  update_agent t patch_id ~f:Patch_agent.set_tried_fresh
+
+let clear_session_fallback t patch_id =
+  update_agent t patch_id ~f:Patch_agent.clear_session_fallback
+
 let set_has_conflict t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_has_conflict
 
