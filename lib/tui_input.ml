@@ -46,8 +46,8 @@ let apply_move ~count ~selected (cmd : command) =
       | Move_down -> selected + 1
       | Page_up -> selected - 5
       | Page_down -> selected + 5
-      | Quit | Refresh | Help | Select | Back | Noop | Send_message _
-      | Add_pr _ ->
+      | Quit | Refresh | Help | Select | Back | Noop | Send_message _ | Add_pr _
+        ->
           selected
     in
     clamp next
