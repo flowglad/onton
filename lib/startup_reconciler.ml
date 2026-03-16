@@ -101,14 +101,18 @@ let recover_worktrees ~process_mgr ~repo_root ~patches =
         ([], Some (Printf.sprintf "worktree discovery failed: %s" msg))
   in
   let recovered =
-    List.filter_map worktrees ~f:(fun (path, branch) ->
-        match
-          List.find patches ~f:(fun (p : Patch.t) ->
-              Branch.equal p.branch branch)
-        with
-        | Some patch ->
-            Some { worktree_patch_id = patch.Patch.id; worktree_path = path }
-        | None -> None)
+    List.filter_map worktrees ~f:(fun (path, branch_opt) ->
+        match branch_opt with
+        | None -> None
+        | Some branch -> (
+            match
+              List.find patches ~f:(fun (p : Patch.t) ->
+                  Branch.equal p.branch branch)
+            with
+            | Some patch ->
+                Some
+                  { worktree_patch_id = patch.Patch.id; worktree_path = path }
+            | None -> None))
   in
   (recovered, list_error)
 
