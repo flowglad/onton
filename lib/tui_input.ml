@@ -146,3 +146,102 @@ let%test "apply_move noop preserves" = apply_move ~count:5 ~selected:3 Noop = 3
 
 let%test "apply_move noop clamps stale selection" =
   apply_move ~count:3 ~selected:9 Noop = 2
+
+(** Input history — a pure zipper over previously entered lines.
+
+    [prev] is older entries (most recent first), [next] is newer entries (oldest
+    first), and [draft] holds the in-progress line the user was typing before
+    navigating history. *)
+module History = struct
+  type t = {
+    prev : string list;
+    next : string list;
+    draft : string;
+    max_size : int;
+  }
+  [@@deriving show, eq]
+
+  let create ?(max_size = 100) () =
+    { prev = []; next = []; draft = ""; max_size }
+
+  let add entry t =
+    (* Skip duplicates of the most recent entry and empty strings *)
+    if String.is_empty entry then t
+    else
+      let prev =
+        match t.prev @ List.rev t.next with
+        | top :: _ when String.equal top entry -> t.prev @ List.rev t.next
+        | _ -> (entry :: t.prev) @ List.rev t.next
+      in
+      (* Flatten and truncate to max_size *)
+      let prev = List.take prev t.max_size in
+      { prev; next = []; draft = ""; max_size = t.max_size }
+
+  let up ~current t =
+    match t.prev with
+    | [] -> (current, t)
+    | top :: rest ->
+        let draft = if List.is_empty t.next then current else t.draft in
+        (top, { t with prev = rest; next = top :: t.next; draft })
+
+  let down ~current:_ t =
+    match t.next with
+    | [] -> (t.draft, t)
+    | [ only ] ->
+        (t.draft, { t with next = []; prev = only :: t.prev; draft = "" })
+    | top :: next_entry :: rest ->
+        (next_entry, { t with next = next_entry :: rest; prev = top :: t.prev })
+
+  let reset t =
+    { t with prev = t.prev @ List.rev t.next; next = []; draft = "" }
+
+  let entries t = List.rev t.prev @ t.next
+
+  let%test "empty history up returns current" =
+    let h = create () in
+    let line, h' = up ~current:"foo" h in
+    String.equal line "foo" && equal h h'
+
+  let%test "add then up recalls entry" =
+    let h = create () |> add "hello" in
+    let line, _ = up ~current:"" h in
+    String.equal line "hello"
+
+  let%test "up then down restores draft" =
+    let h = create () |> add "hello" in
+    let _, h = up ~current:"typing" h in
+    let line, _ = down ~current:"hello" h in
+    String.equal line "typing"
+
+  let%test "duplicate suppression" =
+    let h = create () |> add "hello" |> add "hello" in
+    equal_list String.equal (entries h) [ "hello" ]
+
+  let%test "empty string not added" =
+    let h = create () |> add "" in
+    equal_list String.equal (entries h) []
+
+  let%test "max_size truncation" =
+    let h = create ~max_size:3 () in
+    let h = h |> add "a" |> add "b" |> add "c" |> add "d" in
+    List.length (entries h) = 3
+
+  let%test "multiple entries in order" =
+    let h = create () |> add "first" |> add "second" |> add "third" in
+    let line1, h = up ~current:"" h in
+    let line2, h = up ~current:line1 h in
+    let line3, _ = up ~current:line2 h in
+    String.equal line1 "third"
+    && String.equal line2 "second"
+    && String.equal line3 "first"
+
+  let%test "reset flattens navigation" =
+    let h = create () |> add "a" |> add "b" in
+    let _, h = up ~current:"" h in
+    let h = reset h in
+    List.is_empty h.next
+
+  let%test "entries returns chronological order" =
+    let h = create () |> add "first" |> add "second" in
+    equal_list String.equal (entries h) [ "first"; "second" ]
+end
