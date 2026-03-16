@@ -275,6 +275,8 @@ let input_fiber ~runtime ~selected ~pr_registry =
                         "Cannot register ad-hoc PR: no selectable patch"
                   | Some patch_id ->
                       Pr_registry.register pr_registry ~patch_id ~pr_number;
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.clear_needs_intervention orch patch_id);
                       log_event runtime ~patch_id
                         (Printf.sprintf "Ad-hoc PR #%d registered"
                            (Pr_number.to_int pr_number)))
