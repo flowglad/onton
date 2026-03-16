@@ -138,6 +138,40 @@ let activity_entries_of_log (log : Activity_log.t) =
         })
   |> Base.List.map ~f:snd
 
+let timeline_entries_of_log (log : Activity_log.t) =
+  merged_log_entries ~log ~limit:100
+    ~compare:(fun (t1, _) (t2, _) -> Base.Float.descending t1 t2)
+    ~map_event:(fun (e : Activity_log.Event.t) ->
+      Tui.
+        {
+          timestamp = e.Activity_log.Event.timestamp;
+          entry =
+            Event
+              {
+                patch_id =
+                  Base.Option.map e.Activity_log.Event.patch_id
+                    ~f:Patch_id.to_string;
+                message = e.Activity_log.Event.message;
+              };
+        })
+    ~map_transition:(fun (t : Activity_log.Transition_entry.t) ->
+      Tui.
+        {
+          timestamp = t.Activity_log.Transition_entry.timestamp;
+          entry =
+            Transition
+              {
+                patch_id =
+                  Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
+                from_label =
+                  Tui.label t.Activity_log.Transition_entry.from_status;
+                to_status = t.Activity_log.Transition_entry.to_status;
+                to_label = Tui.label t.Activity_log.Transition_entry.to_status;
+                action = t.Activity_log.Transition_entry.action;
+              };
+        })
+  |> Base.List.map ~f:snd
+
 (** {1 Branch lookup map}
 
     Built once at startup to avoid O(n) linear scans per [branch_of] call. *)
@@ -211,9 +245,11 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     let width = match size with Some s -> s.Term.cols | None -> 80 in
     let height = match size with Some s -> s.Term.rows | None -> 24 in
     let activity = activity_entries_of_log log in
+    let timeline = timeline_entries_of_log log in
+    let now = Unix.gettimeofday () in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
-        ~activity ~project_name:gp.Gameplan.project_name views
+        ~activity ~timeline ~now ~project_name:gp.Gameplan.project_name views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     Eio.Time.sleep clock 0.1;
@@ -296,7 +332,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
                   | Tui_input.Page_down | Tui_input.Select | Tui_input.Back
-                  | Tui_input.Noop )
+                  | Tui_input.Noop | Tui_input.Timeline )
               | None ->
                   log_event runtime
                     (Printf.sprintf "Unrecognised input: %s" line));
@@ -331,6 +367,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   in
                   selected :=
                     Tui_input.apply_move ~count ~selected:!selected cmd
+              | Tui.Timeline_view ->
+                  let count =
+                    Runtime.read runtime (fun snap ->
+                        let log = snap.Runtime.activity_log in
+                        Base.List.length
+                          (Activity_log.recent_events log ~limit:100)
+                        + Base.List.length
+                            (Activity_log.recent_transitions log ~limit:100))
+                  in
+                  selected :=
+                    Tui_input.apply_move ~count ~selected:!selected cmd
               | Tui.Detail_view _ -> ());
               loop ()
           | Tui_input.Select -> (
@@ -351,10 +398,16 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   loop ()
               | Tui.Detail_view _ ->
                   text_mode := true;
-                  loop ())
+                  loop ()
+              | Tui.Timeline_view -> loop ())
+          | Tui_input.Timeline ->
+              selected := 0;
+              view_mode := Tui.Timeline_view;
+              loop ()
           | Tui_input.Back -> (
               match !view_mode with
-              | Tui.Detail_view _ ->
+              | Tui.Detail_view _ | Tui.Timeline_view ->
+                  selected := 0;
                   view_mode := Tui.List_view;
                   loop ()
               | Tui.List_view -> loop ())

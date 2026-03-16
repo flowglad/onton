@@ -292,7 +292,8 @@ let status_indicator = function
 
 (** {1 View mode — list vs detail} *)
 
-type view_mode = List_view | Detail_view of Patch_id.t [@@deriving show, eq]
+type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
+[@@deriving show, eq]
 
 (** {1 Patch view — derived per-patch rendering data} *)
 
@@ -381,6 +382,11 @@ type activity_entry =
     }
   | Event of { patch_id : string option; message : string }
 [@@warning "-37"]
+
+type timeline_entry = { timestamp : float; entry : activity_entry }
+[@@warning "-69"]
+(** Timeline entry: an activity entry with a timestamp for chronological display
+    across all patches. *)
 
 let render_header ~project_name ~width =
   let title =
@@ -551,15 +557,80 @@ let render_detail (pv : patch_view) ~width =
   in
   lines @ op_line @ intervention
 
+let format_relative_time (timestamp : float) ~(now : float) =
+  let delta = now -. timestamp in
+  if Float.( < ) delta 60.0 then Printf.sprintf "%ds ago" (Float.to_int delta)
+  else if Float.( < ) delta 3600.0 then
+    Printf.sprintf "%dm ago" (Float.to_int (delta /. 60.0))
+  else if Float.( < ) delta 86400.0 then
+    Printf.sprintf "%dh ago" (Float.to_int (delta /. 3600.0))
+  else Printf.sprintf "%dd ago" (Float.to_int (delta /. 86400.0))
+
+let render_timeline_entry ~now (te : timeline_entry) =
+  let time_str =
+    Term.styled [ Term.Sgr.dim ]
+      (Printf.sprintf "%-8s" (format_relative_time te.timestamp ~now))
+  in
+  match te.entry with
+  | Transition { patch_id; from_label; to_status; to_label; action } ->
+      Printf.sprintf "  %s %s  %s → %s  %s" time_str
+        (Term.styled [ Term.Sgr.fg_cyan ] (Printf.sprintf "%-6s" patch_id))
+        (Term.styled [ Term.Sgr.dim ] from_label)
+        (styled_status to_status to_label)
+        (Term.styled [ Term.Sgr.dim ] action)
+  | Event { patch_id; message } ->
+      let pid_str =
+        match patch_id with
+        | Some pid ->
+            Term.styled [ Term.Sgr.fg_cyan ] (Printf.sprintf "%-6s" pid)
+        | None -> Term.styled [ Term.Sgr.dim ] "      "
+      in
+      Printf.sprintf "  %s %s  %s" time_str pid_str
+        (Term.styled [ Term.Sgr.dim ] message)
+
+let render_timeline ~width ~selected ~max_visible ~now
+    (entries : timeline_entry list) =
+  let total = List.length entries in
+  let offset, count = visible_window ~selected ~total ~max_visible in
+  let header = Term.styled [ Term.Sgr.bold ] " Timeline (newest first)" in
+  let col_header =
+    Term.styled [ Term.Sgr.dim ]
+      (Term.fit_width (Int.max 1 width) "  Time     Patch   Status change")
+  in
+  let visible =
+    List.sub entries ~pos:offset ~len:(min count (total - offset))
+  in
+  let rows = List.map visible ~f:(render_timeline_entry ~now) in
+  let scroll_up =
+    if offset > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↑ %d more" offset) ]
+    else []
+  in
+  let remaining = total - offset - count in
+  let scroll_down =
+    if remaining > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↓ %d more" remaining) ]
+    else []
+  in
+  let empty =
+    if List.is_empty entries then
+      [ Term.styled [ Term.Sgr.dim ] "  (no activity yet)" ]
+    else []
+  in
+  (header :: col_header :: scroll_up) @ rows @ scroll_down @ empty
+
 let render_footer ~width ~view_mode =
   let help =
     match view_mode with
     | List_view ->
         Term.styled [ Term.Sgr.dim ]
-          " q:quit  r:refresh  ↑/↓:navigate  enter:detail  h:help"
+          " q:quit  r:refresh  ↑/↓:navigate  enter:detail  t:timeline  h:help"
     | Detail_view _ ->
         Term.styled [ Term.Sgr.dim ]
-          " q:quit  esc/backspace:back  r:refresh  h:help"
+          " q:quit  esc/backspace:back  r:refresh  t:timeline  h:help"
+    | Timeline_view ->
+        Term.styled [ Term.Sgr.dim ]
+          " q:quit  esc/backspace:back  r:refresh  ↑/↓:scroll  h:help"
   in
   [ Term.hrule width; help ]
 
@@ -578,7 +649,8 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       patch_view_of_agent agent ~patches_by_id ~graph)
 
 let render_frame ~width ~height ~selected ~view_mode
-    ~(activity : activity_entry list) ~project_name (views : patch_view list) =
+    ~(activity : activity_entry list) ~(timeline : timeline_entry list) ~now
+    ~project_name (views : patch_view list) =
   let header = render_header ~project_name ~width in
   let summary = [ render_summary views ] in
   let footer = render_footer ~width ~view_mode in
@@ -597,6 +669,16 @@ let render_frame ~width ~height ~selected ~view_mode
       let detail = List.take detail max_detail in
       let lines =
         header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
+      in
+      { lines; width }
+  | Timeline_view ->
+      let reserved = 2 + 1 + 1 + 1 + 2 + 1 + 2 in
+      let max_rows = Int.max 0 (height - reserved) in
+      let timeline_lines =
+        render_timeline ~width ~selected ~max_visible:max_rows ~now timeline
+      in
+      let lines =
+        header @ [ "" ] @ summary @ [ "" ] @ timeline_lines @ [ "" ] @ footer
       in
       { lines; width }
   | List_view ->

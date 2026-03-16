@@ -34,7 +34,8 @@ val derive_display_status :
 
 (** {2 View mode} *)
 
-type view_mode = List_view | Detail_view of Patch_id.t [@@deriving show, eq]
+type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
+[@@deriving show, eq]
 
 (** {2 Patch view} *)
 
@@ -67,6 +68,8 @@ type activity_entry =
     }
   | Event of { patch_id : string option; message : string }
 
+type timeline_entry = { timestamp : float; entry : activity_entry }
+
 val views_of_orchestrator :
   orchestrator:Orchestrator.t -> gameplan:Gameplan.t -> patch_view list
 
@@ -76,6 +79,8 @@ val render_frame :
   selected:int ->
   view_mode:view_mode ->
   activity:activity_entry list ->
+  timeline:timeline_entry list ->
+  now:float ->
   project_name:string ->
   patch_view list ->
   frame

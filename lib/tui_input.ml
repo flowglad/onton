@@ -16,6 +16,7 @@ type command =
   | Select
   | Back
   | Noop
+  | Timeline
   | Send_message of Types.Patch_id.t * string
   | Add_pr of Types.Pr_number.t
 [@@deriving show, eq]
@@ -24,6 +25,7 @@ let of_key (key : Term.Key.t) : command =
   match key with
   | Char 'q' | Ctrl 'c' -> Quit
   | Char 'r' -> Refresh
+  | Char 't' -> Timeline
   | Char 'h' | Char '?' -> Help
   | Up | Char 'k' -> Move_up
   | Down | Char 'j' -> Move_down
@@ -46,8 +48,8 @@ let apply_move ~count ~selected (cmd : command) =
       | Move_down -> selected + 1
       | Page_up -> selected - 5
       | Page_down -> selected + 5
-      | Quit | Refresh | Help | Select | Back | Noop | Send_message _ | Add_pr _
-        ->
+      | Quit | Refresh | Help | Select | Back | Noop | Timeline | Send_message _
+      | Add_pr _ ->
           selected
     in
     clamp next
@@ -122,6 +124,7 @@ let%test "page_down maps to Page_down" =
 let%test "enter maps to Select" = equal_command (of_key Enter) Select
 let%test "escape maps to Back" = equal_command (of_key Escape) Back
 let%test "backspace maps to Back" = equal_command (of_key Backspace) Back
+let%test "t maps to Timeline" = equal_command (of_key (Char 't')) Timeline
 let%test "unknown key maps to Noop" = equal_command (of_key (Char 'z')) Noop
 let%test "tab maps to Noop" = equal_command (of_key Tab) Noop
 
