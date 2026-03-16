@@ -563,6 +563,7 @@ let run config =
                       ]
                   with Quit_tui -> ())))
 
+
 (** {1 CLI via Cmdliner} *)
 
 let gameplan_path_arg =
@@ -632,7 +633,12 @@ let main_cmd =
         github_token = Base.String.strip github_token;
         github_owner = Base.String.strip github_owner;
         github_repo = Base.String.strip github_repo;
-        main_branch = Branch.of_string main_branch;
+        main_branch =
+          Branch.of_string
+            (let s = Base.String.strip main_branch in
+             if Base.String.is_empty s then
+               failwith "main_branch cannot be empty"
+             else s);
         poll_interval;
         repo_root;
         max_concurrency;
