@@ -56,9 +56,11 @@ let load_override ~(project_name : string) (name : string) : string option =
   | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
   | fd ->
       let ic = Unix.in_channel_of_descr fd in
-      let content = Stdlib.In_channel.input_all ic in
-      Stdlib.In_channel.close ic;
-      Some content
+      Exn.protect
+        ~finally:(fun () -> Stdlib.In_channel.close ic)
+        ~f:(fun () ->
+          let content = Stdlib.In_channel.input_all ic in
+          Some content)
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
@@ -184,7 +186,7 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
 
 let render_ci_failure_unknown_prompt ~(project_name : string) =
   let vars =
-    [ ("project_name", project_name); ("checks", ""); ("count", "0") ]
+    [ ("project_name", project_name); ("checks", ""); ("count", "unknown") ]
   in
   render_with_override ~project_name ~name:"ci_failure" ~vars
     ~default:(fun () ->
