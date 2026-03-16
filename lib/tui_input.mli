@@ -43,8 +43,15 @@ val parse_line : string -> command option
 module History : sig
   type t
 
+  type newer_result =
+    | At_fresh
+    | Entry of string
+        (** Result of {!newer}. [At_fresh] means the browse position is at the
+            fresh-input slot (either already there or just moved back).
+            [Entry s] is a history line. *)
+
   val create : ?capacity:int -> unit -> t
-  (** Create a history buffer. Default capacity is 100. *)
+  (** Create a history buffer. Default capacity is 50. *)
 
   val push : t -> string -> unit
   (** Record a line. Empty lines are ignored (browse position unchanged);
@@ -53,9 +60,9 @@ module History : sig
   val older : t -> string option
   (** Move toward older entries. Returns [None] at the oldest. *)
 
-  val newer : t -> string option
-  (** Move toward newer entries. Returns [None] when back at the fresh-input
-      position (bottom of history). *)
+  val newer : t -> newer_result
+  (** Move toward newer entries. Returns [At_fresh] when at the fresh-input
+      position (whether already there or just arrived). *)
 
   val reset_browse : t -> unit
   (** Reset browse position to the bottom (fresh-input position). *)

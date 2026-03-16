@@ -166,7 +166,9 @@ module History = struct
             the fresh-input position (not browsing). *)
   }
 
-  let create ?(capacity = 100) () =
+  type newer_result = At_fresh | Entry of string
+
+  let create ?(capacity = 50) () =
     if capacity < 1 then invalid_arg "History.create: capacity must be >= 1";
     {
       entries = Array.create ~len:capacity "";
@@ -200,13 +202,13 @@ module History = struct
     end
 
   let newer t =
-    if t.browse_depth <= 0 then None
+    if t.browse_depth <= 0 then At_fresh
     else begin
       t.browse_depth <- t.browse_depth - 1;
-      if t.browse_depth = 0 then None
+      if t.browse_depth = 0 then At_fresh
       else
         let idx = (t.cursor - t.browse_depth + t.capacity) % t.capacity in
-        Some t.entries.(idx)
+        Entry t.entries.(idx)
     end
 
   let reset_browse t = t.browse_depth <- 0
@@ -238,10 +240,10 @@ module History = struct
     push h "   ";
     Option.is_none (older h)
 
-  let%test "newer returns None at bottom" =
+  let%test "newer returns At_fresh at bottom" =
     let h = create ~capacity:5 () in
     push h "a";
-    Option.is_none (newer h)
+    match newer h with At_fresh -> true | Entry _ -> false
 
   let%test "older then newer round-trips" =
     let h = create ~capacity:5 () in
@@ -252,10 +254,10 @@ module History = struct
     let _ = older h in
     (* at "a" *)
     match newer h with
-    | Some s -> String.equal s "b"
-    | None -> false
+    | Entry s -> String.equal s "b"
+    | At_fresh -> false
 
-  let%test "newer past newest returns None" =
+  let%test "newer past newest returns At_fresh" =
     let h = create ~capacity:5 () in
     push h "a";
     push h "b";
@@ -263,7 +265,9 @@ module History = struct
     let _ = older h in
     let _ = newer h in
     (* at "b" *)
-    Option.is_none (newer h)
+    match newer h with
+    | At_fresh -> true
+    | Entry _ -> false
 
   let%test "capacity overflow drops oldest" =
     let h = create ~capacity:3 () in
