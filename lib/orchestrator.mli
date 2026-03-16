@@ -56,10 +56,12 @@ val clear_session_fallback : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
+val reset_busy : t -> Patch_id.t -> t
 
 (** {2 Queries} *)
 
 val agent : t -> Patch_id.t -> Patch_agent.t
+val find_agent : t -> Patch_id.t -> Patch_agent.t option
 val all_agents : t -> Patch_agent.t list
 val graph : t -> Graph.t
 val main_branch : t -> Branch.t

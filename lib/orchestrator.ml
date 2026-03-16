@@ -33,6 +33,7 @@ let create ~patches ~main_branch =
   { graph; agents; main_branch }
 
 let agent t patch_id = Map.find_exn t.agents patch_id
+let find_agent t patch_id = Map.find t.agents patch_id
 
 let update_agent t patch_id ~f =
   match Map.find t.agents patch_id with
@@ -158,6 +159,8 @@ let increment_ci_failure_count t patch_id =
 
 let clear_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
+
+let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
 
 (** {2 Queries} *)
 

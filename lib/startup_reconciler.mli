@@ -1,12 +1,18 @@
 open Types
 
-(** Startup reconciliation: discover existing GitHub PRs at launch.
+(** Startup reconciliation: discover existing GitHub PRs, recover worktrees, and
+    identify stale busy agents at launch.
 
     When onton starts fresh (no persisted state), each patch agent begins with
     [has_pr = false]. If PRs already exist from a previous run, the startup
     reconciler queries GitHub to discover them and returns updates to apply
     before the main loop begins. This avoids re-spawning Claude for patches that
-    already have open or merged PRs. *)
+    already have open or merged PRs.
+
+    When resuming from a persisted snapshot, the reconciler also:
+    - Discovers existing git worktrees and matches them to patches by branch
+    - Identifies agents that were persisted with [busy=true] (crashed sessions)
+      so the caller can reset them *)
 
 type pr_discovery = {
   patch_id : Patch_id.t;
@@ -17,10 +23,28 @@ type pr_discovery = {
 [@@deriving show, eq]
 (** A discovered PR for a patch, including the PR's base ref. *)
 
-type t = { discovered : pr_discovery list; errors : (Patch_id.t * string) list }
+type worktree_recovery = {
+  worktree_patch_id : Patch_id.t;
+  worktree_path : string;
+}
 [@@deriving show, eq]
-(** Result of startup reconciliation. [errors] contains per-patch discovery
-    failures with diagnostic messages. *)
+(** A recovered worktree matched to a patch by branch name. The path is logged
+    for diagnostics; worktrees are not tracked in orchestrator state since they
+    are always derived from [Worktree.worktree_dir] at runtime. *)
+
+type t = {
+  discovered : pr_discovery list;
+  recovered_worktrees : worktree_recovery list;
+  reset_pending : Patch_id.t list;
+  errors : (Patch_id.t * string) list;
+  worktree_errors : string list;
+}
+[@@deriving show, eq]
+(** Result of startup reconciliation. [recovered_worktrees] contains worktrees
+    found on disk that match patch branches. [reset_pending] lists patch IDs
+    whose agents had [busy=true] at persist time (stale sessions). [errors]
+    contains per-patch PR discovery failures. [worktree_errors] contains global
+    worktree listing failures (not per-patch). *)
 
 val reconcile :
   process_mgr:_ Eio.Process.mgr ->
@@ -28,9 +52,11 @@ val reconcile :
   owner:string ->
   repo:string ->
   patches:Patch.t list ->
+  ?repo_root:string ->
+  ?agents:Patch_agent.t list ->
+  unit ->
   t
-(** [reconcile ~process_mgr ~token ~owner ~repo ~patches] queries GitHub for
-    each patch's branch to find existing PRs. For each found PR, queries its
-    merge status and base ref. CLOSED PRs are skipped. Iterates through all
-    matching PRs to find the first non-CLOSED one. Per-patch errors are
-    collected in [errors] rather than silently dropped. *)
+(** [reconcile ~process_mgr ~token ~owner ~repo ~patches ?repo_root ?agents ()]
+    queries GitHub for each patch's branch to find existing PRs, discovers
+    existing worktrees under [repo_root] (default ["."]), and identifies stale
+    busy agents from [agents] (default [[]]). *)

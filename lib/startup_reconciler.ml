@@ -9,7 +9,19 @@ type pr_discovery = {
 }
 [@@deriving show, eq]
 
-type t = { discovered : pr_discovery list; errors : (Patch_id.t * string) list }
+type worktree_recovery = {
+  worktree_patch_id : Patch_id.t;
+  worktree_path : string;
+}
+[@@deriving show, eq]
+
+type t = {
+  discovered : pr_discovery list;
+  recovered_worktrees : worktree_recovery list;
+  reset_pending : Patch_id.t list;
+  errors : (Patch_id.t * string) list;
+  worktree_errors : string list;
+}
 [@@deriving show, eq]
 
 (** Parse a single PR JSON object, returning [(pr_number, base_branch, merged)]
@@ -68,9 +80,48 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
         in
         find_live entries
     | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
-  with exn -> Error (Stdlib.Printexc.to_string exn)
+  with
+  | Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
+  | Yojson.Json_error msg ->
+      Error (Printf.sprintf "could not parse gh output as JSON: %s" msg)
+  | Yojson.Basic.Util.Type_error (msg, _) ->
+      Error (Printf.sprintf "unexpected JSON structure from gh: %s" msg)
 
-let reconcile ~process_mgr ~token ~owner ~repo ~patches =
+(** Discover existing worktrees and match them to patches by branch name.
+    Returns matched worktrees and an optional error string if listing failed. *)
+let recover_worktrees ~process_mgr ~repo_root ~patches =
+  let worktrees, list_error =
+    try (Worktree.list_with_branches ~process_mgr ~repo_root, None) with
+    | Eio.Exn.Io _ as exn ->
+        ( [],
+          Some
+            (Printf.sprintf "worktree discovery failed: %s"
+               (Stdlib.Printexc.to_string exn)) )
+    | Failure msg ->
+        ([], Some (Printf.sprintf "worktree discovery failed: %s" msg))
+    | Stdlib.Sys_error msg ->
+        ([], Some (Printf.sprintf "worktree discovery failed: %s" msg))
+  in
+  let recovered =
+    List.filter_map worktrees ~f:(fun (path, branch) ->
+        match
+          List.find patches ~f:(fun (p : Patch.t) ->
+              Branch.equal p.branch branch)
+        with
+        | Some patch ->
+            Some { worktree_patch_id = patch.Patch.id; worktree_path = path }
+        | None -> None)
+  in
+  (recovered, list_error)
+
+(** Find agents that were persisted with [busy=true] — these represent crashed
+    sessions that need resetting. *)
+let find_stale_busy ~agents =
+  List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
+      if agent.busy then Some agent.patch_id else None)
+
+let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
+    ?(agents = []) () =
   let discovered, errors =
     List.fold patches ~init:([], [])
       ~f:(fun (discovered, errors) (patch : Patch.t) ->
@@ -84,4 +135,14 @@ let reconcile ~process_mgr ~token ~owner ~repo ~patches =
         | Ok None -> (discovered, errors)
         | Error err -> (discovered, (patch.id, err) :: errors))
   in
-  { discovered = List.rev discovered; errors = List.rev errors }
+  let recovered_worktrees, worktree_error =
+    recover_worktrees ~process_mgr ~repo_root ~patches
+  in
+  let reset_pending = find_stale_busy ~agents in
+  {
+    discovered = List.rev discovered;
+    recovered_worktrees;
+    reset_pending;
+    errors = List.rev errors;
+    worktree_errors = Option.to_list worktree_error;
+  }
