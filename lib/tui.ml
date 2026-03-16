@@ -292,7 +292,8 @@ let status_indicator = function
 
 (** {1 View mode — list vs detail} *)
 
-type view_mode = List_view | Detail_view of Patch_id.t [@@deriving show, eq]
+type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
+[@@deriving show, eq]
 
 (** {1 Patch view — derived per-patch rendering data} *)
 
@@ -551,15 +552,64 @@ let render_detail (pv : patch_view) ~width =
   in
   lines @ op_line @ intervention
 
+let render_timeline ~width ~selected ~max_visible
+    (entries : activity_entry list) =
+  let total = List.length entries in
+  let offset, count = visible_window ~selected ~total ~max_visible in
+  let header = Term.styled [ Term.Sgr.bold ] " Timeline" in
+  let visible =
+    List.sub entries ~pos:offset ~len:(min count (total - offset))
+  in
+  let rows =
+    List.mapi visible ~f:(fun i entry ->
+        let is_selected = offset + i = selected in
+        let row =
+          match entry with
+          | Transition { patch_id; from_label; to_status; to_label; action } ->
+              Printf.sprintf "  %s: %s → %s (%s)"
+                (Term.styled [ Term.Sgr.dim ] patch_id)
+                from_label
+                (styled_status to_status to_label)
+                (Term.styled [ Term.Sgr.dim ] action)
+          | Event { patch_id; message } ->
+              let prefix =
+                match patch_id with
+                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | None -> "  "
+              in
+              Printf.sprintf "  %s%s" prefix
+                (Term.styled [ Term.Sgr.dim ] message)
+        in
+        let row = Term.fit_width (Int.max 1 (width - 1)) row in
+        if is_selected then
+          Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
+        else row)
+  in
+  let scroll_up =
+    if offset > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↑ %d more" offset) ]
+    else []
+  in
+  let remaining = total - offset - count in
+  let scroll_down =
+    if remaining > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↓ %d more" remaining) ]
+    else []
+  in
+  (header :: scroll_up) @ rows @ scroll_down
+
 let render_footer ~width ~view_mode =
   let help =
     match view_mode with
     | List_view ->
         Term.styled [ Term.Sgr.dim ]
-          " q:quit  r:refresh  ↑/↓:navigate  enter:detail  h:help"
+          " q:quit  r:refresh  ↑/↓:navigate  enter:detail  t:timeline  h:help"
     | Detail_view _ ->
         Term.styled [ Term.Sgr.dim ]
-          " q:quit  esc/backspace:back  r:refresh  h:help"
+          " q:quit  esc/backspace:back  r:refresh  t:timeline  h:help"
+    | Timeline_view ->
+        Term.styled [ Term.Sgr.dim ]
+          " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
   in
   [ Term.hrule width; help ]
 
@@ -597,6 +647,19 @@ let render_frame ~width ~height ~selected ~view_mode
       let detail = List.take detail max_detail in
       let lines =
         header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
+      in
+      { lines; width }
+  | Timeline_view ->
+      (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
+         + scroll indicators(2) + blank before footer + footer(2) = 11 *)
+      let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 in
+      (* = 11 *)
+      let max_rows = Int.max 0 (height - reserved) in
+      let timeline =
+        render_timeline ~width ~selected ~max_visible:max_rows activity
+      in
+      let lines =
+        header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ footer
       in
       { lines; width }
   | List_view ->

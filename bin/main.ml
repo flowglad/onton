@@ -117,8 +117,8 @@ let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
   in
   Base.List.sort (events @ transitions) ~compare
 
-let activity_entries_of_log (log : Activity_log.t) =
-  merged_log_entries ~log ~limit:10
+let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
+  merged_log_entries ~log ~limit
     ~compare:(fun (t1, _) (t2, _) -> Base.Float.descending t1 t2)
     ~map_event:(fun (e : Activity_log.Event.t) ->
       Tui.Event
@@ -210,7 +210,12 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     let size = Term.get_size () in
     let width = match size with Some s -> s.Term.cols | None -> 80 in
     let height = match size with Some s -> s.Term.rows | None -> 24 in
-    let activity = activity_entries_of_log log in
+    let limit =
+      match !view_mode with
+      | Tui.Timeline_view -> 100
+      | Tui.List_view | Tui.Detail_view _ -> 10
+    in
+    let activity = activity_entries_of_log ~limit log in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
         ~activity ~project_name:gp.Gameplan.project_name views
@@ -234,6 +239,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
 let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
+  let saved_list_selected = ref 0 in
   let rec loop () =
     match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
@@ -299,7 +305,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
                   | Tui_input.Page_down | Tui_input.Select | Tui_input.Back
-                  | Tui_input.Noop )
+                  | Tui_input.Timeline | Tui_input.Noop )
               | None ->
                   log_event runtime
                     (Printf.sprintf "Unrecognised input: %s" line));
@@ -334,6 +340,22 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   in
                   selected :=
                     Tui_input.apply_move ~count ~selected:!selected cmd
+              | Tui.Timeline_view ->
+                  let count =
+                    Runtime.read runtime (fun snap ->
+                        let log = snap.Runtime.activity_log in
+                        let events =
+                          Base.List.length
+                            (Activity_log.recent_events log ~limit:100)
+                        in
+                        let transitions =
+                          Base.List.length
+                            (Activity_log.recent_transitions log ~limit:100)
+                        in
+                        events + transitions)
+                  in
+                  selected :=
+                    Tui_input.apply_move ~count ~selected:!selected cmd
               | Tui.Detail_view _ -> ());
               loop ()
           | Tui_input.Select -> (
@@ -354,13 +376,29 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   loop ()
               | Tui.Detail_view _ ->
                   text_mode := true;
-                  loop ())
+                  loop ()
+              | Tui.Timeline_view -> loop ())
           | Tui_input.Back -> (
               match !view_mode with
               | Tui.Detail_view _ ->
                   view_mode := Tui.List_view;
                   loop ()
+              | Tui.Timeline_view ->
+                  view_mode := Tui.List_view;
+                  selected := !saved_list_selected;
+                  loop ()
               | Tui.List_view -> loop ())
+          | Tui_input.Timeline -> (
+              match !view_mode with
+              | Tui.Timeline_view ->
+                  view_mode := Tui.List_view;
+                  selected := !saved_list_selected;
+                  loop ()
+              | Tui.List_view | Tui.Detail_view _ ->
+                  saved_list_selected := !selected;
+                  view_mode := Tui.Timeline_view;
+                  selected := 0;
+                  loop ())
           | Tui_input.Refresh | Tui_input.Help | Tui_input.Noop
           | Tui_input.Send_message _ | Tui_input.Add_pr _ ->
               loop ())
