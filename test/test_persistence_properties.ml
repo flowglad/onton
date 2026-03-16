@@ -158,8 +158,7 @@ let () =
   in
   let pr_number_roundtrip =
     QCheck2.Test.make ~name:"pr_number survives round-trip" ~count:200
-      QCheck2.Gen.(pair gen_patch_agent_fully_populated bool)
-      (fun (agent, _) ->
+      gen_patch_agent_fully_populated (fun agent ->
         try
           let json = Onton.Persistence.patch_agent_to_yojson agent in
           match Onton.Persistence.patch_agent_of_yojson json with

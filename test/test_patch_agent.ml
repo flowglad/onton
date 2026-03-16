@@ -334,7 +334,32 @@ let () =
       Test.make ~name:"start clears ci_checks and addressed_comment_ids"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid in
+          let a = start a ~base_branch:br in
+          let check =
+            Ci_check.
+              {
+                name = "build";
+                conclusion = "success";
+                details_url = None;
+                description = None;
+              }
+          in
+          let cid = Comment_id.of_int 1 in
+          let a = set_ci_checks a [ check ] in
+          let a = add_addressed_comment_id a cid in
+          let a = complete a in
+          let a = mark_merged a in
+          let a =
+            Onton.Patch_agent.restore ~patch_id:a.patch_id ~has_pr:false
+              ~pr_number:None ~has_session:false ~busy:false ~merged:false
+              ~needs_intervention:false ~queue:[] ~satisfies:false
+              ~changed:false ~has_conflict:false ~base_branch:None
+              ~ci_failure_count:0 ~session_fallback:Fresh_available
+              ~pending_comments:[] ~last_session_id:None ~ci_checks:a.ci_checks
+              ~addressed_comment_ids:a.addressed_comment_ids ~removed:false
+          in
+          let a = start a ~base_branch:br in
           List.is_empty a.ci_checks && Set.is_empty a.addressed_comment_ids);
       (* -- set_ci_checks stores checks -- *)
       Test.make ~name:"set_ci_checks stores checks" ~count:1
