@@ -56,7 +56,12 @@ let enqueue t k =
 let mark_merged t = { t with merged = true }
 
 let add_pending_comment t comment ~valid =
-  { t with pending_comments = { comment; valid } :: t.pending_comments }
+  let already_present =
+    List.exists t.pending_comments ~f:(fun pc ->
+        Comment.equal pc.comment comment)
+  in
+  if already_present then t
+  else { t with pending_comments = { comment; valid } :: t.pending_comments }
 
 let set_session_failed t = { t with session_failed = true }
 let set_last_session_id t id = { t with last_session_id = Some id }

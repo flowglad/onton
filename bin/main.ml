@@ -24,12 +24,12 @@ let validate_config config =
           "--owner / GITHUB_OWNER is required" );
         ( Base.String.is_empty (Base.String.strip config.github_repo),
           "--repo / GITHUB_REPO is required" );
+        ( Base.String.is_empty
+            (Base.String.strip (Branch.to_string config.main_branch)),
+          "--main-branch cannot be empty" );
         ( Float.compare config.poll_interval 0.0 <= 0,
           Printf.sprintf "--poll-interval must be > 0 (got %g)"
             config.poll_interval );
-        ( Base.String.is_empty
-            (Base.String.strip (Branch.to_string config.main_branch)),
-          "--main-branch must be non-empty" );
         ( config.max_concurrency < 1,
           Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
             config.max_concurrency );
@@ -391,9 +391,15 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
                         Orchestrator.set_has_conflict orch patch_id
                       else orch
                     in
-                    Base.List.fold poll_result.Poller.queue ~init:orch
-                      ~f:(fun acc kind ->
-                        Orchestrator.enqueue acc patch_id kind))));
+                    let orch =
+                      Base.List.fold poll_result.Poller.queue ~init:orch
+                        ~f:(fun acc kind ->
+                          Orchestrator.enqueue acc patch_id kind)
+                    in
+                    Base.List.fold pr_state.Github.Pr_state.comments ~init:orch
+                      ~f:(fun acc comment ->
+                        Orchestrator.add_pending_comment acc patch_id comment
+                          ~valid:true))));
     (* Reconcile *)
     Runtime.update runtime (fun snap ->
         let orch = snap.Runtime.orchestrator in
@@ -720,7 +726,7 @@ let main_cmd =
         github_token = Base.String.strip github_token;
         github_owner = Base.String.strip github_owner;
         github_repo = Base.String.strip github_repo;
-        main_branch = Branch.of_string main_branch;
+        main_branch = Branch.of_string (Base.String.strip main_branch);
         poll_interval;
         repo_root;
         max_concurrency;

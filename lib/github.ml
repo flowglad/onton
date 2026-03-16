@@ -125,8 +125,10 @@ let parse_response body =
             in
             let comments =
               List.concat_map review_threads ~f:(fun thread ->
-                  thread |> member "comments" |> member "nodes" |> to_list
-                  |> List.map ~f:parse_comment_node)
+                  if thread |> member "isResolved" |> to_bool then []
+                  else
+                    thread |> member "comments" |> member "nodes" |> to_list
+                    |> List.map ~f:parse_comment_node)
             in
             Ok
               Pr_state.
