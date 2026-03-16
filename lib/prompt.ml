@@ -56,9 +56,8 @@ let render_with_override ~(project_name : string) ~(name : string)
   | Some template -> substitute_variables template vars
   | None -> default ()
 
-let render_patch_prompt (patch : Patch.t) (gameplan : Gameplan.t)
-    ~(base_branch : string) =
-  let project_name = gameplan.Gameplan.project_name in
+let render_patch_prompt ~(project_name : string) (patch : Patch.t)
+    (gameplan : Gameplan.t) ~(base_branch : string) =
   let deps =
     match patch.Patch.dependencies with
     | [] -> "None"
@@ -240,7 +239,8 @@ let%test "patch prompt includes title and deps" =
       }
   in
   let result =
-    render_patch_prompt patch gameplan ~base_branch:"onton-port/patch-1"
+    render_patch_prompt ~project_name:"onton-port" patch gameplan
+      ~base_branch:"onton-port/patch-1"
   in
   String.is_substring result ~substring:"# [onton-port] Prompt renderer"
   && String.is_substring result ~substring:"Patches 1"

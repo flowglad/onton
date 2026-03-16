@@ -26,7 +26,9 @@ val render_with_override :
     [vars], and returns the result. Falls back to [default ()] when no override
     file exists. *)
 
-val render_patch_prompt : Patch.t -> Gameplan.t -> base_branch:string -> string
+val render_patch_prompt :
+  project_name:string -> Patch.t -> Gameplan.t -> base_branch:string -> string
+
 val render_review_prompt : project_name:string -> Comment.t list -> string
 val render_ci_failure_prompt : project_name:string -> Ci_check.t list -> string
 

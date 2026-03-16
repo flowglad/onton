@@ -590,7 +590,7 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~pr_registry =
+let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
@@ -654,7 +654,8 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                               `Stale)
                             else
                               let prompt =
-                                Prompt.render_patch_prompt patch gameplan
+                                Prompt.render_patch_prompt ~project_name patch
+                                  gameplan
                                   ~base_branch:(Branch.to_string base_branch)
                               in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
@@ -727,26 +728,20 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                    details yet — only ci_failure_count.
                                    Propagate check details from Poller to
                                    surface them here. *)
-                                Prompt.render_ci_failure_prompt
-                                  ~project_name:gameplan.Gameplan.project_name
-                                  []
+                                Prompt.render_ci_failure_prompt ~project_name []
                             | Operation_kind.Review_comments ->
-                                Prompt.render_review_prompt
-                                  ~project_name:gameplan.Gameplan.project_name
+                                Prompt.render_review_prompt ~project_name
                                   pending_comments
                             | Operation_kind.Merge_conflict ->
                                 Prompt.render_merge_conflict_prompt
-                                  ~project_name:gameplan.Gameplan.project_name
-                                  ~base_branch:base
+                                  ~project_name ~base_branch:base
                             | Operation_kind.Human ->
-                                Prompt.render_human_message_prompt
-                                  ~project_name:gameplan.Gameplan.project_name
+                                Prompt.render_human_message_prompt ~project_name
                                   (Base.List.map pending_comments
                                      ~f:(fun (c : Comment.t) -> c.Comment.body))
                             | Operation_kind.Rebase ->
                                 Prompt.render_merge_conflict_prompt
-                                  ~project_name:gameplan.Gameplan.project_name
-                                  ~base_branch:base
+                                  ~project_name ~base_branch:base
                           in
                           run_claude_and_handle ~runtime ~process_mgr ~fs
                             ~repo_root:config.repo_root ~patch_id ~prompt
@@ -973,7 +968,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
               ~branch_of);
-          (fun () -> runner_fiber ~runtime ~env ~config ~pr_registry);
+          (fun () ->
+            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry);
           (fun () -> persistence_fiber ~runtime ~clock ~project_name);
         ]
       in
