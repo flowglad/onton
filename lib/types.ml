@@ -51,8 +51,13 @@ module Comment_id = struct
   let counter = Atomic.make 0
 
   let next_synthetic () =
-    (* fetch_and_add returns the pre-decrement value; subtract 1 again so
-       the first call returns -1, never 0, which is reserved/invalid. *)
+    (* Atomically claim the next synthetic ID. fetch_and_add returns the old
+       counter value and decrements it, so counter always equals the last issued
+       ID after each call. Subtract 1 from the old value to get the new value;
+       this ensures the first call returns -1 (counter: 0 → -1, result: 0-1=-1)
+       and 0 is never issued. seed_synthetic_counter relies on this: seeding to
+       min_id causes the next call to return min_id-1, safely below all existing
+       IDs. *)
     let n = Atomic.fetch_and_add counter (-1) - 1 in
     n
 
