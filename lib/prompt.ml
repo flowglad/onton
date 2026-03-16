@@ -46,7 +46,9 @@ let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
   | content -> Some content
-  | exception Stdlib.Sys_error _ -> None
+  | exception Stdlib.Sys_error msg ->
+      if String.is_substring msg ~substring:"No such file" then None
+      else raise (Stdlib.Sys_error msg)
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
@@ -122,7 +124,11 @@ let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
         |> String.concat ~sep:"\n\n"
   in
   let vars =
-    [ ("comments", formatted); ("count", Int.to_string (List.length comments)) ]
+    [
+      ("project_name", project_name);
+      ("comments", formatted);
+      ("count", Int.to_string (List.length comments));
+    ]
   in
   render_with_override ~project_name ~name:"review" ~vars ~default:(fun () ->
       match comments with
@@ -156,7 +162,11 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
         |> String.concat ~sep:"\n"
   in
   let vars =
-    [ ("checks", formatted); ("count", Int.to_string (List.length checks)) ]
+    [
+      ("project_name", project_name);
+      ("checks", formatted);
+      ("count", Int.to_string (List.length checks));
+    ]
   in
   render_with_override ~project_name ~name:"ci_failure" ~vars
     ~default:(fun () ->
@@ -168,7 +178,7 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
 
 let render_merge_conflict_prompt ~(project_name : string)
     ~(base_branch : string) =
-  let vars = [ ("base_branch", base_branch) ] in
+  let vars = [ ("project_name", project_name); ("base_branch", base_branch) ] in
   render_with_override ~project_name ~name:"merge_conflict" ~vars
     ~default:(fun () ->
       Printf.sprintf
@@ -186,16 +196,13 @@ Resolve any conflicts, then continue with `git rebase --continue`.|}
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
-  let formatted =
-    match messages with
-    | [] -> ""
-    | [ msg ] -> msg
-    | _ ->
-        List.mapi messages ~f:(fun i msg -> Printf.sprintf "%d. %s" (i + 1) msg)
-        |> String.concat ~sep:"\n"
-  in
+  let formatted = String.concat ~sep:"\n" messages in
   let vars =
-    [ ("messages", formatted); ("count", Int.to_string (List.length messages)) ]
+    [
+      ("project_name", project_name);
+      ("messages", formatted);
+      ("count", Int.to_string (List.length messages));
+    ]
   in
   render_with_override ~project_name ~name:"human_message" ~vars
     ~default:(fun () ->
