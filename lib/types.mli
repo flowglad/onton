@@ -35,6 +35,13 @@ module Operation_kind : sig
   [@@deriving show, eq, ord, sexp_of, compare, hash]
 end
 
+module Comment_id : sig
+  type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  val of_int : int -> t
+  val to_int : t -> int
+end
+
 module Comment : sig
   type t = { body : string; path : string option; line : int option }
   [@@deriving show, eq, sexp_of, compare]
@@ -59,6 +66,15 @@ module Ci_check : sig
     details_url : string option;
     description : string option;
   }
+  [@@deriving show, eq, sexp_of, compare]
+end
+
+module Stream_event : sig
+  type t =
+    | Text_delta of string
+    | Tool_use of { name : string; input : string }
+    | Result of { text : string; stop_reason : string }
+    | Error of string
   [@@deriving show, eq, sexp_of, compare]
 end
 
