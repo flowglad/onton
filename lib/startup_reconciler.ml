@@ -80,7 +80,10 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
         in
         find_live entries
     | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
-  with Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
+  with
+  | Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
+  | Yojson.Json_error msg ->
+      Error (Printf.sprintf "could not parse gh output as JSON: %s" msg)
 
 (** Discover existing worktrees and match them to patches by branch name.
     Returns matched worktrees and an optional error string if listing failed. *)
