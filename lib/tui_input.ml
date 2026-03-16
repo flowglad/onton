@@ -16,6 +16,7 @@ type command =
   | Select
   | Back
   | Noop
+  | Timeline
   | Send_message of Types.Patch_id.t * string
   | Add_pr of Types.Pr_number.t
 [@@deriving show, eq]
@@ -25,6 +26,7 @@ let of_key (key : Term.Key.t) : command =
   | Char 'q' | Ctrl 'c' -> Quit
   | Char 'r' -> Refresh
   | Char 'h' | Char '?' -> Help
+  | Char 't' -> Timeline
   | Up | Char 'k' -> Move_up
   | Down | Char 'j' -> Move_down
   | Page_up -> Page_up
@@ -46,8 +48,8 @@ let apply_move ~count ~selected (cmd : command) =
       | Move_down -> selected + 1
       | Page_up -> selected - 5
       | Page_down -> selected + 5
-      | Quit | Refresh | Help | Select | Back | Noop | Send_message _ | Add_pr _
-        ->
+      | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
+      | Add_pr _ ->
           selected
     in
     clamp next

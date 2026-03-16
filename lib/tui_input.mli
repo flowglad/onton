@@ -14,6 +14,7 @@ type command =
   | Select
   | Back
   | Noop
+  | Timeline
   | Send_message of Types.Patch_id.t * string
   | Add_pr of Types.Pr_number.t
 [@@deriving show, eq]
