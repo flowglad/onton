@@ -11,6 +11,7 @@ type config = {
   main_branch : Branch.t;
   poll_interval : float;
   repo_root : string;
+  max_concurrent : int;
 }
 
 let validate_config config =
@@ -380,11 +381,12 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
+let runner_fiber ~runtime ~env ~config ~pr_registry =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
   let clock = Eio.Stdenv.clock env in
+  let sem = Eio.Semaphore.make config.max_concurrent in
   let rec loop () =
     let actions, gameplan =
       Runtime.read runtime (fun snap ->
@@ -481,8 +483,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
                           (Base.List.map pending_comments
                              ~f:(fun (c : Comment.t) -> c.Comment.body))
                     | Operation_kind.Rebase ->
-                        Prompt.render_merge_conflict_prompt
-                          ~base_branch:(Branch.to_string (branch_of patch_id))
+                        Prompt.render_merge_conflict_prompt ~base_branch:base
                   in
                   let result =
                     run_claude_and_handle ~runtime ~process_mgr ~fs
@@ -494,7 +495,11 @@ let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
                           Orchestrator.complete orch patch_id)
                   | `Failed -> ()))
     in
-    if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
+    if not (Base.List.is_empty action_fibers) then
+      Eio.Fiber.all
+        (Base.List.map action_fibers ~f:(fun f () ->
+             Eio.Semaphore.acquire sem;
+             Fun.protect f ~finally:(fun () -> Eio.Semaphore.release sem)));
     Eio.Time.sleep clock 1.0;
     loop ()
   in
@@ -544,10 +549,10 @@ let run config =
                           poller_fiber ~runtime ~clock ~net ~github ~config
                             ~pr_registry ~branch_of);
                         (fun () ->
-                          runner_fiber ~runtime ~env ~config ~pr_registry
-                            ~branch_of);
+                          runner_fiber ~runtime ~env ~config ~pr_registry);
                       ]
                   with Quit_tui -> ())))
+
 
 (** {1 CLI via Cmdliner} *)
 
@@ -600,10 +605,18 @@ let repo_root_arg =
     & info [ "repo-root" ] ~docv:"PATH"
         ~doc:"Path to the git repository root (default: .).")
 
+let max_concurrent_arg =
+  let open Cmdliner in
+  Arg.(
+    value & opt int 4
+    & info [ "max-concurrent" ] ~docv:"N"
+        ~doc:"Maximum number of concurrent Claude processes (default: 4)."
+        ~env:(Cmd.Env.info "ONTON_MAX_CONCURRENT"))
+
 let main_cmd =
   let open Cmdliner in
   let run_cmd gameplan_path github_token github_owner github_repo main_branch
-      poll_interval repo_root =
+      poll_interval repo_root max_concurrent =
     let config =
       {
         gameplan_path;
@@ -613,6 +626,7 @@ let main_cmd =
         main_branch = Branch.of_string main_branch;
         poll_interval;
         repo_root;
+        max_concurrent;
       }
     in
     run config
@@ -620,7 +634,8 @@ let main_cmd =
   let term =
     Term.(
       const run_cmd $ gameplan_path_arg $ github_token_arg $ github_owner_arg
-      $ github_repo_arg $ main_branch_arg $ poll_interval_arg $ repo_root_arg)
+      $ github_repo_arg $ main_branch_arg $ poll_interval_arg $ repo_root_arg
+      $ max_concurrent_arg)
   in
   let info =
     Cmd.info "onton" ~version:"0.1.0"
