@@ -682,7 +682,13 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                     let _ci_store =
                       let failed =
                         let failure_conclusions =
-                          [ "failure"; "error"; "action_required"; "timed_out" ]
+                          [
+                            "failure";
+                            "error";
+                            "action_required";
+                            "timed_out";
+                            "startup_failure";
+                          ]
                         in
                         Base.List.filter poll_result.Poller.ci_checks
                           ~f:(fun (c : Ci_check.t) ->
@@ -696,7 +702,11 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                     Base.List.fold pr_state.Github.Pr_state.comments ~init:orch
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
-                          ~valid:true))));
+                          ~valid:true));
+                if pr_state.Github.Pr_state.ci_checks_truncated then
+                  log_event runtime ~patch_id
+                    "warning: CI check list was truncated (>100 checks); some \
+                     failures may not appear in the prompt"));
     (* Reconcile *)
     Runtime.update runtime (fun snap ->
         let orch = snap.Runtime.orchestrator in

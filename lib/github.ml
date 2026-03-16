@@ -9,6 +9,7 @@ module Pr_state = struct
     merge_state : merge_state;
     check_status : check_status;
     ci_checks : Types.Ci_check.t list;
+    ci_checks_truncated : bool;
     comments : Types.Comment.t list;
     unresolved_comment_count : int;
   }
@@ -37,7 +38,8 @@ let graphql_query =
           commit {
             statusCheckRollup {
               state
-              contexts(first: 50) {
+              contexts(first: 100) {
+                pageInfo { hasNextPage }
                 nodes {
                   ... on CheckRun {
                     __typename
@@ -157,26 +159,32 @@ let parse_response body =
             let merge_state =
               pr |> member "mergeable" |> to_string |> parse_merge_state
             in
-            let check_status, ci_checks =
+            let check_status, ci_checks, ci_checks_truncated =
               let commits = pr |> member "commits" |> member "nodes" in
               match commits |> to_list with
-              | [] -> (Pr_state.Pending, [])
+              | [] -> (Pr_state.Pending, [], false)
               | node :: _ -> (
                   let rollup =
                     node |> member "commit" |> member "statusCheckRollup"
                   in
                   match rollup with
-                  | `Null -> (Pr_state.Pending, [])
+                  | `Null -> (Pr_state.Pending, [], false)
                   | rollup ->
                       let status =
                         rollup |> member "state" |> to_string
                         |> parse_check_status
                       in
+                      let contexts = rollup |> member "contexts" in
+                      let truncated =
+                        contexts |> member "pageInfo" |> member "hasNextPage"
+                        |> to_bool_option
+                        |> Option.value ~default:false
+                      in
                       let checks =
-                        rollup |> member "contexts" |> member "nodes" |> to_list
+                        contexts |> member "nodes" |> to_list
                         |> List.filter_map ~f:parse_check_context_node
                       in
-                      (status, checks))
+                      (status, checks, truncated))
             in
             let review_threads =
               pr |> member "reviewThreads" |> member "nodes" |> to_list
@@ -199,6 +207,7 @@ let parse_response body =
                   merge_state;
                   check_status;
                   ci_checks;
+                  ci_checks_truncated;
                   comments;
                   unresolved_comment_count;
                 })
