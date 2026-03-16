@@ -237,12 +237,10 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _ = Orchestrator.tick orch ~patches in
-                let orch = Orchestrator.increment_ci_failure_count orch pid in
-                let orch = Orchestrator.increment_ci_failure_count orch pid in
-                let orch = Orchestrator.increment_ci_failure_count orch pid in
+                let orch = Orchestrator.set_session_failed orch pid in
                 let orch = Orchestrator.complete orch pid in
                 let agent = Orchestrator.agent orch pid in
-                if not agent.Patch_agent.needs_intervention then true
+                if not agent.Patch_agent.needs_intervention then false
                 else
                   let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
                   let _, actions = Orchestrator.tick orch ~patches in
