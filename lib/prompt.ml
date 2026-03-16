@@ -53,7 +53,9 @@ let load_override ~(project_name : string) (name : string) : string option =
   validate_name "prompt name" name;
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Unix.openfile path [ Unix.O_RDONLY ] 0 with
-  | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
+  | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR | Unix.EISDIR), _, _)
+    ->
+      None
   | fd ->
       let ic =
         match Unix.in_channel_of_descr fd with
