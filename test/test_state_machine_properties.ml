@@ -241,6 +241,7 @@ let () =
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _ = Orchestrator.tick orch ~patches in
                 let orch = Orchestrator.set_session_failed orch pid in
+                let orch = Orchestrator.set_tried_fresh orch pid in
                 let orch = Orchestrator.complete orch pid in
                 let agent = Orchestrator.agent orch pid in
                 if not agent.Patch_agent.needs_intervention then false

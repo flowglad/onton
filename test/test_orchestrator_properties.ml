@@ -224,9 +224,10 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _ = Orchestrator.tick orch ~patches in
-              (* Set session_failed, then complete — this triggers
-                 needs_intervention since session_failed=true *)
+              (* Exhaust fallback chain, then complete — this triggers
+                 needs_intervention since session_fallback=Given_up *)
               let orch = Orchestrator.set_session_failed orch pid in
+              let orch = Orchestrator.set_tried_fresh orch pid in
               let orch = Orchestrator.complete orch pid in
               let a = Orchestrator.agent orch pid in
               assert a.Patch_agent.needs_intervention;

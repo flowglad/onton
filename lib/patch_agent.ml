@@ -110,13 +110,18 @@ let add_pending_comment t comment ~valid =
   if already_present then t
   else { t with pending_comments = { comment; valid } :: t.pending_comments }
 
-let set_session_failed t = { t with session_fallback = Given_up }
+let set_session_failed t =
+  match t.session_fallback with
+  | Fresh_available -> { t with session_fallback = Tried_fresh }
+  | Tried_fresh | Given_up -> t
+
 let set_last_session_id t id = { t with last_session_id = Some id }
 
 let set_tried_fresh t =
   match t.session_fallback with
   | Fresh_available -> { t with session_fallback = Tried_fresh }
-  | Tried_fresh | Given_up -> t
+  | Tried_fresh -> { t with session_fallback = Given_up }
+  | Given_up -> t
 
 let clear_session_fallback t = { t with session_fallback = Fresh_available }
 let set_has_conflict t = { t with has_conflict = true }

@@ -83,7 +83,7 @@ let render_with_override ~(project_name : string) ~(name : string)
   | Some template -> substitute_variables template vars
   | None -> default ()
 
-let render_patch_prompt ~(project_name : string) (patch : Patch.t)
+let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     (gameplan : Gameplan.t) ~(base_branch : string) =
   let deps =
     match patch.Patch.dependencies with
@@ -101,6 +101,11 @@ let render_patch_prompt ~(project_name : string) (patch : Patch.t)
           p.Patch.title)
     |> String.concat ~sep:"\n"
   in
+  let pr_str =
+    match pr_number with
+    | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
+    | None -> "Not yet created"
+  in
   let vars =
     [
       ("project_name", project_name);
@@ -112,6 +117,10 @@ let render_patch_prompt ~(project_name : string) (patch : Patch.t)
       ("base_branch", base_branch);
       ("patch_id", Patch_id.to_string patch.Patch.id);
       ("patches_list", patches_list);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
     ]
   in
   render_with_override ~project_name ~name:"patch" ~vars ~default:(fun () ->
@@ -130,13 +139,16 @@ let render_patch_prompt ~(project_name : string) (patch : Patch.t)
 ## Git Instructions
 - Branch: %s
 - Base branch: %s
+- PR: %s
 
 ## Patches in Gameplan
 %s|}
         project_name patch.Patch.title gameplan.Gameplan.problem_statement
-        gameplan.Gameplan.solution_summary deps branch base_branch patches_list)
+        gameplan.Gameplan.solution_summary deps branch base_branch pr_str
+        patches_list)
 
-let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
+let render_review_prompt ~(project_name : string) ?pr_number
+    (comments : Comment.t list) =
   match comments with
   | [] -> "No review comments to address."
   | _ ->
@@ -151,23 +163,32 @@ let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
             Printf.sprintf "### %s\n%s" location c.Comment.body)
         |> String.concat ~sep:"\n\n"
       in
+      let pr_ctx =
+        match pr_number with
+        | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
+        | None -> ""
+      in
       let vars =
         [
           ("project_name", project_name);
           ("comments", formatted);
           ("count", Int.to_string (List.length comments));
+          ( "pr_number",
+            match pr_number with
+            | Some n -> Int.to_string (Pr_number.to_int n)
+            | None -> "" );
         ]
       in
       render_with_override ~project_name ~name:"review" ~vars
         ~default:(fun () ->
           Printf.sprintf
-            "# Review Comments\n\n\
+            "# Review Comments%s\n\n\
              Please address the following review comments:\n\n\
              %s"
-            formatted)
+            pr_ctx formatted)
 
-let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
-    =
+let render_ci_failure_prompt ~(project_name : string) ?pr_number
+    (checks : Ci_check.t list) =
   match checks with
   | [] -> "No CI failures."
   | _ ->
@@ -187,34 +208,73 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
               c.Ci_check.conclusion url desc)
         |> String.concat ~sep:"\n"
       in
+      let pr_ctx =
+        match pr_number with
+        | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
+        | None -> ""
+      in
       let vars =
         [
           ("project_name", project_name);
           ("checks", formatted);
           ("count", Int.to_string (List.length checks));
+          ( "pr_number",
+            match pr_number with
+            | Some n -> Int.to_string (Pr_number.to_int n)
+            | None -> "" );
         ]
       in
       render_with_override ~project_name ~name:"ci_failure" ~vars
         ~default:(fun () ->
           Printf.sprintf
-            "# CI Failures\n\nThe following CI checks failed:\n\n%s" formatted)
+            "# CI Failures%s\n\nThe following CI checks failed:\n\n%s" pr_ctx
+            formatted)
 
-let render_ci_failure_unknown_prompt ~(project_name : string) =
-  let vars = [ ("project_name", project_name) ] in
+let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
+  let pr_ctx =
+    match pr_number with
+    | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
+    | None -> ""
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+    ]
+  in
   render_with_override ~project_name ~name:"ci_failure_unknown" ~vars
     ~default:(fun () ->
-      "# CI Failures\n\n\
-       One or more CI checks failed. Please investigate the failures and fix \
-       them.\n\n\
-       Run the CI checks locally or check the PR status for details.")
+      Printf.sprintf
+        "# CI Failures%s\n\n\
+         One or more CI checks failed. Please investigate the failures and fix \
+         them.\n\n\
+         Run the CI checks locally or check the PR status for details."
+        pr_ctx)
 
-let render_merge_conflict_prompt ~(project_name : string)
-    ~(base_branch : string) =
-  let vars = [ ("project_name", project_name); ("base_branch", base_branch) ] in
+let render_merge_conflict_prompt ~(project_name : string) ?pr_number
+    ~(base_branch : string) () =
+  let pr_ctx =
+    match pr_number with
+    | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
+    | None -> ""
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ("base_branch", base_branch);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+    ]
+  in
   render_with_override ~project_name ~name:"merge_conflict" ~vars
     ~default:(fun () ->
       Printf.sprintf
-        {|# Merge Conflict
+        {|# Merge Conflict%s
 
 Your branch has conflicts with `%s`. Please rebase and resolve conflicts:
 
@@ -224,7 +284,7 @@ git rebase origin/%s
 ```
 
 Resolve any conflicts, then continue with `git rebase --continue`.|}
-        base_branch base_branch)
+        pr_ctx base_branch base_branch)
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
