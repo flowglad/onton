@@ -297,9 +297,15 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of =
                         Orchestrator.set_has_conflict orch patch_id
                       else orch
                     in
-                    Base.List.fold poll_result.Poller.queue ~init:orch
-                      ~f:(fun acc kind ->
-                        Orchestrator.enqueue acc patch_id kind))));
+                    let orch =
+                      Base.List.fold poll_result.Poller.queue ~init:orch
+                        ~f:(fun acc kind ->
+                          Orchestrator.enqueue acc patch_id kind)
+                    in
+                    Base.List.fold pr_state.Github.Pr_state.comments ~init:orch
+                      ~f:(fun acc comment ->
+                        Orchestrator.add_pending_comment acc patch_id comment
+                          ~valid:true))));
     (* Reconcile *)
     Runtime.update runtime (fun snap ->
         let orch = snap.Runtime.orchestrator in
