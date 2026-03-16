@@ -10,6 +10,12 @@ let string_member_opt key json =
 
 let int_member key json = Yojson.Safe.Util.(member key json |> to_int)
 let bool_member key json = Yojson.Safe.Util.(member key json |> to_bool)
+
+let bool_member_opt key json =
+  match Yojson.Safe.Util.member key json with
+  | `Null -> None
+  | v -> Some (Yojson.Safe.Util.to_bool v)
+
 let float_member key json = Yojson.Safe.Util.(member key json |> to_float)
 let list_member key json = Yojson.Safe.Util.(member key json |> to_list)
 let nullable_string = function None -> `Null | Some s -> `String s
@@ -136,6 +142,11 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("session_failed", `Bool a.session_failed);
       ( "pending_comments",
         `List (List.map a.pending_comments ~f:pending_comment_to_yojson) );
+      ( "last_session_id",
+        match a.last_session_id with
+        | None -> `Null
+        | Some id -> `String (Session_id.to_string id) );
+      ("tried_fresh", `Bool a.tried_fresh);
     ]
 
 let patch_agent_of_yojson json =
@@ -165,7 +176,12 @@ let patch_agent_of_yojson json =
               |> Option.map ~f:Branch.of_string)
             ~ci_failure_count:(int_member "ci_failure_count" json)
             ~session_failed:(bool_member "session_failed" json)
-            ~pending_comments))
+            ~pending_comments
+            ~last_session_id:
+              (string_member_opt "last_session_id" json
+              |> Option.map ~f:Session_id.of_string)
+            ~tried_fresh:
+              (bool_member_opt "tried_fresh" json |> Option.value ~default:false)))
 
 (* ---------- Transition_entry ---------- *)
 

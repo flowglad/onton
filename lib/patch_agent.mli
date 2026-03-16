@@ -24,6 +24,8 @@ type t = private {
   ci_failure_count : int;
   session_failed : bool;
   pending_comments : pending_comment list;
+  last_session_id : Types.Session_id.t option;
+  tried_fresh : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -64,6 +66,16 @@ val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
 val set_session_failed : t -> t
 (** Mark the current session as failed. *)
 
+val set_last_session_id : t -> Types.Session_id.t -> t
+(** Record the session ID from the most recent Claude run. *)
+
+val set_tried_fresh : t -> t
+(** Mark that a fresh session has been attempted after a resume failure. *)
+
+val clear_session_fallback : t -> t
+(** Reset [tried_fresh] and [session_failed] (e.g., after successful
+    completion). *)
+
 val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
 
@@ -95,6 +107,8 @@ val restore :
   ci_failure_count:int ->
   session_failed:bool ->
   pending_comments:pending_comment list ->
+  last_session_id:Types.Session_id.t option ->
+  tried_fresh:bool ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

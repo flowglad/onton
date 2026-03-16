@@ -155,9 +155,8 @@ let mark_session_failed runtime patch_id =
       let orch = Orchestrator.set_session_failed orch patch_id in
       Orchestrator.complete orch patch_id)
 
-(** Run a Claude process and handle the result. Returns [Some pr_discover_fn]
-    for Start actions that succeeded (caller should discover PR), or [None]. *)
-let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
+(** Run a single Claude invocation. Returns [`Ok session_id] or [`Failed]. *)
+let run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
     ~session_id =
   let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
   let cwd = Eio.Path.(fs / worktree_path) in
@@ -169,13 +168,54 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
   | Error msg ->
       log_event runtime ~patch_id
         (Printf.sprintf "Claude process error: %s" msg);
-      mark_session_failed runtime patch_id;
       `Failed
-  | Ok r when r.Claude_runner.exit_code = 0 -> `Ok
+  | Ok r when r.Claude_runner.exit_code = 0 -> `Ok r.Claude_runner.session_id
   | Ok r ->
       log_event runtime ~patch_id
-        (Printf.sprintf "Claude exited with code %d, marking session failed"
-           r.Claude_runner.exit_code);
+        (Printf.sprintf "Claude exited with code %d" r.Claude_runner.exit_code);
+      `Failed
+
+(** Run Claude with two-shot session resume fallback.
+
+    1. If the agent has a [last_session_id], try [--resume] first. 2. If resume
+    fails and [tried_fresh] is false, retry with a fresh session. 3. If fresh
+    also fails (or [tried_fresh] is already true): [needs_intervention].
+
+    Returns [`Ok] or [`Failed]. Updates orchestrator state for session tracking.
+*)
+let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
+    =
+  let agent =
+    Runtime.read runtime (fun snap ->
+        Orchestrator.agent snap.Runtime.orchestrator patch_id)
+  in
+  let session_id = agent.Patch_agent.last_session_id in
+  let tried_fresh = agent.Patch_agent.tried_fresh in
+  match
+    run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
+      ~session_id
+  with
+  | `Ok sid ->
+      Runtime.update_orchestrator runtime (fun orch ->
+          Orchestrator.set_last_session_id orch patch_id sid);
+      `Ok
+  | `Failed when Option.is_some session_id && not tried_fresh -> (
+      log_event runtime ~patch_id "Resume failed, falling back to fresh session";
+      Runtime.update_orchestrator runtime (fun orch ->
+          Orchestrator.set_tried_fresh orch patch_id);
+      match
+        run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
+          ~session_id:None
+      with
+      | `Ok sid ->
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch = Orchestrator.set_last_session_id orch patch_id sid in
+              Orchestrator.clear_session_fallback orch patch_id);
+          `Ok
+      | `Failed ->
+          mark_session_failed runtime patch_id;
+          `Failed)
+  | `Failed ->
       mark_session_failed runtime patch_id;
       `Failed
 
@@ -387,7 +427,6 @@ let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
                       let result =
                         run_claude_and_handle ~runtime ~process_mgr ~fs
                           ~repo_root:config.repo_root ~patch_id ~prompt
-                          ~session_id:None
                       in
                       match result with
                       | `Ok ->
@@ -448,7 +487,6 @@ let runner_fiber ~runtime ~env ~config ~pr_registry ~branch_of =
                   let result =
                     run_claude_and_handle ~runtime ~process_mgr ~fs
                       ~repo_root:config.repo_root ~patch_id ~prompt
-                      ~session_id:None
                   in
                   match result with
                   | `Ok ->
