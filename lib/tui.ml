@@ -435,25 +435,36 @@ let visible_window ~selected ~total ~max_visible =
 
 let render_patches ~width ~selected ~max_visible (views : patch_view list) =
   let total = List.length views in
-  let offset, count = visible_window ~selected ~total ~max_visible in
-  let section_header = Term.styled [ Term.Sgr.bold ] " Patches" in
-  let visible = List.sub views ~pos:offset ~len:(min count (total - offset)) in
-  let rows =
-    List.mapi visible ~f:(fun i pv ->
-        render_patch_row ~width ~selected:(offset + i = selected) pv)
-  in
-  let scroll_up =
-    if offset > 0 then
-      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↑ %d more" offset) ]
-    else []
-  in
-  let remaining = total - offset - count in
-  let scroll_down =
-    if remaining > 0 then
-      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↓ %d more" remaining) ]
-    else []
-  in
-  (section_header :: scroll_up) @ rows @ scroll_down
+  if total = 0 then
+    [
+      Term.styled [ Term.Sgr.bold ] " Patches";
+      Term.styled [ Term.Sgr.dim ]
+        (Term.fit_width
+           (Int.max 1 (width - 2))
+           "  No patches. Press : then +N to add a PR (e.g. +123)");
+    ]
+  else
+    let offset, count = visible_window ~selected ~total ~max_visible in
+    let section_header = Term.styled [ Term.Sgr.bold ] " Patches" in
+    let visible =
+      List.sub views ~pos:offset ~len:(min count (total - offset))
+    in
+    let rows =
+      List.mapi visible ~f:(fun i pv ->
+          render_patch_row ~width ~selected:(offset + i = selected) pv)
+    in
+    let scroll_up =
+      if offset > 0 then
+        [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↑ %d more" offset) ]
+      else []
+    in
+    let remaining = total - offset - count in
+    let scroll_down =
+      if remaining > 0 then
+        [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↓ %d more" remaining) ]
+      else []
+    in
+    (section_header :: scroll_up) @ rows @ scroll_down
 
 let render_summary (views : patch_view list) =
   let count status =

@@ -1289,6 +1289,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             patches = [];
           }
       in
+      Project_store.save_config ~project_name ~github_token:token
+        ~github_owner:owner ~github_repo:repo
+        ~main_branch:(Branch.to_string main_branch)
+        ~poll_interval ~repo_root ~max_concurrency;
       Ok
         ( {
             project = Some project_name;
