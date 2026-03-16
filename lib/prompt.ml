@@ -44,10 +44,9 @@ let substitute_variables (template : string) (vars : (string * string) list) :
 
 let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
-  match Unix.access path [ Unix.R_OK ] with
-  | () ->
-      Some (Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all)
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> None
+  match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
+  | content -> Some content
+  | exception Sys_error _ -> None
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
