@@ -9,10 +9,29 @@ type pr_discovery = {
 }
 [@@deriving show, eq]
 
-type t = { discovered : pr_discovery list } [@@deriving show, eq]
+type t = { discovered : pr_discovery list; errors : (Patch_id.t * string) list }
+[@@deriving show, eq]
 
-(** Query [gh pr list] for a branch, returning discovery info if a live PR is
-    found. CLOSED PRs are skipped — only OPEN and MERGED are returned. *)
+(** Parse a single PR JSON object, returning [(pr_number, base_branch, merged)]
+    for OPEN/MERGED PRs, [None] for CLOSED, or [Error] for unexpected shapes. *)
+let parse_pr_entry fields =
+  match
+    ( List.Assoc.find fields ~equal:String.equal "number",
+      List.Assoc.find fields ~equal:String.equal "state",
+      List.Assoc.find fields ~equal:String.equal "baseRefName" )
+  with
+  | Some (`Int n), Some (`String "OPEN"), Some (`String base) ->
+      Ok (Some (Pr_number.of_int n, Branch.of_string base, (* merged *) false))
+  | Some (`Int n), Some (`String "MERGED"), Some (`String base) ->
+      Ok (Some (Pr_number.of_int n, Branch.of_string base, (* merged *) true))
+  | Some (`Int _), Some (`String "CLOSED"), _ -> Ok None
+  | Some (`Int _), Some (`String state), _ ->
+      Error (Printf.sprintf "unexpected PR state: %s" state)
+  | _ -> Error "unexpected PR JSON field shape"
+
+(** Query [gh pr list] for a branch, returning discovery info for the first
+    non-CLOSED PR. Iterates through all matching PRs to handle cases where the
+    most recent PR is CLOSED but an older one is still OPEN or MERGED. *)
 let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
   let args =
     [
@@ -27,8 +46,6 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
       "all";
       "--json";
       "number,state,baseRefName";
-      "--limit";
-      "1";
     ]
   in
   let base_env = Unix.environment () in
@@ -38,36 +55,33 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
     Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) ~env process_mgr args;
     let output = Buffer.contents buf in
     match Yojson.Basic.from_string output with
-    | `List (`Assoc fields :: _) -> (
-        match
-          ( List.Assoc.find fields ~equal:String.equal "number",
-            List.Assoc.find fields ~equal:String.equal "state",
-            List.Assoc.find fields ~equal:String.equal "baseRefName" )
-        with
-        | Some (`Int n), Some (`String "OPEN"), Some (`String base) ->
-            Ok
-              (Some
-                 (Pr_number.of_int n, Branch.of_string base, (* merged *) false))
-        | Some (`Int n), Some (`String "MERGED"), Some (`String base) ->
-            Ok
-              (Some
-                 (Pr_number.of_int n, Branch.of_string base, (* merged *) true))
-        | Some (`Int _), Some (`String "CLOSED"), _ -> Ok None
-        | Some (`Int _), Some (`String state), _ ->
-            Error (Printf.sprintf "unexpected PR state: %s" state)
-        | _ -> Ok None)
-    | `List [] -> Ok None
-    | _ -> Error "unexpected JSON shape"
+    | `List entries ->
+        let rec find_live = function
+          | [] -> Ok None
+          | `Assoc fields :: rest -> (
+              match parse_pr_entry fields with
+              | Ok (Some _ as result) -> Ok result
+              | Ok None -> find_live rest
+              | Error _ as e -> e)
+          | _ :: _ ->
+              Error (Printf.sprintf "unexpected PR JSON shape: %s" output)
+        in
+        find_live entries
+    | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let reconcile ~process_mgr ~token ~owner ~repo ~patches =
-  let discovered =
-    List.filter_map patches ~f:(fun (patch : Patch.t) ->
+  let discovered, errors =
+    List.fold patches ~init:([], [])
+      ~f:(fun (discovered, errors) (patch : Patch.t) ->
         match
           discover_pr ~process_mgr ~token ~owner ~repo ~branch:patch.branch
         with
         | Ok (Some (pr_number, base_branch, merged)) ->
-            Some { patch_id = patch.id; pr_number; base_branch; merged }
-        | Ok None | Error _ -> None)
+            ( { patch_id = patch.id; pr_number; base_branch; merged }
+              :: discovered,
+              errors )
+        | Ok None -> (discovered, errors)
+        | Error err -> (discovered, (patch.id, err) :: errors))
   in
-  { discovered }
+  { discovered = List.rev discovered; errors = List.rev errors }

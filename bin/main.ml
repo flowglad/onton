@@ -495,6 +495,10 @@ let run config =
               ~owner:config.github_owner ~repo:config.github_repo
               ~patches:gameplan.Gameplan.patches
           in
+          Base.List.iter startup.Startup_reconciler.errors
+            ~f:(fun (patch_id, err) ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "startup discovery error: %s" err));
           Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
               let pid = d.Startup_reconciler.patch_id in
               let pr = d.Startup_reconciler.pr_number in

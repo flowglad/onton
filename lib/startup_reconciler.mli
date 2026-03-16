@@ -17,8 +17,10 @@ type pr_discovery = {
 [@@deriving show, eq]
 (** A discovered PR for a patch, including the PR's base ref. *)
 
-type t = { discovered : pr_discovery list } [@@deriving show, eq]
-(** Result of startup reconciliation. *)
+type t = { discovered : pr_discovery list; errors : (Patch_id.t * string) list }
+[@@deriving show, eq]
+(** Result of startup reconciliation. [errors] contains per-patch discovery
+    failures with diagnostic messages. *)
 
 val reconcile :
   process_mgr:_ Eio.Process.mgr ->
@@ -29,5 +31,6 @@ val reconcile :
   t
 (** [reconcile ~process_mgr ~token ~owner ~repo ~patches] queries GitHub for
     each patch's branch to find existing PRs. For each found PR, queries its
-    merge status and base ref. CLOSED PRs are skipped. Errors for individual
-    patches are silently skipped — the patch will simply start fresh. *)
+    merge status and base ref. CLOSED PRs are skipped. Iterates through all
+    matching PRs to find the first non-CLOSED one. Per-patch errors are
+    collected in [errors] rather than silently dropped. *)
