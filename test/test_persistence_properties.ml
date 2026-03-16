@@ -13,9 +13,10 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
   let agents_a = Onton.Orchestrator.agents_map a.orchestrator |> Map.to_alist in
   let agents_b = Onton.Orchestrator.agents_map b.orchestrator |> Map.to_alist in
   let agents_eq =
-    List.length agents_a = List.length agents_b
-    && List.for_all2_exn agents_a agents_b ~f:(fun (ka, va) (kb, vb) ->
+    List.equal
+      (fun (ka, va) (kb, vb) ->
         Patch_id.equal ka kb && Onton.Patch_agent.equal va vb)
+      agents_a agents_b
   in
   let main_eq =
     Branch.equal
@@ -66,46 +67,52 @@ let () =
   let snapshot_roundtrip =
     QCheck2.Test.make ~name:"snapshot round-trip (fresh agents)" ~count:200
       gen_snapshot (fun snap ->
-        let json = Onton.Persistence.snapshot_to_yojson snap in
-        match
-          Onton.Persistence.snapshot_of_yojson ~gameplan:snap.gameplan json
-        with
-        | Ok snap' -> snapshots_equal snap snap'
-        | Error msg -> failwith msg)
+        try
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          match
+            Onton.Persistence.snapshot_of_yojson ~gameplan:snap.gameplan json
+          with
+          | Ok snap' -> snapshots_equal snap snap'
+          | Error _msg -> false
+        with _ -> false)
   in
   let snapshot_roundtrip_completed =
     QCheck2.Test.make ~name:"snapshot round-trip (completed agents)" ~count:200
       gen_snapshot_with_varied_agents (fun snap ->
-        let json = Onton.Persistence.snapshot_to_yojson snap in
-        match
-          Onton.Persistence.snapshot_of_yojson ~gameplan:snap.gameplan json
-        with
-        | Ok snap' -> snapshots_equal snap snap'
-        | Error msg -> failwith msg)
+        try
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          match
+            Onton.Persistence.snapshot_of_yojson ~gameplan:snap.gameplan json
+          with
+          | Ok snap' -> snapshots_equal snap snap'
+          | Error _msg -> false
+        with _ -> false)
   in
   let activity_log_roundtrip =
     QCheck2.Test.make ~name:"activity_log round-trip" ~count:200
       gen_activity_log (fun log ->
-        let gameplan =
-          Gameplan.
-            {
-              project_name = "t";
-              problem_statement = "t";
-              solution_summary = "t";
-              patches = [];
-            }
-        in
-        let orchestrator =
-          Onton.Orchestrator.create ~patches:[]
-            ~main_branch:(Branch.of_string "main")
-        in
-        let snap =
-          { Onton.Runtime.orchestrator; activity_log = log; gameplan }
-        in
-        let json = Onton.Persistence.snapshot_to_yojson snap in
-        match Onton.Persistence.snapshot_of_yojson ~gameplan json with
-        | Ok snap' -> Onton.Activity_log.equal log snap'.activity_log
-        | Error msg -> failwith msg)
+        try
+          let gameplan =
+            Gameplan.
+              {
+                project_name = "t";
+                problem_statement = "t";
+                solution_summary = "t";
+                patches = [];
+              }
+          in
+          let orchestrator =
+            Onton.Orchestrator.create ~patches:[]
+              ~main_branch:(Branch.of_string "main")
+          in
+          let snap =
+            { Onton.Runtime.orchestrator; activity_log = log; gameplan }
+          in
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          match Onton.Persistence.snapshot_of_yojson ~gameplan json with
+          | Ok snap' -> Onton.Activity_log.equal log snap'.activity_log
+          | Error _msg -> false
+        with _ -> false)
   in
   let snapshot_json_structure =
     QCheck2.Test.make ~name:"snapshot JSON has version field" ~count:100
@@ -120,16 +127,20 @@ let () =
   let file_roundtrip =
     QCheck2.Test.make ~name:"snapshot file I/O round-trip" ~count:50
       gen_snapshot (fun snap ->
-        let path = Stdlib.Filename.temp_file "onton_test_" ".json" in
-        Stdlib.Fun.protect
-          ~finally:(fun () -> try Stdlib.Sys.remove path with _ -> ())
-          (fun () ->
-            match Onton.Persistence.save ~path snap with
-            | Error msg -> failwith msg
-            | Ok () -> (
-                match Onton.Persistence.load ~path ~gameplan:snap.gameplan with
-                | Ok snap' -> snapshots_equal snap snap'
-                | Error msg -> failwith msg)))
+        try
+          let path = Stdlib.Filename.temp_file "onton_test_" ".json" in
+          Stdlib.Fun.protect
+            ~finally:(fun () -> try Stdlib.Sys.remove path with _ -> ())
+            (fun () ->
+              match Onton.Persistence.save ~path snap with
+              | Error _msg -> false
+              | Ok () -> (
+                  match
+                    Onton.Persistence.load ~path ~gameplan:snap.gameplan
+                  with
+                  | Ok snap' -> snapshots_equal snap snap'
+                  | Error _msg -> false))
+        with _ -> false)
   in
   let exit_code =
     QCheck_base_runner.run_tests

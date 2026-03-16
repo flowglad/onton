@@ -266,14 +266,14 @@ let gen_display_status =
 
 let gen_transition_entry =
   QCheck2.Gen.(
-    map
-      (fun ((timestamp, patch_id), (from_status, to_status), action) ->
-        Onton.Activity_log.Transition_entry.create ~timestamp ~patch_id
-          ~from_status ~to_status ~action)
-      (triple
-         (pair (float_range 0.0 1e12) gen_patch_id)
-         (pair gen_display_status gen_display_status)
-         (string_size ~gen:(char_range 'a' 'z') (int_range 3 20))))
+    let* timestamp = float_range 0.0 1e12 in
+    let* patch_id = gen_patch_id in
+    let* from_status = gen_display_status in
+    let* to_status = gen_display_status in
+    let* action = string_size ~gen:(char_range 'a' 'z') (int_range 3 20) in
+    return
+      (Onton.Activity_log.Transition_entry.create ~timestamp ~patch_id
+         ~from_status ~to_status ~action))
 
 let gen_event =
   QCheck2.Gen.(
