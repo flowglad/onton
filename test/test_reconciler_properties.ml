@@ -155,8 +155,10 @@ let prop_detect_rebases_skips_already_queued =
       in
       return (graph, views, ids))
     (fun (graph, views, newly_merged) ->
-      let actions = Reconciler.detect_rebases graph views ~newly_merged in
-      List.is_empty actions)
+      try
+        let actions = Reconciler.detect_rebases graph views ~newly_merged in
+        List.is_empty actions
+      with _ -> false)
 
 (* ========== plan_operations properties ========== *)
 
@@ -237,25 +239,27 @@ let prop_plan_picks_highest_priority =
   QCheck2.Test.make
     ~name:"plan_operations: picks highest priority op from queue" ~count:500
     gen_plan_scenario (fun (graph, main, has_merged, branch_of, views) ->
-      let actions =
-        Reconciler.plan_operations views ~has_merged ~branch_of ~graph ~main
-      in
-      let view_by_id =
-        Map.of_alist_exn
-          (module Types.Patch_id)
-          (List.map views ~f:(fun v -> (v.Reconciler.id, v)))
-      in
-      List.for_all actions ~f:(function
-        | Reconciler.Start_operation { patch_id; kind; _ } -> (
-            let v = Map.find_exn view_by_id patch_id in
-            let min_priority =
-              List.map v.Reconciler.queue ~f:Priority.priority
-              |> List.min_elt ~compare:Int.compare
-            in
-            match min_priority with
-            | Some p -> Priority.priority kind = p
-            | None -> false)
-        | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true))
+      try
+        let actions =
+          Reconciler.plan_operations views ~has_merged ~branch_of ~graph ~main
+        in
+        let view_by_id =
+          Map.of_alist_exn
+            (module Types.Patch_id)
+            (List.map views ~f:(fun v -> (v.Reconciler.id, v)))
+        in
+        List.for_all actions ~f:(function
+          | Reconciler.Start_operation { patch_id; kind; _ } -> (
+              let v = Map.find_exn view_by_id patch_id in
+              let min_priority =
+                List.map v.Reconciler.queue ~f:Priority.priority
+                |> List.min_elt ~compare:Int.compare
+              in
+              match min_priority with
+              | Some p -> Priority.priority kind = p
+              | None -> false)
+          | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true)
+      with _ -> false)
 
 let prop_plan_new_base_only_for_rebase =
   QCheck2.Test.make ~name:"plan_operations: new_base is Some only for Rebase"
@@ -316,20 +320,18 @@ let gen_reconcile_scenario =
     map2
       (fun merged_prs views -> (graph, main, branch_of, merged_prs, views))
       gen_subset
-      (map
-         (fun patches ->
-           List.map patches ~f:(fun (p : Types.Patch.t) ->
-               Reconciler.
-                 {
-                   id = p.id;
-                   has_pr = true;
-                   merged = false;
-                   busy = false;
-                   needs_intervention = false;
-                   queue = [];
-                   base_branch = main;
-                 }))
-         (return patches)))
+      (return
+         (List.map patches ~f:(fun (p : Types.Patch.t) ->
+              Reconciler.
+                {
+                  id = p.id;
+                  has_pr = true;
+                  merged = false;
+                  busy = false;
+                  needs_intervention = false;
+                  queue = [];
+                  base_branch = main;
+                }))))
 
 let prop_reconcile_merges_subset =
   QCheck2.Test.make
