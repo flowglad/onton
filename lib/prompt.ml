@@ -10,9 +10,7 @@ let prompts_dir (project_name : string) : string =
 
 let substitute_variables (template : string) (vars : (string * string) list) :
     string =
-  let var_map =
-    Map.of_alist_reduce (module String) vars ~f:(fun _first last -> last)
-  in
+  let var_map = Map.of_alist_exn (module String) vars in
   let buf = Buffer.create (String.length template) in
   let len = String.length template in
   let rec scan i =
@@ -56,11 +54,16 @@ let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
   | content -> Some content
-  | exception Sys_error _ -> (
+  | exception (Sys_error msg as exn) -> (
+      (* Sys_error could mean file-not-found OR permission-denied. Use stat
+         to distinguish: ENOENT/ENOTDIR means "no override", anything else
+         (including a successful stat) means a real read failure. *)
       match Unix.stat path with
       | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
-      | _ | (exception _) ->
-          Stdlib.failwith (Printf.sprintf "load_override: cannot read %s" path))
+      | _ -> Stdlib.raise exn
+      | exception _ ->
+          Stdlib.failwith
+            (Printf.sprintf "load_override: cannot read %s: %s" path msg))
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
@@ -95,6 +98,7 @@ let render_patch_prompt ~(project_name : string) (patch : Patch.t)
       ("dependencies", deps);
       ("branch", branch);
       ("base_branch", base_branch);
+      ("patch_id", Patch_id.to_string patch.Patch.id);
       ("patches_list", patches_list);
     ]
   in
@@ -221,7 +225,9 @@ let render_human_message_prompt ~(project_name : string)
       in
       render_with_override ~project_name ~name:"human_message" ~vars
         ~default:(fun () ->
-          Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
+          if Int.equal (List.length messages) 1 then
+            Printf.sprintf "# Message from Human\n\n%s" formatted_flat
+          else Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
 
 let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
