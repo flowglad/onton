@@ -11,7 +11,7 @@ type config = {
   main_branch : Branch.t;
   poll_interval : float;
   repo_root : string;
-  max_concurrent : int;
+  max_concurrency : int;
 }
 
 let validate_config config =
@@ -30,9 +30,9 @@ let validate_config config =
         ( Base.String.is_empty
             (Base.String.strip (Branch.to_string config.main_branch)),
           "--main-branch must be non-empty" );
-        ( config.max_concurrent <= 0,
-          Printf.sprintf "--max-concurrent must be > 0 (got %d)"
-            config.max_concurrent );
+        ( config.max_concurrency < 1,
+          Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
+            config.max_concurrency );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
@@ -48,14 +48,16 @@ let validate_config config =
     patch's branch name after Claude completes work. *)
 
 module Pr_registry = struct
-  type t = (Patch_id.t, Pr_number.t) Hashtbl.t
+  type t = { mutex : Eio.Mutex.t; table : (Patch_id.t, Pr_number.t) Hashtbl.t }
 
-  let create () : t = Hashtbl.create 64
+  let create () : t = { mutex = Eio.Mutex.create (); table = Hashtbl.create 64 }
 
   let register (t : t) ~patch_id ~pr_number =
-    Hashtbl.replace t patch_id pr_number
+    Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
+        Hashtbl.replace t.table patch_id pr_number)
 
-  let find (t : t) ~patch_id = Hashtbl.find_opt t patch_id
+  let find (t : t) ~patch_id =
+    Eio.Mutex.use_ro t.mutex (fun () -> Hashtbl.find_opt t.table patch_id)
 end
 
 (** Discover PR number for a branch by calling [gh pr list]. Returns [Ok] with
@@ -159,8 +161,9 @@ let mark_session_failed runtime patch_id =
       let orch = Orchestrator.set_session_failed orch patch_id in
       Orchestrator.complete orch patch_id)
 
-(** Run a single Claude invocation. Returns [`Ok session_id] or [`Failed]. *)
-let run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
+(** Run a Claude process and handle the result. Returns [`Ok] on successful
+    Claude exit (code 0), otherwise [`Failed]. *)
+let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
     ~session_id =
   let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
   let cwd = Eio.Path.(fs / worktree_path) in
@@ -172,55 +175,13 @@ let run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
   | Error msg ->
       log_event runtime ~patch_id
         (Printf.sprintf "Claude process error: %s" msg);
+      mark_session_failed runtime patch_id;
       `Failed
-  | Ok r when r.Claude_runner.exit_code = 0 -> `Ok r.Claude_runner.session_id
+  | Ok r when r.Claude_runner.exit_code = 0 -> `Ok
   | Ok r ->
       log_event runtime ~patch_id
-        (Printf.sprintf "Claude exited with code %d" r.Claude_runner.exit_code);
-      `Failed
-
-(** Run Claude with two-shot session resume fallback.
-
-    1. If the agent has a [last_session_id], try [--resume] first. 2. If resume
-    fails and [tried_fresh] is false, retry with a fresh session. 3. If fresh
-    also fails (or [tried_fresh] is already true): [needs_intervention].
-
-    Returns [`Ok] or [`Failed]. Updates orchestrator state for session tracking.
-*)
-let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-    =
-  let agent =
-    Runtime.read runtime (fun snap ->
-        Orchestrator.agent snap.Runtime.orchestrator patch_id)
-  in
-  let session_id = agent.Patch_agent.last_session_id in
-  let tried_fresh = agent.Patch_agent.tried_fresh in
-  match
-    run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-      ~session_id
-  with
-  | `Ok sid ->
-      Runtime.update_orchestrator runtime (fun orch ->
-          let orch = Orchestrator.set_last_session_id orch patch_id sid in
-          Orchestrator.clear_session_fallback orch patch_id);
-      `Ok
-  | `Failed when Option.is_some session_id && not tried_fresh -> (
-      log_event runtime ~patch_id "Resume failed, falling back to fresh session";
-      Runtime.update_orchestrator runtime (fun orch ->
-          Orchestrator.set_tried_fresh orch patch_id);
-      match
-        run_claude_once ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-          ~session_id:None
-      with
-      | `Ok sid ->
-          Runtime.update_orchestrator runtime (fun orch ->
-              let orch = Orchestrator.set_last_session_id orch patch_id sid in
-              Orchestrator.clear_session_fallback orch patch_id);
-          `Ok
-      | `Failed ->
-          mark_session_failed runtime patch_id;
-          `Failed)
-  | `Failed ->
+        (Printf.sprintf "Claude exited with code %d, marking session failed"
+           r.Claude_runner.exit_code);
       mark_session_failed runtime patch_id;
       `Failed
 
@@ -390,7 +351,11 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
   let clock = Eio.Stdenv.clock env in
-  let sem = Eio.Semaphore.make config.max_concurrent in
+  let semaphore = Eio.Semaphore.make config.max_concurrency in
+  let with_claude_slot f =
+    Eio.Semaphore.acquire semaphore;
+    Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
+  in
   let rec loop () =
     let actions, gameplan =
       Runtime.read runtime (fun snap ->
@@ -410,7 +375,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
       Runtime.update_orchestrator runtime (fun orch ->
           Base.List.fold actions ~init:orch ~f:(fun orch action ->
               Orchestrator.fire orch action));
-    (* Spawn all actions concurrently *)
+    (* Spawn all actions concurrently, limited by max_concurrency semaphore *)
     let action_fibers =
       Base.List.filter_map actions ~f:(fun action ->
           match action with
@@ -427,15 +392,33 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
               | Some patch ->
                   Some
                     (fun () ->
-                      let prompt =
-                        Prompt.render_patch_prompt patch gameplan
-                          ~base_branch:(Branch.to_string base_branch)
-                      in
                       let result =
-                        run_claude_and_handle ~runtime ~process_mgr ~fs
-                          ~repo_root:config.repo_root ~patch_id ~prompt
+                        with_claude_slot (fun () ->
+                            let agent =
+                              Runtime.read runtime (fun snap ->
+                                  Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id)
+                            in
+                            if
+                              agent.Patch_agent.merged
+                              || agent.Patch_agent.needs_intervention
+                              || not agent.Patch_agent.busy
+                            then (
+                              log_event runtime ~patch_id
+                                "runner: action stale after semaphore wait, \
+                                 skipping";
+                              `Stale)
+                            else
+                              let prompt =
+                                Prompt.render_patch_prompt patch gameplan
+                                  ~base_branch:(Branch.to_string base_branch)
+                              in
+                              run_claude_and_handle ~runtime ~process_mgr ~fs
+                                ~repo_root:config.repo_root ~patch_id ~prompt
+                                ~session_id:None)
                       in
                       match result with
+                      | `Stale | `Failed -> ()
                       | `Ok ->
                           let rec discover remaining =
                             match
@@ -458,53 +441,69 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                   (Printf.sprintf "PR discovery failed: %s" msg);
                                 mark_session_failed runtime patch_id
                           in
-                          discover 2
-                      | `Failed -> ()))
+                          discover 2))
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
-                  let agent =
-                    Runtime.read runtime (fun snap ->
-                        Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                  in
-                  let base =
-                    Base.Option.value_map agent.Patch_agent.base_branch
-                      ~default:(Branch.to_string main) ~f:Branch.to_string
-                  in
-                  let pending_comments =
-                    Base.List.map agent.Patch_agent.pending_comments
-                      ~f:(fun (pc : Patch_agent.pending_comment) ->
-                        pc.Patch_agent.comment)
-                  in
-                  let prompt =
-                    match kind with
-                    | Operation_kind.Ci -> Prompt.render_ci_failure_prompt []
-                    | Operation_kind.Review_comments ->
-                        Prompt.render_review_prompt pending_comments
-                    | Operation_kind.Merge_conflict ->
-                        Prompt.render_merge_conflict_prompt ~base_branch:base
-                    | Operation_kind.Human ->
-                        Prompt.render_human_message_prompt
-                          (Base.List.map pending_comments
-                             ~f:(fun (c : Comment.t) -> c.Comment.body))
-                    | Operation_kind.Rebase ->
-                        Prompt.render_merge_conflict_prompt ~base_branch:base
-                  in
                   let result =
-                    run_claude_and_handle ~runtime ~process_mgr ~fs
-                      ~repo_root:config.repo_root ~patch_id ~prompt
+                    with_claude_slot (fun () ->
+                        let agent =
+                          Runtime.read runtime (fun snap ->
+                              Orchestrator.agent snap.Runtime.orchestrator
+                                patch_id)
+                        in
+                        if
+                          agent.Patch_agent.merged
+                          || agent.Patch_agent.needs_intervention
+                          || not agent.Patch_agent.busy
+                        then (
+                          log_event runtime ~patch_id
+                            "runner: action stale after semaphore wait, \
+                             skipping";
+                          `Stale)
+                        else
+                          let base =
+                            Base.Option.value_map agent.Patch_agent.base_branch
+                              ~default:(Branch.to_string main)
+                              ~f:Branch.to_string
+                          in
+                          let pending_comments =
+                            Base.List.map agent.Patch_agent.pending_comments
+                              ~f:(fun (pc : Patch_agent.pending_comment) ->
+                                pc.Patch_agent.comment)
+                          in
+                          let prompt =
+                            match kind with
+                            | Operation_kind.Ci ->
+                                (* TODO: Patch_agent doesn't store Ci_check.t
+                                   details yet — only ci_failure_count.
+                                   Propagate check details from Poller to
+                                   surface them here. *)
+                                Prompt.render_ci_failure_prompt []
+                            | Operation_kind.Review_comments ->
+                                Prompt.render_review_prompt pending_comments
+                            | Operation_kind.Merge_conflict ->
+                                Prompt.render_merge_conflict_prompt
+                                  ~base_branch:base
+                            | Operation_kind.Human ->
+                                Prompt.render_human_message_prompt
+                                  (Base.List.map pending_comments
+                                     ~f:(fun (c : Comment.t) -> c.Comment.body))
+                            | Operation_kind.Rebase ->
+                                Prompt.render_merge_conflict_prompt
+                                  ~base_branch:base
+                          in
+                          run_claude_and_handle ~runtime ~process_mgr ~fs
+                            ~repo_root:config.repo_root ~patch_id ~prompt
+                            ~session_id:None)
                   in
                   match result with
+                  | `Stale | `Failed -> ()
                   | `Ok ->
                       Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id)
-                  | `Failed -> ()))
+                          Orchestrator.complete orch patch_id)))
     in
-    if not (Base.List.is_empty action_fibers) then
-      Eio.Fiber.all
-        (Base.List.map action_fibers ~f:(fun f () ->
-             Eio.Semaphore.acquire sem;
-             Fun.protect f ~finally:(fun () -> Eio.Semaphore.release sem)));
+    if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
     Eio.Time.sleep clock 1.0;
     loop ()
   in
@@ -609,18 +608,18 @@ let repo_root_arg =
     & info [ "repo-root" ] ~docv:"PATH"
         ~doc:"Path to the git repository root (default: .).")
 
-let max_concurrent_arg =
+let max_concurrency_arg =
   let open Cmdliner in
   Arg.(
-    value & opt int 4
-    & info [ "max-concurrent" ] ~docv:"N"
-        ~doc:"Maximum number of concurrent Claude processes (default: 4)."
-        ~env:(Cmd.Env.info "ONTON_MAX_CONCURRENT"))
+    value & opt int 5
+    & info [ "max-concurrency" ] ~docv:"N"
+        ~doc:"Maximum number of concurrent Claude processes (default: 5)."
+        ~env:(Cmd.Env.info "ONTON_MAX_CONCURRENCY"))
 
 let main_cmd =
   let open Cmdliner in
   let run_cmd gameplan_path github_token github_owner github_repo main_branch
-      poll_interval repo_root max_concurrent =
+      poll_interval repo_root max_concurrency =
     let config =
       {
         gameplan_path;
@@ -630,7 +629,7 @@ let main_cmd =
         main_branch = Branch.of_string main_branch;
         poll_interval;
         repo_root;
-        max_concurrent;
+        max_concurrency;
       }
     in
     run config
@@ -639,7 +638,7 @@ let main_cmd =
     Term.(
       const run_cmd $ gameplan_path_arg $ github_token_arg $ github_owner_arg
       $ github_repo_arg $ main_branch_arg $ poll_interval_arg $ repo_root_arg
-      $ max_concurrent_arg)
+      $ max_concurrency_arg)
   in
   let info =
     Cmd.info "onton" ~version:"0.1.0"

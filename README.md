@@ -39,6 +39,7 @@ onton GAMEPLAN --token TOKEN --owner OWNER --repo REPO [OPTIONS]
 | `--main-branch` | `main` | Main branch name |
 | `--poll-interval` | `30.0` | GitHub polling interval in seconds |
 | `--repo-root` | `.` | Path to the git repository root |
+| `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 
 ## Build & test
 
