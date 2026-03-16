@@ -941,11 +941,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
                             | None -> main
                           in
                           let new_base =
-                            Graph.initial_base graph patch_id ~has_merged
-                              ~branch_of ~main
+                            match
+                              Graph.open_pr_deps graph patch_id ~has_merged
+                            with
+                            | [] -> Some main
+                            | [ d ] -> Some (branch_of d)
+                            | _ -> None
                           in
-                          match agent.Patch_agent.pr_number with
-                          | Some pr_number when Branch.equal new_base main ->
+                          match (agent.Patch_agent.pr_number, new_base) with
+                          | Some pr_number, Some b when Branch.equal b main ->
                               set_pr_draft ~process_mgr
                                 ~token:config.github_token
                                 ~owner:config.github_owner
