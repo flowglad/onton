@@ -194,22 +194,22 @@ let get_size () =
 module Raw = struct
   type state = { original : Unix.terminal_io }
 
+  let make_raw_settings (original : Unix.terminal_io) : Unix.terminal_io =
+    {
+      original with
+      Unix.c_icanon = false;
+      c_echo = false;
+      c_icrnl = false;
+      c_ixon = false;
+      c_vmin = 1;
+      c_vtime = 0;
+      c_isig = false;
+    }
+
   let enter () =
     let fd = Unix.stdin in
     let original = Unix.tcgetattr fd in
-    let raw =
-      {
-        original with
-        Unix.c_icanon = false;
-        c_echo = false;
-        c_icrnl = false;
-        c_ixon = false;
-        c_vmin = 1;
-        c_vtime = 0;
-        c_isig = false;
-      }
-    in
-    Unix.tcsetattr fd Unix.TCSAFLUSH raw;
+    Unix.tcsetattr fd Unix.TCSAFLUSH (make_raw_settings original);
     { original }
 
   let leave state = Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH state.original
@@ -220,6 +220,11 @@ module Raw = struct
 
   (** Shared mutable state for suspend/resume across signal boundaries. *)
   let _saved_state : state option ref = ref None
+
+  (** Saved previous signal handlers, restored by {!clear_suspend_handlers}. *)
+  let _saved_handlers :
+      (Stdlib.Sys.signal_behavior * Stdlib.Sys.signal_behavior) option ref =
+    ref None
 
   (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
       TUI render loop should check and clear this each iteration. *)
@@ -232,8 +237,8 @@ module Raw = struct
     match !_saved_state with
     | None -> () (* not in raw mode, nothing to do *)
     | Some state ->
-        leave state;
         _saved_state := None;
+        leave state;
         let (_ : int) =
           Unix.write_substring Unix.stdout Cursor.show 0
             (String.length Cursor.show)
@@ -245,32 +250,19 @@ module Raw = struct
       re-enter raw mode around the stop. *)
   let install_suspend_handlers (state : state) =
     _saved_state := Some state;
-    let _prev_tstp =
+    let prev_tstp =
       Stdlib.Sys.signal Stdlib.Sys.sigtstp
         (Stdlib.Sys.Signal_handle (fun _signum -> suspend ()))
     in
-    ignore _prev_tstp;
-    let _prev_cont =
+    let prev_cont =
       Stdlib.Sys.signal Stdlib.Sys.sigcont
         (Stdlib.Sys.Signal_handle
            (fun _signum ->
              (* Re-enter raw mode after resume — guard against spurious
                 delivery when _saved_state was already cleared. *)
              if Option.is_none !_saved_state then (
-               let fd = Unix.stdin in
-               let raw =
-                 {
-                   state.original with
-                   Unix.c_icanon = false;
-                   c_echo = false;
-                   c_icrnl = false;
-                   c_ixon = false;
-                   c_vmin = 1;
-                   c_vtime = 0;
-                   c_isig = false;
-                 }
-               in
-               Unix.tcsetattr fd Unix.TCSAFLUSH raw;
+               Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH
+                 (make_raw_settings state.original);
                _saved_state := Some state;
                let (_ : int) =
                  Unix.write_substring Unix.stdout Cursor.hide 0
@@ -278,13 +270,18 @@ module Raw = struct
                in
                redraw_needed := true)))
     in
-    ()
+    _saved_handlers := Some (prev_tstp, prev_cont)
 
-  (** Clean up suspend handlers, clearing saved state. *)
+  (** Clean up suspend handlers, restoring previous handlers and clearing saved
+      state. *)
   let clear_suspend_handlers () =
     _saved_state := None;
-    ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp Stdlib.Sys.Signal_default);
-    ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont Stdlib.Sys.Signal_default)
+    (match !_saved_handlers with
+    | None -> ()
+    | Some (prev_tstp, prev_cont) ->
+        ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp prev_tstp);
+        ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont prev_cont));
+    _saved_handlers := None
 end
 
 (** Keyboard input types and parsing. *)
