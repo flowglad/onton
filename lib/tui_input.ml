@@ -16,6 +16,8 @@ type command =
   | Select
   | Back
   | Noop
+  | Send_message of Types.Patch_id.t * string
+  | Add_pr of Types.Pr_number.t
 [@@deriving show, eq]
 
 let of_key (key : Term.Key.t) : command =
@@ -44,9 +46,64 @@ let apply_move ~count ~selected (cmd : command) =
       | Move_down -> selected + 1
       | Page_up -> selected - 5
       | Page_down -> selected + 5
-      | Quit | Refresh | Help | Select | Back | Noop -> selected
+      | Quit | Refresh | Help | Select | Back | Noop | Send_message _
+      | Add_pr _ ->
+          selected
     in
     clamp next
+
+let equal_command_option = Option.equal equal_command
+
+(** Parse a text-mode input line into a command.
+
+    Supported formats:
+    - ["N> message"] — send a human message to patch N
+    - ["+123"] — register ad-hoc PR #123 for the currently selected patch
+
+    Returns [None] for empty or unrecognised input. *)
+let parse_line (line : string) : command option =
+  let line = String.strip line in
+  if String.is_empty line then None
+  else if String.is_prefix line ~prefix:"+" then
+    let rest = String.drop_prefix line 1 in
+    match Int.of_string_opt rest with
+    | Some n when n > 0 -> Some (Add_pr (Types.Pr_number.of_int n))
+    | _ -> None
+  else
+    match String.lsplit2 line ~on:'>' with
+    | Some (num_str, msg) -> (
+        let num_str = String.strip num_str in
+        let msg = String.strip msg in
+        match Int.of_string_opt num_str with
+        | Some n when n > 0 && not (String.is_empty msg) ->
+            Some
+              (Send_message (Types.Patch_id.of_string (Int.to_string n), msg))
+        | _ -> None)
+    | None -> None
+
+let%test "parse_line: message input" =
+  equal_command_option
+    (parse_line "3> fix the tests")
+    (Some (Send_message (Types.Patch_id.of_string "3", "fix the tests")))
+
+let%test "parse_line: add PR" =
+  equal_command_option (parse_line "+123")
+    (Some (Add_pr (Types.Pr_number.of_int 123)))
+
+let%test "parse_line: empty" = Option.is_none (parse_line "")
+let%test "parse_line: whitespace" = Option.is_none (parse_line "   ")
+let%test "parse_line: invalid" = Option.is_none (parse_line "hello")
+
+let%test "parse_line: message with spaces in number" =
+  equal_command_option
+    (parse_line " 5 > rewrite module")
+    (Some (Send_message (Types.Patch_id.of_string "5", "rewrite module")))
+
+let%test "parse_line: zero PR rejected" = Option.is_none (parse_line "+0")
+let%test "parse_line: negative PR rejected" = Option.is_none (parse_line "+-1")
+
+let%test "parse_line: empty message rejected" =
+  Option.is_none (parse_line "3>  ")
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
 let%test "ctrl-c maps to Quit" = equal_command (of_key (Ctrl 'c')) Quit

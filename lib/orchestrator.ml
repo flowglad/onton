@@ -128,6 +128,11 @@ let add_pending_comment t patch_id comment ~valid =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.add_pending_comment a comment ~valid)
 
+let send_human_message t patch_id message =
+  let comment = Comment.{ body = message; path = None; line = None } in
+  let t = add_pending_comment t patch_id comment ~valid:true in
+  enqueue t patch_id Operation_kind.Human
+
 let set_session_failed t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_session_failed
 

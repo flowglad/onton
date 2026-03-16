@@ -209,25 +209,96 @@ let tui_fiber ~runtime ~clock ~stdout =
   in
   loop ()
 
-(** Input fiber — reads keypresses and dispatches TUI commands. *)
-let input_fiber ~runtime ~selected =
+(** Input fiber — reads keypresses and dispatches TUI commands.
+
+    Supports two modes:
+    - Normal mode: single-key navigation (j/k, arrows, q to quit)
+    - Text mode: entered via [:], accumulates a line buffer, dispatched on Enter
+
+    Text-mode commands (parsed by {!Tui_input.parse_line}):
+    - ["N> message"] — send human message to patch N
+    - ["+123"] — register ad-hoc PR #123 for the selected patch *)
+let input_fiber ~runtime ~selected ~pr_registry =
+  let buf = Buffer.create 64 in
+  let text_mode = ref false in
   let rec loop () =
     match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
     | Some key -> (
-        let cmd = Tui_input.of_key key in
-        match cmd with
-        | Tui_input.Quit -> raise Quit_tui
-        | Tui_input.Refresh | Tui_input.Help | Tui_input.Select | Tui_input.Back
-        | Tui_input.Noop | Tui_input.Move_up | Tui_input.Move_down
-        | Tui_input.Page_up | Tui_input.Page_down ->
-            let count =
-              Runtime.read runtime (fun snap ->
-                  Base.List.length
-                    (Orchestrator.all_agents snap.Runtime.orchestrator))
-            in
-            selected := Tui_input.apply_move ~count ~selected:!selected cmd;
-            loop ())
+        if !text_mode then
+          match key with
+          | Term.Key.Escape ->
+              Buffer.clear buf;
+              text_mode := false;
+              loop ()
+          | Term.Key.Enter ->
+              let line = Buffer.contents buf in
+              Buffer.clear buf;
+              text_mode := false;
+              (match Tui_input.parse_line line with
+              | Some (Tui_input.Send_message (patch_id, msg)) ->
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.send_human_message orch patch_id msg);
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Human message sent: %s" msg)
+              | Some (Tui_input.Add_pr pr_number) ->
+                  (* Use the currently selected patch for ad-hoc PR registration *)
+                  let patch_id =
+                    Runtime.read runtime (fun snap ->
+                        let agents =
+                          Orchestrator.all_agents snap.Runtime.orchestrator
+                        in
+                        let idx =
+                          Base.Int.min !selected (Base.List.length agents - 1)
+                        in
+                        (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+                  in
+                  Pr_registry.register pr_registry ~patch_id ~pr_number;
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Ad-hoc PR #%d registered"
+                       (Pr_number.to_int pr_number))
+              | Some
+                  ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
+                  | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
+                  | Tui_input.Page_down | Tui_input.Select | Tui_input.Back
+                  | Tui_input.Noop )
+              | None ->
+                  log_event runtime
+                    (Printf.sprintf "Unrecognised input: %s" line));
+              loop ()
+          | Term.Key.Backspace | Term.Key.Delete ->
+              let len = Buffer.length buf in
+              if len > 0 then (
+                let contents = Buffer.contents buf in
+                Buffer.clear buf;
+                Buffer.add_string buf (String.sub contents 0 (len - 1)));
+              loop ()
+          | Term.Key.Char c ->
+              Buffer.add_char buf c;
+              loop ()
+          | Term.Key.Up | Term.Key.Down | Term.Key.Left | Term.Key.Right
+          | Term.Key.Home | Term.Key.End | Term.Key.Page_up | Term.Key.Page_down
+          | Term.Key.Tab | Term.Key.F _ | Term.Key.Ctrl _ | Term.Key.Unknown _
+            ->
+              loop ()
+        else
+          let cmd = Tui_input.of_key key in
+          match cmd with
+          | Tui_input.Quit -> raise Quit_tui
+          | Tui_input.Select ->
+              (* Enter text mode on Select (Enter key) *)
+              text_mode := true;
+              loop ()
+          | Tui_input.Refresh | Tui_input.Help | Tui_input.Back | Tui_input.Noop
+          | Tui_input.Send_message _ | Tui_input.Add_pr _ | Tui_input.Move_up
+          | Tui_input.Move_down | Tui_input.Page_up | Tui_input.Page_down ->
+              let count =
+                Runtime.read runtime (fun snap ->
+                    Base.List.length
+                      (Orchestrator.all_agents snap.Runtime.orchestrator))
+              in
+              selected := Tui_input.apply_move ~count ~selected:!selected cmd;
+              loop ())
   in
   loop ()
 
@@ -501,7 +572,7 @@ let run config =
                     Eio.Fiber.all
                       [
                         (fun () -> tui_fiber ~runtime ~clock ~stdout);
-                        (fun () -> input_fiber ~runtime ~selected);
+                        (fun () -> input_fiber ~runtime ~selected ~pr_registry);
                         (fun () ->
                           poller_fiber ~runtime ~clock ~net ~github ~config
                             ~pr_registry ~branch_of);
