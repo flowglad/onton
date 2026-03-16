@@ -29,8 +29,11 @@ let remove ~process_mgr ~repo_root t =
 
 let add_existing ~patch_id ~branch ~path =
   let path = normalize_path path in
-  if not (Stdlib.Sys.is_directory path) then
-    failwith ("Worktree path is not a directory: " ^ path);
+  (match Stdlib.Sys.file_exists path with
+  | false -> failwith ("Worktree path does not exist: " ^ path)
+  | true ->
+      if not (Stdlib.Sys.is_directory path) then
+        failwith ("Worktree path is not a directory: " ^ path));
   { patch_id; branch; path }
 
 let detect_branch ~process_mgr ~path =
@@ -53,14 +56,21 @@ let list_with_branches ~process_mgr ~repo_root =
   let rec parse acc current_path current_branch = function
     | [] ->
         let acc =
-          match (current_path, current_branch) with
-          | Some p, Some b -> (p, b) :: acc
-          | _ -> acc
+          match current_path with
+          | Some p -> (p, current_branch) :: acc
+          | None -> acc
         in
         List.rev acc
     | line :: rest -> (
         match String.lsplit2 line ~on:' ' with
-        | Some ("worktree", p) -> parse acc (Some p) None rest
+        | Some ("worktree", p) ->
+            (* Flush any pending entry that wasn't terminated by a blank line *)
+            let acc =
+              match current_path with
+              | Some prev_p -> (prev_p, current_branch) :: acc
+              | None -> acc
+            in
+            parse acc (Some p) None rest
         | Some ("branch", b) ->
             let branch_name =
               match String.chop_prefix b ~prefix:"refs/heads/" with
@@ -73,9 +83,9 @@ let list_with_branches ~process_mgr ~repo_root =
         | _ ->
             if String.is_empty line then
               let acc =
-                match (current_path, current_branch) with
-                | Some p, Some b -> (p, b) :: acc
-                | _ -> acc
+                match current_path with
+                | Some p -> (p, current_branch) :: acc
+                | None -> acc
               in
               parse acc None None rest
             else parse acc current_path current_branch rest)
