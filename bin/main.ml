@@ -681,10 +681,13 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                     in
                     let _ci_store =
                       let failed =
+                        let failure_conclusions =
+                          [ "failure"; "error"; "action_required"; "timed_out" ]
+                        in
                         Base.List.filter poll_result.Poller.ci_checks
                           ~f:(fun (c : Ci_check.t) ->
-                            not
-                              (Base.String.equal c.Ci_check.conclusion "success"))
+                            Base.List.mem failure_conclusions
+                              c.Ci_check.conclusion ~equal:Base.String.equal)
                       in
                       if not (Base.List.is_empty failed) then
                         Hashtbl.replace ci_checks_cache patch_id failed

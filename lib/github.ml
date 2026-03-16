@@ -102,26 +102,30 @@ let parse_check_context_node node =
   let open Yojson.Safe.Util in
   let typename = node |> member "__typename" |> to_string_option in
   match typename with
-  | Some "CheckRun" ->
-      let name = node |> member "name" |> to_string in
-      let conclusion =
-        match node |> member "conclusion" |> to_string_option with
-        | Some c -> String.lowercase c
-        | None -> "pending"
-      in
-      let details_url = node |> member "detailsUrl" |> to_string_option in
-      let description = node |> member "text" |> to_string_option in
-      Some Types.Ci_check.{ name; conclusion; details_url; description }
-  | Some "StatusContext" ->
-      let name = node |> member "context" |> to_string in
-      let conclusion =
-        match node |> member "state" |> to_string_option with
-        | Some s -> String.lowercase s
-        | None -> "pending"
-      in
-      let details_url = node |> member "targetUrl" |> to_string_option in
-      let description = node |> member "description" |> to_string_option in
-      Some Types.Ci_check.{ name; conclusion; details_url; description }
+  | Some "CheckRun" -> (
+      match node |> member "name" |> to_string_option with
+      | None -> None
+      | Some name ->
+          let conclusion =
+            match node |> member "conclusion" |> to_string_option with
+            | Some c -> String.lowercase c
+            | None -> "pending"
+          in
+          let details_url = node |> member "detailsUrl" |> to_string_option in
+          let description = node |> member "text" |> to_string_option in
+          Some Types.Ci_check.{ name; conclusion; details_url; description })
+  | Some "StatusContext" -> (
+      match node |> member "context" |> to_string_option with
+      | None -> None
+      | Some name ->
+          let conclusion =
+            match node |> member "state" |> to_string_option with
+            | Some s -> String.lowercase s
+            | None -> "pending"
+          in
+          let details_url = node |> member "targetUrl" |> to_string_option in
+          let description = node |> member "description" |> to_string_option in
+          Some Types.Ci_check.{ name; conclusion; details_url; description })
   | _ -> None
 
 let parse_comment_node node =
