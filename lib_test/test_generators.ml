@@ -241,6 +241,80 @@ let gen_violation =
       (string_size ~gen:(char_range 'a' 'z') (int_range 5 30))
       (string_size ~gen:printable (int_range 5 50)))
 
+(* -- Display status / Activity log -- *)
+
+(** Exhaustive identity match ensures a compile error if a variant is added. *)
+let all_display_statuses : Onton.Tui.display_status list =
+  let open Onton.Tui in
+  let id = function
+    | Merged -> Merged
+    | Needs_help -> Needs_help
+    | Approved_idle -> Approved_idle
+    | Approved_running -> Approved_running
+    | Fixing_ci -> Fixing_ci
+    | Addressing_review -> Addressing_review
+    | Resolving_conflict -> Resolving_conflict
+    | Responding_to_human -> Responding_to_human
+    | Rebasing -> Rebasing
+    | Starting -> Starting
+    | Ci_queued -> Ci_queued
+    | Review_queued -> Review_queued
+    | Awaiting_ci -> Awaiting_ci
+    | Awaiting_review -> Awaiting_review
+    | Pending -> Pending
+  in
+  List.map ~f:id
+    [
+      Merged;
+      Needs_help;
+      Approved_idle;
+      Approved_running;
+      Fixing_ci;
+      Addressing_review;
+      Resolving_conflict;
+      Responding_to_human;
+      Rebasing;
+      Starting;
+      Ci_queued;
+      Review_queued;
+      Awaiting_ci;
+      Awaiting_review;
+      Pending;
+    ]
+
+let gen_display_status = QCheck2.Gen.oneof_list all_display_statuses
+
+let gen_transition_entry =
+  QCheck2.Gen.(
+    let* timestamp = float_range 0.0 1e12 in
+    let* patch_id = gen_patch_id in
+    let* from_status = gen_display_status in
+    let* to_status = gen_display_status in
+    let* action = string_size ~gen:printable (int_range 3 40) in
+    return
+      (Onton.Activity_log.Transition_entry.create ~timestamp ~patch_id
+         ~from_status ~to_status ~action))
+
+let gen_event =
+  QCheck2.Gen.(
+    let* timestamp = float_range 0.0 1e12 in
+    let* patch_id = option gen_patch_id in
+    let* message = string_size ~gen:printable (int_range 3 80) in
+    return (Onton.Activity_log.Event.create ~timestamp ?patch_id message))
+
+let gen_activity_log =
+  QCheck2.Gen.(
+    map2
+      (fun transitions events ->
+        let log =
+          List.fold transitions ~init:Onton.Activity_log.empty ~f:(fun acc e ->
+              Onton.Activity_log.add_transition acc e)
+        in
+        List.fold events ~init:log ~f:(fun acc e ->
+            Onton.Activity_log.add_event acc e))
+      (list_size (int_range 0 5) gen_transition_entry)
+      (list_size (int_range 0 5) gen_event))
+
 (* -- Printers for QCheck2 shrinking/reporting -- *)
 
 let print_patch_id = Patch_id.to_string

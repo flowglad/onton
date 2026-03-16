@@ -17,3 +17,4 @@ module Worktree = Worktree
 module Prompt = Prompt
 module Activity_log = Activity_log
 module Tui_input = Tui_input
+module Persistence = Persistence
