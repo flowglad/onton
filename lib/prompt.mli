@@ -27,13 +27,27 @@ val render_with_override :
     file exists. *)
 
 val render_patch_prompt :
-  project_name:string -> Patch.t -> Gameplan.t -> base_branch:string -> string
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  Patch.t ->
+  Gameplan.t ->
+  base_branch:string ->
+  string
 
-val render_review_prompt : project_name:string -> Comment.t list -> string
-val render_ci_failure_prompt : project_name:string -> Ci_check.t list -> string
-val render_ci_failure_unknown_prompt : project_name:string -> string
+val render_review_prompt :
+  project_name:string -> ?pr_number:Pr_number.t -> Comment.t list -> string
+
+val render_ci_failure_prompt :
+  project_name:string -> ?pr_number:Pr_number.t -> Ci_check.t list -> string
+
+val render_ci_failure_unknown_prompt :
+  project_name:string -> ?pr_number:Pr_number.t -> unit -> string
 
 val render_merge_conflict_prompt :
-  project_name:string -> base_branch:string -> string
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  base_branch:string ->
+  unit ->
+  string
 
 val render_human_message_prompt : project_name:string -> string list -> string

@@ -150,7 +150,8 @@ let session_fallback_of_yojson json =
 
 let session_fallback_of_legacy ~session_failed ~tried_fresh =
   match (session_failed, tried_fresh) with
-  | true, _ -> Patch_agent.Given_up
+  | true, false -> Patch_agent.Tried_fresh
+  | true, true -> Patch_agent.Given_up
   | false, true -> Patch_agent.Tried_fresh
   | false, false -> Patch_agent.Fresh_available
 

@@ -196,10 +196,31 @@ let log_event runtime ?patch_id msg =
         (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
            msg))
 
+(** Terminal failure — forces [Given_up] so [complete] raises intervention. Used
+    for non-retryable errors (patch not found, PR discovery failed). *)
 let mark_session_failed runtime patch_id =
   Runtime.update_orchestrator runtime (fun orch ->
       let orch = Orchestrator.set_session_failed orch patch_id in
+      let orch = Orchestrator.set_tried_fresh orch patch_id in
       Orchestrator.complete orch patch_id)
+
+(** Compute the session ID for the fallback chain.
+
+    The fallback chain is: resume existing session → fresh session → give up.
+    - [Fresh_available] with a [last_session_id]: try to resume it.
+    - [Fresh_available] with no [last_session_id], or [Tried_fresh]: start a
+      fresh session (no resume).
+    - [Given_up]: the agent has exhausted its fallback chain — return
+      [`Give_up]. *)
+let session_id_for_fallback (agent : Patch_agent.t) :
+    [ `Resume of Session_id.t | `Fresh | `Give_up ] =
+  match agent.Patch_agent.session_fallback with
+  | Patch_agent.Given_up -> `Give_up
+  | Patch_agent.Tried_fresh -> `Fresh
+  | Patch_agent.Fresh_available -> (
+      match agent.Patch_agent.last_session_id with
+      | Some id -> `Resume id
+      | None -> `Fresh)
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
@@ -238,67 +259,104 @@ let log_stream_entry runtime ~patch_id kind =
 
 (** Run a Claude process with streaming and handle the result. Returns [`Ok] on
     successful Claude exit (code 0), otherwise [`Failed]. The [on_pr_detected]
-    callback is invoked if a PR number is found in Claude's text output. *)
+    callback is invoked if a PR number is found in Claude's text output.
+    Implements the session fallback chain: resume → fresh → give up. On success,
+    stores the session ID and clears fallback state. *)
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-    ~session_id ~owner ~repo ~on_pr_detected =
-  let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
-  let cwd = Eio.Path.(fs / worktree_path) in
-  let text_buf = Buffer.create 4096 in
-  let pr_found = ref false in
-  let needle_len =
-    String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
-  in
-  let on_event (event : Types.Stream_event.t) =
-    match event with
-    | Types.Stream_event.Text_delta text -> (
-        let prev_len = Buffer.length text_buf in
-        Buffer.add_string text_buf text;
-        (* Only re-scan from where new text could begin a fresh match *)
-        if not !pr_found then
-          let offset = max 0 (prev_len - needle_len) in
-          let tail =
-            Buffer.sub text_buf offset (Buffer.length text_buf - offset)
-          in
-          match extract_pr_number_from_text ~owner ~repo tail with
-          | Some pr_number ->
-              pr_found := true;
-              log_stream_entry runtime ~patch_id
-                (Activity_log.Stream_entry.Text_chunk
-                   (Printf.sprintf "PR #%d detected"
-                      (Pr_number.to_int pr_number)));
-              on_pr_detected pr_number
-          | None -> ())
-    | Types.Stream_event.Tool_use { name; _ } ->
-        log_stream_entry runtime ~patch_id
-          (Activity_log.Stream_entry.Tool_use name)
-    | Types.Stream_event.Final_result { stop_reason; _ } ->
-        let reason = Types.Stop_reason.show stop_reason in
-        log_stream_entry runtime ~patch_id
-          (Activity_log.Stream_entry.Finished reason)
-    | Types.Stream_event.Error msg ->
-        log_stream_entry runtime ~patch_id
-          (Activity_log.Stream_entry.Stream_error msg)
-  in
-  let result =
-    try
-      Ok
-        (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
-           ~session_id ~on_event)
-    with exn -> Error (Printexc.to_string exn)
-  in
-  match result with
-  | Error msg ->
+    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected =
+  match session_id_for_fallback agent with
+  | `Give_up ->
       log_event runtime ~patch_id
-        (Printf.sprintf "Claude process error: %s" msg);
+        "session fallback exhausted (resume failed, fresh failed), needs \
+         intervention";
       mark_session_failed runtime patch_id;
       `Failed
-  | Ok r when r.Claude_runner.exit_code = 0 -> `Ok
-  | Ok r ->
-      log_event runtime ~patch_id
-        (Printf.sprintf "Claude exited with code %d, marking session failed"
-           r.Claude_runner.exit_code);
-      mark_session_failed runtime patch_id;
-      `Failed
+  | (`Resume _ | `Fresh) as fallback -> (
+      let session_id, is_fresh =
+        match fallback with
+        | `Resume id -> (Some id, false)
+        | `Fresh -> (None, true)
+      in
+      let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
+      let cwd = Eio.Path.(fs / worktree_path) in
+      let text_buf = Buffer.create 4096 in
+      let pr_found = ref false in
+      let needle_len =
+        String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
+      in
+      let on_event (event : Types.Stream_event.t) =
+        match event with
+        | Types.Stream_event.Text_delta text -> (
+            let prev_len = Buffer.length text_buf in
+            Buffer.add_string text_buf text;
+            if not !pr_found then
+              let offset = max 0 (prev_len - needle_len) in
+              let tail =
+                Buffer.sub text_buf offset (Buffer.length text_buf - offset)
+              in
+              match extract_pr_number_from_text ~owner ~repo tail with
+              | Some pr_number ->
+                  pr_found := true;
+                  log_stream_entry runtime ~patch_id
+                    (Activity_log.Stream_entry.Text_chunk
+                       (Printf.sprintf "PR #%d detected"
+                          (Pr_number.to_int pr_number)));
+                  on_pr_detected pr_number
+              | None -> ())
+        | Types.Stream_event.Tool_use { name; _ } ->
+            log_stream_entry runtime ~patch_id
+              (Activity_log.Stream_entry.Tool_use name)
+        | Types.Stream_event.Final_result { stop_reason; _ } ->
+            let reason = Types.Stop_reason.show stop_reason in
+            log_stream_entry runtime ~patch_id
+              (Activity_log.Stream_entry.Finished reason)
+        | Types.Stream_event.Error msg ->
+            log_stream_entry runtime ~patch_id
+              (Activity_log.Stream_entry.Stream_error msg)
+      in
+      let result =
+        try
+          Ok
+            (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
+               ~session_id ~on_event)
+        with exn -> Error (Printexc.to_string exn)
+      in
+      match result with
+      | Error msg ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "Claude process error: %s" msg);
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch = Orchestrator.set_session_failed orch patch_id in
+              let orch =
+                if is_fresh then Orchestrator.set_tried_fresh orch patch_id
+                else orch
+              in
+              Orchestrator.complete orch patch_id);
+          `Failed
+      | Ok r when r.Claude_runner.exit_code = 0 ->
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch =
+                Orchestrator.set_last_session_id orch patch_id
+                  r.Claude_runner.session_id
+              in
+              Orchestrator.clear_session_fallback orch patch_id);
+          `Ok
+      | Ok r ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "Claude exited with code %d, marking session failed"
+               r.Claude_runner.exit_code);
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch =
+                Orchestrator.set_last_session_id orch patch_id
+                  r.Claude_runner.session_id
+              in
+              let orch = Orchestrator.set_session_failed orch patch_id in
+              let orch =
+                if is_fresh then Orchestrator.set_tried_fresh orch patch_id
+                else orch
+              in
+              Orchestrator.complete orch patch_id);
+          `Failed)
 
 (** {1 Fibers} *)
 
@@ -945,7 +1003,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               `Stale)
                             else
                               let prompt =
-                                Prompt.render_patch_prompt ~project_name patch
+                                Prompt.render_patch_prompt ~project_name
+                                  ?pr_number:agent.Patch_agent.pr_number patch
                                   gameplan
                                   ~base_branch:(Branch.to_string base_branch)
                               in
@@ -955,7 +1014,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               let on_pr_detected _pr_number = () in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
-                                ~session_id:None ~owner:config.github_owner
+                                ~agent ~owner:config.github_owner
                                 ~repo:config.github_repo ~on_pr_detected)
                       in
                       match result with
@@ -1024,6 +1083,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               ~f:(fun (pc : Patch_agent.pending_comment) ->
                                 pc.Patch_agent.comment)
                           in
+                          let pr_number = agent.Patch_agent.pr_number in
                           let prompt =
                             match kind with
                             | Operation_kind.Ci -> (
@@ -1033,31 +1093,31 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 | Some checks
                                   when not (Base.List.is_empty checks) ->
                                     Prompt.render_ci_failure_prompt
-                                      ~project_name checks
+                                      ~project_name ?pr_number checks
                                 | _ ->
                                     Prompt.render_ci_failure_unknown_prompt
-                                      ~project_name)
+                                      ~project_name ?pr_number ())
                             | Operation_kind.Review_comments ->
                                 Prompt.render_review_prompt ~project_name
-                                  pending_comments
+                                  ?pr_number pending_comments
                             | Operation_kind.Merge_conflict ->
                                 Prompt.render_merge_conflict_prompt
-                                  ~project_name ~base_branch:base
+                                  ~project_name ?pr_number ~base_branch:base ()
                             | Operation_kind.Human ->
                                 Prompt.render_human_message_prompt ~project_name
                                   (Base.List.map pending_comments
                                      ~f:(fun (c : Comment.t) -> c.Comment.body))
                             | Operation_kind.Rebase ->
                                 Prompt.render_merge_conflict_prompt
-                                  ~project_name ~base_branch:base
+                                  ~project_name ?pr_number ~base_branch:base ()
                           in
                           (* Respond patches already have a PR — ignore
                              streamed PR detections *)
                           let on_pr_detected _pr_number = () in
                           run_claude_and_handle ~runtime ~process_mgr ~fs
-                            ~repo_root:config.repo_root ~patch_id ~prompt
-                            ~session_id:None ~owner:config.github_owner
-                            ~repo:config.github_repo ~on_pr_detected)
+                            ~repo_root:config.repo_root ~patch_id ~prompt ~agent
+                            ~owner:config.github_owner ~repo:config.github_repo
+                            ~on_pr_detected)
                   in
                   match result with
                   | `Stale | `Failed -> ()

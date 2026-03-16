@@ -217,7 +217,8 @@ let () =
 (* ========== Legacy backward-compat migration tests ========== *)
 
 let () =
-  (* Test: session_failed=true (no session_fallback key) -> Given_up *)
+  (* Test: session_failed=true, tried_fresh=false -> Tried_fresh
+     (resume failed but fresh not yet attempted) *)
   let legacy_given_up =
     `Assoc
       [
@@ -243,8 +244,8 @@ let () =
   | Ok agent ->
       assert (
         Onton.Patch_agent.equal_session_fallback agent.session_fallback
-          Onton.Patch_agent.Given_up)
-  | Error msg -> Stdlib.failwith ("legacy Given_up: " ^ msg));
+          Onton.Patch_agent.Tried_fresh)
+  | Error msg -> Stdlib.failwith ("legacy Tried_fresh: " ^ msg));
   (* Test: tried_fresh=true, session_failed=false -> Tried_fresh *)
   let legacy_tried_fresh =
     `Assoc
@@ -273,6 +274,34 @@ let () =
         Onton.Patch_agent.equal_session_fallback agent.session_fallback
           Onton.Patch_agent.Tried_fresh)
   | Error msg -> Stdlib.failwith ("legacy Tried_fresh: " ^ msg));
+  (* Test: session_failed=true, tried_fresh=true -> Given_up *)
+  let legacy_given_up_both =
+    `Assoc
+      [
+        ("patch_id", `String "p2b");
+        ("has_pr", `Bool true);
+        ("has_session", `Bool true);
+        ("busy", `Bool false);
+        ("merged", `Bool false);
+        ("needs_intervention", `Bool false);
+        ("queue", `List []);
+        ("satisfies", `Bool false);
+        ("changed", `Bool false);
+        ("has_conflict", `Bool false);
+        ("base_branch", `String "main");
+        ("ci_failure_count", `Int 0);
+        ("session_failed", `Bool true);
+        ("pending_comments", `List []);
+        ("last_session_id", `Null);
+        ("tried_fresh", `Bool true);
+      ]
+  in
+  (match Onton.Persistence.patch_agent_of_yojson legacy_given_up_both with
+  | Ok agent ->
+      assert (
+        Onton.Patch_agent.equal_session_fallback agent.session_fallback
+          Onton.Patch_agent.Given_up)
+  | Error msg -> Stdlib.failwith ("legacy Given_up: " ^ msg));
   (* Test: both false -> Fresh_available *)
   let legacy_fresh =
     `Assoc

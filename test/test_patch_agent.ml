@@ -274,6 +274,7 @@ let () =
           let a = create pid |> fun a -> start a ~base_branch:br in
           let a = complete a in
           let a = set_session_failed a in
+          let a = set_tried_fresh a in
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
@@ -286,6 +287,7 @@ let () =
           let a = create pid |> fun a -> start a ~base_branch:br in
           let a = complete a in
           let a = set_session_failed a in
+          let a = set_tried_fresh a in
           let a = enqueue a Operation_kind.Human in
           let a = enqueue a Operation_kind.Rebase in
           let a = respond a Operation_kind.Rebase in
@@ -313,6 +315,7 @@ let () =
           let a = create pid |> fun a -> start a ~base_branch:br in
           let a = complete a in
           let a = set_session_failed a in
+          let a = set_tried_fresh a in
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
@@ -410,16 +413,17 @@ let () =
           let a = set_tried_fresh a in
           equal_session_fallback a.session_fallback Tried_fresh);
       (* -- set_tried_fresh is no-op from Tried_fresh or Given_up -- *)
-      Test.make ~name:"set_tried_fresh idempotent from Tried_fresh" gen_pid
+      Test.make ~name:"set_tried_fresh advances Tried_fresh to Given_up" gen_pid
         (fun pid ->
           let a = create pid in
           let a = set_tried_fresh a in
           let a = set_tried_fresh a in
-          equal_session_fallback a.session_fallback Tried_fresh);
+          equal_session_fallback a.session_fallback Given_up);
       (* -- set_tried_fresh is no-op from Given_up -- *)
       Test.make ~name:"set_tried_fresh no-op from Given_up" gen_pid (fun pid ->
           let a = create pid in
-          let a = set_session_failed a in
+          let a = set_tried_fresh a in
+          let a = set_tried_fresh a in
           let a = set_tried_fresh a in
           equal_session_fallback a.session_fallback Given_up);
     ]
