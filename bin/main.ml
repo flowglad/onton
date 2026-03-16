@@ -363,9 +363,15 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                           Unix.symlink real_path expected);
                         Runtime.update_orchestrator runtime (fun orch ->
                             Orchestrator.clear_needs_intervention orch patch_id);
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "Worktree registered at %s → %s"
-                             real_path expected)
+                        if String.equal real_path expected then
+                          log_event runtime ~patch_id
+                            (Printf.sprintf
+                               "Worktree already at expected path %s" real_path)
+                        else
+                          log_event runtime ~patch_id
+                            (Printf.sprintf
+                               "Worktree registered: symlinked %s → %s" expected
+                               real_path)
                       with exn ->
                         log_event runtime ~patch_id
                           (Printf.sprintf "Failed to add worktree: %s"
@@ -390,6 +396,16 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                       log_event runtime
                         "Cannot remove patch: no selectable patch"
                   | Some patch_id ->
+                      let busy =
+                        Runtime.read runtime (fun snap ->
+                            (Orchestrator.agent snap.Runtime.orchestrator
+                               patch_id)
+                              .Patch_agent.busy)
+                      in
+                      if busy then
+                        log_event runtime ~patch_id
+                          "Warning: patch is currently running — it may create \
+                           a GitHub PR before stopping";
                       Runtime.update_orchestrator runtime (fun orch ->
                           Orchestrator.mark_merged orch patch_id);
                       log_event runtime ~patch_id
