@@ -187,6 +187,17 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
           Printf.sprintf
             "# CI Failures\n\nThe following CI checks failed:\n\n%s" formatted)
 
+let render_ci_failure_unknown_prompt ~(project_name : string) =
+  let vars =
+    [ ("project_name", project_name); ("checks", ""); ("count", "0") ]
+  in
+  render_with_override ~project_name ~name:"ci_failure" ~vars
+    ~default:(fun () ->
+      "# CI Failures\n\n\
+       One or more CI checks failed. Please investigate the failures and fix \
+       them.\n\n\
+       Run the CI checks locally or check the PR status for details.")
+
 let render_merge_conflict_prompt ~(project_name : string)
     ~(base_branch : string) =
   let vars = [ ("project_name", project_name); ("base_branch", base_branch) ] in

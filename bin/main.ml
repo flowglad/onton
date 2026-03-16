@@ -728,7 +728,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
                                    details yet — only ci_failure_count.
                                    Propagate check details from Poller to
                                    surface them here. *)
-                                Prompt.render_ci_failure_prompt ~project_name []
+                                Prompt.render_ci_failure_unknown_prompt
+                                  ~project_name
                             | Operation_kind.Review_comments ->
                                 Prompt.render_review_prompt ~project_name
                                   pending_comments

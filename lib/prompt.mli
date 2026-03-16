@@ -31,6 +31,7 @@ val render_patch_prompt :
 
 val render_review_prompt : project_name:string -> Comment.t list -> string
 val render_ci_failure_prompt : project_name:string -> Ci_check.t list -> string
+val render_ci_failure_unknown_prompt : project_name:string -> string
 
 val render_merge_conflict_prompt :
   project_name:string -> base_branch:string -> string
