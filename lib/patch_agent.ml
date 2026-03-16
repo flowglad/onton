@@ -59,10 +59,11 @@ let mark_merged t = { t with merged = true }
 
 let add_pending_comment t comment ~valid =
   let already_present =
+    let is_synthetic id = Comment_id.to_int id < 0 in
     List.exists t.pending_comments ~f:(fun pc ->
         Comment_id.equal pc.comment.Comment.id comment.Comment.id
-        || Comment_id.to_int comment.Comment.id < 0
-           && Comment_id.to_int pc.comment.Comment.id < 0
+        || (is_synthetic pc.comment.Comment.id
+           || is_synthetic comment.Comment.id)
            && String.equal pc.comment.Comment.body comment.Comment.body
            && Option.equal String.equal pc.comment.Comment.path
                 comment.Comment.path
