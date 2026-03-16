@@ -43,9 +43,21 @@ let add_existing ~patch_id ~branch ~path =
        ~f:(fun () -> try Stdlib.input_line ic with End_of_file -> "")
        ~finally:(fun () -> Stdlib.close_in ic)
    in
-   if not (String.is_prefix first_line ~prefix:"gitdir: ") then
-     failwith
-       ("Path is not a git worktree (.git file has unexpected format): " ^ path));
+   match String.chop_prefix first_line ~prefix:"gitdir: " with
+   | None ->
+       failwith
+         ("Path is not a git worktree (.git file has unexpected format): "
+        ^ path)
+   | Some gitdir_path ->
+       let gitdir_path = String.strip gitdir_path in
+       let resolved =
+         if Stdlib.Filename.is_relative gitdir_path then
+           Stdlib.Filename.concat path gitdir_path
+         else gitdir_path
+       in
+       if not (Stdlib.Sys.file_exists resolved) then
+         failwith
+           ("Worktree no longer registered with git (gitdir missing): " ^ path));
   { patch_id; branch; path }
 
 let detect_branch ~process_mgr ~path =
@@ -89,6 +101,7 @@ let list_with_branches ~process_mgr ~repo_root =
   let lines = String.split_lines raw in
   let repo_root = normalize_path repo_root in
   let flush_entry acc p branch =
+    let p = normalize_path p in
     match branch with
     | None -> acc (* skip detached-HEAD worktrees *)
     | Some b -> if String.( <> ) p repo_root then (p, b) :: acc else acc
