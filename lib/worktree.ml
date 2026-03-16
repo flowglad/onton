@@ -10,7 +10,7 @@ let normalize_path path =
     else path
   in
   if String.length p > 1 && String.is_suffix p ~suffix:"/" then
-    String.chop_suffix_exn p ~suffix:"/"
+    String.rstrip p ~drop:(Char.equal '/')
   else p
 
 let worktree_dir ~repo_root ~patch_id =
@@ -138,8 +138,9 @@ let list_with_branches ~process_mgr ~repo_root =
             let b = String.drop_prefix line (String.length "branch ") in
             let branch =
               match String.chop_prefix b ~prefix:"refs/heads/" with
-              | Some short -> Some (Types.Branch.of_string short)
-              | None -> None (* non-local ref, treat as detached *)
+              | Some short when not (String.is_empty short) ->
+                  Some (Types.Branch.of_string short)
+              | _ -> None (* detached, non-local ref, or empty name *)
             in
             parse acc current_path branch rest
         | () ->
