@@ -45,10 +45,7 @@ let substitute_variables (template : string) (vars : (string * string) list) :
   Buffer.contents buf
 
 let validate_name (kind : string) (value : string) : unit =
-  if
-    String.is_substring value ~substring:"/"
-    || String.is_substring value ~substring:".."
-  then
+  if String.is_substring value ~substring:"/" || String.equal value ".." then
     Stdlib.invalid_arg
       (Printf.sprintf "load_override: invalid %s %S" kind value)
 
@@ -70,9 +67,9 @@ let load_override ~(project_name : string) (name : string) : string option =
         ~f:(fun () ->
           match Stdlib.In_channel.input_all ic with
           | content -> Some content
-          | exception Sys_error msg ->
+          | exception (Sys_error msg as exn) ->
               if String.is_substring msg ~substring:"Is a directory" then None
-              else raise (Sys_error msg))
+              else raise exn)
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
