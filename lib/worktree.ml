@@ -135,14 +135,12 @@ let list_with_branches ~process_mgr ~repo_root =
             parse acc (Some p) None rest
         | () when String.is_prefix line ~prefix:"branch " ->
             let b = String.drop_prefix line (String.length "branch ") in
-            let branch_name =
+            let branch =
               match String.chop_prefix b ~prefix:"refs/heads/" with
-              | Some short -> short
-              | None -> b
+              | Some short -> Some (Types.Branch.of_string short)
+              | None -> None (* non-local ref, treat as detached *)
             in
-            parse acc current_path
-              (Some (Types.Branch.of_string branch_name))
-              rest
+            parse acc current_path branch rest
         | () ->
             if String.is_empty line then
               let acc =
