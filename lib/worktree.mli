@@ -23,7 +23,7 @@ val detect_branch :
 val list_with_branches :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
-  (string * Types.Branch.t option) list
+  (string * Types.Branch.t) list
 
 val exists : t -> bool
 val path : t -> string

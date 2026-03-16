@@ -51,7 +51,9 @@ let add_existing ~patch_id ~branch ~path =
 let detect_branch ~process_mgr ~path =
   let buf = Buffer.create 128 in
   let path = normalize_path path in
+  let stderr_buf = Buffer.create 64 in
   Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+    ~stderr:(Eio.Flow.buffer_sink stderr_buf)
     [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ];
   let raw = Buffer.contents buf in
   let branch_str = String.strip raw in
@@ -70,7 +72,9 @@ let list_with_branches ~process_mgr ~repo_root =
     Stdlib.Sys.file_exists git_path && not (Stdlib.Sys.is_directory git_path)
   in
   let flush_entry acc p branch =
-    if is_linked_worktree p then (p, branch) :: acc else acc
+    match branch with
+    | None -> acc (* skip detached-HEAD worktrees *)
+    | Some b -> if is_linked_worktree p then (p, b) :: acc else acc
   in
   let rec parse acc current_path current_branch = function
     | [] ->
