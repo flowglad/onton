@@ -285,6 +285,16 @@ let%test "load_override returns None for missing file" =
   Option.is_none
     (load_override ~project_name:"nonexistent_project" "nonexistent_prompt_name")
 
+let%test "load_override rejects traversal in prompt name" =
+  match load_override ~project_name:"test" "../secret" with
+  | _ -> false
+  | exception Stdlib.Invalid_argument _ -> true
+
+let%test "load_override rejects traversal in project name" =
+  match load_override ~project_name:"../etc" "patch" with
+  | _ -> false
+  | exception Stdlib.Invalid_argument _ -> true
+
 let%test "review prompt formats comments" =
   let comments : Comment.t list =
     [
