@@ -52,18 +52,13 @@ let load_override ~(project_name : string) (name : string) : string option =
   validate_name "prompt name" name;
   validate_name "project name" project_name;
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
-  match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
-  | content -> Some content
-  | exception (Sys_error msg as exn) -> (
-      (* Sys_error could mean file-not-found OR permission-denied. Use stat
-         to distinguish: ENOENT/ENOTDIR means "no override", anything else
-         (including a successful stat) means a real read failure. *)
-      match Unix.stat path with
-      | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
-      | _ -> Stdlib.raise exn
-      | exception _ ->
-          Stdlib.failwith
-            (Printf.sprintf "load_override: cannot read %s: %s" path msg))
+  match Unix.openfile path [ Unix.O_RDONLY ] 0 with
+  | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
+  | fd ->
+      let ic = Unix.in_channel_of_descr fd in
+      let content = Stdlib.In_channel.input_all ic in
+      Stdlib.In_channel.close ic;
+      Some content
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
