@@ -221,6 +221,10 @@ module Raw = struct
   (** Shared mutable state for suspend/resume across signal boundaries. *)
   let _saved_state : state option ref = ref None
 
+  (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
+      TUI render loop should check and clear this each iteration. *)
+  let redraw_needed : bool ref = ref false
+
   (** Suspend the terminal: restore original settings, show cursor, then send
       SIGSTOP to ourselves. A SIGCONT handler (installed via
       {!install_suspend_handlers}) re-enters raw mode automatically. *)
@@ -229,6 +233,7 @@ module Raw = struct
     | None -> () (* not in raw mode, nothing to do *)
     | Some state ->
         leave state;
+        _saved_state := None;
         let (_ : int) =
           Unix.write_substring Unix.stdout Cursor.show 0
             (String.length Cursor.show)
@@ -249,26 +254,29 @@ module Raw = struct
       Stdlib.Sys.signal Stdlib.Sys.sigcont
         (Stdlib.Sys.Signal_handle
            (fun _signum ->
-             (* Re-enter raw mode after resume *)
-             let fd = Unix.stdin in
-             let raw =
-               {
-                 state.original with
-                 Unix.c_icanon = false;
-                 c_echo = false;
-                 c_icrnl = false;
-                 c_ixon = false;
-                 c_vmin = 1;
-                 c_vtime = 0;
-                 c_isig = false;
-               }
-             in
-             Unix.tcsetattr fd Unix.TCSAFLUSH raw;
-             let (_ : int) =
-               Unix.write_substring Unix.stdout Cursor.hide 0
-                 (String.length Cursor.hide)
-             in
-             ()))
+             (* Re-enter raw mode after resume — guard against spurious
+                delivery when _saved_state was already cleared. *)
+             if Option.is_none !_saved_state then (
+               let fd = Unix.stdin in
+               let raw =
+                 {
+                   state.original with
+                   Unix.c_icanon = false;
+                   c_echo = false;
+                   c_icrnl = false;
+                   c_ixon = false;
+                   c_vmin = 1;
+                   c_vtime = 0;
+                   c_isig = false;
+                 }
+               in
+               Unix.tcsetattr fd Unix.TCSAFLUSH raw;
+               _saved_state := Some state;
+               let (_ : int) =
+                 Unix.write_substring Unix.stdout Cursor.hide 0
+                   (String.length Cursor.hide)
+               in
+               redraw_needed := true)))
     in
     ()
 

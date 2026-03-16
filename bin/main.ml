@@ -221,7 +221,9 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
         ~activity ~project_name:gp.Gameplan.project_name views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
-    Eio.Time.sleep clock 0.1;
+    (* After SIGCONT, skip the sleep to redraw immediately *)
+    if Term.Raw.redraw_needed.contents then Term.Raw.redraw_needed := false
+    else Eio.Time.sleep clock 0.1;
     loop ()
   in
   loop ()
