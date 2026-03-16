@@ -62,7 +62,11 @@ let add_pending_comment t comment ~valid =
     List.exists t.pending_comments ~f:(fun pc ->
         Comment_id.equal pc.comment.Comment.id comment.Comment.id
         || Comment_id.to_int comment.Comment.id < 0
-           && Comment.equal pc.comment comment)
+           && String.equal pc.comment.Comment.body comment.Comment.body
+           && Option.equal String.equal pc.comment.Comment.path
+                comment.Comment.path
+           && Option.equal Int.equal pc.comment.Comment.line
+                comment.Comment.line)
   in
   if already_present then t
   else { t with pending_comments = { comment; valid } :: t.pending_comments }
