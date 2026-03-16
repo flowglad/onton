@@ -635,6 +635,29 @@ let run config =
             build_branch_map gameplan ~default:config.main_branch
           in
           Eio_main.run @@ fun env ->
+          let process_mgr = Eio.Stdenv.process_mgr env in
+          (* Startup reconciliation: discover existing PRs before main loop *)
+          let startup =
+            Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
+              ~owner:config.github_owner ~repo:config.github_repo
+              ~patches:gameplan.Gameplan.patches
+          in
+          Base.List.iter startup.Startup_reconciler.errors
+            ~f:(fun (patch_id, err) ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "startup discovery error: %s" err));
+          Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
+              let pid = d.Startup_reconciler.patch_id in
+              let pr = d.Startup_reconciler.pr_number in
+              let base = d.Startup_reconciler.base_branch in
+              let merged = d.Startup_reconciler.merged in
+              Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch =
+                    Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                  in
+                  let orch = Orchestrator.complete orch pid in
+                  if merged then Orchestrator.mark_merged orch pid else orch));
           let clock = Eio.Stdenv.clock env in
           let net = Eio.Stdenv.net env in
           let stdout = Eio.Stdenv.stdout env in
