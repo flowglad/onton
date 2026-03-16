@@ -166,7 +166,7 @@ let mark_session_failed runtime patch_id =
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
-let extract_pr_number_from_text ~owner ~repo ?(offset = 0) text =
+let extract_pr_number_from_text ~owner ~repo text =
   let needle = Printf.sprintf "github.com/%s/%s/pull/" owner repo in
   let needle_len = String.length needle in
   let text_len = String.length text in
@@ -190,7 +190,7 @@ let extract_pr_number_from_text ~owner ~repo ?(offset = 0) text =
       else scan (i + 1)
     else scan (i + 1)
   in
-  scan offset
+  scan 0
 
 (** Log a stream entry to the activity log. *)
 let log_stream_entry runtime ~patch_id kind =
@@ -219,10 +219,10 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
         (* Only re-scan from where new text could begin a fresh match *)
         if not !pr_found then
           let offset = max 0 (prev_len - needle_len) in
-          match
-            extract_pr_number_from_text ~owner ~repo ~offset
-              (Buffer.contents text_buf)
-          with
+          let tail =
+            Buffer.sub text_buf offset (Buffer.length text_buf - offset)
+          in
+          match extract_pr_number_from_text ~owner ~repo tail with
           | Some pr_number ->
               pr_found := true;
               log_stream_entry runtime ~patch_id
