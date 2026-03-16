@@ -52,9 +52,17 @@ let detect_branch ~process_mgr ~path =
   let buf = Buffer.create 128 in
   let path = normalize_path path in
   let stderr_buf = Buffer.create 64 in
-  Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
-    ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-    [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ];
+  (match
+     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+       [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
+   with
+  | () -> ()
+  | exception exn ->
+      let msg = Buffer.contents stderr_buf in
+      failwith
+        (Printf.sprintf "detect_branch failed at %s: %s\ngit stderr: %s" path
+           (Exn.to_string exn) msg));
   let raw = Buffer.contents buf in
   let branch_str = String.strip raw in
   if String.equal branch_str "HEAD" then
