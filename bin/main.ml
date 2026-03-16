@@ -12,6 +12,7 @@ type config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  headless : bool;
 }
 
 let validate_config config =
@@ -361,6 +362,56 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   in
   loop ()
 
+(** Headless logging fiber — prints events and transitions to stdout as plain
+    text, without TUI escape codes. Uses a timestamp cursor so output does not
+    stop once the sliding window fills up. *)
+let headless_fiber ~runtime ~clock ~stdout =
+  let last_seen_ts : float ref = ref 0.0 in
+  let rec loop () =
+    let entries =
+      Runtime.read runtime (fun snap ->
+          let log = snap.Runtime.activity_log in
+          let events =
+            Base.List.map (Activity_log.recent_events log ~limit:50)
+              ~f:(fun (e : Activity_log.Event.t) ->
+                let pid_str =
+                  match e.Activity_log.Event.patch_id with
+                  | Some pid -> Printf.sprintf "[%s] " (Patch_id.to_string pid)
+                  | None -> ""
+                in
+                ( e.Activity_log.Event.timestamp,
+                  pid_str ^ e.Activity_log.Event.message ))
+          in
+          let transitions =
+            Base.List.map (Activity_log.recent_transitions log ~limit:50)
+              ~f:(fun (t : Activity_log.Transition_entry.t) ->
+                let pid =
+                  Patch_id.to_string t.Activity_log.Transition_entry.patch_id
+                in
+                let msg =
+                  Printf.sprintf "[%s] %s -> %s" pid
+                    (Tui.label t.Activity_log.Transition_entry.from_status)
+                    (Tui.label t.Activity_log.Transition_entry.to_status)
+                in
+                (t.Activity_log.Transition_entry.timestamp, msg))
+          in
+          Base.List.sort (events @ transitions) ~compare:(fun (t1, _) (t2, _) ->
+              Base.Float.ascending t1 t2))
+    in
+    let new_entries =
+      Base.List.filter entries ~f:(fun (ts, _) ->
+          Float.compare ts !last_seen_ts > 0)
+    in
+    Base.List.iter new_entries ~f:(fun (_ts, msg) ->
+        Eio.Flow.copy_string (msg ^ "\n") stdout);
+    (match Base.List.last new_entries with
+    | Some (ts, _) -> last_seen_ts := ts
+    | None -> ());
+    Eio.Time.sleep clock 1.0;
+    loop ()
+  in
+  loop ()
+
 (** Per-agent poll intent, collected inside [read] and executed outside. *)
 type poll_intent =
   | Skip_no_pr of Patch_id.t
@@ -691,27 +742,35 @@ let run config =
           let clock = Eio.Stdenv.clock env in
           let net = Eio.Stdenv.net env in
           let stdout = Eio.Stdenv.stdout env in
-          let selected = ref 0 in
-          let view_mode = ref Tui.List_view in
-          Term.Raw.with_raw (fun () ->
-              Fun.protect
-                ~finally:(fun () ->
-                  Eio.Flow.copy_string (Tui.exit_tui ()) stdout)
-                (fun () ->
-                  try
-                    Eio.Fiber.all
-                      [
-                        (fun () ->
-                          tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode);
-                        (fun () ->
-                          input_fiber ~runtime ~selected ~view_mode ~pr_registry);
-                        (fun () ->
-                          poller_fiber ~runtime ~clock ~net ~github ~config
-                            ~pr_registry ~branch_of);
-                        (fun () ->
-                          runner_fiber ~runtime ~env ~config ~pr_registry);
-                      ]
-                  with Quit_tui -> ())))
+          let common_fibers =
+            [
+              (fun () ->
+                poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
+                  ~branch_of);
+              (fun () -> runner_fiber ~runtime ~env ~config ~pr_registry);
+            ]
+          in
+          if config.headless then
+            Eio.Fiber.all
+              ((fun () -> headless_fiber ~runtime ~clock ~stdout)
+              :: common_fibers)
+          else
+            let selected = ref 0 in
+            let view_mode = ref Tui.List_view in
+            Term.Raw.with_raw (fun () ->
+                Fun.protect
+                  ~finally:(fun () ->
+                    Eio.Flow.copy_string (Tui.exit_tui ()) stdout)
+                  (fun () ->
+                    try
+                      Eio.Fiber.all
+                        ((fun () ->
+                           tui_fiber ~runtime ~clock ~stdout ~selected
+                             ~view_mode)
+                        :: (fun () ->
+                          input_fiber ~runtime ~selected ~view_mode ~pr_registry)
+                        :: common_fibers)
+                    with Quit_tui -> ())))
 
 (** {1 CLI via Cmdliner} *)
 
@@ -772,10 +831,16 @@ let max_concurrency_arg =
         ~doc:"Maximum number of concurrent Claude processes (default: 5)."
         ~env:(Cmd.Env.info "ONTON_MAX_CONCURRENCY"))
 
+let headless_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "headless" ] ~doc:"Run without TUI (plain log output).")
+
 let main_cmd =
   let open Cmdliner in
   let run_cmd gameplan_path github_token github_owner github_repo main_branch
-      poll_interval repo_root max_concurrency =
+      poll_interval repo_root max_concurrency headless =
     let config =
       {
         gameplan_path;
@@ -786,6 +851,7 @@ let main_cmd =
         poll_interval;
         repo_root;
         max_concurrency;
+        headless;
       }
     in
     run config
@@ -794,7 +860,7 @@ let main_cmd =
     Term.(
       const run_cmd $ gameplan_path_arg $ github_token_arg $ github_owner_arg
       $ github_repo_arg $ main_branch_arg $ poll_interval_arg $ repo_root_arg
-      $ max_concurrency_arg)
+      $ max_concurrency_arg $ headless_arg)
   in
   let info =
     Cmd.info "onton" ~version:"0.1.0"
