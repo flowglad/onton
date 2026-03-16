@@ -988,8 +988,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Fun.protect
           ~finally:(fun () ->
             Term.Raw.clear_suspend_handlers ();
-            Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
             Term.Raw.leave raw_state;
+            Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
             let snap = Runtime.read runtime (fun s -> s) in
             ignore
               (Persistence.save
