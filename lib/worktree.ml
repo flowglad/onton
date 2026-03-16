@@ -72,11 +72,10 @@ let add_existing ~patch_id ~branch ~path =
              ^ path)));
   { patch_id; branch; path }
 
-let has_cancellation = function
+let rec has_cancellation = function
   | Eio.Cancel.Cancelled _ -> true
   | Eio.Exn.Multiple exns ->
-      List.exists exns ~f:(fun (exn, _bt) ->
-          match exn with Eio.Cancel.Cancelled _ -> true | _ -> false)
+      List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
   | _ -> false
 
 let detect_branch ~process_mgr ~path =
