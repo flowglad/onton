@@ -11,10 +11,11 @@ open Types
 type pr_discovery = {
   patch_id : Patch_id.t;
   pr_number : Pr_number.t;
+  base_branch : Branch.t;
   merged : bool;
 }
 [@@deriving show, eq]
-(** A discovered PR for a patch. *)
+(** A discovered PR for a patch, including the PR's base ref. *)
 
 type t = { discovered : pr_discovery list } [@@deriving show, eq]
 (** Result of startup reconciliation. *)
@@ -28,5 +29,5 @@ val reconcile :
   t
 (** [reconcile ~process_mgr ~token ~owner ~repo ~patches] queries GitHub for
     each patch's branch to find existing PRs. For each found PR, queries its
-    merge status. Errors for individual patches are silently skipped — the patch
-    will simply start fresh. *)
+    merge status and base ref. CLOSED PRs are skipped. Errors for individual
+    patches are silently skipped — the patch will simply start fresh. *)

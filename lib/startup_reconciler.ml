@@ -4,14 +4,15 @@ open Types
 type pr_discovery = {
   patch_id : Patch_id.t;
   pr_number : Pr_number.t;
+  base_branch : Branch.t;
   merged : bool;
 }
 [@@deriving show, eq]
 
 type t = { discovered : pr_discovery list } [@@deriving show, eq]
 
-(** Query [gh pr list] for a branch, returning [(pr_number, merged)] if found.
-*)
+(** Query [gh pr list] for a branch, returning discovery info if a live PR is
+    found. CLOSED PRs are skipped — only OPEN and MERGED are returned. *)
 let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
   let args =
     [
@@ -25,7 +26,7 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
       "--state";
       "all";
       "--json";
-      "number,state";
+      "number,state,baseRefName";
       "--limit";
       "1";
     ]
@@ -40,10 +41,20 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
     | `List (`Assoc fields :: _) -> (
         match
           ( List.Assoc.find fields ~equal:String.equal "number",
-            List.Assoc.find fields ~equal:String.equal "state" )
+            List.Assoc.find fields ~equal:String.equal "state",
+            List.Assoc.find fields ~equal:String.equal "baseRefName" )
         with
-        | Some (`Int n), Some (`String state) ->
-            Ok (Some (Pr_number.of_int n, String.equal state "MERGED"))
+        | Some (`Int n), Some (`String "OPEN"), Some (`String base) ->
+            Ok
+              (Some
+                 (Pr_number.of_int n, Branch.of_string base, (* merged *) false))
+        | Some (`Int n), Some (`String "MERGED"), Some (`String base) ->
+            Ok
+              (Some
+                 (Pr_number.of_int n, Branch.of_string base, (* merged *) true))
+        | Some (`Int _), Some (`String "CLOSED"), _ -> Ok None
+        | Some (`Int _), Some (`String state), _ ->
+            Error (Printf.sprintf "unexpected PR state: %s" state)
         | _ -> Ok None)
     | `List [] -> Ok None
     | _ -> Error "unexpected JSON shape"
@@ -55,8 +66,8 @@ let reconcile ~process_mgr ~token ~owner ~repo ~patches =
         match
           discover_pr ~process_mgr ~token ~owner ~repo ~branch:patch.branch
         with
-        | Ok (Some (pr_number, merged)) ->
-            Some { patch_id = patch.id; pr_number; merged }
+        | Ok (Some (pr_number, base_branch, merged)) ->
+            Some { patch_id = patch.id; pr_number; base_branch; merged }
         | Ok None | Error _ -> None)
   in
   { discovered }

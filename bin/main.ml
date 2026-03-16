@@ -498,10 +498,10 @@ let run config =
           Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
               let pid = d.Startup_reconciler.patch_id in
               let pr = d.Startup_reconciler.pr_number in
+              let base = d.Startup_reconciler.base_branch in
               let merged = d.Startup_reconciler.merged in
               Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
               Runtime.update_orchestrator runtime (fun orch ->
-                  let base = branch_of pid in
                   let orch =
                     Orchestrator.fire orch (Orchestrator.Start (pid, base))
                   in
