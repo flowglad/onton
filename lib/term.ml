@@ -214,8 +214,10 @@ module Raw = struct
 
   let leave state = Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH state.original
 
-  (** Shared mutable state for suspend/resume across signal boundaries. *)
-  let _saved_state : state option ref = ref None
+  (** Shared mutable state for suspend/resume across signal boundaries. Uses
+      [Atomic.t] because it is written by the SIGCONT handler and read by the
+      main fiber. *)
+  let _saved_state : state option Atomic.t = Atomic.make None
 
   (** Saved previous signal handlers, restored by {!clear_suspend_handlers}. *)
   let _saved_handlers :
@@ -244,11 +246,11 @@ module Raw = struct
       SIGSTOP to ourselves. A SIGCONT handler (installed via
       {!install_suspend_handlers}) re-enters raw mode automatically. *)
   let suspend () =
-    match !_saved_state with
+    match Atomic.get _saved_state with
     | None -> () (* not in raw mode, nothing to do *)
     | Some state ->
         leave state;
-        _saved_state := None;
+        Atomic.set _saved_state None;
         write_stdout_all
           (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show);
         Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop
@@ -257,7 +259,7 @@ module Raw = struct
       be called after {!enter} — pass the {!state} so we can restore and
       re-enter raw mode around the stop. *)
   let install_suspend_handlers (state : state) =
-    _saved_state := Some state;
+    Atomic.set _saved_state (Some state);
     let prev_tstp =
       Stdlib.Sys.signal Stdlib.Sys.sigtstp
         (Stdlib.Sys.Signal_handle (fun _signum -> suspend ()))
@@ -267,13 +269,11 @@ module Raw = struct
         (Stdlib.Sys.Signal_handle
            (fun _signum ->
              (* Only re-enter raw mode if we actually suspended: suspend()
-                clears _saved_state before sending SIGSTOP, so is_none means
-                a real resume. If _saved_state is Some, SIGCONT was spurious
-                (process wasn't stopped by us) and we leave the terminal alone. *)
-             if Option.is_none !_saved_state then (
+                clears _saved_state before sending SIGSTOP, so None means
+                a real resume. CAS ensures only one SIGCONT wins if racing. *)
+             if Atomic.compare_and_set _saved_state None (Some state) then (
                Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH
                  (make_raw_settings state.original);
-               _saved_state := Some state;
                write_stdout_all
                  (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.hide);
                Atomic.set redraw_needed true)))
@@ -289,7 +289,7 @@ module Raw = struct
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp prev_tstp);
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont prev_cont));
     _saved_handlers := None;
-    _saved_state := None
+    Atomic.set _saved_state None
 end
 
 (** Keyboard input types and parsing. *)
