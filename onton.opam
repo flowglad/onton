@@ -14,6 +14,7 @@ depends: [
   "tls-eio" {>= "2.0.0"}
   "mirage-crypto-rng" {>= "2.0.0"}
   "ca-certs" {>= "1.0.0"}
+  "re" {>= "1.10.0"}
   "cmdliner" {>= "1.3.0"}
   "ppx_deriving" {>= "6.0"}
   "ppx_sexp_conv" {>= "v0.17.0"}

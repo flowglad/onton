@@ -15,6 +15,56 @@ type config = {
   headless : bool;
 }
 
+(** Infer GitHub owner/repo from [git remote get-url origin] in [repo_root].
+    Parses both HTTPS and SSH remote URLs. *)
+let infer_owner_repo ~repo_root =
+  let buf = Buffer.create 128 in
+  try
+    let ic =
+      Unix.open_process_in
+        (Printf.sprintf "git -C %s remote get-url origin 2>/dev/null"
+           (Filename.quote repo_root))
+    in
+    (try
+       while true do
+         Buffer.add_char buf (input_char ic)
+       done
+     with End_of_file -> ());
+    (match Unix.close_process_in ic with
+    | Unix.WEXITED 0 -> ()
+    | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> raise Exit);
+    let url = Base.String.strip (Buffer.contents buf) in
+    let re =
+      Re.Pcre.re {|github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?/?$|}
+      |> Re.compile
+    in
+    match Re.exec_opt re url with
+    | Some g -> Some (Re.Group.get g 1, Re.Group.get g 2)
+    | None -> None
+  with _ -> None
+
+(** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].
+*)
+let infer_github_token () =
+  match Stdlib.Sys.getenv_opt "GITHUB_TOKEN" with
+  | Some t when not (Base.String.is_empty (Base.String.strip t)) ->
+      Base.String.strip t
+  | _ -> (
+      let buf = Buffer.create 128 in
+      try
+        let ic = Unix.open_process_in "gh auth token 2>/dev/null" in
+        (try
+           while true do
+             Buffer.add_char buf (input_char ic)
+           done
+         with End_of_file -> ());
+        (match Unix.close_process_in ic with
+        | Unix.WEXITED 0 -> ()
+        | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> raise Exit);
+        let t = Base.String.strip (Buffer.contents buf) in
+        if Base.String.is_empty t then "" else t
+      with _ -> "")
+
 let validate_resolved_config ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
   let errors =
@@ -1191,6 +1241,27 @@ let load_snapshot ~project_name ~gameplan =
     | Error _ -> None
   else None
 
+(** Resolve owner/repo/token with CLI flags, falling back to git remote and
+    [gh auth token] when flags are empty. *)
+let resolve_github_credentials ~github_token ~github_owner ~github_repo
+    ~repo_root =
+  let token =
+    let t = Base.String.strip github_token in
+    if Base.String.is_empty t then infer_github_token () else t
+  in
+  let owner, repo =
+    let o = Base.String.strip github_owner in
+    let r = Base.String.strip github_repo in
+    if Base.String.is_empty o || Base.String.is_empty r then
+      match infer_owner_repo ~repo_root with
+      | Some (inferred_o, inferred_r) ->
+          ( (if Base.String.is_empty o then inferred_o else o),
+            if Base.String.is_empty r then inferred_r else r )
+      | None -> (o, r)
+    else (o, r)
+  in
+  (token, owner, repo)
+
 (** Resolve CLI args into a config ready to run.
     - [--gameplan] provided: parse it, persist config + gameplan source, derive
       project name.
@@ -1201,9 +1272,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
     ~headless =
   match (project, gameplan_path) with
   | None, None ->
-      let token = Base.String.strip github_token in
-      let owner = Base.String.strip github_owner in
-      let repo = Base.String.strip github_repo in
+      let token, owner, repo =
+        resolve_github_credentials ~github_token ~github_owner ~github_repo
+          ~repo_root
+      in
       let project_name =
         if Base.String.is_empty owner || Base.String.is_empty repo then "adhoc"
         else Printf.sprintf "%s-%s" owner repo
@@ -1241,9 +1313,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             | Some p -> p
             | None -> gameplan.Gameplan.project_name
           in
-          let token = Base.String.strip github_token in
-          let owner = Base.String.strip github_owner in
-          let repo = Base.String.strip github_repo in
+          let token, owner, repo =
+            resolve_github_credentials ~github_token ~github_owner ~github_repo
+              ~repo_root
+          in
           Project_store.save_config ~project_name ~github_token:token
             ~github_owner:owner ~github_repo:repo
             ~main_branch:(Branch.to_string main_branch)
@@ -1287,20 +1360,30 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
               | Error msg ->
                   Error [ Printf.sprintf "Error loading config: %s" msg ]
               | Ok stored ->
-                  let token =
-                    if Base.String.is_empty (Base.String.strip github_token)
-                    then stored.Project_store.github_token
-                    else Base.String.strip github_token
+                  (* CLI flags override stored config; stored config overrides
+                     git-remote inference *)
+                  let merge_cli_stored cli stored_val =
+                    let c = Base.String.strip cli in
+                    if Base.String.is_empty c then stored_val else c
                   in
-                  let owner =
-                    if Base.String.is_empty (Base.String.strip github_owner)
-                    then stored.Project_store.github_owner
-                    else Base.String.strip github_owner
+                  let token_from_stored =
+                    merge_cli_stored github_token
+                      stored.Project_store.github_token
                   in
-                  let repo =
-                    if Base.String.is_empty (Base.String.strip github_repo) then
+                  let owner_from_stored =
+                    merge_cli_stored github_owner
+                      stored.Project_store.github_owner
+                  in
+                  let repo_from_stored =
+                    merge_cli_stored github_repo
                       stored.Project_store.github_repo
-                    else Base.String.strip github_repo
+                  in
+                  (* If still empty after stored config, fall back to
+                     inference *)
+                  let token, owner, repo =
+                    resolve_github_credentials ~github_token:token_from_stored
+                      ~github_owner:owner_from_stored
+                      ~github_repo:repo_from_stored ~repo_root
                   in
                   let branch =
                     if Base.String.equal (Branch.to_string main_branch) "main"
