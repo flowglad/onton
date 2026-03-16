@@ -362,30 +362,49 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   in
   loop ()
 
-(** Headless logging fiber — prints activity log entries to stdout as plain
-    text, without TUI escape codes. *)
+(** Headless logging fiber — prints events and transitions to stdout as plain
+    text, without TUI escape codes. Uses a timestamp cursor so output does not
+    stop once the sliding window fills up. *)
 let headless_fiber ~runtime ~clock ~stdout =
-  let last_count = ref 0 in
+  let last_seen_ts : float ref = ref 0.0 in
   let rec loop () =
     let entries =
       Runtime.read runtime (fun snap ->
-          Activity_log.recent_events snap.Runtime.activity_log ~limit:50)
+          let log = snap.Runtime.activity_log in
+          let events =
+            Base.List.map (Activity_log.recent_events log ~limit:50)
+              ~f:(fun (e : Activity_log.Event.t) ->
+                let pid_str =
+                  match e.Activity_log.Event.patch_id with
+                  | Some pid -> Printf.sprintf "[%s] " (Patch_id.to_string pid)
+                  | None -> ""
+                in
+                ( e.Activity_log.Event.timestamp,
+                  pid_str ^ e.Activity_log.Event.message ))
+          in
+          let transitions =
+            Base.List.map (Activity_log.recent_transitions log ~limit:50)
+              ~f:(fun (t : Activity_log.Transition_entry.t) ->
+                let pid =
+                  Patch_id.to_string t.Activity_log.Transition_entry.patch_id
+                in
+                let msg =
+                  Printf.sprintf "[%s] %s -> %s" pid
+                    (Tui.label t.Activity_log.Transition_entry.from_status)
+                    (Tui.label t.Activity_log.Transition_entry.to_status)
+                in
+                (t.Activity_log.Transition_entry.timestamp, msg))
+          in
+          Base.List.sort (events @ transitions) ~compare:(fun (t1, _) (t2, _) ->
+              Base.Float.ascending t1 t2))
     in
-    let total = Base.List.length entries in
-    if total > !last_count then (
-      let new_entries = Base.List.take entries (total - !last_count) in
-      Base.List.iter (Base.List.rev new_entries)
-        ~f:(fun (e : Activity_log.Event.t) ->
-          let pid_str =
-            match e.Activity_log.Event.patch_id with
-            | Some pid -> Printf.sprintf "[%s] " (Patch_id.to_string pid)
-            | None -> ""
-          in
-          let line =
-            Printf.sprintf "%s%s\n" pid_str e.Activity_log.Event.message
-          in
-          Eio.Flow.copy_string line stdout);
-      last_count := total);
+    let new_entries =
+      Base.List.filter entries ~f:(fun (ts, _) ->
+          Float.compare ts !last_seen_ts > 0)
+    in
+    Base.List.iter new_entries ~f:(fun (ts, msg) ->
+        Eio.Flow.copy_string (msg ^ "\n") stdout;
+        if Float.compare ts !last_seen_ts > 0 then last_seen_ts := ts);
     Eio.Time.sleep clock 1.0;
     loop ()
   in
