@@ -44,10 +44,8 @@ let substitute_variables (template : string) (vars : (string * string) list) :
 
 let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
-  match Stdlib.Sys.file_exists path with
-  | false -> None
-  | true ->
-      Some (Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all)
+  match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
+  | content -> Some content
   | exception Stdlib.Sys_error _ -> None
 
 let render_with_override ~(project_name : string) ~(name : string)
@@ -109,10 +107,10 @@ let render_patch_prompt ~(project_name : string) (patch : Patch.t)
         gameplan.Gameplan.solution_summary deps branch base_branch patches_list)
 
 let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
-  match comments with
-  | [] -> "No review comments to address."
-  | _ ->
-      let formatted =
+  let formatted =
+    match comments with
+    | [] -> ""
+    | _ ->
         List.map comments ~f:(fun (c : Comment.t) ->
             let location =
               match (c.Comment.path, c.Comment.line) with
@@ -122,15 +120,14 @@ let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
             in
             Printf.sprintf "### %s\n%s" location c.Comment.body)
         |> String.concat ~sep:"\n\n"
-      in
-      let vars =
-        [
-          ("comments", formatted);
-          ("count", Int.to_string (List.length comments));
-        ]
-      in
-      render_with_override ~project_name ~name:"review" ~vars
-        ~default:(fun () ->
+  in
+  let vars =
+    [ ("comments", formatted); ("count", Int.to_string (List.length comments)) ]
+  in
+  render_with_override ~project_name ~name:"review" ~vars ~default:(fun () ->
+      match comments with
+      | [] -> "No review comments to address."
+      | _ ->
           Printf.sprintf
             "# Review Comments\n\n\
              Please address the following review comments:\n\n\
@@ -139,10 +136,10 @@ let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
 
 let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
     =
-  match checks with
-  | [] -> "No CI failures."
-  | _ ->
-      let formatted =
+  let formatted =
+    match checks with
+    | [] -> ""
+    | _ ->
         List.map checks ~f:(fun (c : Ci_check.t) ->
             let url =
               match c.Ci_check.details_url with
@@ -157,12 +154,15 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
             Printf.sprintf "- **%s**: %s%s%s" c.Ci_check.name
               c.Ci_check.conclusion url desc)
         |> String.concat ~sep:"\n"
-      in
-      let vars =
-        [ ("checks", formatted); ("count", Int.to_string (List.length checks)) ]
-      in
-      render_with_override ~project_name ~name:"ci_failure" ~vars
-        ~default:(fun () ->
+  in
+  let vars =
+    [ ("checks", formatted); ("count", Int.to_string (List.length checks)) ]
+  in
+  render_with_override ~project_name ~name:"ci_failure" ~vars
+    ~default:(fun () ->
+      match checks with
+      | [] -> "No CI failures."
+      | _ ->
           Printf.sprintf
             "# CI Failures\n\nThe following CI checks failed:\n\n%s" formatted)
 
@@ -186,28 +186,23 @@ Resolve any conflicts, then continue with `git rebase --continue`.|}
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
-  match messages with
-  | [] -> "No messages."
-  | _ ->
-      let formatted =
-        match messages with
-        | [ msg ] -> msg
-        | _ ->
-            List.mapi messages ~f:(fun i msg ->
-                Printf.sprintf "%d. %s" (i + 1) msg)
-            |> String.concat ~sep:"\n"
-      in
-      let vars =
-        [
-          ("messages", formatted);
-          ("count", Int.to_string (List.length messages));
-        ]
-      in
-      render_with_override ~project_name ~name:"human_message" ~vars
-        ~default:(fun () ->
-          match messages with
-          | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
-          | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted)
+  let formatted =
+    match messages with
+    | [] -> ""
+    | [ msg ] -> msg
+    | _ ->
+        List.mapi messages ~f:(fun i msg -> Printf.sprintf "%d. %s" (i + 1) msg)
+        |> String.concat ~sep:"\n"
+  in
+  let vars =
+    [ ("messages", formatted); ("count", Int.to_string (List.length messages)) ]
+  in
+  render_with_override ~project_name ~name:"human_message" ~vars
+    ~default:(fun () ->
+      match messages with
+      | [] -> "No messages."
+      | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
+      | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted)
 
 let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
