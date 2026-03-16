@@ -826,6 +826,10 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                         Hashtbl.replace ci_checks_cache patch_id failed
                       else Hashtbl.remove ci_checks_cache patch_id
                     in
+                    let orch =
+                      Orchestrator.set_ci_checks orch patch_id
+                        poll_result.Poller.ci_checks
+                    in
                     Base.List.fold poll_result.Poller.new_comments ~init:orch
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
