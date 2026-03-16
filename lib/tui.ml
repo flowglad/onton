@@ -370,7 +370,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     has_conflict = agent.has_conflict;
     needs_intervention = agent.needs_intervention;
     pending_comments = List.length agent.pending_comments;
-    ci_checks = [];
+    ci_checks = agent.ci_checks;
     recent_stream = [];
   }
 
@@ -689,9 +689,7 @@ let render_frame ~width ~height ~selected ~view_mode
                   | Event { patch_id = None; _ } -> false)
             in
             let pv =
-              if List.is_empty pv.recent_stream then
-                { pv with recent_stream = List.take filtered_activity 10 }
-              else pv
+              { pv with recent_stream = List.take filtered_activity 10 }
             in
             render_detail pv ~width
         | None -> [ " (patch not found)" ]

@@ -56,8 +56,8 @@ val set_tried_fresh : t -> Patch_id.t -> t
 val clear_session_fallback : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
+val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
-val set_ci_checks : t -> Patch_id.t -> Types.Ci_check.t list -> t
 val add_addressed_comment_id : t -> Patch_id.t -> Types.Comment_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
 
