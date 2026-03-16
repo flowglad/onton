@@ -58,25 +58,38 @@ let enqueue t k =
 let mark_merged t = { t with merged = true }
 
 let add_pending_comment t comment ~valid =
+  let is_synthetic id = Comment_id.to_int id < 0 in
+  let is_content_match (a : Comment.t) (b : Comment.t) =
+    String.equal a.body b.body
+    && Option.equal String.equal a.path b.path
+    && Option.equal Int.equal a.line b.line
+  in
+  (* Migration: if a pending comment has a synthetic ID and the incoming
+     comment has a real ID with matching content, upgrade the synthetic entry's
+     ID in-place so subsequent polls match by ID directly.
+     Assumption: the GraphQL query only fetches review-thread comments, which
+     always have path/line set. If PR-level comments (path=None, line=None)
+     are ever fetched, this could falsely match a human message. *)
+  let migration_matched = ref false in
+  let pending_comments =
+    List.map t.pending_comments ~f:(fun pc ->
+        if
+          is_synthetic pc.comment.Comment.id
+          && (not (is_synthetic comment.Comment.id))
+          && is_content_match pc.comment comment
+        then (
+          migration_matched := true;
+          {
+            pc with
+            comment = { pc.comment with Comment.id = comment.Comment.id };
+          })
+        else pc)
+  in
+  let t = { t with pending_comments } in
   let already_present =
-    let is_synthetic id = Comment_id.to_int id < 0 in
-    List.exists t.pending_comments ~f:(fun pc ->
-        Comment_id.equal pc.comment.Comment.id comment.Comment.id
-        (* Content-match fallback for migration only: a legacy comment loaded
-           with a synthetic ID and re-polled with its real databaseId is caught
-           here. Guard: pending must be synthetic AND incoming must be real, so
-           two synthetic human messages with the same body both queue.
-           Assumption: the GraphQL query only fetches review-thread comments,
-           which always have path/line set. If PR-level comments (path=None,
-           line=None) are ever fetched, this could falsely match a human message
-           with the same body. *)
-        || is_synthetic pc.comment.Comment.id
-           && (not (is_synthetic comment.Comment.id))
-           && String.equal pc.comment.Comment.body comment.Comment.body
-           && Option.equal String.equal pc.comment.Comment.path
-                comment.Comment.path
-           && Option.equal Int.equal pc.comment.Comment.line
-                comment.Comment.line)
+    !migration_matched
+    || List.exists t.pending_comments ~f:(fun pc ->
+        Comment_id.equal pc.comment.Comment.id comment.Comment.id)
   in
   if already_present then t
   else { t with pending_comments = { comment; valid } :: t.pending_comments }

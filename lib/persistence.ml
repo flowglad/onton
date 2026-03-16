@@ -412,6 +412,9 @@ let load ~path ~gameplan =
     let result = snapshot_of_yojson ~gameplan json in
     (match result with
     | Ok snap ->
+        (* NOTE: seeds only from pending_comments. If Comment_id.t is ever
+           stored outside of pending_comments (e.g. a processed-comments log),
+           those IDs must be included here to prevent synthetic reuse. *)
         let ids =
           Orchestrator.all_agents snap.orchestrator
           |> List.concat_map ~f:(fun (a : Patch_agent.t) ->

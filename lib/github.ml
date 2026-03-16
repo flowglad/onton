@@ -81,14 +81,15 @@ let parse_check_status = function
 
 let parse_comment_node node =
   let open Yojson.Safe.Util in
-  match node |> member "databaseId" |> to_int_option with
-  | None -> None
-  | Some raw_id ->
-      let id = Types.Comment_id.of_int raw_id in
-      let body = node |> member "body" |> to_string in
-      let path = node |> member "path" |> to_string_option in
-      let line = node |> member "line" |> to_int_option in
-      Some Types.Comment.{ id; body; path; line }
+  let id =
+    match node |> member "databaseId" |> to_int_option with
+    | Some raw_id -> Types.Comment_id.of_int raw_id
+    | None -> Types.Comment_id.next_synthetic ()
+  in
+  let body = node |> member "body" |> to_string in
+  let path = node |> member "path" |> to_string_option in
+  let line = node |> member "line" |> to_int_option in
+  Types.Comment.{ id; body; path; line }
 
 let parse_response body =
   let open Yojson.Safe.Util in
@@ -129,7 +130,7 @@ let parse_response body =
                   if thread |> member "isResolved" |> to_bool then []
                   else
                     thread |> member "comments" |> member "nodes" |> to_list
-                    |> List.filter_map ~f:parse_comment_node)
+                    |> List.map ~f:parse_comment_node)
             in
             let unresolved_comment_count = List.length comments in
             Ok
