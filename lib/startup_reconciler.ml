@@ -90,7 +90,7 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
 let recover_worktrees ~process_mgr ~repo_root ~patches =
   let worktrees, list_error =
     try (Worktree.list_with_branches ~process_mgr ~repo_root, None)
-    with Eio.Exn.Io _ as exn ->
+    with exn ->
       ( [],
         Some
           (Printf.sprintf "worktree discovery failed: %s"
