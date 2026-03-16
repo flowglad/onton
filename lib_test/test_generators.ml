@@ -153,7 +153,15 @@ let gen_poller =
     map4
       (fun queue (merged, has_conflict) (mergeable, checks_passing) ci_checks ->
         Onton.Poller.
-          { queue; merged; has_conflict; mergeable; checks_passing; ci_checks })
+          {
+            queue;
+            merged;
+            has_conflict;
+            mergeable;
+            checks_passing;
+            ci_checks;
+            new_comments = [];
+          })
       gen_operation_kind_queue (pair bool bool) (pair bool bool)
       (list_small gen_ci_check))
 
