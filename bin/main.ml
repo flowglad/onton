@@ -330,7 +330,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     let limit =
       match !view_mode with
       | Tui.Timeline_view -> 100
-      | Tui.List_view | Tui.Detail_view _ -> 10
+      | Tui.Detail_view _ -> 100
+      | Tui.List_view -> 10
     in
     let activity = activity_entries_of_log ~limit log in
     let frame =
