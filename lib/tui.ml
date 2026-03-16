@@ -511,7 +511,13 @@ let render_activity (entries : activity_entry list) =
     header :: lines
 
 let render_detail (pv : patch_view) ~width =
-  let header = Term.styled [ Term.Sgr.bold ] (Printf.sprintf " %s" pv.title) in
+  let fit_value prefix value =
+    prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
+  in
+  let header =
+    Term.styled [ Term.Sgr.bold ]
+      (Term.fit_width (Int.max 1 (width - 1)) (" " ^ pv.title))
+  in
   let rule = Term.hrule width in
   let badge = render_status_badge pv.status in
   let lines =
@@ -519,8 +525,8 @@ let render_detail (pv : patch_view) ~width =
       header;
       rule;
       Printf.sprintf "  Status:      %s" badge;
-      Printf.sprintf "  Patch ID:    %s" (Patch_id.to_string pv.patch_id);
-      Printf.sprintf "  Branch:      %s" (Branch.to_string pv.branch);
+      fit_value "  Patch ID:    " (Patch_id.to_string pv.patch_id);
+      fit_value "  Branch:      " (Branch.to_string pv.branch);
       Printf.sprintf "  PR:          %s" (if pv.has_pr then "yes" else "no");
       Printf.sprintf "  Dependencies: %d" pv.dep_count;
       Printf.sprintf "  CI failures: %d" pv.ci_failures;
@@ -554,7 +560,8 @@ let render_footer ~width ~view_mode =
         Term.styled [ Term.Sgr.dim ]
           " q:quit  r:refresh  ↑/↓:navigate  enter:detail  h:help"
     | Detail_view _ ->
-        Term.styled [ Term.Sgr.dim ] " q:quit  esc:back  r:refresh  h:help"
+        Term.styled [ Term.Sgr.dim ]
+          " q:quit  esc/backspace:back  r:refresh  h:help"
   in
   [ Term.hrule width; help ]
 
@@ -572,9 +579,6 @@ let render_frame ~width ~height ~selected ~view_mode
   let header = render_header ~project_name ~width in
   let summary = [ render_summary views ] in
   let footer = render_footer ~width ~view_mode in
-  (* Reserve lines for header(2) + blank + summary(1) + blank + footer(2) +
-     blank = 8 fixed lines *)
-  let max_patch_rows = max 3 (height - 8) in
   match view_mode with
   | Detail_view patch_id ->
       let detail =
@@ -589,10 +593,19 @@ let render_frame ~width ~height ~selected ~view_mode
       in
       { lines; width }
   | List_view ->
+      let activity_lines = render_activity activity in
+      let activity_height =
+        if List.is_empty activity_lines then 0
+        else 1 + List.length activity_lines
+      in
+      (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
+         + scroll indicators(2) + blank before footer + footer(2) +
+         activity block *)
+      let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + activity_height in
+      let max_patch_rows = Int.max 0 (height - reserved) in
       let patches =
         render_patches ~width ~selected ~max_visible:max_patch_rows views
       in
-      let activity_lines = render_activity activity in
       let lines =
         header @ [ "" ] @ summary @ [ "" ] @ patches
         @ (if List.is_empty activity_lines then [] else "" :: activity_lines)

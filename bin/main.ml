@@ -319,12 +319,16 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           | Tui_input.Quit -> raise Quit_tui
           | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
           | Tui_input.Page_down ->
-              let count =
-                Runtime.read runtime (fun snap ->
-                    Base.List.length
-                      (Orchestrator.all_agents snap.Runtime.orchestrator))
-              in
-              selected := Tui_input.apply_move ~count ~selected:!selected cmd;
+              (match !view_mode with
+              | Tui.List_view ->
+                  let count =
+                    Runtime.read runtime (fun snap ->
+                        Base.List.length
+                          (Orchestrator.all_agents snap.Runtime.orchestrator))
+                  in
+                  selected :=
+                    Tui_input.apply_move ~count ~selected:!selected cmd
+              | Tui.Detail_view _ -> ());
               loop ()
           | Tui_input.Select -> (
               match !view_mode with
