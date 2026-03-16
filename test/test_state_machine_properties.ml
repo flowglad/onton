@@ -52,6 +52,7 @@ let gen_command ~n =
       ])
 
 let gen_command_seq ~n ~len =
+  if len < 1 then invalid_arg "gen_command_seq: len must be at least 1";
   QCheck2.Gen.(list_size (int_range 1 len) (gen_command ~n))
 
 let pid_of_idx patches i =
@@ -137,6 +138,8 @@ let () =
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
         safe (fun () ->
             let orch = Orchestrator.create ~patches ~main_branch:main in
+            (* gen_patch_list_unique produces linear chains where each tick
+               starts at most one patch, so |patches|+2 ticks suffices. *)
             let rec stabilize o n =
               if n = 0 then o
               else
