@@ -101,40 +101,43 @@ let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch ~base_branch =
   | exn ->
       Error (Printf.sprintf "unexpected error: %s" (Printexc.to_string exn))
 
-(** {1 Activity log → TUI conversion} *)
+(** {1 Activity log helpers} *)
+
+(** Merge events and transitions from an activity log into a single
+    timestamp-tagged list. [compare] controls sort direction. *)
+let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
+    ~(map_event : Activity_log.Event.t -> 'a)
+    ~(map_transition : Activity_log.Transition_entry.t -> 'a) =
+  let events =
+    Base.List.map (Activity_log.recent_events log ~limit) ~f:(fun e ->
+        (e.Activity_log.Event.timestamp, map_event e))
+  in
+  let transitions =
+    Base.List.map (Activity_log.recent_transitions log ~limit) ~f:(fun t ->
+        (t.Activity_log.Transition_entry.timestamp, map_transition t))
+  in
+  Base.List.sort (events @ transitions) ~compare
 
 let activity_entries_of_log (log : Activity_log.t) =
-  let transitions =
-    Base.List.map (Activity_log.recent_transitions log ~limit:10)
-      ~f:(fun (t : Activity_log.Transition_entry.t) ->
-        ( t.Activity_log.Transition_entry.timestamp,
-          Tui.Transition
-            {
-              patch_id =
-                Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
-              from_label = Tui.label t.Activity_log.Transition_entry.from_status;
-              to_status = t.Activity_log.Transition_entry.to_status;
-              to_label = Tui.label t.Activity_log.Transition_entry.to_status;
-              action = t.Activity_log.Transition_entry.action;
-            } ))
-  in
-  let events =
-    Base.List.map (Activity_log.recent_events log ~limit:10)
-      ~f:(fun (e : Activity_log.Event.t) ->
-        ( e.Activity_log.Event.timestamp,
-          Tui.Event
-            {
-              patch_id =
-                Base.Option.map e.Activity_log.Event.patch_id
-                  ~f:Patch_id.to_string;
-              message = e.Activity_log.Event.message;
-            } ))
-  in
-  let merged =
-    Base.List.sort (transitions @ events) ~compare:(fun (t1, _) (t2, _) ->
-        Base.Float.descending t1 t2)
-  in
-  Base.List.map merged ~f:snd
+  merged_log_entries ~log ~limit:10
+    ~compare:(fun (t1, _) (t2, _) -> Base.Float.descending t1 t2)
+    ~map_event:(fun (e : Activity_log.Event.t) ->
+      Tui.Event
+        {
+          patch_id =
+            Base.Option.map e.Activity_log.Event.patch_id ~f:Patch_id.to_string;
+          message = e.Activity_log.Event.message;
+        })
+    ~map_transition:(fun (t : Activity_log.Transition_entry.t) ->
+      Tui.Transition
+        {
+          patch_id = Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
+          from_label = Tui.label t.Activity_log.Transition_entry.from_status;
+          to_status = t.Activity_log.Transition_entry.to_status;
+          to_label = Tui.label t.Activity_log.Transition_entry.to_status;
+          action = t.Activity_log.Transition_entry.action;
+        })
+  |> Base.List.map ~f:snd
 
 (** {1 Branch lookup map}
 
@@ -362,51 +365,45 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   in
   loop ()
 
+(** Format a Unix timestamp as HH:MM:SS for headless log lines. *)
+let format_time ts =
+  let t = Unix.localtime ts in
+  Printf.sprintf "%02d:%02d:%02d" t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+
+let format_event (e : Activity_log.Event.t) =
+  let pid_str =
+    match e.Activity_log.Event.patch_id with
+    | Some pid -> Printf.sprintf "[%s] " (Patch_id.to_string pid)
+    | None -> ""
+  in
+  pid_str ^ e.Activity_log.Event.message
+
+let format_transition (t : Activity_log.Transition_entry.t) =
+  Printf.sprintf "[%s] %s -> %s"
+    (Patch_id.to_string t.Activity_log.Transition_entry.patch_id)
+    (Tui.label t.Activity_log.Transition_entry.from_status)
+    (Tui.label t.Activity_log.Transition_entry.to_status)
+
 (** Headless logging fiber — prints events and transitions to stdout as plain
-    text, without TUI escape codes. Uses a timestamp cursor so output does not
-    stop once the sliding window fills up. *)
+    text, without TUI escape codes. Uses a count-based cursor to avoid losing
+    entries with identical timestamps. *)
 let headless_fiber ~runtime ~clock ~stdout =
-  let last_seen_ts : float ref = ref 0.0 in
+  let seen_count = ref 0 in
   let rec loop () =
     let entries =
       Runtime.read runtime (fun snap ->
-          let log = snap.Runtime.activity_log in
-          let events =
-            Base.List.map (Activity_log.recent_events log ~limit:50)
-              ~f:(fun (e : Activity_log.Event.t) ->
-                let pid_str =
-                  match e.Activity_log.Event.patch_id with
-                  | Some pid -> Printf.sprintf "[%s] " (Patch_id.to_string pid)
-                  | None -> ""
-                in
-                ( e.Activity_log.Event.timestamp,
-                  pid_str ^ e.Activity_log.Event.message ))
-          in
-          let transitions =
-            Base.List.map (Activity_log.recent_transitions log ~limit:50)
-              ~f:(fun (t : Activity_log.Transition_entry.t) ->
-                let pid =
-                  Patch_id.to_string t.Activity_log.Transition_entry.patch_id
-                in
-                let msg =
-                  Printf.sprintf "[%s] %s -> %s" pid
-                    (Tui.label t.Activity_log.Transition_entry.from_status)
-                    (Tui.label t.Activity_log.Transition_entry.to_status)
-                in
-                (t.Activity_log.Transition_entry.timestamp, msg))
-          in
-          Base.List.sort (events @ transitions) ~compare:(fun (t1, _) (t2, _) ->
-              Base.Float.ascending t1 t2))
+          merged_log_entries ~log:snap.Runtime.activity_log ~limit:50
+            ~compare:(fun (t1, _) (t2, _) -> Base.Float.ascending t1 t2)
+            ~map_event:format_event ~map_transition:format_transition)
     in
-    let new_entries =
-      Base.List.filter entries ~f:(fun (ts, _) ->
-          Float.compare ts !last_seen_ts > 0)
-    in
-    Base.List.iter new_entries ~f:(fun (_ts, msg) ->
-        Eio.Flow.copy_string (msg ^ "\n") stdout);
-    (match Base.List.last new_entries with
-    | Some (ts, _) -> last_seen_ts := ts
-    | None -> ());
+    let total = Base.List.length entries in
+    if total > !seen_count then (
+      let new_entries = Base.List.drop entries !seen_count in
+      Base.List.iter new_entries ~f:(fun (ts, msg) ->
+          Eio.Flow.copy_string
+            (Printf.sprintf "%s %s\n" (format_time ts) msg)
+            stdout);
+      seen_count := total);
     Eio.Time.sleep clock 1.0;
     loop ()
   in
