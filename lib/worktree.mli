@@ -13,6 +13,22 @@ val create :
   process_mgr:_ Eio.Process.mgr -> repo_root:string -> patch:Types.Patch.t -> t
 
 val remove : process_mgr:_ Eio.Process.mgr -> repo_root:string -> t -> unit
+
+val add_existing :
+  patch_id:Types.Patch_id.t -> branch:Types.Branch.t -> path:string -> t
+(** Adopt an existing linked worktree directory. Validates filesystem structure
+    (directory exists, contains a [.git] file with [gitdir:] prefix) but does
+    NOT verify that [branch] matches the worktree's actual HEAD — callers must
+    confirm via {!detect_branch} or {!list_with_branches} before calling. *)
+
+val detect_branch :
+  process_mgr:_ Eio.Process.mgr -> path:string -> Types.Branch.t
+
+val list_with_branches :
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  (string * Types.Branch.t) list
+
 val exists : t -> bool
 val path : t -> string
 val patch_id : t -> Types.Patch_id.t

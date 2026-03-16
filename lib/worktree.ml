@@ -4,9 +4,15 @@ type t = { patch_id : Types.Patch_id.t; branch : Types.Branch.t; path : string }
 [@@deriving show, eq, sexp_of, compare]
 
 let normalize_path path =
-  if Stdlib.Filename.is_relative path then
-    Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
-  else path
+  let p =
+    if Stdlib.Filename.is_relative path then
+      Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
+    else path
+  in
+  if String.length p > 1 && String.is_suffix p ~suffix:"/" then
+    let stripped = String.rstrip p ~drop:(Char.equal '/') in
+    if String.is_empty stripped then p else stripped
+  else p
 
 let worktree_dir ~repo_root ~patch_id =
   let repo_root = normalize_path repo_root in
@@ -26,6 +32,139 @@ let create ~process_mgr ~repo_root ~patch =
 let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
+
+let add_existing ~patch_id ~branch ~path =
+  let path = normalize_path path in
+  (match Stdlib.Sys.file_exists path with
+  | false -> failwith ("Worktree path does not exist: " ^ path)
+  | true ->
+      if not (Stdlib.Sys.is_directory path) then
+        failwith ("Worktree path is not a directory: " ^ path));
+  let git_file = Stdlib.Filename.concat path ".git" in
+  if (not (Stdlib.Sys.file_exists git_file)) || Stdlib.Sys.is_directory git_file
+  then failwith ("Path is not a git worktree (no .git file): " ^ path);
+  (match Stdlib.open_in git_file with
+  | exception Sys_error msg ->
+      failwith ("Failed to read .git file at " ^ path ^ ": " ^ msg)
+  | ic -> (
+      let first_line =
+        Exn.protect
+          ~f:(fun () -> try Stdlib.input_line ic with End_of_file -> "")
+          ~finally:(fun () -> Stdlib.close_in ic)
+      in
+      match String.chop_prefix first_line ~prefix:"gitdir: " with
+      | None ->
+          failwith
+            ("Path is not a git worktree (.git file has unexpected format): "
+           ^ path)
+      | Some gitdir_path ->
+          let gitdir_path = String.strip gitdir_path in
+          if String.is_empty gitdir_path then
+            failwith ("Worktree .git file has empty gitdir path: " ^ path);
+          let resolved =
+            if Stdlib.Filename.is_relative gitdir_path then
+              Stdlib.Filename.concat path gitdir_path
+            else gitdir_path
+          in
+          if not (Stdlib.Sys.file_exists resolved) then
+            failwith
+              ("Worktree no longer registered with git (gitdir missing): "
+             ^ path)));
+  { patch_id; branch; path }
+
+let rec has_cancellation = function
+  | Eio.Cancel.Cancelled _ -> true
+  | Eio.Exn.Multiple exns ->
+      List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
+  | _ -> false
+
+let detect_branch ~process_mgr ~path =
+  let buf = Buffer.create 128 in
+  let path = normalize_path path in
+  let stderr_buf = Buffer.create 64 in
+  (match
+     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+       [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
+   with
+  | () -> ()
+  | exception e when has_cancellation e -> raise e
+  | exception exn ->
+      let msg = Buffer.contents stderr_buf in
+      failwith
+        (Printf.sprintf "detect_branch failed at %s: %s\ngit stderr: %s" path
+           (Exn.to_string exn) msg));
+  let raw = Buffer.contents buf in
+  let branch_str = String.strip raw in
+  if String.is_empty branch_str then
+    failwith ("detect_branch: git rev-parse returned empty output at " ^ path);
+  if String.equal branch_str "HEAD" then
+    failwith ("Worktree at " ^ path ^ " has detached HEAD; cannot detect branch");
+  Types.Branch.of_string branch_str
+
+let list_with_branches ~process_mgr ~repo_root =
+  let buf = Buffer.create 512 in
+  let stderr_buf = Buffer.create 64 in
+  (match
+     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+       [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
+   with
+  | () -> ()
+  | exception e when has_cancellation e -> raise e
+  | exception exn ->
+      let msg = Buffer.contents stderr_buf in
+      failwith
+        (Printf.sprintf "list_with_branches failed at %s: %s\ngit stderr: %s"
+           repo_root (Exn.to_string exn) msg));
+  let raw = Buffer.contents buf in
+  let lines = String.split_lines raw in
+  let repo_root = normalize_path repo_root in
+  let flush_entry acc p branch =
+    let p = normalize_path p in
+    match branch with
+    | None -> acc (* skip detached-HEAD worktrees *)
+    | Some b -> if String.( <> ) p repo_root then (p, b) :: acc else acc
+  in
+  let rec parse acc current_path current_branch = function
+    | [] ->
+        let acc =
+          match current_path with
+          | Some p -> flush_entry acc p current_branch
+          | None -> acc
+        in
+        List.rev acc
+    | line :: rest -> (
+        match () with
+        | () when String.is_prefix line ~prefix:"worktree " ->
+            let p = String.drop_prefix line (String.length "worktree ") in
+            (* Flush any pending entry that wasn't terminated by a blank line *)
+            let acc =
+              match current_path with
+              | Some prev_p -> flush_entry acc prev_p current_branch
+              | None -> acc
+            in
+            parse acc (Some p) None rest
+        | () when String.is_prefix line ~prefix:"branch " ->
+            let b = String.drop_prefix line (String.length "branch ") in
+            let branch =
+              match String.chop_prefix b ~prefix:"refs/heads/" with
+              | Some short when not (String.is_empty short) ->
+                  Some (Types.Branch.of_string short)
+              | _ -> None (* detached, non-local ref, or empty name *)
+            in
+            parse acc current_path branch rest
+        | () ->
+            if String.is_empty line then
+              let acc =
+                match current_path with
+                | Some p -> flush_entry acc p current_branch
+                | None -> acc
+              in
+              parse acc None None rest
+            else parse acc current_path current_branch rest)
+  in
+  parse [] None None lines
 
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
