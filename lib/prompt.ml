@@ -58,11 +58,7 @@ let load_override ~(project_name : string) (name : string) : string option =
   | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
   | fd -> (
       match (Unix.fstat fd).Unix.st_kind with
-      | Unix.S_DIR ->
-          Unix.close fd;
-          None
-      | Unix.S_REG | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
-      | Unix.S_SOCK ->
+      | Unix.S_REG ->
           let ic =
             match Unix.in_channel_of_descr fd with
             | exception exn ->
@@ -73,6 +69,10 @@ let load_override ~(project_name : string) (name : string) : string option =
           Exn.protect
             ~finally:(fun () -> Stdlib.In_channel.close ic)
             ~f:(fun () -> Some (Stdlib.In_channel.input_all ic))
+      | Unix.S_DIR | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
+      | Unix.S_SOCK ->
+          Unix.close fd;
+          None
       | exception exn ->
           Unix.close fd;
           raise exn)
