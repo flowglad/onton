@@ -51,6 +51,8 @@ module Comment_id = struct
   let counter = Atomic.make 0
 
   let next_synthetic () =
+    (* fetch_and_add returns the pre-decrement value; subtract 1 again so
+       the first call returns -1, never 0, which is reserved/invalid. *)
     let n = Atomic.fetch_and_add counter (-1) - 1 in
     n
 
