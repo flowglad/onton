@@ -65,6 +65,8 @@ let detect_branch ~process_mgr ~path =
            (Exn.to_string exn) msg));
   let raw = Buffer.contents buf in
   let branch_str = String.strip raw in
+  if String.is_empty branch_str then
+    failwith ("detect_branch: git rev-parse returned empty output at " ^ path);
   if String.equal branch_str "HEAD" then
     failwith ("Worktree at " ^ path ^ " has detached HEAD; cannot detect branch");
   Types.Branch.of_string branch_str
