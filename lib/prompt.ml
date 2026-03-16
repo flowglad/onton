@@ -44,9 +44,10 @@ let substitute_variables (template : string) (vars : (string * string) list) :
 
 let load_override ~(project_name : string) (name : string) : string option =
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
-  if Stdlib.Sys.file_exists path then
-    Some (Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all)
-  else None
+  match Unix.access path [ Unix.R_OK ] with
+  | () ->
+      Some (Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all)
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> None
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
@@ -194,11 +195,16 @@ Resolve any conflicts, then continue with `git rebase --continue`.|}
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
-  let formatted = String.concat ~sep:"\n" messages in
+  let formatted_flat = String.concat ~sep:"\n" messages in
+  let formatted_numbered =
+    List.mapi messages ~f:(fun i msg -> Printf.sprintf "%d. %s" (i + 1) msg)
+    |> String.concat ~sep:"\n"
+  in
   let vars =
     [
       ("project_name", project_name);
-      ("messages", formatted);
+      ("messages", formatted_flat);
+      ("messages_numbered", formatted_numbered);
       ("count", Int.to_string (List.length messages));
     ]
   in
@@ -207,7 +213,7 @@ let render_human_message_prompt ~(project_name : string)
       match messages with
       | [] -> "No messages."
       | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
-      | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted)
+      | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
 
 let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
