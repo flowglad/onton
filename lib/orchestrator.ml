@@ -130,6 +130,7 @@ let add_pending_comment t patch_id comment ~valid =
 
 let send_human_message t patch_id message =
   let comment = Comment.{ body = message; path = None; line = None } in
+  let t = update_agent t patch_id ~f:Patch_agent.clear_needs_intervention in
   let t = add_pending_comment t patch_id comment ~valid:true in
   enqueue t patch_id Operation_kind.Human
 

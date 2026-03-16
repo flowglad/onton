@@ -241,22 +241,31 @@ let input_fiber ~runtime ~selected ~pr_registry =
                       Orchestrator.send_human_message orch patch_id msg);
                   log_event runtime ~patch_id
                     (Printf.sprintf "Human message sent: %s" msg)
-              | Some (Tui_input.Add_pr pr_number) ->
+              | Some (Tui_input.Add_pr pr_number) -> (
                   (* Use the currently selected patch for ad-hoc PR registration *)
-                  let patch_id =
+                  let patch_id_opt =
                     Runtime.read runtime (fun snap ->
                         let agents =
                           Orchestrator.all_agents snap.Runtime.orchestrator
                         in
-                        let idx =
-                          Base.Int.min !selected (Base.List.length agents - 1)
-                        in
-                        (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+                        let count = Base.List.length agents in
+                        if count = 0 then None
+                        else
+                          let idx =
+                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                          in
+                          Some
+                            (Base.List.nth_exn agents idx).Patch_agent.patch_id)
                   in
-                  Pr_registry.register pr_registry ~patch_id ~pr_number;
-                  log_event runtime ~patch_id
-                    (Printf.sprintf "Ad-hoc PR #%d registered"
-                       (Pr_number.to_int pr_number))
+                  match patch_id_opt with
+                  | None ->
+                      log_event runtime
+                        "Cannot register ad-hoc PR: no selectable patch"
+                  | Some patch_id ->
+                      Pr_registry.register pr_registry ~patch_id ~pr_number;
+                      log_event runtime ~patch_id
+                        (Printf.sprintf "Ad-hoc PR #%d registered"
+                           (Pr_number.to_int pr_number)))
               | Some
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
