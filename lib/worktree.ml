@@ -4,9 +4,13 @@ type t = { patch_id : Types.Patch_id.t; branch : Types.Branch.t; path : string }
 [@@deriving show, eq, sexp_of, compare]
 
 let normalize_path path =
-  if Stdlib.Filename.is_relative path then
-    Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
-  else path
+  let p =
+    if Stdlib.Filename.is_relative path then
+      Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
+    else path
+  in
+  if String.is_suffix p ~suffix:"/" then String.chop_suffix_exn p ~suffix:"/"
+  else p
 
 let worktree_dir ~repo_root ~patch_id =
   let repo_root = normalize_path repo_root in
@@ -72,6 +76,7 @@ let detect_branch ~process_mgr ~path =
        [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
    with
   | () -> ()
+  | exception (Eio.Cancel.Cancelled _ as e) -> raise e
   | exception exn ->
       let msg = Buffer.contents stderr_buf in
       failwith
@@ -94,6 +99,7 @@ let list_with_branches ~process_mgr ~repo_root =
        [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
    with
   | () -> ()
+  | exception (Eio.Cancel.Cancelled _ as e) -> raise e
   | exception exn ->
       let msg = Buffer.contents stderr_buf in
       failwith
