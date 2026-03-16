@@ -113,7 +113,8 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
   in
   try Eio.Process.run ~env process_mgr args
   with exn ->
-    Printf.eprintf "set_pr_draft failed: %s\n%!" (Printexc.to_string exn)
+    Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str draft
+      (Printexc.to_string exn)
 
 (** {1 Activity log helpers} *)
 
@@ -914,25 +915,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry =
                           Orchestrator.complete orch patch_id);
                       match kind with
                       | Operation_kind.Rebase -> (
-                          let agent, graph =
+                          let orch_snap, patches =
                             Runtime.read runtime (fun snap ->
-                                ( Orchestrator.agent snap.Runtime.orchestrator
-                                    patch_id,
-                                  Orchestrator.graph snap.Runtime.orchestrator
-                                ))
+                                ( snap.Runtime.orchestrator,
+                                  snap.Runtime.gameplan.Gameplan.patches ))
                           in
+                          let agent = Orchestrator.agent orch_snap patch_id in
+                          let graph = Orchestrator.graph orch_snap in
                           let has_merged pid =
-                            (Runtime.read runtime (fun snap ->
-                                 Orchestrator.agent snap.Runtime.orchestrator
-                                   pid))
+                            (Orchestrator.agent orch_snap pid)
                               .Patch_agent.merged
                           in
                           let branch_of pid =
-                            let patches =
-                              (Runtime.read runtime (fun snap ->
-                                   snap.Runtime.gameplan))
-                                .Gameplan.patches
-                            in
                             match
                               Base.List.find patches ~f:(fun (p : Patch.t) ->
                                   Patch_id.equal p.Patch.id pid)
