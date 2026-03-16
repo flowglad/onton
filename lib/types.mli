@@ -42,6 +42,7 @@ module Comment_id : sig
 
   val of_int : int -> t
   val to_int : t -> int
+  val next_synthetic : unit -> t
 end
 
 module Comment : sig

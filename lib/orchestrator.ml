@@ -128,16 +128,15 @@ let add_pending_comment t patch_id comment ~valid =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.add_pending_comment a comment ~valid)
 
-let next_synthetic_id =
-  let counter = ref 0 in
-  fun () ->
-    Int.decr counter;
-    Comment_id.of_int !counter
-
 let send_human_message t patch_id message =
   let comment =
     Comment.
-      { id = next_synthetic_id (); body = message; path = None; line = None }
+      {
+        id = Comment_id.next_synthetic ();
+        body = message;
+        path = None;
+        line = None;
+      }
   in
   let t = update_agent t patch_id ~f:Patch_agent.clear_needs_intervention in
   let t = add_pending_comment t patch_id comment ~valid:true in

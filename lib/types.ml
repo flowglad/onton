@@ -48,6 +48,12 @@ module Comment_id = struct
 
   let of_int n = n
   let to_int t = t
+
+  let next_synthetic =
+    let counter = Atomic.make 0 in
+    fun () ->
+      let n = Atomic.fetch_and_add counter (-1) - 1 in
+      n
 end
 
 module Comment = struct

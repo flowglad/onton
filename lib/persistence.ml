@@ -104,8 +104,9 @@ let comment_of_yojson json =
     Ok
       {
         Comment.id =
-          member "id" json |> to_int_option |> Option.value ~default:0
-          |> Comment_id.of_int;
+          (match member "id" json |> to_int_option with
+          | Some n -> Comment_id.of_int n
+          | None -> Comment_id.next_synthetic ());
         body = member "body" json |> to_string;
         path = member "path" json |> to_string_option;
         line = member "line" json |> to_int_option;
