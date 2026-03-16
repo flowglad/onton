@@ -131,6 +131,7 @@ let start t ~base_branch =
 let respond t k =
   if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
+  if t.removed then invalid_arg "Patch_agent.respond: patch is removed";
   if t.busy then invalid_arg "Patch_agent.respond: patch is busy";
   if t.needs_intervention then
     invalid_arg "Patch_agent.respond: patch needs intervention";

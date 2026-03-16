@@ -33,45 +33,6 @@ let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
 
-let add_existing ~patch_id ~branch ~path =
-  let path = normalize_path path in
-  (match Stdlib.Sys.file_exists path with
-  | false -> failwith ("Worktree path does not exist: " ^ path)
-  | true ->
-      if not (Stdlib.Sys.is_directory path) then
-        failwith ("Worktree path is not a directory: " ^ path));
-  let git_file = Stdlib.Filename.concat path ".git" in
-  if (not (Stdlib.Sys.file_exists git_file)) || Stdlib.Sys.is_directory git_file
-  then failwith ("Path is not a git worktree (no .git file): " ^ path);
-  (match Stdlib.open_in git_file with
-  | exception Sys_error msg ->
-      failwith ("Failed to read .git file at " ^ path ^ ": " ^ msg)
-  | ic -> (
-      let first_line =
-        Exn.protect
-          ~f:(fun () -> try Stdlib.input_line ic with End_of_file -> "")
-          ~finally:(fun () -> Stdlib.close_in ic)
-      in
-      match String.chop_prefix first_line ~prefix:"gitdir: " with
-      | None ->
-          failwith
-            ("Path is not a git worktree (.git file has unexpected format): "
-           ^ path)
-      | Some gitdir_path ->
-          let gitdir_path = String.strip gitdir_path in
-          if String.is_empty gitdir_path then
-            failwith ("Worktree .git file has empty gitdir path: " ^ path);
-          let resolved =
-            if Stdlib.Filename.is_relative gitdir_path then
-              Stdlib.Filename.concat path gitdir_path
-            else gitdir_path
-          in
-          if not (Stdlib.Sys.file_exists resolved) then
-            failwith
-              ("Worktree no longer registered with git (gitdir missing): "
-             ^ path)));
-  { patch_id; branch; path }
-
 let rec has_cancellation = function
   | Eio.Cancel.Cancelled _ -> true
   | Eio.Exn.Multiple exns ->
