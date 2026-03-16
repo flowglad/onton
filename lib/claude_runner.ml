@@ -71,7 +71,7 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
               in
               Some (Types.Stream_event.Tool_use { name; input = "" })
           | _ -> None)
-      | Some "message_stop" | Some "message_delta" -> (
+      | Some "message_delta" -> (
           let delta = member "delta" json in
           let raw_reason =
             member "stop_reason" delta |> to_string_option
