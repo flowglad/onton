@@ -123,6 +123,9 @@ let%test "parse_line: w with no path rejected" =
 let%test "parse_line: remove patch" =
   equal_command_option (parse_line "-") (Some Remove_patch)
 
+let%test "parse_line: remove patch with surrounding whitespace" =
+  equal_command_option (parse_line "  -  ") (Some Remove_patch)
+
 let%test "parse_line: zero PR rejected" = Option.is_none (parse_line "+0")
 let%test "parse_line: negative PR rejected" = Option.is_none (parse_line "+-1")
 

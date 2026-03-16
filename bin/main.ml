@@ -340,7 +340,11 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                       in
                       try
                         let raw_path = Worktree.normalize_path path in
-                        if not (Stdlib.Sys.is_directory raw_path) then
+                        if
+                          match Stdlib.Sys.is_directory raw_path with
+                          | v -> not v
+                          | exception Stdlib.Sys_error _ -> true
+                        then
                           failwith
                             ("Worktree path is not a directory: " ^ raw_path);
                         let canonical_real = Unix.realpath raw_path in
