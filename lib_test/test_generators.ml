@@ -42,7 +42,9 @@ let gen_comment =
     let gen_line = option (int_range 1 500) in
     map4
       (fun id body path line -> Comment.{ id; body; path; line })
-      (map Comment_id.of_int (int_range (-1_000_000) 1_000_000))
+      (map Comment_id.of_int
+         (QCheck2.Gen.oneof
+            [ int_range (-1_000_000) (-1); int_range 1 1_000_000 ]))
       gen_body gen_path gen_line)
 
 let gen_patch =
