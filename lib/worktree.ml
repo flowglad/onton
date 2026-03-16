@@ -10,7 +10,8 @@ let normalize_path path =
     else path
   in
   if String.length p > 1 && String.is_suffix p ~suffix:"/" then
-    String.rstrip p ~drop:(Char.equal '/')
+    let stripped = String.rstrip p ~drop:(Char.equal '/') in
+    if String.is_empty stripped then p else stripped
   else p
 
 let worktree_dir ~repo_root ~patch_id =
@@ -42,30 +43,41 @@ let add_existing ~patch_id ~branch ~path =
   let git_file = Stdlib.Filename.concat path ".git" in
   if (not (Stdlib.Sys.file_exists git_file)) || Stdlib.Sys.is_directory git_file
   then failwith ("Path is not a git worktree (no .git file): " ^ path);
-  (let ic = Stdlib.open_in git_file in
-   let first_line =
-     Exn.protect
-       ~f:(fun () -> try Stdlib.input_line ic with End_of_file -> "")
-       ~finally:(fun () -> Stdlib.close_in ic)
-   in
-   match String.chop_prefix first_line ~prefix:"gitdir: " with
-   | None ->
-       failwith
-         ("Path is not a git worktree (.git file has unexpected format): "
-        ^ path)
-   | Some gitdir_path ->
-       let gitdir_path = String.strip gitdir_path in
-       if String.is_empty gitdir_path then
-         failwith ("Worktree .git file has empty gitdir path: " ^ path);
-       let resolved =
-         if Stdlib.Filename.is_relative gitdir_path then
-           Stdlib.Filename.concat path gitdir_path
-         else gitdir_path
-       in
-       if not (Stdlib.Sys.file_exists resolved) then
-         failwith
-           ("Worktree no longer registered with git (gitdir missing): " ^ path));
+  (match Stdlib.open_in git_file with
+  | exception Sys_error msg ->
+      failwith ("Failed to read .git file at " ^ path ^ ": " ^ msg)
+  | ic -> (
+      let first_line =
+        Exn.protect
+          ~f:(fun () -> try Stdlib.input_line ic with End_of_file -> "")
+          ~finally:(fun () -> Stdlib.close_in ic)
+      in
+      match String.chop_prefix first_line ~prefix:"gitdir: " with
+      | None ->
+          failwith
+            ("Path is not a git worktree (.git file has unexpected format): "
+           ^ path)
+      | Some gitdir_path ->
+          let gitdir_path = String.strip gitdir_path in
+          if String.is_empty gitdir_path then
+            failwith ("Worktree .git file has empty gitdir path: " ^ path);
+          let resolved =
+            if Stdlib.Filename.is_relative gitdir_path then
+              Stdlib.Filename.concat path gitdir_path
+            else gitdir_path
+          in
+          if not (Stdlib.Sys.file_exists resolved) then
+            failwith
+              ("Worktree no longer registered with git (gitdir missing): "
+             ^ path)));
   { patch_id; branch; path }
+
+let has_cancellation = function
+  | Eio.Cancel.Cancelled _ -> true
+  | Eio.Exn.Multiple exns ->
+      List.exists exns ~f:(fun (exn, _bt) ->
+          match exn with Eio.Cancel.Cancelled _ -> true | _ -> false)
+  | _ -> false
 
 let detect_branch ~process_mgr ~path =
   let buf = Buffer.create 128 in
@@ -77,7 +89,7 @@ let detect_branch ~process_mgr ~path =
        [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
    with
   | () -> ()
-  | exception (Eio.Cancel.Cancelled _ as e) -> raise e
+  | exception e when has_cancellation e -> raise e
   | exception exn ->
       let msg = Buffer.contents stderr_buf in
       failwith
@@ -100,7 +112,7 @@ let list_with_branches ~process_mgr ~repo_root =
        [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
    with
   | () -> ()
-  | exception (Eio.Cancel.Cancelled _ as e) -> raise e
+  | exception e when has_cancellation e -> raise e
   | exception exn ->
       let msg = Buffer.contents stderr_buf in
       failwith
