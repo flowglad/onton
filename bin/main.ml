@@ -30,9 +30,6 @@ let validate_config config =
         ( Float.compare config.poll_interval 0.0 <= 0,
           Printf.sprintf "--poll-interval must be > 0 (got %g)"
             config.poll_interval );
-        ( Base.String.is_empty
-            (Base.String.strip (Branch.to_string config.main_branch)),
-          "--main-branch must be non-empty" );
         ( config.max_concurrency < 1,
           Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
             config.max_concurrency );
@@ -565,7 +562,6 @@ let run config =
                           runner_fiber ~runtime ~env ~config ~pr_registry);
                       ]
                   with Quit_tui -> ())))
-
 
 (** {1 CLI via Cmdliner} *)
 
