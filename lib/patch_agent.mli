@@ -12,6 +12,7 @@ type pending_comment = private { comment : Types.Comment.t; valid : bool }
 type t = private {
   patch_id : Types.Patch_id.t;
   has_pr : bool;
+  pr_number : Types.Pr_number.t option;
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -92,9 +93,13 @@ val highest_priority : t -> Types.Operation_kind.t option
 
 (** {2 Persistence support} *)
 
+val set_pr_number : t -> Types.Pr_number.t -> t
+(** Set the PR number for the patch. *)
+
 val restore :
   patch_id:Types.Patch_id.t ->
   has_pr:bool ->
+  pr_number:Types.Pr_number.t option ->
   has_session:bool ->
   busy:bool ->
   merged:bool ->

@@ -288,6 +288,9 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   | Some patch_id ->
                       Pr_registry.register pr_registry ~patch_id ~pr_number;
                       Runtime.update_orchestrator runtime (fun orch ->
+                          let orch =
+                            Orchestrator.set_pr_number orch patch_id pr_number
+                          in
                           Orchestrator.clear_needs_intervention orch patch_id);
                       log_event runtime ~patch_id
                         (Printf.sprintf "Ad-hoc PR #%d registered"
@@ -609,6 +612,10 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Pr_registry.register pr_registry ~patch_id
                                   ~pr_number;
                                 Runtime.update_orchestrator runtime (fun orch ->
+                                    let orch =
+                                      Orchestrator.set_pr_number orch patch_id
+                                        pr_number
+                                    in
                                     Orchestrator.complete orch patch_id)
                             | Error _ when remaining > 0 ->
                                 Eio.Time.sleep clock 2.0;
@@ -858,10 +865,22 @@ let run_with_config (config : config) gameplan existing_snapshot =
           ~owner:config.github_owner ~repo:config.github_repo
           ~patches:gameplan.Gameplan.patches
       in
-      Base.List.iter startup.Startup_reconciler.errors
-        ~f:(fun (patch_id, err) ->
-          log_event runtime ~patch_id
-            (Printf.sprintf "startup discovery error: %s" err));
+      let errored_ids =
+        Base.List.map startup.Startup_reconciler.errors
+          ~f:(fun (patch_id, err) ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "startup discovery error: %s" err);
+            patch_id)
+        |> Base.Hash_set.of_list (module Patch_id)
+      in
+      (* Seed Pr_registry from snapshot for patches Startup_reconciler errored on *)
+      Runtime.read runtime (fun snap ->
+          Orchestrator.all_agents snap.Runtime.orchestrator)
+      |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
+          if Base.Hash_set.mem errored_ids agent.Patch_agent.patch_id then
+            Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
+                Pr_registry.register pr_registry
+                  ~patch_id:agent.Patch_agent.patch_id ~pr_number));
       Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
           let pid = d.Startup_reconciler.patch_id in
           let pr = d.Startup_reconciler.pr_number in
@@ -872,6 +891,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
               let orch =
                 Orchestrator.fire orch (Orchestrator.Start (pid, base))
               in
+              let orch = Orchestrator.set_pr_number orch pid pr in
               let orch = Orchestrator.complete orch pid in
               if merged then Orchestrator.mark_merged orch pid else orch));
       let clock = Eio.Stdenv.clock env in

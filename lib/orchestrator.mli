@@ -48,6 +48,7 @@ val send_human_message : t -> Patch_id.t -> string -> t
 (** Convenience: add a human message as a pending comment and enqueue
     [Operation_kind.Human] for the given patch. *)
 
+val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val set_session_failed : t -> Patch_id.t -> t
 val set_last_session_id : t -> Patch_id.t -> Session_id.t -> t
 val set_tried_fresh : t -> Patch_id.t -> t
