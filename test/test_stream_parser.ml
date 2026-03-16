@@ -152,23 +152,15 @@ let () =
   (* Property: unknown type returns None *)
   let prop_unknown_type =
     Test.make ~name:"stream: unknown type returns None"
-      Gen.(string_size ~gen:(char_range 'a' 'z') (int_range 3 20))
+      Gen.(
+        map
+          (fun s -> "unknown_" ^ s)
+          (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
       (fun typ ->
         let json = Printf.sprintf {|{"type":"%s"}|} typ in
         match Onton.Claude_runner.parse_stream_event json with
         | None -> true
-        | Some _ ->
-            (* If the random type happens to match a known type, that's fine *)
-            List.mem
-              [
-                "content_block_delta";
-                "content_block_start";
-                "message_stop";
-                "message_delta";
-                "result";
-                "error";
-              ]
-              typ ~equal:String.equal)
+        | Some _ -> false)
   in
 
   (* Property: parse_stream_event is total — never raises *)
