@@ -30,6 +30,9 @@ let validate_config config =
         ( Base.String.is_empty
             (Base.String.strip (Branch.to_string config.main_branch)),
           "--main-branch must be non-empty" );
+        ( config.max_concurrent <= 0,
+          Printf.sprintf "--max-concurrent must be > 0 (got %d)"
+            config.max_concurrent );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
@@ -198,7 +201,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
   with
   | `Ok sid ->
       Runtime.update_orchestrator runtime (fun orch ->
-          Orchestrator.set_last_session_id orch patch_id sid);
+          let orch = Orchestrator.set_last_session_id orch patch_id sid in
+          Orchestrator.clear_session_fallback orch patch_id);
       `Ok
   | `Failed when Option.is_some session_id && not tried_fresh -> (
       log_event runtime ~patch_id "Resume failed, falling back to fresh session";
@@ -418,6 +422,7 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
               | None ->
                   log_event runtime ~patch_id
                     "runner: patch not found in gameplan, skipping";
+                  mark_session_failed runtime patch_id;
                   None
               | Some patch ->
                   Some
