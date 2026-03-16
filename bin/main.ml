@@ -190,8 +190,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
 exception Quit_tui
 (** Raised by the input fiber to signal a clean exit. *)
 
-(** TUI rendering fiber — redraws the terminal at ~10 fps. *)
-let tui_fiber ~runtime ~clock ~stdout =
+(** TUI rendering fiber — redraws the terminal at ~10 fps.
+
+    [selected] and [view_mode] are shared mutable refs updated by the input
+    fiber. *)
+let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let rec loop () =
     let orch, gp, log =
@@ -201,13 +204,13 @@ let tui_fiber ~runtime ~clock ~stdout =
             snap.Runtime.activity_log ))
     in
     let views = Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp in
-    let width =
-      match Term.get_size () with Some size -> size.Term.cols | None -> 80
-    in
+    let size = Term.get_size () in
+    let width = match size with Some s -> s.Term.cols | None -> 80 in
+    let height = match size with Some s -> s.Term.rows | None -> 24 in
     let activity = activity_entries_of_log log in
     let frame =
-      Tui.render_frame ~width ~activity ~project_name:gp.Gameplan.project_name
-        views
+      Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
+        ~activity ~project_name:gp.Gameplan.project_name views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     Eio.Time.sleep clock 0.1;
@@ -218,13 +221,14 @@ let tui_fiber ~runtime ~clock ~stdout =
 (** Input fiber — reads keypresses and dispatches TUI commands.
 
     Supports two modes:
-    - Normal mode: single-key navigation (j/k, arrows, q to quit)
+    - Normal mode: single-key navigation (j/k, arrows, q to quit, enter for
+      detail)
     - Text mode: entered via [:], accumulates a line buffer, dispatched on Enter
 
     Text-mode commands (parsed by {!Tui_input.parse_line}):
     - ["N> message"] — send human message to patch N
     - ["+123"] — register ad-hoc PR #123 for the selected patch *)
-let input_fiber ~runtime ~selected ~pr_registry =
+let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let rec loop () =
@@ -260,7 +264,6 @@ let input_fiber ~runtime ~selected ~pr_registry =
                          "Cannot send human message: unknown patch %s"
                          (Patch_id.to_string patch_id))
               | Some (Tui_input.Add_pr pr_number) -> (
-                  (* Use the currently selected patch for ad-hoc PR registration *)
                   let patch_id_opt =
                     Runtime.read runtime (fun snap ->
                         let agents =
@@ -314,19 +317,37 @@ let input_fiber ~runtime ~selected ~pr_registry =
           let cmd = Tui_input.of_key key in
           match cmd with
           | Tui_input.Quit -> raise Quit_tui
-          | Tui_input.Select ->
-              (* Enter text mode on Select (Enter key) *)
-              text_mode := true;
-              loop ()
-          | Tui_input.Refresh | Tui_input.Help | Tui_input.Back | Tui_input.Noop
-          | Tui_input.Send_message _ | Tui_input.Add_pr _ | Tui_input.Move_up
-          | Tui_input.Move_down | Tui_input.Page_up | Tui_input.Page_down ->
+          | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
+          | Tui_input.Page_down ->
               let count =
                 Runtime.read runtime (fun snap ->
                     Base.List.length
                       (Orchestrator.all_agents snap.Runtime.orchestrator))
               in
               selected := Tui_input.apply_move ~count ~selected:!selected cmd;
+              loop ()
+          | Tui_input.Select -> (
+              match !view_mode with
+              | Tui.List_view ->
+                  let agents =
+                    Runtime.read runtime (fun snap ->
+                        Orchestrator.all_agents snap.Runtime.orchestrator)
+                  in
+                  (if !selected < Base.List.length agents then
+                     let agent = Base.List.nth_exn agents !selected in
+                     view_mode := Tui.Detail_view agent.Patch_agent.patch_id);
+                  loop ()
+              | Tui.Detail_view _ ->
+                  text_mode := true;
+                  loop ())
+          | Tui_input.Back -> (
+              match !view_mode with
+              | Tui.Detail_view _ ->
+                  view_mode := Tui.List_view;
+                  loop ()
+              | Tui.List_view -> loop ())
+          | Tui_input.Refresh | Tui_input.Help | Tui_input.Noop
+          | Tui_input.Send_message _ | Tui_input.Add_pr _ ->
               loop ())
   in
   loop ()
@@ -639,6 +660,7 @@ let run config =
           let net = Eio.Stdenv.net env in
           let stdout = Eio.Stdenv.stdout env in
           let selected = ref 0 in
+          let view_mode = ref Tui.List_view in
           Term.Raw.with_raw (fun () ->
               Fun.protect
                 ~finally:(fun () ->
@@ -647,8 +669,10 @@ let run config =
                   try
                     Eio.Fiber.all
                       [
-                        (fun () -> tui_fiber ~runtime ~clock ~stdout);
-                        (fun () -> input_fiber ~runtime ~selected ~pr_registry);
+                        (fun () ->
+                          tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode);
+                        (fun () ->
+                          input_fiber ~runtime ~selected ~view_mode ~pr_registry);
                         (fun () ->
                           poller_fiber ~runtime ~clock ~net ~github ~config
                             ~pr_registry ~branch_of);
