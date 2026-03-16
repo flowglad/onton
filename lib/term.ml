@@ -214,10 +214,6 @@ module Raw = struct
 
   let leave state = Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH state.original
 
-  let with_raw f =
-    let state = enter () in
-    Exn.protect ~f ~finally:(fun () -> leave state)
-
   (** Shared mutable state for suspend/resume across signal boundaries. *)
   let _saved_state : state option ref = ref None
 
@@ -228,7 +224,7 @@ module Raw = struct
 
   (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
       TUI render loop should check and clear this each iteration. *)
-  let redraw_needed : bool ref = ref false
+  let redraw_needed : bool Atomic.t = Atomic.make false
 
   (** Suspend the terminal: restore original settings, show cursor, then send
       SIGSTOP to ourselves. A SIGCONT handler (installed via
@@ -275,7 +271,7 @@ module Raw = struct
                  Unix.write_substring Unix.stdout enter_seq 0
                    (String.length enter_seq)
                in
-               redraw_needed := true)))
+               Atomic.set redraw_needed true)))
     in
     _saved_handlers := Some (prev_tstp, prev_cont)
 

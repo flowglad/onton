@@ -222,7 +222,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     (* After SIGCONT, skip the sleep to redraw immediately *)
-    if Term.Raw.redraw_needed.contents then Term.Raw.redraw_needed := false
+    if Atomic.exchange Term.Raw.redraw_needed false then ()
     else Eio.Time.sleep clock 0.1;
     loop ()
   in
