@@ -60,7 +60,9 @@ let mark_merged t = { t with merged = true }
 let add_pending_comment t comment ~valid =
   let already_present =
     List.exists t.pending_comments ~f:(fun pc ->
-        Comment_id.equal pc.comment.Comment.id comment.Comment.id)
+        Comment_id.equal pc.comment.Comment.id comment.Comment.id
+        || Comment_id.to_int comment.Comment.id < 0
+           && Comment.equal pc.comment comment)
   in
   if already_present then t
   else { t with pending_comments = { comment; valid } :: t.pending_comments }
