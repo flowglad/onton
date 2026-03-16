@@ -62,7 +62,7 @@ let add_pending_comment t comment ~valid =
     List.exists t.pending_comments ~f:(fun pc ->
         Comment_id.equal pc.comment.Comment.id comment.Comment.id
         || (Comment_id.to_int comment.Comment.id < 0
-           || Comment_id.to_int pc.comment.Comment.id < 0)
+           && Comment_id.to_int pc.comment.Comment.id < 0)
            && String.equal pc.comment.Comment.body comment.Comment.body
            && Option.equal String.equal pc.comment.Comment.path
                 comment.Comment.path
