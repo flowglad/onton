@@ -240,6 +240,11 @@ module Raw = struct
       re-enter raw mode around the stop. *)
   let install_suspend_handlers (state : state) =
     _saved_state := Some state;
+    let _prev_tstp =
+      Stdlib.Sys.signal Stdlib.Sys.sigtstp
+        (Stdlib.Sys.Signal_handle (fun _signum -> suspend ()))
+    in
+    ignore _prev_tstp;
     let _prev_cont =
       Stdlib.Sys.signal Stdlib.Sys.sigcont
         (Stdlib.Sys.Signal_handle
@@ -270,10 +275,8 @@ module Raw = struct
   (** Clean up suspend handlers, clearing saved state. *)
   let clear_suspend_handlers () =
     _saved_state := None;
-    let _prev =
-      Stdlib.Sys.signal Stdlib.Sys.sigcont Stdlib.Sys.Signal_default
-    in
-    ()
+    ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp Stdlib.Sys.Signal_default);
+    ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont Stdlib.Sys.Signal_default)
 end
 
 (** Keyboard input types and parsing. *)
