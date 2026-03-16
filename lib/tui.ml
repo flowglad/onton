@@ -295,6 +295,18 @@ let status_indicator = function
 type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
 [@@deriving show, eq]
 
+(** Activity entry for rendering — breaks the Tui↔Activity_log cycle. *)
+type activity_entry =
+  | Transition of {
+      patch_id : string;
+      from_label : string;
+      to_status : display_status;
+      to_label : string;
+      action : string;
+    }
+  | Event of { patch_id : string option; message : string }
+[@@warning "-37"]
+
 (** {1 Patch view — derived per-patch rendering data} *)
 
 type patch_view = {
@@ -310,6 +322,8 @@ type patch_view = {
   has_conflict : bool;
   needs_intervention : bool;
   pending_comments : int;
+  ci_checks : Ci_check.t list;
+  recent_stream : activity_entry list;
 }
 [@@warning "-69"]
 
@@ -356,6 +370,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
     has_conflict = agent.has_conflict;
     needs_intervention = agent.needs_intervention;
     pending_comments = List.length agent.pending_comments;
+    ci_checks = [];
+    recent_stream = [];
   }
 
 (** {1 Render helpers} *)
@@ -370,18 +386,6 @@ let render_status_badge status =
 (** {1 Frame rendering} *)
 
 type frame = { lines : string list; width : int } [@@warning "-69"]
-
-(** Activity entry for rendering — breaks the Tui↔Activity_log cycle. *)
-type activity_entry =
-  | Transition of {
-      patch_id : string;
-      from_label : string;
-      to_status : display_status;
-      to_label : string;
-      action : string;
-    }
-  | Event of { patch_id : string option; message : string }
-[@@warning "-37"]
 
 let render_header ~project_name ~width =
   let title =
@@ -550,7 +554,42 @@ let render_detail (pv : patch_view) ~width =
       ]
     else []
   in
-  lines @ op_line @ intervention
+  let ci_section =
+    if List.is_empty pv.ci_checks then []
+    else
+      let ci_header = [ ""; Term.styled [ Term.Sgr.bold ] "  CI Checks" ] in
+      let ci_rows =
+        List.map pv.ci_checks ~f:(fun (c : Ci_check.t) ->
+            let icon =
+              if String.equal c.conclusion "success" then
+                Term.styled [ Term.Sgr.fg_green ] "✓"
+              else if String.equal c.conclusion "failure" then
+                Term.styled [ Term.Sgr.fg_red ] "✗"
+              else Term.styled [ Term.Sgr.fg_yellow ] "?"
+            in
+            Printf.sprintf "    %s %s: %s" icon c.name c.conclusion)
+      in
+      ci_header @ ci_rows
+  in
+  let stream_section =
+    if List.is_empty pv.recent_stream then []
+    else
+      let stream_header =
+        [ ""; Term.styled [ Term.Sgr.bold ] "  Recent Activity" ]
+      in
+      let stream_rows =
+        List.map pv.recent_stream ~f:(fun entry ->
+            match entry with
+            | Event { message; _ } ->
+                Printf.sprintf "    %s" (Term.styled [ Term.Sgr.dim ] message)
+            | Transition { from_label; to_status; to_label; action; _ } ->
+                Printf.sprintf "    %s → %s (%s)" from_label
+                  (styled_status to_status to_label)
+                  (Term.styled [ Term.Sgr.dim ] action))
+      in
+      stream_header @ stream_rows
+  in
+  lines @ op_line @ intervention @ ci_section @ stream_section
 
 let render_timeline ~width ~selected ~max_visible
     (entries : activity_entry list) =
@@ -638,7 +677,23 @@ let render_frame ~width ~height ~selected ~view_mode
         match
           List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
         with
-        | Some pv -> render_detail pv ~width
+        | Some pv ->
+            let patch_id_str = Patch_id.to_string patch_id in
+            let filtered_activity =
+              List.filter activity ~f:(fun entry ->
+                  match entry with
+                  | Transition { patch_id = pid; _ } ->
+                      String.equal pid patch_id_str
+                  | Event { patch_id = Some pid; _ } ->
+                      String.equal pid patch_id_str
+                  | Event { patch_id = None; _ } -> false)
+            in
+            let pv =
+              if List.is_empty pv.recent_stream then
+                { pv with recent_stream = List.take filtered_activity 10 }
+              else pv
+            in
+            render_detail pv ~width
         | None -> [ " (patch not found)" ]
       in
       (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
