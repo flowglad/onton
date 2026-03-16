@@ -361,6 +361,8 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                                 (Printf.sprintf
                                    "Cannot overwrite non-symlink at %s" expected));
                           Unix.symlink real_path expected);
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.clear_needs_intervention orch patch_id);
                         log_event runtime ~patch_id
                           (Printf.sprintf "Worktree registered at %s → %s"
                              real_path expected)
