@@ -84,17 +84,21 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
   | Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
   | Yojson.Json_error msg ->
       Error (Printf.sprintf "could not parse gh output as JSON: %s" msg)
+  | Yojson.Basic.Util.Type_error (msg, _) ->
+      Error (Printf.sprintf "unexpected JSON structure from gh: %s" msg)
 
 (** Discover existing worktrees and match them to patches by branch name.
     Returns matched worktrees and an optional error string if listing failed. *)
 let recover_worktrees ~process_mgr ~repo_root ~patches =
   let worktrees, list_error =
-    try (Worktree.list_with_branches ~process_mgr ~repo_root, None)
-    with exn ->
-      ( [],
-        Some
-          (Printf.sprintf "worktree discovery failed: %s"
-             (Stdlib.Printexc.to_string exn)) )
+    try (Worktree.list_with_branches ~process_mgr ~repo_root, None) with
+    | Eio.Exn.Io _ as exn ->
+        ( [],
+          Some
+            (Printf.sprintf "worktree discovery failed: %s"
+               (Stdlib.Printexc.to_string exn)) )
+    | Failure msg ->
+        ([], Some (Printf.sprintf "worktree discovery failed: %s" msg))
   in
   let recovered =
     List.filter_map worktrees ~f:(fun (path, branch) ->
