@@ -195,11 +195,11 @@ let set_has_conflict t patch_id =
 let increment_ci_failure_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_ci_failure_count
 
-let clear_needs_intervention t patch_id =
-  update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
-
 let set_ci_checks t patch_id checks =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_ci_checks a checks)
+
+let clear_needs_intervention t patch_id =
+  update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
 
 let add_addressed_comment_id t patch_id id =
   update_agent t patch_id ~f:(fun a ->

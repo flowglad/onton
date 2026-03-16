@@ -438,7 +438,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     let limit =
       match !view_mode with
       | Tui.Timeline_view -> 100
-      | Tui.List_view | Tui.Detail_view _ -> 10
+      | Tui.Detail_view _ -> 100
+      | Tui.List_view -> 10
     in
     let activity = activity_entries_of_log ~limit log in
     let frame =
@@ -926,6 +927,10 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                       if not (Base.List.is_empty failed) then
                         Hashtbl.replace ci_checks_cache patch_id failed
                       else Hashtbl.remove ci_checks_cache patch_id
+                    in
+                    let orch =
+                      Orchestrator.set_ci_checks orch patch_id
+                        poll_result.Poller.ci_checks
                     in
                     Base.List.fold poll_result.Poller.new_comments ~init:orch
                       ~f:(fun acc comment ->

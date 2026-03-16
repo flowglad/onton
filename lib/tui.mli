@@ -37,6 +37,18 @@ val derive_display_status :
 type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
 [@@deriving show, eq]
 
+(** {2 Activity entry} *)
+
+type activity_entry =
+  | Transition of {
+      patch_id : string;
+      from_label : string;
+      to_status : display_status;
+      to_label : string;
+      action : string;
+    }
+  | Event of { patch_id : string option; message : string }
+
 (** {2 Patch view} *)
 
 type patch_view = {
@@ -52,21 +64,13 @@ type patch_view = {
   has_conflict : bool;
   needs_intervention : bool;
   pending_comments : int;
+  ci_checks : Ci_check.t list;
+  recent_stream : activity_entry list;
 }
 
 (** {2 Frame rendering} *)
 
 type frame
-
-type activity_entry =
-  | Transition of {
-      patch_id : string;
-      from_label : string;
-      to_status : display_status;
-      to_label : string;
-      action : string;
-    }
-  | Event of { patch_id : string option; message : string }
 
 val views_of_orchestrator :
   orchestrator:Orchestrator.t -> gameplan:Gameplan.t -> patch_view list
