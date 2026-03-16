@@ -45,7 +45,12 @@ module Comment_id : sig
 end
 
 module Comment : sig
-  type t = { body : string; path : string option; line : int option }
+  type t = {
+    id : Comment_id.t;
+    body : string;
+    path : string option;
+    line : int option;
+  }
   [@@deriving show, eq, sexp_of, compare]
 
   include Comparator.S with type t := t
@@ -72,7 +77,14 @@ module Ci_check : sig
 end
 
 module Stop_reason : sig
-  type t = End_turn | Tool_use | Max_tokens | Stop_sequence
+  type t =
+    | End_turn
+    | Tool_use
+    | Max_tokens
+    | Stop_sequence
+    | Pause_turn
+    | Refusal
+    | Model_context_window_exceeded
   [@@deriving show, eq, sexp_of, compare]
 
   val of_string : string -> t option
@@ -82,6 +94,7 @@ module Stream_event : sig
   type t =
     | Text_delta of string
     | Tool_use of { name : string; input : string }
+    | Tool_result of { tool_use_id : string; content : string }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
   [@@deriving show, eq, sexp_of, compare]

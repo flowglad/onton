@@ -40,8 +40,9 @@ let gen_comment =
       option (string_size ~gen:(char_range 'a' 'z') (int_range 3 30))
     in
     let gen_line = option (int_range 1 500) in
-    map3
-      (fun body path line -> Comment.{ body; path; line })
+    map4
+      (fun id body path line -> Comment.{ id; body; path; line })
+      (map Comment_id.of_int (int_range 1 1_000_000))
       gen_body gen_path gen_line)
 
 let gen_patch =

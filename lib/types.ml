@@ -52,7 +52,12 @@ end
 
 module Comment = struct
   module T = struct
-    type t = { body : string; path : string option; line : int option }
+    type t = {
+      id : Comment_id.t;
+      body : string;
+      path : string option;
+      line : int option;
+    }
     [@@deriving show, eq, sexp_of, compare]
   end
 
@@ -81,7 +86,14 @@ module Ci_check = struct
 end
 
 module Stop_reason = struct
-  type t = End_turn | Tool_use | Max_tokens | Stop_sequence
+  type t =
+    | End_turn
+    | Tool_use
+    | Max_tokens
+    | Stop_sequence
+    | Pause_turn
+    | Refusal
+    | Model_context_window_exceeded
   [@@deriving show, eq, sexp_of, compare]
 
   let of_string = function
@@ -89,6 +101,9 @@ module Stop_reason = struct
     | "tool_use" -> Some Tool_use
     | "max_tokens" -> Some Max_tokens
     | "stop_sequence" -> Some Stop_sequence
+    | "pause_turn" -> Some Pause_turn
+    | "refusal" -> Some Refusal
+    | "model_context_window_exceeded" -> Some Model_context_window_exceeded
     | _ -> None
 end
 
@@ -96,6 +111,7 @@ module Stream_event = struct
   type t =
     | Text_delta of string
     | Tool_use of { name : string; input : string }
+    | Tool_result of { tool_use_id : string; content : string }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
   [@@deriving show, eq, sexp_of, compare]

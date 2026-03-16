@@ -21,8 +21,12 @@ let () =
   let open QCheck2 in
   let pid0 = Patch_id.of_string "p" in
   let br0 = Branch.of_string "main" in
-  let c_valid = Comment.{ body = "fix"; path = None; line = None } in
-  let c_invalid = Comment.{ body = "nit"; path = None; line = None } in
+  let c_valid =
+    Comment.{ id = Comment_id.of_int 1; body = "fix"; path = None; line = None }
+  in
+  let c_invalid =
+    Comment.{ id = Comment_id.of_int 2; body = "nit"; path = None; line = None }
+  in
   let tests =
     [
       (* -- create -- *)

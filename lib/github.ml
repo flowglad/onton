@@ -45,6 +45,7 @@ let graphql_query =
           isResolved
           comments(first: 1) {
             nodes {
+              databaseId
               body
               path
               line
@@ -80,10 +81,11 @@ let parse_check_status = function
 
 let parse_comment_node node =
   let open Yojson.Safe.Util in
+  let id = node |> member "databaseId" |> to_int |> Types.Comment_id.of_int in
   let body = node |> member "body" |> to_string in
   let path = node |> member "path" |> to_string_option in
   let line = node |> member "line" |> to_int_option in
-  Types.Comment.{ body; path; line }
+  Types.Comment.{ id; body; path; line }
 
 let parse_response body =
   let open Yojson.Safe.Util in

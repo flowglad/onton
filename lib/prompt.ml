@@ -151,11 +151,18 @@ let%test "review prompt formats comments" =
     [
       Comment.
         {
+          id = Comment_id.of_int 1;
           body = "Fix this function.";
           path = Some "lib/foo.ml";
           line = Some 42;
         };
-      Comment.{ body = "General feedback."; path = None; line = None };
+      Comment.
+        {
+          id = Comment_id.of_int 2;
+          body = "General feedback.";
+          path = None;
+          line = None;
+        };
     ]
   in
   let result = render_review_prompt comments in

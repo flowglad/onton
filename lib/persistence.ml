@@ -92,6 +92,7 @@ let display_status_of_yojson json =
 let comment_to_yojson (c : Comment.t) =
   `Assoc
     [
+      ("id", `Int (Comment_id.to_int c.id));
       ("body", `String c.body);
       ("path", nullable_string c.path);
       ("line", nullable_int c.line);
@@ -102,7 +103,8 @@ let comment_of_yojson json =
     let open Yojson.Safe.Util in
     Ok
       {
-        Comment.body = member "body" json |> to_string;
+        Comment.id = member "id" json |> to_int |> Comment_id.of_int;
+        body = member "body" json |> to_string;
         path = member "path" json |> to_string_option;
         line = member "line" json |> to_int_option;
       }
