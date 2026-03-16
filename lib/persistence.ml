@@ -103,7 +103,9 @@ let comment_of_yojson json =
     let open Yojson.Safe.Util in
     Ok
       {
-        Comment.id = member "id" json |> to_int |> Comment_id.of_int;
+        Comment.id =
+          member "id" json |> to_int_option |> Option.value ~default:0
+          |> Comment_id.of_int;
         body = member "body" json |> to_string;
         path = member "path" json |> to_string_option;
         line = member "line" json |> to_int_option;
