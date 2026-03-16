@@ -727,18 +727,25 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                    details yet — only ci_failure_count.
                                    Propagate check details from Poller to
                                    surface them here. *)
-                                Prompt.render_ci_failure_prompt []
+                                Prompt.render_ci_failure_prompt
+                                  ~project_name:gameplan.Gameplan.project_name
+                                  []
                             | Operation_kind.Review_comments ->
-                                Prompt.render_review_prompt pending_comments
+                                Prompt.render_review_prompt
+                                  ~project_name:gameplan.Gameplan.project_name
+                                  pending_comments
                             | Operation_kind.Merge_conflict ->
                                 Prompt.render_merge_conflict_prompt
+                                  ~project_name:gameplan.Gameplan.project_name
                                   ~base_branch:base
                             | Operation_kind.Human ->
                                 Prompt.render_human_message_prompt
+                                  ~project_name:gameplan.Gameplan.project_name
                                   (Base.List.map pending_comments
                                      ~f:(fun (c : Comment.t) -> c.Comment.body))
                             | Operation_kind.Rebase ->
                                 Prompt.render_merge_conflict_prompt
+                                  ~project_name:gameplan.Gameplan.project_name
                                   ~base_branch:base
                           in
                           run_claude_and_handle ~runtime ~process_mgr ~fs

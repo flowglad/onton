@@ -1,27 +1,56 @@
 open Base
 open Types
 
-(* Prompt override system: loads template files from .onton/prompts/ and
-   substitutes \{\{variable\}\} placeholders. Falls back to built-in defaults
-   when no override file exists. *)
+(* Prompt override system: loads template files from the project data
+   directory's prompts/ subdirectory and performs single-pass variable
+   substitution. Falls back to built-in defaults when no override exists. *)
 
-let prompts_dir = ".onton/prompts"
+let prompts_dir (project_name : string) : string =
+  Stdlib.Filename.concat (Project_store.project_dir project_name) "prompts"
 
 let substitute_variables (template : string) (vars : (string * string) list) :
     string =
-  List.fold vars ~init:template ~f:(fun acc (key, value) ->
-      let pattern = "{{" ^ key ^ "}}" in
-      String.substr_replace_all acc ~pattern ~with_:value)
+  let var_map =
+    Map.of_alist_reduce (module String) vars ~f:(fun _first last -> last)
+  in
+  let buf = Buffer.create (String.length template) in
+  let len = String.length template in
+  let rec scan i =
+    if i >= len then ()
+    else if
+      i + 1 < len
+      && Char.equal (String.get template i) '{'
+      && Char.equal (String.get template (i + 1)) '{'
+    then (
+      match String.substr_index template ~pos:(i + 2) ~pattern:"}}" with
+      | None ->
+          Buffer.add_char buf (String.get template i);
+          scan (i + 1)
+      | Some close_pos ->
+          let key = String.sub template ~pos:(i + 2) ~len:(close_pos - i - 2) in
+          (match Map.find var_map key with
+          | Some value -> Buffer.add_string buf value
+          | None ->
+              Buffer.add_string buf "{{";
+              Buffer.add_string buf key;
+              Buffer.add_string buf "}}");
+          scan (close_pos + 2))
+    else (
+      Buffer.add_char buf (String.get template i);
+      scan (i + 1))
+  in
+  scan 0;
+  Buffer.contents buf
 
-let load_override (name : string) : string option =
-  let path = prompts_dir ^ "/" ^ name ^ ".md" in
+let load_override ~(project_name : string) (name : string) : string option =
+  let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
   | contents -> Some contents
   | exception Stdlib.Sys_error _ -> None
 
-let render_with_override ~(name : string) ~(vars : (string * string) list)
-    ~(default : unit -> string) : string =
-  match load_override name with
+let render_with_override ~(project_name : string) ~(name : string)
+    ~(vars : (string * string) list) ~(default : unit -> string) : string =
+  match load_override ~project_name name with
   | Some template -> substitute_variables template vars
   | None -> default ()
 
@@ -56,7 +85,7 @@ let render_patch_prompt (patch : Patch.t) (gameplan : Gameplan.t)
       ("patches_list", patches_list);
     ]
   in
-  render_with_override ~name:"patch" ~vars ~default:(fun () ->
+  render_with_override ~project_name ~name:"patch" ~vars ~default:(fun () ->
       Printf.sprintf
         {|# [%s] %s
 
@@ -78,7 +107,7 @@ let render_patch_prompt (patch : Patch.t) (gameplan : Gameplan.t)
         project_name patch.Patch.title gameplan.Gameplan.problem_statement
         gameplan.Gameplan.solution_summary deps branch base_branch patches_list)
 
-let render_review_prompt (comments : Comment.t list) =
+let render_review_prompt ~(project_name : string) (comments : Comment.t list) =
   let formatted =
     match comments with
     | [] -> ""
@@ -96,7 +125,7 @@ let render_review_prompt (comments : Comment.t list) =
   let vars =
     [ ("comments", formatted); ("count", Int.to_string (List.length comments)) ]
   in
-  render_with_override ~name:"review" ~vars ~default:(fun () ->
+  render_with_override ~project_name ~name:"review" ~vars ~default:(fun () ->
       match comments with
       | [] -> "No review comments to address."
       | _ ->
@@ -106,7 +135,8 @@ let render_review_prompt (comments : Comment.t list) =
              %s"
             formatted)
 
-let render_ci_failure_prompt (checks : Ci_check.t list) =
+let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
+    =
   let formatted =
     match checks with
     | [] -> ""
@@ -129,16 +159,19 @@ let render_ci_failure_prompt (checks : Ci_check.t list) =
   let vars =
     [ ("checks", formatted); ("count", Int.to_string (List.length checks)) ]
   in
-  render_with_override ~name:"ci_failure" ~vars ~default:(fun () ->
+  render_with_override ~project_name ~name:"ci_failure" ~vars
+    ~default:(fun () ->
       match checks with
       | [] -> "No CI failures."
       | _ ->
           Printf.sprintf
             "# CI Failures\n\nThe following CI checks failed:\n\n%s" formatted)
 
-let render_merge_conflict_prompt ~(base_branch : string) =
+let render_merge_conflict_prompt ~(project_name : string)
+    ~(base_branch : string) =
   let vars = [ ("base_branch", base_branch) ] in
-  render_with_override ~name:"merge_conflict" ~vars ~default:(fun () ->
+  render_with_override ~project_name ~name:"merge_conflict" ~vars
+    ~default:(fun () ->
       Printf.sprintf
         {|# Merge Conflict
 
@@ -152,7 +185,8 @@ git rebase origin/%s
 Resolve any conflicts, then continue with `git rebase --continue`.|}
         base_branch base_branch)
 
-let render_human_message_prompt (messages : string list) =
+let render_human_message_prompt ~(project_name : string)
+    (messages : string list) =
   let formatted =
     match messages with
     | [] -> ""
@@ -164,7 +198,8 @@ let render_human_message_prompt (messages : string list) =
   let vars =
     [ ("messages", formatted); ("count", Int.to_string (List.length messages)) ]
   in
-  render_with_override ~name:"human_message" ~vars ~default:(fun () ->
+  render_with_override ~project_name ~name:"human_message" ~vars
+    ~default:(fun () ->
       match messages with
       | [] -> "No messages."
       | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
@@ -220,8 +255,16 @@ let%test "substitute_variables leaves unknown placeholders" =
   in
   String.equal result "Hello Bob, {{unknown}} here"
 
+let%test "substitute_variables does not expand values" =
+  let result =
+    substitute_variables "A: {{a}}, B: {{b}}"
+      [ ("a", "{{b}}"); ("b", "expanded") ]
+  in
+  String.equal result "A: {{b}}, B: expanded"
+
 let%test "load_override returns None for missing file" =
-  Option.is_none (load_override "nonexistent_prompt_name")
+  Option.is_none
+    (load_override ~project_name:"nonexistent_project" "nonexistent_prompt_name")
 
 let%test "review prompt formats comments" =
   let comments : Comment.t list =
@@ -235,7 +278,7 @@ let%test "review prompt formats comments" =
       Comment.{ body = "General feedback."; path = None; line = None };
     ]
   in
-  let result = render_review_prompt comments in
+  let result = render_review_prompt ~project_name:"test" comments in
   String.is_substring result ~substring:"# Review Comments"
   && String.is_substring result ~substring:"### lib/foo.ml:42"
   && String.is_substring result ~substring:"Fix this function."
