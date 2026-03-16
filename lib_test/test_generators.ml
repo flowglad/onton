@@ -243,26 +243,46 @@ let gen_violation =
 
 (* -- Display status / Activity log -- *)
 
-let gen_display_status =
-  QCheck2.Gen.oneof_list
-    Onton.Tui.
-      [
-        Merged;
-        Needs_help;
-        Approved_idle;
-        Approved_running;
-        Fixing_ci;
-        Addressing_review;
-        Resolving_conflict;
-        Responding_to_human;
-        Rebasing;
-        Starting;
-        Ci_queued;
-        Review_queued;
-        Awaiting_ci;
-        Awaiting_review;
-        Pending;
-      ]
+(** Exhaustive identity match ensures a compile error if a variant is added. *)
+let all_display_statuses : Onton.Tui.display_status list =
+  let open Onton.Tui in
+  let id = function
+    | Merged -> Merged
+    | Needs_help -> Needs_help
+    | Approved_idle -> Approved_idle
+    | Approved_running -> Approved_running
+    | Fixing_ci -> Fixing_ci
+    | Addressing_review -> Addressing_review
+    | Resolving_conflict -> Resolving_conflict
+    | Responding_to_human -> Responding_to_human
+    | Rebasing -> Rebasing
+    | Starting -> Starting
+    | Ci_queued -> Ci_queued
+    | Review_queued -> Review_queued
+    | Awaiting_ci -> Awaiting_ci
+    | Awaiting_review -> Awaiting_review
+    | Pending -> Pending
+  in
+  List.map ~f:id
+    [
+      Merged;
+      Needs_help;
+      Approved_idle;
+      Approved_running;
+      Fixing_ci;
+      Addressing_review;
+      Resolving_conflict;
+      Responding_to_human;
+      Rebasing;
+      Starting;
+      Ci_queued;
+      Review_queued;
+      Awaiting_ci;
+      Awaiting_review;
+      Pending;
+    ]
+
+let gen_display_status = QCheck2.Gen.oneof_list all_display_statuses
 
 let gen_transition_entry =
   QCheck2.Gen.(

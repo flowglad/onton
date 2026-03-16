@@ -53,7 +53,8 @@ let gen_snapshot_with_varied_agents =
             ~patches:gameplan.Gameplan.patches
         in
         let orchestrator =
-          List.fold gameplan.patches ~init:orchestrator ~f:(fun orch patch ->
+          List.fold gameplan.Gameplan.patches ~init:orchestrator
+            ~f:(fun orch patch ->
               let agent = Onton.Orchestrator.agent orch patch.Patch.id in
               if agent.busy then Onton.Orchestrator.complete orch patch.Patch.id
               else orch)
