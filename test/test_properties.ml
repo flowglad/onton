@@ -479,4 +479,120 @@ let () =
 
   Stdlib.print_endline "reconciler: all properties passed"
 
+(* ========== Comment dedup properties ========== *)
+
+let () =
+  let open QCheck2 in
+  let open Onton in
+  (* Poller: addressed comments are excluded from new_comments *)
+  let prop_addressed_filtered =
+    Test.make ~name:"dedup: addressed ids filtered from new_comments"
+      Onton_test_support.Test_generators.gen_pr_state (fun pr ->
+        let all_ids =
+          List.map pr.Github.Pr_state.comments ~f:(fun (c : Types.Comment.t) ->
+              c.id)
+        in
+        let addressed = Set.of_list (module Types.Comment_id) all_ids in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:addressed pr
+        in
+        List.is_empty result.new_comments)
+  in
+  (* Poller: all-addressed means no Review_comments in queue *)
+  let prop_addressed_suppresses_review =
+    Test.make ~name:"dedup: all addressed suppresses review queue"
+      Onton_test_support.Test_generators.gen_pr_state (fun pr ->
+        let all_ids =
+          List.map pr.Github.Pr_state.comments ~f:(fun (c : Types.Comment.t) ->
+              c.id)
+        in
+        let addressed = Set.of_list (module Types.Comment_id) all_ids in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:addressed pr
+        in
+        not
+          (List.mem result.queue Types.Operation_kind.Review_comments
+             ~equal:Types.Operation_kind.equal))
+  in
+  (* Poller: unaddressed comments appear in new_comments *)
+  let prop_unaddressed_preserved =
+    Test.make ~name:"dedup: unaddressed comments preserved"
+      Onton_test_support.Test_generators.gen_pr_state (fun pr ->
+        let no_addressed = Set.empty (module Types.Comment_id) in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
+        in
+        List.length result.new_comments
+        = List.length pr.Github.Pr_state.comments)
+  in
+  (* add_pending_comment is idempotent: adding same comment twice = once *)
+  let prop_add_pending_idempotent =
+    Test.make ~name:"dedup: add_pending_comment idempotent"
+      (Gen.pair Onton_test_support.Test_generators.gen_patch_id
+         Onton_test_support.Test_generators.gen_comment) (fun (pid, comment) ->
+        let a = Patch_agent.create pid in
+        let a = Patch_agent.add_pending_comment a comment ~valid:true in
+        let a = Patch_agent.add_pending_comment a comment ~valid:true in
+        List.length a.Patch_agent.pending_comments = 1)
+  in
+  (* Synthetic-to-real migration: content-matching synthetic ID gets upgraded *)
+  let prop_synthetic_migration =
+    Test.make ~name:"dedup: synthetic to real id migration"
+      (Gen.pair Onton_test_support.Test_generators.gen_patch_id
+         (Gen.triple
+            (Gen.string_size ~gen:Gen.printable (Gen.int_range 1 40))
+            (Gen.option
+               (Gen.string_size
+                  ~gen:Gen.(char_range 'a' 'z')
+                  (Gen.int_range 3 20)))
+            (Gen.option (Gen.int_range 1 500))))
+      (fun (pid, (body, path, line)) ->
+        let synthetic_id = Types.Comment_id.of_int (-999_999) in
+        let real_id = Types.Comment_id.of_int 42 in
+        let synthetic_comment =
+          Types.Comment.{ id = synthetic_id; body; path; line }
+        in
+        let real_comment = Types.Comment.{ id = real_id; body; path; line } in
+        let a = Patch_agent.create pid in
+        let a =
+          Patch_agent.add_pending_comment a synthetic_comment ~valid:true
+        in
+        let a = Patch_agent.add_pending_comment a real_comment ~valid:true in
+        (* Should still be 1 entry, with the real ID *)
+        List.length a.Patch_agent.pending_comments = 1
+        && Types.Comment_id.equal
+             (List.hd_exn a.Patch_agent.pending_comments).comment
+               .Types.Comment.id real_id)
+  in
+  (* Partial addressed: only non-addressed comments pass through *)
+  let prop_partial_addressed =
+    Test.make ~name:"dedup: partial addressed filters correctly"
+      Onton_test_support.Test_generators.gen_pr_state (fun pr ->
+        match pr.Github.Pr_state.comments with
+        | [] -> true
+        | first :: _ ->
+            let addressed =
+              Set.singleton (module Types.Comment_id) first.Types.Comment.id
+            in
+            let result =
+              Poller.poll ~was_merged:false ~addressed_ids:addressed pr
+            in
+            (not
+               (List.exists result.new_comments ~f:(fun (c : Types.Comment.t) ->
+                    Types.Comment_id.equal c.id first.id)))
+            && List.length result.new_comments
+               >= List.length pr.Github.Pr_state.comments - 1)
+  in
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
+    [
+      prop_addressed_filtered;
+      prop_addressed_suppresses_review;
+      prop_unaddressed_preserved;
+      prop_add_pending_idempotent;
+      prop_synthetic_migration;
+      prop_partial_addressed;
+    ];
+  Stdlib.print_endline "comment dedup: all properties passed"
+
 let () = Stdlib.print_endline "all property tests passed"
