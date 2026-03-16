@@ -221,16 +221,9 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
         ~activity ~project_name:gp.Gameplan.project_name views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
-    (* Sleep until next tick, but wake early on SIGCONT for immediate redraw *)
+    (* After SIGCONT, skip the sleep to redraw immediately *)
     if Term.Raw.redraw_needed.contents then Term.Raw.redraw_needed := false
-    else
-      Eio.Fiber.first
-        (fun () -> Eio.Time.sleep clock 0.1)
-        (fun () ->
-          while not Term.Raw.redraw_needed.contents do
-            Eio.Time.sleep clock 0.005
-          done;
-          Term.Raw.redraw_needed := false);
+    else Eio.Time.sleep clock 0.1;
     loop ()
   in
   loop ()
@@ -363,6 +356,9 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           | Term.Key.Page_up | Term.Key.Page_down | Term.Key.Tab | Term.Key.F _
           | Term.Key.Ctrl _ | Term.Key.Unknown _ ->
               loop ()
+        else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
+          Term.Raw.suspend ();
+          loop ())
         else
           let cmd = Tui_input.of_key key in
           match cmd with
