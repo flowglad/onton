@@ -778,7 +778,18 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                 log_event runtime ~patch_id
                   (Printf.sprintf "poll error: %s" (Github.show_error err))
             | Ok pr_state ->
-                let poll_result = Poller.poll ~was_merged pr_state in
+                let addressed_ids =
+                  Runtime.read runtime (fun snap ->
+                      match
+                        Orchestrator.find_agent snap.Runtime.orchestrator
+                          patch_id
+                      with
+                      | None -> Base.Set.empty (module Types.Comment_id)
+                      | Some a -> a.Patch_agent.addressed_comment_ids)
+                in
+                let poll_result =
+                  Poller.poll ~was_merged ~addressed_ids pr_state
+                in
                 Runtime.update_orchestrator runtime (fun orch ->
                     let orch =
                       if poll_result.Poller.merged then
@@ -815,7 +826,7 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                         Hashtbl.replace ci_checks_cache patch_id failed
                       else Hashtbl.remove ci_checks_cache patch_id
                     in
-                    Base.List.fold pr_state.Github.Pr_state.comments ~init:orch
+                    Base.List.fold poll_result.Poller.new_comments ~init:orch
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
                           ~valid:true));

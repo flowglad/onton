@@ -126,22 +126,29 @@ let () =
 
 let () =
   let open QCheck2 in
+  let no_addressed = Set.empty (module Types.Comment_id) in
   let prop_merged_sticky =
     Test.make ~name:"poller: merged is sticky"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-        let result = Poller.poll ~was_merged:true pr in
+        let result =
+          Poller.poll ~was_merged:true ~addressed_ids:no_addressed pr
+        in
         result.merged)
   in
   let prop_merged_from_pr =
     Test.make ~name:"poller: merged reflects pr state"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-        let result = Poller.poll ~was_merged:false pr in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
+        in
         Bool.equal result.merged pr.Github.Pr_state.merged)
   in
   let prop_conflict_queue =
     Test.make ~name:"poller: conflict in queue iff has_conflict"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-        let result = Poller.poll ~was_merged:false pr in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
+        in
         let in_queue =
           List.mem result.queue Types.Operation_kind.Merge_conflict
             ~equal:Types.Operation_kind.equal
@@ -151,7 +158,9 @@ let () =
   let prop_ci_queue =
     Test.make ~name:"poller: ci in queue iff checks failing"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-        let result = Poller.poll ~was_merged:false pr in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
+        in
         let in_queue =
           List.mem result.queue Types.Operation_kind.Ci
             ~equal:Types.Operation_kind.equal
@@ -159,19 +168,38 @@ let () =
         Bool.equal in_queue (Github.ci_failed pr))
   in
   let prop_review_queue =
-    Test.make ~name:"poller: review in queue iff unresolved"
+    Test.make ~name:"poller: review in queue iff new comments"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-        let result = Poller.poll ~was_merged:false pr in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
+        in
+        let all_ids =
+          Set.of_list
+            (module Types.Comment_id)
+            (List.map pr.Github.Pr_state.comments ~f:(fun c ->
+                 c.Types.Comment.id))
+        in
+        let result_all_addressed =
+          Poller.poll ~was_merged:false ~addressed_ids:all_ids pr
+        in
         let in_queue =
           List.mem result.queue Types.Operation_kind.Review_comments
             ~equal:Types.Operation_kind.equal
         in
-        Bool.equal in_queue (pr.Github.Pr_state.unresolved_comment_count > 0))
+        (* when addressed_ids is empty: in_queue iff there are comments *)
+        (* when addressed_ids covers all comments: never in_queue *)
+        Bool.equal in_queue (not (List.is_empty pr.Github.Pr_state.comments))
+        && not
+             (List.mem result_all_addressed.queue
+                Types.Operation_kind.Review_comments
+                ~equal:Types.Operation_kind.equal))
   in
   let prop_no_rebase =
     Test.make ~name:"poller: rebase never in poll queue"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-        let result = Poller.poll ~was_merged:false pr in
+        let result =
+          Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
+        in
         not
           (List.mem result.queue Types.Operation_kind.Rebase
              ~equal:Types.Operation_kind.equal))
