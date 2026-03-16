@@ -239,7 +239,9 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
 
     Text-mode commands (parsed by {!Tui_input.parse_line}):
     - ["N> message"] — send human message to patch N
-    - ["+123"] — register ad-hoc PR #123 for the selected patch *)
+    - ["+123"] — register ad-hoc PR #123 for the selected patch
+    - ["w /path"] — register existing worktree directory for the selected patch
+    - ["-"] — remove the selected patch from orchestration *)
 let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
@@ -313,6 +315,69 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                       log_event runtime ~patch_id
                         (Printf.sprintf "Ad-hoc PR #%d registered"
                            (Pr_number.to_int pr_number)))
+              | Some (Tui_input.Add_worktree path) -> (
+                  let patch_id_opt =
+                    Runtime.read runtime (fun snap ->
+                        let agents =
+                          Orchestrator.all_agents snap.Runtime.orchestrator
+                        in
+                        let count = Base.List.length agents in
+                        if count = 0 then None
+                        else
+                          let idx =
+                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                          in
+                          Some
+                            (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+                  in
+                  match patch_id_opt with
+                  | None ->
+                      log_event runtime
+                        "Cannot add worktree: no selectable patch"
+                  | Some patch_id -> (
+                      let branch =
+                        Runtime.read runtime (fun snap ->
+                            let agent =
+                              Orchestrator.agent snap.Runtime.orchestrator
+                                patch_id
+                            in
+                            Base.Option.value agent.Patch_agent.base_branch
+                              ~default:
+                                (Orchestrator.main_branch
+                                   snap.Runtime.orchestrator))
+                      in
+                      try
+                        ignore (Worktree.add_existing ~patch_id ~branch ~path);
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "Worktree registered at %s" path)
+                      with exn ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "Failed to add worktree: %s"
+                             (Printexc.to_string exn))))
+              | Some Tui_input.Remove_patch -> (
+                  let patch_id_opt =
+                    Runtime.read runtime (fun snap ->
+                        let agents =
+                          Orchestrator.all_agents snap.Runtime.orchestrator
+                        in
+                        let count = Base.List.length agents in
+                        if count = 0 then None
+                        else
+                          let idx =
+                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                          in
+                          Some
+                            (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+                  in
+                  match patch_id_opt with
+                  | None ->
+                      log_event runtime
+                        "Cannot remove patch: no selectable patch"
+                  | Some patch_id ->
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_merged orch patch_id);
+                      log_event runtime ~patch_id
+                        "Patch removed from orchestration")
               | Some
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
@@ -436,7 +501,8 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                   selected := 0;
                   loop ())
           | Tui_input.Refresh | Tui_input.Help | Tui_input.Noop
-          | Tui_input.Send_message _ | Tui_input.Add_pr _ ->
+          | Tui_input.Send_message _ | Tui_input.Add_pr _
+          | Tui_input.Add_worktree _ | Tui_input.Remove_patch ->
               loop ())
   in
   loop ()
