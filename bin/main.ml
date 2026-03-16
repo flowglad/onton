@@ -196,9 +196,12 @@ let log_event runtime ?patch_id msg =
         (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
            msg))
 
+(** Terminal failure — forces [Given_up] so [complete] raises intervention. Used
+    for non-retryable errors (patch not found, PR discovery failed). *)
 let mark_session_failed runtime patch_id =
   Runtime.update_orchestrator runtime (fun orch ->
       let orch = Orchestrator.set_session_failed orch patch_id in
+      let orch = Orchestrator.set_tried_fresh orch patch_id in
       Orchestrator.complete orch patch_id)
 
 (** Compute the session ID for the fallback chain.
