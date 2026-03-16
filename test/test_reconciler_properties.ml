@@ -99,31 +99,37 @@ let gen_rebase_scenario =
 let prop_detect_rebases_only_enqueue_rebase =
   QCheck2.Test.make ~name:"detect_rebases: only produces Enqueue_rebase"
     ~count:500 gen_rebase_scenario (fun (graph, views, newly_merged) ->
-      let actions = Reconciler.detect_rebases graph views ~newly_merged in
-      List.for_all actions ~f:(function
-        | Reconciler.Enqueue_rebase _ -> true
-        | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+      try
+        let actions = Reconciler.detect_rebases graph views ~newly_merged in
+        List.for_all actions ~f:(function
+          | Reconciler.Enqueue_rebase _ -> true
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false)
+      with _ -> false)
 
 let prop_detect_rebases_never_targets_merged =
   QCheck2.Test.make
     ~name:"detect_rebases: never enqueues rebase for newly-merged patches"
     ~count:500 gen_rebase_scenario (fun (graph, views, newly_merged) ->
-      let actions = Reconciler.detect_rebases graph views ~newly_merged in
-      let merged_set = Set.of_list (module Types.Patch_id) newly_merged in
-      List.for_all actions ~f:(fun a ->
-          not (Set.mem merged_set (action_patch_id a))))
+      try
+        let actions = Reconciler.detect_rebases graph views ~newly_merged in
+        let merged_set = Set.of_list (module Types.Patch_id) newly_merged in
+        List.for_all actions ~f:(fun a ->
+            not (Set.mem merged_set (action_patch_id a)))
+      with _ -> false)
 
 let prop_detect_rebases_targets_are_dependents =
   QCheck2.Test.make
     ~name:"detect_rebases: targets are dependents of newly-merged" ~count:500
     gen_rebase_scenario (fun (graph, views, newly_merged) ->
-      let actions = Reconciler.detect_rebases graph views ~newly_merged in
-      let all_dependents =
-        List.concat_map newly_merged ~f:(Graph.dependents graph)
-        |> Set.of_list (module Types.Patch_id)
-      in
-      List.for_all actions ~f:(fun a ->
-          Set.mem all_dependents (action_patch_id a)))
+      try
+        let actions = Reconciler.detect_rebases graph views ~newly_merged in
+        let all_dependents =
+          List.concat_map newly_merged ~f:(Graph.dependents graph)
+          |> Set.of_list (module Types.Patch_id)
+        in
+        List.for_all actions ~f:(fun a ->
+            Set.mem all_dependents (action_patch_id a))
+      with _ -> false)
 
 let prop_detect_rebases_skips_already_queued =
   QCheck2.Test.make
@@ -134,23 +140,20 @@ let prop_detect_rebases_skips_already_queued =
       let graph = Graph.of_patches patches in
       let ids = List.map patches ~f:(fun (p : Types.Patch.t) -> p.id) in
       let main = Types.Branch.of_string "main" in
-      map
-        (fun () ->
-          let views =
-            List.map patches ~f:(fun (p : Types.Patch.t) ->
-                Reconciler.
-                  {
-                    id = p.id;
-                    has_pr = true;
-                    merged = false;
-                    busy = false;
-                    needs_intervention = false;
-                    queue = [ Types.Operation_kind.Rebase ];
-                    base_branch = main;
-                  })
-          in
-          (graph, views, ids))
-        (return ()))
+      let views =
+        List.map patches ~f:(fun (p : Types.Patch.t) ->
+            Reconciler.
+              {
+                id = p.id;
+                has_pr = true;
+                merged = false;
+                busy = false;
+                needs_intervention = false;
+                queue = [ Types.Operation_kind.Rebase ];
+                base_branch = main;
+              })
+      in
+      return (graph, views, ids))
     (fun (graph, views, newly_merged) ->
       let actions = Reconciler.detect_rebases graph views ~newly_merged in
       List.is_empty actions)
@@ -396,4 +399,6 @@ let () =
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
-  Stdlib.print_endline "reconciler properties: all 17 tests passed"
+  Stdlib.print_endline
+    (Printf.sprintf "reconciler properties: all %d tests passed"
+       (List.length tests))
