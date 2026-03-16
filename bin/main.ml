@@ -242,7 +242,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     - ["+123"] — register ad-hoc PR #123 for the selected patch
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
-let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
+let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let saved_list_selected = ref 0 in
@@ -335,21 +335,26 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                       log_event runtime
                         "Cannot add worktree: no selectable patch"
                   | Some patch_id -> (
-                      let branch =
-                        Runtime.read runtime (fun snap ->
-                            let agent =
-                              Orchestrator.agent snap.Runtime.orchestrator
-                                patch_id
-                            in
-                            Base.Option.value agent.Patch_agent.base_branch
-                              ~default:
-                                (Orchestrator.main_branch
-                                   snap.Runtime.orchestrator))
+                      let expected =
+                        Worktree.worktree_dir ~repo_root ~patch_id
                       in
                       try
-                        ignore (Worktree.add_existing ~patch_id ~branch ~path);
+                        let wt =
+                          Worktree.add_existing ~patch_id
+                            ~branch:(Branch.of_string "unknown")
+                            ~path
+                        in
+                        let real_path = Worktree.path wt in
+                        if not (String.equal real_path expected) then (
+                          let parent = Stdlib.Filename.dirname expected in
+                          if not (Stdlib.Sys.file_exists parent) then
+                            Unix.mkdir parent 0o755;
+                          if Stdlib.Sys.file_exists expected then
+                            Stdlib.Sys.remove expected;
+                          Unix.symlink real_path expected);
                         log_event runtime ~patch_id
-                          (Printf.sprintf "Worktree registered at %s" path)
+                          (Printf.sprintf "Worktree registered at %s → %s"
+                             real_path expected)
                       with exn ->
                         log_event runtime ~patch_id
                           (Printf.sprintf "Failed to add worktree: %s"
@@ -1070,7 +1075,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
                 :: (fun () ->
-                  input_fiber ~runtime ~selected ~view_mode ~pr_registry)
+                  input_fiber ~runtime ~selected ~view_mode ~pr_registry
+                    ~repo_root:config.repo_root)
                 :: common_fibers)
             with Quit_tui -> ())
 
