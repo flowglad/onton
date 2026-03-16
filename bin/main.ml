@@ -337,9 +337,14 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
                     Runtime.read runtime (fun snap ->
                         Orchestrator.all_agents snap.Runtime.orchestrator)
                   in
-                  (if !selected < Base.List.length agents then
-                     let agent = Base.List.nth_exn agents !selected in
-                     view_mode := Tui.Detail_view agent.Patch_agent.patch_id);
+                  let count = Base.List.length agents in
+                  if count > 0 then (
+                    let idx =
+                      Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                    in
+                    selected := idx;
+                    let agent = Base.List.nth_exn agents idx in
+                    view_mode := Tui.Detail_view agent.Patch_agent.patch_id);
                   loop ()
               | Tui.Detail_view _ ->
                   text_mode := true;

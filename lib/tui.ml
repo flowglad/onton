@@ -312,12 +312,10 @@ type patch_view = {
 }
 [@@warning "-69"]
 
-let patch_view_of_agent (agent : Patch_agent.t) ~(patches : Patch.t list)
-    ~(graph : Graph.t) =
+let patch_view_of_agent (agent : Patch_agent.t)
+    ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t) =
   let patch_id = agent.patch_id in
-  let patch_opt =
-    List.find patches ~f:(fun p -> Patch_id.equal p.id patch_id)
-  in
+  let patch_opt = Map.find patches_by_id patch_id in
   let title =
     match patch_opt with
     | Some p -> p.Patch.title
@@ -571,8 +569,13 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
     ~(gameplan : Gameplan.t) =
   let agents = Orchestrator.all_agents orchestrator in
   let graph = Orchestrator.graph orchestrator in
+  let patches_by_id =
+    List.fold gameplan.patches
+      ~init:(Map.empty (module Patch_id))
+      ~f:(fun acc (p : Patch.t) -> Map.set acc ~key:p.Patch.id ~data:p)
+  in
   List.map agents ~f:(fun agent ->
-      patch_view_of_agent agent ~patches:gameplan.patches ~graph)
+      patch_view_of_agent agent ~patches_by_id ~graph)
 
 let render_frame ~width ~height ~selected ~view_mode
     ~(activity : activity_entry list) ~project_name (views : patch_view list) =
@@ -588,6 +591,10 @@ let render_frame ~width ~height ~selected ~view_mode
         | Some pv -> render_detail pv ~width
         | None -> [ " (patch not found)" ]
       in
+      (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
+         + footer(2) = 7 fixed lines *)
+      let max_detail = Int.max 0 (height - 7) in
+      let detail = List.take detail max_detail in
       let lines =
         header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
       in
