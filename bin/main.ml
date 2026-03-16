@@ -982,18 +982,18 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let selected = ref 0 in
         let view_mode = ref Tui.List_view in
         let raw_state = Term.Raw.enter () in
-        Term.Raw.install_suspend_handlers raw_state;
         Fun.protect
           ~finally:(fun () ->
             Term.Raw.clear_suspend_handlers ();
-            Term.Raw.leave raw_state;
             Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
+            Term.Raw.leave raw_state;
             let snap = Runtime.read runtime (fun s -> s) in
             ignore
               (Persistence.save
                  ~path:(Project_store.snapshot_path project_name)
                  snap))
           (fun () ->
+            Term.Raw.install_suspend_handlers raw_state;
             try
               Eio.Fiber.all
                 ((fun () ->

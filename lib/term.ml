@@ -258,8 +258,10 @@ module Raw = struct
       Stdlib.Sys.signal Stdlib.Sys.sigcont
         (Stdlib.Sys.Signal_handle
            (fun _signum ->
-             (* Re-enter raw mode after resume — guard against spurious
-                delivery when _saved_state was already cleared. *)
+             (* Only re-enter raw mode if we actually suspended: suspend()
+                clears _saved_state before sending SIGSTOP, so is_none means
+                a real resume. If _saved_state is Some, SIGCONT was spurious
+                (process wasn't stopped by us) and we leave the terminal alone. *)
              if Option.is_none !_saved_state then (
                Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH
                  (make_raw_settings state.original);
