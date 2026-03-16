@@ -197,29 +197,47 @@ let gen_session_fallback =
 
 let gen_patch_agent_fully_populated =
   QCheck2.Gen.(
-    map4
-      (fun (pid, branch) (comments, ops) (ci_checks, fallback) addressed_ids ->
-        let a = Onton.Patch_agent.create pid in
-        let a = Onton.Patch_agent.start a ~base_branch:branch in
-        let a =
-          List.fold comments ~init:a ~f:(fun a (comment, valid) ->
-              Onton.Patch_agent.add_pending_comment a comment ~valid)
-        in
-        let a =
-          match fallback with
-          | Onton.Patch_agent.Fresh_available -> a
-          | Onton.Patch_agent.Tried_fresh -> Onton.Patch_agent.set_tried_fresh a
-          | Onton.Patch_agent.Given_up -> Onton.Patch_agent.set_session_failed a
-        in
-        let a = Onton.Patch_agent.complete a in
-        let a = List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue in
-        let a = Onton.Patch_agent.set_ci_checks a ci_checks in
-        List.fold addressed_ids ~init:a
-          ~f:Onton.Patch_agent.add_addressed_comment_id)
-      (pair gen_patch_id gen_branch)
-      (pair (list_small (pair gen_comment bool)) gen_operation_kind_queue)
-      (pair (list_small gen_ci_check) gen_session_fallback)
-      (list_small (map Comment_id.of_int (int_range 1 100_000))))
+    let* pid = gen_patch_id in
+    let* branch = gen_branch in
+    let* comments = list_small (pair gen_comment bool) in
+    let* ops = gen_operation_kind_queue in
+    let* ci_checks = list_small gen_ci_check in
+    let* fallback = gen_session_fallback in
+    let* addressed_ids =
+      list_small (map Comment_id.of_int (int_range 1 100_000))
+    in
+    let* pr_number = option gen_pr_number in
+    let* last_session_id = option gen_session_id in
+    let a = Onton.Patch_agent.create pid in
+    let a = Onton.Patch_agent.start a ~base_branch:branch in
+    let a =
+      List.fold comments ~init:a ~f:(fun a (comment, valid) ->
+          Onton.Patch_agent.add_pending_comment a comment ~valid)
+    in
+    let a =
+      match fallback with
+      | Onton.Patch_agent.Fresh_available -> a
+      | Onton.Patch_agent.Tried_fresh -> Onton.Patch_agent.set_tried_fresh a
+      | Onton.Patch_agent.Given_up -> Onton.Patch_agent.set_session_failed a
+    in
+    let a = Onton.Patch_agent.complete a in
+    let a = List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue in
+    let a = Onton.Patch_agent.set_ci_checks a ci_checks in
+    let a =
+      List.fold addressed_ids ~init:a
+        ~f:Onton.Patch_agent.add_addressed_comment_id
+    in
+    let a =
+      match pr_number with
+      | Some n -> Onton.Patch_agent.set_pr_number a n
+      | None -> a
+    in
+    let a =
+      match last_session_id with
+      | Some id -> Onton.Patch_agent.set_last_session_id a id
+      | None -> a
+    in
+    return a)
 
 (* -- Reconciler -- *)
 

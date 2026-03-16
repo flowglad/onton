@@ -156,6 +156,49 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  let pr_number_roundtrip =
+    QCheck2.Test.make ~name:"pr_number survives round-trip" ~count:200
+      QCheck2.Gen.(pair gen_patch_agent_fully_populated bool)
+      (fun (agent, _) ->
+        try
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          match Onton.Persistence.patch_agent_of_yojson json with
+          | Ok agent' ->
+              Option.equal Pr_number.equal agent.pr_number agent'.pr_number
+          | Error _ -> false
+        with _ -> false)
+  in
+  let last_session_id_roundtrip =
+    QCheck2.Test.make ~name:"last_session_id survives round-trip" ~count:200
+      gen_patch_agent_fully_populated (fun agent ->
+        try
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          match Onton.Persistence.patch_agent_of_yojson json with
+          | Ok agent' ->
+              Option.equal Session_id.equal agent.last_session_id
+                agent'.last_session_id
+          | Error _ -> false
+        with _ -> false)
+  in
+  let missing_pr_number_defaults_none =
+    QCheck2.Test.make ~name:"missing pr_number defaults to None" ~count:200
+      gen_patch_agent_fully_populated (fun agent ->
+        try
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          (* Remove pr_number from JSON to simulate legacy snapshot *)
+          let json =
+            match json with
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter fields ~f:(fun (k, _) ->
+                       not (String.equal k "pr_number")))
+            | other -> other
+          in
+          match Onton.Persistence.patch_agent_of_yojson json with
+          | Ok agent' -> Option.is_none agent'.pr_number
+          | Error _ -> false
+        with _ -> false)
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
@@ -165,6 +208,9 @@ let () =
         snapshot_json_structure;
         file_roundtrip;
         patch_agent_roundtrip_fully_populated;
+        pr_number_roundtrip;
+        last_session_id_roundtrip;
+        missing_pr_number_defaults_none;
       ]
   in
   if exit_code <> 0 then Stdlib.exit exit_code
