@@ -339,18 +339,27 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                         Worktree.worktree_dir ~repo_root ~patch_id
                       in
                       try
-                        let wt =
-                          Worktree.add_existing ~patch_id
-                            ~branch:(Branch.of_string "unknown")
-                            ~path
-                        in
-                        let real_path = Worktree.path wt in
+                        let real_path = Worktree.normalize_path path in
+                        if not (Stdlib.Sys.is_directory real_path) then
+                          failwith
+                            ("Worktree path is not a directory: " ^ real_path);
                         if not (String.equal real_path expected) then (
                           let parent = Stdlib.Filename.dirname expected in
                           if not (Stdlib.Sys.file_exists parent) then
                             Unix.mkdir parent 0o755;
-                          if Stdlib.Sys.file_exists expected then
-                            Stdlib.Sys.remove expected;
+                          (match Unix.lstat expected with
+                          | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+                          | { Unix.st_kind = Unix.S_LNK; _ } ->
+                              Unix.unlink expected
+                          | {
+                           Unix.st_kind =
+                             ( Unix.S_REG | Unix.S_DIR | Unix.S_CHR | Unix.S_BLK
+                             | Unix.S_FIFO | Unix.S_SOCK );
+                           _;
+                          } ->
+                              failwith
+                                (Printf.sprintf
+                                   "Cannot overwrite non-symlink at %s" expected));
                           Unix.symlink real_path expected);
                         log_event runtime ~patch_id
                           (Printf.sprintf "Worktree registered at %s → %s"

@@ -29,6 +29,9 @@ val list_with_branches :
   repo_root:string ->
   (string * Types.Branch.t) list
 
+val normalize_path : string -> string
+(** Resolve a relative path to absolute using the current working directory. *)
+
 val exists : t -> bool
 val path : t -> string
 val patch_id : t -> Types.Patch_id.t
