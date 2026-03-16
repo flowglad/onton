@@ -295,7 +295,9 @@ module Raw = struct
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp prev_tstp);
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont prev_cont));
     _saved_handlers := None;
-    Atomic.set _saved_state None
+    match Atomic.exchange _saved_state None with
+    | Some state -> leave state
+    | None -> ()
 end
 
 (** Keyboard input types and parsing. *)
