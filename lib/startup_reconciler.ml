@@ -9,7 +9,18 @@ type pr_discovery = {
 }
 [@@deriving show, eq]
 
-type t = { discovered : pr_discovery list; errors : (Patch_id.t * string) list }
+type worktree_recovery = {
+  worktree_patch_id : Patch_id.t;
+  worktree : Worktree.t;
+}
+[@@deriving show, eq]
+
+type t = {
+  discovered : pr_discovery list;
+  recovered_worktrees : worktree_recovery list;
+  reset_pending : Patch_id.t list;
+  errors : (Patch_id.t * string) list;
+}
 [@@deriving show, eq]
 
 (** Parse a single PR JSON object, returning [(pr_number, base_branch, merged)]
@@ -70,7 +81,30 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
     | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
-let reconcile ~process_mgr ~token ~owner ~repo ~patches =
+(** Discover existing worktrees and match them to patches by branch name. *)
+let recover_worktrees ~process_mgr ~repo_root ~patches =
+  let worktrees =
+    try Worktree.list_with_branches ~process_mgr ~repo_root with _ -> []
+  in
+  List.filter_map worktrees ~f:(fun (path, branch) ->
+      match
+        List.find patches ~f:(fun (p : Patch.t) -> Branch.equal p.branch branch)
+      with
+      | Some patch ->
+          let wt =
+            Worktree.add_existing ~patch_id:patch.Patch.id ~branch ~path
+          in
+          Some { worktree_patch_id = patch.Patch.id; worktree = wt }
+      | None -> None)
+
+(** Find agents that were persisted with [busy=true] — these represent crashed
+    sessions that need resetting. *)
+let find_stale_busy ~agents =
+  List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
+      if agent.busy then Some agent.patch_id else None)
+
+let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
+    ?(agents = []) () =
   let discovered, errors =
     List.fold patches ~init:([], [])
       ~f:(fun (discovered, errors) (patch : Patch.t) ->
@@ -84,4 +118,13 @@ let reconcile ~process_mgr ~token ~owner ~repo ~patches =
         | Ok None -> (discovered, errors)
         | Error err -> (discovered, (patch.id, err) :: errors))
   in
-  { discovered = List.rev discovered; errors = List.rev errors }
+  let recovered_worktrees =
+    recover_worktrees ~process_mgr ~repo_root ~patches
+  in
+  let reset_pending = find_stale_busy ~agents in
+  {
+    discovered = List.rev discovered;
+    recovered_worktrees;
+    reset_pending;
+    errors = List.rev errors;
+  }

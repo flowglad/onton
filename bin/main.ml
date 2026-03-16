@@ -924,10 +924,15 @@ let run_with_config (config : config) gameplan existing_snapshot =
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
       Eio_main.run @@ fun env ->
       let process_mgr = Eio.Stdenv.process_mgr env in
+      let all_agents =
+        Runtime.read runtime (fun snap ->
+            Orchestrator.all_agents snap.Runtime.orchestrator)
+      in
       let startup =
         Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
           ~owner:config.github_owner ~repo:config.github_repo
-          ~patches:gameplan.Gameplan.patches
+          ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
+          ~agents:all_agents ()
       in
       let errored_ids =
         Base.List.map startup.Startup_reconciler.errors
@@ -945,11 +950,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
             Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
                 Pr_registry.register pr_registry
                   ~patch_id:agent.Patch_agent.patch_id ~pr_number));
-      Base.List.iter startup.Startup_reconciler.discovered ~f:(fun d ->
-          let pid = d.Startup_reconciler.patch_id in
-          let pr = d.Startup_reconciler.pr_number in
-          let base = d.Startup_reconciler.base_branch in
-          let merged = d.Startup_reconciler.merged in
+      let open Startup_reconciler in
+      Base.List.iter startup.discovered
+        ~f:(fun
+            { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
           Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
           Runtime.update_orchestrator runtime (fun orch ->
               let orch =
@@ -958,6 +962,15 @@ let run_with_config (config : config) gameplan existing_snapshot =
               let orch = Orchestrator.set_pr_number orch pid pr in
               let orch = Orchestrator.complete orch pid in
               if merged then Orchestrator.mark_merged orch pid else orch));
+      Base.List.iter startup.reset_pending ~f:(fun patch_id ->
+          log_event runtime ~patch_id
+            "reset stale busy agent from crashed session";
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.reset_busy orch patch_id));
+      Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
+          log_event runtime ~patch_id:wr.worktree_patch_id
+            (Printf.sprintf "recovered worktree at %s"
+               (Worktree.path wr.worktree)));
       let clock = Eio.Stdenv.clock env in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in

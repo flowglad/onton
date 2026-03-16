@@ -85,6 +85,16 @@ let clear_needs_intervention t =
     session_failed = false;
   }
 
+let reset_busy t =
+  if not t.busy then t
+  else
+    let needs_intervention =
+      if List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal then
+        false
+      else t.ci_failure_count >= 3 || t.session_failed
+    in
+    { t with busy = false; needs_intervention }
+
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_failed ~pending_comments ~last_session_id

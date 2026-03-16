@@ -86,6 +86,11 @@ val increment_ci_failure_count : t -> t
 val clear_needs_intervention : t -> t
 (** Clear the needs-intervention flag (e.g., after manual resolution). *)
 
+val reset_busy : t -> t
+(** Reset a stale [busy] flag from a crashed session. If [busy], clears it and
+    sets [session_failed] so the agent knows the previous session did not
+    complete cleanly. No-op if not busy. *)
+
 (** {2 Queries} *)
 
 val highest_priority : t -> Types.Operation_kind.t option

@@ -159,6 +159,8 @@ let increment_ci_failure_count t patch_id =
 let clear_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
 
+let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
+
 (** {2 Queries} *)
 
 let all_agents t = Map.data t.agents
