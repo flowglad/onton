@@ -233,8 +233,8 @@ module Raw = struct
     match !_saved_state with
     | None -> () (* not in raw mode, nothing to do *)
     | Some state ->
-        _saved_state := None;
         leave state;
+        _saved_state := None;
         let exit_seq =
           Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show
         in
@@ -244,7 +244,7 @@ module Raw = struct
         Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop
 
   (** Install SIGTSTP/SIGCONT handlers for proper terminal suspend/resume. Must
-      be called inside {!with_raw} — pass the {!state} so we can restore and
+      be called after {!enter} — pass the {!state} so we can restore and
       re-enter raw mode around the stop. *)
   let install_suspend_handlers (state : state) =
     _saved_state := Some state;
