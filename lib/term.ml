@@ -194,29 +194,115 @@ let get_size () =
 module Raw = struct
   type state = { original : Unix.terminal_io }
 
+  let make_raw_settings (original : Unix.terminal_io) : Unix.terminal_io =
+    {
+      original with
+      Unix.c_icanon = false;
+      c_echo = false;
+      c_icrnl = false;
+      c_ixon = false;
+      c_vmin = 1;
+      c_vtime = 0;
+      c_isig = false;
+    }
+
   let enter () =
     let fd = Unix.stdin in
     let original = Unix.tcgetattr fd in
-    let raw =
-      {
-        original with
-        Unix.c_icanon = false;
-        c_echo = false;
-        c_icrnl = false;
-        c_ixon = false;
-        c_vmin = 1;
-        c_vtime = 0;
-        c_isig = false;
-      }
-    in
-    Unix.tcsetattr fd Unix.TCSAFLUSH raw;
+    Unix.tcsetattr fd Unix.TCSAFLUSH (make_raw_settings original);
     { original }
 
   let leave state = Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH state.original
 
-  let with_raw f =
-    let state = enter () in
-    Exn.protect ~f ~finally:(fun () -> leave state)
+  (** Shared mutable state for suspend/resume across signal boundaries. Uses
+      [Atomic.t] because it is written by the SIGCONT handler and read by the
+      main fiber. *)
+  let _saved_state : state option Atomic.t = Atomic.make None
+
+  (** Saved previous signal handlers, restored by {!clear_suspend_handlers}. *)
+  let _saved_handlers :
+      (Stdlib.Sys.signal_behavior * Stdlib.Sys.signal_behavior) option ref =
+    ref None
+
+  (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
+      TUI render loop should check and clear this each iteration. *)
+  let redraw_needed : bool Atomic.t = Atomic.make false
+
+  (** Write a string to stdout, handling short writes and EINTR. Uses
+      [single_write_substring] which maps directly to [write(2)] — safe to call
+      from signal handlers unlike buffered I/O. *)
+  let write_stdout_all s =
+    let len = String.length s in
+    let rec go off =
+      if off < len then
+        try
+          let n = Unix.single_write_substring Unix.stdout s off (len - off) in
+          go (off + n)
+        with
+        | Unix.Unix_error (Unix.EINTR, _, _) -> go off
+        | Unix.Unix_error (_, _, _) -> ()
+    in
+    go 0
+
+  (** Suspend the terminal: restore original settings, show cursor, then send
+      SIGSTOP to ourselves. A SIGCONT handler (installed via
+      {!install_suspend_handlers}) re-enters raw mode automatically. *)
+  let suspend () =
+    let current = Atomic.get _saved_state in
+    match current with
+    | None -> () (* not in raw mode, nothing to do *)
+    | Some state ->
+        (* Block SIGCONT before CAS so the handler cannot race between the
+           state clear and the sigprocmask call. *)
+        let old_mask = Unix.sigprocmask Unix.SIG_BLOCK [ Stdlib.Sys.sigcont ] in
+        (* CAS ensures only one concurrent suspend() proceeds — if the SIGTSTP
+           handler races with a Ctrl+Z suspend, the loser's CAS fails. *)
+        if Atomic.compare_and_set _saved_state current None then (
+          leave state;
+          write_stdout_all
+            (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.show);
+          Unix.kill (Unix.getpid ()) Stdlib.Sys.sigstop;
+          (* SIGCONT is unblocked here — handler runs and re-enters raw mode *)
+          ignore (Unix.sigprocmask Unix.SIG_SETMASK old_mask))
+        else ignore (Unix.sigprocmask Unix.SIG_SETMASK old_mask)
+
+  (** Install SIGTSTP/SIGCONT handlers for proper terminal suspend/resume. Must
+      be called after {!enter} — pass the {!state} so we can restore and
+      re-enter raw mode around the stop. *)
+  let install_suspend_handlers (state : state) =
+    Atomic.set _saved_state (Some state);
+    let prev_tstp =
+      Stdlib.Sys.signal Stdlib.Sys.sigtstp
+        (Stdlib.Sys.Signal_handle (fun _signum -> suspend ()))
+    in
+    let prev_cont =
+      Stdlib.Sys.signal Stdlib.Sys.sigcont
+        (Stdlib.Sys.Signal_handle
+           (fun _signum ->
+             (* Only re-enter raw mode if we actually suspended: suspend()
+                clears _saved_state before sending SIGSTOP, so None means
+                a real resume. CAS ensures only one SIGCONT wins if racing. *)
+             if Atomic.compare_and_set _saved_state None (Some state) then (
+               Unix.tcsetattr Unix.stdin Unix.TCSAFLUSH
+                 (make_raw_settings state.original);
+               write_stdout_all
+                 (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.hide);
+               Atomic.set redraw_needed true)))
+    in
+    _saved_handlers := Some (prev_tstp, prev_cont)
+
+  (** Clean up suspend handlers, restoring previous handlers and clearing saved
+      state. *)
+  let clear_suspend_handlers () =
+    (match !_saved_handlers with
+    | None -> ()
+    | Some (prev_tstp, prev_cont) ->
+        ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp prev_tstp);
+        ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont prev_cont));
+    _saved_handlers := None;
+    match Atomic.exchange _saved_state None with
+    | Some state -> leave state
+    | None -> ()
 end
 
 (** Keyboard input types and parsing. *)
