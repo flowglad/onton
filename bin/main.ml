@@ -199,7 +199,12 @@ exception Quit_tui
     fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
+  let first = ref true in
   let rec loop () =
+    (* Skip sleep on first iteration and after SIGCONT resume *)
+    if !first then first := false
+    else if Atomic.exchange Term.Raw.redraw_needed false then ()
+    else Eio.Time.sleep clock 0.1;
     let orch, gp, log =
       Runtime.read runtime (fun snap ->
           ( snap.Runtime.orchestrator,
@@ -221,9 +226,6 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
         ~activity ~project_name:gp.Gameplan.project_name views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
-    (* After SIGCONT, skip the sleep to redraw immediately *)
-    if Atomic.exchange Term.Raw.redraw_needed false then ()
-    else Eio.Time.sleep clock 0.1;
     loop ()
   in
   loop ()
