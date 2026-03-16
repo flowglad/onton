@@ -165,65 +165,73 @@ let validate ~patches ~dep_graph =
         if is_valid_patch_id id_str then None
         else Some (Printf.sprintf "Invalid patch ID: %S" id_str))
   in
-  if not (List.is_empty invalid_ids) then Error (List.hd_exn invalid_ids)
-  else
-    (* Check for duplicate patch IDs *)
-    let all_ids = List.map patches ~f:(fun p -> p.Types.Patch.id) in
-    let unique_ids = Set.of_list (module Types.Patch_id) all_ids in
-    if Set.length unique_ids <> List.length all_ids then
-      let dup =
-        let seen = Hashtbl.create (module Types.Patch_id) in
-        List.find_map_exn all_ids ~f:(fun id ->
-            if Hashtbl.mem seen id then
-              Some
-                (Printf.sprintf "Duplicate patch ID: %s"
-                   (Types.Patch_id.to_string id))
-            else (
-              Hashtbl.set seen ~key:id ~data:();
-              None))
-      in
-      Error dup
-    else
-      let patch_ids = unique_ids in
-      (* Check all dep graph keys (source patches) exist *)
-      let orphan_sources =
-        Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:_ acc ->
-            if Set.mem patch_ids from then acc
-            else
-              Printf.sprintf "Dependency graph references nonexistent patch %s"
-                (Types.Patch_id.to_string from)
-              :: acc)
-      in
-      if not (List.is_empty orphan_sources) then
-        Error (List.hd_exn orphan_sources)
-      else
-        (* Check all dep targets exist *)
-        let missing =
-          Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
-              List.fold deps ~init:acc ~f:(fun acc dep ->
-                  if Set.mem patch_ids dep then acc
-                  else
-                    Printf.sprintf "Patch %s depends on nonexistent patch %s"
-                      (Types.Patch_id.to_string from)
-                      (Types.Patch_id.to_string dep)
-                    :: acc))
+  match invalid_ids with
+  | msg :: _ -> Error msg
+  | [] -> (
+      (* Check for duplicate patch IDs *)
+      let all_ids = List.map patches ~f:(fun p -> p.Types.Patch.id) in
+      let unique_ids = Set.of_list (module Types.Patch_id) all_ids in
+      if Set.length unique_ids <> List.length all_ids then
+        let dup =
+          let seen = Hashtbl.create (module Types.Patch_id) in
+          List.find_map all_ids ~f:(fun id ->
+              if Hashtbl.mem seen id then
+                Some
+                  (Printf.sprintf "Duplicate patch ID: %s"
+                     (Types.Patch_id.to_string id))
+              else (
+                Hashtbl.set seen ~key:id ~data:();
+                None))
         in
-        if not (List.is_empty missing) then Error (List.hd_exn missing)
-        else
-          (* Check no self-deps *)
-          let self_deps =
-            Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
-                if List.mem deps from ~equal:Types.Patch_id.equal then
-                  Printf.sprintf "Patch %s depends on itself"
-                    (Types.Patch_id.to_string from)
-                  :: acc
-                else acc)
-          in
-          if not (List.is_empty self_deps) then Error (List.hd_exn self_deps)
-          else
-            match detect_cycle dep_graph with
-            | Some msg -> Error msg
-            | None -> Ok ()
+        match dup with
+        | Some msg -> Error msg
+        | None -> Error "Duplicate patch ID detected but could not identify it"
+      else
+        let patch_ids = unique_ids in
+        (* Check all dep graph keys (source patches) exist *)
+        let orphan_sources =
+          Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:_ acc ->
+              if Set.mem patch_ids from then acc
+              else
+                Printf.sprintf
+                  "Dependency graph references nonexistent patch %s"
+                  (Types.Patch_id.to_string from)
+                :: acc)
+        in
+        match orphan_sources with
+        | msg :: _ -> Error msg
+        | [] -> (
+            (* Check all dep targets exist *)
+            let missing =
+              Map.fold dep_graph ~init:[] ~f:(fun ~key:from ~data:deps acc ->
+                  List.fold deps ~init:acc ~f:(fun acc dep ->
+                      if Set.mem patch_ids dep then acc
+                      else
+                        Printf.sprintf
+                          "Patch %s depends on nonexistent patch %s"
+                          (Types.Patch_id.to_string from)
+                          (Types.Patch_id.to_string dep)
+                        :: acc))
+            in
+            match missing with
+            | msg :: _ -> Error msg
+            | [] -> (
+                (* Check no self-deps *)
+                let self_deps =
+                  Map.fold dep_graph ~init:[]
+                    ~f:(fun ~key:from ~data:deps acc ->
+                      if List.mem deps from ~equal:Types.Patch_id.equal then
+                        Printf.sprintf "Patch %s depends on itself"
+                          (Types.Patch_id.to_string from)
+                        :: acc
+                      else acc)
+                in
+                match self_deps with
+                | msg :: _ -> Error msg
+                | [] -> (
+                    match detect_cycle dep_graph with
+                    | Some msg -> Error msg
+                    | None -> Ok ()))))
 
 let parse_string input =
   let lines = String.split_lines input in

@@ -32,7 +32,14 @@ let create ~patches ~main_branch =
   in
   { graph; agents; main_branch }
 
-let agent t patch_id = Map.find_exn t.agents patch_id
+let agent t patch_id =
+  match Map.find t.agents patch_id with
+  | Some a -> a
+  | None ->
+      invalid_arg
+        (Printf.sprintf "Orchestrator.agent: unknown patch_id %s"
+           (Patch_id.to_string patch_id))
+
 let find_agent t patch_id = Map.find t.agents patch_id
 
 let update_agent t patch_id ~f =
@@ -77,7 +84,15 @@ let startable_patches t ~branch_map =
         let has_merged_excluding_removed pid =
           has_merged t pid && not (agent t pid).Patch_agent.removed
         in
-        let branch_of pid = Map.find_exn branch_map pid in
+        let branch_of pid =
+          match Map.find branch_map pid with
+          | Some b -> b
+          | None ->
+              invalid_arg
+                (Printf.sprintf
+                   "Orchestrator.startable_patches: no branch for patch %s"
+                   (Patch_id.to_string pid))
+        in
         let base =
           Graph.initial_base t.graph pid
             ~has_merged:has_merged_excluding_removed ~branch_of
