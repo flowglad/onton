@@ -15,6 +15,7 @@
 - The pre-commit hook runs build + test + format check — commits will be rejected if any fail.
 
 ## Code patterns
+
 - Never use `*_exn` (`Map.find_exn`, `List.hd_exn`, `Option.value_exn`) on data from external sources (GitHub API, JSON, user input). Use `Map.find`, `List.hd`, `Option.value ~default` or pattern matching. `*_exn` is fine on internal invariants (e.g. a map you just built from a known-complete list).
 - Wrap `Eio.Semaphore.acquire`/`release` in `Fun.protect ~finally` — never hold across error paths.
 - Prefer `Map.add` (returns `` `Ok | `Duplicate ``) over `Map.set` when key uniqueness is expected. Silent overwrites mask bugs.
