@@ -27,6 +27,58 @@ let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
 
+let add_existing ~patch_id ~branch ~path =
+  let path = normalize_path path in
+  if not (Stdlib.Sys.file_exists path) then
+    failwith ("Worktree path does not exist: " ^ path);
+  { patch_id; branch; path }
+
+let detect_branch ~process_mgr ~path =
+  let buf = Buffer.create 128 in
+  let path = normalize_path path in
+  Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+    [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ];
+  let raw = Buffer.contents buf in
+  Types.Branch.of_string (String.strip raw)
+
+let list_with_branches ~process_mgr ~repo_root =
+  let buf = Buffer.create 512 in
+  Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+    [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ];
+  let raw = Buffer.contents buf in
+  let lines = String.split_lines raw in
+  let rec parse acc current_path current_branch = function
+    | [] ->
+        let acc =
+          match (current_path, current_branch) with
+          | Some p, Some b -> (p, b) :: acc
+          | _ -> acc
+        in
+        List.rev acc
+    | line :: rest -> (
+        match String.lsplit2 line ~on:' ' with
+        | Some ("worktree", p) -> parse acc (Some p) None rest
+        | Some ("branch", b) ->
+            let branch_name =
+              match String.chop_prefix b ~prefix:"refs/heads/" with
+              | Some short -> short
+              | None -> b
+            in
+            parse acc current_path
+              (Some (Types.Branch.of_string branch_name))
+              rest
+        | _ ->
+            if String.is_empty line then
+              let acc =
+                match (current_path, current_branch) with
+                | Some p, Some b -> (p, b) :: acc
+                | _ -> acc
+              in
+              parse acc None None rest
+            else parse acc current_path current_branch rest)
+  in
+  parse [] None None lines
+
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
 let patch_id t = t.patch_id
