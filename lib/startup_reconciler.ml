@@ -20,6 +20,7 @@ type t = {
   recovered_worktrees : worktree_recovery list;
   reset_pending : Patch_id.t list;
   errors : (Patch_id.t * string) list;
+  worktree_errors : string list;
 }
 [@@deriving show, eq]
 
@@ -79,14 +80,14 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
         in
         find_live entries
     | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
-  with exn -> Error (Stdlib.Printexc.to_string exn)
+  with Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
 
 (** Discover existing worktrees and match them to patches by branch name.
     Returns matched worktrees and an optional error string if listing failed. *)
 let recover_worktrees ~process_mgr ~repo_root ~patches =
   let worktrees, list_error =
     try (Worktree.list_with_branches ~process_mgr ~repo_root, None)
-    with exn ->
+    with Eio.Exn.Io _ as exn ->
       ( [],
         Some
           (Printf.sprintf "worktree discovery failed: %s"
@@ -129,24 +130,10 @@ let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
     recover_worktrees ~process_mgr ~repo_root ~patches
   in
   let reset_pending = find_stale_busy ~agents in
-  let errors = List.rev errors in
-  let errors =
-    match worktree_error with
-    | Some msg ->
-        (* Use the first patch's id as a sentinel, or a synthetic error if no
-           patches exist. Worktree listing is a global operation, not per-patch,
-           but the error list is keyed by patch_id for uniformity. *)
-        let sentinel =
-          match patches with
-          | p :: _ -> p.Patch.id
-          | [] -> Patch_id.of_string "_worktree"
-        in
-        errors @ [ (sentinel, msg) ]
-    | None -> errors
-  in
   {
     discovered = List.rev discovered;
     recovered_worktrees;
     reset_pending;
-    errors;
+    errors = List.rev errors;
+    worktree_errors = Option.to_list worktree_error;
   }

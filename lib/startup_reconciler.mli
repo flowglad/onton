@@ -37,12 +37,14 @@ type t = {
   recovered_worktrees : worktree_recovery list;
   reset_pending : Patch_id.t list;
   errors : (Patch_id.t * string) list;
+  worktree_errors : string list;
 }
 [@@deriving show, eq]
 (** Result of startup reconciliation. [recovered_worktrees] contains worktrees
     found on disk that match patch branches. [reset_pending] lists patch IDs
     whose agents had [busy=true] at persist time (stale sessions). [errors]
-    contains per-patch PR discovery failures with diagnostic messages. *)
+    contains per-patch PR discovery failures. [worktree_errors] contains global
+    worktree listing failures (not per-patch). *)
 
 val reconcile :
   process_mgr:_ Eio.Process.mgr ->

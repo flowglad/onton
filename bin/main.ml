@@ -970,6 +970,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
       Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
           log_event runtime ~patch_id:wr.worktree_patch_id
             (Printf.sprintf "recovered worktree at %s" wr.worktree_path));
+      Base.List.iter startup.worktree_errors ~f:(fun err ->
+          log_event runtime (Printf.sprintf "startup worktree error: %s" err));
       let clock = Eio.Stdenv.clock env in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
