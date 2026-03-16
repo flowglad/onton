@@ -164,14 +164,83 @@ let mark_session_failed runtime patch_id =
       let orch = Orchestrator.set_session_failed orch patch_id in
       Orchestrator.complete orch patch_id)
 
-(** Run a Claude process and handle the result. Returns [`Ok] on successful
-    Claude exit (code 0), otherwise [`Failed]. *)
+(** Extract a PR number from text containing a GitHub PR URL. Scans for
+    [github.com/owner/repo/pull/N] patterns. *)
+let extract_pr_number_from_text ~owner ~repo text =
+  let needle = Printf.sprintf "github.com/%s/%s/pull/" owner repo in
+  let needle_len = String.length needle in
+  let text_len = String.length text in
+  let rec scan i =
+    if i + needle_len >= text_len then None
+    else if String.sub text i needle_len = needle then
+      (* Extract digits after the needle *)
+      let start = i + needle_len in
+      let rec end_pos j =
+        if j < text_len && text.[j] >= '0' && text.[j] <= '9' then
+          end_pos (j + 1)
+        else j
+      in
+      let stop = end_pos start in
+      if stop > start then
+        try
+          Some
+            (Pr_number.of_int
+               (int_of_string (String.sub text start (stop - start))))
+        with _ -> scan (i + 1)
+      else scan (i + 1)
+    else scan (i + 1)
+  in
+  scan 0
+
+(** Log a stream entry to the activity log. *)
+let log_stream_entry runtime ~patch_id kind =
+  Runtime.update_activity_log runtime (fun log ->
+      Activity_log.add_stream_entry log
+        (Activity_log.Stream_entry.create ~timestamp:(Unix.gettimeofday ())
+           ~patch_id ~kind))
+
+(** Run a Claude process with streaming and handle the result. Returns [`Ok] on
+    successful Claude exit (code 0), otherwise [`Failed]. The [on_pr_detected]
+    callback is invoked if a PR number is found in Claude's text output. *)
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-    ~session_id =
+    ~session_id ~owner ~repo ~on_pr_detected =
   let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
   let cwd = Eio.Path.(fs / worktree_path) in
+  let text_buf = Buffer.create 4096 in
+  let pr_found = ref false in
+  let on_event (event : Types.Stream_event.t) =
+    match event with
+    | Types.Stream_event.Text_delta text -> (
+        Buffer.add_string text_buf text;
+        (* Check for PR number in accumulated text *)
+        if not !pr_found then
+          match
+            extract_pr_number_from_text ~owner ~repo (Buffer.contents text_buf)
+          with
+          | Some pr_number ->
+              pr_found := true;
+              log_stream_entry runtime ~patch_id
+                (Activity_log.Stream_entry.Text_chunk
+                   (Printf.sprintf "PR #%d detected"
+                      (Pr_number.to_int pr_number)));
+              on_pr_detected pr_number
+          | None -> ())
+    | Types.Stream_event.Tool_use { name; _ } ->
+        log_stream_entry runtime ~patch_id
+          (Activity_log.Stream_entry.Tool_use name)
+    | Types.Stream_event.Final_result { stop_reason; _ } ->
+        let reason = Types.Stop_reason.show stop_reason in
+        log_stream_entry runtime ~patch_id
+          (Activity_log.Stream_entry.Finished reason)
+    | Types.Stream_event.Error msg ->
+        log_stream_entry runtime ~patch_id
+          (Activity_log.Stream_entry.Stream_error msg)
+  in
   let result =
-    try Ok (Claude_runner.run ~process_mgr ~cwd ~patch_id ~prompt ~session_id)
+    try
+      Ok
+        (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
+           ~session_id ~on_event)
     with exn -> Error (Printexc.to_string exn)
   in
   match result with
@@ -657,39 +726,65 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Prompt.render_patch_prompt patch gameplan
                                   ~base_branch:(Branch.to_string base_branch)
                               in
+                              let stream_pr = ref None in
+                              let on_pr_detected pr_number =
+                                stream_pr := Some pr_number;
+                                Pr_registry.register pr_registry ~patch_id
+                                  ~pr_number;
+                                Runtime.update_orchestrator runtime (fun orch ->
+                                    Orchestrator.set_pr_number orch patch_id
+                                      pr_number)
+                              in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
-                                ~session_id:None)
+                                ~session_id:None ~owner:config.github_owner
+                                ~repo:config.github_repo ~on_pr_detected)
                       in
                       match result with
                       | `Stale | `Failed -> ()
                       | `Ok ->
-                          let rec discover remaining =
-                            match
-                              discover_pr_number ~process_mgr
-                                ~token:config.github_token
-                                ~owner:config.github_owner
-                                ~repo:config.github_repo
-                                ~branch:patch.Patch.branch ~base_branch
-                            with
-                            | Ok pr_number ->
-                                Pr_registry.register pr_registry ~patch_id
-                                  ~pr_number;
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    let orch =
-                                      Orchestrator.set_pr_number orch patch_id
-                                        pr_number
-                                    in
-                                    Orchestrator.complete orch patch_id)
-                            | Error _ when remaining > 0 ->
-                                Eio.Time.sleep clock 2.0;
-                                discover (remaining - 1)
-                            | Error msg ->
-                                log_event runtime ~patch_id
-                                  (Printf.sprintf "PR discovery failed: %s" msg);
-                                mark_session_failed runtime patch_id
+                          (* If PR was already detected from stream, just complete *)
+                          let already_found =
+                            Runtime.read runtime (fun snap ->
+                                let a =
+                                  Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id
+                                in
+                                Base.Option.is_some a.Patch_agent.pr_number)
                           in
-                          discover 2))
+                          if already_found then
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.complete orch patch_id)
+                          else
+                            (* Fall back to gh pr list discovery *)
+                            let rec discover remaining =
+                              match
+                                discover_pr_number ~process_mgr
+                                  ~token:config.github_token
+                                  ~owner:config.github_owner
+                                  ~repo:config.github_repo
+                                  ~branch:patch.Patch.branch ~base_branch
+                              with
+                              | Ok pr_number ->
+                                  Pr_registry.register pr_registry ~patch_id
+                                    ~pr_number;
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      let orch =
+                                        Orchestrator.set_pr_number orch patch_id
+                                          pr_number
+                                      in
+                                      Orchestrator.complete orch patch_id)
+                              | Error _ when remaining > 0 ->
+                                  Eio.Time.sleep clock 2.0;
+                                  discover (remaining - 1)
+                              | Error msg ->
+                                  log_event runtime ~patch_id
+                                    (Printf.sprintf "PR discovery failed: %s"
+                                       msg);
+                                  mark_session_failed runtime patch_id
+                            in
+                            discover 2))
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
@@ -741,9 +836,17 @@ let runner_fiber ~runtime ~env ~config ~pr_registry =
                                 Prompt.render_merge_conflict_prompt
                                   ~base_branch:base
                           in
+                          let on_pr_detected pr_number =
+                            Pr_registry.register pr_registry ~patch_id
+                              ~pr_number;
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.set_pr_number orch patch_id
+                                  pr_number)
+                          in
                           run_claude_and_handle ~runtime ~process_mgr ~fs
                             ~repo_root:config.repo_root ~patch_id ~prompt
-                            ~session_id:None)
+                            ~session_id:None ~owner:config.github_owner
+                            ~repo:config.github_repo ~on_pr_detected)
                   in
                   match result with
                   | `Stale | `Failed -> ()
