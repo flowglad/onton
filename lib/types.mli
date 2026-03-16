@@ -35,8 +35,28 @@ module Operation_kind : sig
   [@@deriving show, eq, ord, sexp_of, compare, hash]
 end
 
+(** Wrapper for GitHub comment [databaseId]. Synthetic IDs are always negative;
+    real GitHub IDs are always positive. When restoring persisted comments, call
+    {!seed_synthetic_counter} before any call to {!next_synthetic} so newly
+    minted IDs stay below the existing minimum. *)
+module Comment_id : sig
+  type t = private int [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  include Comparator.S with type t := t
+
+  val of_int : int -> t
+  val to_int : t -> int
+  val next_synthetic : unit -> t
+  val seed_synthetic_counter : t list -> unit
+end
+
 module Comment : sig
-  type t = { body : string; path : string option; line : int option }
+  type t = {
+    id : Comment_id.t;
+    body : string;
+    path : string option;
+    line : int option;
+  }
   [@@deriving show, eq, sexp_of, compare]
 
   include Comparator.S with type t := t
@@ -59,6 +79,40 @@ module Ci_check : sig
     details_url : string option;
     description : string option;
   }
+  [@@deriving show, eq, sexp_of, compare]
+end
+
+module Pr_url : sig
+  type t = private string [@@deriving show, eq, ord, sexp_of, compare, hash]
+
+  include Comparator.S with type t := t
+
+  val of_string : string -> t
+  val to_string : t -> string
+end
+
+module Stop_reason : sig
+  type t =
+    | End_turn
+    | Tool_use
+    | Max_tokens
+    | Stop_sequence
+    | Pause_turn
+    | Refusal
+    | Model_context_window_exceeded
+  [@@deriving show, eq, sexp_of, compare]
+
+  val of_string : string -> t option
+end
+
+(** Events from Claude Code's NDJSON stdout (--output-format stream-json), not
+    the raw Anthropic streaming API. *)
+module Stream_event : sig
+  type t =
+    | Text_delta of string
+    | Tool_use of { name : string; input : string }
+    | Final_result of { text : string; stop_reason : Stop_reason.t }
+    | Error of string
   [@@deriving show, eq, sexp_of, compare]
 end
 

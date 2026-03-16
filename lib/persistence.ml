@@ -92,6 +92,7 @@ let display_status_of_yojson json =
 let comment_to_yojson (c : Comment.t) =
   `Assoc
     [
+      ("id", `Int (Comment_id.to_int c.id));
       ("body", `String c.body);
       ("path", nullable_string c.path);
       ("line", nullable_int c.line);
@@ -102,7 +103,11 @@ let comment_of_yojson json =
     let open Yojson.Safe.Util in
     Ok
       {
-        Comment.body = member "body" json |> to_string;
+        Comment.id =
+          (match member "id" json |> to_int_option with
+          | Some n -> Comment_id.of_int n
+          | None -> Comment_id.next_synthetic ());
+        body = member "body" json |> to_string;
         path = member "path" json |> to_string_option;
         line = member "line" json |> to_int_option;
       }
@@ -407,5 +412,18 @@ let load ~path ~gameplan =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    snapshot_of_yojson ~gameplan json
+    let result = snapshot_of_yojson ~gameplan json in
+    (match result with
+    | Ok snap ->
+        (* NOTE: seeds only from pending_comments. If Comment_id.t is ever
+           stored outside of pending_comments (e.g. a processed-comments log),
+           those IDs must be included here to prevent synthetic reuse. *)
+        let ids =
+          Orchestrator.all_agents snap.orchestrator
+          |> List.concat_map ~f:(fun (a : Patch_agent.t) ->
+              List.map a.pending_comments ~f:(fun pc -> pc.comment.Comment.id))
+        in
+        Comment_id.seed_synthetic_counter ids
+    | Error _ -> ());
+    result
   with exn -> Error (Stdlib.Printexc.to_string exn)

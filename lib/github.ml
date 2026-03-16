@@ -45,6 +45,7 @@ let graphql_query =
           isResolved
           comments(first: 1) {
             nodes {
+              databaseId
               body
               path
               line
@@ -80,10 +81,15 @@ let parse_check_status = function
 
 let parse_comment_node node =
   let open Yojson.Safe.Util in
+  let id =
+    match node |> member "databaseId" |> to_int_option with
+    | Some raw_id -> Types.Comment_id.of_int raw_id
+    | None -> Types.Comment_id.next_synthetic ()
+  in
   let body = node |> member "body" |> to_string in
   let path = node |> member "path" |> to_string_option in
   let line = node |> member "line" |> to_int_option in
-  Types.Comment.{ body; path; line }
+  Types.Comment.{ id; body; path; line }
 
 let parse_response body =
   let open Yojson.Safe.Util in
@@ -119,16 +125,16 @@ let parse_response body =
             let review_threads =
               pr |> member "reviewThreads" |> member "nodes" |> to_list
             in
-            let unresolved_comment_count =
-              List.count review_threads ~f:(fun thread ->
-                  not (thread |> member "isResolved" |> to_bool))
-            in
             let comments =
               List.concat_map review_threads ~f:(fun thread ->
                   if thread |> member "isResolved" |> to_bool then []
                   else
                     thread |> member "comments" |> member "nodes" |> to_list
                     |> List.map ~f:parse_comment_node)
+            in
+            let unresolved_comment_count =
+              List.count review_threads ~f:(fun thread ->
+                  not (thread |> member "isResolved" |> to_bool))
             in
             Ok
               Pr_state.
