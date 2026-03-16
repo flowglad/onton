@@ -38,8 +38,11 @@ let add_existing ~patch_id ~branch ~path =
   if (not (Stdlib.Sys.file_exists git_file)) || Stdlib.Sys.is_directory git_file
   then failwith ("Path is not a git worktree (no .git file): " ^ path);
   (let ic = Stdlib.open_in git_file in
-   let first_line = try Stdlib.input_line ic with End_of_file -> "" in
-   Stdlib.close_in ic;
+   let first_line =
+     Exn.protect
+       ~f:(fun () -> try Stdlib.input_line ic with End_of_file -> "")
+       ~finally:(fun () -> Stdlib.close_in ic)
+   in
    if not (String.is_prefix first_line ~prefix:"gitdir: ") then
      failwith
        ("Path is not a git worktree (.git file has unexpected format): " ^ path));
@@ -78,8 +81,9 @@ let list_with_branches ~process_mgr ~repo_root =
         in
         List.rev acc
     | line :: rest -> (
-        match String.lsplit2 line ~on:' ' with
-        | Some ("worktree", p) ->
+        match () with
+        | () when String.is_prefix line ~prefix:"worktree " ->
+            let p = String.drop_prefix line (String.length "worktree ") in
             (* Flush any pending entry that wasn't terminated by a blank line *)
             let acc =
               match current_path with
@@ -87,7 +91,8 @@ let list_with_branches ~process_mgr ~repo_root =
               | None -> acc
             in
             parse acc (Some p) None rest
-        | Some ("branch", b) ->
+        | () when String.is_prefix line ~prefix:"branch " ->
+            let b = String.drop_prefix line (String.length "branch ") in
             let branch_name =
               match String.chop_prefix b ~prefix:"refs/heads/" with
               | Some short -> short
@@ -96,7 +101,7 @@ let list_with_branches ~process_mgr ~repo_root =
             parse acc current_path
               (Some (Types.Branch.of_string branch_name))
               rest
-        | _ ->
+        | () ->
             if String.is_empty line then
               let acc =
                 match current_path with
