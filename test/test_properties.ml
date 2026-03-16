@@ -186,9 +186,9 @@ let () =
           List.mem result.queue Types.Operation_kind.Review_comments
             ~equal:Types.Operation_kind.equal
         in
-        (* when addressed_ids is empty: in_queue iff there are comments *)
+        (* when addressed_ids is empty: in_queue iff there are new comments *)
         (* when addressed_ids covers all comments: never in_queue *)
-        Bool.equal in_queue (not (List.is_empty pr.Github.Pr_state.comments))
+        Bool.equal in_queue (not (List.is_empty result.new_comments))
         && not
              (List.mem result_all_addressed.queue
                 Types.Operation_kind.Review_comments
