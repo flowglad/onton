@@ -55,10 +55,10 @@ let load_override ~(project_name : string) (name : string) : string option =
   match Unix.openfile path [ Unix.O_RDONLY ] 0 with
   | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
   | fd ->
-      let ic = Unix.in_channel_of_descr fd in
       Exn.protect
-        ~finally:(fun () -> Stdlib.In_channel.close ic)
+        ~finally:(fun () -> Unix.close fd)
         ~f:(fun () ->
+          let ic = Unix.in_channel_of_descr fd in
           let content = Stdlib.In_channel.input_all ic in
           Some content)
 
@@ -185,10 +185,8 @@ let render_ci_failure_prompt ~(project_name : string) (checks : Ci_check.t list)
             "# CI Failures\n\nThe following CI checks failed:\n\n%s" formatted)
 
 let render_ci_failure_unknown_prompt ~(project_name : string) =
-  let vars =
-    [ ("project_name", project_name); ("checks", ""); ("count", "unknown") ]
-  in
-  render_with_override ~project_name ~name:"ci_failure" ~vars
+  let vars = [ ("project_name", project_name) ] in
+  render_with_override ~project_name ~name:"ci_failure_unknown" ~vars
     ~default:(fun () ->
       "# CI Failures\n\n\
        One or more CI checks failed. Please investigate the failures and fix \
