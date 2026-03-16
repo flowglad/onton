@@ -65,7 +65,7 @@ let startable_patches t ~branch_map =
   |> List.filter_map ~f:(fun pid ->
       let a = agent t pid in
       if
-        (not a.Patch_agent.has_pr)
+        (not a.Patch_agent.has_pr) && (not a.Patch_agent.merged)
         && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
              ~has_pr:(has_pr t)
       then

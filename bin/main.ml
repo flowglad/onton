@@ -345,8 +345,11 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                             ("Worktree path is not a directory: " ^ real_path);
                         if not (String.equal real_path expected) then (
                           let parent = Stdlib.Filename.dirname expected in
-                          if not (Stdlib.Sys.file_exists parent) then
-                            Unix.mkdir parent 0o755;
+                          (try Unix.mkdir parent 0o755 with
+                          | Unix.Unix_error (Unix.ENOENT, _, _) ->
+                              failwith
+                                ("Cannot create parent directory: " ^ parent)
+                          | Unix.Unix_error (Unix.EEXIST, _, _) -> ());
                           (match Unix.lstat expected with
                           | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
                           | { Unix.st_kind = Unix.S_LNK; _ } ->
