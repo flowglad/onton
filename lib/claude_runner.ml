@@ -54,7 +54,10 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
           let delta_type = member "type" delta |> to_string_option in
           match delta_type with
           | Some "text_delta" ->
-              let text = member "text" delta |> to_string in
+              let text =
+                member "text" delta |> to_string_option
+                |> Option.value ~default:""
+              in
               Some (Types.Stream_event.Text_delta text)
           | _ -> None)
       | Some "content_block_start" -> (
@@ -62,7 +65,10 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
           let block_type = member "type" content_block |> to_string_option in
           match block_type with
           | Some "tool_use" ->
-              let name = member "name" content_block |> to_string in
+              let name =
+                member "name" content_block
+                |> to_string_option |> Option.value ~default:""
+              in
               Some (Types.Stream_event.Tool_use { name; input = "" })
           | _ -> None)
       | Some "message_stop" | Some "message_delta" -> (
