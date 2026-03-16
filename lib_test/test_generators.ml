@@ -191,6 +191,36 @@ let gen_patch_agent_with_comments =
       (list_small (pair gen_comment bool))
       gen_operation_kind_queue)
 
+let gen_session_fallback =
+  QCheck2.Gen.oneof_list
+    Onton.Patch_agent.[ Fresh_available; Tried_fresh; Given_up ]
+
+let gen_patch_agent_fully_populated =
+  QCheck2.Gen.(
+    map4
+      (fun (pid, branch) (comments, ops) (ci_checks, fallback) addressed_ids ->
+        let a = Onton.Patch_agent.create pid in
+        let a = Onton.Patch_agent.start a ~base_branch:branch in
+        let a =
+          List.fold comments ~init:a ~f:(fun a (comment, valid) ->
+              Onton.Patch_agent.add_pending_comment a comment ~valid)
+        in
+        let a =
+          match fallback with
+          | Onton.Patch_agent.Fresh_available -> a
+          | Onton.Patch_agent.Tried_fresh -> Onton.Patch_agent.set_tried_fresh a
+          | Onton.Patch_agent.Given_up -> Onton.Patch_agent.set_session_failed a
+        in
+        let a = Onton.Patch_agent.complete a in
+        let a = List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue in
+        let a = Onton.Patch_agent.set_ci_checks a ci_checks in
+        List.fold addressed_ids ~init:a
+          ~f:Onton.Patch_agent.add_addressed_comment_id)
+      (pair gen_patch_id gen_branch)
+      (pair (list_small (pair gen_comment bool)) gen_operation_kind_queue)
+      (pair (list_small gen_ci_check) gen_session_fallback)
+      (list_small (map Comment_id.of_int (int_range 1 100_000))))
+
 (* -- Reconciler -- *)
 
 let gen_patch_view =

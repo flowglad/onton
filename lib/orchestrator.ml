@@ -195,6 +195,13 @@ let increment_ci_failure_count t patch_id =
 let clear_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
 
+let set_ci_checks t patch_id checks =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_ci_checks a checks)
+
+let add_addressed_comment_id t patch_id id =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.add_addressed_comment_id a id)
+
 let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
 
 (** {2 Queries} *)

@@ -24,3 +24,10 @@ val snapshot_of_yojson :
   Yojson.Safe.t ->
   (Runtime.snapshot, string) result
 (** Parse a snapshot from JSON. *)
+
+val patch_agent_to_yojson : Patch_agent.t -> Yojson.Safe.t
+(** Convert a patch agent to JSON. Exposed for testing. *)
+
+val patch_agent_of_yojson : Yojson.Safe.t -> (Patch_agent.t, string) result
+(** Parse a patch agent from JSON. Supports backward-compat migration from
+    legacy [session_failed]/[tried_fresh] booleans. Exposed for testing. *)

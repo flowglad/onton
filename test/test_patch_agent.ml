@@ -37,8 +37,11 @@ let () =
           && List.is_empty t.queue && (not t.satisfies) && (not t.changed)
           && (not t.has_conflict)
           && Option.is_none t.base_branch
-          && t.ci_failure_count = 0 && (not t.session_failed)
-          && List.is_empty t.pending_comments);
+          && t.ci_failure_count = 0
+          && equal_session_fallback t.session_fallback Fresh_available
+          && List.is_empty t.pending_comments
+          && List.is_empty t.ci_checks
+          && Set.is_empty t.addressed_comment_ids);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)

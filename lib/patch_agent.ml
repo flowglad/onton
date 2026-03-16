@@ -5,6 +5,9 @@ open Operation_kind
 type pending_comment = { comment : Comment.t; valid : bool }
 [@@deriving show, eq, sexp_of, compare]
 
+type session_fallback = Fresh_available | Tried_fresh | Given_up
+[@@deriving show, eq, sexp_of, compare]
+
 type t = {
   patch_id : Patch_id.t;
   has_pr : bool;
@@ -19,13 +22,20 @@ type t = {
   has_conflict : bool;
   base_branch : Branch.t option;
   ci_failure_count : int;
-  session_failed : bool;
+  session_fallback : session_fallback;
   pending_comments : pending_comment list;
   last_session_id : Session_id.t option;
-  tried_fresh : bool;
+  ci_checks : Ci_check.t list;
+  addressed_comment_ids : Set.M(Comment_id).t;
+      [@equal Set.equal]
+      [@compare Set.compare_direct]
+      [@sexp_of fun s -> Set.sexp_of_m__t (module Comment_id) s]
   removed : bool;
 }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving eq, sexp_of, compare]
+
+let pp fmt t = Sexp.pp_hum fmt (sexp_of_t t)
+let show t = Sexp.to_string_hum (sexp_of_t t)
 
 let create patch_id =
   {
@@ -42,10 +52,11 @@ let create patch_id =
     has_conflict = false;
     base_branch = None;
     ci_failure_count = 0;
-    session_failed = false;
+    session_fallback = Fresh_available;
     pending_comments = [];
     last_session_id = None;
-    tried_fresh = false;
+    ci_checks = [];
+    addressed_comment_ids = Set.empty (module Comment_id);
     removed = false;
   }
 
@@ -99,25 +110,29 @@ let add_pending_comment t comment ~valid =
   if already_present then t
   else { t with pending_comments = { comment; valid } :: t.pending_comments }
 
-let set_session_failed t = { t with session_failed = true }
+let set_session_failed t = { t with session_fallback = Given_up }
 let set_last_session_id t id = { t with last_session_id = Some id }
-let set_tried_fresh t = { t with tried_fresh = true }
 
-let clear_session_fallback t =
-  { t with tried_fresh = false; session_failed = false }
+let set_tried_fresh t =
+  match t.session_fallback with
+  | Fresh_available -> { t with session_fallback = Tried_fresh }
+  | Tried_fresh | Given_up -> t
 
+let clear_session_fallback t = { t with session_fallback = Fresh_available }
 let set_has_conflict t = { t with has_conflict = true }
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
+let set_ci_checks t checks = { t with ci_checks = checks }
+
+let add_addressed_comment_id t id =
+  { t with addressed_comment_ids = Set.add t.addressed_comment_ids id }
+
+let is_comment_addressed t id = Set.mem t.addressed_comment_ids id
+
 let clear_needs_intervention t =
-  {
-    t with
-    needs_intervention = false;
-    tried_fresh = false;
-    session_failed = false;
-  }
+  { t with needs_intervention = false; session_fallback = Fresh_available }
 
 let reset_busy t =
   if not t.busy then t
@@ -125,14 +140,16 @@ let reset_busy t =
     let needs_intervention =
       if List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal then
         false
-      else t.ci_failure_count >= 3 || t.session_failed
+      else
+        t.ci_failure_count >= 3
+        || equal_session_fallback t.session_fallback Given_up
     in
     { t with busy = false; needs_intervention }
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
-    ~ci_failure_count ~session_failed ~pending_comments ~last_session_id
-    ~tried_fresh ~removed =
+    ~ci_failure_count ~session_fallback ~pending_comments ~last_session_id
+    ~ci_checks ~addressed_comment_ids ~removed =
   {
     patch_id;
     has_pr;
@@ -147,10 +164,11 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     has_conflict;
     base_branch;
     ci_failure_count;
-    session_failed;
+    session_fallback;
     pending_comments;
     last_session_id;
-    tried_fresh;
+    ci_checks;
+    addressed_comment_ids;
     removed;
   }
 
@@ -166,7 +184,9 @@ let start t ~base_branch =
     busy = true;
     satisfies = true;
     base_branch = Some base_branch;
-    tried_fresh = false;
+    session_fallback = Fresh_available;
+    ci_checks = [];
+    addressed_comment_ids = Set.empty (module Comment_id);
   }
 
 let respond t k =
@@ -214,6 +234,8 @@ let complete t =
   let needs_intervention =
     if List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal then
       false
-    else t.ci_failure_count >= 3 || t.session_failed
+    else
+      t.ci_failure_count >= 3
+      || equal_session_fallback t.session_fallback Given_up
   in
   { t with busy = false; needs_intervention }
