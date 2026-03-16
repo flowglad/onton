@@ -214,6 +214,18 @@ module History = struct
   let reset_browse t = t.browse_depth <- 0
   let is_browsing t = t.browse_depth > 0
 
+  let%test "zero capacity raises" =
+    try
+      let _ = create ~capacity:0 () in
+      false
+    with Invalid_argument _ -> true
+
+  let%test "negative capacity raises" =
+    try
+      let _ = create ~capacity:(-1) () in
+      false
+    with Invalid_argument _ -> true
+
   let%test "empty history returns None for older" =
     let h = create ~capacity:5 () in
     Option.is_none (older h)

@@ -257,6 +257,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry =
           | Term.Key.Enter ->
               let line = Buffer.contents buf in
               Tui_input.History.push history line;
+              Tui_input.History.reset_browse history;
               Buffer.clear buf;
               saved_draft := "";
               text_mode := false;
