@@ -377,7 +377,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                           (Printf.sprintf "Failed to add worktree: %s"
                              (Printexc.to_string exn))))
               | Some Tui_input.Remove_patch -> (
-                  let patch_id_opt =
+                  let info_opt =
                     Runtime.read runtime (fun snap ->
                         let agents =
                           Orchestrator.all_agents snap.Runtime.orchestrator
@@ -388,20 +388,20 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                           let idx =
                             Base.Int.max 0 (Base.Int.min !selected (count - 1))
                           in
+                          let agent = Base.List.nth_exn agents idx in
                           Some
-                            (Base.List.nth_exn agents idx).Patch_agent.patch_id)
+                            ( agent.Patch_agent.patch_id,
+                              agent.Patch_agent.busy,
+                              agent.Patch_agent.merged ))
                   in
-                  match patch_id_opt with
+                  match info_opt with
                   | None ->
                       log_event runtime
                         "Cannot remove patch: no selectable patch"
-                  | Some patch_id ->
-                      let busy =
-                        Runtime.read runtime (fun snap ->
-                            (Orchestrator.agent snap.Runtime.orchestrator
-                               patch_id)
-                              .Patch_agent.busy)
-                      in
+                  | Some (patch_id, _busy, true) ->
+                      log_event runtime ~patch_id
+                        "Patch is already merged — nothing to do"
+                  | Some (patch_id, busy, false) ->
                       if busy then
                         log_event runtime ~patch_id
                           "Warning: patch is currently running — it may create \
