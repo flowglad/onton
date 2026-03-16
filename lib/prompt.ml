@@ -26,15 +26,15 @@ let substitute_variables (template : string) (vars : (string * string) list) :
           Buffer.add_char buf '{';
           scan (i + 2)
       | Some close_pos ->
-          let key =
-            String.strip
-              (String.sub template ~pos:(i + 2) ~len:(close_pos - i - 2))
+          let raw_key =
+            String.sub template ~pos:(i + 2) ~len:(close_pos - i - 2)
           in
+          let key = String.strip raw_key in
           (match Map.find var_map key with
           | Some value -> Buffer.add_string buf value
           | None ->
               Buffer.add_string buf "{{";
-              Buffer.add_string buf key;
+              Buffer.add_string buf raw_key;
               Buffer.add_string buf "}}");
           scan (close_pos + 2))
     else (
