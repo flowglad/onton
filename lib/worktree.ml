@@ -71,8 +71,18 @@ let detect_branch ~process_mgr ~path =
 
 let list_with_branches ~process_mgr ~repo_root =
   let buf = Buffer.create 512 in
-  Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
-    [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ];
+  let stderr_buf = Buffer.create 64 in
+  (match
+     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+       [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
+   with
+  | () -> ()
+  | exception exn ->
+      let msg = Buffer.contents stderr_buf in
+      failwith
+        (Printf.sprintf "list_with_branches failed at %s: %s\ngit stderr: %s"
+           repo_root (Exn.to_string exn) msg));
   let raw = Buffer.contents buf in
   let lines = String.split_lines raw in
   let is_linked_worktree p =
