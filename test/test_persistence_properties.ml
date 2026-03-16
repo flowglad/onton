@@ -145,6 +145,17 @@ let () =
                   | Error _msg -> false))
         with _ -> false)
   in
+  let patch_agent_roundtrip_fully_populated =
+    QCheck2.Test.make
+      ~name:"patch_agent round-trip (ci_checks, addressed IDs, fallback)"
+      ~count:200 gen_patch_agent_fully_populated (fun agent ->
+        try
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          match Onton.Persistence.patch_agent_of_yojson json with
+          | Ok agent' -> Onton.Patch_agent.equal agent agent'
+          | Error _msg -> false
+        with _ -> false)
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
@@ -153,8 +164,97 @@ let () =
         activity_log_roundtrip;
         snapshot_json_structure;
         file_roundtrip;
+        patch_agent_roundtrip_fully_populated;
       ]
   in
   if exit_code <> 0 then Stdlib.exit exit_code
+
+(* ========== Legacy backward-compat migration tests ========== *)
+
+let () =
+  (* Test: session_failed=true (no session_fallback key) -> Given_up *)
+  let legacy_given_up =
+    `Assoc
+      [
+        ("patch_id", `String "p1");
+        ("has_pr", `Bool true);
+        ("has_session", `Bool true);
+        ("busy", `Bool false);
+        ("merged", `Bool false);
+        ("needs_intervention", `Bool false);
+        ("queue", `List []);
+        ("satisfies", `Bool false);
+        ("changed", `Bool false);
+        ("has_conflict", `Bool false);
+        ("base_branch", `String "main");
+        ("ci_failure_count", `Int 0);
+        ("session_failed", `Bool true);
+        ("pending_comments", `List []);
+        ("last_session_id", `Null);
+        ("tried_fresh", `Bool false);
+      ]
+  in
+  (match Onton.Persistence.patch_agent_of_yojson legacy_given_up with
+  | Ok agent ->
+      assert (
+        Onton.Patch_agent.equal_session_fallback agent.session_fallback
+          Onton.Patch_agent.Given_up)
+  | Error msg -> Stdlib.failwith ("legacy Given_up: " ^ msg));
+  (* Test: tried_fresh=true, session_failed=false -> Tried_fresh *)
+  let legacy_tried_fresh =
+    `Assoc
+      [
+        ("patch_id", `String "p2");
+        ("has_pr", `Bool true);
+        ("has_session", `Bool true);
+        ("busy", `Bool false);
+        ("merged", `Bool false);
+        ("needs_intervention", `Bool false);
+        ("queue", `List []);
+        ("satisfies", `Bool false);
+        ("changed", `Bool false);
+        ("has_conflict", `Bool false);
+        ("base_branch", `String "main");
+        ("ci_failure_count", `Int 0);
+        ("session_failed", `Bool false);
+        ("pending_comments", `List []);
+        ("last_session_id", `Null);
+        ("tried_fresh", `Bool true);
+      ]
+  in
+  (match Onton.Persistence.patch_agent_of_yojson legacy_tried_fresh with
+  | Ok agent ->
+      assert (
+        Onton.Patch_agent.equal_session_fallback agent.session_fallback
+          Onton.Patch_agent.Tried_fresh)
+  | Error msg -> Stdlib.failwith ("legacy Tried_fresh: " ^ msg));
+  (* Test: both false -> Fresh_available *)
+  let legacy_fresh =
+    `Assoc
+      [
+        ("patch_id", `String "p3");
+        ("has_pr", `Bool true);
+        ("has_session", `Bool true);
+        ("busy", `Bool false);
+        ("merged", `Bool false);
+        ("needs_intervention", `Bool false);
+        ("queue", `List []);
+        ("satisfies", `Bool false);
+        ("changed", `Bool false);
+        ("has_conflict", `Bool false);
+        ("base_branch", `String "main");
+        ("ci_failure_count", `Int 0);
+        ("session_failed", `Bool false);
+        ("pending_comments", `List []);
+        ("last_session_id", `Null);
+        ("tried_fresh", `Bool false);
+      ]
+  in
+  match Onton.Persistence.patch_agent_of_yojson legacy_fresh with
+  | Ok agent ->
+      assert (
+        Onton.Patch_agent.equal_session_fallback agent.session_fallback
+          Onton.Patch_agent.Fresh_available)
+  | Error msg -> Stdlib.failwith ("legacy Fresh_available: " ^ msg)
 
 let () = Stdlib.print_endline "all persistence property tests passed"

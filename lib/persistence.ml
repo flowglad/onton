@@ -132,6 +132,49 @@ let pending_comment_of_yojson json =
 
 (* ---------- Patch_agent ---------- *)
 
+let session_fallback_to_yojson = function
+  | Patch_agent.Fresh_available -> `String "Fresh_available"
+  | Tried_fresh -> `String "Tried_fresh"
+  | Given_up -> `String "Given_up"
+
+let session_fallback_of_yojson json =
+  match Yojson.Safe.Util.to_string_option json with
+  | Some "Fresh_available" -> Ok Patch_agent.Fresh_available
+  | Some "Tried_fresh" -> Ok Patch_agent.Tried_fresh
+  | Some "Given_up" -> Ok Patch_agent.Given_up
+  | Some s -> Error (Printf.sprintf "unknown session_fallback: %s" s)
+  | None ->
+      Error
+        (Printf.sprintf "session_fallback: expected string, got %s"
+           (Yojson.Safe.to_string json))
+
+let session_fallback_of_legacy ~session_failed ~tried_fresh =
+  match (session_failed, tried_fresh) with
+  | true, _ -> Patch_agent.Given_up
+  | false, true -> Patch_agent.Tried_fresh
+  | false, false -> Patch_agent.Fresh_available
+
+let ci_check_to_yojson (c : Ci_check.t) =
+  `Assoc
+    [
+      ("name", `String c.name);
+      ("conclusion", `String c.conclusion);
+      ("details_url", nullable_string c.details_url);
+      ("description", nullable_string c.description);
+    ]
+
+let ci_check_of_yojson json =
+  try
+    Ok
+      {
+        Ci_check.name = string_member "name" json;
+        conclusion = string_member "conclusion" json;
+        details_url = string_member_opt "details_url" json;
+        description = string_member_opt "description" json;
+      }
+  with Yojson.Safe.Util.Type_error (msg, _) ->
+    Error (Printf.sprintf "malformed ci_check: %s" msg)
+
 let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
@@ -154,54 +197,120 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | None -> `Null
         | Some b -> `String (Branch.to_string b) );
       ("ci_failure_count", `Int a.ci_failure_count);
-      ("session_failed", `Bool a.session_failed);
+      ("session_fallback", session_fallback_to_yojson a.session_fallback);
       ( "pending_comments",
         `List (List.map a.pending_comments ~f:pending_comment_to_yojson) );
       ( "last_session_id",
         match a.last_session_id with
         | None -> `Null
         | Some id -> `String (Session_id.to_string id) );
-      ("tried_fresh", `Bool a.tried_fresh);
+      ("ci_checks", `List (List.map a.ci_checks ~f:ci_check_to_yojson));
+      ( "addressed_comment_ids",
+        `List
+          (Set.to_list a.addressed_comment_ids
+          |> List.map ~f:(fun id -> `Int (Comment_id.to_int id))) );
       ("removed", `Bool a.removed);
     ]
+
+let list_member_opt key json =
+  match Yojson.Safe.Util.member key json with
+  | `Null -> Ok None
+  | `List _ as v -> Ok (Some (Yojson.Safe.Util.to_list v))
+  | other ->
+      Error
+        (Printf.sprintf "%s: expected list, got %s" key
+           (Yojson.Safe.to_string other))
 
 let patch_agent_of_yojson json =
   Result.bind
     (result_all
        (List.map (list_member "queue" json) ~f:operation_kind_of_yojson))
     ~f:(fun queue ->
-      Result.map
+      Result.bind
         (result_all
            (List.map
               (list_member "pending_comments" json)
               ~f:pending_comment_of_yojson))
         ~f:(fun pending_comments ->
-          Patch_agent.restore
-            ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-            ~has_pr:(bool_member "has_pr" json)
-            ~pr_number:
-              (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
-            ~has_session:(bool_member "has_session" json)
-            ~busy:(bool_member "busy" json)
-            ~merged:(bool_member "merged" json)
-            ~needs_intervention:(bool_member "needs_intervention" json)
-            ~queue
-            ~satisfies:(bool_member "satisfies" json)
-            ~changed:(bool_member "changed" json)
-            ~has_conflict:(bool_member "has_conflict" json)
-            ~base_branch:
-              (string_member_opt "base_branch" json
-              |> Option.map ~f:Branch.of_string)
-            ~ci_failure_count:(int_member "ci_failure_count" json)
-            ~session_failed:(bool_member "session_failed" json)
-            ~pending_comments
-            ~last_session_id:
-              (string_member_opt "last_session_id" json
-              |> Option.map ~f:Session_id.of_string)
-            ~tried_fresh:
-              (bool_member_opt "tried_fresh" json |> Option.value ~default:false)
-            ~removed:
-              (bool_member_opt "removed" json |> Option.value ~default:false)))
+          let session_fallback_result =
+            match json with
+            | `Assoc fields -> (
+                match
+                  List.Assoc.find fields ~equal:String.equal "session_fallback"
+                with
+                | None ->
+                    (* backward compat: derive from legacy bools *)
+                    let session_failed =
+                      bool_member_opt "session_failed" json
+                      |> Option.value ~default:false
+                    in
+                    let tried_fresh =
+                      bool_member_opt "tried_fresh" json
+                      |> Option.value ~default:false
+                    in
+                    Ok (session_fallback_of_legacy ~session_failed ~tried_fresh)
+                | Some v -> session_fallback_of_yojson v)
+            | _ -> Error "patch_agent: expected JSON object"
+          in
+          Result.bind session_fallback_result ~f:(fun session_fallback ->
+              Result.bind (list_member_opt "ci_checks" json)
+                ~f:(fun ci_checks_raw ->
+                  let ci_checks_raw = Option.value ci_checks_raw ~default:[] in
+                  Result.bind
+                    (result_all (List.map ci_checks_raw ~f:ci_check_of_yojson))
+                    ~f:(fun ci_checks ->
+                      Result.bind (list_member_opt "addressed_comment_ids" json)
+                        ~f:(fun addressed_raw ->
+                          let addressed_raw =
+                            Option.value addressed_raw ~default:[]
+                          in
+                          Result.map
+                            (result_all
+                               (List.map addressed_raw ~f:(fun j ->
+                                    match Yojson.Safe.Util.to_int_option j with
+                                    | Some n -> Ok (Comment_id.of_int n)
+                                    | None ->
+                                        Error
+                                          (Printf.sprintf
+                                             "addressed_comment_id: expected \
+                                              int, got %s"
+                                             (Yojson.Safe.to_string j)))))
+                            ~f:(fun addressed_comment_ids_list ->
+                              let addressed_comment_ids =
+                                Set.of_list
+                                  (module Comment_id)
+                                  addressed_comment_ids_list
+                              in
+                              Patch_agent.restore
+                                ~patch_id:
+                                  (Patch_id.of_string
+                                     (string_member "patch_id" json))
+                                ~has_pr:(bool_member "has_pr" json)
+                                ~pr_number:
+                                  (int_member_opt "pr_number" json
+                                  |> Option.map ~f:Pr_number.of_int)
+                                ~has_session:(bool_member "has_session" json)
+                                ~busy:(bool_member "busy" json)
+                                ~merged:(bool_member "merged" json)
+                                ~needs_intervention:
+                                  (bool_member "needs_intervention" json)
+                                ~queue
+                                ~satisfies:(bool_member "satisfies" json)
+                                ~changed:(bool_member "changed" json)
+                                ~has_conflict:(bool_member "has_conflict" json)
+                                ~base_branch:
+                                  (string_member_opt "base_branch" json
+                                  |> Option.map ~f:Branch.of_string)
+                                ~ci_failure_count:
+                                  (int_member "ci_failure_count" json)
+                                ~session_fallback ~pending_comments
+                                ~last_session_id:
+                                  (string_member_opt "last_session_id" json
+                                  |> Option.map ~f:Session_id.of_string)
+                                ~ci_checks ~addressed_comment_ids
+                                ~removed:
+                                  (bool_member_opt "removed" json
+                                  |> Option.value ~default:false))))))))
 
 (* ---------- Transition_entry ---------- *)
 
@@ -421,7 +530,11 @@ let load ~path ~gameplan =
         let ids =
           Orchestrator.all_agents snap.orchestrator
           |> List.concat_map ~f:(fun (a : Patch_agent.t) ->
-              List.map a.pending_comments ~f:(fun pc -> pc.comment.Comment.id))
+              let pc_ids =
+                List.map a.pending_comments ~f:(fun pc -> pc.comment.Comment.id)
+              in
+              let addressed_ids = Set.to_list a.addressed_comment_ids in
+              pc_ids @ addressed_ids)
         in
         Comment_id.seed_synthetic_counter ids
     | Error _ -> ());

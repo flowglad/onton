@@ -9,6 +9,9 @@ open Base
 type pending_comment = private { comment : Types.Comment.t; valid : bool }
 [@@deriving show, eq, sexp_of, compare]
 
+type session_fallback = Fresh_available | Tried_fresh | Given_up
+[@@deriving show, eq, sexp_of, compare]
+
 type t = private {
   patch_id : Types.Patch_id.t;
   has_pr : bool;
@@ -23,10 +26,11 @@ type t = private {
   has_conflict : bool;
   base_branch : Types.Branch.t option;
   ci_failure_count : int;
-  session_failed : bool;
+  session_fallback : session_fallback;
   pending_comments : pending_comment list;
   last_session_id : Types.Session_id.t option;
-  tried_fresh : bool;
+  ci_checks : Types.Ci_check.t list;
+  addressed_comment_ids : Set.M(Types.Comment_id).t;
   removed : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
@@ -52,7 +56,7 @@ val respond : t -> Types.Operation_kind.t -> t
 val complete : t -> t
 (** [PatchCtx ~> Complete] — session finished. Preconditions (checked): [busy].
     Postconditions: [~busy]; recalculates [needs_intervention] from
-    [ci_failure_count], [session_failed], and [Human] in queue. *)
+    [ci_failure_count], [session_fallback], and [Human] in queue. *)
 
 (** {2 State mutation helpers} *)
 
@@ -71,17 +75,17 @@ val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
 (** Add a pending review comment. *)
 
 val set_session_failed : t -> t
-(** Mark the current session as failed. *)
+(** Mark session fallback as [Given_up]. *)
 
 val set_last_session_id : t -> Types.Session_id.t -> t
 (** Record the session ID from the most recent Claude run. *)
 
 val set_tried_fresh : t -> t
-(** Mark that a fresh session has been attempted after a resume failure. *)
+(** Advance session fallback to [Tried_fresh]. No-op if already [Tried_fresh] or
+    [Given_up] — the fallback state only moves forward. *)
 
 val clear_session_fallback : t -> t
-(** Reset [tried_fresh] and [session_failed] (e.g., after successful
-    completion). *)
+(** Reset session fallback to [Fresh_available]. *)
 
 val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
@@ -91,6 +95,15 @@ val increment_ci_failure_count : t -> t
 
 val clear_needs_intervention : t -> t
 (** Clear the needs-intervention flag (e.g., after manual resolution). *)
+
+val set_ci_checks : t -> Types.Ci_check.t list -> t
+(** Replace the stored CI check details. *)
+
+val add_addressed_comment_id : t -> Types.Comment_id.t -> t
+(** Record a comment ID as addressed. *)
+
+val is_comment_addressed : t -> Types.Comment_id.t -> bool
+(** Check whether a comment has been addressed. *)
 
 val reset_busy : t -> t
 (** Reset a stale [busy] flag from a crashed session. If [busy], clears it and
@@ -122,10 +135,11 @@ val restore :
   has_conflict:bool ->
   base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
-  session_failed:bool ->
+  session_fallback:session_fallback ->
   pending_comments:pending_comment list ->
   last_session_id:Types.Session_id.t option ->
-  tried_fresh:bool ->
+  ci_checks:Types.Ci_check.t list ->
+  addressed_comment_ids:Set.M(Types.Comment_id).t ->
   removed:bool ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
