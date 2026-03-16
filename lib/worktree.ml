@@ -56,11 +56,18 @@ let list_with_branches ~process_mgr ~repo_root =
     [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ];
   let raw = Buffer.contents buf in
   let lines = String.split_lines raw in
+  let is_linked_worktree p =
+    let git_path = Stdlib.Filename.concat p ".git" in
+    Stdlib.Sys.file_exists git_path && not (Stdlib.Sys.is_directory git_path)
+  in
+  let flush_entry acc p branch =
+    if is_linked_worktree p then (p, branch) :: acc else acc
+  in
   let rec parse acc current_path current_branch = function
     | [] ->
         let acc =
           match current_path with
-          | Some p -> (p, current_branch) :: acc
+          | Some p -> flush_entry acc p current_branch
           | None -> acc
         in
         List.rev acc
@@ -70,7 +77,7 @@ let list_with_branches ~process_mgr ~repo_root =
             (* Flush any pending entry that wasn't terminated by a blank line *)
             let acc =
               match current_path with
-              | Some prev_p -> (prev_p, current_branch) :: acc
+              | Some prev_p -> flush_entry acc prev_p current_branch
               | None -> acc
             in
             parse acc (Some p) None rest
@@ -87,7 +94,7 @@ let list_with_branches ~process_mgr ~repo_root =
             if String.is_empty line then
               let acc =
                 match current_path with
-                | Some p -> (p, current_branch) :: acc
+                | Some p -> flush_entry acc p current_branch
                 | None -> acc
               in
               parse acc None None rest
