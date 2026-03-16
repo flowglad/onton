@@ -42,24 +42,25 @@ let substitute_variables (template : string) (vars : (string * string) list) :
   scan 0;
   Buffer.contents buf
 
-let load_override ~(project_name : string) (name : string) : string option =
+let validate_name (kind : string) (value : string) : unit =
   if
-    String.is_substring name ~substring:"/"
-    || String.is_substring name ~substring:".."
+    String.is_substring value ~substring:"/"
+    || String.is_substring value ~substring:".."
   then
     Stdlib.invalid_arg
-      (Printf.sprintf "load_override: invalid prompt name %S" name);
+      (Printf.sprintf "load_override: invalid %s %S" kind value)
+
+let load_override ~(project_name : string) (name : string) : string option =
+  validate_name "prompt name" name;
+  validate_name "project name" project_name;
   let path = Stdlib.Filename.concat (prompts_dir project_name) (name ^ ".md") in
   match Stdlib.In_channel.with_open_text path Stdlib.In_channel.input_all with
   | content -> Some content
-  | exception Sys_error msg ->
-      if
-        String.is_substring msg ~substring:"No such file or directory"
-        || String.is_substring msg ~substring:"Is a directory"
-      then None
-      else
-        Stdlib.failwith
-          (Printf.sprintf "load_override: cannot read %s: %s" path msg)
+  | exception Sys_error _ -> (
+      match Unix.stat path with
+      | exception Unix.Unix_error ((Unix.ENOENT | Unix.ENOTDIR), _, _) -> None
+      | _ | (exception _) ->
+          Stdlib.failwith (Printf.sprintf "load_override: cannot read %s" path))
 
 let render_with_override ~(project_name : string) ~(name : string)
     ~(vars : (string * string) list) ~(default : unit -> string) : string =
@@ -220,9 +221,7 @@ let render_human_message_prompt ~(project_name : string)
       in
       render_with_override ~project_name ~name:"human_message" ~vars
         ~default:(fun () ->
-          match messages with
-          | [ msg ] -> Printf.sprintf "# Message from Human\n\n%s" msg
-          | _ -> Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
+          Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
 
 let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
