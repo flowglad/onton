@@ -10,7 +10,9 @@ let prompts_dir (project_name : string) : string =
 
 let substitute_variables (template : string) (vars : (string * string) list) :
     string =
-  let var_map = Map.of_alist_exn (module String) vars in
+  let var_map =
+    Map.of_alist_reduce (module String) vars ~f:(fun _first last -> last)
+  in
   let buf = Buffer.create (String.length template) in
   let len = String.length template in
   let rec scan i =
