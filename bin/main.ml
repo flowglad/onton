@@ -1819,6 +1819,15 @@ let run_with_config (config : config) gameplan existing_snapshot =
           ~repo:config.github_repo
       in
       let pr_registry = Pr_registry.create () in
+      (* Seed registry from any agents that already have a PR number — covers
+         both gameplan patches restored from a snapshot and ad-hoc agents. The
+         reconciliation fiber and poller will overwrite/extend this as needed. *)
+      Runtime.read runtime (fun snap ->
+          Orchestrator.all_agents snap.Runtime.orchestrator)
+      |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
+          Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
+              Pr_registry.register pr_registry
+                ~patch_id:agent.Patch_agent.patch_id ~pr_number));
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
       let process_mgr = Eio.Stdenv.process_mgr env in
       let clock = Eio.Stdenv.clock env in
