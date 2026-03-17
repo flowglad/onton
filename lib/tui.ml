@@ -707,8 +707,11 @@ let render_footer ~width ~view_mode ?input_line () =
 
 let render_help_overlay ~width ~height =
   let pair_rows keys =
+    let col_w =
+      List.fold keys ~init:0 ~f:(fun m k -> Int.max m (String.length k))
+    in
     let rec go acc = function
-      | a :: b :: tl -> go (Printf.sprintf "    %-22s %s" a b :: acc) tl
+      | a :: b :: tl -> go (Printf.sprintf "    %-*s %s" col_w a b :: acc) tl
       | [ a ] -> List.rev (Printf.sprintf "    %s" a :: acc)
       | [] -> List.rev acc
     in
