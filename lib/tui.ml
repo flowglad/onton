@@ -593,24 +593,7 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       in
       ci_header @ ci_rows
   in
-  let stream_section =
-    if List.is_empty pv.recent_stream then []
-    else
-      let stream_header =
-        [ ""; Term.styled [ Term.Sgr.bold ] "  Recent Activity" ]
-      in
-      let stream_rows =
-        List.map pv.recent_stream ~f:(fun entry ->
-            match entry with
-            | Event { message; _ } ->
-                Printf.sprintf "    %s" (Term.styled [ Term.Sgr.dim ] message)
-            | Transition { from_label; to_status; to_label; action; _ } ->
-                Printf.sprintf "    %s → %s (%s)" from_label
-                  (styled_status to_status to_label)
-                  (Term.styled [ Term.Sgr.dim ] action))
-      in
-      stream_header @ stream_rows
-  in
+  let stream_section = [] in
   let transcript_section =
     if String.is_empty transcript then []
     else
