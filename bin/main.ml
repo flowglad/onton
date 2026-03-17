@@ -488,7 +488,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
         ~activity ~project_name:gp.Gameplan.project_name ~transcript
-        ~input_line:!input_line views
+        ?input_line:!input_line views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     loop ()
@@ -512,7 +512,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let sync_input () =
-    input_line := if !text_mode then Buffer.contents buf else ""
+    input_line := if !text_mode then Some (Buffer.contents buf) else None
   in
   let saved_list_selected = ref 0 in
   let history = Tui_input.History.create () in
@@ -1762,7 +1762,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let selected = ref 0 in
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
-        let input_line = ref "" in
+        let input_line = ref None in
         let raw_state = Term.Raw.enter () in
         Fun.protect
           ~finally:(fun () ->
