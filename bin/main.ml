@@ -1486,6 +1486,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
            (fun _ ->
              Printf.eprintf "\nInterrupted.\n%!";
              (* Kill entire process group so child Claude processes die too *)
+             Sys.set_signal Sys.sigterm
+               (Sys.Signal_handle (fun _ -> Stdlib.exit 130));
              Unix.kill 0 Sys.sigterm;
              Stdlib.exit 130));
       Eio_main.run @@ fun env ->

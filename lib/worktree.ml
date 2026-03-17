@@ -19,6 +19,12 @@ let worktree_dir ~repo_root ~patch_id =
   let id_str = Types.Patch_id.to_string patch_id in
   Stdlib.Filename.concat repo_root ("worktrees/patch-" ^ id_str)
 
+let rec has_cancellation = function
+  | Eio.Cancel.Cancelled _ -> true
+  | Eio.Exn.Multiple exns ->
+      List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
+  | _ -> false
+
 let branch_exists ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 16 in
   match
@@ -34,6 +40,7 @@ let branch_exists ~process_mgr ~repo_root branch_str =
       ]
   with
   | () -> true
+  | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
 let create ~process_mgr ~repo_root ~patch =
@@ -64,12 +71,6 @@ let create ~process_mgr ~repo_root ~patch =
 let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
-
-let rec has_cancellation = function
-  | Eio.Cancel.Cancelled _ -> true
-  | Eio.Exn.Multiple exns ->
-      List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
-  | _ -> false
 
 let detect_branch ~process_mgr ~path =
   let buf = Buffer.create 128 in
