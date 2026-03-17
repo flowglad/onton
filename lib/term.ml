@@ -315,6 +315,7 @@ type mouse_event =
 
 (** SGR 1006 mouse mode escape sequences. *)
 let enable_mouse = "\027[?1006h\027[?1000h"
+
 let disable_mouse = "\027[?1006l\027[?1000l"
 
 (** Keyboard input types and parsing. *)
@@ -425,9 +426,9 @@ module Key = struct
     in
     consume ()
 
-  (** Parse an SGR mouse sequence: CSI < Pb;Px;Py M/m.
-      Pb encodes button (0=left, 1=middle, 2=right, 64=scroll-up, 65=scroll-down).
-      M = press, m = release. *)
+  (** Parse an SGR mouse sequence: CSI < Pb;Px;Py M/m. Pb encodes button
+      (0=left, 1=middle, 2=right, 64=scroll-up, 65=scroll-down). M = press, m =
+      release. *)
   let parse_sgr_mouse () =
     (* Read decimal digits until a non-digit delimiter *)
     let read_number () =
