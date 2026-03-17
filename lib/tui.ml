@@ -768,11 +768,7 @@ let render_help_overlay ~width ~height =
   let content = title :: body in
   let overlay_h = Int.max 0 (Int.min (List.length content) (height - 2)) in
   let visible = List.sub content ~pos:0 ~len:overlay_h in
-  let pad_line line =
-    let raw_len = Term.visible_length line in
-    let pad = Int.max 0 (width - raw_len) in
-    line ^ String.make pad ' '
-  in
+  let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
 
 (** {1 Public API} *)
