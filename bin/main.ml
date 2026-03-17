@@ -384,6 +384,18 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               in
               Orchestrator.complete orch patch_id);
           `Failed
+      | Ok r when (not r.Claude_runner.got_events) && continue ->
+          (* --continue failed to find a session (no events produced).
+             Treat as resume failure — fall back to fresh session. *)
+          log_event runtime ~patch_id
+            "--continue produced no events (no session to resume), will retry \
+             fresh";
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch =
+                Orchestrator.on_session_failure orch patch_id ~is_fresh:false
+              in
+              Orchestrator.complete orch patch_id);
+          `Failed
       | Ok r when r.Claude_runner.exit_code = 0 ->
           let stream_errors = String.trim (Buffer.contents error_buf) in
           if String.length stream_errors > 0 then

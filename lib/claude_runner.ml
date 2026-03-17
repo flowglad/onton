@@ -1,19 +1,55 @@
 open Base
 
-type result = { exit_code : int; stdout : string; stderr : string }
+type result = {
+  exit_code : int;
+  stdout : string;
+  stderr : string;
+  got_events : bool;
+}
 [@@deriving show, eq, sexp_of, compare]
 
+(** Strip ANSI escape sequences injected by the PTY wrapper. *)
+let strip_ansi s =
+  (* Match ESC[ ... <letter> (CSI sequences) and ESC] ... (BEL|ST) (OSC).
+     Use Re combinators instead of PCRE to avoid escape issues. *)
+  let esc = Re.char '\x1b' in
+  let csi =
+    Re.seq [ esc; Re.set "[("; Re.rep (Re.set "0123456789;?"); Re.rg 'A' 'z' ]
+  in
+  let osc =
+    Re.seq
+      [
+        esc;
+        Re.set "]>";
+        Re.rep (Re.compl [ Re.char '\x07'; Re.char '\x1b' ]);
+        Re.opt (Re.alt [ Re.char '\x07'; Re.seq [ esc; Re.char '\\' ] ]);
+      ]
+  in
+  let re = Re.compile (Re.alt [ csi; osc ]) in
+  Re.replace_string re ~by:"" s
+
+(** Wrap a command in a pseudo-TTY via [script].
+
+    Claude CLI requires a TTY to produce stream-json output when not in
+    [--print] mode. We use [script -q /dev/null] on macOS to allocate a PTY
+    without writing a transcript file. *)
+let pty_wrap args =
+  (* macOS: script -q /dev/null <cmd> <args...> *)
+  "/usr/bin/script" :: "-q" :: "/dev/null" :: args
+
 let build_args ~prompt ~continue =
-  let base = [ "claude"; "--print"; "--output-format"; "text" ] in
+  let base = [ "claude"; "-p"; prompt; "--output-format"; "text" ] in
   let session_args = if continue then [ "--continue" ] else [] in
-  base @ session_args @ [ "--"; prompt ]
+  let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
+  base @ session_args @ flags
 
 let build_stream_args ~prompt ~continue =
   let base =
-    [ "claude"; "--print"; "--verbose"; "--output-format"; "stream-json" ]
+    [ "claude"; "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
   in
   let session_args = if continue then [ "--continue" ] else [] in
-  base @ session_args @ [ "--"; prompt ]
+  let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
+  base @ session_args @ flags
 
 let parse_stream_events (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -123,7 +159,7 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
 
 let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_args ~prompt ~continue in
+  let args = pty_wrap (build_args ~prompt ~continue) in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
@@ -145,12 +181,17 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (out, err, code)
   in
-  { exit_code; stdout = stdout_content; stderr = stderr_content }
+  {
+    exit_code;
+    stdout = strip_ansi stdout_content;
+    stderr = stderr_content;
+    got_events = true;
+  }
 
 let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_stream_args ~prompt ~continue in
-  let stderr_content, exit_code =
+  let args = pty_wrap (build_stream_args ~prompt ~continue) in
+  let stderr_content, exit_code, got_events =
     Eio.Switch.run @@ fun sw ->
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
     let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
@@ -163,14 +204,17 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
     let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
     let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
     let err_ref = ref "" in
+    let got_events_ref = ref false in
     Eio.Fiber.both
       (fun () ->
         let rec read_lines () =
           match Eio.Buf_read.line stdout_buf with
           | line ->
-              let trimmed = String.strip line in
-              if not (String.is_empty trimmed) then
-                List.iter (parse_stream_events trimmed) ~f:on_event;
+              let trimmed = strip_ansi (String.strip line) in
+              if not (String.is_empty trimmed) then (
+                let events = parse_stream_events trimmed in
+                if not (List.is_empty events) then got_events_ref := true;
+                List.iter events ~f:on_event);
               read_lines ()
           | exception End_of_file -> ()
         in
@@ -178,26 +222,37 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
       (fun () -> err_ref := Eio.Buf_read.take_all stderr_buf);
     let status = Eio.Process.await child in
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
-    (!err_ref, code)
+    (!err_ref, code, !got_events_ref)
   in
-  { exit_code; stdout = ""; stderr = stderr_content }
+  { exit_code; stdout = ""; stderr = stderr_content; got_events }
 
 let%test "build_args without continue" =
   let args = build_args ~prompt:"do stuff" ~continue:false in
   List.equal String.equal args
-    [ "claude"; "--print"; "--output-format"; "text"; "--"; "do stuff" ]
+    [
+      "claude";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "text";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+    ]
 
 let%test "build_args with continue" =
   let args = build_args ~prompt:"do stuff" ~continue:true in
   List.equal String.equal args
     [
       "claude";
-      "--print";
+      "-p";
+      "do stuff";
       "--output-format";
       "text";
       "--continue";
-      "--";
-      "do stuff";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
     ]
 
 let%test "build_stream_args without continue" =
@@ -205,12 +260,14 @@ let%test "build_stream_args without continue" =
   List.equal String.equal args
     [
       "claude";
-      "--print";
-      "--verbose";
+      "-p";
+      "do stuff";
       "--output-format";
       "stream-json";
-      "--";
-      "do stuff";
+      "--verbose";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
     ]
 
 let%test "build_stream_args with continue" =
@@ -218,14 +275,27 @@ let%test "build_stream_args with continue" =
   List.equal String.equal args
     [
       "claude";
-      "--print";
-      "--verbose";
+      "-p";
+      "do stuff";
       "--output-format";
       "stream-json";
+      "--verbose";
       "--continue";
-      "--";
-      "do stuff";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
     ]
+
+let%test "strip_ansi removes escape sequences" =
+  String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
+
+let%test "strip_ansi passes clean text through" =
+  String.equal (strip_ansi "hello world") "hello world"
+
+let%test "pty_wrap prepends script command" =
+  let args = pty_wrap [ "claude"; "-p"; "hello" ] in
+  List.equal String.equal args
+    [ "/usr/bin/script"; "-q"; "/dev/null"; "claude"; "-p"; "hello" ]
 
 let%test "parse_stream_event text_delta" =
   let line =
