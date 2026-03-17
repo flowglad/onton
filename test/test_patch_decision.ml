@@ -20,7 +20,8 @@ let gen_comment_id = QCheck2.Gen.(map Comment_id.of_int (int_range 1 10000))
 let gen_comment =
   QCheck2.Gen.(
     map2
-      (fun id body -> Comment.{ id; body; path = None; line = None })
+      (fun id body ->
+        Comment.{ id; thread_id = None; body; path = None; line = None })
       gen_comment_id
       (string_size ~gen:(char_range 'a' 'z') (int_range 1 30)))
 
@@ -154,6 +155,7 @@ let () =
               {
                 id = Comment_id.of_int 100;
                 body = "fix";
+                thread_id = None;
                 path = None;
                 line = None;
               }
@@ -163,6 +165,7 @@ let () =
               {
                 id = Comment_id.of_int 200;
                 body = "nit";
+                thread_id = None;
                 path = None;
                 line = None;
               }
@@ -184,6 +187,7 @@ let () =
               {
                 id = Comment_id.of_int 100;
                 body = "fix";
+                thread_id = None;
                 path = None;
                 line = None;
               }

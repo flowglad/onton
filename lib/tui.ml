@@ -526,7 +526,7 @@ let render_activity (entries : activity_entry list) =
     in
     header :: lines
 
-let render_detail (pv : patch_view) ~width =
+let render_detail (pv : patch_view) ~width ?(transcript = "") () =
   let fit_value prefix value =
     prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
   in
@@ -611,7 +611,21 @@ let render_detail (pv : patch_view) ~width =
       in
       stream_header @ stream_rows
   in
+  let transcript_section =
+    if String.is_empty transcript then []
+    else
+      let transcript_header =
+        [ ""; Term.styled [ Term.Sgr.bold ] "  Transcript" ]
+      in
+      let transcript_lines =
+        String.split_on_chars ~on:[ '\n' ] transcript
+        |> List.map ~f:(fun line ->
+            "    " ^ Term.fit_width (Int.max 1 (width - 4)) line)
+      in
+      transcript_header @ transcript_lines
+  in
   lines @ op_line @ intervention @ ci_section @ stream_section
+  @ transcript_section
 
 let render_timeline ~width ~selected ~max_visible
     (entries : activity_entry list) =
@@ -698,7 +712,8 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       { pv with recent_stream = List.take filtered 10 })
 
 let render_frame ~width ~height ~selected ~view_mode
-    ~(activity : activity_entry list) ~project_name (views : patch_view list) =
+    ~(activity : activity_entry list) ~project_name ?(transcript = "")
+    (views : patch_view list) =
   let header = render_header ~project_name ~width in
   let summary = [ render_summary views ] in
   let footer = render_footer ~width ~view_mode in
@@ -708,7 +723,7 @@ let render_frame ~width ~height ~selected ~view_mode
         match
           List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
         with
-        | Some pv -> render_detail pv ~width
+        | Some pv -> render_detail pv ~width ~transcript ()
         | None -> [ " (patch not found)" ]
       in
       (* Chrome: header(2) + blank + summary(1) + blank + blank before footer

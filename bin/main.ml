@@ -314,7 +314,7 @@ let log_stream_entry runtime ~patch_id kind =
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected =
+    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -340,6 +340,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
         | Types.Stream_event.Text_delta text -> (
             let prev_len = Buffer.length text_buf in
             Buffer.add_string text_buf text;
+            Hashtbl.replace transcripts patch_id (Buffer.contents text_buf);
             if not !pr_found then
               let offset = max 0 (prev_len - needle_len) in
               let tail =
@@ -356,6 +357,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               | None -> ())
         | Types.Stream_event.Tool_use { name; _ } ->
             tool_count := !tool_count + 1;
+            Buffer.add_string text_buf (Printf.sprintf "\n[tool: %s]\n" name);
+            Hashtbl.replace transcripts patch_id (Buffer.contents text_buf);
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Tool_use name)
         | Types.Stream_event.Final_result { stop_reason; _ } ->
@@ -446,7 +449,7 @@ exception Quit_tui
 
     [selected] and [view_mode] are shared mutable refs updated by the input
     fiber. *)
-let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
+let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let rec loop () =
@@ -473,9 +476,15 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
     let views =
       Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp ~activity
     in
+    let transcript =
+      match !view_mode with
+      | Tui.Detail_view pid -> (
+          match Hashtbl.find_opt transcripts pid with Some t -> t | None -> "")
+      | Tui.List_view | Tui.Timeline_view -> ""
+    in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
-        ~activity ~project_name:gp.Gameplan.project_name views
+        ~activity ~project_name:gp.Gameplan.project_name ~transcript views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     loop ()
@@ -1065,7 +1074,7 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-    ~ci_checks_cache =
+    ~ci_checks_cache ~transcripts =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
@@ -1189,7 +1198,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   run_claude_and_handle ~runtime ~process_mgr
                                     ~fs ~repo_root:config.repo_root ~patch_id
                                     ~prompt ~agent ~owner:config.github_owner
-                                    ~repo:config.github_repo ~on_pr_detected)
+                                    ~repo:config.github_repo ~on_pr_detected
+                                    ~transcripts)
                           in
                           match result with
                           | `Stale | `Failed -> ()
@@ -1269,7 +1279,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
                                 ~agent ~owner:config.github_owner
-                                ~repo:config.github_repo ~on_pr_detected)
+                                ~repo:config.github_repo ~on_pr_detected
+                                ~transcripts)
                       in
                       match result with
                       | `Stale | `Failed -> ()
@@ -1370,7 +1381,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
                                 ~agent ~owner:config.github_owner
-                                ~repo:config.github_repo ~on_pr_detected)
+                                ~repo:config.github_repo ~on_pr_detected
+                                ~transcripts)
                       in
                       match result with
                       | `Stale | `Failed -> ()
@@ -1708,6 +1720,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Base.List.iter startup.worktree_errors ~f:(fun err ->
             log_event runtime (Printf.sprintf "startup worktree error: %s" err))
       in
+      let transcripts = Hashtbl.create 16 in
       let common_fibers =
         [
           reconciliation_fiber;
@@ -1716,7 +1729,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
               ~branch_of ~ci_checks_cache);
           (fun () ->
             runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~ci_checks_cache);
+              ~ci_checks_cache ~transcripts);
           (fun () -> persistence_fiber ~runtime ~clock ~project_name);
         ]
       in
@@ -1742,7 +1755,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
             try
               Eio.Fiber.all
                 ((fun () ->
-                   tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode)
+                   tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode
+                     ~transcripts)
                 :: (fun () ->
                   input_fiber ~runtime ~selected ~view_mode ~pr_registry
                     ~repo_root:config.repo_root)

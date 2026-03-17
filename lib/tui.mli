@@ -86,6 +86,7 @@ val render_frame :
   view_mode:view_mode ->
   activity:activity_entry list ->
   project_name:string ->
+  ?transcript:string ->
   patch_view list ->
   frame
 
