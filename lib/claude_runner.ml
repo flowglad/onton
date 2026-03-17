@@ -164,13 +164,13 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
-    Eio.Flow.close stdin_w;
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
     let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
     let child =
       Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
         ~stderr:stderr_w args
     in
+    Eio.Flow.close stdin_r;
     Eio.Flow.close stdout_w;
     Eio.Flow.close stderr_w;
     let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
@@ -181,6 +181,7 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
         (fun () -> Eio.Buf_read.take_all stderr_buf)
     in
     let status = Eio.Process.await child in
+    Eio.Flow.close stdin_w;
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (out, err, code)
   in
@@ -197,13 +198,13 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
   let stderr_content, exit_code, got_events =
     Eio.Switch.run @@ fun sw ->
     let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
-    Eio.Flow.close stdin_w;
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
     let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
     let child =
       Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
         ~stderr:stderr_w args
     in
+    Eio.Flow.close stdin_r;
     Eio.Flow.close stdout_w;
     Eio.Flow.close stderr_w;
     let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
@@ -226,6 +227,7 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
         read_lines ())
       (fun () -> err_ref := Eio.Buf_read.take_all stderr_buf);
     let status = Eio.Process.await child in
+    Eio.Flow.close stdin_w;
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (!err_ref, code, !got_events_ref)
   in
