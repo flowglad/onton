@@ -269,9 +269,7 @@ let%test "pending is default" =
 type scroll_state = { offset : int; total : int; visible : int }
 
 let make_scroll ~total ~visible = { offset = 0; total; visible }
-
-let scroll_max s =
-  if s.total > s.visible then s.total - s.visible else 0
+let scroll_max s = if s.total > s.visible then s.total - s.visible else 0
 
 let clamp_scroll s delta =
   let new_offset = s.offset + delta in
@@ -280,9 +278,7 @@ let clamp_scroll s delta =
 
 let scroll_indicators s =
   let max = scroll_max s in
-  let top =
-    if s.offset > 0 then Printf.sprintf "↑ %d more" s.offset else ""
-  in
+  let top = if s.offset > 0 then Printf.sprintf "↑ %d more" s.offset else "" in
   let remaining = max - s.offset in
   let bottom =
     if remaining > 0 then Printf.sprintf "↓ %d more" remaining else ""
