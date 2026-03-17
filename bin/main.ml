@@ -496,8 +496,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
     in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
-        ~activity ~project_name:gp.Gameplan.project_name
-        ~show_help:!show_help ~transcript ?input_line:!input_line views
+        ~activity ~project_name:gp.Gameplan.project_name ~show_help:!show_help
+        ~transcript ?input_line:!input_line views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     loop ()
