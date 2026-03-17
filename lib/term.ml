@@ -9,6 +9,7 @@ module Sgr = struct
   let dim = "\027[2m"
   let italic = "\027[3m"
   let underline = "\027[4m"
+  let reverse = "\027[7m"
   let strikethrough = "\027[9m"
   let fg_black = "\027[30m"
   let fg_red = "\027[31m"
