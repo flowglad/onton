@@ -103,8 +103,6 @@ let save_gameplan_source ~project_name ~source_path =
       (gameplan_json_path project_name, gameplan_path project_name)
     else (gameplan_path project_name, gameplan_json_path project_name)
   in
-  (if Stdlib.Sys.file_exists stale then
-     try Stdlib.Sys.remove stale with Sys_error _ -> ());
   let ic = Stdlib.open_in source_path in
   let content =
     Stdlib.Fun.protect
@@ -116,7 +114,9 @@ let save_gameplan_source ~project_name ~source_path =
     ~finally:(fun () -> Stdlib.close_out oc)
     (fun () ->
       Stdlib.output_string oc content;
-      Stdlib.flush oc)
+      Stdlib.flush oc);
+  if Stdlib.Sys.file_exists stale then
+    try Stdlib.Sys.remove stale with Sys_error _ -> ()
 
 let project_exists project_name =
   Stdlib.Sys.file_exists (config_path project_name)
