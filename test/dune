@@ -48,7 +48,7 @@
 
 (test
  (name test_poller_properties)
- (libraries onton qcheck-core))
+ (libraries onton onton_test_support qcheck-core))
 
 (test
  (name test_tui_scheduling)
