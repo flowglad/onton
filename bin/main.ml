@@ -314,7 +314,8 @@ let log_stream_entry runtime ~patch_id kind =
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
-    ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts =
+    ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
+    ~transcripts =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -329,7 +330,24 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
       let worktree_path =
         match agent.Patch_agent.worktree_path with
         | Some p -> p
-        | None -> Worktree.worktree_dir ~project_name ~patch_id
+        | None ->
+            (* Try to find an existing worktree for the patch's branch before
+               falling back to the default computed path. *)
+            let found =
+              match agent.Patch_agent.head_branch with
+              | Some branch ->
+                  Worktree.find_for_branch ~process_mgr ~repo_root branch
+              | None -> None
+            in
+            let path =
+              match found with
+              | Some p -> p
+              | None -> Worktree.worktree_dir ~project_name ~patch_id
+            in
+            (* Persist so we don't re-discover every time *)
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.set_worktree_path orch patch_id path);
+            path
       in
       let cwd = Eio.Path.(fs / worktree_path) in
       let text_buf =
@@ -1114,6 +1132,11 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                       Orchestrator.set_ci_checks orch patch_id
                         poll_result.Poller.ci_checks
                     in
+                    let orch =
+                      match pr_state.Github.Pr_state.head_branch with
+                      | Some b -> Orchestrator.set_head_branch orch patch_id b
+                      | None -> orch
+                    in
                     Base.List.fold poll_result.Poller.new_comments ~init:orch
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
@@ -1317,7 +1340,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                      after Claude finishes *)
                                   let on_pr_detected _pr_number = () in
                                   run_claude_and_handle ~runtime ~process_mgr
-                                    ~fs ~project_name ~patch_id ~prompt ~agent
+                                    ~fs ~project_name ~patch_id
+                                    ~repo_root:config.repo_root ~prompt ~agent
                                     ~owner:config.github_owner
                                     ~repo:config.github_repo ~on_pr_detected
                                     ~transcripts)
@@ -1526,7 +1550,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               in
                               let on_pr_detected _pr_number = () in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
-                                ~project_name ~patch_id ~prompt ~agent
+                                ~project_name ~patch_id
+                                ~repo_root:config.repo_root ~prompt ~agent
                                 ~owner:config.github_owner
                                 ~repo:config.github_repo ~on_pr_detected
                                 ~transcripts)

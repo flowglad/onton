@@ -265,6 +265,9 @@ let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
 let set_worktree_path t patch_id path =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_worktree_path a path)
 
+let set_head_branch t patch_id branch =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_head_branch a branch)
+
 (** {2 Queries} *)
 
 let all_agents t = Map.data t.agents

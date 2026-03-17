@@ -19,6 +19,7 @@ module Pr_state : sig
     ci_checks_truncated : bool;
     comments : Comment.t list;
     unresolved_comment_count : int;
+    head_branch : Branch.t option;
   }
   [@@deriving show, eq]
 end

@@ -137,6 +137,7 @@ let gen_pr_state =
           ci_checks_truncated;
           comments;
           unresolved_comment_count;
+          head_branch = None;
         })
       (pair bool gen_merge_state)
       bool

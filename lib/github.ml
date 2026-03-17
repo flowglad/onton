@@ -13,6 +13,7 @@ module Pr_state = struct
     ci_checks_truncated : bool;
     comments : Types.Comment.t list;
     unresolved_comment_count : int;
+    head_branch : Types.Branch.t option;
   }
   [@@deriving show, eq]
 end
@@ -35,6 +36,7 @@ let graphql_query =
       merged
       mergeable
       mergeStateStatus
+      headRefName
       commits(last: 1) {
         nodes {
           commit {
@@ -209,6 +211,10 @@ let parse_response body =
               List.count review_threads ~f:(fun thread ->
                   not (thread |> member "isResolved" |> to_bool))
             in
+            let head_branch =
+              pr |> member "headRefName" |> to_string_option
+              |> Option.map ~f:Types.Branch.of_string
+            in
             Ok
               Pr_state.
                 {
@@ -220,6 +226,7 @@ let parse_response body =
                   ci_checks_truncated;
                   comments;
                   unresolved_comment_count;
+                  head_branch;
                 })
     | errors ->
         let msgs =

@@ -403,6 +403,7 @@ let () =
               ~addressed_comment_ids:a.addressed_comment_ids ~removed:false
               ~mergeable:false ~merge_ready:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
+              ~head_branch:None
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks && Set.is_empty a.addressed_comment_ids);
@@ -489,7 +490,7 @@ let () =
               ~addressed_comment_ids:(Set.empty (module Comment_id))
               ~removed:false ~mergeable:false ~merge_ready:false
               ~checks_passing:false ~no_unresolved_comments:false
-              ~worktree_path:None
+              ~worktree_path:None ~head_branch:None
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in

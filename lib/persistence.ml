@@ -116,6 +116,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
       ( "worktree_path",
         match a.worktree_path with None -> `Null | Some p -> `String p );
+      ( "head_branch",
+        match a.head_branch with
+        | None -> `Null
+        | Some b -> Branch.yojson_of_t b );
     ]
 
 let list_member_opt key json =
@@ -201,7 +205,9 @@ let patch_agent_of_yojson json =
        ~no_unresolved_comments:
          (bool_member_opt "no_unresolved_comments" json
          |> Option.value ~default:false)
-       ~worktree_path:(string_member_opt "worktree_path" json))
+       ~worktree_path:(string_member_opt "worktree_path" json)
+       ~head_branch:
+         (string_member_opt "head_branch" json |> Option.map ~f:Branch.of_string))
 
 (* ---------- Activity_log ---------- *)
 
