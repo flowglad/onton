@@ -4,6 +4,7 @@ module Graph = Graph
 module Patch_agent = Patch_agent
 module Patch_decision = Patch_decision
 module Orchestrator = Orchestrator
+module Spawn_logic = Spawn_logic
 module Github = Github
 module Poller = Poller
 module Reconciler = Reconciler
