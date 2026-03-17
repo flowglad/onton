@@ -119,7 +119,7 @@ let () =
         (fun (pid, br) ->
           let a = with_pr pid br in
           (* count = 0 *)
-          equal_ci_decision (on_ci_failure a) Enqueue);
+          equal_ci_decision (on_ci_failure a) Enqueue_ci);
       (* ---- on_ci_failure: at cap -> Cap_reached ---- *)
       Test.make ~name:"on_ci_failure: count >= 3 -> Cap_reached"
         Gen.(triple gen_pid gen_branch (int_range 3 20))
@@ -136,7 +136,14 @@ let () =
         (fun (pid, br) ->
           let a = with_pr pid br in
           let a = increment_ci_failure_count (increment_ci_failure_count a) in
-          equal_ci_decision (on_ci_failure a) Enqueue);
+          equal_ci_decision (on_ci_failure a) Enqueue_ci);
+      (* ---- on_ci_failure: Ci already queued -> Already_queued ---- *)
+      Test.make ~name:"on_ci_failure: Ci in queue -> Already_queued"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          let a = enqueue a Operation_kind.Ci in
+          equal_ci_decision (on_ci_failure a) Ci_already_queued);
       (* ---- on_review_comments: filters addressed ---- *)
       Test.make ~name:"on_review_comments: filters addressed comments"
         Gen.(pair gen_pid gen_branch)
@@ -162,10 +169,11 @@ let () =
           in
           let a = add_addressed_comment_id a (Comment_id.of_int 100) in
           let result = on_review_comments a ~comments:[ c1; c2 ] in
-          List.length result.new_comments = 1
-          && result.should_enqueue
-          && Comment_id.equal (List.hd_exn result.new_comments).Comment.id
-               (Comment_id.of_int 200));
+          result.should_enqueue
+          &&
+          match result.new_comments with
+          | [ c ] -> Comment_id.equal c.Comment.id (Comment_id.of_int 200)
+          | _ -> false);
       (* ---- on_review_comments: all addressed -> should_enqueue=false ---- *)
       Test.make ~name:"on_review_comments: all addressed -> no enqueue"
         Gen.(pair gen_pid gen_branch)

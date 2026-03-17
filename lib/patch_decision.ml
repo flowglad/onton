@@ -34,12 +34,16 @@ let disposition (a : Patch_agent.t) : disposition =
             Ready_respond k)
 
 type ci_decision =
-  | Enqueue  (** CI failure count below cap — enqueue Ci feedback. *)
+  | Enqueue_ci  (** CI failure count below cap — enqueue Ci feedback. *)
+  | Ci_already_queued  (** Ci already in queue — no action needed. *)
   | Cap_reached  (** CI failure count >= 3 — do not enqueue, flag. *)
 [@@deriving show, eq, sexp_of, compare]
 
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
-  if a.ci_failure_count >= 3 then Cap_reached else Enqueue
+  if a.ci_failure_count >= 3 then Cap_reached
+  else if List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal then
+    Ci_already_queued
+  else Enqueue_ci
 
 type comment_decision = { new_comments : Comment.t list; should_enqueue : bool }
 [@@deriving show, eq]
