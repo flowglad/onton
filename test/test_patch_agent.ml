@@ -30,10 +30,24 @@ let () =
   let pid0 = Patch_id.of_string "p" in
   let br0 = Branch.of_string "main" in
   let c_valid =
-    Comment.{ id = Comment_id.of_int 1; body = "fix"; path = None; line = None }
+    Comment.
+      {
+        id = Comment_id.of_int 1;
+        thread_id = None;
+        body = "fix";
+        path = None;
+        line = None;
+      }
   in
   let c_invalid =
-    Comment.{ id = Comment_id.of_int 2; body = "nit"; path = None; line = None }
+    Comment.
+      {
+        id = Comment_id.of_int 2;
+        thread_id = None;
+        body = "nit";
+        path = None;
+        line = None;
+      }
   in
   let tests =
     [

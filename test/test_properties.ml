@@ -563,9 +563,12 @@ let () =
         let synthetic_id = Types.Comment_id.of_int (-999_999) in
         let real_id = Types.Comment_id.of_int 42 in
         let synthetic_comment =
-          Types.Comment.{ id = synthetic_id; body; path; line }
+          Types.Comment.
+            { id = synthetic_id; thread_id = None; body; path; line }
         in
-        let real_comment = Types.Comment.{ id = real_id; body; path; line } in
+        let real_comment =
+          Types.Comment.{ id = real_id; thread_id = None; body; path; line }
+        in
         let a = Patch_agent.create pid in
         let a =
           Patch_agent.add_pending_comment a synthetic_comment ~valid:true

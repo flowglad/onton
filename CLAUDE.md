@@ -23,6 +23,10 @@
 - Every `Patch_agent.busy = true` must have a corresponding `complete` on all exit paths (success, error, cancel). Use `Fun.protect` when the busy→idle transition spans async work.
 - bisect_ppx is not compatible with our OCaml version — do not add it as a dependency.
 
+## Reference
+- Reference implementation (Elixir): `../orchestrate-gameplan/`
+- Reference specification: `../orchestrate-gameplan/spec/anton.pant`
+
 ## Stack
 - OCaml 5.4.0, dune 3.21, local opam switch
 - `open Base` in lib modules for Jane Street ppx compatibility

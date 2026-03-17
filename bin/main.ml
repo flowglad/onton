@@ -310,6 +310,9 @@ let log_stream_entry runtime ~patch_id kind =
     callback is invoked if a PR number is found in Claude's text output.
     Implements the session fallback chain: resume → fresh → give up. On success,
     stores the session ID and clears fallback state. *)
+
+let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
+
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
     ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected =
   match session_mode agent with
@@ -401,8 +404,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
           if String.length stream_errors > 0 then
             log_event runtime ~patch_id
               (Printf.sprintf "Claude exited 0 but had stream errors: %s"
-                 (if String.length stream_errors <= 500 then stream_errors
-                  else String.sub stream_errors 0 500));
+                 (truncate stream_errors 500));
           let text_len = Buffer.length text_buf in
           let tools = !tool_count in
           if tools = 0 && text_len < 200 then
@@ -410,9 +412,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               (Printf.sprintf
                  "Claude exited 0 with no tool use and %d chars of text: %s"
                  text_len
-                 (let s = String.trim (Buffer.contents text_buf) in
-                  if String.length s <= 200 then s
-                  else String.sub s 0 200 ^ "..."));
+                 (truncate (String.trim (Buffer.contents text_buf)) 200));
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
@@ -425,10 +425,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
             | "", e | e, "" -> e
             | s, e -> s ^ " | stream: " ^ e
           in
-          let detail =
-            if String.length detail <= 500 then detail
-            else String.sub detail 0 500
-          in
+          let detail = truncate detail 500 in
           log_event runtime ~patch_id
             (Printf.sprintf
                "Claude exited with code %d, marking session failed: %s"
@@ -860,6 +857,13 @@ let headless_fiber ~runtime ~clock ~stdout =
           Eio.Flow.copy_string
             (Printf.sprintf "%s %s\n" (format_time ts) msg)
             stdout));
+    (* Bound the seen set: rebuild from current entries so it never grows
+       beyond the merged_log_entries window (~1500 entries max). *)
+    if Hashtbl.length seen > 2000 then (
+      let current = Hashtbl.create 256 in
+      Base.List.iter entries ~f:(fun key -> Hashtbl.replace current key true);
+      Hashtbl.reset seen;
+      Hashtbl.iter (fun k v -> Hashtbl.replace seen k v) current);
     Eio.Time.sleep clock 1.0;
     loop ()
   in

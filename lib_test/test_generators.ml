@@ -45,7 +45,8 @@ let gen_comment =
     in
     let gen_line = option (int_range 1 500) in
     map4
-      (fun id body path line -> Comment.{ id; body; path; line })
+      (fun id body path line ->
+        Comment.{ id; thread_id = None; body; path; line })
       (* Use only synthetic (negative) IDs so content-based dedup governs in
          property tests, matching production behavior where real IDs are unique
          per GitHub comment. Real-ID duplicates with different content can't

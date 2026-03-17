@@ -53,6 +53,7 @@ end
 module Comment : sig
   type t = {
     id : Comment_id.t;
+    thread_id : string option;
     body : string;
     path : string option;
     line : int option;

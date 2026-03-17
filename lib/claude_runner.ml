@@ -8,10 +8,10 @@ type result = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-(** Strip ANSI escape sequences injected by the PTY wrapper. *)
-let strip_ansi s =
-  (* Match ESC[ ... <letter> (CSI sequences) and ESC] ... (BEL|ST) (OSC).
-     Use Re combinators instead of PCRE to avoid escape issues. *)
+(** Compiled regex for ANSI escape sequences and carriage returns. Matches CSI
+    sequences (ESC\[ ... letter), OSC sequences (ESC\] ... BEL/ST), and bare \r
+    from PTY line endings. Compiled once at module load. *)
+let ansi_re =
   let esc = Re.char '\x1b' in
   let csi =
     Re.seq [ esc; Re.set "[("; Re.rep (Re.set "0123456789;?"); Re.rg 'A' 'z' ]
@@ -26,8 +26,10 @@ let strip_ansi s =
       ]
   in
   let cr = Re.char '\r' in
-  let re = Re.compile (Re.alt [ csi; osc; cr ]) in
-  Re.replace_string re ~by:"" s
+  Re.compile (Re.alt [ csi; osc; cr ])
+
+(** Strip ANSI escape sequences injected by the PTY wrapper. *)
+let strip_ansi s = Re.replace_string ansi_re ~by:"" s
 
 (** Wrap a command in a pseudo-TTY via [script].
 

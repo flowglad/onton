@@ -206,6 +206,7 @@ let send_human_message t patch_id message =
     Comment.
       {
         id = Comment_id.next_synthetic ();
+        thread_id = None;
         body = message;
         path = None;
         line = None;

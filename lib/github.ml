@@ -63,6 +63,7 @@ let graphql_query =
       }
       reviewThreads(first: 100) {
         nodes {
+          id
           isResolved
           comments(first: 1) {
             nodes {
@@ -130,7 +131,7 @@ let parse_check_context_node node =
           Some Types.Ci_check.{ name; conclusion; details_url; description })
   | _ -> None
 
-let parse_comment_node node =
+let parse_comment_node ~thread_id node =
   let open Yojson.Safe.Util in
   let id =
     match node |> member "databaseId" |> to_int_option with
@@ -140,7 +141,7 @@ let parse_comment_node node =
   let body = node |> member "body" |> to_string in
   let path = node |> member "path" |> to_string_option in
   let line = node |> member "line" |> to_int_option in
-  Types.Comment.{ id; body; path; line }
+  Types.Comment.{ id; thread_id; body; path; line }
 
 let parse_response body =
   let open Yojson.Safe.Util in
@@ -193,8 +194,9 @@ let parse_response body =
               List.concat_map review_threads ~f:(fun thread ->
                   if thread |> member "isResolved" |> to_bool then []
                   else
+                    let thread_id = thread |> member "id" |> to_string_option in
                     thread |> member "comments" |> member "nodes" |> to_list
-                    |> List.map ~f:parse_comment_node)
+                    |> List.map ~f:(parse_comment_node ~thread_id))
             in
             let unresolved_comment_count =
               List.count review_threads ~f:(fun thread ->

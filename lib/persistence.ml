@@ -93,6 +93,7 @@ let comment_to_yojson (c : Comment.t) =
   `Assoc
     [
       ("id", `Int (Comment_id.to_int c.id));
+      ("thread_id", nullable_string c.thread_id);
       ("body", `String c.body);
       ("path", nullable_string c.path);
       ("line", nullable_int c.line);
@@ -107,6 +108,7 @@ let comment_of_yojson json =
           (match member "id" json |> to_int_option with
           | Some n -> Comment_id.of_int n
           | None -> Comment_id.next_synthetic ());
+        thread_id = member "thread_id" json |> to_string_option;
         body = member "body" json |> to_string;
         path = member "path" json |> to_string_option;
         line = member "line" json |> to_int_option;

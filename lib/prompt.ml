@@ -209,15 +209,30 @@ let render_review_prompt ~(project_name : string) ?pr_number
   match comments with
   | [] -> "No review comments to address."
   | _ ->
+      let pr_num_str =
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "{pr_number}"
+      in
       let formatted =
         List.map comments ~f:(fun (c : Comment.t) ->
             let location =
               match (c.Comment.path, c.Comment.line) with
-              | Some path, Some line -> Printf.sprintf "%s:%d" path line
-              | Some path, None -> path
-              | None, _ -> "(general)"
+              | Some path, Some line ->
+                  Printf.sprintf " on `%s` (line %d)" path line
+              | Some path, None -> Printf.sprintf " on `%s`" path
+              | None, _ -> ""
             in
-            Printf.sprintf "### %s\n%s" location c.Comment.body)
+            let db_id =
+              Printf.sprintf " [comment_id=%d]" (Comment_id.to_int c.Comment.id)
+            in
+            let thread_ref =
+              match c.Comment.thread_id with
+              | Some tid -> Printf.sprintf " [thread_id=%s]" tid
+              | None -> ""
+            in
+            Printf.sprintf "- **Comment**%s%s%s: %s" location db_id thread_ref
+              c.Comment.body)
         |> String.concat ~sep:"\n\n"
       in
       let pr_ctx =
@@ -230,19 +245,30 @@ let render_review_prompt ~(project_name : string) ?pr_number
           ("project_name", project_name);
           ("comments", formatted);
           ("count", Int.to_string (List.length comments));
-          ( "pr_number",
-            match pr_number with
-            | Some n -> Int.to_string (Pr_number.to_int n)
-            | None -> "" );
+          ("pr_number", pr_num_str);
         ]
       in
       render_with_override ~project_name ~name:"review" ~vars
         ~default:(fun () ->
           Printf.sprintf
             "# Review Comments%s\n\n\
-             Please address the following review comments:\n\n\
-             %s"
-            pr_ctx formatted)
+             The following review comments need to be addressed on your PR:\n\n\
+             %s\n\n\
+             For each comment:\n\
+             1. Implement the requested change, OR explain why the current \
+             approach is correct.\n\
+             2. Reply to the comment thread:\n\
+            \   `gh api \
+             repos/{owner}/{repo}/pulls/%s/comments/{comment_id}/replies -f \
+             body=\"your response\"`\n\
+            \   (`{owner}/{repo}` is resolved automatically by `gh` when run \
+             inside the repo)\n\
+             3. Resolve the thread using the thread_id:\n\
+            \   `gh api graphql -f query='mutation { \
+             resolveReviewThread(input: {threadId: \"{thread_id}\"}) { thread \
+             { isResolved } } }'`\n\n\
+             After addressing all comments, push your changes."
+            pr_ctx formatted pr_num_str)
 
 let render_ci_failure_prompt ~(project_name : string) ?pr_number
     (checks : Ci_check.t list) =
@@ -444,6 +470,7 @@ let%test "review prompt formats comments" =
       Comment.
         {
           id = Comment_id.of_int 1;
+          thread_id = Some "PRRT_thread1";
           body = "Fix this function.";
           path = Some "lib/foo.ml";
           line = Some 42;
@@ -451,6 +478,7 @@ let%test "review prompt formats comments" =
       Comment.
         {
           id = Comment_id.of_int 2;
+          thread_id = None;
           body = "General feedback.";
           path = None;
           line = None;
@@ -459,7 +487,10 @@ let%test "review prompt formats comments" =
   in
   let result = render_review_prompt ~project_name:"test" comments in
   String.is_substring result ~substring:"# Review Comments"
-  && String.is_substring result ~substring:"### lib/foo.ml:42"
+  && String.is_substring result ~substring:"on `lib/foo.ml` (line 42)"
+  && String.is_substring result ~substring:"[comment_id=1]"
+  && String.is_substring result ~substring:"[thread_id=PRRT_thread1]"
   && String.is_substring result ~substring:"Fix this function."
-  && String.is_substring result ~substring:"### (general)"
   && String.is_substring result ~substring:"General feedback."
+  && String.is_substring result ~substring:"resolveReviewThread"
+  && String.is_substring result ~substring:"gh api repos/"
