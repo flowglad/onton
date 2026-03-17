@@ -62,6 +62,24 @@ let detect_rebases graph views ~newly_merged =
           Some (Enqueue_rebase dep_id)
       | _ -> None)
 
+(** Detect agents whose base_branch still points at a merged dependency's
+    branch. This catches cases where the event-driven detect_rebases missed the
+    rebase (e.g. agent had needs_intervention at the time). *)
+let detect_stale_bases graph views ~has_merged ~branch_of ~main =
+  List.filter_map views ~f:(fun v ->
+      if
+        v.has_pr && (not v.merged)
+        && not
+             (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
+      then
+        let correct_base =
+          Graph.initial_base graph v.id ~has_merged ~branch_of ~main
+        in
+        if not (Branch.equal v.base_branch correct_base) then
+          Some (Enqueue_rebase v.id)
+        else None
+      else None)
+
 let plan_operations views ~has_merged ~branch_of ~graph ~main =
   List.filter_map views ~f:(fun v ->
       if v.has_pr && (not v.merged) && (not v.busy) && not v.needs_intervention
@@ -91,7 +109,24 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
     List.exists views ~f:(fun v -> Patch_id.equal v.id pid && v.merged)
     || List.exists merged_pr_patches ~f:(Patch_id.equal pid)
   in
-  let rebases = detect_rebases graph views ~newly_merged in
+  let event_rebases = detect_rebases graph views ~newly_merged in
+  let stale_rebases =
+    detect_stale_bases graph views ~has_merged ~branch_of ~main
+  in
+  (* Deduplicate: event-driven rebases may overlap with stale-base rebases *)
+  let rebases =
+    let seen =
+      Set.of_list
+        (module Patch_id)
+        (List.filter_map event_rebases ~f:(function
+          | Enqueue_rebase pid -> Some pid
+          | Mark_merged _ | Start_operation _ -> None))
+    in
+    event_rebases
+    @ List.filter stale_rebases ~f:(function
+      | Enqueue_rebase pid -> not (Set.mem seen pid)
+      | Mark_merged _ | Start_operation _ -> true)
+  in
   let rebase_set =
     List.filter_map rebases ~f:(function
       | Enqueue_rebase pid -> Some pid
