@@ -398,31 +398,31 @@ let render_header ~project_name ~width =
   let rule = Term.hrule width in
   [ title; rule ]
 
+let short_op_name = function
+  | Operation_kind.Ci -> "ci"
+  | Operation_kind.Review_comments -> "review"
+  | Operation_kind.Merge_conflict -> "conflict"
+  | Operation_kind.Human -> "human"
+  | Operation_kind.Rebase -> "rebase"
+
 let render_patch_row ~width ~selected (pv : patch_view) =
   let badge = render_status_badge pv.status in
   let title_max = width - 30 in
   let title_display = Term.fit_width (max title_max 10) pv.title in
-  let queue_info =
-    if pv.queue_len > 0 then
-      Term.styled [ Term.Sgr.dim ] (Printf.sprintf " q:%d" pv.queue_len)
-    else ""
+  let op_info =
+    match pv.current_op with
+    | Some op ->
+        Term.styled [ Term.Sgr.dim ] (Printf.sprintf " [%s]" (short_op_name op))
+    | None -> ""
   in
   let ci_info =
     if pv.ci_failures > 0 then
       Term.styled [ Term.Sgr.fg_red ] (Printf.sprintf " ci:%d" pv.ci_failures)
     else ""
   in
-  let op_info =
-    match pv.current_op with
-    | Some op ->
-        Term.styled [ Term.Sgr.dim ]
-          (Printf.sprintf " [%s]" (Operation_kind.show op))
-    | None -> ""
-  in
   let cursor = if selected then "▸" else " " in
   let row =
-    Printf.sprintf "%s%s  %s%s%s%s" cursor badge title_display queue_info
-      ci_info op_info
+    Printf.sprintf "%s%s  %s%s%s" cursor badge title_display ci_info op_info
   in
   if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
   else row
@@ -557,7 +557,7 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
   in
   let op_line =
     match pv.current_op with
-    | Some op -> [ Printf.sprintf "  Current op:  %s" (Operation_kind.show op) ]
+    | Some op -> [ Printf.sprintf "  Current op:  %s" (short_op_name op) ]
     | None -> []
   in
   let intervention =
