@@ -1109,6 +1109,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~branch:patch.Patch.branch ~base_branch
                                 with
                                 | Ok pr_number ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "PR #%d created"
+                                         (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
                                     if not (Branch.equal base_branch main) then
