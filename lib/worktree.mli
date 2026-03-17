@@ -25,6 +25,15 @@ val list_with_branches :
 val normalize_path : string -> string
 (** Resolve a relative path to absolute using the current working directory. *)
 
+type rebase_result = Ok | Noop | Conflict | Error of string
+[@@deriving show, eq, sexp_of, compare]
+
+val rebase_onto :
+  process_mgr:_ Eio.Process.mgr ->
+  path:string ->
+  target:Types.Branch.t ->
+  rebase_result
+
 val exists : t -> bool
 val path : t -> string
 val patch_id : t -> Types.Patch_id.t

@@ -160,6 +160,41 @@ let list_with_branches ~process_mgr ~repo_root =
   in
   parse [] None None lines
 
+type rebase_result = Ok | Noop | Conflict | Error of string
+[@@deriving show, eq, sexp_of, compare]
+
+let run_git_exit_code ~process_mgr args =
+  Eio.Switch.run @@ fun sw ->
+  let child = Eio.Process.spawn ~sw process_mgr args in
+  match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
+
+let rebase_onto ~process_mgr ~path ~target =
+  let target = Types.Branch.to_string target in
+  (* Check if target is already an ancestor of HEAD (noop) *)
+  let ancestor_code =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "merge-base"; "--is-ancestor"; target; "HEAD" ]
+  in
+  if ancestor_code = 0 then Noop
+  else
+    let rebase_code =
+      run_git_exit_code ~process_mgr [ "git"; "-C"; path; "rebase"; target ]
+    in
+    if rebase_code = 0 then Ok
+    else
+      (* Check if this is a conflict (rebase in progress) *)
+      let rebase_dir = Stdlib.Filename.concat path ".git/rebase-merge" in
+      let rebase_apply = Stdlib.Filename.concat path ".git/rebase-apply" in
+      if
+        Stdlib.Sys.file_exists rebase_dir || Stdlib.Sys.file_exists rebase_apply
+      then
+        let _abort_code =
+          run_git_exit_code ~process_mgr
+            [ "git"; "-C"; path; "rebase"; "--abort" ]
+        in
+        Conflict
+      else Error (Printf.sprintf "git rebase exited with code %d" rebase_code)
+
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
 let patch_id t = t.patch_id
