@@ -113,7 +113,7 @@ val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
 
 val clear_has_conflict : t -> t
-(** Clear the merge conflict flag. *)
+(** Clear the merge conflict flag. Spec: [mergeable' p = world-mergeable p]. *)
 
 val set_base_branch : t -> Types.Branch.t -> t
 (** Update the base branch. *)
