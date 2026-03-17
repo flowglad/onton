@@ -327,19 +327,30 @@ module Key = struct
     | Unknown of string
   [@@deriving show, eq]
 
-  (** Read a single byte from stdin, returning None on EOF/error. *)
+  (** Read a single byte from stdin, returning None on EOF/error. Runs in a
+      systhread so it does not block the Eio event loop. *)
   let read_byte () =
-    let buf = Bytes.create 1 in
-    try
-      let n = Unix.read Unix.stdin buf 0 1 in
-      if n = 0 then None else Some (Bytes.get buf 0)
-    with _ -> None
+    Eio_unix.run_in_systhread (fun () ->
+        let buf = Bytes.create 1 in
+        try
+          let n = Unix.read Unix.stdin buf 0 1 in
+          if n = 0 then None else Some (Bytes.get buf 0)
+        with _ -> None)
 
   (** Try to read a byte with a short timeout (for escape sequence detection).
-      Uses Unix.select with a 50ms timeout. *)
+      Uses Unix.select with a 50ms timeout. Runs in a systhread so it does not
+      block the Eio event loop. *)
   let read_byte_timeout () =
-    let ready, _, _ = Unix.select [ Unix.stdin ] [] [] 0.05 in
-    match ready with [] -> None | _ -> read_byte ()
+    Eio_unix.run_in_systhread (fun () ->
+        let ready, _, _ = Unix.select [ Unix.stdin ] [] [] 0.05 in
+        match ready with
+        | [] -> None
+        | _ -> (
+            let buf = Bytes.create 1 in
+            try
+              let n = Unix.read Unix.stdin buf 0 1 in
+              if n = 0 then None else Some (Bytes.get buf 0)
+            with _ -> None))
 
   (** Parse a CSI escape sequence (after ESC and bracket have been read). *)
   let parse_csi () =
