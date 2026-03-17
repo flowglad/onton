@@ -35,6 +35,18 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
+          (* Prepare PRs so agents have varied state *)
+          let orch = prepare_with_prs orch patches in
+          (* Mark every 3rd patch as removed, every 4th as merged *)
+          let orch =
+            List.foldi patches ~init:orch ~f:(fun i o (p : Patch.t) ->
+                let o =
+                  if i % 3 = 1 then Orchestrator.mark_removed o p.Patch.id
+                  else o
+                in
+                if i % 4 = 0 && i > 0 then Orchestrator.mark_merged o p.Patch.id
+                else o)
+          in
           let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
           List.for_all spawns ~f:(fun s ->
               let pid = Onton.Spawn_logic.patch_id_of s in
@@ -107,6 +119,8 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
+          (* Give some agents PRs so we can verify Start excludes them *)
+          let orch = prepare_with_prs orch patches in
           let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
           List.for_all spawns ~f:(fun s ->
               match Onton.Spawn_logic.classify s with
