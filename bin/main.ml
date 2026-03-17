@@ -528,10 +528,11 @@ exception Quit_tui
 
 (** TUI rendering fiber — redraws the terminal at ~10 fps.
 
-    [selected] and [view_mode] are shared mutable refs updated by the input
-    fiber. *)
-let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
-    ~transcripts ~sorted_patch_ids ~input_line ~completion_hint =
+    [list_selected], [detail_scroll], [timeline_scroll], and [view_mode] are
+    shared mutable refs updated by the input fiber. *)
+let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
+    ~timeline_scroll ~view_mode ~show_help ~transcripts ~sorted_patch_ids
+    ~input_line ~completion_hint =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -567,15 +568,21 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
           match Hashtbl.find_opt transcripts pid with Some t -> t | None -> "")
       | Tui.List_view | Tui.Timeline_view -> ""
     in
+    let scroll_offset =
+      match !view_mode with
+      | Tui.Detail_view _ -> !detail_scroll
+      | Tui.Timeline_view -> !timeline_scroll
+      | Tui.List_view -> 0
+    in
     let frame =
-      Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
-        ~activity ~project_name:gp.Gameplan.project_name ~show_help:!show_help
-        ~transcript ?input_line:!input_line ?completion_hint:!completion_hint
-        views
+      Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
+        ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
+        ~show_help:!show_help ~transcript ?input_line:!input_line
+        ?completion_hint:!completion_hint views
     in
     (* Auto-follow: if detail view is at bottom, keep it pinned so new
        transcript content stays visible without manual scrolling. *)
-    if Tui.detail_at_bottom frame then selected := Base.Int.max_value;
+    if Tui.detail_at_bottom frame then detail_scroll := Base.Int.max_value;
     let output = Tui.paint_frame frame in
     if not (String.equal output !prev_output) then (
       Eio.Flow.copy_string output stdout;
@@ -596,8 +603,9 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
     - ["+123"] — register ad-hoc PR #123 for the selected patch
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
-let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
-    ~show_help ~sorted_patch_ids ~input_line ~completion_hint =
+let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
+    ~detail_scrolls ~view_mode ~pr_registry ~project_name ~show_help
+    ~sorted_patch_ids ~input_line ~completion_hint =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let current_completions = ref [] in
@@ -621,7 +629,6 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
       current_completions := [];
       completion_hint := None)
   in
-  let saved_list_selected = ref 0 in
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
   let eof_count = ref 0 in
@@ -729,7 +736,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                     if count = 0 then None
                     else
                       let idx =
-                        Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                        Base.Int.max 0 (Base.Int.min !list_selected (count - 1))
                       in
                       let pid = Base.List.nth_exn pids idx in
                       let busy =
@@ -821,7 +828,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                     if count = 0 then None
                     else
                       let idx =
-                        Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                        Base.Int.max 0 (Base.Int.min !list_selected (count - 1))
                       in
                       let pid = Base.List.nth_exn pids idx in
                       Runtime.read runtime (fun snap ->
@@ -950,8 +957,8 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                   (match !view_mode with
                   | Tui.List_view ->
                       let count = Base.List.length !sorted_patch_ids in
-                      selected :=
-                        Tui_input.apply_move ~count ~selected:!selected cmd
+                      list_selected :=
+                        Tui_input.apply_move ~count ~selected:!list_selected cmd
                   | Tui.Timeline_view ->
                       let count =
                         Runtime.read runtime (fun snap ->
@@ -966,10 +973,10 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                             in
                             events + transitions)
                       in
-                      selected :=
-                        Tui_input.apply_move ~count ~selected:!selected cmd
+                      timeline_scroll :=
+                        Tui_input.apply_move ~count ~selected:!timeline_scroll
+                          cmd
                   | Tui.Detail_view _ ->
-                      (* Scroll detail view — selected doubles as scroll offset *)
                       let delta =
                         match cmd with
                         | Tui_input.Move_up -> -1
@@ -983,7 +990,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                         | Tui_input.Remove_patch ->
                             0
                       in
-                      selected := Base.Int.max 0 (!selected + delta));
+                      detail_scroll := Base.Int.max 0 (!detail_scroll + delta));
                   loop ()
               | Tui_input.Select -> (
                   match !view_mode with
@@ -992,12 +999,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                       let count = Base.List.length pids in
                       if count > 0 then (
                         let idx =
-                          Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                          Base.Int.max 0
+                            (Base.Int.min !list_selected (count - 1))
                         in
-                        saved_list_selected := idx;
+                        list_selected := idx;
                         let pid = Base.List.nth_exn pids idx in
                         view_mode := Tui.Detail_view pid;
-                        selected := Base.Int.max_value);
+                        (* Restore per-patch scroll or default to auto-follow *)
+                        detail_scroll :=
+                          match Hashtbl.find_opt detail_scrolls pid with
+                          | Some v -> v
+                          | None -> Base.Int.max_value);
                       loop ()
                   | Tui.Detail_view _ ->
                       text_mode := true;
@@ -1005,25 +1017,27 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                   | Tui.Timeline_view -> loop ())
               | Tui_input.Back -> (
                   match !view_mode with
-                  | Tui.Detail_view _ ->
+                  | Tui.Detail_view pid ->
+                      (* Save per-patch scroll position *)
+                      Hashtbl.replace detail_scrolls pid !detail_scroll;
                       view_mode := Tui.List_view;
-                      selected := !saved_list_selected;
                       loop ()
                   | Tui.Timeline_view ->
                       view_mode := Tui.List_view;
-                      selected := !saved_list_selected;
                       loop ()
                   | Tui.List_view -> loop ())
               | Tui_input.Timeline -> (
                   match !view_mode with
                   | Tui.Timeline_view ->
                       view_mode := Tui.List_view;
-                      selected := !saved_list_selected;
                       loop ()
                   | Tui.List_view | Tui.Detail_view _ ->
-                      saved_list_selected := !selected;
+                      (match !view_mode with
+                      | Tui.Detail_view pid ->
+                          Hashtbl.replace detail_scrolls pid !detail_scroll
+                      | Tui.List_view | Tui.Timeline_view -> ());
                       view_mode := Tui.Timeline_view;
-                      selected := 0;
+                      timeline_scroll := 0;
                       loop ())
               | Tui_input.Help ->
                   show_help := true;
@@ -1981,7 +1995,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout) :: common_fibers)
       else
-        let selected = ref 0 in
+        let list_selected = ref 0 in
+        let detail_scroll = ref 0 in
+        let timeline_scroll = ref 0 in
+        let detail_scrolls : (Patch_id.t, int) Hashtbl.t = Hashtbl.create 16 in
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
         let input_line = ref None in
@@ -2003,11 +2020,12 @@ let run_with_config (config : config) gameplan existing_snapshot =
             try
               Eio.Fiber.all
                 ((fun () ->
-                   tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode
-                     ~show_help ~transcripts ~sorted_patch_ids ~input_line
-                     ~completion_hint)
+                   tui_fiber ~runtime ~clock ~stdout ~list_selected
+                     ~detail_scroll ~timeline_scroll ~view_mode ~show_help
+                     ~transcripts ~sorted_patch_ids ~input_line ~completion_hint)
                 :: (fun () ->
-                  input_fiber ~runtime ~selected ~view_mode ~pr_registry
+                  input_fiber ~runtime ~list_selected ~detail_scroll
+                    ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
                     ~project_name ~show_help ~sorted_patch_ids ~input_line
                     ~completion_hint)
                 :: common_fibers)

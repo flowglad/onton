@@ -1,16 +1,6 @@
 open Base
 open Types
 
-(** {1 Color palette} *)
-
-let c_accent = Term.Sgr.fg_256 75 (* soft blue — section headers *)
-let c_muted = Term.Sgr.dim (* timestamps, secondary labels *)
-let c_ok = Term.Sgr.fg_256 76 (* green — merged, passing *)
-let c_warn = Term.Sgr.fg_256 178 (* amber — queued, rebasing *)
-let c_alert = Term.Sgr.fg_256 196 (* red — error, needs-help *)
-let c_running = Term.Sgr.fg_256 39 (* cyan — active work *)
-let c_pending = Term.Sgr.dim (* pending patches *)
-
 (** {1 Display status} *)
 
 type display_status =
@@ -54,22 +44,22 @@ let label = function
   | Pending -> "pending"
 
 let color = function
-  | Merged -> c_ok
-  | Needs_help -> c_alert
-  | Approved_idle -> c_ok
-  | Approved_running -> c_running
-  | Fixing_ci -> c_warn
-  | Addressing_review -> c_warn
-  | Resolving_conflict -> c_warn
+  | Merged -> Term.Sgr.fg_green
+  | Needs_help -> Term.Sgr.fg_red
+  | Approved_idle -> Term.Sgr.fg_green
+  | Approved_running -> Term.Sgr.fg_cyan
+  | Fixing_ci -> Term.Sgr.fg_yellow
+  | Addressing_review -> Term.Sgr.fg_yellow
+  | Resolving_conflict -> Term.Sgr.fg_yellow
   | Responding_to_human -> Term.Sgr.fg_magenta
-  | Rebasing -> c_warn
-  | Starting -> c_running
-  | Updating -> c_running
-  | Ci_queued -> c_warn
-  | Review_queued -> c_warn
-  | Awaiting_ci -> c_accent
-  | Awaiting_review -> c_accent
-  | Pending -> c_pending
+  | Rebasing -> Term.Sgr.fg_cyan
+  | Starting -> Term.Sgr.fg_cyan
+  | Updating -> Term.Sgr.fg_cyan
+  | Ci_queued -> Term.Sgr.fg_yellow
+  | Review_queued -> Term.Sgr.fg_yellow
+  | Awaiting_ci -> Term.Sgr.fg_blue
+  | Awaiting_review -> Term.Sgr.fg_blue
+  | Pending -> Term.Sgr.fg_white
 
 let to_status_display status = { label = label status; color = color status }
 
@@ -333,18 +323,18 @@ let%test "scroll_indicators no scroll needed" =
 (** {1 Styling} *)
 
 let status_style = function
-  | Merged -> [ c_ok; Term.Sgr.bold ]
-  | Needs_help -> [ c_alert; Term.Sgr.bold ]
-  | Approved_idle -> [ c_ok ]
-  | Approved_running -> [ c_ok; Term.Sgr.bold ]
+  | Merged -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
+  | Needs_help -> [ Term.Sgr.fg_red; Term.Sgr.bold ]
+  | Approved_idle -> [ Term.Sgr.fg_green ]
+  | Approved_running -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human ->
-      [ c_running; Term.Sgr.bold ]
-  | Rebasing -> [ c_warn ]
-  | Starting | Updating -> [ c_running ]
-  | Ci_queued | Review_queued -> [ c_warn ]
-  | Awaiting_ci -> [ c_accent ]
-  | Awaiting_review -> [ c_accent ]
-  | Pending -> [ c_pending ]
+      [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
+  | Rebasing -> [ Term.Sgr.fg_yellow ]
+  | Starting | Updating -> [ Term.Sgr.fg_cyan ]
+  | Ci_queued | Review_queued -> [ Term.Sgr.fg_yellow ]
+  | Awaiting_ci -> [ Term.Sgr.fg_blue ]
+  | Awaiting_review -> [ Term.Sgr.fg_blue ]
+  | Pending -> [ Term.Sgr.dim ]
 
 let status_indicator = function
   | Merged -> "✓"
@@ -551,21 +541,22 @@ let render_status_badge status =
 
 (** {1 Frame rendering} *)
 
-type frame = { lines : string list; width : int; detail_at_bottom : bool }
+type frame = {
+  lines : string list;
+  width : int;
+  detail_at_bottom : bool;
+  detail_scroll_offset : int;
+}
 [@@warning "-69"]
 
 let render_header ~project_name ~width =
-  let prefix = "── " in
-  let suffix_pad =
-    Int.max 0
-      (width - Term.visible_length prefix - Term.visible_length project_name - 1)
+  let title =
+    Term.styled
+      [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
+      (Printf.sprintf " %s " project_name)
   in
-  let rule_suffix = Term.hrule ~ch:"─" suffix_pad in
-  let raw_title = Printf.sprintf "%s%s %s" prefix project_name rule_suffix in
-  let title_line =
-    Term.styled [ c_accent ] (Term.fit_width (Int.max 1 width) raw_title)
-  in
-  [ title_line ]
+  let rule = Term.hrule width in
+  [ title; rule ]
 
 let short_op_name = function
   | Operation_kind.Ci -> "ci"
@@ -574,37 +565,32 @@ let short_op_name = function
   | Operation_kind.Human -> "human"
   | Operation_kind.Rebase -> "rebase"
 
-let apply_reverse_selection row =
-  let reapply = Term.Sgr.reset ^ Term.Sgr.reverse in
-  let row =
-    String.substr_replace_all row ~pattern:Term.Sgr.reset ~with_:reapply
-  in
-  Term.Sgr.reverse ^ row ^ Term.Sgr.reset
-
 let render_patch_row ~width ~selected (pv : patch_view) =
-  let ind = status_indicator pv.status in
-  let styled_ind = styled_status pv.status (Printf.sprintf "[%s]" ind) in
-  let pr_tag =
+  let badge = render_status_badge pv.status in
+  let pr_label =
     match pv.pr_number with
-    | Some n ->
-        Term.styled [ c_muted ] (Printf.sprintf "PR#%d" (Pr_number.to_int n))
+    | Some n -> Printf.sprintf "#%-4d " (Pr_number.to_int n)
     | None -> ""
   in
-  let branch_str = Term.styled [ c_muted ] (Branch.to_string pv.branch) in
-  let status_suffix = styled_status pv.status (label pv.status) in
   let op_suffix =
     match pv.current_op with
     | Some op ->
-        Term.styled [ c_muted ] (Printf.sprintf " (%s)" (short_op_name op))
+        Term.styled [ Term.Sgr.dim ] (Printf.sprintf " [%s]" (short_op_name op))
     | None -> ""
+  in
+  let ci_info =
+    if pv.ci_failures > 0 then
+      Term.styled [ Term.Sgr.fg_red ] (Printf.sprintf " ci:%d" pv.ci_failures)
+    else ""
   in
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s %s %s  %s  %s%s" cursor styled_ind pr_tag branch_str
-         status_suffix op_suffix)
+      (Printf.sprintf "%s%s  %s%s%s%s" cursor badge pr_label pv.title op_suffix
+         ci_info)
   in
-  if selected then apply_reverse_selection row else row
+  if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
+  else row
 
 (** Compute visible window: returns (offset, count) for scrolling. *)
 let visible_window ~selected ~total ~max_visible =
@@ -630,7 +616,7 @@ let render_patches ~width ~selected ~max_visible (views : patch_view list) =
     ]
   else
     let offset, count = visible_window ~selected ~total ~max_visible in
-    let section_header = Term.styled [ c_accent ] " Patches" in
+    let section_header = Term.styled [ Term.Sgr.bold ] " Patches" in
     let visible =
       List.sub views ~pos:offset ~len:(min count (total - offset))
     in
@@ -638,16 +624,15 @@ let render_patches ~width ~selected ~max_visible (views : patch_view list) =
       List.mapi visible ~f:(fun i pv ->
           render_patch_row ~width ~selected:(offset + i = selected) pv)
     in
+    let s = { offset; total; visible = count } in
+    let top, bottom = scroll_indicators s in
     let scroll_up =
-      if offset > 0 then
-        [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↑ %d more" offset) ]
-      else []
+      if String.is_empty top then []
+      else [ Term.styled [ Term.Sgr.dim ] (" " ^ top) ]
     in
-    let remaining = total - offset - count in
     let scroll_down =
-      if remaining > 0 then
-        [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf " ↓ %d more" remaining) ]
-      else []
+      if String.is_empty bottom then []
+      else [ Term.styled [ Term.Sgr.dim ] (" " ^ bottom) ]
     in
     (section_header :: scroll_up) @ rows @ scroll_down
 
@@ -655,6 +640,7 @@ let render_summary (views : patch_view list) =
   let count status =
     List.count views ~f:(fun v -> equal_display_status v.status status)
   in
+  let total = List.length views in
   let merged = count Merged in
   let is_running status =
     match status with
@@ -666,135 +652,93 @@ let render_summary (views : patch_view list) =
         false
   in
   let running = List.count views ~f:(fun v -> is_running v.status) in
-  let awaiting =
-    List.count views ~f:(fun v ->
-        match v.status with
-        | Awaiting_ci | Awaiting_review | Ci_queued | Review_queued -> true
-        | Merged | Needs_help | Approved_idle | Approved_running | Fixing_ci
-        | Addressing_review | Resolving_conflict | Responding_to_human
-        | Rebasing | Starting | Updating | Pending ->
-            false)
-  in
   let needs_help = count Needs_help in
   let parts =
     [
-      (if merged > 0 then
-         Some (Term.styled [ c_ok ] (Printf.sprintf "%d merged" merged))
-       else None);
-      (if running > 0 then
-         Some (Term.styled [ c_running ] (Printf.sprintf "%d running" running))
-       else None);
-      (if awaiting > 0 then
-         Some (Term.styled [ c_warn ] (Printf.sprintf "%d awaiting" awaiting))
-       else None);
+      Printf.sprintf "%d/%d merged" merged total;
+      (if running > 0 then Printf.sprintf "%d running" running else "");
       (if needs_help > 0 then
-         Some
-           (Term.styled [ c_alert ]
-              (Printf.sprintf "%d \xe2\x9a\xa0 needs help" needs_help))
-       else None);
+         Term.styled [ Term.Sgr.fg_red ]
+           (Printf.sprintf "%d need help" needs_help)
+       else "");
     ]
-    |> List.filter_map ~f:Fn.id
+    |> List.filter ~f:(fun s -> not (String.is_empty s))
   in
-  " " ^ String.concat ~sep:"  " parts
+  Term.styled [ Term.Sgr.dim ] (" " ^ String.concat ~sep:" │ " parts)
 
-let section_rule ~label:lbl ~width =
-  let prefix = Printf.sprintf "── %s " lbl in
-  let pad = Int.max 0 (width - Term.visible_length prefix) in
-  Term.styled [ c_muted ] (prefix ^ Term.hrule ~ch:"─" pad)
-
-let render_activity ~width (entries : activity_entry list) =
+let render_activity (entries : activity_entry list) =
   if List.is_empty entries then []
   else
-    let header = section_rule ~label:"Recent Activity" ~width in
+    let header = Term.styled [ Term.Sgr.bold ] " Activity" in
     let lines =
       List.map entries ~f:(fun entry ->
           match entry with
           | Transition { patch_id; from_label; to_status; to_label; action } ->
               Printf.sprintf "  %s: %s → %s (%s)"
-                (Term.styled [ c_muted ] patch_id)
+                (Term.styled [ Term.Sgr.dim ] patch_id)
                 from_label
                 (styled_status to_status to_label)
-                (Term.styled [ c_muted ] action)
+                (Term.styled [ Term.Sgr.dim ] action)
           | Event { patch_id; message } ->
               let prefix =
                 match patch_id with
-                | Some pid -> Term.styled [ c_muted ] (pid ^ ": ")
-                | None -> "  "
+                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | None -> ""
               in
-              Printf.sprintf "  %s%s" prefix (Term.styled [ c_muted ] message))
+              Printf.sprintf "  %s%s" prefix
+                (Term.styled [ Term.Sgr.dim ] message))
     in
     header :: lines
 
-let render_detail (pv : patch_view) ~width ?(transcript = "") () =
+(** Build the info rows for a detail view. Shared between [render_detail] and
+    [detail_info_height] to keep them in sync. *)
+let detail_info_rows (pv : patch_view) ~width =
+  let fit_value prefix value =
+    prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
+  in
   let header =
     Term.styled [ Term.Sgr.bold ]
       (Term.fit_width (Int.max 1 (width - 1)) (" " ^ pv.title))
   in
-  let info_rule = section_rule ~label:"Info" ~width in
+  let rule = Term.hrule width in
   let badge = render_status_badge pv.status in
-  let col_w = 16 in
-  let grid lbl value =
-    let pad = String.make (Int.max 1 (col_w - String.length lbl)) ' ' in
-    Printf.sprintf "  %s%s%s" lbl pad value
-  in
   let lines =
     [
       header;
-      info_rule;
-      grid "Status" badge;
-      grid "Patch ID" (Patch_id.to_string pv.patch_id);
-      grid "Branch" (Branch.to_string pv.branch);
-      grid "Base"
+      rule;
+      Printf.sprintf "  Status:      %s" badge;
+      fit_value "  Patch ID:    " (Patch_id.to_string pv.patch_id);
+      fit_value "  Branch:      " (Branch.to_string pv.branch);
+      fit_value "  Base:        "
         (match pv.base_branch with
         | Some b -> Branch.to_string b
-        | None -> Term.styled [ c_muted ] "(not set)");
-      grid "Worktree"
-        (match pv.worktree_path with
-        | Some p -> p
-        | None -> Term.styled [ c_muted ] "(none)");
-      grid "PR"
+        | None -> "(not set)");
+      fit_value "  Worktree:    "
+        (match pv.worktree_path with Some p -> p | None -> "(none)");
+      Printf.sprintf "  PR:          %s"
         (match pv.pr_number with
         | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
         | None -> if pv.has_pr then "yes" else "no");
-      grid "Dependencies" (Printf.sprintf "%d" pv.dep_count);
-      grid "CI failures"
-        (if pv.ci_failures > 0 then
-           Term.styled [ c_alert ] (Printf.sprintf "%d" pv.ci_failures)
-         else "0");
-      grid "Queue depth" (Printf.sprintf "%d" pv.queue_len);
-      grid "Conflict"
-        (if pv.has_conflict then Term.styled [ c_warn ] "yes" else "no");
-      grid "Comments"
-        (if pv.pending_comments > 0 then
-           Printf.sprintf "%d pending" pv.pending_comments
-         else "0 pending");
+      Printf.sprintf "  Dependencies: %d" pv.dep_count;
+      Printf.sprintf "  CI failures: %d" pv.ci_failures;
+      Printf.sprintf "  Queue depth: %d" pv.queue_len;
+      Printf.sprintf "  Conflict:    %s"
+        (if pv.has_conflict then "yes" else "no");
+      Printf.sprintf "  Comments:    %d pending" pv.pending_comments;
     ]
   in
   let op_line =
     match pv.current_op with
-    | Some op ->
-        [ grid "Current op" (Term.styled [ c_running ] (short_op_name op)) ]
+    | Some op -> [ Printf.sprintf "  Current op:  %s" (short_op_name op) ]
     | None -> []
   in
   let intervention =
     if pv.needs_intervention then
-      let banner_text = " NEEDS HUMAN ATTENTION " in
-      let inner_w = Int.max 1 (width - 6) in
-      let banner_text = Term.fit_width inner_w banner_text in
-      let top =
-        Printf.sprintf "  \xe2\x95\x94%s\xe2\x95\x97"
-          (Term.repeat inner_w "\xe2\x95\x90")
-      in
-      let mid = Printf.sprintf "  \xe2\x95\x91%s\xe2\x95\x91" banner_text in
-      let bot =
-        Printf.sprintf "  \xe2\x95\x9a%s\xe2\x95\x9d"
-          (Term.repeat inner_w "\xe2\x95\x90")
-      in
       [
         "";
-        Term.styled [ c_alert; Term.Sgr.bold ] top;
-        Term.styled [ c_alert; Term.Sgr.bold ] mid;
-        Term.styled [ c_alert; Term.Sgr.bold ] bot;
+        Term.styled
+          [ Term.Sgr.fg_red; Term.Sgr.bold ]
+          "  ⚠ Needs manual intervention";
       ]
     else []
   in
@@ -806,30 +750,36 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
           "failure"; "error"; "action_required"; "timed_out"; "startup_failure";
         ]
       in
-      let ci_header = [ ""; section_rule ~label:"CI Checks" ~width ] in
+      let ci_header = [ ""; Term.styled [ Term.Sgr.bold ] "  CI Checks" ] in
       let ci_rows =
         List.map pv.ci_checks ~f:(fun (c : Ci_check.t) ->
             let icon =
               if String.equal c.conclusion "success" then
-                Term.styled [ c_ok ] "\xe2\x9c\x93"
+                Term.styled [ Term.Sgr.fg_green ] "✓"
               else if
                 List.mem failure_conclusions c.conclusion ~equal:String.equal
-              then Term.styled [ c_alert ] "\xe2\x9c\x97"
-              else Term.styled [ c_warn ] "?"
+              then Term.styled [ Term.Sgr.fg_red ] "✗"
+              else Term.styled [ Term.Sgr.fg_yellow ] "?"
             in
             Printf.sprintf "    %s %s: %s" icon c.name c.conclusion)
       in
       ci_header @ ci_rows
   in
-  let comment_section = [] in
-  let transcript_section =
+  lines @ op_line @ intervention @ ci_section
+
+let render_detail (pv : patch_view) ~width ~scroll ?(transcript = "") () =
+  let info = detail_info_rows pv ~width in
+  let transcript_content =
     if String.is_empty transcript then []
     else
-      let transcript_header = [ ""; section_rule ~label:"Transcript" ~width ] in
       let wrap_line max_w line =
+        (* Wrap on visible characters, not ANSI escapes. Use a simple
+           byte-length heuristic — ANSI sequences add ~10 bytes per style
+           but this is good enough for TUI display. *)
         let stripped_len = String.length (Term.strip_ansi line) in
         if stripped_len <= max_w then [ line ]
         else
+          (* Fall back to raw split for long lines *)
           let rec split acc pos =
             if pos >= String.length line then List.rev acc
             else
@@ -840,65 +790,100 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       in
       let content_width = Int.max 1 (width - 4) in
       let rendered = Markdown_render.render_to_lines transcript in
-      let transcript_lines =
-        List.concat_map rendered ~f:(fun line ->
-            wrap_line content_width line
-            |> List.map ~f:(fun chunk -> "    " ^ chunk))
-      in
-      transcript_header @ transcript_lines
+      List.concat_map rendered ~f:(fun line ->
+          wrap_line content_width line
+          |> List.map ~f:(fun chunk -> "    " ^ chunk))
   in
-  let info = lines @ op_line @ intervention @ ci_section @ comment_section in
-  (info, transcript_section)
+  let total = List.length transcript_content in
+  if total = 0 || scroll.visible = 0 then (info, [], false, 0)
+  else
+    (* Reserve 3 lines for header + possible top/bottom indicators *)
+    let content_budget = Int.max 0 (scroll.visible - 3) in
+    let s = { offset = scroll.offset; total; visible = content_budget } in
+    let s = { s with offset = Int.max 0 (Int.min s.offset (scroll_max s)) } in
+    let vis_count = Int.min s.visible (Int.max 0 (total - s.offset)) in
+    let first = s.offset + 1 in
+    let last = s.offset + vis_count in
+    let transcript_hdr =
+      if vis_count > 0 then
+        Term.styled [ Term.Sgr.bold ]
+          (Printf.sprintf "  ── Transcript (line %d–%d of %d) ──" first last
+             total)
+      else
+        Term.styled [ Term.Sgr.bold ]
+          (Printf.sprintf "  ── Transcript (%d lines) ──" total)
+    in
+    let remaining = scroll_max s - s.offset in
+    let top_ind =
+      if s.offset > 0 then
+        [
+          Term.styled [ Term.Sgr.dim ] (Printf.sprintf "  ↑ %d above" s.offset);
+        ]
+      else []
+    in
+    let bot_ind =
+      if remaining > 0 then
+        [
+          Term.styled [ Term.Sgr.dim ] (Printf.sprintf "  ↓ %d below" remaining);
+        ]
+      else []
+    in
+    let visible_transcript =
+      List.sub transcript_content ~pos:s.offset ~len:vis_count
+    in
+    let at_bottom = s.offset >= scroll_max s in
+    let raw_section =
+      (transcript_hdr :: top_ind) @ visible_transcript @ bot_ind
+    in
+    let section = List.take raw_section scroll.visible in
+    (info, section, at_bottom, s.offset)
 
-let render_timeline ~width ~selected ~max_visible
-    (entries : activity_entry list) =
+let render_timeline ~width ~scroll (entries : activity_entry list) =
   let total = List.length entries in
-  let offset, count = visible_window ~selected ~total ~max_visible in
-  let header = section_rule ~label:"Timeline" ~width in
-  let visible =
-    List.sub entries ~pos:offset ~len:(min count (total - offset))
+  let s = { offset = scroll.offset; total; visible = scroll.visible } in
+  let s = { s with offset = Int.max 0 (Int.min s.offset (scroll_max s)) } in
+  let vis_count = Int.min s.visible (Int.max 0 (total - s.offset)) in
+  let header =
+    if total = 0 then Term.styled [ Term.Sgr.bold ] " Timeline"
+    else if vis_count = 0 then
+      Term.styled [ Term.Sgr.bold ]
+        (Printf.sprintf " ── Activity (%d entries) ──" total)
+    else
+      let first = s.offset + 1 in
+      let last = s.offset + vis_count in
+      Term.styled [ Term.Sgr.bold ]
+        (Printf.sprintf " ── Activity (%d–%d of %d) ──" first last total)
   in
+  let visible = List.sub entries ~pos:s.offset ~len:vis_count in
   let rows =
-    List.mapi visible ~f:(fun i entry ->
-        let is_selected = offset + i = selected in
+    List.map visible ~f:(fun entry ->
         let row =
           match entry with
           | Transition { patch_id; from_label; to_status; to_label; action } ->
-              Printf.sprintf "  %s  #%s  %s \xe2\x86\x92 %s (%s)"
-                (Term.styled [ c_muted ] "··:··:··")
-                (Term.styled [ c_muted ] patch_id)
-                (Term.styled [ c_muted ] from_label)
+              Printf.sprintf "  %s: %s → %s (%s)"
+                (Term.styled [ Term.Sgr.dim ] patch_id)
+                from_label
                 (styled_status to_status to_label)
-                (Term.styled [ c_muted ] action)
+                (Term.styled [ Term.Sgr.dim ] action)
           | Event { patch_id; message } ->
-              let pid_tag =
+              let prefix =
                 match patch_id with
-                | Some pid -> Printf.sprintf "  #%s" pid
-                | None -> ""
+                | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
+                | None -> "  "
               in
-              Printf.sprintf "  %s%s  \xc2\xb7  %s"
-                (Term.styled [ c_muted ] "··:··:··")
-                (Term.styled [ c_muted ] pid_tag)
-                (Term.styled [ c_muted ] message)
+              Printf.sprintf "  %s%s" prefix
+                (Term.styled [ Term.Sgr.dim ] message)
         in
-        let row = Term.fit_width (Int.max 1 (width - 1)) row in
-        if is_selected then apply_reverse_selection row else row)
+        Term.fit_width (Int.max 1 (width - 1)) row)
   in
+  let top, bottom = scroll_indicators s in
   let scroll_up =
-    if offset > 0 then
-      [
-        Term.styled [ c_muted ] (Printf.sprintf " \xe2\x86\x91 %d more" offset);
-      ]
-    else []
+    if String.is_empty top then []
+    else [ Term.styled [ Term.Sgr.dim ] (" " ^ top) ]
   in
-  let remaining = total - offset - count in
   let scroll_down =
-    if remaining > 0 then
-      [
-        Term.styled [ c_muted ]
-          (Printf.sprintf " \xe2\x86\x93 %d more" remaining);
-      ]
-    else []
+    if String.is_empty bottom then []
+    else [ Term.styled [ Term.Sgr.dim ] (" " ^ bottom) ]
   in
   (header :: scroll_up) @ rows @ scroll_down
 
@@ -921,17 +906,15 @@ let render_footer ~width ~view_mode ?input_line ?completion_hint () =
       let help =
         match view_mode with
         | List_view ->
-            Term.styled [ c_muted ]
-              " [j/k] navigate  [Enter] detail  [t] timeline  [h] help  [:] \
-               command  [q] quit"
+            Term.styled [ Term.Sgr.dim ]
+              " q:quit  r:refresh  ↑/↓:navigate  enter:detail  t:timeline  \
+               h:help"
         | Detail_view _ ->
-            Term.styled [ c_muted ]
-              " [\xe2\x86\x91\xe2\x86\x93] scroll  [Esc] back  [t] timeline  \
-               [h] help  [q] quit"
+            Term.styled [ Term.Sgr.dim ]
+              " q:quit  esc/backspace:back  enter:command  t:timeline  h:help"
         | Timeline_view ->
-            Term.styled [ c_muted ]
-              " [\xe2\x86\x91\xe2\x86\x93] scroll  [Esc] back  [t] list  [h] \
-               help  [q] quit"
+            Term.styled [ Term.Sgr.dim ]
+              " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
       in
       [ Term.hrule width; help ]
 
@@ -1010,6 +993,12 @@ let render_help_overlay ~width ~height =
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
 
+(** Number of info lines render_detail produces for a patch. Derived from
+    [detail_info_rows] so the two cannot drift. Width only affects truncation,
+    not line count, so we pass a dummy value. *)
+let detail_info_height (pv : patch_view) =
+  List.length (detail_info_rows pv ~width:80)
+
 (** {1 Public API} *)
 
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
@@ -1044,13 +1033,18 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       let idx_b = Map.find order b.patch_id |> Option.value ~default:999 in
       Int.compare idx_a idx_b)
 
-let render_frame ~width ~height ~selected ~view_mode
+let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~show_help
     ?(transcript = "") ?input_line ?completion_hint ?status_msg
     (views : patch_view list) =
   if show_help then
     let overlay = render_help_overlay ~width ~height in
-    { lines = overlay; width; detail_at_bottom = false }
+    {
+      lines = overlay;
+      width;
+      detail_at_bottom = false;
+      detail_scroll_offset = 0;
+    }
   else
     let header = render_header ~project_name ~width in
     let summary = [ render_summary views ] in
@@ -1062,59 +1056,68 @@ let render_frame ~width ~height ~selected ~view_mode
       if String.is_empty rendered then [] else [ rendered ]
     in
     match view_mode with
-    | Detail_view patch_id ->
-        let info, transcript_lines =
-          match
-            List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
-          with
-          | Some pv -> render_detail pv ~width ~transcript ()
-          | None -> ([ " (patch not found)" ], [])
-        in
-        (* Chrome: header(1) + blank + summary(1) + blank + info + blank
-           + status(0-1) + footer(2) *)
-        let fixed_lines =
-          1 + 1 + 1 + 1 + List.length info + 1 + List.length status_line + 2
-        in
-        let max_transcript = Int.max 0 (height - fixed_lines) in
-        let total_transcript = List.length transcript_lines in
-        let max_scroll = Int.max 0 (total_transcript - max_transcript) in
-        let scroll_offset = Int.min selected max_scroll in
-        let at_bottom = selected >= max_scroll in
-        let visible_transcript =
-          List.sub transcript_lines ~pos:scroll_offset
-            ~len:(Int.min max_transcript (total_transcript - scroll_offset))
-        in
-        let lines =
-          header @ [ "" ] @ summary @ [ "" ] @ info @ visible_transcript
-          @ [ "" ] @ status_line @ footer
-        in
-        { lines; width; detail_at_bottom = at_bottom }
+    | Detail_view patch_id -> (
+        match
+          List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
+        with
+        | Some pv ->
+            let info_h = detail_info_height pv in
+            (* Chrome: header(2) + blank + summary(1) + blank + info + blank
+               before footer + footer(2) *)
+            let fixed =
+              2 + 1 + 1 + 1 + info_h + 1 + List.length status_line + 2
+            in
+            let max_section = Int.max 0 (height - fixed) in
+            let scroll =
+              { offset = scroll_offset; total = 0; visible = max_section }
+            in
+            let info, transcript_section, at_bottom, clamped_offset =
+              render_detail pv ~width ~scroll ~transcript ()
+            in
+            let lines =
+              header @ [ "" ] @ summary @ [ "" ] @ info @ transcript_section
+              @ [ "" ] @ status_line @ footer
+            in
+            {
+              lines;
+              width;
+              detail_at_bottom = at_bottom;
+              detail_scroll_offset = clamped_offset;
+            }
+        | None ->
+            let lines =
+              header @ [ "" ] @ summary @ [ "" ] @ [ " (patch not found)" ]
+              @ [ "" ] @ status_line @ footer
+            in
+            { lines; width; detail_at_bottom = false; detail_scroll_offset = 0 }
+        )
     | Timeline_view ->
-        (* Budget: header(1) + blank + summary(1) + blank + "Timeline" header(1)
-         + scroll indicators(2) + blank + status(0-1) + footer(2) *)
+        (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
+         + scroll indicators(2) + blank before footer + footer(2) = 11 *)
         let reserved =
-          1 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line + 2
+          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line + 2
         in
         let max_rows = Int.max 0 (height - reserved) in
-        let timeline =
-          render_timeline ~width ~selected ~max_visible:max_rows activity
+        let scroll =
+          { offset = scroll_offset; total = 0; visible = max_rows }
         in
+        let timeline = render_timeline ~width ~scroll activity in
         let lines =
           header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ status_line
           @ footer
         in
-        { lines; width; detail_at_bottom = false }
+        { lines; width; detail_at_bottom = false; detail_scroll_offset = 0 }
     | List_view ->
-        let activity_lines = render_activity ~width activity in
+        let activity_lines = render_activity activity in
         let activity_height =
           if List.is_empty activity_lines then 0
           else 1 + List.length activity_lines
         in
-        (* Budget: header(1) + blank + summary(1) + blank + "Patches" header(1)
-         + scroll indicators(2) + blank + status(0-1) + footer(2) +
+        (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
+         + scroll indicators(2) + blank before footer + footer(2) +
          activity block *)
         let reserved =
-          1 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line + 2
+          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line + 2
           + activity_height
         in
         let max_patch_rows = Int.max 0 (height - reserved) in
@@ -1126,10 +1129,11 @@ let render_frame ~width ~height ~selected ~view_mode
           @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
           @ [ "" ] @ status_line @ footer
         in
-        { lines; width; detail_at_bottom = false }
+        { lines; width; detail_at_bottom = false; detail_scroll_offset = 0 }
 
 let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
 let detail_at_bottom frame = frame.detail_at_bottom
+let detail_scroll_offset frame = frame.detail_scroll_offset
 
 let paint_frame (frame : frame) =
   let buf = Buffer.create 4096 in
