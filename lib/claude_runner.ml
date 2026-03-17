@@ -25,7 +25,8 @@ let strip_ansi s =
         Re.opt (Re.alt [ Re.char '\x07'; Re.seq [ esc; Re.char '\\' ] ]);
       ]
   in
-  let re = Re.compile (Re.alt [ csi; osc ]) in
+  let cr = Re.char '\r' in
+  let re = Re.compile (Re.alt [ csi; osc; cr ]) in
   Re.replace_string re ~by:"" s
 
 (** Wrap a command in a pseudo-TTY via [script].
@@ -162,11 +163,13 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
   let args = pty_wrap (build_args ~prompt ~continue) in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
+    let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
+    Eio.Flow.close stdin_w;
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
     let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
     let child =
-      Eio.Process.spawn ~sw process_mgr ~cwd ~stdout:stdout_w ~stderr:stderr_w
-        args
+      Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
+        ~stderr:stderr_w args
     in
     Eio.Flow.close stdout_w;
     Eio.Flow.close stderr_w;
@@ -193,11 +196,13 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
   let args = pty_wrap (build_stream_args ~prompt ~continue) in
   let stderr_content, exit_code, got_events =
     Eio.Switch.run @@ fun sw ->
+    let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
+    Eio.Flow.close stdin_w;
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
     let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
     let child =
-      Eio.Process.spawn ~sw process_mgr ~cwd ~stdout:stdout_w ~stderr:stderr_w
-        args
+      Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
+        ~stderr:stderr_w args
     in
     Eio.Flow.close stdout_w;
     Eio.Flow.close stderr_w;
