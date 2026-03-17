@@ -91,6 +91,7 @@ module Patch = struct
   type t = {
     id : Patch_id.t;
     title : string;
+    description : string;
     branch : Branch.t;
     dependencies : Patch_id.t list;
   }
@@ -157,6 +158,7 @@ module Gameplan = struct
     project_name : string;
     problem_statement : string;
     solution_summary : string;
+    design_decisions : string;
     patches : Patch.t list;
   }
   [@@deriving show, eq, sexp_of, compare]

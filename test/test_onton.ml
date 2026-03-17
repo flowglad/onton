@@ -5,6 +5,7 @@ let () =
         {
           id = Onton.Types.Patch_id.of_string "1";
           title = "Test patch";
+          description = "";
           branch = Onton.Types.Branch.of_string "test-1";
           dependencies = [];
         };

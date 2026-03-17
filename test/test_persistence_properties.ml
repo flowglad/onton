@@ -99,6 +99,7 @@ let () =
                 project_name = "t";
                 problem_statement = "t";
                 solution_summary = "t";
+                design_decisions = "";
                 patches = [];
               }
           in
@@ -167,18 +168,6 @@ let () =
           | Error _ -> false
         with _ -> false)
   in
-  let last_session_id_roundtrip =
-    QCheck2.Test.make ~name:"last_session_id survives round-trip" ~count:200
-      gen_patch_agent_fully_populated (fun agent ->
-        try
-          let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson json with
-          | Ok agent' ->
-              Option.equal Session_id.equal agent.last_session_id
-                agent'.last_session_id
-          | Error _ -> false
-        with _ -> false)
-  in
   let missing_pr_number_defaults_none =
     QCheck2.Test.make ~name:"missing pr_number defaults to None" ~count:200
       gen_patch_agent_fully_populated (fun agent ->
@@ -208,7 +197,6 @@ let () =
         file_roundtrip;
         patch_agent_roundtrip_fully_populated;
         pr_number_roundtrip;
-        last_session_id_roundtrip;
         missing_pr_number_defaults_none;
       ]
   in
@@ -236,7 +224,6 @@ let () =
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool true);
         ("pending_comments", `List []);
-        ("last_session_id", `Null);
         ("tried_fresh", `Bool false);
       ]
   in
@@ -264,7 +251,6 @@ let () =
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool false);
         ("pending_comments", `List []);
-        ("last_session_id", `Null);
         ("tried_fresh", `Bool true);
       ]
   in
@@ -292,7 +278,6 @@ let () =
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool true);
         ("pending_comments", `List []);
-        ("last_session_id", `Null);
         ("tried_fresh", `Bool true);
       ]
   in
@@ -320,7 +305,6 @@ let () =
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool false);
         ("pending_comments", `List []);
-        ("last_session_id", `Null);
         ("tried_fresh", `Bool false);
       ]
   in

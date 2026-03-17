@@ -383,7 +383,7 @@ let () =
               ~needs_intervention:false ~queue:[] ~satisfies:false
               ~changed:false ~has_conflict:false ~base_branch:None
               ~ci_failure_count:0 ~session_fallback:Fresh_available
-              ~pending_comments:[] ~last_session_id:None ~ci_checks:a.ci_checks
+              ~pending_comments:[] ~ci_checks:a.ci_checks
               ~addressed_comment_ids:a.addressed_comment_ids ~removed:false
           in
           let a = start a ~base_branch:br in
@@ -421,16 +421,6 @@ let () =
           let a = add_addressed_comment_id a cid in
           let after = is_comment_addressed a cid in
           (not before) && after);
-      (* -- set_last_session_id stores session id -- *)
-      Test.make ~name:"set_last_session_id stores session id"
-        Gen.(
-          pair gen_pid
-            (map Session_id.of_string
-               (string_size ~gen:(char_range 'a' 'z') (int_range 8 16))))
-        (fun (pid, sid) ->
-          let a = create pid in
-          let a = set_last_session_id a sid in
-          Option.equal Session_id.equal a.last_session_id (Some sid));
       (* -- set_tried_fresh from Fresh_available -> Tried_fresh -- *)
       Test.make ~name:"set_tried_fresh from Fresh_available" gen_pid (fun pid ->
           let a = create pid in
@@ -477,7 +467,7 @@ let () =
               ~needs_intervention:false ~queue:[] ~satisfies:true ~changed:false
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
               ~session_fallback:Fresh_available ~pending_comments:[]
-              ~last_session_id:None ~ci_checks:[]
+              ~ci_checks:[]
               ~addressed_comment_ids:(Set.empty (module Comment_id))
               ~removed:false
           in

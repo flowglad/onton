@@ -59,7 +59,7 @@ let gen_patch =
     let gen_title = string_size ~gen:printable (int_range 5 50) in
     map4
       (fun id title branch dependencies ->
-        Patch.{ id; title; branch; dependencies })
+        Patch.{ id; title; description = ""; branch; dependencies })
       gen_patch_id gen_title gen_branch gen_deps)
 
 let gen_ci_check =
@@ -87,7 +87,13 @@ let gen_patch_list_unique =
               else [ Patch_id.of_string (Printf.sprintf "patch-%d" (i - 1)) ]
             in
             Patch.
-              { id; title = Printf.sprintf "Patch %d" i; branch; dependencies }))
+              {
+                id;
+                title = Printf.sprintf "Patch %d" i;
+                description = "";
+                branch;
+                dependencies;
+              }))
       (int_range 1 8))
 
 let gen_gameplan =
@@ -99,6 +105,7 @@ let gen_gameplan =
             project_name = "test-project";
             problem_statement = "test problem";
             solution_summary = "test solution";
+            design_decisions = "";
             patches;
           })
       gen_patch_list_unique)
@@ -224,7 +231,6 @@ let gen_patch_agent_fully_populated =
       list_small (map Comment_id.of_int (int_range 1 100_000))
     in
     let* pr_number = option gen_pr_number in
-    let* last_session_id = option gen_session_id in
     let a = Onton.Patch_agent.create pid in
     let a = Onton.Patch_agent.start a ~base_branch:branch in
     let a =
@@ -247,11 +253,6 @@ let gen_patch_agent_fully_populated =
     let a =
       match pr_number with
       | Some n -> Onton.Patch_agent.set_pr_number a n
-      | None -> a
-    in
-    let a =
-      match last_session_id with
-      | Some id -> Onton.Patch_agent.set_last_session_id a id
       | None -> a
     in
     return a)

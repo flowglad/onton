@@ -10,7 +10,11 @@ type t = private {
 val worktree_dir : repo_root:string -> patch_id:Types.Patch_id.t -> string
 
 val create :
-  process_mgr:_ Eio.Process.mgr -> repo_root:string -> patch:Types.Patch.t -> t
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  patch:Types.Patch.t ->
+  base_ref:string ->
+  t
 
 val remove : process_mgr:_ Eio.Process.mgr -> repo_root:string -> t -> unit
 

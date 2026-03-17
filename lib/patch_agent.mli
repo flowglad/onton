@@ -28,7 +28,6 @@ type t = private {
   ci_failure_count : int;
   session_fallback : session_fallback;
   pending_comments : pending_comment list;
-  last_session_id : Types.Session_id.t option;
   ci_checks : Types.Ci_check.t list;
   addressed_comment_ids : Set.M(Types.Comment_id).t;
   removed : bool;
@@ -89,15 +88,22 @@ val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
 val set_session_failed : t -> t
 (** Mark session fallback as [Given_up]. *)
 
-val set_last_session_id : t -> Types.Session_id.t -> t
-(** Record the session ID from the most recent Claude run. *)
-
 val set_tried_fresh : t -> t
 (** Advance session fallback to [Tried_fresh]. No-op if already [Tried_fresh] or
     [Given_up] — the fallback state only moves forward. *)
 
 val clear_session_fallback : t -> t
 (** Reset session fallback to [Fresh_available]. *)
+
+val on_session_failure : t -> is_fresh:bool -> t
+(** Handle a Claude session failure. Pure decision:
+    - Start path (no PR) + fresh failure: reset to [Fresh_available] for retry
+    - Resume failure: escalate to [Tried_fresh] (will try fresh next)
+    - Respond path fresh failure: escalate to [Given_up] → needs_intervention *)
+
+val on_pr_discovery_failure : t -> t
+(** Handle a successful Claude run where PR discovery failed. Resets fallback so
+    the patch retries from scratch. *)
 
 val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
@@ -150,7 +156,6 @@ val restore :
   ci_failure_count:int ->
   session_fallback:session_fallback ->
   pending_comments:pending_comment list ->
-  last_session_id:Types.Session_id.t option ->
   ci_checks:Types.Ci_check.t list ->
   addressed_comment_ids:Set.M(Types.Comment_id).t ->
   removed:bool ->

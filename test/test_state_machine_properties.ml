@@ -20,7 +20,14 @@ let mk_patches n =
         if i = 0 then []
         else [ Patch_id.of_string (Printf.sprintf "p%d" (i - 1)) ]
       in
-      Patch.{ id; title = Printf.sprintf "Patch %d" i; branch; dependencies })
+      Patch.
+        {
+          id;
+          title = Printf.sprintf "Patch %d" i;
+          description = "";
+          branch;
+          dependencies;
+        })
 
 (** Generate a random command to apply to the orchestrator. Commands model the
     external events that the runner can produce. *)

@@ -201,10 +201,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("session_fallback", session_fallback_to_yojson a.session_fallback);
       ( "pending_comments",
         `List (List.map a.pending_comments ~f:pending_comment_to_yojson) );
-      ( "last_session_id",
-        match a.last_session_id with
-        | None -> `Null
-        | Some id -> `String (Session_id.to_string id) );
       ("ci_checks", `List (List.map a.ci_checks ~f:ci_check_to_yojson));
       ( "addressed_comment_ids",
         `List
@@ -285,11 +281,7 @@ let patch_agent_of_yojson json =
        ~base_branch:
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
-       ~session_fallback ~pending_comments
-       ~last_session_id:
-         (string_member_opt "last_session_id" json
-         |> Option.map ~f:Session_id.of_string)
-       ~ci_checks ~addressed_comment_ids
+       ~session_fallback ~pending_comments ~ci_checks ~addressed_comment_ids
        ~removed:(bool_member_opt "removed" json |> Option.value ~default:false))
 
 (* ---------- Transition_entry ---------- *)

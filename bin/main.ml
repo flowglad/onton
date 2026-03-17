@@ -254,23 +254,21 @@ let mark_session_failed runtime patch_id =
       let orch = Orchestrator.set_tried_fresh orch patch_id in
       Orchestrator.complete orch patch_id)
 
-(** Compute the session ID for the fallback chain.
+(** Compute the session mode for the fallback chain.
 
-    The fallback chain is: resume existing session → fresh session → give up.
-    - [Fresh_available] with a [last_session_id]: try to resume it.
-    - [Fresh_available] with no [last_session_id], or [Tried_fresh]: start a
-      fresh session (no resume).
+    The fallback chain is: continue existing session → fresh session → give up.
+    - [Fresh_available] with [has_pr]: use [--continue] to resume worktree
+      session.
+    - [Fresh_available] without [has_pr], or [Tried_fresh]: start fresh (no
+      --continue).
     - [Given_up]: the agent has exhausted its fallback chain — return
       [`Give_up]. *)
-let session_id_for_fallback (agent : Patch_agent.t) :
-    [ `Resume of Session_id.t | `Fresh | `Give_up ] =
+let session_mode (agent : Patch_agent.t) : [ `Continue | `Fresh | `Give_up ] =
   match agent.Patch_agent.session_fallback with
   | Patch_agent.Given_up -> `Give_up
   | Patch_agent.Tried_fresh -> `Fresh
-  | Patch_agent.Fresh_available -> (
-      match agent.Patch_agent.last_session_id with
-      | Some id -> `Resume id
-      | None -> `Fresh)
+  | Patch_agent.Fresh_available ->
+      if agent.Patch_agent.has_pr then `Continue else `Fresh
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
@@ -314,22 +312,22 @@ let log_stream_entry runtime ~patch_id kind =
     stores the session ID and clears fallback state. *)
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
     ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected =
-  match session_id_for_fallback agent with
+  match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
-        "session fallback exhausted (resume failed, fresh failed), needs \
+        "session fallback exhausted (continue failed, fresh failed), needs \
          intervention";
       mark_session_failed runtime patch_id;
       `Failed
-  | (`Resume _ | `Fresh) as fallback -> (
-      let session_id, is_fresh =
-        match fallback with
-        | `Resume id -> (Some id, false)
-        | `Fresh -> (None, true)
+  | (`Continue | `Fresh) as mode -> (
+      let continue, is_fresh =
+        match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
       let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
       let cwd = Eio.Path.(fs / worktree_path) in
       let text_buf = Buffer.create 4096 in
+      let error_buf = Buffer.create 256 in
+      let tool_count = ref 0 in
       let pr_found = ref false in
       let needle_len =
         String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
@@ -354,6 +352,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
                   on_pr_detected pr_number
               | None -> ())
         | Types.Stream_event.Tool_use { name; _ } ->
+            tool_count := !tool_count + 1;
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Tool_use name)
         | Types.Stream_event.Final_result { stop_reason; _ } ->
@@ -361,6 +360,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Finished reason)
         | Types.Stream_event.Error msg ->
+            if Buffer.length error_buf > 0 then Buffer.add_char error_buf '\n';
+            Buffer.add_string error_buf msg;
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Stream_error msg)
       in
@@ -368,7 +369,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
         try
           Ok
             (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
-               ~session_id ~on_event)
+               ~continue ~on_event)
         with exn -> Error (Printexc.to_string exn)
       in
       match result with
@@ -384,26 +385,45 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               Orchestrator.complete orch patch_id);
           `Failed
       | Ok r when r.Claude_runner.exit_code = 0 ->
+          let stream_errors = String.trim (Buffer.contents error_buf) in
+          if String.length stream_errors > 0 then
+            log_event runtime ~patch_id
+              (Printf.sprintf "Claude exited 0 but had stream errors: %s"
+                 (if String.length stream_errors <= 500 then stream_errors
+                  else String.sub stream_errors 0 500));
+          let text_len = Buffer.length text_buf in
+          let tools = !tool_count in
+          if tools = 0 && text_len < 200 then
+            log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Claude exited 0 with no tool use and %d chars of text: %s"
+                 text_len
+                 (let s = String.trim (Buffer.contents text_buf) in
+                  if String.length s <= 200 then s
+                  else String.sub s 0 200 ^ "..."));
           Runtime.update_orchestrator runtime (fun orch ->
-              let orch =
-                Orchestrator.set_last_session_id orch patch_id
-                  r.Claude_runner.session_id
-              in
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
       | Ok r ->
+          let stderr = String.trim r.Claude_runner.stderr in
+          let stream_errors = String.trim (Buffer.contents error_buf) in
+          let detail =
+            match (stderr, stream_errors) with
+            | "", "" -> "(no error details)"
+            | "", e | e, "" -> e
+            | s, e -> s ^ " | stream: " ^ e
+          in
+          let detail =
+            if String.length detail <= 500 then detail
+            else String.sub detail 0 500
+          in
           log_event runtime ~patch_id
-            (Printf.sprintf "Claude exited with code %d, marking session failed"
-               r.Claude_runner.exit_code);
+            (Printf.sprintf
+               "Claude exited with code %d, marking session failed: %s"
+               r.Claude_runner.exit_code detail);
           Runtime.update_orchestrator runtime (fun orch ->
               let orch =
-                Orchestrator.set_last_session_id orch patch_id
-                  r.Claude_runner.session_id
-              in
-              let orch = Orchestrator.set_session_failed orch patch_id in
-              let orch =
-                if is_fresh then Orchestrator.set_tried_fresh orch patch_id
-                else orch
+                Orchestrator.on_session_failure orch patch_id ~is_fresh
               in
               Orchestrator.complete orch patch_id);
           `Failed)
@@ -470,7 +490,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
   let rec loop () =
-    match Eio_unix.run_in_systhread Term.Key.read with
+    match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
     | Some key -> (
         if !text_mode then
@@ -892,20 +912,29 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                 let poll_result =
                   Poller.poll ~was_merged ~addressed_ids pr_state
                 in
+                let pending_logs = ref [] in
                 Runtime.update_orchestrator runtime (fun orch ->
                     let orch =
-                      if poll_result.Poller.merged then
-                        Orchestrator.mark_merged orch patch_id
+                      if poll_result.Poller.merged then (
+                        pending_logs := ("merged", patch_id) :: !pending_logs;
+                        Orchestrator.mark_merged orch patch_id)
                       else orch
                     in
                     let orch =
-                      if poll_result.Poller.has_conflict then
-                        Orchestrator.set_has_conflict orch patch_id
+                      if poll_result.Poller.has_conflict then (
+                        pending_logs :=
+                          ("merge conflict detected", patch_id) :: !pending_logs;
+                        Orchestrator.set_has_conflict orch patch_id)
                       else orch
                     in
                     let orch =
                       Base.List.fold poll_result.Poller.queue ~init:orch
                         ~f:(fun acc kind ->
+                          pending_logs :=
+                            ( Printf.sprintf "enqueued %s"
+                                (Operation_kind.show kind),
+                              patch_id )
+                            :: !pending_logs;
                           Orchestrator.enqueue acc patch_id kind)
                     in
                     let _ci_store =
@@ -936,11 +965,14 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
                           ~valid:true));
+                Base.List.iter (Base.List.rev !pending_logs)
+                  ~f:(fun (msg, pid) -> log_event runtime ~patch_id:pid msg);
                 if pr_state.Github.Pr_state.ci_checks_truncated then
                   log_event runtime ~patch_id
                     "warning: CI check list was truncated (>100 checks); some \
                      failures may not appear in the prompt"));
     (* Reconcile *)
+    let reconcile_logs = ref [] in
     Runtime.update runtime (fun snap ->
         let orch = snap.Runtime.orchestrator in
         let agents = Orchestrator.all_agents orch in
@@ -962,7 +994,6 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
           Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
               if a.Patch_agent.merged then Some a.Patch_agent.patch_id else None)
         in
-        let gp = snap.Runtime.gameplan in
         let actions =
           Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
             ~merged_pr_patches:merged_patches ~branch_of patch_views
@@ -972,13 +1003,14 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
               match action with
               | Reconciler.Mark_merged pid -> Orchestrator.mark_merged orch pid
               | Reconciler.Enqueue_rebase pid ->
+                  reconcile_logs :=
+                    ("rebase enqueued by reconciler", pid) :: !reconcile_logs;
                   Orchestrator.enqueue orch pid Operation_kind.Rebase
               | Reconciler.Start_operation _ -> orch)
         in
-        let orch, _actions =
-          Orchestrator.tick orch ~patches:gp.Gameplan.patches
-        in
         { snap with Runtime.orchestrator = orch });
+    Base.List.iter (Base.List.rev !reconcile_logs) ~f:(fun (msg, pid) ->
+        log_event runtime ~patch_id:pid msg);
     Eio.Time.sleep clock config.poll_interval;
     loop ()
   in
@@ -1082,7 +1114,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       "creating worktree";
                                     ignore
                                       (Worktree.create ~process_mgr
-                                         ~repo_root:config.repo_root ~patch));
+                                         ~repo_root:config.repo_root ~patch
+                                         ~base_ref:
+                                           (Branch.to_string base_branch)));
                                   let prompt =
                                     Prompt.render_patch_prompt ~project_name
                                       ?pr_number:agent.Patch_agent.pr_number
@@ -1112,6 +1146,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~branch:patch.Patch.branch ~base_branch
                                 with
                                 | Ok pr_number ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "PR #%d created"
+                                         (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
                                     if not (Branch.equal base_branch main) then
@@ -1134,7 +1171,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     log_event runtime ~patch_id
                                       (Printf.sprintf "PR discovery failed: %s"
                                          msg);
-                                    mark_session_failed runtime patch_id
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        let orch =
+                                          Orchestrator.on_pr_discovery_failure
+                                            orch patch_id
+                                        in
+                                        Orchestrator.complete orch patch_id)
                               in
                               discover 2)))
           | Orchestrator.Rebase (patch_id, new_base) ->
@@ -1342,6 +1385,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             project_name;
             problem_statement = "";
             solution_summary = "";
+            design_decisions = "";
             patches = [];
           }
       in
@@ -1483,6 +1527,12 @@ let run_with_config (config : config) gameplan existing_snapshot =
       Stdlib.exit 1
   | Ok () ->
       Eio_main.run @@ fun env ->
+      Sys.set_signal Sys.sigint
+        (Sys.Signal_handle
+           (fun _ ->
+             Printf.eprintf "\nInterrupted.\n%!";
+             (try Unix.kill 0 Sys.sigterm with Unix.Unix_error _ -> ());
+             Stdlib.exit 130));
       let runtime =
         match existing_snapshot with
         | Some snap ->

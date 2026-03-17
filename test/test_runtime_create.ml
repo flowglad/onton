@@ -11,6 +11,7 @@ let () =
       Gameplan.project_name = "test";
       problem_statement = "";
       solution_summary = "";
+      design_decisions = "";
       patches = [];
     }
   in

@@ -1,49 +1,21 @@
 open Base
 
-type result = {
-  session_id : Types.Session_id.t;
-  exit_code : int;
-  stdout : string;
-  stderr : string;
-}
+type result = { exit_code : int; stdout : string; stderr : string }
 [@@deriving show, eq, sexp_of, compare]
 
-let generate_session_id () =
-  (* Random.bits() yields 30 bits per call; combine calls for full-width fields *)
-  let r1 = Random.bits () in
-  let r2 = Random.bits () in
-  let r3 = Random.bits () in
-  let r4 = Random.bits () in
-  let r5 = Random.bits () in
-  let last_raw = (r4 lsr 16) lor (r5 lsl 14) in
-  let last_field = last_raw land 0xFFFFFFFFFFFF in
-  let uuid =
-    Printf.sprintf "%08x-%04x-%04x-%04x-%012x"
-      ((r1 lsl 2) lor (r2 land 0x3))
-      ((r2 lsr 2) land 0xFFFF)
-      (r3 land 0xFFFF) (r4 land 0xFFFF) last_field
-  in
-  Types.Session_id.of_string uuid
-
-let build_args ~prompt ~session_id =
+let build_args ~prompt ~continue =
   let base = [ "claude"; "--print"; "--output-format"; "text" ] in
-  let session_args =
-    match session_id with
-    | Some id -> [ "--resume"; Types.Session_id.to_string id ]
-    | None -> []
-  in
+  let session_args = if continue then [ "--continue" ] else [] in
   base @ session_args @ [ "--"; prompt ]
 
-let build_stream_args ~prompt ~session_id =
-  let base = [ "claude"; "--print"; "--output-format"; "stream-json" ] in
-  let session_args =
-    match session_id with
-    | Some id -> [ "--resume"; Types.Session_id.to_string id ]
-    | None -> []
+let build_stream_args ~prompt ~continue =
+  let base =
+    [ "claude"; "--print"; "--verbose"; "--output-format"; "stream-json" ]
   in
+  let session_args = if continue then [ "--continue" ] else [] in
   base @ session_args @ [ "--"; prompt ]
 
-let parse_stream_event (line : string) : Types.Stream_event.t option =
+let parse_stream_events (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
   | json -> (
       let open Yojson.Safe.Util in
@@ -58,8 +30,8 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
                 member "text" delta |> to_string_option
                 |> Option.value ~default:""
               in
-              Some (Types.Stream_event.Text_delta text)
-          | _ -> None)
+              [ Types.Stream_event.Text_delta text ]
+          | _ -> [])
       | Some "content_block_start" -> (
           let content_block = member "content_block" json in
           let block_type = member "type" content_block |> to_string_option in
@@ -69,8 +41,31 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
                 member "name" content_block
                 |> to_string_option |> Option.value ~default:""
               in
-              Some (Types.Stream_event.Tool_use { name; input = "" })
-          | _ -> None)
+              [ Types.Stream_event.Tool_use { name; input = "" } ]
+          | _ -> [])
+      | Some "assistant" ->
+          (* --verbose format: assistant event contains message.content array *)
+          let content =
+            match member "message" json |> member "content" with
+            | `List l -> l
+            | _ -> []
+          in
+          List.filter_map content ~f:(fun block ->
+              let block_type = member "type" block |> to_string_option in
+              match block_type with
+              | Some "tool_use" ->
+                  let name =
+                    member "name" block |> to_string_option
+                    |> Option.value ~default:""
+                  in
+                  Some (Types.Stream_event.Tool_use { name; input = "" })
+              | Some "text" ->
+                  let text =
+                    member "text" block |> to_string_option
+                    |> Option.value ~default:""
+                  in
+                  Some (Types.Stream_event.Text_delta text)
+              | _ -> None)
       | Some "message_delta" -> (
           let delta = member "delta" json in
           let raw_reason =
@@ -78,37 +73,57 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
             |> Option.value ~default:""
           in
           match Types.Stop_reason.of_string raw_reason with
-          | None -> None
+          | None -> []
           | Some stop_reason ->
-              Some (Types.Stream_event.Final_result { text = ""; stop_reason }))
+              [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
       | Some "result" ->
-          let text =
-            member "result" json |> to_string_option |> Option.value ~default:""
+          let is_error =
+            member "is_error" json |> to_bool_option
+            |> Option.value ~default:false
           in
-          let raw_reason =
-            member "stop_reason" json |> to_string_option
-            |> Option.value ~default:"end_turn"
-          in
-          let stop_reason =
-            Types.Stop_reason.of_string raw_reason
-            |> Option.value ~default:Types.Stop_reason.End_turn
-          in
-          Some (Types.Stream_event.Final_result { text; stop_reason })
+          if is_error then
+            let errors =
+              match member "errors" json with
+              | `List items ->
+                  List.filter_map items ~f:(fun item -> to_string_option item)
+              | _ -> []
+            in
+            let msg =
+              match errors with
+              | [] -> "unknown error"
+              | errs -> String.concat ~sep:"; " errs
+            in
+            [ Types.Stream_event.Error msg ]
+          else
+            let text =
+              member "result" json |> to_string_option
+              |> Option.value ~default:""
+            in
+            let raw_reason =
+              member "stop_reason" json |> to_string_option
+              |> Option.value ~default:"end_turn"
+            in
+            let stop_reason =
+              Types.Stop_reason.of_string raw_reason
+              |> Option.value ~default:Types.Stop_reason.End_turn
+            in
+            [ Types.Stream_event.Final_result { text; stop_reason } ]
       | Some "error" ->
           let err =
             member "error" json |> member "message" |> to_string_option
             |> Option.value ~default:"unknown error"
           in
-          Some (Types.Stream_event.Error err)
-      | _ -> None)
-  | exception Yojson.Json_error _ -> None
+          [ Types.Stream_event.Error err ]
+      | _ -> [])
+  | exception Yojson.Json_error _ -> []
 
-let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
+(** Backward-compatible wrapper returning the first parsed event. *)
+let parse_stream_event (line : string) : Types.Stream_event.t option =
+  match parse_stream_events line with [] -> None | e :: _ -> Some e
+
+let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
   ignore (patch_id : Types.Patch_id.t);
-  let fallback_id =
-    match session_id with Some id -> id | None -> generate_session_id ()
-  in
-  let args = build_args ~prompt ~session_id in
+  let args = build_args ~prompt ~continue in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
@@ -130,19 +145,11 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (out, err, code)
   in
-  {
-    session_id = fallback_id;
-    exit_code;
-    stdout = stdout_content;
-    stderr = stderr_content;
-  }
+  { exit_code; stdout = stdout_content; stderr = stderr_content }
 
-let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
+let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
   ignore (patch_id : Types.Patch_id.t);
-  let fallback_id =
-    match session_id with Some id -> id | None -> generate_session_id ()
-  in
-  let args = build_stream_args ~prompt ~session_id in
+  let args = build_stream_args ~prompt ~continue in
   let stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
@@ -162,10 +169,8 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
           match Eio.Buf_read.line stdout_buf with
           | line ->
               let trimmed = String.strip line in
-              (if not (String.is_empty trimmed) then
-                 match parse_stream_event trimmed with
-                 | Some event -> on_event event
-                 | None -> ());
+              if not (String.is_empty trimmed) then
+                List.iter (parse_stream_events trimmed) ~f:on_event;
               read_lines ()
           | exception End_of_file -> ()
         in
@@ -175,56 +180,49 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (!err_ref, code)
   in
-  { session_id = fallback_id; exit_code; stdout = ""; stderr = stderr_content }
+  { exit_code; stdout = ""; stderr = stderr_content }
 
-let%test "build_args without session" =
-  let args = build_args ~prompt:"do stuff" ~session_id:None in
+let%test "build_args without continue" =
+  let args = build_args ~prompt:"do stuff" ~continue:false in
   List.equal String.equal args
     [ "claude"; "--print"; "--output-format"; "text"; "--"; "do stuff" ]
 
-let%test "build_args with session" =
-  let sid = Types.Session_id.of_string "abc-123" in
-  let args = build_args ~prompt:"do stuff" ~session_id:(Some sid) in
+let%test "build_args with continue" =
+  let args = build_args ~prompt:"do stuff" ~continue:true in
   List.equal String.equal args
     [
       "claude";
       "--print";
       "--output-format";
       "text";
-      "--resume";
-      "abc-123";
+      "--continue";
       "--";
       "do stuff";
     ]
 
-let%test "generate_session_id produces non-empty string" =
-  let id = generate_session_id () in
-  not (String.is_empty (Types.Session_id.to_string id))
-
-let%test "generate_session_id produces unique values across many calls" =
-  let ids =
-    List.init 1000 ~f:(fun _ ->
-        Types.Session_id.to_string (generate_session_id ()))
-  in
-  let unique_count = Set.length (Set.of_list (module String) ids) in
-  unique_count = 1000
-
-let%test "build_stream_args without session" =
-  let args = build_stream_args ~prompt:"do stuff" ~session_id:None in
-  List.equal String.equal args
-    [ "claude"; "--print"; "--output-format"; "stream-json"; "--"; "do stuff" ]
-
-let%test "build_stream_args with session" =
-  let sid = Types.Session_id.of_string "abc-123" in
-  let args = build_stream_args ~prompt:"do stuff" ~session_id:(Some sid) in
+let%test "build_stream_args without continue" =
+  let args = build_stream_args ~prompt:"do stuff" ~continue:false in
   List.equal String.equal args
     [
       "claude";
       "--print";
+      "--verbose";
       "--output-format";
       "stream-json";
-      "--resume";
-      "abc-123";
+      "--";
+      "do stuff";
+    ]
+
+let%test "build_stream_args with continue" =
+  let args = build_stream_args ~prompt:"do stuff" ~continue:true in
+  List.equal String.equal args
+    [
+      "claude";
+      "--print";
+      "--verbose";
+      "--output-format";
+      "stream-json";
+      "--continue";
       "--";
       "do stuff";
     ]
@@ -261,6 +259,13 @@ let%test "parse_stream_event message_delta with stop_reason" =
     (Some
        (Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn }))
+
+let%test "parse_stream_event error result" =
+  let line =
+    {|{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["bad session ID"]}|}
+  in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Error "bad session ID"))
 
 let%test "parse_stream_event invalid json returns None" =
   Option.is_none (parse_stream_event "not json at all")

@@ -173,7 +173,7 @@ let fire t action =
   match action with
   | Start (pid, base) ->
       let a = agent t pid in
-      if a.Patch_agent.has_pr then t
+      if a.Patch_agent.has_pr || a.Patch_agent.busy then t
       else
         update_agent t pid ~f:(fun a -> Patch_agent.start a ~base_branch:base)
   | Respond (pid, k) -> update_agent t pid ~f:(fun a -> Patch_agent.respond a k)
@@ -221,15 +221,18 @@ let set_pr_number t patch_id pr_number =
 let set_session_failed t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_session_failed
 
-let set_last_session_id t patch_id session_id =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_last_session_id a session_id)
-
 let set_tried_fresh t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_tried_fresh
 
 let clear_session_fallback t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_session_fallback
+
+let on_session_failure t patch_id ~is_fresh =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.on_session_failure a ~is_fresh)
+
+let on_pr_discovery_failure t patch_id =
+  update_agent t patch_id ~f:Patch_agent.on_pr_discovery_failure
 
 let set_has_conflict t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_has_conflict
