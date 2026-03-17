@@ -1005,7 +1005,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
             "runner: fiber exiting with busy=true, forcing complete";
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.complete orch patch_id)))
-      f
+      (fun () ->
+        try f ()
+        with exn ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "runner: unexpected action exception: %s"
+               (Printexc.to_string exn));
+          mark_session_failed runtime patch_id)
   in
   let rec loop () =
     let actions, gameplan =
