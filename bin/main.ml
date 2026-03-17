@@ -1031,12 +1031,12 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                           | Operation_kind.Ci -> (
                               match Patch_decision.on_ci_failure agent with
                               | Patch_decision.Enqueue_ci ->
-                                  (if is_new then
-                                     pending_logs :=
-                                       ( Printf.sprintf "enqueued %s"
-                                           (Operation_kind.show kind),
-                                         patch_id )
-                                       :: !pending_logs);
+                                  if is_new then
+                                    pending_logs :=
+                                      ( Printf.sprintf "enqueued %s"
+                                          (Operation_kind.show kind),
+                                        patch_id )
+                                      :: !pending_logs;
                                   Orchestrator.enqueue acc patch_id kind
                               | Patch_decision.Ci_already_queued -> acc
                               | Patch_decision.Cap_reached ->
@@ -1047,24 +1047,24 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                                     :: !pending_logs;
                                   acc)
                           | Operation_kind.Review_comments ->
-                              (if is_new then
-                                 pending_logs :=
-                                   ( Printf.sprintf
-                                       "enqueued %s (%d new comments)"
-                                       (Operation_kind.show kind)
-                                       (Base.List.length
-                                          poll_result.Poller.new_comments),
-                                     patch_id )
-                                   :: !pending_logs);
+                              if is_new then
+                                pending_logs :=
+                                  ( Printf.sprintf
+                                      "enqueued %s (%d new comments)"
+                                      (Operation_kind.show kind)
+                                      (Base.List.length
+                                         poll_result.Poller.new_comments),
+                                    patch_id )
+                                  :: !pending_logs;
                               Orchestrator.enqueue acc patch_id kind
                           | Operation_kind.Rebase | Operation_kind.Human
                           | Operation_kind.Merge_conflict ->
-                              (if is_new then
-                                 pending_logs :=
-                                   ( Printf.sprintf "enqueued %s"
-                                       (Operation_kind.show kind),
-                                     patch_id )
-                                   :: !pending_logs);
+                              if is_new then
+                                pending_logs :=
+                                  ( Printf.sprintf "enqueued %s"
+                                      (Operation_kind.show kind),
+                                    patch_id )
+                                  :: !pending_logs;
                               Orchestrator.enqueue acc patch_id kind)
                     in
                     let _ci_store =
