@@ -549,7 +549,19 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root
               Buffer.clear buf;
               saved_draft := "";
               text_mode := false;
-              (match Tui_input.parse_line line with
+              (* In detail view, bare text (no N> prefix) is sent to the
+                 currently viewed patch as a human message. *)
+              let parsed =
+                let p = Tui_input.parse_line line in
+                match (p, !view_mode) with
+                | None, Tui.Detail_view pid
+                  when not (Base.String.is_empty (Base.String.strip line)) ->
+                    Some (Tui_input.Send_message (pid, Base.String.strip line))
+                | None, (Tui.List_view | Tui.Timeline_view | Tui.Detail_view _)
+                | Some _, _ ->
+                    p
+              in
+              (match parsed with
               | Some (Tui_input.Send_message (patch_id, msg)) ->
                   let patch_exists =
                     Runtime.read runtime (fun snap ->
