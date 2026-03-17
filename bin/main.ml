@@ -890,7 +890,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                     saved_list_selected := idx;
                     let pid = Base.List.nth_exn pids idx in
                     view_mode := Tui.Detail_view pid;
-                    selected := 0);
+                    selected := Base.Int.max_value);
                   loop ()
               | Tui.Detail_view _ ->
                   text_mode := true;
