@@ -1836,7 +1836,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
               proj;
           ]
       else
-        let stored_gp_path = Project_store.gameplan_path proj in
+        let stored_gp_path = Project_store.stored_gameplan_path proj in
         if not (Stdlib.Sys.file_exists stored_gp_path) then
           Error
             [ Printf.sprintf "Stored gameplan not found for project %S." proj ]

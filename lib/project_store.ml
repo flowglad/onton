@@ -31,6 +31,13 @@ let config_path project_name =
 let gameplan_path project_name =
   Stdlib.Filename.concat (project_dir project_name) "gameplan.md"
 
+let gameplan_json_path project_name =
+  Stdlib.Filename.concat (project_dir project_name) "gameplan.json"
+
+let stored_gameplan_path project_name =
+  let md = gameplan_path project_name in
+  if Stdlib.Sys.file_exists md then md else gameplan_json_path project_name
+
 let ensure_dir path =
   let rec mkdir_p dir =
     if not (Stdlib.Sys.file_exists dir) then (
@@ -91,7 +98,11 @@ let load_config ~project_name =
 let save_gameplan_source ~project_name ~source_path =
   let dir = project_dir project_name in
   ensure_dir dir;
-  let dest = gameplan_path project_name in
+  let dest, stale =
+    if Stdlib.Filename.check_suffix source_path ".json" then
+      (gameplan_json_path project_name, gameplan_path project_name)
+    else (gameplan_path project_name, gameplan_json_path project_name)
+  in
   let ic = Stdlib.open_in source_path in
   let content =
     Stdlib.Fun.protect
@@ -103,7 +114,9 @@ let save_gameplan_source ~project_name ~source_path =
     ~finally:(fun () -> Stdlib.close_out oc)
     (fun () ->
       Stdlib.output_string oc content;
-      Stdlib.flush oc)
+      Stdlib.flush oc);
+  if Stdlib.Sys.file_exists stale then
+    try Stdlib.Sys.remove stale with Sys_error _ -> ()
 
 let project_exists project_name =
   Stdlib.Sys.file_exists (config_path project_name)

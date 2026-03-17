@@ -45,10 +45,18 @@ val load_config : project_name:string -> (stored_config, string) result
 (** Load a previously saved project config. *)
 
 val save_gameplan_source : project_name:string -> source_path:string -> unit
-(** Copy the gameplan markdown into the project data directory. *)
+(** Copy the gameplan file into the project data directory. Detects [.json] vs
+    markdown by file extension and stores to the appropriate filename. *)
 
 val gameplan_path : string -> string
-(** Path to the stored gameplan markdown. *)
+(** Path to the stored gameplan markdown ([gameplan.md]). *)
+
+val gameplan_json_path : string -> string
+(** Path to the stored gameplan JSON ([gameplan.json]). *)
+
+val stored_gameplan_path : string -> string
+(** Returns the path to whichever stored gameplan file exists ([gameplan.md]
+    takes precedence; falls back to [gameplan.json]). *)
 
 val project_exists : string -> bool
 (** Whether a project data directory with config exists. *)

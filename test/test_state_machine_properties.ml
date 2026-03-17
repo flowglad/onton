@@ -27,6 +27,9 @@ let mk_patches n =
           description = "";
           branch;
           dependencies;
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
         })
 
 (** Generate a random command to apply to the orchestrator. Commands model the

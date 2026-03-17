@@ -311,6 +311,9 @@ let () =
           description = "";
           branch = Types.Branch.of_string "b1";
           dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
         };
     ]
   in
@@ -361,6 +364,9 @@ let () =
         description = "";
         branch = Types.Branch.of_string "b1";
         dependencies = [];
+        spec = "";
+        acceptance_criteria = [];
+        files = [];
       }
   in
 
@@ -464,6 +470,9 @@ let () =
           description = "";
           branch = Types.Branch.of_string "b1";
           dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
         };
       Types.Patch.
         {
@@ -472,6 +481,9 @@ let () =
           description = "";
           branch = Types.Branch.of_string "b2";
           dependencies = [ p1 ];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
         };
     ]
   in

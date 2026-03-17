@@ -60,7 +60,17 @@ let gen_patch =
     let gen_title = string_size ~gen:printable (int_range 5 50) in
     map4
       (fun id title branch dependencies ->
-        Patch.{ id; title; description = ""; branch; dependencies })
+        Patch.
+          {
+            id;
+            title;
+            description = "";
+            branch;
+            dependencies;
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+          })
       gen_patch_id gen_title gen_branch gen_deps)
 
 let gen_ci_check =
@@ -94,6 +104,9 @@ let gen_patch_list_unique =
                 description = "";
                 branch;
                 dependencies;
+                spec = "";
+                acceptance_criteria = [];
+                files = [];
               }))
       (int_range 1 8))
 

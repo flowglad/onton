@@ -6,4 +6,9 @@ type t = {
 }
 
 val parse_string : string -> (t, string) Result.t
+val parse_json_string : string -> (t, string) Result.t
+val parse_json_file : string -> (t, string) Result.t
+
 val parse_file : string -> (t, string) Result.t
+(** [parse_file path] dispatches to the JSON or markdown parser based on the
+    file extension ([.json] or otherwise). *)
