@@ -1,5 +1,7 @@
 # onton
 
+![onton](onton.png)
+
 An OCaml orchestrator for parallel Claude Code agents executing gameplan
 patches. Port of the [Anton](https://github.com/flowglad/orchestrate-gameplan)
 Elixir/OTP system.
