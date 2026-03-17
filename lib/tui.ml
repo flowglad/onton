@@ -293,6 +293,80 @@ let status_indicator = function
   | Awaiting_ci | Awaiting_review -> "◎"
   | Pending -> "·"
 
+(** {1 Status messages} *)
+
+type msg_level = Info | Warning | Error [@@deriving show, eq]
+
+type status_msg = {
+  level : msg_level;
+  text : string;
+  expires_at : float option;
+}
+[@@deriving show, eq]
+
+let msg_expired ~now msg =
+  match msg.expires_at with Some t -> Float.( >= ) now t | None -> false
+
+let render_status_msg ~width = function
+  | None -> ""
+  | Some msg ->
+      let raw =
+        match msg.level with
+        | Info -> Term.styled [ Term.Sgr.dim ] msg.text
+        | Warning ->
+            Term.styled [ Term.Sgr.fg_yellow ] (Printf.sprintf "⚠ %s" msg.text)
+        | Error ->
+            Term.styled
+              [ Term.Sgr.fg_red; Term.Sgr.bold ]
+              (Printf.sprintf "✗ %s" msg.text)
+      in
+      Term.fit_width width raw
+
+let%test "render_status_msg None is empty" =
+  String.equal (render_status_msg ~width:80 None) ""
+
+let%test "render_status_msg Error contains text" =
+  let s =
+    render_status_msg ~width:80
+      (Some { level = Error; text = "oops"; expires_at = None })
+  in
+  String.is_substring s ~substring:"oops"
+
+let%test "render_status_msg Error contains red ANSI" =
+  let s =
+    render_status_msg ~width:80
+      (Some { level = Error; text = "oops"; expires_at = None })
+  in
+  String.is_substring s ~substring:"\027[31m"
+  || String.is_substring s ~substring:"\027[1;31m"
+  || String.is_substring s ~substring:"\027[31;1m"
+
+let%test "render_status_msg Warning has prefix" =
+  let s =
+    render_status_msg ~width:80
+      (Some { level = Warning; text = "watch out"; expires_at = None })
+  in
+  String.is_substring s ~substring:"⚠"
+  && String.is_substring s ~substring:"watch out"
+
+let%test "render_status_msg Info is styled dim" =
+  let s =
+    render_status_msg ~width:80
+      (Some { level = Info; text = "hello"; expires_at = None })
+  in
+  String.is_substring s ~substring:"hello"
+  && String.is_substring s ~substring:"\027[2m"
+
+let%test "msg_expired true when past" =
+  msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = Some 50.0 }
+
+let%test "msg_expired false when persistent" =
+  not (msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = None })
+
+let%test "msg_expired false when not yet expired" =
+  not
+    (msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = Some 200.0 })
+
 (** {1 View mode — list vs detail} *)
 
 type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
