@@ -75,6 +75,9 @@ module Patch : sig
     description : string;
     branch : Branch.t;
     dependencies : Patch_id.t list;
+    spec : string; [@yojson.default ""]
+    acceptance_criteria : string list; [@yojson.default []]
+    files : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

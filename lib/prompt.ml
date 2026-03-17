@@ -106,6 +106,9 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
     | None -> "Not yet created"
   in
+  let format_list items =
+    List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
+  in
   let vars =
     [
       ("project_name", project_name);
@@ -121,6 +124,9 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
         match pr_number with
         | Some n -> Int.to_string (Pr_number.to_int n)
         | None -> "" );
+      ("spec", patch.Patch.spec);
+      ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
+      ("files", format_list patch.Patch.files);
     ]
   in
   let design_decisions_section =
@@ -128,6 +134,28 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     else
       Printf.sprintf "\n## Design Decisions (Non-negotiable)\n%s\n"
         gameplan.Gameplan.design_decisions
+  in
+  let spec_section =
+    if String.is_empty patch.Patch.spec then ""
+    else Printf.sprintf "\n## Specification\n%s\n" patch.Patch.spec
+  in
+  let acceptance_criteria_section =
+    match patch.Patch.acceptance_criteria with
+    | [] -> ""
+    | items ->
+        let formatted =
+          List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
+        in
+        Printf.sprintf "\n## Acceptance Criteria\n%s\n" formatted
+  in
+  let files_section =
+    match patch.Patch.files with
+    | [] -> ""
+    | items ->
+        let formatted =
+          List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
+        in
+        Printf.sprintf "\n## Files to Modify\n%s\n" formatted
   in
   let base_branch_note =
     if String.equal base_branch "main" then ""
@@ -180,7 +208,7 @@ Then continue implementing. When finished:
 ## Your Task
 
 %s
-
+%s%s%s
 ## Git Instructions
 - Branch: %s
 - Base branch: %s
@@ -199,8 +227,9 @@ Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed pro
         (Patch_id.to_string patch.Patch.id)
         patch.Patch.title gameplan.Gameplan.problem_statement
         gameplan.Gameplan.solution_summary design_decisions_section deps
-        patch.Patch.description branch base_branch pr_str base_branch_note
-        pr_instructions project_name
+        patch.Patch.description spec_section acceptance_criteria_section
+        files_section branch base_branch pr_str base_branch_note pr_instructions
+        project_name
         (Patch_id.to_string patch.Patch.id)
         patch.Patch.title patches_list)
 
@@ -402,6 +431,9 @@ let%test "patch prompt includes title and deps" =
         description = "";
         branch = Branch.of_string "onton-port/patch-5";
         dependencies = [ Patch_id.of_string "1" ];
+        spec = "";
+        acceptance_criteria = [];
+        files = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -420,6 +452,9 @@ let%test "patch prompt includes title and deps" =
                 description = "";
                 branch = Branch.of_string "onton-port/patch-1";
                 dependencies = [];
+                spec = "";
+                acceptance_criteria = [];
+                files = [];
               };
             patch;
           ];

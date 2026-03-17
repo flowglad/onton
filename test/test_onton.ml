@@ -8,6 +8,9 @@ let () =
           description = "";
           branch = Onton.Types.Branch.of_string "test-1";
           dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
         };
     ]
   in
