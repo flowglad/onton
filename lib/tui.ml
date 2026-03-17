@@ -606,10 +606,23 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       let transcript_header =
         [ ""; Term.styled [ Term.Sgr.bold ] "  Transcript" ]
       in
+      let wrap_line max_w line =
+        if String.length line <= max_w then [ line ]
+        else
+          let rec split acc pos =
+            if pos >= String.length line then List.rev acc
+            else
+              let len = Int.min max_w (String.length line - pos) in
+              split (String.sub line ~pos ~len :: acc) (pos + len)
+          in
+          split [] 0
+      in
+      let content_width = Int.max 1 (width - 4) in
       let transcript_lines =
         String.split_on_chars ~on:[ '\n' ] transcript
-        |> List.map ~f:(fun line ->
-            "    " ^ Term.fit_width (Int.max 1 (width - 4)) line)
+        |> List.concat_map ~f:(fun line ->
+            wrap_line content_width line
+            |> List.map ~f:(fun chunk -> "    " ^ chunk))
       in
       transcript_header @ transcript_lines
   in
