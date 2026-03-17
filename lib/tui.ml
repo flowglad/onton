@@ -682,17 +682,28 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc (p : Patch.t) -> Map.set acc ~key:p.Patch.id ~data:p)
   in
-  List.map agents ~f:(fun agent ->
-      let pv = patch_view_of_agent agent ~patches_by_id ~graph in
-      let pid_str = Patch_id.to_string agent.patch_id in
-      let filtered =
-        List.filter activity ~f:(fun entry ->
-            match entry with
-            | Transition { patch_id = pid; _ } -> String.equal pid pid_str
-            | Event { patch_id = Some pid; _ } -> String.equal pid pid_str
-            | Event { patch_id = None; _ } -> false)
-      in
-      { pv with recent_stream = List.take filtered 10 })
+  let views =
+    List.map agents ~f:(fun agent ->
+        let pv = patch_view_of_agent agent ~patches_by_id ~graph in
+        let pid_str = Patch_id.to_string agent.patch_id in
+        let filtered =
+          List.filter activity ~f:(fun entry ->
+              match entry with
+              | Transition { patch_id = pid; _ } -> String.equal pid pid_str
+              | Event { patch_id = Some pid; _ } -> String.equal pid pid_str
+              | Event { patch_id = None; _ } -> false)
+        in
+        { pv with recent_stream = List.take filtered 10 })
+  in
+  (* Sort by gameplan order (numeric patch IDs sort naturally). *)
+  let order =
+    List.mapi gameplan.patches ~f:(fun i (p : Patch.t) -> (p.Patch.id, i))
+    |> Map.of_alist_reduce (module Patch_id) ~f:(fun a _ -> a)
+  in
+  List.sort views ~compare:(fun a b ->
+      let idx_a = Map.find order a.patch_id |> Option.value ~default:999 in
+      let idx_b = Map.find order b.patch_id |> Option.value ~default:999 in
+      Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~view_mode
     ~(activity : activity_entry list) ~project_name ?(transcript = "")
