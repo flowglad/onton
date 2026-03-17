@@ -326,6 +326,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
       let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
       let cwd = Eio.Path.(fs / worktree_path) in
       let text_buf = Buffer.create 4096 in
+      let error_buf = Buffer.create 256 in
       let pr_found = ref false in
       let needle_len =
         String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
@@ -357,6 +358,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Finished reason)
         | Types.Stream_event.Error msg ->
+            if Buffer.length error_buf > 0 then Buffer.add_char error_buf '\n';
+            Buffer.add_string error_buf msg;
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Stream_error msg)
       in
@@ -384,12 +387,22 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
       | Ok r ->
+          let stderr = String.trim r.Claude_runner.stderr in
+          let stream_errors = String.trim (Buffer.contents error_buf) in
+          let detail =
+            match (stderr, stream_errors) with
+            | "", "" -> "(no error details)"
+            | "", e | e, "" -> e
+            | s, e -> s ^ " | stream: " ^ e
+          in
+          let detail =
+            if String.length detail <= 500 then detail
+            else String.sub detail 0 500
+          in
           log_event runtime ~patch_id
             (Printf.sprintf
                "Claude exited with code %d, marking session failed: %s"
-               r.Claude_runner.exit_code
-               (let s = String.trim r.Claude_runner.stderr in
-                if String.length s <= 500 then s else String.sub s 0 500));
+               r.Claude_runner.exit_code detail);
           Runtime.update_orchestrator runtime (fun orch ->
               let orch =
                 Orchestrator.on_session_failure orch patch_id ~is_fresh
