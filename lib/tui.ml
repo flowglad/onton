@@ -1065,7 +1065,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
           if pv.needs_intervention then
             match List.hd filtered with
             | Some (Event { message; _ }) -> Some message
-            | Some (Transition { action; _ }) -> Some action
+            | Some (Transition _) -> None
             | None -> None
           else None
         in
