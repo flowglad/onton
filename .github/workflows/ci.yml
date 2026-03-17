@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build
+  build-and-test:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -46,44 +46,26 @@ jobs:
               print(f'::{level} file={f},line={line},col={col}::{msg}')
           "
 
-  test:
-    name: Test
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
-        with:
-          ocaml-compiler: '5.4.0'
-          dune-cache: true
-
-      - name: Install dependencies
-        run: opam install . --deps-only --with-test -y
-
       - name: Run tests
         run: opam exec -- dune runtest 2>&1 | tee test.log
 
       - name: Annotate test failures
         if: failure()
         run: |
-          # Parse inline_test failures into annotations
           python3 -c "
           import re
           log = open('test.log').read()
-          # Match: File \"path\", line N ...  FAILED
           for m in re.finditer(r'File \"([^\"]+)\", line (\d+).*?:\s*(.*?FAILED.*)', log):
               f, line, msg = m.groups()
               print(f'::error file={f},line={line}::{msg.strip()}')
-          # Match: FAIL ... in file at line
           for m in re.finditer(r'FAIL\s+(.+?)\s+in\s+(\S+)\s+at\s+line\s+(\d+)', log):
               name, f, line = m.groups()
               print(f'::error file={f},line={line}::Test failed: {name}')
           "
 
   property-tests:
-    name: Property Tests
-    needs: build
+    name: Property Tests (10k)
+    needs: build-and-test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -123,71 +105,3 @@ jobs:
           ocaml-compiler: '5.4.0'
 
       - uses: ocaml/setup-ocaml/lint-fmt@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
-
-  # Coverage job disabled: bisect_ppx 2.8.3 requires ppxlib < 0.36.0,
-  # which is incompatible with OCaml 5.4.0. Re-enable when bisect_ppx
-  # releases a version supporting OCaml 5.4.
-  # coverage:
-  #   name: Coverage
-  #   needs: test
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-  #
-  #     - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
-  #       with:
-  #         ocaml-compiler: '5.4.0'
-  #         dune-cache: true
-  #
-  #     - name: Install dependencies
-  #       run: opam install . --deps-only --with-test bisect_ppx -y
-  #
-  #     - name: Run tests with coverage
-  #       run: |
-  #         opam exec -- dune runtest --instrument-with bisect_ppx --force
-  #         opam exec -- bisect-ppx-report summary
-  #
-  #     - name: Generate coverage report
-  #       run: |
-  #         opam exec -- bisect-ppx-report coveralls coverage.json
-  #         opam exec -- bisect-ppx-report summary --per-file | tee coverage-summary.txt
-  #
-  #     - name: Upload coverage to Codecov
-  #       if: github.event_name == 'push' || github.event_name == 'pull_request'
-  #       uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
-  #       with:
-  #         token: ${{ secrets.CODECOV_TOKEN }}
-  #         files: coverage.json
-  #         fail_ci_if_error: false
-  #       continue-on-error: true
-  #
-  #     - name: Post coverage summary
-  #       if: github.event_name == 'pull_request'
-  #       uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-  #       with:
-  #         script: |
-  #           const fs = require('fs');
-  #           const summary = fs.readFileSync('coverage-summary.txt', 'utf8');
-  #           const body = `## Coverage Report\n\`\`\`\n${summary}\n\`\`\``;
-  #           const { data: comments } = await github.rest.issues.listComments({
-  #             owner: context.repo.owner,
-  #             repo: context.repo.repo,
-  #             issue_number: context.issue.number,
-  #           });
-  #           const existing = comments.find(c => c.body.startsWith('## Coverage Report'));
-  #           if (existing) {
-  #             await github.rest.issues.updateComment({
-  #               owner: context.repo.owner,
-  #               repo: context.repo.repo,
-  #               comment_id: existing.id,
-  #               body,
-  #             });
-  #           } else {
-  #             await github.rest.issues.createComment({
-  #               owner: context.repo.owner,
-  #               repo: context.repo.repo,
-  #               issue_number: context.issue.number,
-  #               body,
-  #             });
-  #           }
-  #       continue-on-error: true
