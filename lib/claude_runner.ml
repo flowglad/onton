@@ -107,18 +107,37 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
           | Some stop_reason ->
               [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
       | Some "result" ->
-          let text =
-            member "result" json |> to_string_option |> Option.value ~default:""
+          let is_error =
+            member "is_error" json |> to_bool_option
+            |> Option.value ~default:false
           in
-          let raw_reason =
-            member "stop_reason" json |> to_string_option
-            |> Option.value ~default:"end_turn"
-          in
-          let stop_reason =
-            Types.Stop_reason.of_string raw_reason
-            |> Option.value ~default:Types.Stop_reason.End_turn
-          in
-          [ Types.Stream_event.Final_result { text; stop_reason } ]
+          if is_error then
+            let errors =
+              match member "errors" json with
+              | `List items ->
+                  List.filter_map items ~f:(fun item -> to_string_option item)
+              | _ -> []
+            in
+            let msg =
+              match errors with
+              | [] -> "unknown error"
+              | errs -> String.concat ~sep:"; " errs
+            in
+            [ Types.Stream_event.Error msg ]
+          else
+            let text =
+              member "result" json |> to_string_option
+              |> Option.value ~default:""
+            in
+            let raw_reason =
+              member "stop_reason" json |> to_string_option
+              |> Option.value ~default:"end_turn"
+            in
+            let stop_reason =
+              Types.Stop_reason.of_string raw_reason
+              |> Option.value ~default:Types.Stop_reason.End_turn
+            in
+            [ Types.Stream_event.Final_result { text; stop_reason } ]
       | Some "error" ->
           let err =
             member "error" json |> member "message" |> to_string_option
@@ -297,6 +316,13 @@ let%test "parse_stream_event message_delta with stop_reason" =
     (Some
        (Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn }))
+
+let%test "parse_stream_event error result" =
+  let line =
+    {|{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["bad session ID"]}|}
+  in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Error "bad session ID"))
 
 let%test "parse_stream_event invalid json returns None" =
   Option.is_none (parse_stream_event "not json at all")
