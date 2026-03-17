@@ -328,7 +328,9 @@ let respond t k =
     else t.changed
   in
   let has_conflict = if is_merge_conflict then false else t.has_conflict in
-  let pending_comments = if is_review then [] else t.pending_comments in
+  let pending_comments =
+    if is_review || is_human then [] else t.pending_comments
+  in
   {
     t with
     has_session = true;
