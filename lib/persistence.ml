@@ -277,10 +277,20 @@ let orchestrator_of_yojson ~gameplan json =
           Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
         in
         let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
-        if not (Set.equal graph_pids agent_pids) then
+        (* Gameplan patches must all be present in the snapshot. *)
+        let missing_from_agents = Set.diff graph_pids agent_pids in
+        if not (Set.is_empty missing_from_agents) then
           Error
             "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
-        else Ok (Orchestrator.restore ~graph ~agents:agents_map ~main_branch))
+        else
+          (* Ad-hoc agents (not in the gameplan) are added to the graph with no
+             dependencies, mirroring Orchestrator.add_agent. *)
+          let graph =
+            Set.fold
+              (Set.diff agent_pids graph_pids)
+              ~init:graph ~f:Graph.add_patch
+          in
+          Ok (Orchestrator.restore ~graph ~agents:agents_map ~main_branch))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)

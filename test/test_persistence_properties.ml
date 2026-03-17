@@ -202,6 +202,47 @@ let () =
           | Error _ -> false
         with _ -> false)
   in
+  (* Ad-hoc snapshot: empty gameplan + agents added via add_agent. Verifies
+     that the gameplan/agent mismatch check correctly handles ad-hoc patches. *)
+  let adhoc_snapshot_roundtrip =
+    QCheck2.Test.make ~name:"ad-hoc snapshot round-trip (no gameplan)" ~count:50
+      QCheck2.Gen.(list_size (int_range 1 5) (int_range 1 9999))
+      (fun pr_numbers ->
+        try
+          let gameplan =
+            Gameplan.
+              {
+                project_name = "adhoc";
+                problem_statement = "";
+                solution_summary = "";
+                design_decisions = "";
+                patches = [];
+              }
+          in
+          let main_branch = Branch.of_string "main" in
+          let orchestrator =
+            Onton.Orchestrator.create ~patches:[] ~main_branch
+          in
+          let orchestrator =
+            List.fold_left pr_numbers ~init:orchestrator ~f:(fun orch n ->
+                let patch_id = Patch_id.of_string (Int.to_string n) in
+                let pr_number = Pr_number.of_int n in
+                Onton.Orchestrator.add_agent orch ~patch_id ~pr_number)
+          in
+          let snap =
+            {
+              Onton.Runtime.orchestrator;
+              activity_log = Onton.Activity_log.empty;
+              gameplan;
+              transcripts = Base.Hashtbl.create (module Patch_id);
+            }
+          in
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          match Onton.Persistence.snapshot_of_yojson ~gameplan json with
+          | Ok snap' -> snapshots_equal snap snap'
+          | Error _msg -> false
+        with _ -> false)
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
@@ -213,6 +254,7 @@ let () =
         patch_agent_roundtrip_fully_populated;
         pr_number_roundtrip;
         missing_pr_number_defaults_none;
+        adhoc_snapshot_roundtrip;
       ]
   in
   if exit_code <> 0 then Stdlib.exit exit_code

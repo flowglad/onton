@@ -1661,6 +1661,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
         ~github_owner:owner ~github_repo:repo
         ~main_branch:(Branch.to_string main_branch)
         ~poll_interval ~repo_root ~max_concurrency;
+      let existing_snapshot = load_snapshot ~project_name ~gameplan in
       Ok
         ( {
             project = Some project_name;
@@ -1674,7 +1675,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             headless;
           },
           gameplan,
-          None )
+          existing_snapshot )
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
