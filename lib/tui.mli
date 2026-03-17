@@ -12,6 +12,7 @@ type display_status =
   | Responding_to_human
   | Rebasing
   | Starting
+  | Updating
   | Ci_queued
   | Review_queued
   | Awaiting_ci

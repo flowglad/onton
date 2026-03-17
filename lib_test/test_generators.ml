@@ -340,6 +340,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Responding_to_human -> Responding_to_human
     | Rebasing -> Rebasing
     | Starting -> Starting
+    | Updating -> Updating
     | Ci_queued -> Ci_queued
     | Review_queued -> Review_queued
     | Awaiting_ci -> Awaiting_ci

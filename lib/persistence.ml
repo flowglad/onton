@@ -62,6 +62,7 @@ let display_status_to_yojson = function
   | Responding_to_human -> `String "Responding_to_human"
   | Rebasing -> `String "Rebasing"
   | Starting -> `String "Starting"
+  | Updating -> `String "Updating"
   | Ci_queued -> `String "Ci_queued"
   | Review_queued -> `String "Review_queued"
   | Awaiting_ci -> `String "Awaiting_ci"
@@ -80,6 +81,7 @@ let display_status_of_yojson json =
   | "Responding_to_human" -> Ok Responding_to_human
   | "Rebasing" -> Ok Rebasing
   | "Starting" -> Ok Starting
+  | "Updating" -> Ok Updating
   | "Ci_queued" -> Ok Ci_queued
   | "Review_queued" -> Ok Review_queued
   | "Awaiting_ci" -> Ok Awaiting_ci

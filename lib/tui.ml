@@ -14,6 +14,7 @@ type display_status =
   | Responding_to_human
   | Rebasing
   | Starting
+  | Updating
   | Ci_queued
   | Review_queued
   | Awaiting_ci
@@ -35,6 +36,7 @@ let label = function
   | Responding_to_human -> "responding-to-human"
   | Rebasing -> "rebasing"
   | Starting -> "starting"
+  | Updating -> "updating"
   | Ci_queued -> "ci-queued"
   | Review_queued -> "review-queued"
   | Awaiting_ci -> "awaiting-ci"
@@ -52,6 +54,7 @@ let color = function
   | Responding_to_human -> Term.Sgr.fg_magenta
   | Rebasing -> Term.Sgr.fg_cyan
   | Starting -> Term.Sgr.fg_cyan
+  | Updating -> Term.Sgr.fg_cyan
   | Ci_queued -> Term.Sgr.fg_yellow
   | Review_queued -> Term.Sgr.fg_yellow
   | Awaiting_ci -> Term.Sgr.fg_blue
@@ -86,7 +89,7 @@ let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     | Some Human -> Responding_to_human
     | Some Rebase -> Rebasing
     | None ->
-        if State.Patch_ctx.has_pr ctx ~patch_id then Rebasing else Starting
+        if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting
   else if State.Patch_ctx.has_pr ctx ~patch_id then
     if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Ci then Ci_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Review_comments then
@@ -195,13 +198,13 @@ let%test "busy with rebase op" =
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
        ~current_op:(Some Rebase))
 
-let%test "busy no op with pr falls back to rebasing" =
+let%test "busy no op with pr falls back to updating" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_busy ~patch_id:(Patch_id.of_string "1") ~value:true
     |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
   in
-  equal_display_status Rebasing
+  equal_display_status Updating
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
        ~current_op:None)
 
@@ -271,7 +274,7 @@ let status_style = function
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human ->
       [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Rebasing -> [ Term.Sgr.fg_yellow ]
-  | Starting -> [ Term.Sgr.fg_cyan ]
+  | Starting | Updating -> [ Term.Sgr.fg_cyan ]
   | Ci_queued | Review_queued -> [ Term.Sgr.fg_yellow ]
   | Awaiting_ci -> [ Term.Sgr.fg_blue ]
   | Awaiting_review -> [ Term.Sgr.fg_blue ]
@@ -285,7 +288,7 @@ let status_indicator = function
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human ->
       "▶"
   | Rebasing -> "↻"
-  | Starting -> "▶"
+  | Starting | Updating -> "▶"
   | Ci_queued | Review_queued -> "◎"
   | Awaiting_ci | Awaiting_review -> "◎"
   | Pending -> "·"
@@ -482,7 +485,7 @@ let render_summary (views : patch_view list) =
   let is_running status =
     match status with
     | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-    | Rebasing | Starting | Approved_running ->
+    | Rebasing | Starting | Updating | Approved_running ->
         true
     | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
     | Awaiting_ci | Awaiting_review | Pending ->
