@@ -124,10 +124,19 @@ let render s =
   let lines = render_block (Cmarkit.Doc.block doc) in
   String.concat ~sep:"\n" lines
 
-(** Render a full markdown string to a list of styled lines. *)
+(** Render a full markdown string to a list of styled lines. Consecutive blank
+    lines are collapsed to at most one. *)
 let render_to_lines s =
   let doc = Cmarkit.Doc.of_string ~strict:false s in
-  render_block (Cmarkit.Doc.block doc)
+  let lines = render_block (Cmarkit.Doc.block doc) in
+  let rec collapse acc prev_blank = function
+    | [] -> List.rev acc
+    | line :: rest ->
+        let is_blank = String.is_empty (String.strip line) in
+        if is_blank && prev_blank then collapse acc true rest
+        else collapse (line :: acc) is_blank rest
+  in
+  collapse [] false lines
 
 let%expect_test "render headings" =
   let s = render "# Title\n## Section\n### Sub" in
