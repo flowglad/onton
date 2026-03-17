@@ -472,6 +472,7 @@ type patch_view = {
   pr_number : Pr_number.t option;
   base_branch : Branch.t option;
   worktree_path : string option;
+  intervention_reason : string option;
 }
 [@@warning "-69"]
 
@@ -528,6 +529,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     pr_number = agent.pr_number;
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
+    intervention_reason = None;
   }
 
 (** {1 Render helpers} *)
@@ -582,8 +584,11 @@ let render_patch_row ~width ~selected (pv : patch_view) =
     | None -> ""
   in
   let ci_info =
-    if pv.ci_failures > 0 then
-      Term.styled [ Term.Sgr.fg_red ] (Printf.sprintf " ci:%d" pv.ci_failures)
+    if pv.ci_failures >= 3 then
+      Term.styled [ Term.Sgr.fg_red ] (Printf.sprintf " CI×%d" pv.ci_failures)
+    else if pv.ci_failures > 0 then
+      Term.styled [ Term.Sgr.fg_yellow ]
+        (Printf.sprintf " CI×%d" pv.ci_failures)
     else ""
   in
   let cursor = if selected then "▸" else " " in
@@ -743,12 +748,38 @@ let detail_info_rows (pv : patch_view) ~width =
   in
   let intervention =
     if pv.needs_intervention then
-      [
-        "";
-        Term.styled
-          [ Term.Sgr.fg_red; Term.Sgr.bold ]
-          "  ⚠ Needs manual intervention";
-      ]
+      let reason_text =
+        match pv.intervention_reason with
+        | Some r -> sanitize_text r
+        | None ->
+            if pv.ci_failures >= 3 then
+              Printf.sprintf "CI failed %d times in a row" pv.ci_failures
+            else "Session failed unexpectedly"
+      in
+      let prefix = "  \xe2\x9a\xa0 Needs attention: " in
+      let prefix_len = String.length prefix in
+      let max_text = Int.max 10 (width - prefix_len) in
+      let wrapped =
+        if String.length reason_text <= max_text then [ reason_text ]
+        else
+          let rec wrap acc remaining =
+            if String.length remaining <= max_text then
+              List.rev (remaining :: acc)
+            else
+              let chunk = String.prefix remaining max_text in
+              wrap (chunk :: acc) (String.drop_prefix remaining max_text)
+          in
+          wrap [] reason_text
+      in
+      let styled_lines =
+        List.mapi wrapped ~f:(fun i line ->
+            let text =
+              if i = 0 then prefix ^ line
+              else String.make prefix_len ' ' ^ line
+            in
+            Term.styled [ Term.Sgr.fg_red; Term.Sgr.bold ] text)
+      in
+      [ "" ] @ styled_lines
     else []
   in
   let ci_section =
@@ -1030,7 +1061,15 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
               | Event { patch_id = Some pid; _ } -> String.equal pid pid_str
               | Event { patch_id = None; _ } -> false)
         in
-        { pv with recent_stream = List.take filtered 10 })
+        let intervention_reason =
+          if pv.needs_intervention then
+            match List.hd filtered with
+            | Some (Event { message; _ }) -> Some message
+            | Some (Transition { action; _ }) -> Some action
+            | None -> None
+          else None
+        in
+        { pv with recent_stream = List.take filtered 10; intervention_reason })
   in
   (* Sort by gameplan order (numeric patch IDs sort naturally). *)
   let order =
@@ -1044,7 +1083,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~show_help
-    ?(transcript = "") ?input_line ?completion_hint ?status_msg
+    ?(transcript = "") ?status_msg ?input_line ?completion_hint
     (views : patch_view list) =
   let no_patches =
     {

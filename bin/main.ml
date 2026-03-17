@@ -531,9 +531,9 @@ exception Quit_tui
     [list_selected], [detail_scroll], [timeline_scroll], and [view_mode] are
     shared mutable refs updated by the input fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
-    ~detail_follow ~timeline_scroll ~view_mode ~show_help ~transcripts
-    ~sorted_patch_ids ~input_line ~completion_hint ~patches_start_row
-    ~patches_scroll_offset ~patches_visible_count =
+    ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
+    ~transcripts ~sorted_patch_ids ~input_line ~completion_hint
+    ~patches_start_row ~patches_scroll_offset ~patches_visible_count =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -569,6 +569,11 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
           match Hashtbl.find_opt transcripts pid with Some t -> t | None -> "")
       | Tui.List_view | Tui.Timeline_view -> ""
     in
+    (* Expire status messages *)
+    let now = Unix.gettimeofday () in
+    (match !status_msg with
+    | Some msg when Tui.msg_expired ~now msg -> status_msg := None
+    | Some _ | None -> ());
     let scroll_offset =
       match !view_mode with
       | Tui.Detail_view _ ->
@@ -579,8 +584,8 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     let frame =
       Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
         ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
-        ~show_help:!show_help ~transcript ?input_line:!input_line
-        ?completion_hint:!completion_hint views
+        ~show_help:!show_help ~transcript ?status_msg:!status_msg
+        ?input_line:!input_line ?completion_hint:!completion_hint views
     in
     (* Write back the clamped scroll offset so delta-based input in
        input_fiber works from a real value, not a sentinel like max_value. *)
@@ -610,8 +615,8 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     - ["-"] — remove the selected patch from orchestration *)
 let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
-    ~show_help ~sorted_patch_ids ~input_line ~completion_hint ~patches_start_row
-    ~patches_scroll_offset ~patches_visible_count =
+    ~show_help ~status_msg ~sorted_patch_ids ~input_line ~completion_hint
+    ~patches_start_row ~patches_scroll_offset ~patches_visible_count =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let current_completions = ref [] in
@@ -769,7 +774,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                       try
                         let raw_path = Worktree.normalize_path path in
                         if not (Stdlib.Sys.file_exists raw_path) then
-                          failwith ("Worktree path does not exist: " ^ raw_path);
+                          failwith ("Worktree path not found: " ^ raw_path);
                         if not (Stdlib.Sys.is_directory raw_path) then
                           failwith
                             ("Worktree path is not a directory: " ^ raw_path);
@@ -825,10 +830,28 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                             (Printf.sprintf
                                "Worktree registered: symlinked %s → %s" expected
                                canonical_real)
-                      with exn ->
+                      with Failure msg ->
+                        status_msg :=
+                          Some
+                            {
+                              Tui.level = Tui.Error;
+                              text = msg;
+                              expires_at = None;
+                            };
                         log_event runtime ~patch_id
-                          (Printf.sprintf "Failed to add worktree: %s"
-                             (Printexc.to_string exn))))
+                          (Printf.sprintf "Failed to add worktree: %s" msg)
+                      | exn ->
+                        let msg = Printexc.to_string exn in
+                        status_msg :=
+                          Some
+                            {
+                              Tui.level = Tui.Error;
+                              text =
+                                Printf.sprintf "Failed to add worktree: %s" msg;
+                              expires_at = None;
+                            };
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "Failed to add worktree: %s" msg)))
               | Some Tui_input.Remove_patch -> (
                   let info_opt =
                     let pids = !sorted_patch_ids in
@@ -1367,11 +1390,16 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-    ~ci_checks_cache ~transcripts =
+    ~ci_checks_cache ~transcripts ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
   let clock = Eio.Stdenv.clock env in
+  let set_status ~level ~text ?expires_at () =
+    match status_msg with
+    | Some r -> r := Some { Tui.level; text; expires_at }
+    | None -> ()
+  in
   let semaphore = Eio.Semaphore.make config.max_concurrency in
   let with_claude_slot f =
     Eio.Semaphore.acquire semaphore;
@@ -1519,7 +1547,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~transcripts)
                           in
                           match result with
-                          | `Stale | `Failed -> ()
+                          | `Stale -> ()
+                          | `Failed ->
+                              set_status ~level:Tui.Error
+                                ~text:
+                                  (Printf.sprintf "Patch %s: session failed — human review needed"
+                                     (Patch_id.to_string patch_id))
+                                ()
                           | `Ok ->
                               (* Always confirm via gh pr list *)
                               let rec discover remaining =
@@ -1710,7 +1744,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 ~transcripts)
                       in
                       match result with
-                      | `Stale | `Failed -> ()
+                      | `Stale -> ()
+                      | `Failed ->
+                          set_status ~level:Tui.Error
+                            ~text:
+                              (Printf.sprintf "Patch %s: session failed — human review needed"
+                                 (Patch_id.to_string patch_id))
+                            ()
                       | `Ok ->
                           (* Mark pending comment IDs as addressed so the
                              poller doesn't re-enqueue them next cycle. *)
@@ -1733,8 +1773,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 if
                                   Operation_kind.equal kind
                                     Operation_kind.Merge_conflict
-                                then
-                                  Orchestrator.clear_has_conflict orch patch_id
+                                then (
+                                  set_status ~level:Tui.Info
+                                    ~text:
+                                      (Printf.sprintf
+                                         "Patch %s: conflict resolved, rebasing…"
+                                         (Patch_id.to_string patch_id))
+                                    ~expires_at:
+                                      (Unix.gettimeofday () +. 10.0)
+                                    ();
+                                  Orchestrator.clear_has_conflict orch patch_id)
                                 else orch
                               in
                               Orchestrator.complete orch patch_id))))
@@ -2063,15 +2111,16 @@ let run_with_config (config : config) gameplan existing_snapshot =
             poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
               ~pr_registry ~branch_of ~ci_checks_cache);
           (fun () ->
-            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~ci_checks_cache ~transcripts);
-          (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
       in
       if config.headless then
         Eio.Fiber.all
-          ((fun () -> headless_fiber ~runtime ~clock ~stdout) :: common_fibers)
+          ((fun () -> headless_fiber ~runtime ~clock ~stdout)
+          :: (fun () ->
+               runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+                 ~ci_checks_cache ~transcripts ())
+          :: common_fibers)
       else
         let list_selected = ref 0 in
         let detail_scroll = ref 0 in
@@ -2085,6 +2134,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let input_line = ref None in
         let completion_hint = ref None in
         let show_help = ref false in
+        let status_msg : Tui.status_msg option ref = ref None in
         let patches_start_row = ref 0 in
         let patches_scroll_offset = ref 0 in
         let patches_visible_count = ref 0 in
@@ -2106,15 +2156,19 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~list_selected
                      ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
-                     ~show_help ~transcripts ~sorted_patch_ids ~input_line
-                     ~completion_hint ~patches_start_row ~patches_scroll_offset
-                     ~patches_visible_count)
+                     ~show_help ~status_msg ~transcripts ~sorted_patch_ids
+                     ~input_line ~completion_hint ~patches_start_row
+                     ~patches_scroll_offset ~patches_visible_count)
                 :: (fun () ->
                   input_fiber ~runtime ~list_selected ~detail_scroll
                     ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode
-                    ~pr_registry ~project_name ~show_help ~sorted_patch_ids
-                    ~input_line ~completion_hint ~patches_start_row
-                    ~patches_scroll_offset ~patches_visible_count)
+                    ~pr_registry ~project_name ~show_help ~status_msg
+                    ~sorted_patch_ids ~input_line ~completion_hint
+                    ~patches_start_row ~patches_scroll_offset
+                    ~patches_visible_count)
+                :: (fun () ->
+                  runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+                    ~ci_checks_cache ~transcripts ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 
