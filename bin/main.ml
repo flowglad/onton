@@ -571,7 +571,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
           let buf_str = buffer in
           if Base.String.is_prefix full ~prefix:buf_str then
             Some (Base.String.drop_prefix full (Base.String.length buf_str))
-          else Some first.Completions.display
+          else None
       | [] -> None
   in
   let sync_input () =
