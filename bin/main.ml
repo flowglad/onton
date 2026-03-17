@@ -1045,6 +1045,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                  skipping";
                               `Stale)
                             else
+                              let wt_path =
+                                Worktree.worktree_dir
+                                  ~repo_root:config.repo_root ~patch_id
+                              in
+                              if not (Stdlib.Sys.file_exists wt_path) then (
+                                log_event runtime ~patch_id "creating worktree";
+                                ignore
+                                  (Worktree.create ~process_mgr
+                                     ~repo_root:config.repo_root ~patch));
                               let prompt =
                                 Prompt.render_patch_prompt ~project_name
                                   ?pr_number:agent.Patch_agent.pr_number patch
@@ -1096,6 +1105,52 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 mark_session_failed runtime patch_id
                           in
                           discover 2))
+          | Orchestrator.Rebase (patch_id, new_base) ->
+              Some
+                (fun () ->
+                  let result =
+                    with_claude_slot (fun () ->
+                        let agent =
+                          Runtime.read runtime (fun snap ->
+                              Orchestrator.agent snap.Runtime.orchestrator
+                                patch_id)
+                        in
+                        if
+                          agent.Patch_agent.merged || not agent.Patch_agent.busy
+                        then (
+                          log_event runtime ~patch_id
+                            "runner: rebase action stale after semaphore wait, \
+                             skipping";
+                          `Stale)
+                        else
+                          let base = Branch.to_string new_base in
+                          let pr_number = agent.Patch_agent.pr_number in
+                          let prompt =
+                            Prompt.render_merge_conflict_prompt ~project_name
+                              ?pr_number ~base_branch:base ()
+                          in
+                          let on_pr_detected _pr_number = () in
+                          run_claude_and_handle ~runtime ~process_mgr ~fs
+                            ~repo_root:config.repo_root ~patch_id ~prompt ~agent
+                            ~owner:config.github_owner ~repo:config.github_repo
+                            ~on_pr_detected)
+                  in
+                  match result with
+                  | `Stale | `Failed -> ()
+                  | `Ok -> (
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.complete orch patch_id);
+                      let agent =
+                        Runtime.read runtime (fun snap ->
+                            Orchestrator.agent snap.Runtime.orchestrator
+                              patch_id)
+                      in
+                      match agent.Patch_agent.pr_number with
+                      | Some pr_number when Branch.equal new_base main ->
+                          set_pr_draft ~process_mgr ~token:config.github_token
+                            ~owner:config.github_owner ~repo:config.github_repo
+                            ~pr_number ~draft:false
+                      | _ -> ()))
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
@@ -1151,11 +1206,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   (Base.List.map pending_comments
                                      ~f:(fun (c : Comment.t) -> c.Comment.body))
                             | Operation_kind.Rebase ->
+                                (* Should not happen — Rebase is dispatched via
+                                   Orchestrator.Rebase, not Respond *)
                                 Prompt.render_merge_conflict_prompt
                                   ~project_name ?pr_number ~base_branch:base ()
                           in
-                          (* Respond patches already have a PR — ignore
-                             streamed PR detections *)
                           let on_pr_detected _pr_number = () in
                           run_claude_and_handle ~runtime ~process_mgr ~fs
                             ~repo_root:config.repo_root ~patch_id ~prompt ~agent
@@ -1164,48 +1219,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                   in
                   match result with
                   | `Stale | `Failed -> ()
-                  | `Ok -> (
+                  | `Ok ->
                       Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id);
-                      match kind with
-                      | Operation_kind.Rebase -> (
-                          let orch_snap, patches =
-                            Runtime.read runtime (fun snap ->
-                                ( snap.Runtime.orchestrator,
-                                  snap.Runtime.gameplan.Gameplan.patches ))
-                          in
-                          let agent = Orchestrator.agent orch_snap patch_id in
-                          let graph = Orchestrator.graph orch_snap in
-                          let has_merged pid =
-                            (Orchestrator.agent orch_snap pid)
-                              .Patch_agent.merged
-                          in
-                          let branch_of pid =
-                            match
-                              Base.List.find patches ~f:(fun (p : Patch.t) ->
-                                  Patch_id.equal p.Patch.id pid)
-                            with
-                            | Some p -> p.Patch.branch
-                            | None -> main
-                          in
-                          let new_base =
-                            match
-                              Graph.open_pr_deps graph patch_id ~has_merged
-                            with
-                            | [] -> Some main
-                            | [ d ] -> Some (branch_of d)
-                            | _ -> None
-                          in
-                          match (agent.Patch_agent.pr_number, new_base) with
-                          | Some pr_number, Some b when Branch.equal b main ->
-                              set_pr_draft ~process_mgr
-                                ~token:config.github_token
-                                ~owner:config.github_owner
-                                ~repo:config.github_repo ~pr_number ~draft:false
-                          | _ -> ())
-                      | Operation_kind.Ci | Operation_kind.Review_comments
-                      | Operation_kind.Merge_conflict | Operation_kind.Human ->
-                          ())))
+                          Orchestrator.complete orch patch_id)))
     in
     if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
     Eio.Time.sleep clock 1.0;
@@ -1426,6 +1442,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok () ->
+      Eio_main.run @@ fun env ->
       let runtime =
         match existing_snapshot with
         | Some snap ->
@@ -1444,7 +1461,6 @@ let run_with_config (config : config) gameplan existing_snapshot =
       in
       let pr_registry = Pr_registry.create () in
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
-      Eio_main.run @@ fun env ->
       let process_mgr = Eio.Stdenv.process_mgr env in
       let all_agents =
         Runtime.read runtime (fun snap ->

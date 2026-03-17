@@ -16,6 +16,14 @@ let gen_branch =
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
 let gen_op = QCheck2.Gen.oneof_list all_ops
+let feedback_ops = Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
+let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
+
+(** Simulate the full start+PR-confirmed flow for tests that need has_pr=true.
+*)
+let start_with_pr t ~base_branch =
+  let t = start t ~base_branch in
+  set_pr_number t (Pr_number.of_int 1)
 
 let () =
   let open QCheck2 in
@@ -46,7 +54,7 @@ let () =
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)
         (fun (pid, br, k) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a1 = enqueue a k in
           let a2 = enqueue a1 k in
@@ -55,22 +63,31 @@ let () =
       Test.make ~name:"enqueue adds operation to queue"
         Gen.(pair (pair gen_pid gen_branch) gen_op)
         (fun ((pid, br), k) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = enqueue a k in
           List.mem a.queue k ~equal:Operation_kind.equal);
       (* -- start postconditions -- *)
-      Test.make ~name:"start sets has_pr, has_session, busy, satisfies"
+      Test.make ~name:"start sets has_session, busy, satisfies (not has_pr)"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = create pid |> fun a -> start a ~base_branch:br in
-          a.has_pr && a.has_session && a.busy && a.satisfies
+          (not a.has_pr) && a.has_session && a.busy && a.satisfies
           && Option.equal Branch.equal a.base_branch (Some br));
       (* -- start twice raises -- *)
-      Test.make ~name:"start on already-started raises"
+      Test.make ~name:"start on already-started raises (busy)"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = create pid |> fun a -> start a ~base_branch:br in
+          match start a ~base_branch:br with
+          | exception Invalid_argument _ -> true
+          | _ -> false);
+      Test.make ~name:"start on has_pr raises"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = set_pr_number a (Pr_number.of_int 1) in
+          let a = complete a in
           match start a ~base_branch:br with
           | exception Invalid_argument _ -> true
           | _ -> false);
@@ -78,7 +95,7 @@ let () =
       Test.make ~name:"complete clears busy"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           not a.busy);
       (* -- complete on non-busy raises -- *)
@@ -100,7 +117,7 @@ let () =
       Test.make ~name:"respond requires not busy"
         Gen.(triple gen_pid gen_branch gen_op)
         (fun (pid, br, k) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           match respond a k with
           | exception Invalid_argument msg ->
               String.is_substring msg ~substring:"busy"
@@ -109,25 +126,25 @@ let () =
       Test.make ~name:"respond requires op in queue"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           match respond a Operation_kind.Ci with
           | exception Invalid_argument _ -> true
           | _ -> false);
       (* -- respond sets busy and has_session -- *)
       Test.make ~name:"respond sets busy and has_session"
-        Gen.(triple gen_pid gen_branch gen_op)
+        Gen.(triple gen_pid gen_branch gen_feedback_op)
         (fun (pid, br, k) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = enqueue a k in
           let a = respond a k in
           a.busy && a.has_session);
       (* -- respond removes op from queue -- *)
       Test.make ~name:"respond removes op from queue"
-        Gen.(triple gen_pid gen_branch gen_op)
+        Gen.(triple gen_pid gen_branch gen_feedback_op)
         (fun (pid, br, k) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = enqueue a k in
           let a = respond a k in
@@ -143,21 +160,28 @@ let () =
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let rank = Onton.Priority.priority in
+          let dispatch a k =
+            if Operation_kind.equal k Operation_kind.Rebase then
+              rebase a ~base_branch:(Branch.of_string "new-base")
+            else respond a k
+          in
           List.for_all all_ops ~f:(fun high ->
               List.for_all all_ops ~f:(fun low ->
                   if rank high >= rank low then true
                   else
-                    let a = create pid |> fun a -> start a ~base_branch:br in
+                    let a =
+                      create pid |> fun a -> start_with_pr a ~base_branch:br
+                    in
                     let a = complete a in
                     let a = enqueue a high in
                     let a = enqueue a low in
                     let low_rejected =
-                      match respond a low with
+                      match dispatch a low with
                       | exception Invalid_argument _ -> true
                       | _ -> false
                     in
                     let high_accepted =
-                      match respond a high with
+                      match dispatch a high with
                       | exception _ -> false
                       | a' ->
                           a'.busy
@@ -172,21 +196,21 @@ let () =
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = create pid in
-          let a = start a ~base_branch:br in
+          let a = start_with_pr a ~base_branch:br in
           let busy_after_start = a.busy in
           let a = complete a in
           let idle_after_complete = not a.busy in
           let a = enqueue a Operation_kind.Rebase in
-          let a = respond a Operation_kind.Rebase in
-          let busy_after_respond = a.busy in
+          let a = rebase a ~base_branch:(Branch.of_string "new-base") in
+          let busy_after_rebase = a.busy in
           let a = complete a in
-          busy_after_start && idle_after_complete && busy_after_respond
+          busy_after_start && idle_after_complete && busy_after_rebase
           && (not a.busy) && not a.needs_intervention);
       (* -- respond Human clears satisfies -- *)
       Test.make ~name:"respond Human clears satisfies" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = enqueue a Operation_kind.Human in
           let a = respond a Operation_kind.Human in
@@ -195,7 +219,7 @@ let () =
       Test.make ~name:"respond Ci sets changed" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
@@ -204,7 +228,7 @@ let () =
       Test.make ~name:"respond Merge_conflict clears has_conflict" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = set_has_conflict a in
           let a = enqueue a Operation_kind.Merge_conflict in
@@ -214,7 +238,7 @@ let () =
       Test.make ~name:"respond Review_comments clears pending_comments" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = add_pending_comment a c_valid ~valid:true in
           let a = enqueue a Operation_kind.Review_comments in
@@ -225,7 +249,7 @@ let () =
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = add_pending_comment a c_valid ~valid:true in
           let a = enqueue a Operation_kind.Review_comments in
@@ -236,7 +260,7 @@ let () =
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = add_pending_comment a c_invalid ~valid:false in
           let a = enqueue a Operation_kind.Review_comments in
@@ -246,7 +270,7 @@ let () =
       Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
@@ -258,7 +282,7 @@ let () =
       Test.make ~name:"3 ci failures triggers intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
@@ -271,7 +295,7 @@ let () =
       Test.make ~name:"session_failed triggers intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
@@ -284,13 +308,13 @@ let () =
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
           let a = enqueue a Operation_kind.Human in
           let a = enqueue a Operation_kind.Rebase in
-          let a = respond a Operation_kind.Rebase in
+          let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
           not a.needs_intervention);
       (* -- Human queued suppresses intervention from 3 ci failures -- *)
@@ -298,21 +322,21 @@ let () =
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
           let a = enqueue a Operation_kind.Human in
           let a = enqueue a Operation_kind.Rebase in
-          let a = respond a Operation_kind.Rebase in
+          let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
           not a.needs_intervention);
       (* -- clear_needs_intervention resets flag -- *)
       Test.make ~name:"clear_needs_intervention resets flag" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start a ~base_branch:br in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
@@ -426,6 +450,47 @@ let () =
           let a = set_tried_fresh a in
           let a = set_tried_fresh a in
           equal_session_fallback a.session_fallback Given_up);
+      (* -- rebase sets busy, preserves has_session, updates base_branch,
+           drains rebase queue -- *)
+      Test.make ~name:"rebase postconditions"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let new_base = Branch.of_string "new-base" in
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+          let a = complete a in
+          let had_session = a.has_session in
+          let a = enqueue a Operation_kind.Rebase in
+          let a = rebase a ~base_branch:new_base in
+          a.busy
+          && Bool.equal a.has_session had_session
+          && Option.equal Branch.equal a.base_branch (Some new_base)
+          && not
+               (List.mem a.queue Operation_kind.Rebase
+                  ~equal:Operation_kind.equal));
+      (* -- rebase preserves other queues -- *)
+      Test.make ~name:"rebase preserves other queues"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+          let a = complete a in
+          let a = enqueue a Operation_kind.Rebase in
+          let a = enqueue a Operation_kind.Ci in
+          let a = rebase a ~base_branch:(Branch.of_string "new-base") in
+          List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal
+          && not
+               (List.mem a.queue Operation_kind.Rebase
+                  ~equal:Operation_kind.equal));
+      (* -- respond rejects Rebase -- *)
+      Test.make ~name:"respond rejects Rebase"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+          let a = complete a in
+          let a = enqueue a Operation_kind.Rebase in
+          match respond a Operation_kind.Rebase with
+          | exception Invalid_argument msg ->
+              String.is_substring msg ~substring:"not a feedback"
+          | _ -> false);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

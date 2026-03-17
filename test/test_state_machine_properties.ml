@@ -151,7 +151,7 @@ let () =
             let starts1 =
               List.count actions1 ~f:(function
                 | Orchestrator.Start _ -> true
-                | Orchestrator.Respond _ -> false)
+                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
             in
             starts1 = 0))
   in
@@ -182,12 +182,18 @@ let () =
                     tick_all o (n - 1)
                 in
                 let orch = tick_all orch (List.length patches + 1) in
+                let orch =
+                  Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+                in
                 let orch = Orchestrator.complete orch pid in
                 let orch = Orchestrator.enqueue orch pid kind in
                 let _, actions = Orchestrator.tick orch ~patches in
                 List.exists actions ~f:(function
                   | Orchestrator.Respond (p, k) ->
                       Patch_id.equal p pid && Operation_kind.equal k kind
+                  | Orchestrator.Rebase (p, _) ->
+                      Patch_id.equal p pid
+                      && Operation_kind.equal kind Operation_kind.Rebase
                   | Orchestrator.Start _ -> false)))
   in
   QCheck2.Test.check_exn prop_p3;
@@ -210,6 +216,9 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _ = Orchestrator.tick orch ~patches in
+                let orch =
+                  Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+                in
                 let orch = Orchestrator.complete orch pid in
                 let orch = Orchestrator.mark_merged orch pid in
                 let orch =
@@ -219,7 +228,9 @@ let () =
                 let _, actions = Orchestrator.tick orch ~patches in
                 not
                   (List.exists actions ~f:(function
-                      | Orchestrator.Start (p, _) | Orchestrator.Respond (p, _)
+                      | Orchestrator.Start (p, _)
+                      | Orchestrator.Respond (p, _)
+                      | Orchestrator.Rebase (p, _)
                       -> Patch_id.equal p pid))))
   in
   QCheck2.Test.check_exn prop_p4;
@@ -240,6 +251,9 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _ = Orchestrator.tick orch ~patches in
+                let orch =
+                  Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+                in
                 let orch = Orchestrator.set_session_failed orch pid in
                 let orch = Orchestrator.set_tried_fresh orch pid in
                 let orch = Orchestrator.complete orch pid in
@@ -252,14 +266,14 @@ let () =
                     not
                       (List.exists actions ~f:(function
                         | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                        | Orchestrator.Start _ -> false))
+                        | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
                   in
                   let orch = Orchestrator.clear_needs_intervention orch pid in
                   let _, actions2 = Orchestrator.tick orch ~patches in
                   let unblocked =
                     List.exists actions2 ~f:(function
                       | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                      | Orchestrator.Start _ -> false)
+                      | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
                   in
                   blocked && unblocked))
   in
@@ -282,6 +296,9 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _ = Orchestrator.tick orch ~patches in
+                let orch =
+                  Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+                in
                 let orch = Orchestrator.complete orch pid in
                 let orch1 = Orchestrator.enqueue orch pid kind in
                 let orch2 = Orchestrator.enqueue orch1 pid kind in
@@ -310,6 +327,9 @@ let () =
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
                 let orch, _ = Orchestrator.tick orch ~patches in
+                let orch =
+                  Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+                in
                 let orch = Orchestrator.complete orch pid in
                 let orch =
                   List.fold ops ~init:orch ~f:(fun o k ->
@@ -322,6 +342,9 @@ let () =
                   List.find_map actions ~f:(function
                     | Orchestrator.Respond (p, k) ->
                         if Patch_id.equal p pid then Some k else None
+                    | Orchestrator.Rebase (p, _) ->
+                        if Patch_id.equal p pid then Some Operation_kind.Rebase
+                        else None
                     | Orchestrator.Start _ -> None)
                 in
                 match (expected_hp, responded_kind) with
@@ -331,5 +354,38 @@ let () =
   in
   QCheck2.Test.check_exn prop_p7;
   Stdlib.print_endline "P7 passed"
+
+(** P8: Enqueue Rebase → tick yields Rebase action (not Respond). *)
+let () =
+  let prop_p8 =
+    QCheck2.Test.make ~name:"P8: enqueue Rebase yields Rebase action" ~count:300
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        safe (fun () ->
+            match patches with
+            | [] -> true
+            | first :: _ ->
+                let pid = first.Patch.id in
+                let orch = Orchestrator.create ~patches ~main_branch:main in
+                let rec tick_all o n =
+                  if n = 0 then o
+                  else
+                    let o, _ = Orchestrator.tick o ~patches in
+                    tick_all o (n - 1)
+                in
+                let orch = tick_all orch (List.length patches + 1) in
+                let orch =
+                  Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+                in
+                let orch = Orchestrator.complete orch pid in
+                let orch =
+                  Orchestrator.enqueue orch pid Operation_kind.Rebase
+                in
+                let _, actions = Orchestrator.tick orch ~patches in
+                List.exists actions ~f:(function
+                  | Orchestrator.Rebase (p, _) -> Patch_id.equal p pid
+                  | Orchestrator.Respond _ | Orchestrator.Start _ -> false)))
+  in
+  QCheck2.Test.check_exn prop_p8;
+  Stdlib.print_endline "P8 passed"
 
 let () = Stdlib.print_endline "all state machine properties passed"

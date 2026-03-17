@@ -48,9 +48,15 @@ val create_adhoc : patch_id:Types.Patch_id.t -> pr_number:Types.Pr_number.t -> t
 
 val start : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Start] — begin work on a patch. Preconditions (checked):
-    [~has_pr]. Caller must verify [in_gameplan] and [deps_satisfied] externally.
-    Postconditions: [has_pr], [has_session], [busy], [satisfies],
+    [~has_pr], [~busy]. Caller must verify [in_gameplan] and [deps_satisfied]
+    externally. Postconditions: [has_session], [busy], [satisfies],
     [base_branch = Some base_branch]. *)
+
+val rebase : t -> base_branch:Types.Branch.t -> t
+(** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:
+    [has_pr], [~merged], [~removed], [~busy], [Rebase] in [queue], [Rebase] is
+    [highest_priority]. Postconditions: [busy]; dequeues [Rebase]; preserves
+    [has_session] (does not force true); updates [base_branch]. *)
 
 val respond : t -> Types.Operation_kind.t -> t
 (** [PatchCtx, Comments ~> Respond] — respond to queued feedback. Preconditions

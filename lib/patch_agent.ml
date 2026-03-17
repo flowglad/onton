@@ -201,13 +201,15 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }
-let set_pr_number t pr_number = { t with pr_number = Some pr_number }
+
+let set_pr_number t pr_number =
+  { t with pr_number = Some pr_number; has_pr = true }
 
 let start t ~base_branch =
   if t.has_pr then invalid_arg "Patch_agent.start: patch already has a PR";
+  if t.busy then invalid_arg "Patch_agent.start: patch is already busy";
   {
     t with
-    has_pr = true;
     has_session = true;
     busy = true;
     satisfies = true;
@@ -217,6 +219,22 @@ let start t ~base_branch =
     addressed_comment_ids = Set.empty (module Comment_id);
   }
 
+let rebase t ~base_branch =
+  if not t.has_pr then invalid_arg "Patch_agent.rebase: patch has no PR";
+  if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
+  if t.removed then invalid_arg "Patch_agent.rebase: patch is removed";
+  if t.busy then invalid_arg "Patch_agent.rebase: patch is busy";
+  if not (List.mem t.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
+  then invalid_arg "Patch_agent.rebase: Rebase not in queue";
+  (match highest_priority t with
+  | Some hp when Operation_kind.equal hp Operation_kind.Rebase -> ()
+  | _ -> invalid_arg "Patch_agent.rebase: Rebase not highest priority");
+  let queue =
+    List.filter t.queue ~f:(fun j ->
+        not (Operation_kind.equal j Operation_kind.Rebase))
+  in
+  { t with busy = true; queue; base_branch = Some base_branch }
+
 let respond t k =
   if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
@@ -224,6 +242,8 @@ let respond t k =
   if t.busy then invalid_arg "Patch_agent.respond: patch is busy";
   if t.needs_intervention then
     invalid_arg "Patch_agent.respond: patch needs intervention";
+  if Operation_kind.equal k Operation_kind.Rebase then
+    invalid_arg "Patch_agent.respond: Rebase is not a feedback operation";
   if not (List.mem t.queue k ~equal:Operation_kind.equal) then
     invalid_arg "Patch_agent.respond: operation not in queue";
   (match highest_priority t with

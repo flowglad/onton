@@ -27,6 +27,10 @@ let gen_operation_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
 
+let gen_feedback_kind =
+  QCheck2.Gen.oneof_list
+    Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
+
 let gen_operation_kind_queue =
   QCheck2.Gen.(
     map
@@ -295,7 +299,10 @@ let gen_orchestrator_action =
           gen_patch_id gen_branch;
         map2
           (fun pid kind -> Onton.Orchestrator.Respond (pid, kind))
-          gen_patch_id gen_operation_kind;
+          gen_patch_id gen_feedback_kind;
+        map2
+          (fun pid branch -> Onton.Orchestrator.Rebase (pid, branch))
+          gen_patch_id gen_branch;
       ])
 
 (* -- Invariants -- *)
