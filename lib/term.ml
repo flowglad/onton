@@ -324,6 +324,7 @@ module Key = struct
     | Delete
     | F of int
     | Ctrl of char
+    | Paste of string
     | Unknown of string
   [@@deriving show, eq]
 
@@ -351,6 +352,65 @@ module Key = struct
               let n = Unix.read Unix.stdin buf 0 1 in
               if n = 0 then None else Some (Bytes.get buf 0)
             with _ -> None))
+
+  (** Read bracketed paste content until ESC[201~ (paste end). *)
+  let read_bracketed_paste () =
+    let buf = Buffer.create 256 in
+    let rec consume () =
+      match read_byte () with
+      | None -> Paste (Buffer.contents buf)
+      | Some '\027' -> (
+          (* Possible end sequence: ESC [ 2 0 1 ~ *)
+          match read_byte_timeout () with
+          | Some '[' -> (
+              match read_byte_timeout () with
+              | Some '2' -> (
+                  match read_byte_timeout () with
+                  | Some '0' -> (
+                      match read_byte_timeout () with
+                      | Some '1' -> (
+                          match read_byte_timeout () with
+                          | Some '~' -> Paste (Buffer.contents buf)
+                          | Some c ->
+                              Buffer.add_string buf "\027[20";
+                              Buffer.add_char buf c;
+                              consume ()
+                          | None ->
+                              Buffer.add_string buf "\027[20";
+                              Paste (Buffer.contents buf))
+                      | Some c ->
+                          Buffer.add_string buf "\027[2";
+                          Buffer.add_char buf c;
+                          consume ()
+                      | None ->
+                          Buffer.add_string buf "\027[2";
+                          Paste (Buffer.contents buf))
+                  | Some c ->
+                      Buffer.add_string buf "\027[";
+                      Buffer.add_char buf c;
+                      consume ()
+                  | None ->
+                      Buffer.add_string buf "\027[";
+                      Paste (Buffer.contents buf))
+              | Some c ->
+                  Buffer.add_string buf "\027";
+                  Buffer.add_char buf c;
+                  consume ()
+              | None ->
+                  Buffer.add_string buf "\027";
+                  Paste (Buffer.contents buf))
+          | Some c ->
+              Buffer.add_string buf "\027";
+              Buffer.add_char buf c;
+              consume ()
+          | None ->
+              Buffer.add_string buf "\027";
+              Paste (Buffer.contents buf))
+      | Some c ->
+          Buffer.add_char buf c;
+          consume ()
+    in
+    consume ()
 
   (** Parse a CSI escape sequence (after ESC and bracket have been read). *)
   let parse_csi () =
@@ -389,6 +449,11 @@ module Key = struct
             | Some '~' -> Unknown "insert"
             | Some '0' -> (
                 match read_byte_timeout () with
+                | Some '0' -> (
+                    (* CSI 200~ = bracketed paste start *)
+                    match read_byte_timeout () with
+                    | Some '~' -> read_bracketed_paste ()
+                    | _ -> Unknown "200")
                 | Some '~' -> F 9
                 | _ -> Unknown "20")
             | Some '1' -> (

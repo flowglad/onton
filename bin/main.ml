@@ -587,6 +587,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
           loop ())
         else if !text_mode then
           match key with
+          | Term.Key.Paste text ->
+              (* Strip trailing newlines — pasted text is submitted via Enter *)
+              let text =
+                Base.String.rstrip text ~drop:(fun c ->
+                    Char.equal c '\n' || Char.equal c '\r')
+              in
+              (* Replace internal newlines with spaces for single-line input *)
+              let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
+              let text = Base.String.tr text ~target:'\r' ~replacement:' ' in
+              Buffer.add_string buf text;
+              loop ()
           | Term.Key.Escape ->
               Buffer.clear buf;
               saved_draft := "";
@@ -838,96 +849,121 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
           text_mode := true;
           loop ())
         else
-          let cmd = Tui_input.of_key key in
-          match cmd with
-          | Tui_input.Quit -> raise Quit_tui
-          | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
-          | Tui_input.Page_down ->
-              (match !view_mode with
-              | Tui.List_view ->
-                  let count = Base.List.length !sorted_patch_ids in
-                  selected :=
-                    Tui_input.apply_move ~count ~selected:!selected cmd
-              | Tui.Timeline_view ->
-                  let count =
-                    Runtime.read runtime (fun snap ->
-                        let log = snap.Runtime.activity_log in
-                        let events =
-                          Base.List.length
-                            (Activity_log.recent_events log ~limit:100)
-                        in
-                        let transitions =
-                          Base.List.length
-                            (Activity_log.recent_transitions log ~limit:100)
-                        in
-                        events + transitions)
-                  in
-                  selected :=
-                    Tui_input.apply_move ~count ~selected:!selected cmd
-              | Tui.Detail_view _ ->
-                  (* Scroll detail view — selected doubles as scroll offset *)
-                  let delta =
-                    match cmd with
-                    | Tui_input.Move_up -> -1
-                    | Tui_input.Move_down -> 1
-                    | Tui_input.Page_up -> -10
-                    | Tui_input.Page_down -> 10
-                    | Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
-                    | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
-                    | Tui_input.Noop | Tui_input.Send_message _
-                    | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-                    | Tui_input.Remove_patch ->
-                        0
-                  in
-                  selected := Base.Int.max 0 (!selected + delta));
-              loop ()
-          | Tui_input.Select -> (
+          match key with
+          | Term.Key.Paste text -> (
+              (* In detail view, auto-enter text mode and buffer the paste *)
               match !view_mode with
-              | Tui.List_view ->
-                  let pids = !sorted_patch_ids in
-                  let count = Base.List.length pids in
-                  if count > 0 then (
-                    let idx =
-                      Base.Int.max 0 (Base.Int.min !selected (count - 1))
-                    in
-                    saved_list_selected := idx;
-                    let pid = Base.List.nth_exn pids idx in
-                    view_mode := Tui.Detail_view pid;
-                    selected := Base.Int.max_value);
-                  loop ()
               | Tui.Detail_view _ ->
+                  Buffer.clear buf;
+                  let text =
+                    Base.String.rstrip text ~drop:(fun c ->
+                        Char.equal c '\n' || Char.equal c '\r')
+                  in
+                  let text =
+                    Base.String.tr text ~target:'\n' ~replacement:' '
+                  in
+                  let text =
+                    Base.String.tr text ~target:'\r' ~replacement:' '
+                  in
+                  Buffer.add_string buf text;
                   text_mode := true;
                   loop ()
-              | Tui.Timeline_view -> loop ())
-          | Tui_input.Back -> (
-              match !view_mode with
-              | Tui.Detail_view _ ->
-                  view_mode := Tui.List_view;
-                  selected := !saved_list_selected;
+              | Tui.List_view | Tui.Timeline_view -> loop ())
+          | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace
+          | Term.Key.Escape | Term.Key.Up | Term.Key.Down | Term.Key.Left
+          | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
+          | Term.Key.Page_down | Term.Key.Delete | Term.Key.F _
+          | Term.Key.Ctrl _ | Term.Key.Unknown _ -> (
+              let cmd = Tui_input.of_key key in
+              match cmd with
+              | Tui_input.Quit -> raise Quit_tui
+              | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
+              | Tui_input.Page_down ->
+                  (match !view_mode with
+                  | Tui.List_view ->
+                      let count = Base.List.length !sorted_patch_ids in
+                      selected :=
+                        Tui_input.apply_move ~count ~selected:!selected cmd
+                  | Tui.Timeline_view ->
+                      let count =
+                        Runtime.read runtime (fun snap ->
+                            let log = snap.Runtime.activity_log in
+                            let events =
+                              Base.List.length
+                                (Activity_log.recent_events log ~limit:100)
+                            in
+                            let transitions =
+                              Base.List.length
+                                (Activity_log.recent_transitions log ~limit:100)
+                            in
+                            events + transitions)
+                      in
+                      selected :=
+                        Tui_input.apply_move ~count ~selected:!selected cmd
+                  | Tui.Detail_view _ ->
+                      (* Scroll detail view — selected doubles as scroll offset *)
+                      let delta =
+                        match cmd with
+                        | Tui_input.Move_up -> -1
+                        | Tui_input.Move_down -> 1
+                        | Tui_input.Page_up -> -10
+                        | Tui_input.Page_down -> 10
+                        | Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
+                        | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
+                        | Tui_input.Noop | Tui_input.Send_message _
+                        | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+                        | Tui_input.Remove_patch ->
+                            0
+                      in
+                      selected := Base.Int.max 0 (!selected + delta));
                   loop ()
-              | Tui.Timeline_view ->
-                  view_mode := Tui.List_view;
-                  selected := !saved_list_selected;
+              | Tui_input.Select -> (
+                  match !view_mode with
+                  | Tui.List_view ->
+                      let pids = !sorted_patch_ids in
+                      let count = Base.List.length pids in
+                      if count > 0 then (
+                        let idx =
+                          Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                        in
+                        saved_list_selected := idx;
+                        let pid = Base.List.nth_exn pids idx in
+                        view_mode := Tui.Detail_view pid;
+                        selected := Base.Int.max_value);
+                      loop ()
+                  | Tui.Detail_view _ ->
+                      text_mode := true;
+                      loop ()
+                  | Tui.Timeline_view -> loop ())
+              | Tui_input.Back -> (
+                  match !view_mode with
+                  | Tui.Detail_view _ ->
+                      view_mode := Tui.List_view;
+                      selected := !saved_list_selected;
+                      loop ()
+                  | Tui.Timeline_view ->
+                      view_mode := Tui.List_view;
+                      selected := !saved_list_selected;
+                      loop ()
+                  | Tui.List_view -> loop ())
+              | Tui_input.Timeline -> (
+                  match !view_mode with
+                  | Tui.Timeline_view ->
+                      view_mode := Tui.List_view;
+                      selected := !saved_list_selected;
+                      loop ()
+                  | Tui.List_view | Tui.Detail_view _ ->
+                      saved_list_selected := !selected;
+                      view_mode := Tui.Timeline_view;
+                      selected := 0;
+                      loop ())
+              | Tui_input.Help ->
+                  show_help := true;
                   loop ()
-              | Tui.List_view -> loop ())
-          | Tui_input.Timeline -> (
-              match !view_mode with
-              | Tui.Timeline_view ->
-                  view_mode := Tui.List_view;
-                  selected := !saved_list_selected;
-                  loop ()
-              | Tui.List_view | Tui.Detail_view _ ->
-                  saved_list_selected := !selected;
-                  view_mode := Tui.Timeline_view;
-                  selected := 0;
-                  loop ())
-          | Tui_input.Help ->
-              show_help := true;
-              loop ()
-          | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
-          | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-          | Tui_input.Remove_patch ->
-              loop ())
+              | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
+              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+              | Tui_input.Remove_patch ->
+                  loop ()))
   in
   loop ()
 

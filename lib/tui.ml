@@ -905,7 +905,11 @@ let paint_frame (frame : frame) =
   Buffer.contents buf
 
 let enter_tui () =
-  Term.Cursor.hide ^ Term.Clear.screen ^ Term.Cursor.move_to ~row:1 ~col:1
+  Term.Cursor.hide ^ Term.Clear.screen
+  ^ Term.Cursor.move_to ~row:1 ~col:1
+  ^ "\027[?2004h" (* enable bracketed paste *)
 
 let exit_tui () =
-  Term.Clear.screen ^ Term.Cursor.move_to ~row:1 ~col:1 ^ Term.Cursor.show
+  "\027[?2004l" (* disable bracketed paste *) ^ Term.Clear.screen
+  ^ Term.Cursor.move_to ~row:1 ~col:1
+  ^ Term.Cursor.show
