@@ -327,6 +327,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
       let cwd = Eio.Path.(fs / worktree_path) in
       let text_buf = Buffer.create 4096 in
       let error_buf = Buffer.create 256 in
+      let tool_count = ref 0 in
       let pr_found = ref false in
       let needle_len =
         String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
@@ -351,6 +352,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
                   on_pr_detected pr_number
               | None -> ())
         | Types.Stream_event.Tool_use { name; _ } ->
+            tool_count := !tool_count + 1;
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Tool_use name)
         | Types.Stream_event.Final_result { stop_reason; _ } ->
@@ -383,6 +385,22 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               Orchestrator.complete orch patch_id);
           `Failed
       | Ok r when r.Claude_runner.exit_code = 0 ->
+          let stream_errors = String.trim (Buffer.contents error_buf) in
+          if String.length stream_errors > 0 then
+            log_event runtime ~patch_id
+              (Printf.sprintf "Claude exited 0 but had stream errors: %s"
+                 (if String.length stream_errors <= 500 then stream_errors
+                  else String.sub stream_errors 0 500));
+          let text_len = Buffer.length text_buf in
+          let tools = !tool_count in
+          if tools = 0 && text_len < 200 then
+            log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Claude exited 0 with no tool use and %d chars of text: %s"
+                 text_len
+                 (let s = String.trim (Buffer.contents text_buf) in
+                  if String.length s <= 200 then s
+                  else String.sub s 0 200 ^ "..."));
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
