@@ -751,8 +751,11 @@ let render_help_overlay ~width ~height =
         ] );
     ]
   in
+  let dismiss = Term.styled [ Term.Sgr.dim ] "(any key to dismiss)" in
   let title =
-    Term.styled [ Term.Sgr.bold; Term.Sgr.fg_cyan ] " Keyboard Shortcuts"
+    Term.styled
+      [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
+      (Printf.sprintf " Keyboard Shortcuts  %s" dismiss)
   in
   let blank = "" in
   let body =
@@ -762,8 +765,8 @@ let render_help_overlay ~width ~height =
         :: List.map keys ~f:(fun k ->
             Printf.sprintf "    %s" (Term.styled [ Term.Sgr.dim ] k)))
   in
-  let content = (title :: body) @ [ blank; " Press any key to dismiss" ] in
-  let overlay_h = Int.min (List.length content) (Int.max 0 (height - 2)) in
+  let content = title :: body in
+  let overlay_h = Int.max 0 (Int.min (List.length content) (height - 2)) in
   let visible = List.sub content ~pos:0 ~len:overlay_h in
   let pad_line line =
     let raw_len = Term.visible_length line in
