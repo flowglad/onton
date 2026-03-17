@@ -1,24 +1,45 @@
 # onton
 
-An OCaml orchestrator for parallel Claude Code agents executing gameplan patches. Port of the [Anton](https://github.com/flowglad/orchestrate-gameplan) Elixir/OTP system.
+An OCaml orchestrator for parallel Claude Code agents executing gameplan
+patches. Port of the [Anton](https://github.com/flowglad/orchestrate-gameplan)
+Elixir/OTP system.
 
-Onton parses a structured gameplan (markdown), builds a dependency graph, and spawns concurrent Claude Code agents in git worktrees — one per patch. It polls GitHub for PR status, detects merges, triggers rebases, and reacts to CI failures and review comments. A terminal UI shows live status with full markdown-rendered agent transcripts.
+Onton parses a structured gameplan (markdown), builds a dependency graph, and
+spawns concurrent Claude Code agents in git worktrees — one per patch. It polls
+GitHub for PR status, detects merges, triggers rebases, and reacts to CI
+failures and review comments. A terminal UI shows live status with full
+markdown-rendered agent transcripts.
 
 ## Status
 
-**Production.** Complete orchestration loop with pure decision logic, GitHub GraphQL polling, Claude subprocess management (PTY-wrapped `-p` mode with `--continue` session resumption), concurrent fiber architecture (TUI, poller, runner, persistence), session fallback chain, snapshot persistence/restore with transcript preservation, startup reconciliation, orchestrator-executed rebases, and rich TUI with markdown rendering via cmarkit.
+**Production.** Complete orchestration loop with pure decision logic, GitHub
+GraphQL polling, Claude subprocess management (PTY-wrapped `-p` mode with
+`--continue` session resumption), concurrent fiber architecture (TUI, poller,
+runner, persistence), session fallback chain, snapshot persistence/restore with
+transcript preservation, startup reconciliation, orchestrator-executed rebases,
+and rich TUI with markdown rendering via cmarkit.
 
-Property-based tests (QCheck2) cover spec invariants for graph, patch agent, orchestrator, reconciler, persistence, stream parsing, poller, patch decision logic, and spawn planning.
+Property-based tests (QCheck2) cover spec invariants for graph, patch agent,
+orchestrator, reconciler, persistence, stream parsing, poller, patch decision
+logic, and spawn planning.
 
-## Requirements
+## Install
 
-- OCaml 5.4.0
-- dune 3.21
-- opam (local switch included)
-- Claude Code CLI (`claude` on PATH)
-- GitHub CLI (`gh` on PATH) for PR discovery
+### Homebrew (macOS)
 
-## Setup
+```sh
+brew install flowglad/onton/onton
+```
+
+### GitHub Releases
+
+Download a prebuilt binary from
+[Releases](https://github.com/flowglad/onton/releases) (macOS ARM64 and
+x86_64).
+
+### From source
+
+Requires OCaml 5.4.0, dune 3.21, and opam:
 
 ```sh
 git clone https://github.com/flowglad/onton.git
@@ -26,7 +47,13 @@ cd onton
 opam switch create . ocaml.5.4.0 --deps-only
 eval $(opam env)
 opam install . --deps-only
+dune build
 ```
+
+## Requirements
+
+- Claude Code CLI (`claude` on PATH)
+- GitHub CLI (`gh` on PATH) for PR discovery
 
 ## Usage
 
@@ -49,11 +76,16 @@ onton --owner OWNER --repo REPO [OPTIONS] # Ad-hoc mode (no gameplan)
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 | `--headless` | off | Run without TUI (plain log output to stdout) |
 
-Project config and state are persisted to `~/.local/share/onton/<project>/`. Resuming a project reloads the saved snapshot (including agent transcripts) and reconciles against GitHub.
+Project config and state are persisted to `~/.local/share/onton/<project>/`.
+Resuming a project reloads the saved snapshot (including agent transcripts) and
+reconciles against GitHub.
 
-Worktrees are created at `~/worktrees/<project>/patch-<id>`, outside the repo directory.
+Worktrees are created at `~/worktrees/<project>/patch-<id>`, outside the repo
+directory.
 
-In ad-hoc mode (no `PROJECT` or `--gameplan`), onton starts with an empty patch list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each `+N` creates a new agent that polls and responds to the given PR.
+In ad-hoc mode (no `PROJECT` or `--gameplan`), onton starts with an empty patch
+list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each `+N`
+creates a new agent that polls and responds to the given PR.
 
 ## Build & test
 
@@ -69,7 +101,7 @@ dune fmt            # auto-format via ocamlformat
 
 ```
 gameplan.md ──> Gameplan_parser ──> Graph + Patches
-                                        │
+                                         │
                     Orchestrator ────────┤
                     ├── Patch_agent (per-patch state machine)
                     ├── Patch_decision (pure decision logic)
@@ -79,29 +111,39 @@ gameplan.md ──> Gameplan_parser ──> Graph + Patches
                     └── TUI (terminal display + markdown transcript)
 
           ┌─────────────────────────────────────────────┐
-          │              Eio_main.run                    │
-          │  ┌────────┐ ┌───────┐ ┌───────┐ ┌────────┐ │
-          │  │  TUI   │ │Poller │ │Runner │ │Persist │ │
-          │  │ fiber  │ │ fiber │ │ fiber │ │ fiber  │ │
-          │  └───┬────┘ └───┬───┘ └───┬───┘ └───┬────┘ │
-          │      └──────────┼─────────┼─────────┘      │
+          │              Eio_main.run                   │
+          │  ┌────────┐ ┌───────┐ ┌───────┐ ┌────────┐  │
+          │  │  TUI   │ │Poller │ │Runner │ │Persist │  │
+          │  │ fiber  │ │ fiber │ │ fiber │ │ fiber  │  │
+          │  └───┬────┘ └───┬───┘ └───┬───┘ └───┬────┘  │
+          │      └──────────┼─────────┼─────────┘       │
           │            Runtime (Eio.Mutex)              │
           └─────────────────────────────────────────────┘
 ```
 
 ### Claude session management
 
-Claude is invoked via `-p` (prompt mode, not `--print`) which saves sessions, enabling `--continue` to resume the most recent session in a worktree. This matches the Elixir reference implementation.
+Claude is invoked via `-p` (prompt mode, not `--print`) which saves sessions,
+enabling `--continue` to resume the most recent session in a worktree. This
+matches the Elixir reference implementation.
 
-Since `-p` mode requires a TTY for streaming output, each Claude process is wrapped in `/usr/bin/script -q /dev/null` to allocate a pseudo-TTY. ANSI escapes from the PTY are stripped before JSON parsing.
+Since `-p` mode requires a TTY for streaming output, each Claude process is
+wrapped in `/usr/bin/script -q /dev/null` to allocate a pseudo-TTY. ANSI
+escapes from the PTY are stripped before JSON parsing.
 
-The session fallback chain: `--continue` (resume worktree session) -> fresh session (no `--continue`) -> give up (needs intervention). If `--continue` produces no events, it's treated as a resume failure and falls back to fresh.
+The session fallback chain: `--continue` (resume worktree session) -> fresh
+session (no `--continue`) -> give up (needs intervention). If `--continue`
+produces no events, it's treated as a resume failure and falls back to fresh.
 
-Additional flags: `--dangerously-skip-permissions`, `--max-turns 200`, `--output-format stream-json`, `--verbose`.
+Additional flags: `--dangerously-skip-permissions`, `--max-turns 200`,
+`--output-format stream-json`, `--verbose`.
 
 ### Runner concurrency
 
-Action fibers are spawned independently (`fork_daemon`) rather than batched — the runner loop picks up newly-queued operations on each 1-second cycle without waiting for running sessions to finish. Backpressure is provided by a `max_concurrency` semaphore.
+Action fibers are spawned independently (`fork_daemon`) rather than batched —
+the runner loop picks up newly-queued operations on each 1-second cycle without
+waiting for running sessions to finish. Backpressure is provided by a
+`max_concurrency` semaphore.
 
 ### Modules
 
@@ -136,12 +178,21 @@ Action fibers are spawned independently (`fork_daemon`) rather than batched — 
 
 ### Design principles
 
-- **Eio for structured concurrency** — four fibers (TUI, poller, runner, persistence), with independently-spawned Claude action fibers bounded by a semaphore
-- **Pure logic core** — parser, graph, priority, state machine, decision logic, spawn planning are pure functions with no I/O
-- **Strict compiler feedback** — all warnings fatal (except 44/70), `.mli` files enforce module boundaries
-- **Pantagruel spec alignment** — state machine transitions match the formal spec in `anton.pant`
-- **Single source of truth** — priority ordering defined once in `Priority`; sorted patch display via shared `sorted_patch_ids` ref; `current_op` tracks active operation for both status display and log suppression
-- **Property-based testing** — QCheck2 tests for graph, patch agent, orchestrator liveness, reconciler, state machine, persistence roundtrip, stream parsing, TUI input, poller, patch decision, and spawn logic
+- **Eio for structured concurrency** — four fibers (TUI, poller, runner,
+  persistence), with independently-spawned Claude action fibers bounded by a
+  semaphore
+- **Pure logic core** — parser, graph, priority, state machine, decision logic,
+  spawn planning are pure functions with no I/O
+- **Strict compiler feedback** — all warnings fatal (except 44/70), `.mli`
+  files enforce module boundaries
+- **Pantagruel spec alignment** — state machine transitions match the formal
+  spec in `anton.pant`
+- **Single source of truth** — priority ordering defined once in `Priority`;
+  sorted patch display via shared `sorted_patch_ids` ref; `current_op` tracks
+  active operation for both status display and log suppression
+- **Property-based testing** — QCheck2 tests for graph, patch agent,
+  orchestrator liveness, reconciler, state machine, persistence roundtrip,
+  stream parsing, TUI input, poller, patch decision, and spawn logic
 
 ## CI
 
@@ -151,12 +202,19 @@ GitHub Actions runs on every push and PR:
 - **Property tests** — QCheck2 with 10,000 iterations
 - **Format check** — `ocamlformat` via `ocaml/setup-ocaml/lint-fmt`
 
+Pushing a `v*` tag builds macOS binaries (ARM64 + x86_64), creates a GitHub
+release, and updates the Homebrew formula.
+
 ## TUI
 
 Three view modes:
-- **List view** — patch table in gameplan order with status badges, CI failures, current operation tag
-- **Detail view** — single patch: status, branch, base branch, PR, dependencies, conflict, pending comments, CI checks, full markdown-rendered transcript
-- **Timeline view** — scrollable activity log (transitions, events, stream entries)
+- **List view** — patch table in gameplan order with status badges, CI
+  failures, current operation tag
+- **Detail view** — single patch: status, branch, base branch, PR,
+  dependencies, conflict, pending comments, CI checks, full markdown-rendered
+  transcript
+- **Timeline view** — scrollable activity log (transitions, events, stream
+  entries)
 
 Key bindings:
 
@@ -170,7 +228,8 @@ Key bindings:
 | `q` | Quit | Quit | Quit |
 
 Text mode (Enter in detail view, or `:` in list):
-- Type a message and press Enter — sent as human message to the currently viewed patch (clears `needs_intervention`)
+- Type a message and press Enter — sent as human message to the currently
+  viewed patch (clears `needs_intervention`)
 - `N> message` — send human message to patch N
 - `+123` — register ad-hoc PR #123 for the selected patch
 - `w /path` — register existing worktree directory
@@ -178,18 +237,23 @@ Text mode (Enter in detail view, or `:` in list):
 
 The input prompt is visible in the footer as `: <text>`.
 
-Headless mode (`--headless`) outputs plain timestamped log lines to stdout with dedup-based entry tracking.
+Headless mode (`--headless`) outputs plain timestamped log lines to stdout with
+dedup-based entry tracking.
 
 ## Formal spec
 
-The state machine is specified in [Pantagruel](https://github.com/subsetpark/pantagruel) (`anton.pant`). Key properties:
+The state machine is specified in
+[Pantagruel](https://github.com/subsetpark/pantagruel) (`anton.pant`). Key
+properties:
 
 - Sessions are never lost (`has_session p -> has_session' p`)
 - Merged is absorbing (terminal state)
 - Queue isolation (responding to `k` only removes `k`)
 - CI failure cap (3 failures triggers intervention)
 - Liveness (all fireable actions fire)
-- `approved?` is derived: `has_pr && mergeable && checks_passing && no_unresolved_comments`
+- `approved?` is derived: `has_pr && merge_ready && not busy && not
+  needs_intervention` (where `merge_ready` reflects GitHub's `mergeStateStatus
+  = CLEAN`)
 
 ## License
 

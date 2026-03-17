@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
+        with:
+          ocaml-compiler: '5.4.0'
+          dune-cache: true
+
+      - name: Install dependencies
+        run: opam install . --deps-only -y
+
+      - name: Build
+        run: opam exec -- dune build
+
+      - name: Package binary
+        run: |
+          cp _build/default/bin/main.exe onton
+          chmod +x onton
+          tar czf "onton-${{ matrix.arch }}-apple-darwin.tar.gz" onton
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: onton-${{ matrix.arch }}-apple-darwin
+          path: onton-${{ matrix.arch }}-apple-darwin.tar.gz
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            onton-arm64-apple-darwin.tar.gz \
+            onton-x86_64-apple-darwin.tar.gz
+
+  homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          echo "arm64=$(shasum -a 256 onton-arm64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "x86_64=$(shasum -a 256 onton-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Generate and commit formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -e "s/VERSION/$VERSION/g" \
+              -e "s/SHA256_ARM64/${{ steps.sha.outputs.arm64 }}/g" \
+              -e "s/SHA256_X86_64/${{ steps.sha.outputs.x86_64 }}/g" \
+              Formula/onton.rb > Formula/onton.rb.tmp
+          mv Formula/onton.rb.tmp Formula/onton.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/onton.rb
+          git commit -m "Formula: onton ${GITHUB_REF_NAME}"
+          git push origin HEAD:main
