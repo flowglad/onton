@@ -449,7 +449,8 @@ exception Quit_tui
 
     [selected] and [view_mode] are shared mutable refs updated by the input
     fiber. *)
-let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts =
+let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
+    ~sorted_patch_ids =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let rec loop () =
@@ -476,6 +477,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts =
     let views =
       Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp ~activity
     in
+    sorted_patch_ids :=
+      Base.List.map views ~f:(fun (pv : Tui.patch_view) -> pv.Tui.patch_id);
     let transcript =
       match !view_mode with
       | Tui.Detail_view pid -> (
@@ -503,7 +506,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts =
     - ["+123"] — register ad-hoc PR #123 for the selected patch
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
-let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
+let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root
+    ~sorted_patch_ids =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let saved_list_selected = ref 0 in
@@ -582,19 +586,20 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                          (Pr_number.to_int pr_number)))
               | Some (Tui_input.Add_worktree path) -> (
                   let info_opt =
-                    Runtime.read runtime (fun snap ->
-                        let agents =
-                          Orchestrator.all_agents snap.Runtime.orchestrator
-                        in
-                        let count = Base.List.length agents in
-                        if count = 0 then None
-                        else
-                          let idx =
-                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
-                          in
-                          let agent = Base.List.nth_exn agents idx in
-                          Some
-                            (agent.Patch_agent.patch_id, agent.Patch_agent.busy))
+                    let pids = !sorted_patch_ids in
+                    let count = Base.List.length pids in
+                    if count = 0 then None
+                    else
+                      let idx =
+                        Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                      in
+                      let pid = Base.List.nth_exn pids idx in
+                      let busy =
+                        Runtime.read runtime (fun snap ->
+                            (Orchestrator.agent snap.Runtime.orchestrator pid)
+                              .Patch_agent.busy)
+                      in
+                      Some (pid, busy)
                   in
                   match info_opt with
                   | None ->
@@ -668,17 +673,18 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                              (Printexc.to_string exn))))
               | Some Tui_input.Remove_patch -> (
                   let info_opt =
-                    Runtime.read runtime (fun snap ->
-                        let agents =
-                          Orchestrator.all_agents snap.Runtime.orchestrator
-                        in
-                        let count = Base.List.length agents in
-                        if count = 0 then None
-                        else
-                          let idx =
-                            Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                    let pids = !sorted_patch_ids in
+                    let count = Base.List.length pids in
+                    if count = 0 then None
+                    else
+                      let idx =
+                        Base.Int.max 0 (Base.Int.min !selected (count - 1))
+                      in
+                      let pid = Base.List.nth_exn pids idx in
+                      Runtime.read runtime (fun snap ->
+                          let agent =
+                            Orchestrator.agent snap.Runtime.orchestrator pid
                           in
-                          let agent = Base.List.nth_exn agents idx in
                           Some
                             ( agent.Patch_agent.patch_id,
                               agent.Patch_agent.busy,
@@ -761,11 +767,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
           | Tui_input.Page_down ->
               (match !view_mode with
               | Tui.List_view ->
-                  let count =
-                    Runtime.read runtime (fun snap ->
-                        Base.List.length
-                          (Orchestrator.all_agents snap.Runtime.orchestrator))
-                  in
+                  let count = Base.List.length !sorted_patch_ids in
                   selected :=
                     Tui_input.apply_move ~count ~selected:!selected cmd
               | Tui.Timeline_view ->
@@ -804,18 +806,15 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
           | Tui_input.Select -> (
               match !view_mode with
               | Tui.List_view ->
-                  let agents =
-                    Runtime.read runtime (fun snap ->
-                        Orchestrator.all_agents snap.Runtime.orchestrator)
-                  in
-                  let count = Base.List.length agents in
+                  let pids = !sorted_patch_ids in
+                  let count = Base.List.length pids in
                   if count > 0 then (
                     let idx =
                       Base.Int.max 0 (Base.Int.min !selected (count - 1))
                     in
                     saved_list_selected := idx;
-                    let agent = Base.List.nth_exn agents idx in
-                    view_mode := Tui.Detail_view agent.Patch_agent.patch_id;
+                    let pid = Base.List.nth_exn pids idx in
+                    view_mode := Tui.Detail_view pid;
                     selected := 0);
                   loop ()
               | Tui.Detail_view _ ->
@@ -1751,6 +1750,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
       else
         let selected = ref 0 in
         let view_mode = ref Tui.List_view in
+        let sorted_patch_ids = ref [] in
         let raw_state = Term.Raw.enter () in
         Fun.protect
           ~finally:(fun () ->
@@ -1768,10 +1768,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
               Eio.Fiber.all
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode
-                     ~transcripts)
+                     ~transcripts ~sorted_patch_ids)
                 :: (fun () ->
                   input_fiber ~runtime ~selected ~view_mode ~pr_registry
-                    ~repo_root:config.repo_root)
+                    ~repo_root:config.repo_root ~sorted_patch_ids)
                 :: common_fibers)
             with Quit_tui -> ())
 
