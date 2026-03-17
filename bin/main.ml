@@ -942,11 +942,20 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                     let orch =
                       Base.List.fold poll_result.Poller.queue ~init:orch
                         ~f:(fun acc kind ->
-                          pending_logs :=
-                            ( Printf.sprintf "enqueued %s"
-                                (Operation_kind.show kind),
-                              patch_id )
-                            :: !pending_logs;
+                          let detail =
+                            match kind with
+                            | Operation_kind.Review_comments ->
+                                Printf.sprintf "enqueued %s (%d new comments)"
+                                  (Operation_kind.show kind)
+                                  (Base.List.length
+                                     poll_result.Poller.new_comments)
+                            | Operation_kind.Ci | Operation_kind.Human
+                            | Operation_kind.Merge_conflict
+                            | Operation_kind.Rebase ->
+                                Printf.sprintf "enqueued %s"
+                                  (Operation_kind.show kind)
+                          in
+                          pending_logs := (detail, patch_id) :: !pending_logs;
                           Orchestrator.enqueue acc patch_id kind)
                     in
                     let _ci_store =
@@ -1297,6 +1306,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     pc.Patch_agent.comment)
                               in
                               let pr_number = agent.Patch_agent.pr_number in
+                              log_event runtime ~patch_id
+                                (Printf.sprintf "delivering %s (%d comments)"
+                                   (Operation_kind.show kind)
+                                   (Base.List.length pending_comments));
                               let prompt =
                                 match kind with
                                 | Operation_kind.Ci -> (
@@ -1337,7 +1350,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       match result with
                       | `Stale | `Failed -> ()
                       | `Ok ->
+                          (* Mark pending comment IDs as addressed so the
+                             poller doesn't re-enqueue them next cycle. *)
+                          let comment_ids =
+                            match pre_fire_agent with
+                            | Some a ->
+                                Base.List.map a.Patch_agent.pending_comments
+                                  ~f:(fun (pc : Patch_agent.pending_comment) ->
+                                    pc.Patch_agent.comment.Comment.id)
+                            | None -> []
+                          in
                           Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                Base.List.fold comment_ids ~init:orch
+                                  ~f:(fun orch cid ->
+                                    Orchestrator.add_addressed_comment_id orch
+                                      patch_id cid)
+                              in
                               Orchestrator.complete orch patch_id))))
     in
     if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
