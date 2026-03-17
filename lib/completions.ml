@@ -1,9 +1,6 @@
 open Base
 
-type t = {
-  display : string;
-  full : string;
-}
+type t = { display : string; full : string }
 
 (* Split buffer into leading digits and the rest *)
 let split_digits buf =
@@ -30,14 +27,11 @@ let complete ~buffer ~patch_ids =
       ]
   else if String.equal buffer "+" then
     [ { display = "+<PR number>"; full = "+" } ]
-  else if String.equal buffer "w" then
-    [ { display = "w <path>"; full = "w " } ]
-  else if String.is_prefix buffer ~prefix:"w " then
-    []
-  else if String.equal buffer "-" then
-    []
+  else if String.equal buffer "w" then [ { display = "w <path>"; full = "w " } ]
+  else if String.is_prefix buffer ~prefix:"w " then []
+  else if String.equal buffer "-" then []
   else
-    let (digits, rest) = split_digits buffer in
+    let digits, rest = split_digits buffer in
     if String.is_empty digits then
       (* No leading digits — not a recognized pattern *)
       []
@@ -54,8 +48,7 @@ let complete ~buffer ~patch_ids =
     else if String.is_prefix rest ~prefix:"> " then
       (* "N> something" — free-form, no completions *)
       []
-    else
-      []
+    else []
 
 let accept_first ~buffer ~completions =
   match completions with [] -> buffer | first :: _ -> first.full
@@ -71,8 +64,7 @@ let%test_unit "complete with message after redirect returns empty" =
 
 let%test_unit "accept_first replaces buffer" =
   let result =
-    accept_first ~buffer:"1"
-      ~completions:[ { display = "> "; full = "1> " } ]
+    accept_first ~buffer:"1" ~completions:[ { display = "> "; full = "1> " } ]
   in
   [%test_eq: string] result "1> "
 
