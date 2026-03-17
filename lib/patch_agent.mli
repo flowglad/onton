@@ -31,6 +31,9 @@ type t = private {
   ci_checks : Types.Ci_check.t list;
   addressed_comment_ids : Set.M(Types.Comment_id).t;
   removed : bool;
+  mergeable : bool;
+  checks_passing : bool;
+  no_unresolved_comments : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -108,6 +111,23 @@ val on_pr_discovery_failure : t -> t
 val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
 
+val clear_has_conflict : t -> t
+(** Clear the merge conflict flag. *)
+
+val set_mergeable : t -> bool -> t
+(** Set the mergeable flag from GitHub merge state. *)
+
+val set_checks_passing : t -> bool -> t
+(** Set the checks_passing flag from GitHub CI status. *)
+
+val set_no_unresolved_comments : t -> bool -> t
+(** Set the no_unresolved_comments flag from GitHub review state. *)
+
+val is_approved : t -> bool
+(** Derived predicate:
+    [has_pr && mergeable && checks_passing && no_unresolved_comments && not busy
+     && not needs_intervention]. *)
+
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
 
@@ -159,6 +179,9 @@ val restore :
   ci_checks:Types.Ci_check.t list ->
   addressed_comment_ids:Set.M(Types.Comment_id).t ->
   removed:bool ->
+  mergeable:bool ->
+  checks_passing:bool ->
+  no_unresolved_comments:bool ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)
