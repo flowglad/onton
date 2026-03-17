@@ -43,8 +43,10 @@ let complete ~buffer ~patch_ids =
             Some { display = tail ^ "> "; full = id ^ "> " }
           else None)
     else if String.equal rest ">" then
-      (* "N>" — complete to "N> " *)
-      [ { display = " "; full = digits ^ "> " } ]
+      (* "N>" — complete to "N> " only if N is a valid patch ID *)
+      if List.mem patch_ids digits ~equal:String.equal then
+        [ { display = " "; full = digits ^ "> " } ]
+      else []
     else if String.is_prefix rest ~prefix:"> " then
       (* "N> something" — free-form, no completions *)
       []
@@ -97,3 +99,7 @@ let%test_unit "dash returns empty" =
 let%test_unit "N> completes to N> with space" =
   let result = complete ~buffer:"5>" ~patch_ids:[ "5" ] in
   [%test_eq: string list] (List.map result ~f:(fun c -> c.full)) [ "5> " ]
+
+let%test_unit "N> with invalid patch id returns empty" =
+  let result = complete ~buffer:"99>" ~patch_ids:[ "1"; "2" ] in
+  [%test_eq: string list] (List.map result ~f:(fun c -> c.full)) []
