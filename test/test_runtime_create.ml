@@ -21,6 +21,7 @@ let () =
         Onton.Orchestrator.create ~patches:[] ~main_branch;
       activity_log = Onton.Activity_log.empty;
       gameplan;
+      transcripts = Base.Hashtbl.create (module Onton.Types.Patch_id);
     }
   in
   let _rt = Onton.Runtime.create ~gameplan ~main_branch ~snapshot () in

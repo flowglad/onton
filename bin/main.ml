@@ -1443,11 +1443,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
 (** {1 Persistence fiber} *)
 
 (** Periodic persistence fiber — saves runtime snapshot every 5 seconds. *)
-let persistence_fiber ~runtime ~clock ~project_name =
+let persistence_fiber ~runtime ~clock ~project_name ~transcripts =
   let path = Project_store.snapshot_path project_name in
   Project_store.ensure_dir (Stdlib.Filename.dirname path);
   let rec loop () =
     Eio.Time.sleep clock 5.0;
+    (* Sync transcripts into the snapshot before saving *)
+    Runtime.update runtime (fun snap ->
+        let t = snap.Runtime.transcripts in
+        Base.Hashtbl.clear t;
+        Hashtbl.iter (fun k v -> Base.Hashtbl.set t ~key:k ~data:v) transcripts;
+        snap);
     let snap = Runtime.read runtime (fun s -> s) in
     (match Persistence.save ~path snap with
     | Ok () -> ()
@@ -1742,7 +1748,13 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Base.List.iter startup.worktree_errors ~f:(fun err ->
             log_event runtime (Printf.sprintf "startup worktree error: %s" err))
       in
-      let transcripts = Hashtbl.create 16 in
+      let transcripts =
+        let t = Hashtbl.create 16 in
+        Runtime.read runtime (fun snap ->
+            Base.Hashtbl.iteri snap.Runtime.transcripts ~f:(fun ~key ~data ->
+                Hashtbl.replace t key data));
+        t
+      in
       let common_fibers =
         [
           reconciliation_fiber;
@@ -1752,7 +1764,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
           (fun () ->
             runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               ~ci_checks_cache ~transcripts);
-          (fun () -> persistence_fiber ~runtime ~clock ~project_name);
+          (fun () ->
+            persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
       in
       if config.headless then

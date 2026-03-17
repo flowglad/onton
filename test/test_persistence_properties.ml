@@ -36,7 +36,12 @@ let gen_snapshot =
           Onton.Orchestrator.create ~patches:gameplan.Gameplan.patches
             ~main_branch
         in
-        { Onton.Runtime.orchestrator; activity_log; gameplan })
+        {
+          Onton.Runtime.orchestrator;
+          activity_log;
+          gameplan;
+          transcripts = Base.Hashtbl.create (module Patch_id);
+        })
       gen_gameplan gen_branch gen_activity_log)
 
 let gen_snapshot_with_varied_agents =
@@ -59,7 +64,12 @@ let gen_snapshot_with_varied_agents =
               if agent.busy then Onton.Orchestrator.complete orch patch.Patch.id
               else orch)
         in
-        { Onton.Runtime.orchestrator; activity_log; gameplan })
+        {
+          Onton.Runtime.orchestrator;
+          activity_log;
+          gameplan;
+          transcripts = Base.Hashtbl.create (module Patch_id);
+        })
       gen_gameplan gen_branch gen_activity_log)
 
 (* ========== Round-trip property tests ========== *)
@@ -108,7 +118,12 @@ let () =
               ~main_branch:(Branch.of_string "main")
           in
           let snap =
-            { Onton.Runtime.orchestrator; activity_log = log; gameplan }
+            {
+              Onton.Runtime.orchestrator;
+              activity_log = log;
+              gameplan;
+              transcripts = Base.Hashtbl.create (module Patch_id);
+            }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
           match Onton.Persistence.snapshot_of_yojson ~gameplan json with

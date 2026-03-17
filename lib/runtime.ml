@@ -4,6 +4,7 @@ type snapshot = {
   orchestrator : Orchestrator.t;
   activity_log : Activity_log.t;
   gameplan : Gameplan.t;
+  transcripts : (Patch_id.t, string) Base.Hashtbl.t;
 }
 
 type t = { mutex : Eio.Mutex.t; mutable snap : snapshot }
@@ -16,7 +17,12 @@ let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
         let orchestrator =
           Orchestrator.create ~patches:gameplan.Gameplan.patches ~main_branch
         in
-        { orchestrator; activity_log = Activity_log.empty; gameplan }
+        {
+          orchestrator;
+          activity_log = Activity_log.empty;
+          gameplan;
+          transcripts = Base.Hashtbl.create (module Patch_id);
+        }
   in
   { mutex = Eio.Mutex.create (); snap }
 

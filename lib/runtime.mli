@@ -10,6 +10,7 @@ type snapshot = {
   orchestrator : Orchestrator.t;
   activity_log : Activity_log.t;
   gameplan : Gameplan.t;
+  transcripts : (Patch_id.t, string) Base.Hashtbl.t;
 }
 
 type t

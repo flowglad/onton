@@ -446,6 +446,22 @@ let gameplan_to_yojson (g : Gameplan.t) =
 
 (* ---------- Snapshot ---------- *)
 
+let transcripts_to_yojson (t : (Patch_id.t, string) Hashtbl.t) =
+  `Assoc
+    (Hashtbl.fold t ~init:[] ~f:(fun ~key ~data acc ->
+         (Patch_id.to_string key, `String data) :: acc))
+
+let transcripts_of_yojson json =
+  let t = Hashtbl.create (module Patch_id) in
+  (match json with
+  | `Assoc fields ->
+      List.iter fields ~f:(fun (key, value) ->
+          match Yojson.Safe.Util.to_string_option value with
+          | Some s -> Hashtbl.set t ~key:(Patch_id.of_string key) ~data:s
+          | None -> ())
+  | _ -> ());
+  t
+
 let snapshot_to_yojson (snap : Runtime.snapshot) =
   `Assoc
     [
@@ -453,6 +469,7 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
       ("orchestrator", orchestrator_to_yojson snap.orchestrator);
       ("activity_log", activity_log_to_yojson snap.activity_log);
       ("gameplan", gameplan_to_yojson snap.gameplan);
+      ("transcripts", transcripts_to_yojson snap.transcripts);
     ]
 
 let snapshot_of_yojson ~gameplan json =
@@ -469,7 +486,12 @@ let snapshot_of_yojson ~gameplan json =
             (activity_log_of_yojson
                (Yojson.Safe.Util.member "activity_log" json))
             ~f:(fun activity_log ->
-              { Runtime.orchestrator; activity_log; gameplan }))
+              let transcripts =
+                match Yojson.Safe.Util.member "transcripts" json with
+                | `Null -> Hashtbl.create (module Patch_id)
+                | j -> transcripts_of_yojson j
+              in
+              { Runtime.orchestrator; activity_log; gameplan; transcripts }))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed snapshot: %s" msg)
