@@ -222,9 +222,10 @@ let () =
                   | None -> false)
               | Some (Orchestrator.Start _ | Orchestrator.Rebase _) -> false
               | None ->
-                  (* No respond is ok if agent is ineligible *)
-                  a.Patch_agent.needs_intervention || a.Patch_agent.busy
-                  || a.Patch_agent.merged)
+                  (* No respond is ok whenever Respond preconditions fail *)
+                  (not a.Patch_agent.has_pr) || a.Patch_agent.needs_intervention
+                  || a.Patch_agent.busy || a.Patch_agent.merged
+                  || a.Patch_agent.removed)
         with _ -> false)
   in
 
