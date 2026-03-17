@@ -509,10 +509,21 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
   let saved_list_selected = ref 0 in
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
+  let eof_count = ref 0 in
   let rec loop () =
     match Term.Key.read () with
-    | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
+    | None ->
+        (* Transient EOF can happen if a child process (e.g. script/gh)
+           briefly interferes with the terminal. Retry a few times before
+           giving up. *)
+        eof_count := !eof_count + 1;
+        if !eof_count >= 10 then
+          log_event runtime "input fiber: stdin closed (10 consecutive EOFs)"
+        else (
+          Eio.Fiber.yield ();
+          loop ())
     | Some key -> (
+        eof_count := 0;
         if !text_mode then
           match key with
           | Term.Key.Escape ->
@@ -1634,12 +1645,13 @@ let run_with_config (config : config) gameplan existing_snapshot =
       Stdlib.exit 1
   | Ok () ->
       Eio_main.run @@ fun env ->
-      Sys.set_signal Sys.sigint
-        (Sys.Signal_handle
-           (fun _ ->
-             Printf.eprintf "\nInterrupted.\n%!";
-             (try Unix.kill 0 Sys.sigterm with Unix.Unix_error _ -> ());
-             Stdlib.exit 130));
+      if config.headless then
+        Sys.set_signal Sys.sigint
+          (Sys.Signal_handle
+             (fun _ ->
+               Printf.eprintf "\nInterrupted.\n%!";
+               (try Unix.kill 0 Sys.sigterm with Unix.Unix_error _ -> ());
+               Stdlib.exit 130));
       let runtime =
         match existing_snapshot with
         | Some snap ->
