@@ -1283,7 +1283,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 "runner: rebase action stale after semaphore \
                                  wait, skipping";
                               `Stale)
-                            else
+                            else (
+                              log_event runtime ~patch_id
+                                (Printf.sprintf "rebasing onto %s"
+                                   (Branch.to_string new_base));
                               let base = Branch.to_string new_base in
                               let pr_number = agent.Patch_agent.pr_number in
                               let prompt =
@@ -1295,11 +1298,14 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 ~repo_root:config.repo_root ~patch_id ~prompt
                                 ~agent ~owner:config.github_owner
                                 ~repo:config.github_repo ~on_pr_detected
-                                ~transcripts)
+                                ~transcripts))
                       in
                       match result with
                       | `Stale | `Failed -> ()
                       | `Ok -> (
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "rebase onto %s completed"
+                               (Branch.to_string new_base));
                           Runtime.update_orchestrator runtime (fun orch ->
                               Orchestrator.complete orch patch_id);
                           let agent =
