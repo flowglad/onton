@@ -470,7 +470,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
   let rec loop () =
-    match Term.Key.read () with
+    match Eio_unix.run_in_systhread Term.Key.read with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
     | Some key -> (
         if !text_mode then
@@ -1436,12 +1436,11 @@ let run_with_config (config : config) gameplan existing_snapshot =
         | Some snap ->
             Printf.eprintf "Resuming project %S from saved state.\n%!"
               project_name;
-            let rt = Runtime.create ~gameplan ~main_branch:config.main_branch in
-            Runtime.update rt (fun _ -> snap);
-            rt
+            Runtime.create ~gameplan ~main_branch:config.main_branch
+              ~snapshot:snap ()
         | None ->
             Printf.eprintf "Starting new project %S.\n%!" project_name;
-            Runtime.create ~gameplan ~main_branch:config.main_branch
+            Runtime.create ~gameplan ~main_branch:config.main_branch ()
       in
       let github =
         Github.create ~token:config.github_token ~owner:config.github_owner
@@ -1451,79 +1450,78 @@ let run_with_config (config : config) gameplan existing_snapshot =
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
       Eio_main.run @@ fun env ->
       let process_mgr = Eio.Stdenv.process_mgr env in
-      let all_agents =
-        Runtime.read runtime (fun snap ->
-            Orchestrator.all_agents snap.Runtime.orchestrator)
-      in
-      let startup =
-        Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
-          ~owner:config.github_owner ~repo:config.github_repo
-          ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
-          ~agents:all_agents ()
-      in
-      let errored_ids =
-        Base.List.map startup.Startup_reconciler.errors
-          ~f:(fun (patch_id, err) ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "startup discovery error: %s" err);
-            patch_id)
-        |> Base.Hash_set.of_list (module Patch_id)
-      in
-      (* Seed Pr_registry from snapshot for patches Startup_reconciler errored on *)
-      Runtime.read runtime (fun snap ->
-          Orchestrator.all_agents snap.Runtime.orchestrator)
-      |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
-          if Base.Hash_set.mem errored_ids agent.Patch_agent.patch_id then
-            Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
-                Pr_registry.register pr_registry
-                  ~patch_id:agent.Patch_agent.patch_id ~pr_number));
-      let open Startup_reconciler in
-      Base.List.iter startup.discovered
-        ~f:(fun
-            { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
-          Runtime.update_orchestrator runtime (fun orch ->
-              match Orchestrator.find_agent orch pid with
-              | Some agent when agent.Patch_agent.has_pr ->
-                  Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                  if merged then Orchestrator.mark_merged orch pid else orch
-              | Some agent when not agent.Patch_agent.busy ->
-                  Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                  let orch =
-                    Orchestrator.fire orch (Orchestrator.Start (pid, base))
-                  in
-                  let orch = Orchestrator.set_pr_number orch pid pr in
-                  let orch = Orchestrator.complete orch pid in
-                  if merged then Orchestrator.mark_merged orch pid else orch
-              | Some _ ->
-                  (* busy=true, has_pr=false: inconsistent state (start sets both
-                     atomically); advance state machine to avoid spurious
-                     re-creation of the already-discovered PR *)
-                  Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                  let orch =
-                    Orchestrator.fire orch (Orchestrator.Start (pid, base))
-                  in
-                  let orch = Orchestrator.set_pr_number orch pid pr in
-                  let orch = Orchestrator.complete orch pid in
-                  if merged then Orchestrator.mark_merged orch pid else orch
-              | None -> orch));
-      Base.List.iter startup.reset_pending ~f:(fun patch_id ->
-          log_event runtime ~patch_id
-            "reset stale busy agent from crashed session";
-          Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.reset_busy orch patch_id));
-      Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
-          log_event runtime ~patch_id:wr.worktree_patch_id
-            (Printf.sprintf "recovered worktree at %s" wr.worktree_path));
-      Base.List.iter startup.worktree_errors ~f:(fun err ->
-          log_event runtime (Printf.sprintf "startup worktree error: %s" err));
       let clock = Eio.Stdenv.clock env in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
       let ci_checks_cache : (Patch_id.t, Ci_check.t list) Hashtbl.t =
         Hashtbl.create 16
       in
+      let reconciliation_fiber () =
+        let all_agents =
+          Runtime.read runtime (fun snap ->
+              Orchestrator.all_agents snap.Runtime.orchestrator)
+        in
+        let startup =
+          Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
+            ~owner:config.github_owner ~repo:config.github_repo
+            ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
+            ~agents:all_agents ()
+        in
+        let errored_ids =
+          Base.List.map startup.Startup_reconciler.errors
+            ~f:(fun (patch_id, err) ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "startup discovery error: %s" err);
+              patch_id)
+          |> Base.Hash_set.of_list (module Patch_id)
+        in
+        Runtime.read runtime (fun snap ->
+            Orchestrator.all_agents snap.Runtime.orchestrator)
+        |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
+            if Base.Hash_set.mem errored_ids agent.Patch_agent.patch_id then
+              Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
+                  Pr_registry.register pr_registry
+                    ~patch_id:agent.Patch_agent.patch_id ~pr_number));
+        let open Startup_reconciler in
+        Base.List.iter startup.discovered
+          ~f:(fun
+              { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
+            Runtime.update_orchestrator runtime (fun orch ->
+                match Orchestrator.find_agent orch pid with
+                | Some agent when agent.Patch_agent.has_pr ->
+                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    if merged then Orchestrator.mark_merged orch pid else orch
+                | Some agent when not agent.Patch_agent.busy ->
+                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    let orch =
+                      Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                    in
+                    let orch = Orchestrator.set_pr_number orch pid pr in
+                    let orch = Orchestrator.complete orch pid in
+                    if merged then Orchestrator.mark_merged orch pid else orch
+                | Some _ ->
+                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    let orch =
+                      Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                    in
+                    let orch = Orchestrator.set_pr_number orch pid pr in
+                    let orch = Orchestrator.complete orch pid in
+                    if merged then Orchestrator.mark_merged orch pid else orch
+                | None -> orch));
+        Base.List.iter startup.reset_pending ~f:(fun patch_id ->
+            log_event runtime ~patch_id
+              "reset stale busy agent from crashed session";
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.reset_busy orch patch_id));
+        Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
+            log_event runtime ~patch_id:wr.worktree_patch_id
+              (Printf.sprintf "recovered worktree at %s" wr.worktree_path));
+        Base.List.iter startup.worktree_errors ~f:(fun err ->
+            log_event runtime (Printf.sprintf "startup worktree error: %s" err))
+      in
       let common_fibers =
         [
+          reconciliation_fiber;
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
               ~branch_of ~ci_checks_cache);

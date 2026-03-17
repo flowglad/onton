@@ -8,11 +8,16 @@ type snapshot = {
 
 type t = { mutex : Eio.Mutex.t; mutable snap : snapshot }
 
-let create ~gameplan ~(main_branch : Branch.t) =
-  let orchestrator =
-    Orchestrator.create ~patches:gameplan.Gameplan.patches ~main_branch
+let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
+  let snap =
+    match snapshot with
+    | Some s -> s
+    | None ->
+        let orchestrator =
+          Orchestrator.create ~patches:gameplan.Gameplan.patches ~main_branch
+        in
+        { orchestrator; activity_log = Activity_log.empty; gameplan }
   in
-  let snap = { orchestrator; activity_log = Activity_log.empty; gameplan } in
   { mutex = Eio.Mutex.create (); snap }
 
 let read t f = Eio.Mutex.use_ro t.mutex (fun () -> f t.snap)

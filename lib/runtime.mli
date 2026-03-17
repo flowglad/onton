@@ -14,8 +14,10 @@ type snapshot = {
 
 type t
 
-val create : gameplan:Gameplan.t -> main_branch:Branch.t -> t
-(** Build initial runtime state from a gameplan. *)
+val create :
+  gameplan:Gameplan.t -> main_branch:Branch.t -> ?snapshot:snapshot -> unit -> t
+(** Build initial runtime state from a gameplan, optionally restoring a previous
+    [snapshot]. *)
 
 (** {2 Atomic read access} *)
 
