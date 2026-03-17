@@ -399,16 +399,23 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
                (let s = String.trim r.Claude_runner.stderr in
                 if String.length s <= 500 then s else String.sub s 0 500));
           Runtime.update_orchestrator runtime (fun orch ->
+              let agent = Orchestrator.agent orch patch_id in
               let orch =
                 Orchestrator.set_last_session_id orch patch_id
                   r.Claude_runner.session_id
               in
-              let orch = Orchestrator.set_session_failed orch patch_id in
-              let orch =
-                if is_fresh then Orchestrator.set_tried_fresh orch patch_id
-                else orch
-              in
-              Orchestrator.complete orch patch_id);
+              if (not agent.Patch_agent.has_pr) && is_fresh then
+                (* Start path fresh failure: reset fallback to allow retry
+                   instead of escalating to Given_up → needs_intervention *)
+                let orch = Orchestrator.clear_session_fallback orch patch_id in
+                Orchestrator.complete orch patch_id
+              else
+                let orch = Orchestrator.set_session_failed orch patch_id in
+                let orch =
+                  if is_fresh then Orchestrator.set_tried_fresh orch patch_id
+                  else orch
+                in
+                Orchestrator.complete orch patch_id);
           `Failed)
 
 (** {1 Fibers} *)
@@ -1133,7 +1140,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     log_event runtime ~patch_id
                                       (Printf.sprintf "PR discovery failed: %s"
                                          msg);
-                                    mark_session_failed runtime patch_id
+                                    (* Claude succeeded but no PR found — reset
+                                       fallback so it retries from scratch *)
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        let orch =
+                                          Orchestrator.clear_session_fallback
+                                            orch patch_id
+                                        in
+                                        Orchestrator.complete orch patch_id)
                               in
                               discover 2)))
           | Orchestrator.Rebase (patch_id, new_base) ->
