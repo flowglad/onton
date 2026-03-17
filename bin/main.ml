@@ -355,8 +355,19 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         (match Hashtbl.find_opt transcripts patch_id with
         | Some prev when String.length prev > 0 ->
             Buffer.add_string buf prev;
-            Buffer.add_string buf "\n--- new run ---\n"
+            Buffer.add_char buf '\n'
         | Some _ | None -> ());
+        (* Write the prompt being delivered so it appears in the transcript *)
+        let now = Unix.gettimeofday () in
+        let tm = Unix.localtime now in
+        Buffer.add_string buf
+          (Printf.sprintf
+             "\n---\n**[%02d:%02d:%02d] Delivered to Claude%s:**\n\n"
+             tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+             (if continue then " (--continue)" else ""));
+        Buffer.add_string buf prompt;
+        Buffer.add_string buf "\n\n---\n**Claude response:**\n\n";
+        Hashtbl.replace transcripts patch_id (Buffer.contents buf);
         buf
       in
       let error_buf = Buffer.create 256 in
