@@ -550,6 +550,28 @@ let () =
             let a = set_no_unresolved_comments a true in
             not (is_approved a)
           with _ -> false);
+      (* -- is_approved false when checks not passing -- *)
+      Test.make ~name:"is_approved false when checks not passing" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_no_unresolved_comments a true in
+            not (is_approved a)
+          with _ -> false);
+      (* -- is_approved false when unresolved comments -- *)
+      Test.make ~name:"is_approved false when unresolved comments" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            not (is_approved a)
+          with _ -> false);
       (* -- is_approved false when needs_intervention -- *)
       Test.make ~name:"is_approved false when needs_intervention" ~count:1
         Gen.(pure (pid0, br0))
