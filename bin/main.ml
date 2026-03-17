@@ -995,28 +995,38 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                     in
                     let orch =
                       if poll_result.Poller.has_conflict then (
-                        pending_logs :=
-                          ("merge conflict detected", patch_id) :: !pending_logs;
+                        let agent = Orchestrator.agent orch patch_id in
+                        if not agent.Patch_agent.has_conflict then
+                          pending_logs :=
+                            ("merge conflict detected", patch_id)
+                            :: !pending_logs;
                         Orchestrator.set_has_conflict orch patch_id)
                       else orch
                     in
                     let orch =
                       Base.List.fold poll_result.Poller.queue ~init:orch
                         ~f:(fun acc kind ->
-                          let detail =
-                            match kind with
-                            | Operation_kind.Review_comments ->
-                                Printf.sprintf "enqueued %s (%d new comments)"
-                                  (Operation_kind.show kind)
-                                  (Base.List.length
-                                     poll_result.Poller.new_comments)
-                            | Operation_kind.Ci | Operation_kind.Human
-                            | Operation_kind.Merge_conflict
-                            | Operation_kind.Rebase ->
-                                Printf.sprintf "enqueued %s"
-                                  (Operation_kind.show kind)
+                          let agent = Orchestrator.agent acc patch_id in
+                          let already_queued =
+                            Base.List.mem agent.Patch_agent.queue kind
+                              ~equal:Operation_kind.equal
                           in
-                          pending_logs := (detail, patch_id) :: !pending_logs;
+                          (if not already_queued then
+                             let detail =
+                               match kind with
+                               | Operation_kind.Review_comments ->
+                                   Printf.sprintf
+                                     "enqueued %s (%d new comments)"
+                                     (Operation_kind.show kind)
+                                     (Base.List.length
+                                        poll_result.Poller.new_comments)
+                               | Operation_kind.Ci | Operation_kind.Human
+                               | Operation_kind.Merge_conflict
+                               | Operation_kind.Rebase ->
+                                   Printf.sprintf "enqueued %s"
+                                     (Operation_kind.show kind)
+                             in
+                             pending_logs := (detail, patch_id) :: !pending_logs);
                           Orchestrator.enqueue acc patch_id kind)
                     in
                     let _ci_store =
