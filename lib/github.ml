@@ -149,10 +149,9 @@ let parse_comment_node ~thread_id node =
   let line = node |> member "line" |> to_int_option in
   Types.Comment.{ id; thread_id; body; path; line }
 
-let parse_response body =
+let parse_response_json json =
   let open Yojson.Safe.Util in
   try
-    let json = Yojson.Safe.from_string body in
     let errors = json |> member "errors" in
     match errors with
     | `Null -> (
@@ -241,9 +240,11 @@ let parse_response body =
           |> List.map ~f:(fun e -> e |> member "message" |> to_string)
         in
         Error (Graphql_error msgs)
-  with
-  | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
-  | Yojson.Json_error msg -> Error (Json_parse_error msg)
+  with Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
+
+let parse_response body =
+  try parse_response_json (Yojson.Safe.from_string body)
+  with Yojson.Json_error msg -> Error (Json_parse_error msg)
 
 let https_config () =
   match Ca_certs.authenticator () with

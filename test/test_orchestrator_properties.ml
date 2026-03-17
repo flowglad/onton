@@ -380,6 +380,238 @@ let () =
         with _ -> false)
   in
 
+  (* ========== apply_rebase_result properties ========== *)
+
+  (* All outcomes set base_branch to new_base *)
+  let prop_rebase_sets_base =
+    Test.make ~name:"apply_rebase_result: always sets base_branch"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
+              List.for_all results ~f:(fun r ->
+                  let orch' =
+                    Orchestrator.apply_rebase_result orch pid r new_base
+                  in
+                  let a = Orchestrator.agent orch' pid in
+                  Option.equal Branch.equal a.Patch_agent.base_branch
+                    (Some new_base))
+        with _ -> false)
+  in
+
+  (* Ok/Noop -> agent not busy after *)
+  let prop_rebase_ok_noop_complete =
+    Test.make ~name:"apply_rebase_result: Ok/Noop -> not busy"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let check r =
+                let orch' =
+                  Orchestrator.apply_rebase_result orch pid r new_base
+                in
+                not (Orchestrator.agent orch' pid).Patch_agent.busy
+              in
+              check Worktree.Ok && check Worktree.Noop
+        with _ -> false)
+  in
+
+  (* Conflict -> Merge_conflict in queue *)
+  let prop_rebase_conflict_enqueues =
+    Test.make ~name:"apply_rebase_result: Conflict -> Merge_conflict queued"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch' =
+                Orchestrator.apply_rebase_result orch pid Worktree.Conflict
+                  new_base
+              in
+              let a = Orchestrator.agent orch' pid in
+              a.Patch_agent.has_conflict
+              && List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                   ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
+  (* Ok -> conflict cleared *)
+  let prop_rebase_ok_clears_conflict =
+    Test.make ~name:"apply_rebase_result: Ok -> clears has_conflict"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.set_has_conflict orch pid in
+              let orch' =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* Error -> session failed + tried_fresh *)
+  let prop_rebase_error_fails =
+    Test.make ~name:"apply_rebase_result: Error -> session failed"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch' =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error") new_base
+              in
+              let a = Orchestrator.agent orch' pid in
+              (not a.Patch_agent.busy)
+              && Patch_agent.equal_session_fallback
+                   a.Patch_agent.session_fallback Patch_agent.Given_up
+        with _ -> false)
+  in
+
+  (* ========== apply_poll_result (Poll_applicator) properties ========== *)
+
+  (* Merged poll result -> agent marked merged *)
+  let prop_poll_merged =
+    Test.make ~name:"apply_poll_result: merged -> mark_merged"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.complete orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = true;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = true;
+                    ci_checks = [];
+                    new_comments = [];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              (Orchestrator.agent orch' pid).Patch_agent.merged
+        with _ -> false)
+  in
+
+  (* Conflict detected -> has_conflict set *)
+  let prop_poll_conflict_set =
+    Test.make ~name:"apply_poll_result: conflict -> has_conflict"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.complete orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    has_conflict = true;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = true;
+                    ci_checks = [];
+                    new_comments = [];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* Conflict cleared -> has_conflict cleared *)
+  let prop_poll_conflict_cleared =
+    Test.make ~name:"apply_poll_result: no conflict -> clears has_conflict"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.set_has_conflict orch pid in
+              let orch = Orchestrator.complete orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = true;
+                    ci_checks = [];
+                    new_comments = [];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* New comments are added as pending *)
+  let prop_poll_new_comments =
+    Test.make ~name:"apply_poll_result: new comments added"
+      (Gen.pair gen_patch_list_unique gen_comment) (fun (patches, comment) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.complete orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = true;
+                    ci_checks = [];
+                    new_comments = [ comment ];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let a = Orchestrator.agent orch' pid in
+              not (List.is_empty a.Patch_agent.pending_comments)
+        with _ -> false)
+  in
+
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
@@ -397,5 +629,14 @@ let () =
       prop_rebase_only_for_rebase_queued;
       prop_respond_never_fires_rebase;
       prop_all_startable_fired;
+      prop_rebase_sets_base;
+      prop_rebase_ok_noop_complete;
+      prop_rebase_conflict_enqueues;
+      prop_rebase_ok_clears_conflict;
+      prop_rebase_error_fails;
+      prop_poll_merged;
+      prop_poll_conflict_set;
+      prop_poll_conflict_cleared;
+      prop_poll_new_comments;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

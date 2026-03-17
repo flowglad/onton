@@ -100,22 +100,7 @@ let detect_branch ~process_mgr ~path =
     failwith ("Worktree at " ^ path ^ " has detached HEAD; cannot detect branch");
   Types.Branch.of_string branch_str
 
-let list_with_branches ~process_mgr ~repo_root =
-  let buf = Buffer.create 512 in
-  let stderr_buf = Buffer.create 64 in
-  (match
-     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
-       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-       [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
-   with
-  | () -> ()
-  | exception e when has_cancellation e -> raise e
-  | exception exn ->
-      let msg = Buffer.contents stderr_buf in
-      failwith
-        (Printf.sprintf "list_with_branches failed at %s: %s\ngit stderr: %s"
-           repo_root (Exn.to_string exn) msg));
-  let raw = Buffer.contents buf in
+let parse_porcelain ~repo_root raw =
   let lines = String.split_lines raw in
   let repo_root = normalize_path repo_root in
   let flush_entry acc p branch =
@@ -163,6 +148,23 @@ let list_with_branches ~process_mgr ~repo_root =
             else parse acc current_path current_branch rest)
   in
   parse [] None None lines
+
+let list_with_branches ~process_mgr ~repo_root =
+  let buf = Buffer.create 512 in
+  let stderr_buf = Buffer.create 64 in
+  (match
+     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+       [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
+   with
+  | () -> ()
+  | exception e when has_cancellation e -> raise e
+  | exception exn ->
+      let msg = Buffer.contents stderr_buf in
+      failwith
+        (Printf.sprintf "list_with_branches failed at %s: %s\ngit stderr: %s"
+           repo_root (Exn.to_string exn) msg));
+  parse_porcelain ~repo_root (Buffer.contents buf)
 
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]

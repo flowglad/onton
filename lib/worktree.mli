@@ -22,6 +22,11 @@ val remove : process_mgr:_ Eio.Process.mgr -> repo_root:string -> t -> unit
 val detect_branch :
   process_mgr:_ Eio.Process.mgr -> path:string -> Types.Branch.t
 
+val parse_porcelain :
+  repo_root:string -> string -> (string * Types.Branch.t) list
+(** Parse [git worktree list --porcelain] output into [(path, branch)] pairs.
+    Excludes the repo root entry and detached-HEAD worktrees. Pure function. *)
+
 val list_with_branches :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->

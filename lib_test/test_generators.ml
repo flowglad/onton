@@ -420,6 +420,48 @@ let gen_activity_log =
       (list_size (int_range 0 5) gen_transition_entry)
       (list_size (int_range 0 5) gen_event))
 
+(* -- Run_classification -- *)
+
+let gen_run_outcome =
+  QCheck2.Gen.(
+    let open Onton.Run_classification in
+    map4
+      (fun exit_code got_events stderr stream_errors ->
+        { exit_code; got_events; stderr; stream_errors })
+      (int_range (-1) 255) bool
+      (string_size ~gen:printable (int_range 0 80))
+      (string_size ~gen:printable (int_range 0 80)))
+
+let gen_porcelain_entry =
+  QCheck2.Gen.(
+    map2
+      (fun path branch ->
+        Printf.sprintf "worktree %s\nbranch refs/heads/%s\n" path branch)
+      (string_size ~gen:(char_range 'a' 'z') (int_range 5 20))
+      (string_size ~gen:(char_range 'a' 'z') (int_range 3 15)))
+
+let gen_porcelain_output =
+  QCheck2.Gen.(
+    map
+      (fun entries -> String.concat ~sep:"\n" entries)
+      (list_small gen_porcelain_entry))
+
+let gen_pr_json_entry =
+  QCheck2.Gen.(
+    map3
+      (fun number state base_ref ->
+        Printf.sprintf {|{"number":%d,"state":"%s","baseRefName":"%s"}|} number
+          state base_ref)
+      (int_range 1 9999)
+      (oneof_list [ "OPEN"; "MERGED"; "CLOSED" ])
+      (string_size ~gen:(char_range 'a' 'z') (int_range 3 15)))
+
+let gen_pr_json =
+  QCheck2.Gen.(
+    map
+      (fun entries -> "[" ^ String.concat ~sep:"," entries ^ "]")
+      (list_small gen_pr_json_entry))
+
 (* -- Printers for QCheck2 shrinking/reporting -- *)
 
 let print_patch_id = Patch_id.to_string

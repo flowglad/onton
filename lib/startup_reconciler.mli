@@ -46,6 +46,18 @@ type t = {
     contains per-patch PR discovery failures. [worktree_errors] contains global
     worktree listing failures (not per-patch). *)
 
+val parse_pr_entry :
+  (string * Yojson.Basic.t) list ->
+  ((Pr_number.t * Branch.t * bool) option, string) Result.t
+(** Parse a single PR JSON object. Returns [(pr_number, base_branch, merged)]
+    for OPEN/MERGED PRs, [None] for CLOSED, or [Error] for unexpected shapes.
+    Pure function. *)
+
+val discover_pr_from_json :
+  string -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
+(** Parse raw JSON output from [gh pr list --json number,state,baseRefName].
+    Returns the first non-CLOSED PR entry or [None]. Pure function. *)
+
 val reconcile :
   process_mgr:_ Eio.Process.mgr ->
   token:string ->

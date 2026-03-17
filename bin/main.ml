@@ -420,8 +420,20 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                ~continue ~on_event)
         with exn -> Error (Printexc.to_string exn)
       in
-      match result with
-      | Error msg ->
+      let open Run_classification in
+      let outcome =
+        Result.map
+          (fun (r : Claude_runner.result) ->
+            {
+              exit_code = r.Claude_runner.exit_code;
+              got_events = r.Claude_runner.got_events;
+              stderr = r.Claude_runner.stderr;
+              stream_errors = String.trim (Buffer.contents error_buf);
+            })
+          result
+      in
+      match classify ~continue outcome with
+      | Process_error msg ->
           log_event runtime ~patch_id
             (Printf.sprintf "Claude process error: %s" msg);
           Runtime.update_orchestrator runtime (fun orch ->
@@ -432,9 +444,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               in
               Orchestrator.complete orch patch_id);
           `Failed
-      | Ok r when (not r.Claude_runner.got_events) && continue ->
-          (* --continue failed to find a session (no events produced).
-             Treat as resume failure — fall back to fresh session. *)
+      | No_session_to_resume ->
           log_event runtime ~patch_id
             "--continue produced no events (no session to resume), will retry \
              fresh";
@@ -444,8 +454,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               in
               Orchestrator.complete orch patch_id);
           `Failed
-      | Ok r when r.Claude_runner.exit_code = 0 ->
-          let stream_errors = String.trim (Buffer.contents error_buf) in
+      | Success { stream_errors } ->
           if String.length stream_errors > 0 then
             log_event runtime ~patch_id
               (Printf.sprintf "Claude exited 0 but had stream errors: %s"
@@ -461,20 +470,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
-      | Ok r ->
-          let stderr = String.trim r.Claude_runner.stderr in
-          let stream_errors = String.trim (Buffer.contents error_buf) in
-          let detail =
-            match (stderr, stream_errors) with
-            | "", "" -> "(no error details)"
-            | "", e | e, "" -> e
-            | s, e -> s ^ " | stream: " ^ e
+      | Session_failed { detail } ->
+          let exit_code =
+            match outcome with Ok r -> r.exit_code | Error _ -> -1
           in
-          let detail = truncate detail 500 in
           log_event runtime ~patch_id
             (Printf.sprintf
                "Claude exited with code %d, marking session failed: %s"
-               r.Claude_runner.exit_code detail);
+               exit_code detail);
           Runtime.update_orchestrator runtime (fun orch ->
               let orch =
                 Orchestrator.on_session_failure orch patch_id ~is_fresh
@@ -1085,107 +1088,33 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                 let poll_result =
                   Poller.poll ~was_merged ~addressed_ids pr_state
                 in
-                let pending_logs = ref [] in
+                let logs = ref [] in
                 Runtime.update_orchestrator runtime (fun orch ->
-                    let orch =
-                      if poll_result.Poller.merged then (
-                        pending_logs := ("merged", patch_id) :: !pending_logs;
-                        Orchestrator.mark_merged orch patch_id)
-                      else orch
+                    let orch, log_entries =
+                      Poll_applicator.apply orch patch_id poll_result
                     in
-                    let orch =
-                      if poll_result.Poller.has_conflict then (
-                        let agent = Orchestrator.agent orch patch_id in
-                        if not agent.Patch_agent.has_conflict then
-                          pending_logs :=
-                            ("merge conflict detected", patch_id)
-                            :: !pending_logs;
-                        Orchestrator.set_has_conflict orch patch_id)
-                      else Orchestrator.clear_has_conflict orch patch_id
-                    in
-                    let orch =
-                      let agent = Orchestrator.agent orch patch_id in
-                      Base.List.fold poll_result.Poller.queue ~init:orch
-                        ~f:(fun acc kind ->
-                          let cur_agent = Orchestrator.agent acc patch_id in
-                          let already_queued =
-                            Base.List.mem cur_agent.Patch_agent.queue kind
-                              ~equal:Operation_kind.equal
-                          in
-                          let is_new =
-                            (not already_queued)
-                            && not
-                                 (Option.equal Operation_kind.equal
-                                    agent.Patch_agent.current_op (Some kind))
-                          in
-                          match kind with
-                          | Operation_kind.Ci -> (
-                              match Patch_decision.on_ci_failure agent with
-                              | Patch_decision.Enqueue_ci ->
-                                  if is_new then
-                                    pending_logs :=
-                                      ( Printf.sprintf "enqueued %s"
-                                          (Operation_kind.show kind),
-                                        patch_id )
-                                      :: !pending_logs;
-                                  Orchestrator.enqueue acc patch_id kind
-                              | Patch_decision.Ci_already_queued -> acc
-                              | Patch_decision.Cap_reached ->
-                                  pending_logs :=
-                                    ( "CI failure cap reached (>=3), skipping \
-                                       CI enqueue",
-                                      patch_id )
-                                    :: !pending_logs;
-                                  acc)
-                          | Operation_kind.Review_comments ->
-                              if is_new then
-                                pending_logs :=
-                                  ( Printf.sprintf
-                                      "enqueued %s (%d new comments)"
-                                      (Operation_kind.show kind)
-                                      (Base.List.length
-                                         poll_result.Poller.new_comments),
-                                    patch_id )
-                                  :: !pending_logs;
-                              Orchestrator.enqueue acc patch_id kind
-                          | Operation_kind.Rebase | Operation_kind.Human
-                          | Operation_kind.Merge_conflict ->
-                              if is_new then
-                                pending_logs :=
-                                  ( Printf.sprintf "enqueued %s"
-                                      (Operation_kind.show kind),
-                                    patch_id )
-                                  :: !pending_logs;
-                              Orchestrator.enqueue acc patch_id kind)
-                    in
-                    let _ci_store =
-                      let failed =
-                        let failure_conclusions =
-                          [
-                            "failure";
-                            "error";
-                            "action_required";
-                            "timed_out";
-                            "startup_failure";
-                          ]
-                        in
-                        Base.List.filter poll_result.Poller.ci_checks
-                          ~f:(fun (c : Ci_check.t) ->
-                            Base.List.mem failure_conclusions
-                              c.Ci_check.conclusion ~equal:Base.String.equal)
+                    logs := log_entries;
+                    (* CI cache side-effect — not pure *)
+                    let failed =
+                      let failure_conclusions =
+                        [
+                          "failure";
+                          "error";
+                          "action_required";
+                          "timed_out";
+                          "startup_failure";
+                        ]
                       in
-                      if not (Base.List.is_empty failed) then
-                        Hashtbl.replace ci_checks_cache patch_id failed
-                      else Hashtbl.remove ci_checks_cache patch_id
+                      Base.List.filter poll_result.Poller.ci_checks
+                        ~f:(fun (c : Ci_check.t) ->
+                          Base.List.mem failure_conclusions
+                            c.Ci_check.conclusion ~equal:Base.String.equal)
                     in
-                    let orch =
-                      Orchestrator.set_merge_ready orch patch_id
-                        poll_result.Poller.merge_ready
-                    in
-                    let orch =
-                      Orchestrator.set_ci_checks orch patch_id
-                        poll_result.Poller.ci_checks
-                    in
+                    if not (Base.List.is_empty failed) then
+                      Hashtbl.replace ci_checks_cache patch_id failed
+                    else Hashtbl.remove ci_checks_cache patch_id;
+                    (* head_branch and worktree discovery — side-effectful,
+                       stays outside Poll_applicator *)
                     let orch =
                       match pr_state.Github.Pr_state.head_branch with
                       | Some b -> Orchestrator.set_head_branch orch patch_id b
@@ -1201,9 +1130,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                           Orchestrator.set_base_branch orch patch_id b
                       | _ -> orch
                     in
-                    (* Eagerly resolve worktree when head_branch is known but
-                       worktree_path is not — avoids chicken-and-egg with
-                       needs_intervention blocking the runner. *)
                     let orch =
                       let agent = Orchestrator.agent orch patch_id in
                       match
@@ -1220,8 +1146,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                                 Orchestrator.set_worktree_path orch patch_id
                                   path
                               in
-                              (* If stuck in needs_intervention due to the
-                                 missing worktree, clear it so work resumes. *)
                               if agent.Patch_agent.needs_intervention then
                                 Orchestrator.clear_needs_intervention orch
                                   patch_id
@@ -1229,23 +1153,11 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                           | None -> orch)
                       | _ -> orch
                     in
-                    (* Don't add comments while the agent is actively
-                       handling review comments — they'll be re-discovered on
-                       the next poll after complete, at which point
-                       addressed_comment_ids will filter out the handled ones. *)
-                    let agent = Orchestrator.agent orch patch_id in
-                    if
-                      Option.equal Operation_kind.equal
-                        agent.Patch_agent.current_op
-                        (Some Operation_kind.Review_comments)
-                    then orch
-                    else
-                      Base.List.fold poll_result.Poller.new_comments ~init:orch
-                        ~f:(fun acc comment ->
-                          Orchestrator.add_pending_comment acc patch_id comment
-                            ~valid:true));
-                Base.List.iter (Base.List.rev !pending_logs)
-                  ~f:(fun (msg, pid) -> log_event runtime ~patch_id:pid msg);
+                    orch);
+                Base.List.iter !logs
+                  ~f:(fun (entry : Poll_applicator.log_entry) ->
+                    log_event runtime ~patch_id:entry.Poll_applicator.patch_id
+                      entry.Poll_applicator.message);
                 if pr_state.Github.Pr_state.ci_checks_truncated then
                   log_event runtime ~patch_id
                     "warning: CI check list was truncated (>100 checks); some \
@@ -1518,45 +1430,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       | Worktree.Ok ->
                           log_event runtime ~patch_id
                             (Printf.sprintf "runner: rebase onto %s succeeded"
-                               (Branch.to_string new_base));
-                          Runtime.update_orchestrator runtime (fun orch ->
-                              let orch =
-                                Orchestrator.set_base_branch orch patch_id
-                                  new_base
-                              in
-                              let orch =
-                                Orchestrator.clear_has_conflict orch patch_id
-                              in
-                              Orchestrator.complete orch patch_id)
+                               (Branch.to_string new_base))
                       | Worktree.Noop ->
                           log_event runtime ~patch_id
-                            "runner: rebase is a noop (already up-to-date)";
-                          Runtime.update_orchestrator runtime (fun orch ->
-                              let orch =
-                                Orchestrator.set_base_branch orch patch_id
-                                  new_base
-                              in
-                              Orchestrator.complete orch patch_id)
+                            "runner: rebase is a noop (already up-to-date)"
                       | Worktree.Conflict ->
                           log_event runtime ~patch_id
-                            "runner: rebase conflict, enqueuing merge-conflict";
-                          Runtime.update_orchestrator runtime (fun orch ->
-                              let orch =
-                                Orchestrator.set_base_branch orch patch_id
-                                  new_base
-                              in
-                              let orch =
-                                Orchestrator.set_has_conflict orch patch_id
-                              in
-                              let orch =
-                                Orchestrator.enqueue orch patch_id
-                                  Operation_kind.Merge_conflict
-                              in
-                              Orchestrator.complete orch patch_id)
+                            "runner: rebase conflict, enqueuing merge-conflict"
                       | Worktree.Error msg ->
                           log_event runtime ~patch_id
-                            (Printf.sprintf "runner: rebase error: %s" msg);
-                          mark_session_failed runtime patch_id);
+                            (Printf.sprintf "runner: rebase error: %s" msg));
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.apply_rebase_result orch patch_id
+                            rebase_result new_base);
                       (* Update PR draft status after successful rebase *)
                       match rebase_result with
                       | Worktree.Ok | Worktree.Noop -> (

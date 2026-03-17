@@ -41,6 +41,30 @@ let parse_pr_entry fields =
       Error (Printf.sprintf "unexpected PR state: %s" state)
   | _ -> Error "unexpected PR JSON field shape"
 
+(** Parse raw JSON output from [gh pr list --json number,state,baseRefName],
+    returning the first non-CLOSED PR entry or [None]. Pure function. *)
+let discover_pr_from_json output =
+  try
+    match Yojson.Basic.from_string output with
+    | `List entries ->
+        let rec find_live = function
+          | [] -> Ok None
+          | `Assoc fields :: rest -> (
+              match parse_pr_entry fields with
+              | Ok (Some _ as result) -> Ok result
+              | Ok None -> find_live rest
+              | Error _ as e -> e)
+          | _ :: _ ->
+              Error (Printf.sprintf "unexpected PR JSON shape: %s" output)
+        in
+        find_live entries
+    | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
+  with
+  | Yojson.Json_error msg ->
+      Error (Printf.sprintf "could not parse gh output as JSON: %s" msg)
+  | Yojson.Basic.Util.Type_error (msg, _) ->
+      Error (Printf.sprintf "unexpected JSON structure from gh: %s" msg)
+
 (** Query [gh pr list] for a branch, returning discovery info for the first
     non-CLOSED PR. Iterates through all matching PRs to handle cases where the
     most recent PR is CLOSED but an older one is still OPEN or MERGED. *)
@@ -65,27 +89,8 @@ let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
   try
     let buf = Buffer.create 256 in
     Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) ~env process_mgr args;
-    let output = Buffer.contents buf in
-    match Yojson.Basic.from_string output with
-    | `List entries ->
-        let rec find_live = function
-          | [] -> Ok None
-          | `Assoc fields :: rest -> (
-              match parse_pr_entry fields with
-              | Ok (Some _ as result) -> Ok result
-              | Ok None -> find_live rest
-              | Error _ as e -> e)
-          | _ :: _ ->
-              Error (Printf.sprintf "unexpected PR JSON shape: %s" output)
-        in
-        find_live entries
-    | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
-  with
-  | Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
-  | Yojson.Json_error msg ->
-      Error (Printf.sprintf "could not parse gh output as JSON: %s" msg)
-  | Yojson.Basic.Util.Type_error (msg, _) ->
-      Error (Printf.sprintf "unexpected JSON structure from gh: %s" msg)
+    discover_pr_from_json (Buffer.contents buf)
+  with Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
 
 (** Discover existing worktrees and match them to patches by branch name.
     Returns matched worktrees and an optional error string if listing failed. *)
