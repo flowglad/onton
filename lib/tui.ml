@@ -278,8 +278,9 @@ let clamp_scroll s delta =
 
 let scroll_indicators s =
   let max = scroll_max s in
-  let top = if s.offset > 0 then Printf.sprintf "↑ %d more" s.offset else "" in
-  let remaining = max - s.offset in
+  let offset = Int.max 0 (Int.min s.offset max) in
+  let top = if offset > 0 then Printf.sprintf "↑ %d more" offset else "" in
+  let remaining = max - offset in
   let bottom =
     if remaining > 0 then Printf.sprintf "↓ %d more" remaining else ""
   in
