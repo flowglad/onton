@@ -168,14 +168,15 @@ let rebase_onto ~process_mgr ~path ~target =
         (Printf.sprintf "rebase failed (exit %d): %s" rebase_code
            (String.strip rebase_stderr))
     else begin
-      let abort_code, _abort_stderr =
+      let abort_code, abort_stderr =
         run_git_exit_code ~process_mgr
           [ "git"; "-C"; path; "rebase"; "--abort" ]
       in
       if abort_code <> 0 then
         Error
-          (Printf.sprintf "rebase conflict but abort also failed (exit %d)"
-             abort_code)
+          (Printf.sprintf "rebase conflict but abort also failed (exit %d): %s"
+             abort_code
+             (String.strip abort_stderr))
       else Conflict
     end
 
