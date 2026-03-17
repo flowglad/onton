@@ -52,7 +52,6 @@ val send_human_message : t -> Patch_id.t -> string -> t
 
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val set_session_failed : t -> Patch_id.t -> t
-val set_last_session_id : t -> Patch_id.t -> Session_id.t -> t
 val set_tried_fresh : t -> Patch_id.t -> t
 val clear_session_fallback : t -> Patch_id.t -> t
 val on_session_failure : t -> Patch_id.t -> is_fresh:bool -> t

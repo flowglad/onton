@@ -254,23 +254,21 @@ let mark_session_failed runtime patch_id =
       let orch = Orchestrator.set_tried_fresh orch patch_id in
       Orchestrator.complete orch patch_id)
 
-(** Compute the session ID for the fallback chain.
+(** Compute the session mode for the fallback chain.
 
-    The fallback chain is: resume existing session → fresh session → give up.
-    - [Fresh_available] with a [last_session_id]: try to resume it.
-    - [Fresh_available] with no [last_session_id], or [Tried_fresh]: start a
-      fresh session (no resume).
+    The fallback chain is: continue existing session → fresh session → give up.
+    - [Fresh_available] with [has_pr]: use [--continue] to resume worktree
+      session.
+    - [Fresh_available] without [has_pr], or [Tried_fresh]: start fresh (no
+      --continue).
     - [Given_up]: the agent has exhausted its fallback chain — return
       [`Give_up]. *)
-let session_id_for_fallback (agent : Patch_agent.t) :
-    [ `Resume of Session_id.t | `Fresh | `Give_up ] =
+let session_mode (agent : Patch_agent.t) : [ `Continue | `Fresh | `Give_up ] =
   match agent.Patch_agent.session_fallback with
   | Patch_agent.Given_up -> `Give_up
   | Patch_agent.Tried_fresh -> `Fresh
-  | Patch_agent.Fresh_available -> (
-      match agent.Patch_agent.last_session_id with
-      | Some id -> `Resume id
-      | None -> `Fresh)
+  | Patch_agent.Fresh_available ->
+      if agent.Patch_agent.has_pr then `Continue else `Fresh
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
@@ -314,18 +312,16 @@ let log_stream_entry runtime ~patch_id kind =
     stores the session ID and clears fallback state. *)
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
     ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected =
-  match session_id_for_fallback agent with
+  match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
-        "session fallback exhausted (resume failed, fresh failed), needs \
+        "session fallback exhausted (continue failed, fresh failed), needs \
          intervention";
       mark_session_failed runtime patch_id;
       `Failed
-  | (`Resume _ | `Fresh) as fallback -> (
-      let session_id, is_fresh =
-        match fallback with
-        | `Resume id -> (Some id, false)
-        | `Fresh -> (None, true)
+  | (`Continue | `Fresh) as mode -> (
+      let continue, is_fresh =
+        match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
       let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
       let cwd = Eio.Path.(fs / worktree_path) in
@@ -368,7 +364,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
         try
           Ok
             (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
-               ~session_id ~on_event)
+               ~continue ~on_event)
         with exn -> Error (Printexc.to_string exn)
       in
       match result with
@@ -385,10 +381,6 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
           `Failed
       | Ok r when r.Claude_runner.exit_code = 0 ->
           Runtime.update_orchestrator runtime (fun orch ->
-              let orch =
-                Orchestrator.set_last_session_id orch patch_id
-                  r.Claude_runner.session_id
-              in
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
       | Ok r ->

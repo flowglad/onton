@@ -231,7 +231,6 @@ let gen_patch_agent_fully_populated =
       list_small (map Comment_id.of_int (int_range 1 100_000))
     in
     let* pr_number = option gen_pr_number in
-    let* last_session_id = option gen_session_id in
     let a = Onton.Patch_agent.create pid in
     let a = Onton.Patch_agent.start a ~base_branch:branch in
     let a =
@@ -254,11 +253,6 @@ let gen_patch_agent_fully_populated =
     let a =
       match pr_number with
       | Some n -> Onton.Patch_agent.set_pr_number a n
-      | None -> a
-    in
-    let a =
-      match last_session_id with
-      | Some id -> Onton.Patch_agent.set_last_session_id a id
       | None -> a
     in
     return a)

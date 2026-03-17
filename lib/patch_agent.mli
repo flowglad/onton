@@ -28,7 +28,6 @@ type t = private {
   ci_failure_count : int;
   session_fallback : session_fallback;
   pending_comments : pending_comment list;
-  last_session_id : Types.Session_id.t option;
   ci_checks : Types.Ci_check.t list;
   addressed_comment_ids : Set.M(Types.Comment_id).t;
   removed : bool;
@@ -88,9 +87,6 @@ val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
 
 val set_session_failed : t -> t
 (** Mark session fallback as [Given_up]. *)
-
-val set_last_session_id : t -> Types.Session_id.t -> t
-(** Record the session ID from the most recent Claude run. *)
 
 val set_tried_fresh : t -> t
 (** Advance session fallback to [Tried_fresh]. No-op if already [Tried_fresh] or
@@ -160,7 +156,6 @@ val restore :
   ci_failure_count:int ->
   session_fallback:session_fallback ->
   pending_comments:pending_comment list ->
-  last_session_id:Types.Session_id.t option ->
   ci_checks:Types.Ci_check.t list ->
   addressed_comment_ids:Set.M(Types.Comment_id).t ->
   removed:bool ->

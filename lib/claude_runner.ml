@@ -1,48 +1,18 @@
 open Base
 
-type result = {
-  session_id : Types.Session_id.t;
-  exit_code : int;
-  stdout : string;
-  stderr : string;
-}
+type result = { exit_code : int; stdout : string; stderr : string }
 [@@deriving show, eq, sexp_of, compare]
 
-let generate_session_id () =
-  (* Random.bits() yields 30 bits per call; combine calls for full-width fields *)
-  let r1 = Random.bits () in
-  let r2 = Random.bits () in
-  let r3 = Random.bits () in
-  let r4 = Random.bits () in
-  let r5 = Random.bits () in
-  let last_raw = (r4 lsr 16) lor (r5 lsl 14) in
-  let last_field = last_raw land 0xFFFFFFFFFFFF in
-  let uuid =
-    Printf.sprintf "%08x-%04x-%04x-%04x-%012x"
-      ((r1 lsl 2) lor (r2 land 0x3))
-      ((r2 lsr 2) land 0xFFFF)
-      (r3 land 0xFFFF) (r4 land 0xFFFF) last_field
-  in
-  Types.Session_id.of_string uuid
-
-let build_args ~prompt ~session_id =
+let build_args ~prompt ~continue =
   let base = [ "claude"; "--print"; "--output-format"; "text" ] in
-  let session_args =
-    match session_id with
-    | Some id -> [ "--resume"; Types.Session_id.to_string id ]
-    | None -> []
-  in
+  let session_args = if continue then [ "--continue" ] else [] in
   base @ session_args @ [ "--"; prompt ]
 
-let build_stream_args ~prompt ~session_id =
+let build_stream_args ~prompt ~continue =
   let base =
     [ "claude"; "--print"; "--verbose"; "--output-format"; "stream-json" ]
   in
-  let session_args =
-    match session_id with
-    | Some id -> [ "--resume"; Types.Session_id.to_string id ]
-    | None -> []
-  in
+  let session_args = if continue then [ "--continue" ] else [] in
   base @ session_args @ [ "--"; prompt ]
 
 let parse_stream_events (line : string) : Types.Stream_event.t list =
@@ -151,12 +121,9 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
 let parse_stream_event (line : string) : Types.Stream_event.t option =
   match parse_stream_events line with [] -> None | e :: _ -> Some e
 
-let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
+let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
   ignore (patch_id : Types.Patch_id.t);
-  let fallback_id =
-    match session_id with Some id -> id | None -> generate_session_id ()
-  in
-  let args = build_args ~prompt ~session_id in
+  let args = build_args ~prompt ~continue in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
@@ -178,19 +145,11 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (out, err, code)
   in
-  {
-    session_id = fallback_id;
-    exit_code;
-    stdout = stdout_content;
-    stderr = stderr_content;
-  }
+  { exit_code; stdout = stdout_content; stderr = stderr_content }
 
-let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
+let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
   ignore (patch_id : Types.Patch_id.t);
-  let fallback_id =
-    match session_id with Some id -> id | None -> generate_session_id ()
-  in
-  let args = build_stream_args ~prompt ~session_id in
+  let args = build_stream_args ~prompt ~continue in
   let stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
@@ -221,42 +180,28 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (!err_ref, code)
   in
-  { session_id = fallback_id; exit_code; stdout = ""; stderr = stderr_content }
+  { exit_code; stdout = ""; stderr = stderr_content }
 
-let%test "build_args without session" =
-  let args = build_args ~prompt:"do stuff" ~session_id:None in
+let%test "build_args without continue" =
+  let args = build_args ~prompt:"do stuff" ~continue:false in
   List.equal String.equal args
     [ "claude"; "--print"; "--output-format"; "text"; "--"; "do stuff" ]
 
-let%test "build_args with session" =
-  let sid = Types.Session_id.of_string "abc-123" in
-  let args = build_args ~prompt:"do stuff" ~session_id:(Some sid) in
+let%test "build_args with continue" =
+  let args = build_args ~prompt:"do stuff" ~continue:true in
   List.equal String.equal args
     [
       "claude";
       "--print";
       "--output-format";
       "text";
-      "--resume";
-      "abc-123";
+      "--continue";
       "--";
       "do stuff";
     ]
 
-let%test "generate_session_id produces non-empty string" =
-  let id = generate_session_id () in
-  not (String.is_empty (Types.Session_id.to_string id))
-
-let%test "generate_session_id produces unique values across many calls" =
-  let ids =
-    List.init 1000 ~f:(fun _ ->
-        Types.Session_id.to_string (generate_session_id ()))
-  in
-  let unique_count = Set.length (Set.of_list (module String) ids) in
-  unique_count = 1000
-
-let%test "build_stream_args without session" =
-  let args = build_stream_args ~prompt:"do stuff" ~session_id:None in
+let%test "build_stream_args without continue" =
+  let args = build_stream_args ~prompt:"do stuff" ~continue:false in
   List.equal String.equal args
     [
       "claude";
@@ -268,9 +213,8 @@ let%test "build_stream_args without session" =
       "do stuff";
     ]
 
-let%test "build_stream_args with session" =
-  let sid = Types.Session_id.of_string "abc-123" in
-  let args = build_stream_args ~prompt:"do stuff" ~session_id:(Some sid) in
+let%test "build_stream_args with continue" =
+  let args = build_stream_args ~prompt:"do stuff" ~continue:true in
   List.equal String.equal args
     [
       "claude";
@@ -278,8 +222,7 @@ let%test "build_stream_args with session" =
       "--verbose";
       "--output-format";
       "stream-json";
-      "--resume";
-      "abc-123";
+      "--continue";
       "--";
       "do stuff";
     ]
