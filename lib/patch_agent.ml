@@ -33,6 +33,7 @@ type t = {
   mergeable : bool;
   checks_passing : bool;
   no_unresolved_comments : bool;
+  current_op : Operation_kind.t option;
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -62,6 +63,7 @@ let create patch_id =
     mergeable = false;
     checks_passing = false;
     no_unresolved_comments = false;
+    current_op = None;
   }
 
 let create_adhoc ~patch_id ~pr_number =
@@ -87,6 +89,7 @@ let create_adhoc ~patch_id ~pr_number =
     mergeable = false;
     checks_passing = false;
     no_unresolved_comments = false;
+    current_op = None;
   }
 
 let highest_priority t =
@@ -202,7 +205,7 @@ let reset_busy t =
         t.ci_failure_count >= 3
         || equal_session_fallback t.session_fallback Given_up
     in
-    { t with busy = false; needs_intervention }
+    { t with busy = false; current_op = None; needs_intervention }
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
@@ -231,6 +234,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     mergeable;
     checks_passing;
     no_unresolved_comments;
+    current_op = None;
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }
@@ -245,6 +249,7 @@ let start t ~base_branch =
     t with
     has_session = true;
     busy = true;
+    current_op = None;
     satisfies = true;
     base_branch = Some base_branch;
     session_fallback = Fresh_available;
@@ -269,6 +274,7 @@ let rebase t ~base_branch =
   {
     t with
     busy = true;
+    current_op = Some Rebase;
     queue;
     base_branch = Some base_branch;
     mergeable = false;
@@ -311,6 +317,7 @@ let respond t k =
     t with
     has_session = true;
     busy = true;
+    current_op = Some k;
     queue;
     satisfies;
     changed;
@@ -330,7 +337,7 @@ let complete t =
       t.ci_failure_count >= 3
       || equal_session_fallback t.session_fallback Given_up
   in
-  { t with busy = false; needs_intervention }
+  { t with busy = false; current_op = None; needs_intervention }
 
 (* -- Tests for session failure recovery -- *)
 

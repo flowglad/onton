@@ -34,6 +34,7 @@ type t = private {
   mergeable : bool;
   checks_passing : bool;
   no_unresolved_comments : bool;
+  current_op : Types.Operation_kind.t option;
 }
 [@@deriving show, eq, sexp_of, compare]
 

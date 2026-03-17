@@ -1020,7 +1020,12 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                             Base.List.mem agent.Patch_agent.queue kind
                               ~equal:Operation_kind.equal
                           in
-                          (if not already_queued then
+                          (if
+                             (not already_queued)
+                             && not
+                                  (Option.equal Operation_kind.equal
+                                     agent.Patch_agent.current_op (Some kind))
+                           then
                              let detail =
                                match kind with
                                | Operation_kind.Review_comments ->
