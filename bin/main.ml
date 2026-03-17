@@ -838,7 +838,10 @@ let format_transition (t : Activity_log.Transition_entry.t) =
     text, without TUI escape codes. Uses a count-based cursor to avoid losing
     entries with identical timestamps. *)
 let headless_fiber ~runtime ~clock ~stdout =
-  let seen_count = ref 0 in
+  (* Track seen entries by set of (timestamp, message) to handle entries that
+     sort before previously-displayed ones (e.g. an event logged just before
+     a stream entry but displayed in the next poll cycle). *)
+  let seen = Hashtbl.create 256 in
   let rec loop () =
     let entries =
       Runtime.read runtime (fun snap ->
@@ -850,14 +853,13 @@ let headless_fiber ~runtime ~clock ~stdout =
                 (Patch_id.to_string s.Activity_log.Stream_entry.patch_id)
                 (format_stream_kind s.Activity_log.Stream_entry.kind)))
     in
-    let total = Base.List.length entries in
-    if total > !seen_count then (
-      let new_entries = Base.List.drop entries !seen_count in
-      Base.List.iter new_entries ~f:(fun (ts, msg) ->
+    Base.List.iter entries ~f:(fun (ts, msg) ->
+        let key = (ts, msg) in
+        if not (Hashtbl.mem seen key) then (
+          Hashtbl.replace seen key true;
           Eio.Flow.copy_string
             (Printf.sprintf "%s %s\n" (format_time ts) msg)
-            stdout);
-      seen_count := total);
+            stdout));
     Eio.Time.sleep clock 1.0;
     loop ()
   in
