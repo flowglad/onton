@@ -1492,7 +1492,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         (Sys.Signal_handle
            (fun _ ->
              Printf.eprintf "\nInterrupted.\n%!";
-             Unix.kill 0 Sys.sigterm;
+             (try Unix.kill 0 Sys.sigterm with Unix.Unix_error _ -> ());
              Stdlib.exit 130));
       let runtime =
         match existing_snapshot with

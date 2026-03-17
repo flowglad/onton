@@ -50,7 +50,7 @@ jobs:
         run: opam exec -- dune runtest 2>&1 | tee test.log
 
       - name: Annotate test failures
-        if: failure()
+        if: failure() && hashFiles('test.log') != ''
         run: |
           python3 -c "
           import re
