@@ -43,7 +43,7 @@ let branch_exists ~process_mgr ~repo_root branch_str =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
-let create ~process_mgr ~repo_root ~patch =
+let create ~process_mgr ~repo_root ~patch ~base_ref =
   let open Types in
   let path = worktree_dir ~repo_root ~patch_id:patch.Patch.id in
   let branch_str = Branch.to_string patch.Patch.branch in
@@ -64,7 +64,7 @@ let create ~process_mgr ~repo_root ~patch =
         "-b";
         branch_str;
         path;
-        "HEAD";
+        base_ref;
       ];
     { patch_id = patch.Patch.id; branch = patch.Patch.branch; path })
 

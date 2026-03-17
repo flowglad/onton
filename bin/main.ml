@@ -1079,7 +1079,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       "creating worktree";
                                     ignore
                                       (Worktree.create ~process_mgr
-                                         ~repo_root:config.repo_root ~patch));
+                                         ~repo_root:config.repo_root ~patch
+                                         ~base_ref:
+                                           (Branch.to_string base_branch)));
                                   let prompt =
                                     Prompt.render_patch_prompt ~project_name
                                       ?pr_number:agent.Patch_agent.pr_number
