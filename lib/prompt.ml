@@ -143,19 +143,12 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     match patch.Patch.acceptance_criteria with
     | [] -> ""
     | items ->
-        let formatted =
-          List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
-        in
-        Printf.sprintf "\n## Acceptance Criteria\n%s\n" formatted
+        Printf.sprintf "\n## Acceptance Criteria\n%s\n" (format_list items)
   in
   let files_section =
     match patch.Patch.files with
     | [] -> ""
-    | items ->
-        let formatted =
-          List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
-        in
-        Printf.sprintf "\n## Files to Modify\n%s\n" formatted
+    | items -> Printf.sprintf "\n## Files to Modify\n%s\n" (format_list items)
   in
   let base_branch_note =
     if String.equal base_branch "main" then ""

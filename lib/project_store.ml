@@ -98,11 +98,13 @@ let load_config ~project_name =
 let save_gameplan_source ~project_name ~source_path =
   let dir = project_dir project_name in
   ensure_dir dir;
-  let dest =
+  let dest, stale =
     if Stdlib.Filename.check_suffix source_path ".json" then
-      gameplan_json_path project_name
-    else gameplan_path project_name
+      (gameplan_json_path project_name, gameplan_path project_name)
+    else (gameplan_path project_name, gameplan_json_path project_name)
   in
+  (if Stdlib.Sys.file_exists stale then
+     try Stdlib.Sys.remove stale with Sys_error _ -> ());
   let ic = Stdlib.open_in source_path in
   let content =
     Stdlib.Fun.protect
