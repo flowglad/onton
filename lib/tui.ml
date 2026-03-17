@@ -556,7 +556,9 @@ type frame = { lines : string list; width : int; detail_at_bottom : bool }
 
 let render_header ~project_name ~width =
   let prefix = "── " in
-  let suffix_pad = Int.max 0 (width - String.length prefix - String.length project_name - 1) in
+  let suffix_pad =
+    Int.max 0 (width - String.length prefix - String.length project_name - 1)
+  in
   let rule_suffix = Term.hrule ~ch:"─" suffix_pad in
   let title_line =
     Term.styled [ c_accent ]
@@ -711,8 +713,7 @@ let render_activity ~width (entries : activity_entry list) =
                 | Some pid -> Term.styled [ c_muted ] (pid ^ ": ")
                 | None -> "  "
               in
-              Printf.sprintf "  %s%s" prefix
-                (Term.styled [ c_muted ] message))
+              Printf.sprintf "  %s%s" prefix (Term.styled [ c_muted ] message))
     in
     header :: lines
 
@@ -815,15 +816,17 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
   in
   let comment_section =
     if pv.pending_comments > 0 then
-      [ ""; Term.styled [ c_muted ] (Printf.sprintf "  %d pending comments" pv.pending_comments) ]
+      [
+        "";
+        Term.styled [ c_muted ]
+          (Printf.sprintf "  %d pending comments" pv.pending_comments);
+      ]
     else []
   in
   let transcript_section =
     if String.is_empty transcript then []
     else
-      let transcript_header =
-        [ ""; section_rule ~label:"Transcript" ~width ]
-      in
+      let transcript_header = [ ""; section_rule ~label:"Transcript" ~width ] in
       let wrap_line max_w line =
         let stripped_len = String.length (Term.strip_ansi line) in
         if stripped_len <= max_w then [ line ]
@@ -845,9 +848,7 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       in
       transcript_header @ transcript_lines
   in
-  let info =
-    lines @ op_line @ intervention @ ci_section @ comment_section
-  in
+  let info = lines @ op_line @ intervention @ ci_section @ comment_section in
   (info, transcript_section)
 
 let render_timeline ~width ~selected ~max_visible
@@ -886,13 +887,18 @@ let render_timeline ~width ~selected ~max_visible
   in
   let scroll_up =
     if offset > 0 then
-      [ Term.styled [ c_muted ] (Printf.sprintf " \xe2\x86\x91 %d more" offset) ]
+      [
+        Term.styled [ c_muted ] (Printf.sprintf " \xe2\x86\x91 %d more" offset);
+      ]
     else []
   in
   let remaining = total - offset - count in
   let scroll_down =
     if remaining > 0 then
-      [ Term.styled [ c_muted ] (Printf.sprintf " \xe2\x86\x93 %d more" remaining) ]
+      [
+        Term.styled [ c_muted ]
+          (Printf.sprintf " \xe2\x86\x93 %d more" remaining);
+      ]
     else []
   in
   (header :: scroll_up) @ rows @ scroll_down
@@ -917,14 +923,16 @@ let render_footer ~width ~view_mode ?input_line ?completion_hint () =
         match view_mode with
         | List_view ->
             Term.styled [ c_muted ]
-              " [j/k] navigate  [Enter] detail  [t] timeline  [h] help  \
-               [:] command  [q] quit"
+              " [j/k] navigate  [Enter] detail  [t] timeline  [h] help  [:] \
+               command  [q] quit"
         | Detail_view _ ->
             Term.styled [ c_muted ]
-              " [\xe2\x86\x91\xe2\x86\x93] scroll  [Esc] back  [t] timeline  [h] help  [q] quit"
+              " [\xe2\x86\x91\xe2\x86\x93] scroll  [Esc] back  [t] timeline  \
+               [h] help  [q] quit"
         | Timeline_view ->
             Term.styled [ c_muted ]
-              " [\xe2\x86\x91\xe2\x86\x93] scroll  [Esc] back  [t] list  [h] help  [q] quit"
+              " [\xe2\x86\x91\xe2\x86\x93] scroll  [Esc] back  [t] list  [h] \
+               help  [q] quit"
       in
       [ Term.hrule width; help ]
 
