@@ -981,8 +981,8 @@ type poll_intent =
 
 (** Poller fiber — periodically polls GitHub for PR state changes and
     reconciles. *)
-let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
-    ~ci_checks_cache =
+let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
+    ~branch_of ~ci_checks_cache =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
@@ -1136,6 +1136,34 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                       match pr_state.Github.Pr_state.head_branch with
                       | Some b -> Orchestrator.set_head_branch orch patch_id b
                       | None -> orch
+                    in
+                    (* Eagerly resolve worktree when head_branch is known but
+                       worktree_path is not — avoids chicken-and-egg with
+                       needs_intervention blocking the runner. *)
+                    let orch =
+                      let agent = Orchestrator.agent orch patch_id in
+                      match
+                        ( agent.Patch_agent.worktree_path,
+                          agent.Patch_agent.head_branch )
+                      with
+                      | None, Some branch -> (
+                          match
+                            Worktree.find_for_branch ~process_mgr
+                              ~repo_root:config.repo_root branch
+                          with
+                          | Some path ->
+                              let orch =
+                                Orchestrator.set_worktree_path orch patch_id
+                                  path
+                              in
+                              (* If stuck in needs_intervention due to the
+                                 missing worktree, clear it so work resumes. *)
+                              if agent.Patch_agent.needs_intervention then
+                                Orchestrator.clear_needs_intervention orch
+                                  patch_id
+                              else orch
+                          | None -> orch)
+                      | _ -> orch
                     in
                     Base.List.fold poll_result.Poller.new_comments ~init:orch
                       ~f:(fun acc comment ->
@@ -1928,8 +1956,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
         [
           reconciliation_fiber;
           (fun () ->
-            poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry
-              ~branch_of ~ci_checks_cache);
+            poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
+              ~pr_registry ~branch_of ~ci_checks_cache);
           (fun () ->
             runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               ~ci_checks_cache ~transcripts);
