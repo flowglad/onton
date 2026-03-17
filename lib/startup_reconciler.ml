@@ -122,18 +122,25 @@ let find_stale_busy ~agents =
 
 let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
     ?(agents = []) () =
-  let discovered, errors =
-    List.fold patches ~init:([], [])
-      ~f:(fun (discovered, errors) (patch : Patch.t) ->
-        match
+  let results =
+    Eio.Fiber.List.map ~max_fibers:8
+      (fun (patch : Patch.t) ->
+        let r =
           discover_pr ~process_mgr ~token ~owner ~repo ~branch:patch.branch
-        with
+        in
+        (patch, r))
+      patches
+  in
+  let discovered, errors =
+    List.fold results ~init:([], [])
+      ~f:(fun (discovered, errors) (patch, result) ->
+        match result with
         | Ok (Some (pr_number, base_branch, merged)) ->
-            ( { patch_id = patch.id; pr_number; base_branch; merged }
+            ( { patch_id = patch.Patch.id; pr_number; base_branch; merged }
               :: discovered,
               errors )
         | Ok None -> (discovered, errors)
-        | Error err -> (discovered, (patch.id, err) :: errors))
+        | Error err -> (discovered, (patch.Patch.id, err) :: errors))
   in
   let recovered_worktrees, worktree_error =
     recover_worktrees ~process_mgr ~repo_root ~patches

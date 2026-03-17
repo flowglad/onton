@@ -135,7 +135,10 @@ let pending_actions t ~patches =
 let fire t action =
   match action with
   | Start (pid, base) ->
-      update_agent t pid ~f:(fun a -> Patch_agent.start a ~base_branch:base)
+      let a = agent t pid in
+      if a.Patch_agent.has_pr then t
+      else
+        update_agent t pid ~f:(fun a -> Patch_agent.start a ~base_branch:base)
   | Respond (pid, k) -> update_agent t pid ~f:(fun a -> Patch_agent.respond a k)
 
 let tick t ~patches =
