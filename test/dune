@@ -47,5 +47,9 @@
  (libraries onton))
 
 (test
+ (name test_poller_properties)
+ (libraries onton qcheck-core))
+
+(test
  (name test_tui_scheduling)
  (libraries onton eio eio_main eio.unix unix))
