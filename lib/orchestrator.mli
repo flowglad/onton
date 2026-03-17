@@ -88,9 +88,9 @@ val apply_rebase_result :
   t -> Patch_id.t -> Worktree.rebase_result -> Branch.t -> t
 (** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->
     set_base_branch + clear_has_conflict + complete. [Noop] -> set_base_branch +
-    complete. [Conflict] -> set_base_branch + set_has_conflict + enqueue
-    Merge_conflict + complete. [Error _] -> set_session_failed + set_tried_fresh
-    \+ complete. *)
+    clear_has_conflict + complete. [Conflict] -> set_base_branch +
+    set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
+    set_session_failed + set_tried_fresh \+ complete. *)
 
 val restore :
   graph:Graph.t ->
