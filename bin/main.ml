@@ -393,8 +393,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
           `Ok
       | Ok r ->
           log_event runtime ~patch_id
-            (Printf.sprintf "Claude exited with code %d, marking session failed"
-               r.Claude_runner.exit_code);
+            (Printf.sprintf
+               "Claude exited with code %d, marking session failed: %s"
+               r.Claude_runner.exit_code
+               (let s = String.trim r.Claude_runner.stderr in
+                if String.length s <= 500 then s else String.sub s 0 500));
           Runtime.update_orchestrator runtime (fun orch ->
               let orch =
                 Orchestrator.set_last_session_id orch patch_id
@@ -470,7 +473,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
   let rec loop () =
-    match Eio_unix.run_in_systhread Term.Key.read with
+    match Term.Key.read () with
     | None -> log_event runtime "input fiber: stdin closed (EOF or I/O error)"
     | Some key -> (
         if !text_mode then
@@ -962,7 +965,6 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
           Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
               if a.Patch_agent.merged then Some a.Patch_agent.patch_id else None)
         in
-        let gp = snap.Runtime.gameplan in
         let actions =
           Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
             ~merged_pr_patches:merged_patches ~branch_of patch_views
@@ -974,9 +976,6 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
               | Reconciler.Enqueue_rebase pid ->
                   Orchestrator.enqueue orch pid Operation_kind.Rebase
               | Reconciler.Start_operation _ -> orch)
-        in
-        let orch, _actions =
-          Orchestrator.tick orch ~patches:gp.Gameplan.patches
         in
         { snap with Runtime.orchestrator = orch });
     Eio.Time.sleep clock config.poll_interval;

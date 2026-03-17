@@ -35,7 +35,9 @@ let build_args ~prompt ~session_id =
   base @ session_args @ [ "--"; prompt ]
 
 let build_stream_args ~prompt ~session_id =
-  let base = [ "claude"; "--print"; "--output-format"; "stream-json" ] in
+  let base =
+    [ "claude"; "--print"; "--verbose"; "--output-format"; "stream-json" ]
+  in
   let session_args =
     match session_id with
     | Some id -> [ "--resume"; Types.Session_id.to_string id ]
@@ -212,7 +214,15 @@ let%test "generate_session_id produces unique values across many calls" =
 let%test "build_stream_args without session" =
   let args = build_stream_args ~prompt:"do stuff" ~session_id:None in
   List.equal String.equal args
-    [ "claude"; "--print"; "--output-format"; "stream-json"; "--"; "do stuff" ]
+    [
+      "claude";
+      "--print";
+      "--verbose";
+      "--output-format";
+      "stream-json";
+      "--";
+      "do stuff";
+    ]
 
 let%test "build_stream_args with session" =
   let sid = Types.Session_id.of_string "abc-123" in
@@ -221,6 +231,7 @@ let%test "build_stream_args with session" =
     [
       "claude";
       "--print";
+      "--verbose";
       "--output-format";
       "stream-json";
       "--resume";
