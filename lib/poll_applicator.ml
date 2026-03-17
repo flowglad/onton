@@ -23,7 +23,16 @@ let apply t patch_id (poll_result : Poller.t) =
       let agent = Orchestrator.agent t patch_id in
       if not agent.Patch_agent.has_conflict then log "merge conflict detected";
       Orchestrator.set_has_conflict t patch_id)
-    else Orchestrator.clear_has_conflict t patch_id
+    else
+      let agent = Orchestrator.agent t patch_id in
+      let local_merge_conflict_active =
+        List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
+          ~equal:Operation_kind.equal
+        || Option.equal Operation_kind.equal agent.Patch_agent.current_op
+             (Some Operation_kind.Merge_conflict)
+      in
+      if local_merge_conflict_active then t
+      else Orchestrator.clear_has_conflict t patch_id
   in
   let agent_before = Orchestrator.agent t patch_id in
   let t =
