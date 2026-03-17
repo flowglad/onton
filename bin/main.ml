@@ -1064,13 +1064,25 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
             mark_session_failed runtime patch_id)
   in
   let rec loop () =
-    let actions, gameplan =
+    let actions, gameplan, pre_fire_agents =
       Runtime.read runtime (fun snap ->
+          let orch = snap.Runtime.orchestrator in
           let actions =
-            Orchestrator.pending_actions snap.Runtime.orchestrator
+            Orchestrator.pending_actions orch
               ~patches:snap.Runtime.gameplan.Gameplan.patches
           in
-          (actions, snap.Runtime.gameplan))
+          (* Capture agent state BEFORE fire clears pending_comments.
+             Respond clears pending_comments as a postcondition, but the
+             runner needs them to build the prompt. *)
+          let agent_map =
+            Base.List.filter_map actions ~f:(fun action ->
+                match action with
+                | Orchestrator.Respond (pid, _) | Orchestrator.Rebase (pid, _)
+                  ->
+                    Some (pid, Orchestrator.agent orch pid)
+                | Orchestrator.Start _ -> None)
+          in
+          (actions, snap.Runtime.gameplan, agent_map))
     in
     (* Fire all actions to mark agents busy, preventing re-dispatch on the next
        loop iteration. Note: there is a benign TOCTOU gap between reading
@@ -1243,6 +1255,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 ~repo:config.github_repo ~pr_number ~draft:false
                           | _ -> ())))
           | Orchestrator.Respond (patch_id, kind) ->
+              (* Use pre-fire agent state for pending_comments — fire/respond
+                 clears them as a postcondition. *)
+              let pre_fire_agent =
+                Base.List.Assoc.find pre_fire_agents patch_id
+                  ~equal:Patch_id.equal
+              in
               Some
                 (fun () ->
                   with_busy_guard ~patch_id (fun () ->
@@ -1269,8 +1287,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~default:(Branch.to_string main)
                                   ~f:Branch.to_string
                               in
+                              let source_agent =
+                                Base.Option.value pre_fire_agent ~default:agent
+                              in
                               let pending_comments =
-                                Base.List.map agent.Patch_agent.pending_comments
+                                Base.List.map
+                                  source_agent.Patch_agent.pending_comments
                                   ~f:(fun (pc : Patch_agent.pending_comment) ->
                                     pc.Patch_agent.comment)
                               in
