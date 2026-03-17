@@ -1229,10 +1229,21 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                           | None -> orch)
                       | _ -> orch
                     in
-                    Base.List.fold poll_result.Poller.new_comments ~init:orch
-                      ~f:(fun acc comment ->
-                        Orchestrator.add_pending_comment acc patch_id comment
-                          ~valid:true));
+                    (* Don't add comments while the agent is actively
+                       handling review comments — they'll be re-discovered on
+                       the next poll after complete, at which point
+                       addressed_comment_ids will filter out the handled ones. *)
+                    let agent = Orchestrator.agent orch patch_id in
+                    if
+                      Option.equal Operation_kind.equal
+                        agent.Patch_agent.current_op
+                        (Some Operation_kind.Review_comments)
+                    then orch
+                    else
+                      Base.List.fold poll_result.Poller.new_comments ~init:orch
+                        ~f:(fun acc comment ->
+                          Orchestrator.add_pending_comment acc patch_id comment
+                            ~valid:true));
                 Base.List.iter (Base.List.rev !pending_logs)
                   ~f:(fun (msg, pid) -> log_event runtime ~patch_id:pid msg);
                 if pr_state.Github.Pr_state.ci_checks_truncated then
