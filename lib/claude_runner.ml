@@ -45,7 +45,7 @@ let build_stream_args ~prompt ~session_id =
   in
   base @ session_args @ [ "--"; prompt ]
 
-let parse_stream_event (line : string) : Types.Stream_event.t option =
+let parse_stream_events (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
   | json -> (
       let open Yojson.Safe.Util in
@@ -60,8 +60,8 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
                 member "text" delta |> to_string_option
                 |> Option.value ~default:""
               in
-              Some (Types.Stream_event.Text_delta text)
-          | _ -> None)
+              [ Types.Stream_event.Text_delta text ]
+          | _ -> [])
       | Some "content_block_start" -> (
           let content_block = member "content_block" json in
           let block_type = member "type" content_block |> to_string_option in
@@ -71,8 +71,31 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
                 member "name" content_block
                 |> to_string_option |> Option.value ~default:""
               in
-              Some (Types.Stream_event.Tool_use { name; input = "" })
-          | _ -> None)
+              [ Types.Stream_event.Tool_use { name; input = "" } ]
+          | _ -> [])
+      | Some "assistant" ->
+          (* --verbose format: assistant event contains message.content array *)
+          let content =
+            match member "message" json |> member "content" with
+            | `List l -> l
+            | _ -> []
+          in
+          List.filter_map content ~f:(fun block ->
+              let block_type = member "type" block |> to_string_option in
+              match block_type with
+              | Some "tool_use" ->
+                  let name =
+                    member "name" block |> to_string_option
+                    |> Option.value ~default:""
+                  in
+                  Some (Types.Stream_event.Tool_use { name; input = "" })
+              | Some "text" ->
+                  let text =
+                    member "text" block |> to_string_option
+                    |> Option.value ~default:""
+                  in
+                  Some (Types.Stream_event.Text_delta text)
+              | _ -> None)
       | Some "message_delta" -> (
           let delta = member "delta" json in
           let raw_reason =
@@ -80,9 +103,9 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
             |> Option.value ~default:""
           in
           match Types.Stop_reason.of_string raw_reason with
-          | None -> None
+          | None -> []
           | Some stop_reason ->
-              Some (Types.Stream_event.Final_result { text = ""; stop_reason }))
+              [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
       | Some "result" ->
           let text =
             member "result" json |> to_string_option |> Option.value ~default:""
@@ -95,15 +118,19 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
             Types.Stop_reason.of_string raw_reason
             |> Option.value ~default:Types.Stop_reason.End_turn
           in
-          Some (Types.Stream_event.Final_result { text; stop_reason })
+          [ Types.Stream_event.Final_result { text; stop_reason } ]
       | Some "error" ->
           let err =
             member "error" json |> member "message" |> to_string_option
             |> Option.value ~default:"unknown error"
           in
-          Some (Types.Stream_event.Error err)
-      | _ -> None)
-  | exception Yojson.Json_error _ -> None
+          [ Types.Stream_event.Error err ]
+      | _ -> [])
+  | exception Yojson.Json_error _ -> []
+
+(** Backward-compatible wrapper returning the first parsed event. *)
+let parse_stream_event (line : string) : Types.Stream_event.t option =
+  match parse_stream_events line with [] -> None | e :: _ -> Some e
 
 let run ~process_mgr ~cwd ~patch_id ~prompt ~session_id =
   ignore (patch_id : Types.Patch_id.t);
@@ -164,10 +191,8 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~session_id ~on_event =
           match Eio.Buf_read.line stdout_buf with
           | line ->
               let trimmed = String.strip line in
-              (if not (String.is_empty trimmed) then
-                 match parse_stream_event trimmed with
-                 | Some event -> on_event event
-                 | None -> ());
+              if not (String.is_empty trimmed) then
+                List.iter (parse_stream_events trimmed) ~f:on_event;
               read_lines ()
           | exception End_of_file -> ()
         in
