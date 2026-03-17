@@ -81,6 +81,8 @@ val views_of_orchestrator :
   activity:activity_entry list ->
   patch_view list
 
+val render_help_overlay : width:int -> height:int -> string list
+
 val render_frame :
   width:int ->
   height:int ->
@@ -88,6 +90,7 @@ val render_frame :
   view_mode:view_mode ->
   activity:activity_entry list ->
   project_name:string ->
+  show_help:bool ->
   ?transcript:string ->
   ?input_line:string ->
   patch_view list ->
