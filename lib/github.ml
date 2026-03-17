@@ -14,6 +14,7 @@ module Pr_state = struct
     comments : Types.Comment.t list;
     unresolved_comment_count : int;
     head_branch : Types.Branch.t option;
+    base_branch : Types.Branch.t option;
   }
   [@@deriving show, eq]
 end
@@ -37,6 +38,7 @@ let graphql_query =
       mergeable
       mergeStateStatus
       headRefName
+      baseRefName
       commits(last: 1) {
         nodes {
           commit {
@@ -215,6 +217,10 @@ let parse_response body =
               pr |> member "headRefName" |> to_string_option
               |> Option.map ~f:Types.Branch.of_string
             in
+            let base_branch =
+              pr |> member "baseRefName" |> to_string_option
+              |> Option.map ~f:Types.Branch.of_string
+            in
             Ok
               Pr_state.
                 {
@@ -227,6 +233,7 @@ let parse_response body =
                   comments;
                   unresolved_comment_count;
                   head_branch;
+                  base_branch;
                 })
     | errors ->
         let msgs =

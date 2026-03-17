@@ -138,6 +138,7 @@ let gen_pr_state =
           comments;
           unresolved_comment_count;
           head_branch = None;
+          base_branch = None;
         })
       (pair bool gen_merge_state)
       bool

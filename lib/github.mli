@@ -20,6 +20,7 @@ module Pr_state : sig
     comments : Comment.t list;
     unresolved_comment_count : int;
     head_branch : Branch.t option;
+    base_branch : Branch.t option;
   }
   [@@deriving show, eq]
 end

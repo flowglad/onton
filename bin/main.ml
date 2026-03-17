@@ -1152,6 +1152,16 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                       | Some b -> Orchestrator.set_head_branch orch patch_id b
                       | None -> orch
                     in
+                    let orch =
+                      let agent = Orchestrator.agent orch patch_id in
+                      match
+                        ( agent.Patch_agent.base_branch,
+                          pr_state.Github.Pr_state.base_branch )
+                      with
+                      | None, Some b ->
+                          Orchestrator.set_base_branch orch patch_id b
+                      | _ -> orch
+                    in
                     (* Eagerly resolve worktree when head_branch is known but
                        worktree_path is not — avoids chicken-and-egg with
                        needs_intervention blocking the runner. *)
