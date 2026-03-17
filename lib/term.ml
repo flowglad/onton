@@ -305,6 +305,18 @@ module Raw = struct
     | None -> ()
 end
 
+type mouse_button = Left | Middle | Right [@@deriving show, eq]
+type scroll_dir = Up | Down [@@deriving show, eq]
+
+type mouse_event =
+  | Click of { button : mouse_button; row : int; col : int; press : bool }
+  | Scroll of { dir : scroll_dir; row : int; col : int }
+[@@deriving show, eq]
+
+(** SGR 1006 mouse mode escape sequences. *)
+let enable_mouse = "\027[?1006h\027[?1000h"
+let disable_mouse = "\027[?1006l\027[?1000l"
+
 (** Keyboard input types and parsing. *)
 module Key = struct
   type t =
@@ -325,6 +337,7 @@ module Key = struct
     | F of int
     | Ctrl of char
     | Paste of string
+    | Mouse of mouse_event
     | Unknown of string
   [@@deriving show, eq]
 
@@ -412,12 +425,53 @@ module Key = struct
     in
     consume ()
 
+  (** Parse an SGR mouse sequence: CSI < Pb;Px;Py M/m.
+      Pb encodes button (0=left, 1=middle, 2=right, 64=scroll-up, 65=scroll-down).
+      M = press, m = release. *)
+  let parse_sgr_mouse () =
+    (* Read decimal digits until a non-digit delimiter *)
+    let read_number () =
+      let buf = Buffer.create 4 in
+      let rec loop () =
+        match read_byte_timeout () with
+        | Some c when Char.( >= ) c '0' && Char.( <= ) c '9' ->
+            Buffer.add_char buf c;
+            loop ()
+        | other ->
+            let s = Buffer.contents buf in
+            if String.is_empty s then (None, other) else (Some s, other)
+      in
+      loop ()
+    in
+    match read_number () with
+    | Some pb_s, Some ';' -> (
+        match read_number () with
+        | Some px_s, Some ';' -> (
+            match read_number () with
+            | Some py_s, Some final
+              when Char.equal final 'M' || Char.equal final 'm' -> (
+                let pb = Int.of_string pb_s in
+                let col = Int.of_string px_s in
+                let row = Int.of_string py_s in
+                let press = Char.equal final 'M' in
+                match pb with
+                | 0 -> Mouse (Click { button = Left; row; col; press })
+                | 1 -> Mouse (Click { button = Middle; row; col; press })
+                | 2 -> Mouse (Click { button = Right; row; col; press })
+                | 64 -> Mouse (Scroll { dir = Up; row; col })
+                | 65 -> Mouse (Scroll { dir = Down; row; col })
+                | _ -> Unknown (Printf.sprintf "mouse:%d" pb))
+            | _ -> Unknown "sgr-mouse")
+        | _ -> Unknown "sgr-mouse")
+    | _ -> Unknown "sgr-mouse"
+
   (** Parse a CSI escape sequence (after ESC and bracket have been read). *)
   let parse_csi () =
     match read_byte_timeout () with
     | None -> Escape
     | Some c -> (
         match c with
+        | '<' -> parse_sgr_mouse ()
         | 'A' -> Up
         | 'B' -> Down
         | 'C' -> Right
@@ -516,3 +570,22 @@ module Key = struct
           Some (Ctrl (Char.of_int_exn (code + 96)))
         else Some (Char c)
 end
+
+let%test "enable_mouse is correct" =
+  String.equal enable_mouse "\027[?1006h\027[?1000h"
+
+let%test "disable_mouse is correct" =
+  String.equal disable_mouse "\027[?1006l\027[?1000l"
+
+let%test "enable_mouse and disable_mouse are distinct" =
+  not (String.equal enable_mouse disable_mouse)
+
+let%test "mouse_event Click equality" =
+  equal_mouse_event
+    (Click { button = Left; row = 5; col = 10; press = true })
+    (Click { button = Left; row = 5; col = 10; press = true })
+
+let%test "mouse_event Scroll equality" =
+  equal_mouse_event
+    (Scroll { dir = Up; row = 5; col = 10 })
+    (Scroll { dir = Up; row = 5; col = 10 })

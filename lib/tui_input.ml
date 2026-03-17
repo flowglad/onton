@@ -36,7 +36,7 @@ let of_key (key : Term.Key.t) : command =
   | Enter -> Select
   | Escape | Backspace -> Back
   | Char _ | Tab | Delete | Home | End | Left | Right | F _ | Ctrl _ | Paste _
-  | Unknown _ ->
+  | Mouse _ | Unknown _ ->
       Noop
 
 (** Apply a command to the selected index, clamping to [0, count-1]. *)

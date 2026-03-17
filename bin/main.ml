@@ -839,7 +839,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
               loop ()
           | Term.Key.Left | Term.Key.Right | Term.Key.Home | Term.Key.End
           | Term.Key.Page_up | Term.Key.Page_down | Term.Key.Tab | Term.Key.F _
-          | Term.Key.Ctrl _ | Term.Key.Unknown _ ->
+          | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
               loop ()
         else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
           Term.Raw.suspend ();
@@ -873,7 +873,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
           | Term.Key.Escape | Term.Key.Up | Term.Key.Down | Term.Key.Left
           | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
           | Term.Key.Page_down | Term.Key.Delete | Term.Key.F _
-          | Term.Key.Ctrl _ | Term.Key.Unknown _ -> (
+          | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ -> (
               let cmd = Tui_input.of_key key in
               match cmd with
               | Tui_input.Quit -> raise Quit_tui
