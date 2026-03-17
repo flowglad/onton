@@ -1486,16 +1486,13 @@ let run_with_config (config : config) gameplan existing_snapshot =
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok () ->
+      Eio_main.run @@ fun env ->
       Sys.set_signal Sys.sigint
         (Sys.Signal_handle
            (fun _ ->
              Printf.eprintf "\nInterrupted.\n%!";
-             (* Kill entire process group so child Claude processes die too *)
-             Sys.set_signal Sys.sigterm
-               (Sys.Signal_handle (fun _ -> Stdlib.exit 130));
              Unix.kill 0 Sys.sigterm;
              Stdlib.exit 130));
-      Eio_main.run @@ fun env ->
       let runtime =
         match existing_snapshot with
         | Some snap ->
