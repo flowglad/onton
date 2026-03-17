@@ -99,6 +99,16 @@ val set_tried_fresh : t -> t
 val clear_session_fallback : t -> t
 (** Reset session fallback to [Fresh_available]. *)
 
+val on_session_failure : t -> is_fresh:bool -> t
+(** Handle a Claude session failure. Pure decision:
+    - Start path (no PR) + fresh failure: reset to [Fresh_available] for retry
+    - Resume failure: escalate to [Tried_fresh] (will try fresh next)
+    - Respond path fresh failure: escalate to [Given_up] → needs_intervention *)
+
+val on_pr_discovery_failure : t -> t
+(** Handle a successful Claude run where PR discovery failed. Resets fallback so
+    the patch retries from scratch. *)
+
 val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
 

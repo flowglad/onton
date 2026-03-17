@@ -231,6 +231,13 @@ let set_tried_fresh t patch_id =
 let clear_session_fallback t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_session_fallback
 
+let on_session_failure t patch_id ~is_fresh =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.on_session_failure a ~is_fresh)
+
+let on_pr_discovery_failure t patch_id =
+  update_agent t patch_id ~f:Patch_agent.on_pr_discovery_failure
+
 let set_has_conflict t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_has_conflict
 

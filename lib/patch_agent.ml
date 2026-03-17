@@ -147,6 +147,21 @@ let set_tried_fresh t =
   | Given_up -> t
 
 let clear_session_fallback t = { t with session_fallback = Fresh_available }
+
+(** Handle a Claude session failure. Pure decision logic:
+    - Start path (no PR) + fresh failure: reset to Fresh_available for retry
+    - Resume failure: escalate to Tried_fresh (will try fresh next)
+    - Respond path fresh failure: escalate to Given_up → needs_intervention *)
+let on_session_failure t ~is_fresh =
+  if (not t.has_pr) && is_fresh then clear_session_fallback t
+  else
+    let t = set_session_failed t in
+    if is_fresh then set_tried_fresh t else t
+
+(** Handle a successful Claude run where PR discovery failed. Reset fallback so
+    the patch retries from scratch. *)
+let on_pr_discovery_failure t = clear_session_fallback t
+
 let set_has_conflict t = { t with has_conflict = true }
 
 let increment_ci_failure_count t =
@@ -287,3 +302,40 @@ let complete t =
       || equal_session_fallback t.session_fallback Given_up
   in
   { t with busy = false; needs_intervention }
+
+(* -- Tests for session failure recovery -- *)
+
+let%test "on_session_failure: start path fresh resets to Fresh_available" =
+  let t = create (Patch_id.of_string "1") in
+  let t = { t with busy = true; session_fallback = Tried_fresh } in
+  let t = on_session_failure t ~is_fresh:true in
+  equal_session_fallback t.session_fallback Fresh_available
+
+let%test "on_session_failure: resume failure escalates to Tried_fresh" =
+  let t = create (Patch_id.of_string "1") in
+  let t = { t with busy = true; session_fallback = Fresh_available } in
+  let t = on_session_failure t ~is_fresh:false in
+  equal_session_fallback t.session_fallback Tried_fresh
+
+let%test "on_session_failure: respond path fresh escalates to Given_up" =
+  let t = create (Patch_id.of_string "1") in
+  let t =
+    { t with busy = true; has_pr = true; session_fallback = Tried_fresh }
+  in
+  let t = on_session_failure t ~is_fresh:true in
+  equal_session_fallback t.session_fallback Given_up
+
+let%test
+    "on_session_failure: start fresh failure + complete does not set \
+     needs_intervention" =
+  let t = create (Patch_id.of_string "1") in
+  let t = { t with busy = true; session_fallback = Tried_fresh } in
+  let t = on_session_failure t ~is_fresh:true in
+  let t = complete t in
+  not t.needs_intervention
+
+let%test "on_pr_discovery_failure resets fallback" =
+  let t = create (Patch_id.of_string "1") in
+  let t = { t with busy = true; session_fallback = Tried_fresh } in
+  let t = on_pr_discovery_failure t in
+  equal_session_fallback t.session_fallback Fresh_available
