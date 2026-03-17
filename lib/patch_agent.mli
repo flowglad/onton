@@ -114,6 +114,9 @@ val set_has_conflict : t -> t
 val clear_has_conflict : t -> t
 (** Clear the merge conflict flag. *)
 
+val set_base_branch : t -> Types.Branch.t -> t
+(** Update the base branch. *)
+
 val set_mergeable : t -> bool -> t
 (** Set the mergeable flag from GitHub merge state. *)
 

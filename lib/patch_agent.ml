@@ -170,6 +170,7 @@ let on_pr_discovery_failure t = { t with session_fallback = Fresh_available }
 
 let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
+let set_base_branch t branch = { t with base_branch = Some branch }
 let set_mergeable t v = { t with mergeable = v }
 let set_checks_passing t v = { t with checks_passing = v }
 let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }

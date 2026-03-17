@@ -1289,47 +1289,60 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               Some
                 (fun () ->
                   with_busy_guard ~patch_id (fun () ->
-                      let result =
-                        with_claude_slot (fun () ->
-                            let agent =
-                              Runtime.read runtime (fun snap ->
-                                  Orchestrator.agent snap.Runtime.orchestrator
-                                    patch_id)
-                            in
-                            if
-                              agent.Patch_agent.merged
-                              || agent.Patch_agent.needs_intervention
-                              || not agent.Patch_agent.busy
-                            then (
-                              log_event runtime ~patch_id
-                                "runner: rebase action stale after semaphore \
-                                 wait, skipping";
-                              `Stale)
-                            else (
-                              log_event runtime ~patch_id
-                                (Printf.sprintf "rebasing onto %s"
-                                   (Branch.to_string new_base));
-                              let base = Branch.to_string new_base in
-                              let pr_number = agent.Patch_agent.pr_number in
-                              let prompt =
-                                Prompt.render_merge_conflict_prompt
-                                  ~project_name ?pr_number ~base_branch:base ()
-                              in
-                              let on_pr_detected _pr_number = () in
-                              run_claude_and_handle ~runtime ~process_mgr ~fs
-                                ~repo_root:config.repo_root ~patch_id ~prompt
-                                ~agent ~owner:config.github_owner
-                                ~repo:config.github_repo ~on_pr_detected
-                                ~transcripts))
+                      let wt_path =
+                        Worktree.worktree_dir ~repo_root:config.repo_root
+                          ~patch_id
                       in
-                      match result with
-                      | `Stale | `Failed -> ()
-                      | `Ok -> (
+                      let rebase_result =
+                        Worktree.rebase_onto ~process_mgr ~path:wt_path
+                          ~target:new_base
+                      in
+                      (match rebase_result with
+                      | Worktree.Ok ->
                           log_event runtime ~patch_id
-                            (Printf.sprintf "rebase onto %s completed"
+                            (Printf.sprintf "runner: rebase onto %s succeeded"
                                (Branch.to_string new_base));
                           Runtime.update_orchestrator runtime (fun orch ->
-                              Orchestrator.complete orch patch_id);
+                              let orch =
+                                Orchestrator.set_base_branch orch patch_id
+                                  new_base
+                              in
+                              let orch =
+                                Orchestrator.clear_has_conflict orch patch_id
+                              in
+                              Orchestrator.complete orch patch_id)
+                      | Worktree.Noop ->
+                          log_event runtime ~patch_id
+                            "runner: rebase is a noop (already up-to-date)";
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                Orchestrator.set_base_branch orch patch_id
+                                  new_base
+                              in
+                              Orchestrator.complete orch patch_id)
+                      | Worktree.Conflict ->
+                          log_event runtime ~patch_id
+                            "runner: rebase conflict, enqueuing merge-conflict";
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                Orchestrator.set_base_branch orch patch_id
+                                  new_base
+                              in
+                              let orch =
+                                Orchestrator.set_has_conflict orch patch_id
+                              in
+                              let orch =
+                                Orchestrator.enqueue orch patch_id
+                                  Operation_kind.Merge_conflict
+                              in
+                              Orchestrator.complete orch patch_id)
+                      | Worktree.Error msg ->
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "runner: rebase error: %s" msg);
+                          mark_session_failed runtime patch_id);
+                      (* Update PR draft status after successful rebase *)
+                      match rebase_result with
+                      | Worktree.Ok | Worktree.Noop -> (
                           let agent =
                             Runtime.read runtime (fun snap ->
                                 Orchestrator.agent snap.Runtime.orchestrator
@@ -1341,7 +1354,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 ~token:config.github_token
                                 ~owner:config.github_owner
                                 ~repo:config.github_repo ~pr_number ~draft:false
-                          | _ -> ())))
+                          | _ -> ())
+                      | Worktree.Conflict | Worktree.Error _ -> ()))
           | Orchestrator.Respond (patch_id, kind) ->
               (* Use pre-fire agent state for pending_comments — fire/respond
                  clears them as a postcondition. *)
@@ -1446,6 +1460,14 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~f:(fun orch cid ->
                                     Orchestrator.add_addressed_comment_id orch
                                       patch_id cid)
+                              in
+                              let orch =
+                                if
+                                  Operation_kind.equal kind
+                                    Operation_kind.Merge_conflict
+                                then
+                                  Orchestrator.clear_has_conflict orch patch_id
+                                else orch
                               in
                               Orchestrator.complete orch patch_id))))
     in
