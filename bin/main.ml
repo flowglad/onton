@@ -830,28 +830,30 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                             (Printf.sprintf
                                "Worktree registered: symlinked %s → %s" expected
                                canonical_real)
-                      with Failure msg ->
-                        status_msg :=
-                          Some
-                            {
-                              Tui.level = Tui.Error;
-                              text = msg;
-                              expires_at = None;
-                            };
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "Failed to add worktree: %s" msg)
+                      with
+                      | Failure msg ->
+                          status_msg :=
+                            Some
+                              {
+                                Tui.level = Tui.Error;
+                                text = msg;
+                                expires_at = None;
+                              };
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "Failed to add worktree: %s" msg)
                       | exn ->
-                        let msg = Printexc.to_string exn in
-                        status_msg :=
-                          Some
-                            {
-                              Tui.level = Tui.Error;
-                              text =
-                                Printf.sprintf "Failed to add worktree: %s" msg;
-                              expires_at = None;
-                            };
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "Failed to add worktree: %s" msg)))
+                          let msg = Printexc.to_string exn in
+                          status_msg :=
+                            Some
+                              {
+                                Tui.level = Tui.Error;
+                                text =
+                                  Printf.sprintf "Failed to add worktree: %s"
+                                    msg;
+                                expires_at = None;
+                              };
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "Failed to add worktree: %s" msg)))
               | Some Tui_input.Remove_patch -> (
                   let info_opt =
                     let pids = !sorted_patch_ids in
@@ -1551,7 +1553,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                           | `Failed ->
                               set_status ~level:Tui.Error
                                 ~text:
-                                  (Printf.sprintf "Patch %s: session failed — human review needed"
+                                  (Printf.sprintf
+                                     "Patch %s: session failed — human review \
+                                      needed"
                                      (Patch_id.to_string patch_id))
                                 ()
                           | `Ok ->
@@ -1748,7 +1752,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       | `Failed ->
                           set_status ~level:Tui.Error
                             ~text:
-                              (Printf.sprintf "Patch %s: session failed — human review needed"
+                              (Printf.sprintf
+                                 "Patch %s: session failed — human review \
+                                  needed"
                                  (Patch_id.to_string patch_id))
                             ()
                       | `Ok ->
@@ -1777,10 +1783,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   set_status ~level:Tui.Info
                                     ~text:
                                       (Printf.sprintf
-                                         "Patch %s: conflict resolved, rebasing…"
+                                         "Patch %s: conflict resolved, \
+                                          rebasing…"
                                          (Patch_id.to_string patch_id))
-                                    ~expires_at:
-                                      (Unix.gettimeofday () +. 10.0)
+                                    ~expires_at:(Unix.gettimeofday () +. 10.0)
                                     ();
                                   Orchestrator.clear_has_conflict orch patch_id)
                                 else orch
@@ -2118,8 +2124,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
-               runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-                 ~ci_checks_cache ~transcripts ())
+            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+              ~ci_checks_cache ~transcripts ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
