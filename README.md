@@ -257,4 +257,4 @@ properties:
 
 ## License
 
-MIT
+BSD-3

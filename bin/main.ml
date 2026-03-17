@@ -788,6 +788,10 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
         else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
           Term.Raw.suspend ();
           loop ())
+        else if Term.Key.equal key (Term.Key.Char ':') then (
+          Buffer.clear buf;
+          text_mode := true;
+          loop ())
         else
           let cmd = Tui_input.of_key key in
           match cmd with
