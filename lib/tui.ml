@@ -706,6 +706,14 @@ let render_footer ~width ~view_mode ?input_line () =
       [ Term.hrule width; help ]
 
 let render_help_overlay ~width ~height =
+  let pair_rows keys =
+    let rec go acc = function
+      | a :: b :: tl -> go (Printf.sprintf "    %-22s %s" a b :: acc) tl
+      | [ a ] -> List.rev (Printf.sprintf "    %s" a :: acc)
+      | [] -> List.rev acc
+    in
+    go [] keys
+  in
   let sections =
     [
       ( "List View",
@@ -757,16 +765,14 @@ let render_help_overlay ~width ~height =
       [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
       (Printf.sprintf " Keyboard Shortcuts  %s" dismiss)
   in
-  let blank = "" in
   let body =
     List.concat_map sections ~f:(fun (header, keys) ->
-        blank
-        :: Term.styled [ Term.Sgr.bold ] (Printf.sprintf "  %s" header)
-        :: List.map keys ~f:(fun k ->
-            Printf.sprintf "    %s" (Term.styled [ Term.Sgr.dim ] k)))
+        Term.styled [ Term.Sgr.bold ] (Printf.sprintf "  %s" header)
+        :: List.map (pair_rows keys) ~f:(fun row ->
+            Term.styled [ Term.Sgr.dim ] row))
   in
   let content = title :: body in
-  let overlay_h = Int.max 0 (Int.min (List.length content) (height - 2)) in
+  let overlay_h = Int.max 0 (Int.min (List.length content) (height - 1)) in
   let visible = List.sub content ~pos:0 ~len:overlay_h in
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
