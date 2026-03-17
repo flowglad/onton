@@ -1006,12 +1006,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.complete orch patch_id)))
       (fun () ->
-        try f ()
-        with exn ->
-          log_event runtime ~patch_id
-            (Printf.sprintf "runner: unexpected action exception: %s"
-               (Printexc.to_string exn));
-          mark_session_failed runtime patch_id)
+        try f () with
+        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | exn ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "runner: unexpected action exception: %s"
+                 (Printexc.to_string exn));
+            mark_session_failed runtime patch_id)
   in
   let rec loop () =
     let actions, gameplan =
