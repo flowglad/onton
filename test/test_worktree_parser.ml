@@ -34,9 +34,11 @@ let () =
            branch refs/heads/feature\n"
         in
         let result = Worktree.parse_porcelain ~repo_root:"/repo" input in
-        List.length result = 1
-        && String.equal (fst (List.hd_exn result)) "/wt/foo"
-        && Branch.equal (snd (List.hd_exn result)) (Branch.of_string "feature"))
+        match result with
+        | [ (path, branch) ] ->
+            String.equal path "/wt/foo"
+            && Branch.equal branch (Branch.of_string "feature")
+        | _ -> false)
   in
 
   (* Multiple entries separated by blank lines parse independently *)
@@ -73,11 +75,13 @@ let () =
           in
           let result = Worktree.parse_porcelain ~repo_root porcelain in
           (* Each generated entry should appear in results *)
-          List.length result = List.length entries
-          && List.for_all2_exn entries result
-               ~f:(fun (path, branch) (parsed_path, parsed_branch) ->
-                 String.is_suffix parsed_path ~suffix:path
-                 && Branch.equal parsed_branch (Branch.of_string branch))
+          match List.zip entries result with
+          | Unequal_lengths -> false
+          | Ok paired ->
+              List.for_all paired
+                ~f:(fun ((path, branch), (parsed_path, parsed_branch)) ->
+                  String.is_suffix parsed_path ~suffix:path
+                  && Branch.equal parsed_branch (Branch.of_string branch))
         with _ -> false)
   in
 
