@@ -265,7 +265,15 @@ let rebase t ~base_branch =
     List.filter t.queue ~f:(fun j ->
         not (Operation_kind.equal j Operation_kind.Rebase))
   in
-  { t with busy = true; queue; base_branch = Some base_branch }
+  {
+    t with
+    busy = true;
+    queue;
+    base_branch = Some base_branch;
+    mergeable = false;
+    checks_passing = false;
+    no_unresolved_comments = false;
+  }
 
 let respond t k =
   if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
@@ -307,6 +315,9 @@ let respond t k =
     changed;
     has_conflict;
     pending_comments;
+    mergeable = false;
+    checks_passing = false;
+    no_unresolved_comments = false;
   }
 
 let complete t =
