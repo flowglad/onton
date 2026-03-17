@@ -889,25 +889,29 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                 let poll_result =
                   Poller.poll ~was_merged ~addressed_ids pr_state
                 in
+                let pending_logs = ref [] in
                 Runtime.update_orchestrator runtime (fun orch ->
                     let orch =
                       if poll_result.Poller.merged then (
-                        log_event runtime ~patch_id "merged";
+                        pending_logs := ("merged", patch_id) :: !pending_logs;
                         Orchestrator.mark_merged orch patch_id)
                       else orch
                     in
                     let orch =
                       if poll_result.Poller.has_conflict then (
-                        log_event runtime ~patch_id "merge conflict detected";
+                        pending_logs :=
+                          ("merge conflict detected", patch_id) :: !pending_logs;
                         Orchestrator.set_has_conflict orch patch_id)
                       else orch
                     in
                     let orch =
                       Base.List.fold poll_result.Poller.queue ~init:orch
                         ~f:(fun acc kind ->
-                          log_event runtime ~patch_id
-                            (Printf.sprintf "enqueued %s"
-                               (Operation_kind.show kind));
+                          pending_logs :=
+                            ( Printf.sprintf "enqueued %s"
+                                (Operation_kind.show kind),
+                              patch_id )
+                            :: !pending_logs;
                           Orchestrator.enqueue acc patch_id kind)
                     in
                     let _ci_store =
@@ -938,11 +942,14 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                       ~f:(fun acc comment ->
                         Orchestrator.add_pending_comment acc patch_id comment
                           ~valid:true));
+                Base.List.iter (Base.List.rev !pending_logs)
+                  ~f:(fun (msg, pid) -> log_event runtime ~patch_id:pid msg);
                 if pr_state.Github.Pr_state.ci_checks_truncated then
                   log_event runtime ~patch_id
                     "warning: CI check list was truncated (>100 checks); some \
                      failures may not appear in the prompt"));
     (* Reconcile *)
+    let reconcile_logs = ref [] in
     Runtime.update runtime (fun snap ->
         let orch = snap.Runtime.orchestrator in
         let agents = Orchestrator.all_agents orch in
@@ -973,12 +980,14 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
               match action with
               | Reconciler.Mark_merged pid -> Orchestrator.mark_merged orch pid
               | Reconciler.Enqueue_rebase pid ->
-                  log_event runtime ~patch_id:pid
-                    "rebase enqueued by reconciler";
+                  reconcile_logs :=
+                    ("rebase enqueued by reconciler", pid) :: !reconcile_logs;
                   Orchestrator.enqueue orch pid Operation_kind.Rebase
               | Reconciler.Start_operation _ -> orch)
         in
         { snap with Runtime.orchestrator = orch });
+    Base.List.iter (Base.List.rev !reconcile_logs) ~f:(fun (msg, pid) ->
+        log_event runtime ~patch_id:pid msg);
     Eio.Time.sleep clock config.poll_interval;
     loop ()
   in
