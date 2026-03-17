@@ -557,7 +557,8 @@ type frame = { lines : string list; width : int; detail_at_bottom : bool }
 let render_header ~project_name ~width =
   let prefix = "── " in
   let suffix_pad =
-    Int.max 0 (width - String.length prefix - String.length project_name - 1)
+    Int.max 0
+      (width - Term.visible_length prefix - String.length project_name - 1)
   in
   let rule_suffix = Term.hrule ~ch:"─" suffix_pad in
   let title_line =
@@ -691,7 +692,7 @@ let render_summary (views : patch_view list) =
 
 let section_rule ~label:lbl ~width =
   let prefix = Printf.sprintf "── %s " lbl in
-  let pad = Int.max 0 (width - String.length prefix) in
+  let pad = Int.max 0 (width - Term.visible_length prefix) in
   Term.styled [ c_muted ] (prefix ^ Term.hrule ~ch:"─" pad)
 
 let render_activity ~width (entries : activity_entry list) =
@@ -814,15 +815,7 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       in
       ci_header @ ci_rows
   in
-  let comment_section =
-    if pv.pending_comments > 0 then
-      [
-        "";
-        Term.styled [ c_muted ]
-          (Printf.sprintf "  %d pending comments" pv.pending_comments);
-      ]
-    else []
-  in
+  let comment_section = [] in
   let transcript_section =
     if String.is_empty transcript then []
     else
