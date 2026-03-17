@@ -842,7 +842,7 @@ let headless_fiber ~runtime ~clock ~stdout =
   let rec loop () =
     let entries =
       Runtime.read runtime (fun snap ->
-          merged_log_entries ~log:snap.Runtime.activity_log ~limit:50
+          merged_log_entries ~log:snap.Runtime.activity_log ~limit:500
             ~compare:(fun (t1, _) (t2, _) -> Base.Float.ascending t1 t2)
             ~map_event:format_event ~map_transition:format_transition
             ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
