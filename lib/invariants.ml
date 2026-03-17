@@ -24,17 +24,23 @@ let check_ci_failure_count_non_negative (state : State.t) =
       else None)
 
 let check_resolved_not_pending (state : State.t) =
-  (* A resolved comment should not be pending for any patch *)
-  let patch_ids = State.Patch_ctx.known_patch_ids (patch_ctx state) in
-  (* We can only check comments we know about via pending entries.
-     If a comment is resolved, it must not be pending for any patch. *)
-  (* This is a structural invariant — enforced by callers, checked here. *)
-  (* Without iterating all comments (no iterator on Comments.t), we rely
-     on the invariant being checked when mutations happen. For now,
-     we return an empty list as we cannot enumerate comments from the
-     opaque Comments.t type. A future patch will add comment enumeration. *)
-  ignore (patch_ids : Patch_id.t list);
-  []
+  let comments = state.State.comments in
+  let resolved =
+    State.Comments.all_resolved comments |> Set.of_list (module Comment)
+  in
+  State.Comments.all_pending comments
+  |> List.filter_map ~f:(fun (comment, patch_id) ->
+      if Set.mem resolved comment then
+        Some
+          {
+            invariant = "resolved_not_pending";
+            details =
+              Printf.sprintf
+                "comment %s is both resolved and pending for patch %s"
+                (Comment.show comment)
+                (Patch_id.to_string patch_id);
+          }
+      else None)
 
 let check_busy_implies_has_session (state : State.t) =
   State.Patch_ctx.known_patch_ids (patch_ctx state)

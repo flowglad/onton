@@ -55,6 +55,9 @@ module Comments : sig
 
   val set_pending :
     t -> comment:Comment.t -> patch_id:Patch_id.t -> value:bool -> t
+
+  val all_resolved : t -> Comment.t list
+  val all_pending : t -> (Comment.t * Patch_id.t) list
 end
 
 type t = { patch_ctx : Patch_ctx.t; comments : Comments.t } [@@deriving sexp_of]

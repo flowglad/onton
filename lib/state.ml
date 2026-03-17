@@ -155,6 +155,14 @@ module Comments = struct
 
   let set_pending t ~comment ~patch_id ~value =
     { t with pending = Map.set t.pending ~key:(comment, patch_id) ~data:value }
+
+  let all_resolved t =
+    Map.fold t.resolved ~init:[] ~f:(fun ~key ~data acc ->
+        if data then key :: acc else acc)
+
+  let all_pending t =
+    Map.fold t.pending ~init:[] ~f:(fun ~key ~data acc ->
+        if data then key :: acc else acc)
 end
 
 type t = { patch_ctx : Patch_ctx.t; comments : Comments.t } [@@deriving sexp_of]
