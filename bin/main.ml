@@ -313,8 +313,8 @@ let log_stream_entry runtime ~patch_id kind =
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
-let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
-    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts =
+let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
+    ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -326,7 +326,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
       let continue, is_fresh =
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
-      let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
+      let worktree_path = Worktree.worktree_dir ~project_name ~patch_id in
       let cwd = Eio.Path.(fs / worktree_path) in
       let text_buf =
         let buf = Buffer.create 4096 in
@@ -516,7 +516,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
     - ["+123"] — register ad-hoc PR #123 for the selected patch
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
-let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root
+let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
     ~sorted_patch_ids ~input_line =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
@@ -637,7 +637,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root
                           "Warning: patch is currently running — changing \
                            worktree may affect the live session";
                       let expected =
-                        Worktree.worktree_dir ~repo_root ~patch_id
+                        Worktree.worktree_dir ~project_name ~patch_id
                       in
                       try
                         let raw_path = Worktree.normalize_path path in
@@ -1248,15 +1248,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   `Stale)
                                 else
                                   let wt_path =
-                                    Worktree.worktree_dir
-                                      ~repo_root:config.repo_root ~patch_id
+                                    Worktree.worktree_dir ~project_name
+                                      ~patch_id
                                   in
                                   if not (Stdlib.Sys.file_exists wt_path) then (
                                     log_event runtime ~patch_id
                                       "creating worktree";
                                     ignore
                                       (Worktree.create ~process_mgr
-                                         ~repo_root:config.repo_root ~patch
+                                         ~repo_root:config.repo_root
+                                         ~project_name ~patch
                                          ~base_ref:
                                            (Branch.to_string base_branch)));
                                   let prompt =
@@ -1271,8 +1272,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                      after Claude finishes *)
                                   let on_pr_detected _pr_number = () in
                                   run_claude_and_handle ~runtime ~process_mgr
-                                    ~fs ~repo_root:config.repo_root ~patch_id
-                                    ~prompt ~agent ~owner:config.github_owner
+                                    ~fs ~project_name ~patch_id ~prompt ~agent
+                                    ~owner:config.github_owner
                                     ~repo:config.github_repo ~on_pr_detected
                                     ~transcripts)
                           in
@@ -1328,8 +1329,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                 (fun () ->
                   with_busy_guard ~patch_id (fun () ->
                       let wt_path =
-                        Worktree.worktree_dir ~repo_root:config.repo_root
-                          ~patch_id
+                        Worktree.worktree_dir ~project_name ~patch_id
                       in
                       let rebase_result =
                         Worktree.rebase_onto ~process_mgr ~path:wt_path
@@ -1474,8 +1474,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               in
                               let on_pr_detected _pr_number = () in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
-                                ~repo_root:config.repo_root ~patch_id ~prompt
-                                ~agent ~owner:config.github_owner
+                                ~project_name ~patch_id ~prompt ~agent
+                                ~owner:config.github_owner
                                 ~repo:config.github_repo ~on_pr_detected
                                 ~transcripts)
                       in
@@ -1878,7 +1878,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
                      ~transcripts ~sorted_patch_ids ~input_line)
                 :: (fun () ->
                   input_fiber ~runtime ~selected ~view_mode ~pr_registry
-                    ~repo_root:config.repo_root ~sorted_patch_ids ~input_line)
+                    ~project_name ~sorted_patch_ids ~input_line)
                 :: common_fibers)
             with Quit_tui -> ())
 

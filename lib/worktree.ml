@@ -14,10 +14,14 @@ let normalize_path path =
     if String.is_empty stripped then p else stripped
   else p
 
-let worktree_dir ~repo_root ~patch_id =
-  let repo_root = normalize_path repo_root in
+let worktree_dir ~project_name ~patch_id =
+  let home =
+    match Stdlib.Sys.getenv_opt "HOME" with Some h -> h | None -> "."
+  in
   let id_str = Types.Patch_id.to_string patch_id in
-  Stdlib.Filename.concat repo_root ("worktrees/patch-" ^ id_str)
+  Stdlib.Filename.concat
+    (Stdlib.Filename.concat home ("worktrees/" ^ project_name))
+    ("patch-" ^ id_str)
 
 let rec has_cancellation = function
   | Eio.Cancel.Cancelled _ -> true
@@ -43,9 +47,9 @@ let branch_exists ~process_mgr ~repo_root branch_str =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
-let create ~process_mgr ~repo_root ~patch ~base_ref =
+let create ~process_mgr ~repo_root ~project_name ~patch ~base_ref =
   let open Types in
-  let path = worktree_dir ~repo_root ~patch_id:patch.Patch.id in
+  let path = worktree_dir ~project_name ~patch_id:patch.Patch.id in
   let branch_str = Branch.to_string patch.Patch.branch in
   if Stdlib.Sys.file_exists path then
     { patch_id = patch.Patch.id; branch = patch.Patch.branch; path }

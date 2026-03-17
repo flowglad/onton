@@ -7,11 +7,12 @@ type t = private {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-val worktree_dir : repo_root:string -> patch_id:Types.Patch_id.t -> string
+val worktree_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
 
 val create :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
+  project_name:string ->
   patch:Types.Patch.t ->
   base_ref:string ->
   t
