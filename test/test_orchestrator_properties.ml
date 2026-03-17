@@ -25,7 +25,7 @@ let () =
           List.for_all actions ~f:(function
             | Orchestrator.Start (pid, _) ->
                 not (Orchestrator.agent orch pid).Patch_agent.has_pr
-            | Orchestrator.Respond (_, _) -> true)
+            | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
 
@@ -42,6 +42,9 @@ let () =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
                 let a = Orchestrator.agent o p.Patch.id in
                 if a.Patch_agent.busy then
+                  let o =
+                    Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1)
+                  in
                   let o = Orchestrator.complete o p.Patch.id in
                   Orchestrator.enqueue o p.Patch.id Operation_kind.Ci
                 else o)
@@ -53,7 +56,7 @@ let () =
                 a.Patch_agent.has_pr && (not a.Patch_agent.merged)
                 && (not a.Patch_agent.busy)
                 && not a.Patch_agent.needs_intervention
-            | Orchestrator.Start (_, _) -> true)
+            | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
 
@@ -69,6 +72,9 @@ let () =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
                 let a = Orchestrator.agent o p.Patch.id in
                 if a.Patch_agent.busy then
+                  let o =
+                    Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1)
+                  in
                   let o = Orchestrator.complete o p.Patch.id in
                   let o = Orchestrator.enqueue o p.Patch.id Operation_kind.Ci in
                   Orchestrator.enqueue o p.Patch.id Operation_kind.Human
@@ -82,7 +88,7 @@ let () =
                 match highest with
                 | Some expected -> Operation_kind.equal k expected
                 | None -> false)
-            | Orchestrator.Start (_, _) -> true)
+            | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
 
@@ -99,7 +105,7 @@ let () =
           List.for_all actions2 ~f:(function
             | Orchestrator.Start (pid, _) ->
                 not (Orchestrator.agent orch pid).Patch_agent.has_pr
-            | Orchestrator.Respond (_, _) -> true)
+            | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
 
@@ -117,8 +123,14 @@ let () =
                 Patch_id.equal p1 p2 && Branch.equal b1 b2
             | Orchestrator.Respond (p1, k1), Orchestrator.Respond (p2, k2) ->
                 Patch_id.equal p1 p2 && Operation_kind.equal k1 k2
-            | Orchestrator.Start _, Orchestrator.Respond _
-            | Orchestrator.Respond _, Orchestrator.Start _ ->
+            | Orchestrator.Rebase (p1, b1), Orchestrator.Rebase (p2, b2) ->
+                Patch_id.equal p1 p2 && Branch.equal b1 b2
+            | ( Orchestrator.Start _,
+                (Orchestrator.Respond _ | Orchestrator.Rebase _) )
+            | ( Orchestrator.Respond _,
+                (Orchestrator.Start _ | Orchestrator.Rebase _) )
+            | ( Orchestrator.Rebase _,
+                (Orchestrator.Start _ | Orchestrator.Respond _) ) ->
                 false
           in
           List.length pending = List.length actions
@@ -138,7 +150,7 @@ let () =
           let started_ids =
             List.filter_map actions ~f:(function
               | Orchestrator.Start (pid, _) -> Some pid
-              | Orchestrator.Respond (_, _) -> None)
+              | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> None)
           in
           let graph = Orchestrator.graph orch in
           List.for_all started_ids ~f:(fun pid ->
@@ -161,7 +173,8 @@ let () =
           let pids =
             List.map actions ~f:(function
               | Orchestrator.Start (pid, _) -> pid
-              | Orchestrator.Respond (pid, _) -> pid)
+              | Orchestrator.Respond (pid, _) -> pid
+              | Orchestrator.Rebase (pid, _) -> pid)
           in
           let deduped = List.dedup_and_sort pids ~compare:Patch_id.compare in
           List.length pids = List.length deduped
@@ -195,6 +208,9 @@ let () =
                 let o, _ = Orchestrator.tick o ~patches in
                 let a = Orchestrator.agent o p.Patch.id in
                 if a.Patch_agent.busy then
+                  let o =
+                    Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1)
+                  in
                   let o = Orchestrator.complete o p.Patch.id in
                   Orchestrator.mark_merged o p.Patch.id
                 else o)
@@ -208,8 +224,10 @@ let () =
           in
           not
             (List.exists actions ~f:(function
-                | Orchestrator.Start (pid, _) | Orchestrator.Respond (pid, _) ->
-                List.mem merged_ids pid ~equal:Patch_id.equal))
+                | Orchestrator.Start (pid, _)
+                | Orchestrator.Respond (pid, _)
+                | Orchestrator.Rebase (pid, _)
+                -> List.mem merged_ids pid ~equal:Patch_id.equal))
         with _ -> false)
   in
 
@@ -224,6 +242,9 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _ = Orchestrator.tick orch ~patches in
+              let orch =
+                Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
+              in
               (* Exhaust fallback chain, then complete — this triggers
                  needs_intervention since session_fallback=Given_up *)
               let orch = Orchestrator.set_session_failed orch pid in
@@ -237,13 +258,14 @@ let () =
               not
                 (List.exists actions ~f:(function
                   | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
-                  | Orchestrator.Start (_, _) -> false))
+                  | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) ->
+                      false))
         with _ -> false)
   in
 
   (* ========== Command sequence: complete/enqueue cycle ========== *)
   let prop_complete_enqueue_cycle =
-    Test.make ~name:"tick: complete+enqueue produces Respond"
+    Test.make ~name:"tick: complete+enqueue produces Respond or Rebase"
       (Gen.pair gen_patch_list_unique gen_operation_kind)
       (fun (patches, kind) ->
         try
@@ -252,6 +274,10 @@ let () =
           | first :: _ ->
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _ = Orchestrator.tick orch ~patches in
+              let orch =
+                Orchestrator.set_pr_number orch first.Patch.id
+                  (Pr_number.of_int 1)
+              in
               let orch = Orchestrator.complete orch first.Patch.id in
               let orch = Orchestrator.enqueue orch first.Patch.id kind in
               let _orch, actions = Orchestrator.tick orch ~patches in
@@ -259,6 +285,9 @@ let () =
                 | Orchestrator.Respond (pid, k) ->
                     Patch_id.equal pid first.Patch.id
                     && Operation_kind.equal k kind
+                | Orchestrator.Rebase (pid, _) ->
+                    Patch_id.equal pid first.Patch.id
+                    && Operation_kind.equal kind Operation_kind.Rebase
                 | Orchestrator.Start (_, _) -> false)
         with _ -> false)
   in
@@ -273,7 +302,7 @@ let () =
           let started_ids =
             List.filter_map actions ~f:(function
               | Orchestrator.Start (pid, _) -> Some pid
-              | Orchestrator.Respond (_, _) -> None)
+              | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> None)
           in
           (* After tick, every agent that had startable preconditions should
              now have has_pr = true *)
@@ -289,9 +318,65 @@ let () =
                      ~has_pr:(fun p ->
                        (Orchestrator.agent orch p).Patch_agent.has_pr)
               then
-                a_after.Patch_agent.has_pr
+                a_after.Patch_agent.busy
                 && List.mem started_ids pid ~equal:Patch_id.equal
               else true)
+        with _ -> false)
+  in
+
+  (* Rebase action only fires for patches with Rebase queued as highest
+     priority *)
+  let prop_rebase_only_for_rebase_queued =
+    Test.make ~name:"tick: Rebase only for patches with Rebase queued"
+      gen_patch_list_unique (fun patches ->
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch =
+            List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
+                let a = Orchestrator.agent o p.Patch.id in
+                if a.Patch_agent.busy then
+                  let o =
+                    Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1)
+                  in
+                  let o = Orchestrator.complete o p.Patch.id in
+                  Orchestrator.enqueue o p.Patch.id Operation_kind.Rebase
+                else o)
+          in
+          let _orch, actions = Orchestrator.tick orch ~patches in
+          List.for_all actions ~f:(function
+            | Orchestrator.Rebase (pid, _) ->
+                let a = Orchestrator.agent orch pid in
+                List.mem a.Patch_agent.queue Operation_kind.Rebase
+                  ~equal:Operation_kind.equal
+            | Orchestrator.Start _ | Orchestrator.Respond _ -> true)
+        with _ -> false)
+  in
+
+  (* Respond never fires for Rebase operation *)
+  let prop_respond_never_fires_rebase =
+    Test.make ~name:"tick: Respond never fires for Rebase" gen_patch_list_unique
+      (fun patches ->
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch =
+            List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
+                let a = Orchestrator.agent o p.Patch.id in
+                if a.Patch_agent.busy then
+                  let o =
+                    Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1)
+                  in
+                  let o = Orchestrator.complete o p.Patch.id in
+                  Orchestrator.enqueue o p.Patch.id Operation_kind.Rebase
+                else o)
+          in
+          let _orch, actions = Orchestrator.tick orch ~patches in
+          not
+            (List.exists actions ~f:(function
+              | Orchestrator.Respond (_, k) ->
+                  Operation_kind.equal k Operation_kind.Rebase
+              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
         with _ -> false)
   in
 
@@ -309,6 +394,8 @@ let () =
       prop_merged_no_actions;
       prop_intervention_blocks_respond;
       prop_complete_enqueue_cycle;
+      prop_rebase_only_for_rebase_queued;
+      prop_respond_never_fires_rebase;
       prop_all_startable_fired;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

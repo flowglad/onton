@@ -66,6 +66,7 @@ let branch_map_of_patches patches =
 type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
+  | Rebase of Patch_id.t * Branch.t
 [@@deriving sexp_of]
 
 let startable_patches t ~branch_map =
@@ -73,7 +74,8 @@ let startable_patches t ~branch_map =
   |> List.filter_map ~f:(fun pid ->
       let a = agent t pid in
       if
-        (not a.Patch_agent.has_pr) && (not a.Patch_agent.merged)
+        (not a.Patch_agent.has_pr) && (not a.Patch_agent.busy)
+        && (not a.Patch_agent.merged)
         && (not a.Patch_agent.removed)
         && Graph.deps_satisfied t.graph pid
              ~has_merged:(fun pid ->
@@ -101,6 +103,38 @@ let startable_patches t ~branch_map =
         Some (Start (pid, base))
       else None)
 
+let rebaseable_patches t ~branch_map =
+  Graph.all_patch_ids t.graph
+  |> List.filter_map ~f:(fun pid ->
+      let (a : Patch_agent.t) = agent t pid in
+      if
+        a.Patch_agent.has_pr && (not a.Patch_agent.merged)
+        && (not a.Patch_agent.removed)
+        && (not a.Patch_agent.busy)
+        && List.mem a.Patch_agent.queue Operation_kind.Rebase
+             ~equal:Operation_kind.equal
+      then
+        match Patch_agent.highest_priority a with
+        | Some hp when Operation_kind.equal hp Operation_kind.Rebase ->
+            let has_merged_excluding_removed pid =
+              has_merged t pid && not (agent t pid).Patch_agent.removed
+            in
+            let branch_of dep_pid =
+              match Map.find branch_map dep_pid with
+              | Some b -> b
+              | None ->
+                  Option.value (agent t dep_pid).Patch_agent.base_branch
+                    ~default:t.main_branch
+            in
+            let new_base =
+              Graph.initial_base t.graph pid
+                ~has_merged:has_merged_excluding_removed ~branch_of
+                ~main:t.main_branch
+            in
+            Some (Rebase (pid, new_base))
+        | _ -> None
+      else None)
+
 let respondable_patches t =
   Graph.all_patch_ids t.graph
   |> List.filter_map ~f:(fun pid ->
@@ -112,7 +146,8 @@ let respondable_patches t =
         && not a.Patch_agent.needs_intervention
       then
         Patch_agent.highest_priority a
-        |> Option.map ~f:(fun k -> Respond (pid, k))
+        |> Option.bind ~f:(fun k ->
+            if Priority.is_feedback k then Some (Respond (pid, k)) else None)
       else None)
 
 let pending_actions t ~patches =
@@ -130,7 +165,9 @@ let pending_actions t ~patches =
          "Orchestrator.pending_actions: tick input missing %d patch id(s) from \
           graph"
          (List.length missing));
-  startable_patches t ~branch_map @ respondable_patches t
+  startable_patches t ~branch_map
+  @ rebaseable_patches t ~branch_map
+  @ respondable_patches t
 
 let fire t action =
   match action with
@@ -140,6 +177,8 @@ let fire t action =
       else
         update_agent t pid ~f:(fun a -> Patch_agent.start a ~base_branch:base)
   | Respond (pid, k) -> update_agent t pid ~f:(fun a -> Patch_agent.respond a k)
+  | Rebase (pid, base) ->
+      update_agent t pid ~f:(fun a -> Patch_agent.rebase a ~base_branch:base)
 
 let tick t ~patches =
   let actions = pending_actions t ~patches in

@@ -25,6 +25,7 @@ val create : patches:Patch.t list -> main_branch:Branch.t -> t
 type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
+  | Rebase of Patch_id.t * Branch.t
 [@@deriving sexp_of]
 
 val tick : t -> patches:Patch.t list -> t * action list

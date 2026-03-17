@@ -241,7 +241,8 @@ let () =
               List.exists actions ~f:(function
                 | Orchestrator.Start (pid, _) ->
                     Types.Patch_id.equal pid first.Types.Patch.id
-                | Orchestrator.Respond (_, _) -> false)
+                | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) ->
+                    false)
         with _ -> false)
   in
   let prop_tick_convergence =
@@ -257,10 +258,7 @@ let () =
           in
           let orch_stable = loop orch (List.length patches + 1) in
           let _orch_final, actions = Orchestrator.tick orch_stable ~patches in
-          not
-            (List.exists actions ~f:(function
-              | Orchestrator.Start (_, _) -> true
-              | Orchestrator.Respond (_, _) -> false))
+          List.is_empty actions
         with _ -> false)
   in
   let prop_no_merged_actions =
@@ -277,7 +275,16 @@ let () =
           let orch = tick_all orch (List.length patches + 1) in
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Types.Patch.t) ->
-                let o = Orchestrator.complete o p.id in
+                let a = Orchestrator.agent o p.id in
+                let o =
+                  if a.Patch_agent.busy then
+                    let o =
+                      Orchestrator.set_pr_number o p.id
+                        (Types.Pr_number.of_int 1)
+                    in
+                    Orchestrator.complete o p.id
+                  else o
+                in
                 Orchestrator.mark_merged o p.id)
           in
           let _, actions = Orchestrator.tick orch ~patches in
@@ -308,15 +315,17 @@ let () =
   in
   let orch = Orchestrator.create ~patches ~main_branch:main in
   let orch, _ = Orchestrator.tick orch ~patches in
+  let orch = Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1) in
   let orch = Orchestrator.complete orch pid in
   let orch = Orchestrator.enqueue orch pid Types.Operation_kind.Ci in
   let _orch, actions = Orchestrator.tick orch ~patches in
+  assert (Int.equal (List.length actions) 1);
   assert (
     List.exists actions ~f:(function
       | Orchestrator.Respond (p, k) ->
           Types.Patch_id.equal p pid
           && Types.Operation_kind.equal k Types.Operation_kind.Ci
-      | Orchestrator.Start (_, _) -> false));
+      | Orchestrator.Start _ | Orchestrator.Rebase _ -> false));
 
   (* orchestrator: mark_merged makes has_merged true *)
   let orch2 = Orchestrator.create ~patches ~main_branch:main in
