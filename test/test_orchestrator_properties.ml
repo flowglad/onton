@@ -584,6 +584,41 @@ let () =
         with _ -> false)
   in
 
+  (* No-conflict poll preserves local Merge_conflict state *)
+  let prop_poll_conflict_not_cleared_with_local_merge_conflict =
+    Test.make
+      ~name:"apply_poll_result: no conflict keeps local Merge_conflict state"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.set_has_conflict orch pid in
+              let orch = Orchestrator.complete orch pid in
+              let orch =
+                Orchestrator.enqueue orch pid Operation_kind.Merge_conflict
+              in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = true;
+                    ci_checks = [];
+                    new_comments = [];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
   (* New comments are added as pending *)
   let prop_poll_new_comments =
     Test.make ~name:"apply_poll_result: new comments added"
@@ -640,6 +675,7 @@ let () =
       prop_poll_merged;
       prop_poll_conflict_set;
       prop_poll_conflict_cleared;
+      prop_poll_conflict_not_cleared_with_local_merge_conflict;
       prop_poll_new_comments;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

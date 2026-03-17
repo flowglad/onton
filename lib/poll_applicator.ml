@@ -14,7 +14,8 @@ let apply t patch_id (poll_result : Poller.t) =
   let log msg = logs := { message = msg; patch_id } :: !logs in
   let t =
     if poll_result.merged then (
-      log "merged";
+      let agent = Orchestrator.agent t patch_id in
+      if not agent.Patch_agent.merged then log "merged";
       Orchestrator.mark_merged t patch_id)
     else t
   in
