@@ -1190,72 +1190,92 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
-                  let result =
-                    with_claude_slot (fun () ->
-                        let agent =
-                          Runtime.read runtime (fun snap ->
-                              Orchestrator.agent snap.Runtime.orchestrator
-                                patch_id)
-                        in
-                        if
-                          agent.Patch_agent.merged
-                          || agent.Patch_agent.needs_intervention
-                          || not agent.Patch_agent.busy
-                        then (
-                          log_event runtime ~patch_id
-                            "runner: action stale after semaphore wait, \
-                             skipping";
-                          `Stale)
-                        else
-                          let base =
-                            Base.Option.value_map agent.Patch_agent.base_branch
-                              ~default:(Branch.to_string main)
-                              ~f:Branch.to_string
-                          in
-                          let pending_comments =
-                            Base.List.map agent.Patch_agent.pending_comments
-                              ~f:(fun (pc : Patch_agent.pending_comment) ->
-                                pc.Patch_agent.comment)
-                          in
-                          let pr_number = agent.Patch_agent.pr_number in
-                          let prompt =
-                            match kind with
-                            | Operation_kind.Ci -> (
-                                match
-                                  Hashtbl.find_opt ci_checks_cache patch_id
-                                with
-                                | Some checks
-                                  when not (Base.List.is_empty checks) ->
-                                    Prompt.render_ci_failure_prompt
-                                      ~project_name ?pr_number checks
-                                | _ ->
-                                    Prompt.render_ci_failure_unknown_prompt
-                                      ~project_name ?pr_number ())
-                            | Operation_kind.Review_comments ->
-                                Prompt.render_review_prompt ~project_name
-                                  ?pr_number pending_comments
-                            | Operation_kind.Merge_conflict ->
-                                Prompt.render_merge_conflict_prompt
-                                  ~project_name ?pr_number ~base_branch:base ()
-                            | Operation_kind.Human ->
-                                Prompt.render_human_message_prompt ~project_name
-                                  (Base.List.map pending_comments
-                                     ~f:(fun (c : Comment.t) -> c.Comment.body))
-                            | Operation_kind.Rebase ->
-                                (* Invariant: Rebase is never routed through Respond *)
-                                assert false
-                          in
-                          let on_pr_detected _pr_number = () in
-                          run_claude_and_handle ~runtime ~process_mgr ~fs
-                            ~repo_root:config.repo_root ~patch_id ~prompt ~agent
-                            ~owner:config.github_owner ~repo:config.github_repo
-                            ~on_pr_detected)
-                  in
-                  match result with
-                  | `Stale | `Failed -> ()
-                  | `Ok ->
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id)))
+                  Fun.protect
+                    ~finally:(fun () ->
+                      let still_busy =
+                        Runtime.read runtime (fun snap ->
+                            (Orchestrator.agent snap.Runtime.orchestrator
+                               patch_id)
+                              .Patch_agent.busy)
+                      in
+                      if still_busy then (
+                        log_event runtime ~patch_id
+                          "runner: Respond fiber exiting with busy=true, \
+                           forcing complete";
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.complete orch patch_id)))
+                    (fun () ->
+                      let result =
+                        with_claude_slot (fun () ->
+                            let agent =
+                              Runtime.read runtime (fun snap ->
+                                  Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id)
+                            in
+                            if
+                              agent.Patch_agent.merged
+                              || agent.Patch_agent.needs_intervention
+                              || not agent.Patch_agent.busy
+                            then (
+                              log_event runtime ~patch_id
+                                "runner: action stale after semaphore wait, \
+                                 skipping";
+                              `Stale)
+                            else
+                              let base =
+                                Base.Option.value_map
+                                  agent.Patch_agent.base_branch
+                                  ~default:(Branch.to_string main)
+                                  ~f:Branch.to_string
+                              in
+                              let pending_comments =
+                                Base.List.map agent.Patch_agent.pending_comments
+                                  ~f:(fun (pc : Patch_agent.pending_comment) ->
+                                    pc.Patch_agent.comment)
+                              in
+                              let pr_number = agent.Patch_agent.pr_number in
+                              let prompt =
+                                match kind with
+                                | Operation_kind.Ci -> (
+                                    match
+                                      Hashtbl.find_opt ci_checks_cache patch_id
+                                    with
+                                    | Some checks
+                                      when not (Base.List.is_empty checks) ->
+                                        Prompt.render_ci_failure_prompt
+                                          ~project_name ?pr_number checks
+                                    | _ ->
+                                        Prompt.render_ci_failure_unknown_prompt
+                                          ~project_name ?pr_number ())
+                                | Operation_kind.Review_comments ->
+                                    Prompt.render_review_prompt ~project_name
+                                      ?pr_number pending_comments
+                                | Operation_kind.Merge_conflict ->
+                                    Prompt.render_merge_conflict_prompt
+                                      ~project_name ?pr_number ~base_branch:base
+                                      ()
+                                | Operation_kind.Human ->
+                                    Prompt.render_human_message_prompt
+                                      ~project_name
+                                      (Base.List.map pending_comments
+                                         ~f:(fun (c : Comment.t) ->
+                                           c.Comment.body))
+                                | Operation_kind.Rebase ->
+                                    (* Invariant: Rebase is never routed
+                                       through Respond *)
+                                    assert false
+                              in
+                              let on_pr_detected _pr_number = () in
+                              run_claude_and_handle ~runtime ~process_mgr ~fs
+                                ~repo_root:config.repo_root ~patch_id ~prompt
+                                ~agent ~owner:config.github_owner
+                                ~repo:config.github_repo ~on_pr_detected)
+                      in
+                      match result with
+                      | `Stale | `Failed -> ()
+                      | `Ok ->
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              Orchestrator.complete orch patch_id))))
     in
     if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
     Eio.Time.sleep clock 1.0;
