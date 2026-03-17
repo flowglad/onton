@@ -1293,11 +1293,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                           log_event runtime ~patch_id
                             "runner: rebase is a noop (already up-to-date)";
                           Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                Orchestrator.set_base_branch orch patch_id
+                                  new_base
+                              in
                               Orchestrator.complete orch patch_id)
                       | Worktree.Conflict ->
                           log_event runtime ~patch_id
                             "runner: rebase conflict, enqueuing merge-conflict";
                           Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                Orchestrator.set_base_branch orch patch_id
+                                  new_base
+                              in
                               let orch =
                                 Orchestrator.set_has_conflict orch patch_id
                               in
