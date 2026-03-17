@@ -153,14 +153,17 @@ let clear_session_fallback t = { t with session_fallback = Fresh_available }
     - Resume failure: escalate to Tried_fresh (will try fresh next)
     - Respond path fresh failure: escalate to Given_up → needs_intervention *)
 let on_session_failure t ~is_fresh =
-  if (not t.has_pr) && is_fresh then clear_session_fallback t
+  if (not t.has_pr) && is_fresh then
+    (* Start path fresh failure: full reset for clean retry *)
+    { t with session_fallback = Fresh_available; last_session_id = None }
   else
     let t = set_session_failed t in
     if is_fresh then set_tried_fresh t else t
 
 (** Handle a successful Claude run where PR discovery failed. Reset fallback so
     the patch retries from scratch. *)
-let on_pr_discovery_failure t = clear_session_fallback t
+let on_pr_discovery_failure t =
+  { t with session_fallback = Fresh_available; last_session_id = None }
 
 let set_has_conflict t = { t with has_conflict = true }
 
@@ -305,11 +308,21 @@ let complete t =
 
 (* -- Tests for session failure recovery -- *)
 
-let%test "on_session_failure: start path fresh resets to Fresh_available" =
+let%test
+    "on_session_failure: start path fresh resets to Fresh_available and clears \
+     session" =
   let t = create (Patch_id.of_string "1") in
-  let t = { t with busy = true; session_fallback = Tried_fresh } in
+  let t =
+    {
+      t with
+      busy = true;
+      session_fallback = Tried_fresh;
+      last_session_id = Some (Session_id.of_string "stale-id");
+    }
+  in
   let t = on_session_failure t ~is_fresh:true in
   equal_session_fallback t.session_fallback Fresh_available
+  && Option.is_none t.last_session_id
 
 let%test "on_session_failure: resume failure escalates to Tried_fresh" =
   let t = create (Patch_id.of_string "1") in
@@ -334,8 +347,16 @@ let%test
   let t = complete t in
   not t.needs_intervention
 
-let%test "on_pr_discovery_failure resets fallback" =
+let%test "on_pr_discovery_failure resets fallback and clears session" =
   let t = create (Patch_id.of_string "1") in
-  let t = { t with busy = true; session_fallback = Tried_fresh } in
+  let t =
+    {
+      t with
+      busy = true;
+      session_fallback = Tried_fresh;
+      last_session_id = Some (Session_id.of_string "old-id");
+    }
+  in
   let t = on_pr_discovery_failure t in
   equal_session_fallback t.session_fallback Fresh_available
+  && Option.is_none t.last_session_id

@@ -400,10 +400,6 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
                 if String.length s <= 500 then s else String.sub s 0 500));
           Runtime.update_orchestrator runtime (fun orch ->
               let orch =
-                Orchestrator.set_last_session_id orch patch_id
-                  r.Claude_runner.session_id
-              in
-              let orch =
                 Orchestrator.on_session_failure orch patch_id ~is_fresh
               in
               Orchestrator.complete orch patch_id);
