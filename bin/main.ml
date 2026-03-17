@@ -1028,6 +1028,120 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               | Some patch ->
                   Some
                     (fun () ->
+                      Fun.protect
+                        ~finally:(fun () ->
+                          let still_busy =
+                            Runtime.read runtime (fun snap ->
+                                (Orchestrator.agent snap.Runtime.orchestrator
+                                   patch_id)
+                                  .Patch_agent.busy)
+                          in
+                          if still_busy then (
+                            log_event runtime ~patch_id
+                              "runner: Start fiber exiting with busy=true, \
+                               forcing complete";
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.complete orch patch_id)))
+                        (fun () ->
+                          let result =
+                            with_claude_slot (fun () ->
+                                let agent =
+                                  Runtime.read runtime (fun snap ->
+                                      Orchestrator.agent
+                                        snap.Runtime.orchestrator patch_id)
+                                in
+                                if
+                                  agent.Patch_agent.merged
+                                  || agent.Patch_agent.needs_intervention
+                                  || not agent.Patch_agent.busy
+                                then (
+                                  log_event runtime ~patch_id
+                                    "runner: action stale after semaphore \
+                                     wait, skipping";
+                                  `Stale)
+                                else
+                                  let wt_path =
+                                    Worktree.worktree_dir
+                                      ~repo_root:config.repo_root ~patch_id
+                                  in
+                                  if not (Stdlib.Sys.file_exists wt_path) then (
+                                    log_event runtime ~patch_id
+                                      "creating worktree";
+                                    ignore
+                                      (Worktree.create ~process_mgr
+                                         ~repo_root:config.repo_root ~patch));
+                                  let prompt =
+                                    Prompt.render_patch_prompt ~project_name
+                                      ?pr_number:agent.Patch_agent.pr_number
+                                      patch gameplan
+                                      ~base_branch:
+                                        (Branch.to_string base_branch)
+                                  in
+                                  (* PR detection from stream text is a hint
+                                     only — always confirmed via gh pr list
+                                     after Claude finishes *)
+                                  let on_pr_detected _pr_number = () in
+                                  run_claude_and_handle ~runtime ~process_mgr
+                                    ~fs ~repo_root:config.repo_root ~patch_id
+                                    ~prompt ~agent ~owner:config.github_owner
+                                    ~repo:config.github_repo ~on_pr_detected)
+                          in
+                          match result with
+                          | `Stale | `Failed -> ()
+                          | `Ok ->
+                              (* Always confirm via gh pr list *)
+                              let rec discover remaining =
+                                match
+                                  discover_pr_number ~process_mgr
+                                    ~token:config.github_token
+                                    ~owner:config.github_owner
+                                    ~repo:config.github_repo
+                                    ~branch:patch.Patch.branch ~base_branch
+                                with
+                                | Ok pr_number ->
+                                    Pr_registry.register pr_registry ~patch_id
+                                      ~pr_number;
+                                    if not (Branch.equal base_branch main) then
+                                      set_pr_draft ~process_mgr
+                                        ~token:config.github_token
+                                        ~owner:config.github_owner
+                                        ~repo:config.github_repo ~pr_number
+                                        ~draft:true;
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        let orch =
+                                          Orchestrator.set_pr_number orch
+                                            patch_id pr_number
+                                        in
+                                        Orchestrator.complete orch patch_id)
+                                | Error _ when remaining > 0 ->
+                                    Eio.Time.sleep clock 2.0;
+                                    discover (remaining - 1)
+                                | Error msg ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "PR discovery failed: %s"
+                                         msg);
+                                    mark_session_failed runtime patch_id
+                              in
+                              discover 2)))
+          | Orchestrator.Rebase (patch_id, new_base) ->
+              Some
+                (fun () ->
+                  Fun.protect
+                    ~finally:(fun () ->
+                      let still_busy =
+                        Runtime.read runtime (fun snap ->
+                            (Orchestrator.agent snap.Runtime.orchestrator
+                               patch_id)
+                              .Patch_agent.busy)
+                      in
+                      if still_busy then (
+                        log_event runtime ~patch_id
+                          "runner: Rebase fiber exiting with busy=true, \
+                           forcing complete";
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.complete orch patch_id)))
+                    (fun () ->
                       let result =
                         with_claude_slot (fun () ->
                             let agent =
@@ -1037,32 +1151,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             in
                             if
                               agent.Patch_agent.merged
-                              || agent.Patch_agent.needs_intervention
                               || not agent.Patch_agent.busy
                             then (
                               log_event runtime ~patch_id
-                                "runner: action stale after semaphore wait, \
-                                 skipping";
+                                "runner: rebase action stale after semaphore \
+                                 wait, skipping";
                               `Stale)
                             else
-                              let wt_path =
-                                Worktree.worktree_dir
-                                  ~repo_root:config.repo_root ~patch_id
-                              in
-                              if not (Stdlib.Sys.file_exists wt_path) then (
-                                log_event runtime ~patch_id "creating worktree";
-                                ignore
-                                  (Worktree.create ~process_mgr
-                                     ~repo_root:config.repo_root ~patch));
+                              let base = Branch.to_string new_base in
+                              let pr_number = agent.Patch_agent.pr_number in
                               let prompt =
-                                Prompt.render_patch_prompt ~project_name
-                                  ?pr_number:agent.Patch_agent.pr_number patch
-                                  gameplan
-                                  ~base_branch:(Branch.to_string base_branch)
+                                Prompt.render_merge_conflict_prompt
+                                  ~project_name ?pr_number ~base_branch:base ()
                               in
-                              (* PR detection from stream text is a hint only —
-                                 always confirmed via gh pr list after Claude
-                                 finishes *)
                               let on_pr_detected _pr_number = () in
                               run_claude_and_handle ~runtime ~process_mgr ~fs
                                 ~repo_root:config.repo_root ~patch_id ~prompt
@@ -1071,86 +1172,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       in
                       match result with
                       | `Stale | `Failed -> ()
-                      | `Ok ->
-                          (* Always confirm via gh pr list *)
-                          let rec discover remaining =
-                            match
-                              discover_pr_number ~process_mgr
+                      | `Ok -> (
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              Orchestrator.complete orch patch_id);
+                          let agent =
+                            Runtime.read runtime (fun snap ->
+                                Orchestrator.agent snap.Runtime.orchestrator
+                                  patch_id)
+                          in
+                          match agent.Patch_agent.pr_number with
+                          | Some pr_number when Branch.equal new_base main ->
+                              set_pr_draft ~process_mgr
                                 ~token:config.github_token
                                 ~owner:config.github_owner
-                                ~repo:config.github_repo
-                                ~branch:patch.Patch.branch ~base_branch
-                            with
-                            | Ok pr_number ->
-                                Pr_registry.register pr_registry ~patch_id
-                                  ~pr_number;
-                                if not (Branch.equal base_branch main) then
-                                  set_pr_draft ~process_mgr
-                                    ~token:config.github_token
-                                    ~owner:config.github_owner
-                                    ~repo:config.github_repo ~pr_number
-                                    ~draft:true;
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    let orch =
-                                      Orchestrator.set_pr_number orch patch_id
-                                        pr_number
-                                    in
-                                    Orchestrator.complete orch patch_id)
-                            | Error _ when remaining > 0 ->
-                                Eio.Time.sleep clock 2.0;
-                                discover (remaining - 1)
-                            | Error msg ->
-                                log_event runtime ~patch_id
-                                  (Printf.sprintf "PR discovery failed: %s" msg);
-                                mark_session_failed runtime patch_id
-                          in
-                          discover 2))
-          | Orchestrator.Rebase (patch_id, new_base) ->
-              Some
-                (fun () ->
-                  let result =
-                    with_claude_slot (fun () ->
-                        let agent =
-                          Runtime.read runtime (fun snap ->
-                              Orchestrator.agent snap.Runtime.orchestrator
-                                patch_id)
-                        in
-                        if
-                          agent.Patch_agent.merged || not agent.Patch_agent.busy
-                        then (
-                          log_event runtime ~patch_id
-                            "runner: rebase action stale after semaphore wait, \
-                             skipping";
-                          `Stale)
-                        else
-                          let base = Branch.to_string new_base in
-                          let pr_number = agent.Patch_agent.pr_number in
-                          let prompt =
-                            Prompt.render_merge_conflict_prompt ~project_name
-                              ?pr_number ~base_branch:base ()
-                          in
-                          let on_pr_detected _pr_number = () in
-                          run_claude_and_handle ~runtime ~process_mgr ~fs
-                            ~repo_root:config.repo_root ~patch_id ~prompt ~agent
-                            ~owner:config.github_owner ~repo:config.github_repo
-                            ~on_pr_detected)
-                  in
-                  match result with
-                  | `Stale | `Failed -> ()
-                  | `Ok -> (
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id);
-                      let agent =
-                        Runtime.read runtime (fun snap ->
-                            Orchestrator.agent snap.Runtime.orchestrator
-                              patch_id)
-                      in
-                      match agent.Patch_agent.pr_number with
-                      | Some pr_number when Branch.equal new_base main ->
-                          set_pr_draft ~process_mgr ~token:config.github_token
-                            ~owner:config.github_owner ~repo:config.github_repo
-                            ~pr_number ~draft:false
-                      | _ -> ()))
+                                ~repo:config.github_repo ~pr_number ~draft:false
+                          | _ -> ())))
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->

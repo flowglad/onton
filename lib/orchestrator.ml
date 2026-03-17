@@ -119,11 +119,12 @@ let rebaseable_patches t ~branch_map =
             let has_merged_excluding_removed pid =
               has_merged t pid && not (agent t pid).Patch_agent.removed
             in
-            let branch_of pid =
-              match Map.find branch_map pid with
+            let branch_of dep_pid =
+              match Map.find branch_map dep_pid with
               | Some b -> b
               | None ->
-                  Option.value a.Patch_agent.base_branch ~default:t.main_branch
+                  Option.value (agent t dep_pid).Patch_agent.base_branch
+                    ~default:t.main_branch
             in
             let new_base =
               Graph.initial_base t.graph pid

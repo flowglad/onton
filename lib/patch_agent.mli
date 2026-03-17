@@ -131,7 +131,8 @@ val highest_priority : t -> Types.Operation_kind.t option
 (** {2 Persistence support} *)
 
 val set_pr_number : t -> Types.Pr_number.t -> t
-(** Set the PR number for the patch. *)
+(** Store [pr_number] and set [has_pr = true]. Not a plain field setter —
+    establishes the PR-present state. *)
 
 val restore :
   patch_id:Types.Patch_id.t ->

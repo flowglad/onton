@@ -452,17 +452,38 @@ let () =
           equal_session_fallback a.session_fallback Given_up);
       (* -- rebase sets busy, preserves has_session, updates base_branch,
            drains rebase queue -- *)
-      Test.make ~name:"rebase postconditions"
+      Test.make ~name:"rebase postconditions (has_session=true)"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let new_base = Branch.of_string "new-base" in
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
-          let had_session = a.has_session in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
-          a.busy
-          && Bool.equal a.has_session had_session
+          a.busy && a.has_session
+          && Option.equal Branch.equal a.base_branch (Some new_base)
+          && not
+               (List.mem a.queue Operation_kind.Rebase
+                  ~equal:Operation_kind.equal));
+      Test.make ~name:"rebase postconditions (has_session=false)"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let new_base = Branch.of_string "new-base" in
+          (* Construct agent with has_pr=true but has_session=false via
+             restore *)
+          let a =
+            restore ~patch_id:pid ~has_pr:true ~pr_number:None
+              ~has_session:false ~busy:false ~merged:false
+              ~needs_intervention:false ~queue:[] ~satisfies:true ~changed:false
+              ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
+              ~session_fallback:Fresh_available ~pending_comments:[]
+              ~last_session_id:None ~ci_checks:[]
+              ~addressed_comment_ids:(Set.empty (module Comment_id))
+              ~removed:false
+          in
+          let a = enqueue a Operation_kind.Rebase in
+          let a = rebase a ~base_branch:new_base in
+          a.busy && (not a.has_session)
           && Option.equal Branch.equal a.base_branch (Some new_base)
           && not
                (List.mem a.queue Operation_kind.Rebase

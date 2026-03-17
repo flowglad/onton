@@ -258,11 +258,7 @@ let () =
           in
           let orch_stable = loop orch (List.length patches + 1) in
           let _orch_final, actions = Orchestrator.tick orch_stable ~patches in
-          not
-            (List.exists actions ~f:(function
-              | Orchestrator.Start (_, _) -> true
-              | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) ->
-                  false))
+          List.is_empty actions
         with _ -> false)
   in
   let prop_no_merged_actions =
@@ -323,12 +319,13 @@ let () =
   let orch = Orchestrator.complete orch pid in
   let orch = Orchestrator.enqueue orch pid Types.Operation_kind.Ci in
   let _orch, actions = Orchestrator.tick orch ~patches in
+  assert (Int.equal (List.length actions) 1);
   assert (
     List.exists actions ~f:(function
       | Orchestrator.Respond (p, k) ->
           Types.Patch_id.equal p pid
           && Types.Operation_kind.equal k Types.Operation_kind.Ci
-      | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> false));
+      | Orchestrator.Start _ | Orchestrator.Rebase _ -> false));
 
   (* orchestrator: mark_merged makes has_merged true *)
   let orch2 = Orchestrator.create ~patches ~main_branch:main in
