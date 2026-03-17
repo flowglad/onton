@@ -365,7 +365,8 @@ let%test "msg_expired false when persistent" =
 
 let%test "msg_expired false when not yet expired" =
   not
-    (msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = Some 200.0 })
+    (msg_expired ~now:100.0
+       { level = Info; text = "x"; expires_at = Some 200.0 })
 
 (** {1 View mode — list vs detail} *)
 
