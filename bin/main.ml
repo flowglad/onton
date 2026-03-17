@@ -484,6 +484,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
     ~transcripts ~sorted_patch_ids ~input_line =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
+  let prev_output = ref "" in
   let rec loop () =
     (* Skip sleep on first iteration and after SIGCONT resume *)
     if !first then first := false
@@ -521,7 +522,10 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
         ~activity ~project_name:gp.Gameplan.project_name ~show_help:!show_help
         ~transcript ?input_line:!input_line views
     in
-    Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
+    let output = Tui.paint_frame frame in
+    if not (String.equal output !prev_output) then (
+      Eio.Flow.copy_string output stdout;
+      prev_output := output);
     loop ()
   in
   loop ()
