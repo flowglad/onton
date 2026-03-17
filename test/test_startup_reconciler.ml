@@ -10,11 +10,20 @@ let () =
   (* First live (OPEN/MERGED) entry wins *)
   let prop_first_live_wins =
     Test.make ~name:"discover_pr_from_json: first OPEN/MERGED entry wins"
-      ~count:500 Onton_test_support.Test_generators.gen_pr_json (fun json ->
-        try
-          match Startup_reconciler.discover_pr_from_json json with
-          | Ok _ | Error _ -> true
-        with _ -> false)
+      ~count:1 Gen.unit (fun () ->
+        let json =
+          {|[
+               {"number":11,"state":"OPEN","baseRefName":"main"},
+               {"number":22,"state":"MERGED","baseRefName":"dev"}
+             ]|}
+        in
+        match Startup_reconciler.discover_pr_from_json json with
+        | Ok (Some (pr, base, merged)) ->
+            Pr_number.equal pr (Pr_number.of_int 11)
+            && Branch.equal base (Branch.of_string "main")
+            && not merged
+        | Ok None -> false
+        | Error _ -> false)
   in
 
   (* Valid OPEN entry returns correct data *)
@@ -27,7 +36,7 @@ let () =
             Pr_number.equal pr (Pr_number.of_int 42)
             && Branch.equal base (Branch.of_string "main")
             && not merged
-        | _ -> false)
+        | Ok None | Error _ -> false)
   in
 
   (* MERGED entry returns merged=true *)
@@ -39,7 +48,7 @@ let () =
         in
         match Startup_reconciler.discover_pr_from_json json with
         | Ok (Some (_, _, merged)) -> merged
-        | _ -> false)
+        | Ok None | Error _ -> false)
   in
 
   (* CLOSED entries are skipped *)
@@ -49,7 +58,7 @@ let () =
         let json = {|[{"number":1,"state":"CLOSED","baseRefName":"main"}]|} in
         match Startup_reconciler.discover_pr_from_json json with
         | Ok None -> true
-        | _ -> false)
+        | Ok (Some _) | Error _ -> false)
   in
 
   (* CLOSED then OPEN: OPEN wins *)
@@ -61,7 +70,7 @@ let () =
         in
         match Startup_reconciler.discover_pr_from_json json with
         | Ok (Some (pr, _, _)) -> Pr_number.equal pr (Pr_number.of_int 2)
-        | _ -> false)
+        | Ok None | Error _ -> false)
   in
 
   (* Malformed JSON -> Error *)
@@ -79,7 +88,7 @@ let () =
       Gen.unit (fun () ->
         match Startup_reconciler.discover_pr_from_json "[]" with
         | Ok None -> true
-        | _ -> false)
+        | Ok (Some _) | Error _ -> false)
   in
 
   let suite =

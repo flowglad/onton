@@ -17,7 +17,7 @@ type classification =
   | Process_error of string
   | No_session_to_resume
   | Success of { stream_errors : string }
-  | Session_failed of { detail : string }
+  | Session_failed of { exit_code : int; detail : string }
 [@@deriving show, eq]
 
 val classify : continue:bool -> (run_outcome, string) Result.t -> classification

@@ -443,7 +443,7 @@ let gen_porcelain_entry =
 let gen_porcelain_output =
   QCheck2.Gen.(
     map
-      (fun entries -> String.concat ~sep:"\n" entries)
+      (fun entries -> String.concat ~sep:"\n\n" entries)
       (list_small gen_porcelain_entry))
 
 let gen_pr_json_entry =

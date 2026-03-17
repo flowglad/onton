@@ -470,10 +470,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.clear_session_fallback orch patch_id);
           `Ok
-      | Session_failed { detail } ->
-          let exit_code =
-            match outcome with Ok r -> r.exit_code | Error _ -> -1
-          in
+      | Session_failed { exit_code; detail } ->
           log_event runtime ~patch_id
             (Printf.sprintf
                "Claude exited with code %d, marking session failed: %s"

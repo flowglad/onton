@@ -14,7 +14,7 @@ let () =
       (fun msg ->
         match classify ~continue:false (Error msg) with
         | Process_error m -> String.equal m msg
-        | _ -> false)
+        | No_session_to_resume | Success _ | Session_failed _ -> false)
   in
 
   (* Ok with no events + continue -> No_session_to_resume *)
@@ -24,7 +24,7 @@ let () =
         let r = { r with got_events = false } in
         match classify ~continue:true (Ok r) with
         | No_session_to_resume -> true
-        | _ -> false)
+        | Process_error _ | Success _ | Session_failed _ -> false)
   in
 
   (* Ok with exit_code=0 -> Success *)
@@ -34,7 +34,7 @@ let () =
         let r = { r with exit_code = 0; got_events = true } in
         match classify ~continue:false (Ok r) with
         | Success _ -> true
-        | _ -> false)
+        | Process_error _ | No_session_to_resume | Session_failed _ -> false)
   in
 
   (* Non-zero exit code -> Session_failed *)
@@ -44,7 +44,7 @@ let () =
         let r = { r with exit_code = 1; got_events = true } in
         match classify ~continue:false (Ok r) with
         | Session_failed _ -> true
-        | _ -> false)
+        | Process_error _ | No_session_to_resume | Success _ -> false)
   in
 
   (* Detail string always <= 503 chars (500 + "...") *)
@@ -53,8 +53,8 @@ let () =
       (fun r ->
         let r = { r with exit_code = 1; got_events = true } in
         match classify ~continue:false (Ok r) with
-        | Session_failed { detail } -> String.length detail <= 503
-        | _ -> false)
+        | Session_failed { detail; _ } -> String.length detail <= 503
+        | Process_error _ | No_session_to_resume | Success _ -> false)
   in
 
   (* continue=false with no events still classifies by exit code *)
@@ -64,7 +64,7 @@ let () =
         let r = { r with got_events = false } in
         match classify ~continue:false (Ok r) with
         | No_session_to_resume -> false (* should not happen without continue *)
-        | _ -> true)
+        | Process_error _ | Success _ | Session_failed _ -> true)
   in
 
   let suite =

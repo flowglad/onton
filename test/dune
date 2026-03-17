@@ -65,17 +65,17 @@
 (test
  (name test_worktree_parser)
  (libraries onton qcheck-core qcheck-core.runner)
- (ocamlopt_flags (:standard -w -4-40-42))
- (ocamlc_flags (:standard -w -4-40-42)))
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_startup_reconciler)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
- (ocamlopt_flags (:standard -w -4-40-42))
- (ocamlc_flags (:standard -w -4-40-42)))
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_run_classification)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
- (ocamlopt_flags (:standard -w -4-40-42))
- (ocamlc_flags (:standard -w -4-40-42)))
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))

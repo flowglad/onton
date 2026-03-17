@@ -291,6 +291,7 @@ let apply_rebase_result t patch_id rebase_result new_base =
       complete t patch_id
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
+      let t = clear_has_conflict t patch_id in
       complete t patch_id
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in

@@ -17,7 +17,7 @@ type classification =
   | Process_error of string
   | No_session_to_resume
   | Success of { stream_errors : string }
-  | Session_failed of { detail : string }
+  | Session_failed of { exit_code : int; detail : string }
 [@@deriving show, eq]
 
 let truncate s n = if String.length s <= n then s else String.prefix s n ^ "..."
@@ -36,4 +36,4 @@ let classify ~continue result =
         | "", e | e, "" -> e
         | s, e -> s ^ " | stream: " ^ e
       in
-      Session_failed { detail = truncate detail 500 }
+      Session_failed { exit_code = r.exit_code; detail = truncate detail 500 }
