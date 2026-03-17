@@ -7,10 +7,10 @@ open Base
     constructors that enforce spec preconditions. *)
 
 type pending_comment = private { comment : Types.Comment.t; valid : bool }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type session_fallback = Fresh_available | Tried_fresh | Given_up
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type t = private {
   patch_id : Types.Patch_id.t;

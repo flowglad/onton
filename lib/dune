@@ -1,9 +1,10 @@
 (library
  (name onton)
- (libraries base unix eio eio_main eio.unix yojson cohttp-eio tls-eio mirage-crypto-rng.unix ca-certs cmarkit)
+ (libraries base unix eio eio_main eio.unix yojson ppx_yojson_conv_lib cohttp-eio tls-eio mirage-crypto-rng.unix ca-certs cmarkit)
  (inline_tests)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42))
  (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord
                   ppx_sexp_conv ppx_compare ppx_hash
+                  ppx_yojson_conv
                   ppx_expect ppx_inline_test ppx_assert)))

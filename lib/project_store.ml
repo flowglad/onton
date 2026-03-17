@@ -1,4 +1,5 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 let data_dir () =
   match Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" with
@@ -38,30 +39,6 @@ let ensure_dir path =
   in
   mkdir_p path
 
-let save_config ~project_name ~github_token ~github_owner ~github_repo
-    ~main_branch ~poll_interval ~repo_root ~max_concurrency =
-  let dir = project_dir project_name in
-  ensure_dir dir;
-  let json =
-    `Assoc
-      [
-        ("project_name", `String project_name);
-        ("github_token", `String github_token);
-        ("github_owner", `String github_owner);
-        ("github_repo", `String github_repo);
-        ("main_branch", `String main_branch);
-        ("poll_interval", `Float poll_interval);
-        ("repo_root", `String repo_root);
-        ("max_concurrency", `Int max_concurrency);
-      ]
-  in
-  let oc = Stdlib.open_out_bin (config_path project_name) in
-  Stdlib.Fun.protect
-    ~finally:(fun () -> Stdlib.close_out oc)
-    (fun () ->
-      Stdlib.output_string oc (Yojson.Safe.pretty_to_string json);
-      Stdlib.flush oc)
-
 type stored_config = {
   project_name : string;
   github_token : string;
@@ -72,6 +49,31 @@ type stored_config = {
   repo_root : string;
   max_concurrency : int;
 }
+[@@deriving yojson]
+
+let save_config ~project_name ~github_token ~github_owner ~github_repo
+    ~main_branch ~poll_interval ~repo_root ~max_concurrency =
+  let dir = project_dir project_name in
+  ensure_dir dir;
+  let config =
+    {
+      project_name;
+      github_token;
+      github_owner;
+      github_repo;
+      main_branch;
+      poll_interval;
+      repo_root;
+      max_concurrency;
+    }
+  in
+  let json = yojson_of_stored_config config in
+  let oc = Stdlib.open_out_bin (config_path project_name) in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_out oc)
+    (fun () ->
+      Stdlib.output_string oc (Yojson.Safe.pretty_to_string json);
+      Stdlib.flush oc)
 
 let load_config ~project_name =
   let path = config_path project_name in
@@ -83,18 +85,7 @@ let load_config ~project_name =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    let open Yojson.Safe.Util in
-    Ok
-      {
-        project_name = member "project_name" json |> to_string;
-        github_token = member "github_token" json |> to_string;
-        github_owner = member "github_owner" json |> to_string;
-        github_repo = member "github_repo" json |> to_string;
-        main_branch = member "main_branch" json |> to_string;
-        poll_interval = member "poll_interval" json |> to_float;
-        repo_root = member "repo_root" json |> to_string;
-        max_concurrency = member "max_concurrency" json |> to_int;
-      }
+    Ok (stored_config_of_yojson json)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let save_gameplan_source ~project_name ~source_path =

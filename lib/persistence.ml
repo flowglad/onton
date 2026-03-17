@@ -16,7 +16,6 @@ let bool_member_opt key json =
   | `Null -> None
   | v -> Some (Yojson.Safe.Util.to_bool v)
 
-let float_member key json = Yojson.Safe.Util.(member key json |> to_float)
 let list_member key json = Yojson.Safe.Util.(member key json |> to_list)
 
 let int_member_opt key json =
@@ -24,83 +23,21 @@ let int_member_opt key json =
   | `Null -> None
   | v -> Some (Yojson.Safe.Util.to_int v)
 
-let nullable_string = function None -> `Null | Some s -> `String s
-let nullable_int = function None -> `Null | Some n -> `Int n
-
 let result_all xs =
   List.fold_right xs ~init:(Ok []) ~f:(fun x acc ->
       Result.bind acc ~f:(fun tl -> Result.map x ~f:(fun hd -> hd :: tl)))
 
-(* ---------- Operation_kind ---------- *)
-
-let operation_kind_to_yojson = function
-  | Operation_kind.Rebase -> `String "Rebase"
-  | Human -> `String "Human"
-  | Merge_conflict -> `String "Merge_conflict"
-  | Ci -> `String "Ci"
-  | Review_comments -> `String "Review_comments"
-
-let operation_kind_of_yojson json =
-  match Yojson.Safe.Util.to_string json with
-  | "Rebase" -> Ok Operation_kind.Rebase
-  | "Human" -> Ok Human
-  | "Merge_conflict" -> Ok Merge_conflict
-  | "Ci" -> Ok Ci
-  | "Review_comments" -> Ok Review_comments
-  | s -> Error (Printf.sprintf "unknown operation kind: %s" s)
-
-(* ---------- display_status ---------- *)
-
-let display_status_to_yojson = function
-  | Tui.Merged -> `String "Merged"
-  | Needs_help -> `String "Needs_help"
-  | Approved_idle -> `String "Approved_idle"
-  | Approved_running -> `String "Approved_running"
-  | Fixing_ci -> `String "Fixing_ci"
-  | Addressing_review -> `String "Addressing_review"
-  | Resolving_conflict -> `String "Resolving_conflict"
-  | Responding_to_human -> `String "Responding_to_human"
-  | Rebasing -> `String "Rebasing"
-  | Starting -> `String "Starting"
-  | Updating -> `String "Updating"
-  | Ci_queued -> `String "Ci_queued"
-  | Review_queued -> `String "Review_queued"
-  | Awaiting_ci -> `String "Awaiting_ci"
-  | Awaiting_review -> `String "Awaiting_review"
-  | Pending -> `String "Pending"
-
-let display_status_of_yojson json =
-  match Yojson.Safe.Util.to_string json with
-  | "Merged" -> Ok Tui.Merged
-  | "Needs_help" -> Ok Needs_help
-  | "Approved_idle" -> Ok Approved_idle
-  | "Approved_running" -> Ok Approved_running
-  | "Fixing_ci" -> Ok Fixing_ci
-  | "Addressing_review" -> Ok Addressing_review
-  | "Resolving_conflict" -> Ok Resolving_conflict
-  | "Responding_to_human" -> Ok Responding_to_human
-  | "Rebasing" -> Ok Rebasing
-  | "Starting" -> Ok Starting
-  | "Updating" -> Ok Updating
-  | "Ci_queued" -> Ok Ci_queued
-  | "Review_queued" -> Ok Review_queued
-  | "Awaiting_ci" -> Ok Awaiting_ci
-  | "Awaiting_review" -> Ok Awaiting_review
-  | "Pending" -> Ok Pending
-  | s -> Error (Printf.sprintf "unknown display status: %s" s)
+(** Wrap a raising ppx_yojson_conv deserializer into a Result.t. *)
+let try_of_yojson f json =
+  try Ok (f json) with
+  | Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (exn, _) ->
+      Error (Stdlib.Printexc.to_string exn)
+  | Yojson.Safe.Util.Type_error (msg, _) ->
+      Error (Printf.sprintf "malformed json: %s" msg)
 
 (* ---------- Comment ---------- *)
 
-let comment_to_yojson (c : Comment.t) =
-  `Assoc
-    [
-      ("id", `Int (Comment_id.to_int c.id));
-      ("thread_id", nullable_string c.thread_id);
-      ("body", `String c.body);
-      ("path", nullable_string c.path);
-      ("line", nullable_int c.line);
-    ]
-
+(* comment_of_yojson is hand-rolled: missing "id" fields get a synthetic ID. *)
 let comment_of_yojson json =
   try
     let open Yojson.Safe.Util in
@@ -120,10 +57,6 @@ let comment_of_yojson json =
 
 (* ---------- pending_comment ---------- *)
 
-let pending_comment_to_yojson (pc : Patch_agent.pending_comment) =
-  `Assoc
-    [ ("comment", comment_to_yojson pc.comment); ("valid", `Bool pc.valid) ]
-
 let pending_comment_of_yojson json =
   try
     Result.map
@@ -136,22 +69,6 @@ let pending_comment_of_yojson json =
 
 (* ---------- Patch_agent ---------- *)
 
-let session_fallback_to_yojson = function
-  | Patch_agent.Fresh_available -> `String "Fresh_available"
-  | Tried_fresh -> `String "Tried_fresh"
-  | Given_up -> `String "Given_up"
-
-let session_fallback_of_yojson json =
-  match Yojson.Safe.Util.to_string_option json with
-  | Some "Fresh_available" -> Ok Patch_agent.Fresh_available
-  | Some "Tried_fresh" -> Ok Patch_agent.Tried_fresh
-  | Some "Given_up" -> Ok Patch_agent.Given_up
-  | Some s -> Error (Printf.sprintf "unknown session_fallback: %s" s)
-  | None ->
-      Error
-        (Printf.sprintf "session_fallback: expected string, got %s"
-           (Yojson.Safe.to_string json))
-
 let session_fallback_of_legacy ~session_failed ~tried_fresh =
   match (session_failed, tried_fresh) with
   | true, false -> Patch_agent.Tried_fresh
@@ -159,57 +76,39 @@ let session_fallback_of_legacy ~session_failed ~tried_fresh =
   | false, true -> Patch_agent.Tried_fresh
   | false, false -> Patch_agent.Fresh_available
 
-let ci_check_to_yojson (c : Ci_check.t) =
-  `Assoc
-    [
-      ("name", `String c.name);
-      ("conclusion", `String c.conclusion);
-      ("details_url", nullable_string c.details_url);
-      ("description", nullable_string c.description);
-    ]
-
-let ci_check_of_yojson json =
-  try
-    Ok
-      {
-        Ci_check.name = string_member "name" json;
-        conclusion = string_member "conclusion" json;
-        details_url = string_member_opt "details_url" json;
-        description = string_member_opt "description" json;
-      }
-  with Yojson.Safe.Util.Type_error (msg, _) ->
-    Error (Printf.sprintf "malformed ci_check: %s" msg)
-
 let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
-      ("patch_id", `String (Patch_id.to_string a.patch_id));
+      ("patch_id", Patch_id.yojson_of_t a.patch_id);
       ("has_pr", `Bool a.has_pr);
       ( "pr_number",
         match a.pr_number with
         | None -> `Null
-        | Some n -> `Int (Pr_number.to_int n) );
+        | Some n -> Pr_number.yojson_of_t n );
       ("has_session", `Bool a.has_session);
       ("busy", `Bool a.busy);
       ("merged", `Bool a.merged);
       ("needs_intervention", `Bool a.needs_intervention);
-      ("queue", `List (List.map a.queue ~f:operation_kind_to_yojson));
+      ("queue", `List (List.map a.queue ~f:Operation_kind.yojson_of_t));
       ("satisfies", `Bool a.satisfies);
       ("changed", `Bool a.changed);
       ("has_conflict", `Bool a.has_conflict);
       ( "base_branch",
         match a.base_branch with
         | None -> `Null
-        | Some b -> `String (Branch.to_string b) );
+        | Some b -> Branch.yojson_of_t b );
       ("ci_failure_count", `Int a.ci_failure_count);
-      ("session_fallback", session_fallback_to_yojson a.session_fallback);
+      ( "session_fallback",
+        Patch_agent.yojson_of_session_fallback a.session_fallback );
       ( "pending_comments",
-        `List (List.map a.pending_comments ~f:pending_comment_to_yojson) );
-      ("ci_checks", `List (List.map a.ci_checks ~f:ci_check_to_yojson));
+        `List
+          (List.map a.pending_comments ~f:Patch_agent.yojson_of_pending_comment)
+      );
+      ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ( "addressed_comment_ids",
         `List
           (Set.to_list a.addressed_comment_ids
-          |> List.map ~f:(fun id -> `Int (Comment_id.to_int id))) );
+          |> List.map ~f:Comment_id.yojson_of_t) );
       ("removed", `Bool a.removed);
       ("mergeable", `Bool a.mergeable);
       ("checks_passing", `Bool a.checks_passing);
@@ -228,7 +127,9 @@ let list_member_opt key json =
 let patch_agent_of_yojson json =
   let ( let* ) r f = Result.bind r ~f in
   let* queue =
-    result_all (List.map (list_member "queue" json) ~f:operation_kind_of_yojson)
+    result_all
+      (List.map (list_member "queue" json) ~f:(fun j ->
+           try_of_yojson Operation_kind.t_of_yojson j))
   in
   let* pending_comments =
     result_all
@@ -250,23 +151,21 @@ let patch_agent_of_yojson json =
               bool_member_opt "tried_fresh" json |> Option.value ~default:false
             in
             Ok (session_fallback_of_legacy ~session_failed ~tried_fresh)
-        | Some v -> session_fallback_of_yojson v)
+        | Some v -> try_of_yojson Patch_agent.session_fallback_of_yojson v)
     | _ -> Error "patch_agent: expected JSON object"
   in
   let* ci_checks_raw = list_member_opt "ci_checks" json in
   let ci_checks_raw = Option.value ci_checks_raw ~default:[] in
-  let* ci_checks = result_all (List.map ci_checks_raw ~f:ci_check_of_yojson) in
+  let* ci_checks =
+    result_all
+      (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
+  in
   let* addressed_raw = list_member_opt "addressed_comment_ids" json in
   let addressed_raw = Option.value addressed_raw ~default:[] in
   let* addressed_comment_ids_list =
     result_all
       (List.map addressed_raw ~f:(fun j ->
-           match Yojson.Safe.Util.to_int_option j with
-           | Some n -> Ok (Comment_id.of_int n)
-           | None ->
-               Error
-                 (Printf.sprintf "addressed_comment_id: expected int, got %s"
-                    (Yojson.Safe.to_string j))))
+           try_of_yojson Comment_id.t_of_yojson j))
   in
   let addressed_comment_ids =
     Set.of_list (module Comment_id) addressed_comment_ids_list
@@ -298,52 +197,6 @@ let patch_agent_of_yojson json =
          (bool_member_opt "no_unresolved_comments" json
          |> Option.value ~default:false))
 
-(* ---------- Transition_entry ---------- *)
-
-let transition_entry_to_yojson (e : Activity_log.Transition_entry.t) =
-  `Assoc
-    [
-      ("timestamp", `Float e.timestamp);
-      ("patch_id", `String (Patch_id.to_string e.patch_id));
-      ("from_status", display_status_to_yojson e.from_status);
-      ("to_status", display_status_to_yojson e.to_status);
-      ("action", `String e.action);
-    ]
-
-let transition_entry_of_yojson json =
-  Result.bind
-    (display_status_of_yojson (Yojson.Safe.Util.member "from_status" json))
-    ~f:(fun from_status ->
-      Result.map
-        (display_status_of_yojson (Yojson.Safe.Util.member "to_status" json))
-        ~f:(fun to_status ->
-          Activity_log.Transition_entry.create
-            ~timestamp:(float_member "timestamp" json)
-            ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-            ~from_status ~to_status
-            ~action:(string_member "action" json)))
-
-(* ---------- Event ---------- *)
-
-let event_to_yojson (e : Activity_log.Event.t) =
-  `Assoc
-    [
-      ("timestamp", `Float e.timestamp);
-      ( "patch_id",
-        match e.patch_id with
-        | None -> `Null
-        | Some pid -> `String (Patch_id.to_string pid) );
-      ("message", `String e.message);
-    ]
-
-let event_of_yojson json =
-  Ok
-    (Activity_log.Event.create
-       ~timestamp:(float_member "timestamp" json)
-       ?patch_id:
-         (string_member_opt "patch_id" json |> Option.map ~f:Patch_id.of_string)
-       (string_member "message" json))
-
 (* ---------- Activity_log ---------- *)
 
 let activity_log_to_yojson (log : Activity_log.t) =
@@ -351,17 +204,22 @@ let activity_log_to_yojson (log : Activity_log.t) =
   let events = Activity_log.recent_events log ~limit:Int.max_value in
   `Assoc
     [
-      ("transitions", `List (List.map transitions ~f:transition_entry_to_yojson));
-      ("events", `List (List.map events ~f:event_to_yojson));
+      ( "transitions",
+        `List
+          (List.map transitions ~f:Activity_log.Transition_entry.yojson_of_t) );
+      ("events", `List (List.map events ~f:Activity_log.Event.yojson_of_t));
     ]
 
 let activity_log_of_yojson json =
   Result.bind
     (result_all
-       (List.map (list_member "transitions" json) ~f:transition_entry_of_yojson))
+       (List.map (list_member "transitions" json) ~f:(fun j ->
+            try_of_yojson Activity_log.Transition_entry.t_of_yojson j)))
     ~f:(fun transitions ->
       Result.map
-        (result_all (List.map (list_member "events" json) ~f:event_of_yojson))
+        (result_all
+           (List.map (list_member "events" json) ~f:(fun j ->
+                try_of_yojson Activity_log.Event.t_of_yojson j)))
         ~f:(fun events ->
           (* Entries are stored newest-first; restore by folding in reverse *)
           let log =
@@ -381,7 +239,7 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
   in
   `Assoc
     [
-      ("main_branch", `String (Branch.to_string (Orchestrator.main_branch o)));
+      ("main_branch", Branch.yojson_of_t (Orchestrator.main_branch o));
       ("agents", `Assoc agents);
     ]
 
@@ -423,29 +281,6 @@ let orchestrator_of_yojson ~gameplan json =
   | Invalid_argument msg ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)
 
-(* ---------- Gameplan ---------- *)
-
-let patch_to_yojson (p : Patch.t) =
-  `Assoc
-    [
-      ("id", `String (Patch_id.to_string p.id));
-      ("title", `String p.title);
-      ("branch", `String (Branch.to_string p.branch));
-      ( "dependencies",
-        `List
-          (List.map p.dependencies ~f:(fun d -> `String (Patch_id.to_string d)))
-      );
-    ]
-
-let gameplan_to_yojson (g : Gameplan.t) =
-  `Assoc
-    [
-      ("project_name", `String g.project_name);
-      ("problem_statement", `String g.problem_statement);
-      ("solution_summary", `String g.solution_summary);
-      ("patches", `List (List.map g.patches ~f:patch_to_yojson));
-    ]
-
 (* ---------- Snapshot ---------- *)
 
 let transcripts_to_yojson (t : (Patch_id.t, string) Hashtbl.t) =
@@ -470,7 +305,7 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
       ("version", `Int 1);
       ("orchestrator", orchestrator_to_yojson snap.orchestrator);
       ("activity_log", activity_log_to_yojson snap.activity_log);
-      ("gameplan", gameplan_to_yojson snap.gameplan);
+      ("gameplan", Gameplan.yojson_of_t snap.gameplan);
       ("transcripts", transcripts_to_yojson snap.transcripts);
     ]
 

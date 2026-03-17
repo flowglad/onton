@@ -18,7 +18,7 @@ type display_status =
   | Awaiting_ci
   | Awaiting_review
   | Pending
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type status_display [@@deriving show, eq, sexp_of, compare]
 

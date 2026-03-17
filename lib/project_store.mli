@@ -26,6 +26,7 @@ type stored_config = {
   repo_root : string;
   max_concurrency : int;
 }
+[@@deriving yojson]
 
 val save_config :
   project_name:string ->

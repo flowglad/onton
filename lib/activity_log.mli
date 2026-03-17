@@ -13,7 +13,7 @@ module Transition_entry : sig
     to_status : Tui.display_status;
     action : string;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 
   val create :
     timestamp:float ->
@@ -30,7 +30,7 @@ module Event : sig
     patch_id : Types.Patch_id.t option;
     message : string;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 
   val create : timestamp:float -> ?patch_id:Types.Patch_id.t -> string -> t
 end

@@ -1,8 +1,9 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 module Patch_id = struct
   module T = struct
-    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash]
+    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
   end
 
   include T
@@ -13,21 +14,21 @@ module Patch_id = struct
 end
 
 module Pr_number = struct
-  type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+  type t = int [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   let of_int n = n
   let to_int t = t
 end
 
 module Session_id = struct
-  type t = string [@@deriving show, eq, ord, sexp_of, compare, hash]
+  type t = string [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   let of_string s = s
   let to_string t = t
 end
 
 module Branch = struct
-  type t = string [@@deriving show, eq, ord, sexp_of, compare, hash]
+  type t = string [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   let of_string s = s
   let to_string t = t
@@ -35,12 +36,12 @@ end
 
 module Operation_kind = struct
   type t = Rebase | Human | Merge_conflict | Ci | Review_comments
-  [@@deriving show, eq, ord, sexp_of, compare, hash]
+  [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 end
 
 module Comment_id = struct
   module T = struct
-    type t = int [@@deriving show, eq, ord, sexp_of, compare, hash]
+    type t = int [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
   end
 
   include T
@@ -81,7 +82,7 @@ module Comment = struct
       path : string option;
       line : int option;
     }
-    [@@deriving show, eq, sexp_of, compare]
+    [@@deriving show, eq, sexp_of, compare, yojson]
   end
 
   include T
@@ -96,7 +97,7 @@ module Patch = struct
     branch : Branch.t;
     dependencies : Patch_id.t list;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
 module Ci_check = struct
@@ -106,12 +107,12 @@ module Ci_check = struct
     details_url : string option;
     description : string option;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
 module Pr_url = struct
   module T = struct
-    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash]
+    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
   end
 
   include T
@@ -130,7 +131,7 @@ module Stop_reason = struct
     | Pause_turn
     | Refusal
     | Model_context_window_exceeded
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 
   let of_string = function
     | "end_turn" -> Some End_turn
@@ -151,7 +152,7 @@ module Stream_event = struct
     | Tool_use of { name : string; input : string }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
 module Gameplan = struct
@@ -162,5 +163,5 @@ module Gameplan = struct
     design_decisions : string;
     patches : Patch.t list;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 end

@@ -1,12 +1,13 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 open Types
 open Operation_kind
 
 type pending_comment = { comment : Comment.t; valid : bool }
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type session_fallback = Fresh_available | Tried_fresh | Given_up
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type t = {
   patch_id : Patch_id.t;

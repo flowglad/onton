@@ -1,4 +1,5 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 module Transition_entry = struct
   type t = {
@@ -8,7 +9,7 @@ module Transition_entry = struct
     to_status : Tui.display_status;
     action : string;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 
   let create ~timestamp ~patch_id ~from_status ~to_status ~action =
     { timestamp; patch_id; from_status; to_status; action }
@@ -20,7 +21,7 @@ module Event = struct
     patch_id : Types.Patch_id.t option;
     message : string;
   }
-  [@@deriving show, eq, sexp_of, compare]
+  [@@deriving show, eq, sexp_of, compare, yojson]
 
   let create ~timestamp ?patch_id message = { timestamp; patch_id; message }
 end
