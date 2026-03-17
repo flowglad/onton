@@ -22,3 +22,5 @@ module Tui_input = Tui_input
 module Persistence = Persistence
 module Startup_reconciler = Startup_reconciler
 module Project_store = Project_store
+module Run_classification = Run_classification
+module Poll_applicator = Poll_applicator
