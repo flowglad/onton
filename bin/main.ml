@@ -1078,7 +1078,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                  (Printexc.to_string exn));
             mark_session_failed runtime patch_id)
   in
-  let rec loop () =
+  let rec loop sw =
     let actions, gameplan, pre_fire_agents =
       Runtime.read runtime (fun snap ->
           let orch = snap.Runtime.orchestrator in
@@ -1375,11 +1375,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               in
                               Orchestrator.complete orch patch_id))))
     in
-    if not (Base.List.is_empty action_fibers) then Eio.Fiber.all action_fibers;
+    (* Spawn action fibers without waiting for completion. Each fiber is
+       guarded by with_busy_guard (ensures complete on exit) and
+       with_claude_slot (semaphore backpressure). The runner loop continues
+       immediately to pick up newly-queued actions from the poller. *)
+    Base.List.iter action_fibers ~f:(fun f ->
+        Eio.Fiber.fork_daemon ~sw (fun () ->
+            f ();
+            `Stop_daemon));
     Eio.Time.sleep clock 1.0;
-    loop ()
+    loop sw
   in
-  loop ()
+  Eio.Switch.run @@ fun sw -> loop sw
 
 (** {1 Persistence fiber} *)
 
