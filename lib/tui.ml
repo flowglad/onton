@@ -324,6 +324,7 @@ type patch_view = {
   pending_comments : int;
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
+  pr_number : Pr_number.t option;
 }
 [@@warning "-69"]
 
@@ -372,6 +373,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     pending_comments = List.length agent.pending_comments;
     ci_checks = agent.ci_checks;
     recent_stream = [];
+    pr_number = agent.pr_number;
   }
 
 (** {1 Render helpers} *)
@@ -541,7 +543,10 @@ let render_detail (pv : patch_view) ~width =
       Printf.sprintf "  Status:      %s" badge;
       fit_value "  Patch ID:    " (Patch_id.to_string pv.patch_id);
       fit_value "  Branch:      " (Branch.to_string pv.branch);
-      Printf.sprintf "  PR:          %s" (if pv.has_pr then "yes" else "no");
+      Printf.sprintf "  PR:          %s"
+        (match pv.pr_number with
+        | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
+        | None -> if pv.has_pr then "yes" else "no");
       Printf.sprintf "  Dependencies: %d" pv.dep_count;
       Printf.sprintf "  CI failures: %d" pv.ci_failures;
       Printf.sprintf "  Queue depth: %d" pv.queue_len;
@@ -672,7 +677,7 @@ let render_footer ~width ~view_mode =
 (** {1 Public API} *)
 
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
-    ~(gameplan : Gameplan.t) =
+    ~(gameplan : Gameplan.t) ~(activity : activity_entry list) =
   let agents = Orchestrator.all_agents orchestrator in
   let graph = Orchestrator.graph orchestrator in
   let patches_by_id =
@@ -681,7 +686,16 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       ~f:(fun acc (p : Patch.t) -> Map.set acc ~key:p.Patch.id ~data:p)
   in
   List.map agents ~f:(fun agent ->
-      patch_view_of_agent agent ~patches_by_id ~graph)
+      let pv = patch_view_of_agent agent ~patches_by_id ~graph in
+      let pid_str = Patch_id.to_string agent.patch_id in
+      let filtered =
+        List.filter activity ~f:(fun entry ->
+            match entry with
+            | Transition { patch_id = pid; _ } -> String.equal pid pid_str
+            | Event { patch_id = Some pid; _ } -> String.equal pid pid_str
+            | Event { patch_id = None; _ } -> false)
+      in
+      { pv with recent_stream = List.take filtered 10 })
 
 let render_frame ~width ~height ~selected ~view_mode
     ~(activity : activity_entry list) ~project_name (views : patch_view list) =
@@ -694,27 +708,20 @@ let render_frame ~width ~height ~selected ~view_mode
         match
           List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
         with
-        | Some pv ->
-            let patch_id_str = Patch_id.to_string patch_id in
-            let filtered_activity =
-              List.filter activity ~f:(fun entry ->
-                  match entry with
-                  | Transition { patch_id = pid; _ } ->
-                      String.equal pid patch_id_str
-                  | Event { patch_id = Some pid; _ } ->
-                      String.equal pid patch_id_str
-                  | Event { patch_id = None; _ } -> false)
-            in
-            let pv =
-              { pv with recent_stream = List.take filtered_activity 10 }
-            in
-            render_detail pv ~width
+        | Some pv -> render_detail pv ~width
         | None -> [ " (patch not found)" ]
       in
       (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
          + footer(2) = 7 fixed lines *)
       let max_detail = Int.max 0 (height - 7) in
-      let detail = List.take detail max_detail in
+      let total_detail = List.length detail in
+      let scroll_offset =
+        Int.min selected (Int.max 0 (total_detail - max_detail))
+      in
+      let detail =
+        List.sub detail ~pos:scroll_offset
+          ~len:(Int.min max_detail (total_detail - scroll_offset))
+      in
       let lines =
         header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
       in

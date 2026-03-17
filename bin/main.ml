@@ -431,7 +431,6 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
             snap.Runtime.gameplan,
             snap.Runtime.activity_log ))
     in
-    let views = Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp in
     let size = Term.get_size () in
     let width = match size with Some s -> s.Term.cols | None -> 80 in
     let height = match size with Some s -> s.Term.rows | None -> 24 in
@@ -442,6 +441,9 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode =
       | Tui.List_view -> 10
     in
     let activity = activity_entries_of_log ~limit log in
+    let views =
+      Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp ~activity
+    in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
         ~activity ~project_name:gp.Gameplan.project_name views
@@ -733,7 +735,22 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                   in
                   selected :=
                     Tui_input.apply_move ~count ~selected:!selected cmd
-              | Tui.Detail_view _ -> ());
+              | Tui.Detail_view _ ->
+                  (* Scroll detail view — selected doubles as scroll offset *)
+                  let delta =
+                    match cmd with
+                    | Tui_input.Move_up -> -1
+                    | Tui_input.Move_down -> 1
+                    | Tui_input.Page_up -> -10
+                    | Tui_input.Page_down -> 10
+                    | Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
+                    | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
+                    | Tui_input.Noop | Tui_input.Send_message _
+                    | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+                    | Tui_input.Remove_patch ->
+                        0
+                  in
+                  selected := Base.Int.max 0 (!selected + delta));
               loop ()
           | Tui_input.Select -> (
               match !view_mode with
@@ -747,9 +764,10 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
                     let idx =
                       Base.Int.max 0 (Base.Int.min !selected (count - 1))
                     in
-                    selected := idx;
+                    saved_list_selected := idx;
                     let agent = Base.List.nth_exn agents idx in
-                    view_mode := Tui.Detail_view agent.Patch_agent.patch_id);
+                    view_mode := Tui.Detail_view agent.Patch_agent.patch_id;
+                    selected := 0);
                   loop ()
               | Tui.Detail_view _ ->
                   text_mode := true;
@@ -759,6 +777,7 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root =
               match !view_mode with
               | Tui.Detail_view _ ->
                   view_mode := Tui.List_view;
+                  selected := !saved_list_selected;
                   loop ()
               | Tui.Timeline_view ->
                   view_mode := Tui.List_view;

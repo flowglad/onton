@@ -66,6 +66,7 @@ type patch_view = {
   pending_comments : int;
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
+  pr_number : Pr_number.t option;
 }
 
 (** {2 Frame rendering} *)
@@ -73,7 +74,10 @@ type patch_view = {
 type frame
 
 val views_of_orchestrator :
-  orchestrator:Orchestrator.t -> gameplan:Gameplan.t -> patch_view list
+  orchestrator:Orchestrator.t ->
+  gameplan:Gameplan.t ->
+  activity:activity_entry list ->
+  patch_view list
 
 val render_frame :
   width:int ->
