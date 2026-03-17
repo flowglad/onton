@@ -451,17 +451,20 @@ module Key = struct
             match read_number () with
             | Some py_s, Some final
               when Char.equal final 'M' || Char.equal final 'm' -> (
-                let pb = Int.of_string pb_s in
-                let col = Int.of_string px_s in
-                let row = Int.of_string py_s in
-                let press = Char.equal final 'M' in
-                match pb with
-                | 0 -> Mouse (Click { button = Left; row; col; press })
-                | 1 -> Mouse (Click { button = Middle; row; col; press })
-                | 2 -> Mouse (Click { button = Right; row; col; press })
-                | 64 -> Mouse (Scroll { dir = Up; row; col })
-                | 65 -> Mouse (Scroll { dir = Down; row; col })
-                | _ -> Unknown (Printf.sprintf "mouse:%d" pb))
+                let pb_opt = Int.of_string_opt pb_s in
+                let col_opt = Int.of_string_opt px_s in
+                let row_opt = Int.of_string_opt py_s in
+                match (pb_opt, col_opt, row_opt) with
+                | Some pb, Some col, Some row ->
+                    let press = Char.equal final 'M' in
+                    (match pb with
+                    | 0 -> Mouse (Click { button = Left; row; col; press })
+                    | 1 -> Mouse (Click { button = Middle; row; col; press })
+                    | 2 -> Mouse (Click { button = Right; row; col; press })
+                    | 64 -> Mouse (Scroll { dir = Up; row; col })
+                    | 65 -> Mouse (Scroll { dir = Down; row; col })
+                    | _ -> Unknown (Printf.sprintf "mouse:%d" pb))
+                | _ -> Unknown "sgr-mouse")
             | _ -> Unknown "sgr-mouse")
         | _ -> Unknown "sgr-mouse")
     | _ -> Unknown "sgr-mouse"
