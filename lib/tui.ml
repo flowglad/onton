@@ -325,6 +325,7 @@ type patch_view = {
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
+  base_branch : Branch.t option;
 }
 [@@warning "-69"]
 
@@ -374,6 +375,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     ci_checks = agent.ci_checks;
     recent_stream = [];
     pr_number = agent.pr_number;
+    base_branch = agent.base_branch;
   }
 
 (** {1 Render helpers} *)
@@ -543,6 +545,10 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       Printf.sprintf "  Status:      %s" badge;
       fit_value "  Patch ID:    " (Patch_id.to_string pv.patch_id);
       fit_value "  Branch:      " (Branch.to_string pv.branch);
+      fit_value "  Base:        "
+        (match pv.base_branch with
+        | Some b -> Branch.to_string b
+        | None -> "(not set)");
       Printf.sprintf "  PR:          %s"
         (match pv.pr_number with
         | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)

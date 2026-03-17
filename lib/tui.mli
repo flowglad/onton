@@ -67,6 +67,7 @@ type patch_view = {
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
+  base_branch : Branch.t option;
 }
 
 (** {2 Frame rendering} *)
