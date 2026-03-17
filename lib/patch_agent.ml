@@ -30,6 +30,9 @@ type t = {
       [@compare Set.compare_direct]
       [@sexp_of fun s -> Set.sexp_of_m__t (module Comment_id) s]
   removed : bool;
+  mergeable : bool;
+  checks_passing : bool;
+  no_unresolved_comments : bool;
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -56,6 +59,9 @@ let create patch_id =
     ci_checks = [];
     addressed_comment_ids = Set.empty (module Comment_id);
     removed = false;
+    mergeable = false;
+    checks_passing = false;
+    no_unresolved_comments = false;
   }
 
 let create_adhoc ~patch_id ~pr_number =
@@ -78,6 +84,9 @@ let create_adhoc ~patch_id ~pr_number =
     ci_checks = [];
     addressed_comment_ids = Set.empty (module Comment_id);
     removed = false;
+    mergeable = false;
+    checks_passing = false;
+    no_unresolved_comments = false;
   }
 
 let highest_priority t =
@@ -160,6 +169,14 @@ let on_session_failure t ~is_fresh =
 let on_pr_discovery_failure t = { t with session_fallback = Fresh_available }
 
 let set_has_conflict t = { t with has_conflict = true }
+let clear_has_conflict t = { t with has_conflict = false }
+let set_mergeable t v = { t with mergeable = v }
+let set_checks_passing t v = { t with checks_passing = v }
+let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
+
+let is_approved t =
+  t.has_pr && t.mergeable && t.checks_passing && t.no_unresolved_comments
+  && (not t.busy) && not t.needs_intervention
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
@@ -189,7 +206,8 @@ let reset_busy t =
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_fallback ~pending_comments ~ci_checks
-    ~addressed_comment_ids ~removed =
+    ~addressed_comment_ids ~removed ~mergeable ~checks_passing
+    ~no_unresolved_comments =
   {
     patch_id;
     has_pr;
@@ -209,6 +227,9 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ci_checks;
     addressed_comment_ids;
     removed;
+    mergeable;
+    checks_passing;
+    no_unresolved_comments;
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }
@@ -244,7 +265,15 @@ let rebase t ~base_branch =
     List.filter t.queue ~f:(fun j ->
         not (Operation_kind.equal j Operation_kind.Rebase))
   in
-  { t with busy = true; queue; base_branch = Some base_branch }
+  {
+    t with
+    busy = true;
+    queue;
+    base_branch = Some base_branch;
+    mergeable = false;
+    checks_passing = false;
+    no_unresolved_comments = false;
+  }
 
 let respond t k =
   if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
@@ -286,6 +315,9 @@ let respond t k =
     changed;
     has_conflict;
     pending_comments;
+    mergeable = false;
+    checks_passing = false;
+    no_unresolved_comments = false;
   }
 
 let complete t =

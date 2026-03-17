@@ -209,6 +209,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
           (Set.to_list a.addressed_comment_ids
           |> List.map ~f:(fun id -> `Int (Comment_id.to_int id))) );
       ("removed", `Bool a.removed);
+      ("mergeable", `Bool a.mergeable);
+      ("checks_passing", `Bool a.checks_passing);
+      ("no_unresolved_comments", `Bool a.no_unresolved_comments);
     ]
 
 let list_member_opt key json =
@@ -284,7 +287,14 @@ let patch_agent_of_yojson json =
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~pending_comments ~ci_checks ~addressed_comment_ids
-       ~removed:(bool_member_opt "removed" json |> Option.value ~default:false))
+       ~removed:(bool_member_opt "removed" json |> Option.value ~default:false)
+       ~mergeable:
+         (bool_member_opt "mergeable" json |> Option.value ~default:false)
+       ~checks_passing:
+         (bool_member_opt "checks_passing" json |> Option.value ~default:false)
+       ~no_unresolved_comments:
+         (bool_member_opt "no_unresolved_comments" json
+         |> Option.value ~default:false))
 
 (* ---------- Transition_entry ---------- *)
 

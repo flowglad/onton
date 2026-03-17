@@ -63,7 +63,9 @@ let () =
           && equal_session_fallback t.session_fallback Fresh_available
           && List.is_empty t.pending_comments
           && List.is_empty t.ci_checks
-          && Set.is_empty t.addressed_comment_ids);
+          && Set.is_empty t.addressed_comment_ids
+          && (not t.mergeable) && (not t.checks_passing)
+          && not t.no_unresolved_comments);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)
@@ -399,6 +401,8 @@ let () =
               ~ci_failure_count:0 ~session_fallback:Fresh_available
               ~pending_comments:[] ~ci_checks:a.ci_checks
               ~addressed_comment_ids:a.addressed_comment_ids ~removed:false
+              ~mergeable:false ~checks_passing:false
+              ~no_unresolved_comments:false
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks && Set.is_empty a.addressed_comment_ids);
@@ -483,7 +487,8 @@ let () =
               ~session_fallback:Fresh_available ~pending_comments:[]
               ~ci_checks:[]
               ~addressed_comment_ids:(Set.empty (module Comment_id))
-              ~removed:false
+              ~removed:false ~mergeable:false ~checks_passing:false
+              ~no_unresolved_comments:false
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
@@ -516,6 +521,128 @@ let () =
           | exception Invalid_argument msg ->
               String.is_substring msg ~substring:"not a feedback"
           | _ -> false);
+      (* -- is_approved true when all conditions met -- *)
+      Test.make ~name:"is_approved true when all conditions met" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            let a = set_no_unresolved_comments a true in
+            is_approved a
+          with _ -> false);
+      (* -- is_approved false without has_pr -- *)
+      Test.make ~name:"is_approved false without has_pr" ~count:1
+        Gen.(pure pid0)
+        (fun pid ->
+          let a = create pid in
+          let a = set_mergeable a true in
+          let a = set_checks_passing a true in
+          let a = set_no_unresolved_comments a true in
+          not (is_approved a));
+      (* -- is_approved false when busy -- *)
+      Test.make ~name:"is_approved false when busy" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            let a = set_no_unresolved_comments a true in
+            not (is_approved a)
+          with _ -> false);
+      (* -- is_approved false when not mergeable -- *)
+      Test.make ~name:"is_approved false when not mergeable" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_checks_passing a true in
+            let a = set_no_unresolved_comments a true in
+            not (is_approved a)
+          with _ -> false);
+      (* -- is_approved false when checks not passing -- *)
+      Test.make ~name:"is_approved false when checks not passing" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_no_unresolved_comments a true in
+            not (is_approved a)
+          with _ -> false);
+      (* -- is_approved false when unresolved comments -- *)
+      Test.make ~name:"is_approved false when unresolved comments" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            not (is_approved a)
+          with _ -> false);
+      (* -- is_approved false when needs_intervention -- *)
+      Test.make ~name:"is_approved false when needs_intervention" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = increment_ci_failure_count a in
+            let a = increment_ci_failure_count a in
+            let a = increment_ci_failure_count a in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            let a = set_no_unresolved_comments a true in
+            not (is_approved a)
+          with _ -> false);
+      (* -- respond invalidates approval flags -- *)
+      Test.make ~name:"respond invalidates approval flags" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            let a = set_no_unresolved_comments a true in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            let a = complete a in
+            not (is_approved a)
+          with _ -> false);
+      (* -- rebase invalidates approval flags -- *)
+      Test.make ~name:"rebase invalidates approval flags" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_mergeable a true in
+            let a = set_checks_passing a true in
+            let a = set_no_unresolved_comments a true in
+            let a = enqueue a Operation_kind.Rebase in
+            let a = rebase a ~base_branch:br in
+            (not a.mergeable) && (not a.checks_passing)
+            && not a.no_unresolved_comments
+          with _ -> false);
+      (* -- clear_has_conflict clears flag -- *)
+      Test.make ~name:"clear_has_conflict clears flag" ~count:1
+        Gen.(pure pid0)
+        (fun pid ->
+          let a = create pid in
+          let a = set_has_conflict a in
+          let before = a.has_conflict in
+          let a = clear_has_conflict a in
+          before && not a.has_conflict);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
