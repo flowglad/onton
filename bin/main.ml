@@ -1475,6 +1475,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
               patch_id)
           |> Base.Hash_set.of_list (module Patch_id)
         in
+        (* For errored patches, preserve any PR numbers from the persisted snapshot *)
         Runtime.read runtime (fun snap ->
             Orchestrator.all_agents snap.Runtime.orchestrator)
         |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
@@ -1490,14 +1491,6 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 match Orchestrator.find_agent orch pid with
                 | Some agent when agent.Patch_agent.has_pr ->
                     Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                    if merged then Orchestrator.mark_merged orch pid else orch
-                | Some agent when not agent.Patch_agent.busy ->
-                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                    let orch =
-                      Orchestrator.fire orch (Orchestrator.Start (pid, base))
-                    in
-                    let orch = Orchestrator.set_pr_number orch pid pr in
-                    let orch = Orchestrator.complete orch pid in
                     if merged then Orchestrator.mark_merged orch pid else orch
                 | Some _ ->
                     Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
