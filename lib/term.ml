@@ -94,8 +94,24 @@ let strip_ansi s =
   in
   loop 0
 
-(** Visible character width of a string (strips ANSI codes). *)
-let visible_length s = String.length (strip_ansi s)
+(** Number of bytes in a UTF-8 sequence starting with byte [b]. *)
+let utf8_char_width b =
+  let b = Char.to_int b in
+  if b land 0x80 = 0 then 1
+  else if b land 0xE0 = 0xC0 then 2
+  else if b land 0xF0 = 0xE0 then 3
+  else 4
+
+(** Visible character width of a string (strips ANSI codes, counts UTF-8
+    codepoints rather than bytes). *)
+let visible_length s =
+  let raw = strip_ansi s in
+  let len = String.length raw in
+  let rec loop i count =
+    if i >= len then count
+    else loop (i + utf8_char_width (String.get raw i)) (count + 1)
+  in
+  loop 0 0
 
 (** Pad or truncate to fit a visible width, preserving ANSI formatting.
     Truncation walks the original string, copying escape sequences verbatim and
@@ -110,10 +126,14 @@ let fit_width width s =
       if visible >= width || i >= len then Buffer.contents buf
       else if Char.equal (String.get s i) '\027' then
         copy_escape (i + 1) visible
-      else begin
-        Buffer.add_char buf (String.get s i);
-        loop (i + 1) (visible + 1)
-      end
+      else
+        let w = utf8_char_width (String.get s i) in
+        let () =
+          for j = 0 to w - 1 do
+            if i + j < len then Buffer.add_char buf (String.get s (i + j))
+          done
+        in
+        loop (i + w) (visible + 1)
     and copy_escape i visible =
       Buffer.add_char buf '\027';
       if i >= len then Buffer.contents buf
