@@ -19,15 +19,47 @@ let worktree_dir ~repo_root ~patch_id =
   let id_str = Types.Patch_id.to_string patch_id in
   Stdlib.Filename.concat repo_root ("worktrees/patch-" ^ id_str)
 
+let branch_exists ~process_mgr ~repo_root branch_str =
+  let buf = Buffer.create 16 in
+  match
+    Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+      ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
+      [
+        "git";
+        "-C";
+        repo_root;
+        "rev-parse";
+        "--verify";
+        "refs/heads/" ^ branch_str;
+      ]
+  with
+  | () -> true
+  | exception _ -> false
+
 let create ~process_mgr ~repo_root ~patch =
   let open Types in
   let path = worktree_dir ~repo_root ~patch_id:patch.Patch.id in
   let branch_str = Branch.to_string patch.Patch.branch in
-  Eio.Process.run process_mgr
-    [
-      "git"; "-C"; repo_root; "worktree"; "add"; "-b"; branch_str; path; "HEAD";
-    ];
-  { patch_id = patch.Patch.id; branch = patch.Patch.branch; path }
+  if Stdlib.Sys.file_exists path then
+    { patch_id = patch.Patch.id; branch = patch.Patch.branch; path }
+  else if branch_exists ~process_mgr ~repo_root branch_str then (
+    Eio.Process.run process_mgr
+      [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ];
+    { patch_id = patch.Patch.id; branch = patch.Patch.branch; path })
+  else (
+    Eio.Process.run process_mgr
+      [
+        "git";
+        "-C";
+        repo_root;
+        "worktree";
+        "add";
+        "-b";
+        branch_str;
+        path;
+        "HEAD";
+      ];
+    { patch_id = patch.Patch.id; branch = patch.Patch.branch; path })
 
 let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
