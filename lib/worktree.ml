@@ -160,6 +160,59 @@ let list_with_branches ~process_mgr ~repo_root =
   in
   parse [] None None lines
 
+type rebase_result = Ok | Noop | Conflict | Error of string
+[@@deriving show, eq, sexp_of, compare]
+
+let run_git_exit_code ~process_mgr args =
+  Eio.Switch.run @@ fun sw ->
+  let stdout_buf = Buffer.create 0 in
+  let stderr_buf = Buffer.create 64 in
+  let child =
+    Eio.Process.spawn ~sw process_mgr
+      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      args
+  in
+  let code =
+    match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
+  in
+  (code, Buffer.contents stderr_buf)
+
+let rebase_onto ~process_mgr ~path ~target =
+  let target = Types.Branch.to_string target in
+  let ancestor_code, ancestor_stderr =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "merge-base"; "--is-ancestor"; target; "HEAD" ]
+  in
+  if ancestor_code = 0 then Noop
+  else if ancestor_code <> 1 then
+    Error
+      (Printf.sprintf
+         "merge-base --is-ancestor failed for target %s (exit %d): %s" target
+         ancestor_code
+         (String.strip ancestor_stderr))
+  else
+    let rebase_code, rebase_stderr =
+      run_git_exit_code ~process_mgr [ "git"; "-C"; path; "rebase"; target ]
+    in
+    if rebase_code = 0 then Ok
+    else if rebase_code <> 1 then
+      Error
+        (Printf.sprintf "rebase failed (exit %d): %s" rebase_code
+           (String.strip rebase_stderr))
+    else begin
+      let abort_code, abort_stderr =
+        run_git_exit_code ~process_mgr
+          [ "git"; "-C"; path; "rebase"; "--abort" ]
+      in
+      if abort_code <> 0 then
+        Error
+          (Printf.sprintf "rebase conflict but abort also failed (exit %d): %s"
+             abort_code
+             (String.strip abort_stderr))
+      else Conflict
+    end
+
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
 let patch_id t = t.patch_id
