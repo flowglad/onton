@@ -992,6 +992,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     Eio.Semaphore.acquire semaphore;
     Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
   in
+  let with_busy_guard ~patch_id f =
+    Fun.protect
+      ~finally:(fun () ->
+        let still_busy =
+          Runtime.read runtime (fun snap ->
+              (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                .Patch_agent.busy)
+        in
+        if still_busy then (
+          log_event runtime ~patch_id
+            "runner: fiber exiting with busy=true, forcing complete";
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.complete orch patch_id)))
+      f
+  in
   let rec loop () =
     let actions, gameplan =
       Runtime.read runtime (fun snap ->
@@ -1028,21 +1043,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               | Some patch ->
                   Some
                     (fun () ->
-                      Fun.protect
-                        ~finally:(fun () ->
-                          let still_busy =
-                            Runtime.read runtime (fun snap ->
-                                (Orchestrator.agent snap.Runtime.orchestrator
-                                   patch_id)
-                                  .Patch_agent.busy)
-                          in
-                          if still_busy then (
-                            log_event runtime ~patch_id
-                              "runner: Start fiber exiting with busy=true, \
-                               forcing complete";
-                            Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator.complete orch patch_id)))
-                        (fun () ->
+                      with_busy_guard ~patch_id (fun () ->
                           let result =
                             with_claude_slot (fun () ->
                                 let agent =
@@ -1127,21 +1128,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
           | Orchestrator.Rebase (patch_id, new_base) ->
               Some
                 (fun () ->
-                  Fun.protect
-                    ~finally:(fun () ->
-                      let still_busy =
-                        Runtime.read runtime (fun snap ->
-                            (Orchestrator.agent snap.Runtime.orchestrator
-                               patch_id)
-                              .Patch_agent.busy)
-                      in
-                      if still_busy then (
-                        log_event runtime ~patch_id
-                          "runner: Rebase fiber exiting with busy=true, \
-                           forcing complete";
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.complete orch patch_id)))
-                    (fun () ->
+                  with_busy_guard ~patch_id (fun () ->
                       let result =
                         with_claude_slot (fun () ->
                             let agent =
@@ -1191,21 +1178,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
           | Orchestrator.Respond (patch_id, kind) ->
               Some
                 (fun () ->
-                  Fun.protect
-                    ~finally:(fun () ->
-                      let still_busy =
-                        Runtime.read runtime (fun snap ->
-                            (Orchestrator.agent snap.Runtime.orchestrator
-                               patch_id)
-                              .Patch_agent.busy)
-                      in
-                      if still_busy then (
-                        log_event runtime ~patch_id
-                          "runner: Respond fiber exiting with busy=true, \
-                           forcing complete";
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.complete orch patch_id)))
-                    (fun () ->
+                  with_busy_guard ~patch_id (fun () ->
                       let result =
                         with_claude_slot (fun () ->
                             let agent =
