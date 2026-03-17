@@ -562,19 +562,17 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
   let current_completions = ref [] in
   let recompute_completions () =
     let buffer = Buffer.contents buf in
-    let patch_ids =
-      Base.List.map !sorted_patch_ids ~f:Patch_id.to_string
-    in
+    let patch_ids = Base.List.map !sorted_patch_ids ~f:Patch_id.to_string in
     current_completions := Completions.complete ~buffer ~patch_ids;
     completion_hint :=
-      (match !current_completions with
+      match !current_completions with
       | first :: _ ->
           let full = first.Completions.full in
           let buf_str = buffer in
           if Base.String.is_prefix full ~prefix:buf_str then
             Some (Base.String.drop_prefix full (Base.String.length buf_str))
           else Some first.Completions.display
-      | [] -> None)
+      | [] -> None
   in
   let sync_input () =
     input_line := if !text_mode then Some (Buffer.contents buf) else None;

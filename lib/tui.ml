@@ -841,7 +841,8 @@ let render_footer ~width ~view_mode ?input_line ?completion_hint () =
         | Some _ | None -> ""
       in
       let prompt_str =
-        Term.fit_width (Int.max 1 (width - 2))
+        Term.fit_width
+          (Int.max 1 (width - 2))
           (Printf.sprintf ": %s%s" text ghost)
       in
       [ Term.hrule width; prompt_str ]
@@ -979,7 +980,9 @@ let render_frame ~width ~height ~selected ~view_mode
   else
     let header = render_header ~project_name ~width in
     let summary = [ render_summary views ] in
-    let footer = render_footer ~width ~view_mode ?input_line ?completion_hint () in
+    let footer =
+      render_footer ~width ~view_mode ?input_line ?completion_hint ()
+    in
     match view_mode with
     | Detail_view patch_id ->
         let info, transcript_lines =
