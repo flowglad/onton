@@ -76,6 +76,10 @@ type patch_view = {
 
 type frame
 
+val detail_at_bottom : frame -> bool
+(** [true] when the detail view scroll is at or past the bottom of content. Used
+    by the TUI loop to auto-follow new transcript content. *)
+
 val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->

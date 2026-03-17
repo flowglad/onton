@@ -533,6 +533,9 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
         ~activity ~project_name:gp.Gameplan.project_name ~show_help:!show_help
         ~transcript ?input_line:!input_line views
     in
+    (* Auto-follow: if detail view is at bottom, keep it pinned so new
+       transcript content stays visible without manual scrolling. *)
+    if Tui.detail_at_bottom frame then selected := Base.Int.max_value;
     let output = Tui.paint_frame frame in
     if not (String.equal output !prev_output) then (
       Eio.Flow.copy_string output stdout;

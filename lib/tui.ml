@@ -396,7 +396,8 @@ let render_status_badge status =
 
 (** {1 Frame rendering} *)
 
-type frame = { lines : string list; width : int } [@@warning "-69"]
+type frame = { lines : string list; width : int; detail_at_bottom : bool }
+[@@warning "-69"]
 
 let render_header ~project_name ~width =
   let title =
@@ -825,7 +826,7 @@ let render_frame ~width ~height ~selected ~view_mode
     ?(transcript = "") ?input_line (views : patch_view list) =
   if show_help then
     let overlay = render_help_overlay ~width ~height in
-    { lines = overlay; width }
+    { lines = overlay; width; detail_at_bottom = false }
   else
     let header = render_header ~project_name ~width in
     let summary = [ render_summary views ] in
@@ -843,9 +844,9 @@ let render_frame ~width ~height ~selected ~view_mode
          + footer(2) = 7 fixed lines *)
         let max_detail = Int.max 0 (height - 7) in
         let total_detail = List.length detail in
-        let scroll_offset =
-          Int.min selected (Int.max 0 (total_detail - max_detail))
-        in
+        let max_scroll = Int.max 0 (total_detail - max_detail) in
+        let scroll_offset = Int.min selected max_scroll in
+        let at_bottom = selected >= max_scroll in
         let detail =
           List.sub detail ~pos:scroll_offset
             ~len:(Int.min max_detail (total_detail - scroll_offset))
@@ -853,7 +854,7 @@ let render_frame ~width ~height ~selected ~view_mode
         let lines =
           header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
         in
-        { lines; width }
+        { lines; width; detail_at_bottom = at_bottom }
     | Timeline_view ->
         (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
          + scroll indicators(2) + blank before footer + footer(2) = 11 *)
@@ -866,7 +867,7 @@ let render_frame ~width ~height ~selected ~view_mode
         let lines =
           header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ footer
         in
-        { lines; width }
+        { lines; width; detail_at_bottom = false }
     | List_view ->
         let activity_lines = render_activity activity in
         let activity_height =
@@ -886,9 +887,10 @@ let render_frame ~width ~height ~selected ~view_mode
           @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
           @ [ "" ] @ footer
         in
-        { lines; width }
+        { lines; width; detail_at_bottom = false }
 
 let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
+let detail_at_bottom frame = frame.detail_at_bottom
 
 let paint_frame (frame : frame) =
   let buf = Buffer.create 4096 in
