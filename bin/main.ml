@@ -328,7 +328,15 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
       in
       let worktree_path = Worktree.worktree_dir ~repo_root ~patch_id in
       let cwd = Eio.Path.(fs / worktree_path) in
-      let text_buf = Buffer.create 4096 in
+      let text_buf =
+        let buf = Buffer.create 4096 in
+        (match Hashtbl.find_opt transcripts patch_id with
+        | Some prev when String.length prev > 0 ->
+            Buffer.add_string buf prev;
+            Buffer.add_string buf "\n--- new run ---\n"
+        | Some _ | None -> ());
+        buf
+      in
       let error_buf = Buffer.create 256 in
       let tool_count = ref 0 in
       let pr_found = ref false in

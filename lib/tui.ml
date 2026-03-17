@@ -607,8 +607,13 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
         [ ""; Term.styled [ Term.Sgr.bold ] "  Transcript" ]
       in
       let wrap_line max_w line =
-        if String.length line <= max_w then [ line ]
+        (* Wrap on visible characters, not ANSI escapes. Use a simple
+           byte-length heuristic — ANSI sequences add ~10 bytes per style
+           but this is good enough for TUI display. *)
+        let stripped_len = String.length (Term.strip_ansi line) in
+        if stripped_len <= max_w then [ line ]
         else
+          (* Fall back to raw split for long lines *)
           let rec split acc pos =
             if pos >= String.length line then List.rev acc
             else
@@ -618,9 +623,9 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
           split [] 0
       in
       let content_width = Int.max 1 (width - 4) in
+      let rendered = Markdown_render.render_to_lines transcript in
       let transcript_lines =
-        String.split_on_chars ~on:[ '\n' ] transcript
-        |> List.concat_map ~f:(fun line ->
+        List.concat_map rendered ~f:(fun line ->
             wrap_line content_width line
             |> List.map ~f:(fun chunk -> "    " ^ chunk))
       in
