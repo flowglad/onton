@@ -69,6 +69,7 @@ type patch_view = {
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
   base_branch : Branch.t option;
+  worktree_path : string option;
 }
 
 (** {2 Frame rendering} *)

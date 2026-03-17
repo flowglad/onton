@@ -36,6 +36,7 @@ type t = {
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Operation_kind.t option;
+  worktree_path : string option;
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -67,6 +68,7 @@ let create patch_id =
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
+    worktree_path = None;
   }
 
 let create_adhoc ~patch_id ~pr_number =
@@ -94,6 +96,7 @@ let create_adhoc ~patch_id ~pr_number =
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
+    worktree_path = None;
   }
 
 let highest_priority t =
@@ -182,6 +185,7 @@ let set_mergeable t v = { t with mergeable = v }
 let set_merge_ready t v = { t with merge_ready = v }
 let set_checks_passing t v = { t with checks_passing = v }
 let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
+let set_worktree_path t path = { t with worktree_path = Some path }
 
 let is_approved t =
   t.has_pr && t.merge_ready && (not t.busy) && not t.needs_intervention
@@ -215,7 +219,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_fallback ~pending_comments ~ci_checks
     ~addressed_comment_ids ~removed ~mergeable ~merge_ready ~checks_passing
-    ~no_unresolved_comments =
+    ~no_unresolved_comments ~worktree_path =
   {
     patch_id;
     has_pr;
@@ -240,6 +244,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     checks_passing;
     no_unresolved_comments;
     current_op = None;
+    worktree_path;
   }
 
 let restore_pending_comment ~comment ~valid = { comment; valid }

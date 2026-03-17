@@ -36,6 +36,7 @@ type t = private {
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
+  worktree_path : string option;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -131,6 +132,9 @@ val set_checks_passing : t -> bool -> t
 val set_no_unresolved_comments : t -> bool -> t
 (** Set the no_unresolved_comments flag from GitHub review state. *)
 
+val set_worktree_path : t -> string -> t
+(** Store the resolved worktree path for this patch. *)
+
 val is_approved : t -> bool
 (** Derived predicate:
     [has_pr && merge_ready && not busy && not needs_intervention]. [merge_ready]
@@ -192,6 +196,7 @@ val restore :
   merge_ready:bool ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
+  worktree_path:string option ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

@@ -329,6 +329,7 @@ type patch_view = {
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
   base_branch : Branch.t option;
+  worktree_path : string option;
 }
 [@@warning "-69"]
 
@@ -381,6 +382,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     recent_stream = [];
     pr_number = agent.pr_number;
     base_branch = agent.base_branch;
+    worktree_path = agent.worktree_path;
   }
 
 (** {1 Render helpers} *)
@@ -553,6 +555,8 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
         (match pv.base_branch with
         | Some b -> Branch.to_string b
         | None -> "(not set)");
+      fit_value "  Worktree:    "
+        (match pv.worktree_path with Some p -> p | None -> "(none)");
       Printf.sprintf "  PR:          %s"
         (match pv.pr_number with
         | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)

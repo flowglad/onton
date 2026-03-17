@@ -65,6 +65,7 @@ val set_merge_ready : t -> Patch_id.t -> bool -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
 val add_addressed_comment_id : t -> Patch_id.t -> Types.Comment_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
+val set_worktree_path : t -> Patch_id.t -> string -> t
 
 (** {2 Queries} *)
 

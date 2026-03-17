@@ -114,6 +114,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("merge_ready", `Bool a.merge_ready);
       ("checks_passing", `Bool a.checks_passing);
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
+      ( "worktree_path",
+        match a.worktree_path with None -> `Null | Some p -> `String p );
     ]
 
 let list_member_opt key json =
@@ -198,7 +200,8 @@ let patch_agent_of_yojson json =
          (bool_member_opt "checks_passing" json |> Option.value ~default:false)
        ~no_unresolved_comments:
          (bool_member_opt "no_unresolved_comments" json
-         |> Option.value ~default:false))
+         |> Option.value ~default:false)
+       ~worktree_path:(string_member_opt "worktree_path" json))
 
 (* ---------- Activity_log ---------- *)
 

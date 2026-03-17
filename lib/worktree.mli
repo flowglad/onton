@@ -36,6 +36,14 @@ val rebase_onto :
   target:Types.Branch.t ->
   rebase_result
 
+val find_for_branch :
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  Types.Branch.t ->
+  string option
+(** Search existing git worktrees for one checked out at [branch]. Returns
+    [None] if no matching worktree is found or if listing fails. *)
+
 val normalize_path : string -> string
 (** Resolve a relative path to absolute using the current working directory. *)
 

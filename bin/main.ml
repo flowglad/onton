@@ -326,7 +326,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
       let continue, is_fresh =
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
-      let worktree_path = Worktree.worktree_dir ~project_name ~patch_id in
+      let worktree_path =
+        match agent.Patch_agent.worktree_path with
+        | Some p -> p
+        | None -> Worktree.worktree_dir ~project_name ~patch_id
+      in
       let cwd = Eio.Path.(fs / worktree_path) in
       let text_buf =
         let buf = Buffer.create 4096 in
@@ -685,7 +689,12 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                                    "Cannot overwrite non-symlink at %s" expected));
                           Unix.symlink canonical_real expected);
                         Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.clear_needs_intervention orch patch_id);
+                            let orch =
+                              Orchestrator.clear_needs_intervention orch
+                                patch_id
+                            in
+                            Orchestrator.set_worktree_path orch patch_id
+                              canonical_real);
                         if String.equal canonical_real canonical_expected then
                           log_event runtime ~patch_id
                             (Printf.sprintf
@@ -1262,18 +1271,40 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   `Stale)
                                 else
                                   let wt_path =
-                                    Worktree.worktree_dir ~project_name
-                                      ~patch_id
+                                    match
+                                      Worktree.find_for_branch ~process_mgr
+                                        ~repo_root:config.repo_root
+                                        patch.Patch.branch
+                                    with
+                                    | Some existing_path ->
+                                        log_event runtime ~patch_id
+                                          (Printf.sprintf
+                                             "found existing worktree at %s"
+                                             existing_path);
+                                        existing_path
+                                    | None ->
+                                        let default_path =
+                                          Worktree.worktree_dir ~project_name
+                                            ~patch_id
+                                        in
+                                        if
+                                          not
+                                            (Stdlib.Sys.file_exists default_path)
+                                        then (
+                                          log_event runtime ~patch_id
+                                            "creating worktree";
+                                          ignore
+                                            (Worktree.create ~process_mgr
+                                               ~repo_root:config.repo_root
+                                               ~project_name ~patch
+                                               ~base_ref:
+                                                 (Branch.to_string base_branch)));
+                                        default_path
                                   in
-                                  if not (Stdlib.Sys.file_exists wt_path) then (
-                                    log_event runtime ~patch_id
-                                      "creating worktree";
-                                    ignore
-                                      (Worktree.create ~process_mgr
-                                         ~repo_root:config.repo_root
-                                         ~project_name ~patch
-                                         ~base_ref:
-                                           (Branch.to_string base_branch)));
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.set_worktree_path orch
+                                        patch_id wt_path);
                                   let prompt =
                                     Prompt.render_patch_prompt ~project_name
                                       ?pr_number:agent.Patch_agent.pr_number
@@ -1342,8 +1373,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               Some
                 (fun () ->
                   with_busy_guard ~patch_id (fun () ->
+                      let agent =
+                        Runtime.read runtime (fun snap ->
+                            Orchestrator.agent snap.Runtime.orchestrator
+                              patch_id)
+                      in
                       let wt_path =
-                        Worktree.worktree_dir ~project_name ~patch_id
+                        match agent.Patch_agent.worktree_path with
+                        | Some p -> p
+                        | None -> Worktree.worktree_dir ~project_name ~patch_id
                       in
                       let rebase_result =
                         Worktree.rebase_onto ~process_mgr ~path:wt_path

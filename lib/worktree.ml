@@ -217,6 +217,11 @@ let rebase_onto ~process_mgr ~path ~target =
       else Conflict
     end
 
+let find_for_branch ~process_mgr ~repo_root branch =
+  let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in
+  List.find_map pairs ~f:(fun (path, b) ->
+      if Types.Branch.equal b branch then Some path else None)
+
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
 let patch_id t = t.patch_id
