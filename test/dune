@@ -57,3 +57,7 @@
 (test
  (name test_patch_decision)
  (libraries onton qcheck-core))
+
+(test
+ (name test_spawn_logic)
+ (libraries onton onton_test_support qcheck-core))
