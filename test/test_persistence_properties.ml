@@ -99,6 +99,7 @@ let () =
                 project_name = "t";
                 problem_statement = "t";
                 solution_summary = "t";
+                design_decisions = "";
                 patches = [];
               }
           in

@@ -122,18 +122,42 @@ let parse_patch_header line =
 
 let parse_patches lines dep_graph ~project_name =
   let slug = slugify project_name in
-  List.filter_map lines ~f:(fun line ->
-      match parse_patch_header line with
-      | None -> None
-      | Some (patch_id_str, title) ->
-          let id = Types.Patch_id.of_string patch_id_str in
-          let dependencies =
-            Map.find dep_graph id |> Option.value ~default:[]
-          in
-          let branch =
-            Types.Branch.of_string (slug ^ "/patch-" ^ patch_id_str)
-          in
-          Some { Types.Patch.id; title; branch; dependencies })
+  (* Collect patch headers with their body lines *)
+  let rec collect acc current lines =
+    match lines with
+    | [] ->
+        let acc =
+          match current with
+          | Some (h, body) -> (h, List.rev body) :: acc
+          | None -> acc
+        in
+        List.rev acc
+    | line :: rest -> (
+        match parse_patch_header line with
+        | Some header ->
+            let acc =
+              match current with
+              | Some (h, body) -> (h, List.rev body) :: acc
+              | None -> acc
+            in
+            collect acc (Some (header, [])) rest
+        | None -> (
+            match current with
+            | Some (h, body) ->
+                (* Stop collecting at next ## section *)
+                if String.is_prefix (String.strip line) ~prefix:"## " then
+                  let acc = (h, List.rev body) :: acc in
+                  collect acc None rest
+                else collect acc (Some (h, line :: body)) rest
+            | None -> collect acc None rest))
+  in
+  let patch_entries = collect [] None lines in
+  List.filter_map patch_entries ~f:(fun ((patch_id_str, title), body_lines) ->
+      let id = Types.Patch_id.of_string patch_id_str in
+      let dependencies = Map.find dep_graph id |> Option.value ~default:[] in
+      let branch = Types.Branch.of_string (slug ^ "/patch-" ^ patch_id_str) in
+      let description = String.concat ~sep:"\n" body_lines |> String.strip in
+      Some { Types.Patch.id; title; description; branch; dependencies })
 
 let detect_cycle dep_graph =
   (* DFS cycle detection *)
@@ -246,6 +270,15 @@ let parse_string input =
         extract_section ~header:"Solution Summary" lines
         |> Option.value ~default:""
       in
+      let design_decisions =
+        let d = extract_section ~header:"Explicit Opinions" lines in
+        let d =
+          match d with
+          | Some _ -> d
+          | None -> extract_section ~header:"Design Decisions" lines
+        in
+        Option.value d ~default:""
+      in
       let dep_graph = parse_dep_graph lines in
       let patches = parse_patches lines dep_graph ~project_name in
       match validate ~patches ~dep_graph with
@@ -258,6 +291,7 @@ let parse_string input =
                   Types.Gameplan.project_name;
                   problem_statement;
                   solution_summary;
+                  design_decisions;
                   patches;
                 };
               dependency_graph = dep_graph;
@@ -360,6 +394,7 @@ let%test_module "Gameplan_parser" =
             {
               id = pid;
               title = "A";
+              description = "";
               branch = Types.Branch.of_string "ba";
               dependencies = [ pid ];
             };
@@ -377,6 +412,7 @@ let%test_module "Gameplan_parser" =
           {
             id = pid;
             title = "A";
+            description = "";
             branch = Types.Branch.of_string "ba";
             dependencies = [];
           }
@@ -413,5 +449,39 @@ Do thing 2.
       | Ok result ->
           List.length result.gameplan.patches = 2
           && String.equal result.gameplan.project_name "Test Project"
+          && String.equal
+               (List.hd_exn result.gameplan.patches).Types.Patch.description
+               "Do thing 1."
+      | Error _ -> false
+
+    let%test "parse_string extracts design decisions" =
+      let input =
+        {|# Gameplan: Test
+
+## Problem Statement
+P.
+
+## Solution Summary
+S.
+
+## Explicit Opinions
+Always use property tests.
+Never mock.
+
+## Dependency Graph
+- Patch 1 [CORE] -> []
+
+## Patches
+
+### Patch 1 [CORE]: First
+Details here.
+|}
+      in
+      match parse_string input with
+      | Ok result ->
+          String.is_substring result.gameplan.design_decisions
+            ~substring:"property tests"
+          && String.is_substring result.gameplan.design_decisions
+               ~substring:"Never mock"
       | Error _ -> false
   end)

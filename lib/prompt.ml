@@ -123,29 +123,86 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
         | None -> "" );
     ]
   in
+  let design_decisions_section =
+    if String.is_empty gameplan.Gameplan.design_decisions then ""
+    else
+      Printf.sprintf "\n## Design Decisions (Non-negotiable)\n%s\n"
+        gameplan.Gameplan.design_decisions
+  in
+  let base_branch_note =
+    if String.equal base_branch "main" then ""
+    else
+      Printf.sprintf
+        "\n\
+         **NOTE:** Your branch is based on `%s`, which is a dependency patch's \
+         branch. Your worktree already contains that patch's changes. This is \
+         expected — build on top of those changes. Your PR will target `%s`, \
+         so the diff should only show YOUR patch's changes, not the \
+         dependency's.\n"
+        base_branch base_branch
+  in
+  let pr_instructions =
+    match pr_number with
+    | Some _ -> ""
+    | None ->
+        Printf.sprintf
+          {|
+**IMPORTANT: Open a draft PR immediately after your first commit.** Do not wait until implementation is complete.
+
+After your first commit, run:
+```bash
+gh pr create --draft --title '[%s] Patch %s: %s' --body 'Work in progress' --base %s
+```
+
+**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches automatically.
+
+Then continue implementing. When finished:
+1. Run tests to verify they pass
+2. Update the PR description with a proper summary
+3. Mark the PR as ready for review when complete|}
+          project_name
+          (Patch_id.to_string patch.Patch.id)
+          patch.Patch.title base_branch
+  in
   render_with_override ~project_name ~name:"patch" ~vars ~default:(fun () ->
       Printf.sprintf
-        {|# [%s] %s
+        {|# [%s] Patch %s: %s
 
 ## Problem Statement
 %s
 
 ## Solution Summary
 %s
-
+%s
 ## Dependencies
+%s
+
+## Your Task
+
 %s
 
 ## Git Instructions
 - Branch: %s
 - Base branch: %s
 - PR: %s
+%s%s
+## PR Title (CRITICAL)
+**You MUST use this EXACT title format:**
+
+`[%s] Patch %s: %s`
+
+Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed project name and patch number are required for tracking.
 
 ## Patches in Gameplan
 %s|}
-        project_name patch.Patch.title gameplan.Gameplan.problem_statement
-        gameplan.Gameplan.solution_summary deps branch base_branch pr_str
-        patches_list)
+        project_name
+        (Patch_id.to_string patch.Patch.id)
+        patch.Patch.title gameplan.Gameplan.problem_statement
+        gameplan.Gameplan.solution_summary design_decisions_section deps
+        patch.Patch.description branch base_branch pr_str base_branch_note
+        pr_instructions project_name
+        (Patch_id.to_string patch.Patch.id)
+        patch.Patch.title patches_list)
 
 let render_review_prompt ~(project_name : string) ?pr_number
     (comments : Comment.t list) =
@@ -316,6 +373,7 @@ let%test "patch prompt includes title and deps" =
       {
         id = Patch_id.of_string "5";
         title = "Prompt renderer";
+        description = "";
         branch = Branch.of_string "onton-port/patch-5";
         dependencies = [ Patch_id.of_string "1" ];
       }
@@ -326,12 +384,14 @@ let%test "patch prompt includes title and deps" =
         project_name = "onton-port";
         problem_statement = "Port Anton to OCaml.";
         solution_summary = "Use Eio for concurrency.";
+        design_decisions = "";
         patches =
           [
             Patch.
               {
                 id = Patch_id.of_string "1";
                 title = "Core types";
+                description = "";
                 branch = Branch.of_string "onton-port/patch-1";
                 dependencies = [];
               };
@@ -343,7 +403,8 @@ let%test "patch prompt includes title and deps" =
     render_patch_prompt ~project_name:"onton-port" patch gameplan
       ~base_branch:"onton-port/patch-1"
   in
-  String.is_substring result ~substring:"# [onton-port] Prompt renderer"
+  String.is_substring result
+    ~substring:"# [onton-port] Patch 5: Prompt renderer"
   && String.is_substring result ~substring:"Patches 1"
   && String.is_substring result ~substring:"Patch 1: Core types"
   && String.is_substring result ~substring:"Patch 5: Prompt renderer"

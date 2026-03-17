@@ -1341,6 +1341,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             project_name;
             problem_statement = "";
             solution_summary = "";
+            design_decisions = "";
             patches = [];
           }
       in

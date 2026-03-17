@@ -308,6 +308,7 @@ let () =
         {
           id = pid;
           title = "P1";
+          description = "";
           branch = Types.Branch.of_string "b1";
           dependencies = [];
         };
@@ -357,6 +358,7 @@ let () =
       {
         id;
         title = Types.Patch_id.to_string id;
+        description = "";
         branch = Types.Branch.of_string "b1";
         dependencies = [];
       }
@@ -459,6 +461,7 @@ let () =
         {
           id = p1;
           title = "P1";
+          description = "";
           branch = Types.Branch.of_string "b1";
           dependencies = [];
         };
@@ -466,6 +469,7 @@ let () =
         {
           id = p2;
           title = "P2";
+          description = "";
           branch = Types.Branch.of_string "b2";
           dependencies = [ p1 ];
         };
