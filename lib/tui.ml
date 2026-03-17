@@ -640,8 +640,8 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
       in
       transcript_header @ transcript_lines
   in
-  lines @ op_line @ intervention @ ci_section @ stream_section
-  @ transcript_section
+  let info = lines @ op_line @ intervention @ ci_section @ stream_section in
+  (info, transcript_section)
 
 let render_timeline ~width ~selected ~max_visible
     (entries : activity_entry list) =
@@ -833,26 +833,28 @@ let render_frame ~width ~height ~selected ~view_mode
     let footer = render_footer ~width ~view_mode ?input_line () in
     match view_mode with
     | Detail_view patch_id ->
-        let detail =
+        let info, transcript_lines =
           match
             List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
           with
           | Some pv -> render_detail pv ~width ~transcript ()
-          | None -> [ " (patch not found)" ]
+          | None -> ([ " (patch not found)" ], [])
         in
-        (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
-         + footer(2) = 7 fixed lines *)
-        let max_detail = Int.max 0 (height - 7) in
-        let total_detail = List.length detail in
-        let max_scroll = Int.max 0 (total_detail - max_detail) in
+        (* Chrome: header(2) + blank + summary(1) + blank + info + blank
+           before footer + footer(2) *)
+        let fixed_lines = 2 + 1 + 1 + 1 + List.length info + 1 + 2 in
+        let max_transcript = Int.max 0 (height - fixed_lines) in
+        let total_transcript = List.length transcript_lines in
+        let max_scroll = Int.max 0 (total_transcript - max_transcript) in
         let scroll_offset = Int.min selected max_scroll in
         let at_bottom = selected >= max_scroll in
-        let detail =
-          List.sub detail ~pos:scroll_offset
-            ~len:(Int.min max_detail (total_detail - scroll_offset))
+        let visible_transcript =
+          List.sub transcript_lines ~pos:scroll_offset
+            ~len:(Int.min max_transcript (total_transcript - scroll_offset))
         in
         let lines =
-          header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
+          header @ [ "" ] @ summary @ [ "" ] @ info @ visible_transcript
+          @ [ "" ] @ footer
         in
         { lines; width; detail_at_bottom = at_bottom }
     | Timeline_view ->
