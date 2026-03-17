@@ -1151,6 +1151,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             in
                             if
                               agent.Patch_agent.merged
+                              || agent.Patch_agent.needs_intervention
                               || not agent.Patch_agent.busy
                             then (
                               log_event runtime ~patch_id
