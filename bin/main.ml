@@ -891,18 +891,23 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                 in
                 Runtime.update_orchestrator runtime (fun orch ->
                     let orch =
-                      if poll_result.Poller.merged then
-                        Orchestrator.mark_merged orch patch_id
+                      if poll_result.Poller.merged then (
+                        log_event runtime ~patch_id "merged";
+                        Orchestrator.mark_merged orch patch_id)
                       else orch
                     in
                     let orch =
-                      if poll_result.Poller.has_conflict then
-                        Orchestrator.set_has_conflict orch patch_id
+                      if poll_result.Poller.has_conflict then (
+                        log_event runtime ~patch_id "merge conflict detected";
+                        Orchestrator.set_has_conflict orch patch_id)
                       else orch
                     in
                     let orch =
                       Base.List.fold poll_result.Poller.queue ~init:orch
                         ~f:(fun acc kind ->
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "enqueued %s"
+                               (Operation_kind.show kind));
                           Orchestrator.enqueue acc patch_id kind)
                     in
                     let _ci_store =
@@ -968,6 +973,8 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
               match action with
               | Reconciler.Mark_merged pid -> Orchestrator.mark_merged orch pid
               | Reconciler.Enqueue_rebase pid ->
+                  log_event runtime ~patch_id:pid
+                    "rebase enqueued by reconciler";
                   Orchestrator.enqueue orch pid Operation_kind.Rebase
               | Reconciler.Start_operation _ -> orch)
         in
