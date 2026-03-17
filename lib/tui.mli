@@ -107,6 +107,7 @@ val render_frame :
   show_help:bool ->
   ?transcript:string ->
   ?input_line:string ->
+  ?completion_hint:string ->
   patch_view list ->
   frame
 

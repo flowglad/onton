@@ -490,7 +490,7 @@ exception Quit_tui
     [selected] and [view_mode] are shared mutable refs updated by the input
     fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
-    ~transcripts ~sorted_patch_ids ~input_line =
+    ~transcripts ~sorted_patch_ids ~input_line ~completion_hint =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -529,7 +529,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
         ~activity ~project_name:gp.Gameplan.project_name ~show_help:!show_help
-        ~transcript ?input_line:!input_line views
+        ~transcript ?input_line:!input_line ?completion_hint:!completion_hint
+        views
     in
     (* Auto-follow: if detail view is at bottom, keep it pinned so new
        transcript content stays visible without manual scrolling. *)
@@ -555,11 +556,32 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
 let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
-    ~show_help ~sorted_patch_ids ~input_line =
+    ~show_help ~sorted_patch_ids ~input_line ~completion_hint =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
+  let current_completions = ref [] in
+  let recompute_completions () =
+    let buffer = Buffer.contents buf in
+    let patch_ids =
+      Base.List.map !sorted_patch_ids ~f:Patch_id.to_string
+    in
+    current_completions := Completions.complete ~buffer ~patch_ids;
+    completion_hint :=
+      (match !current_completions with
+      | first :: _ ->
+          let full = first.Completions.full in
+          let buf_str = buffer in
+          if Base.String.is_prefix full ~prefix:buf_str then
+            Some (Base.String.drop_prefix full (Base.String.length buf_str))
+          else Some first.Completions.display
+      | [] -> None)
+  in
   let sync_input () =
-    input_line := if !text_mode then Some (Buffer.contents buf) else None
+    input_line := if !text_mode then Some (Buffer.contents buf) else None;
+    if !text_mode then recompute_completions ()
+    else (
+      current_completions := [];
+      completion_hint := None)
   in
   let saved_list_selected = ref 0 in
   let history = Tui_input.History.create () in
@@ -835,8 +857,18 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                      Buffer.clear buf;
                      Buffer.add_string buf !saved_draft);
               loop ()
+          | Term.Key.Tab ->
+              let buffer = Buffer.contents buf in
+              let accepted =
+                Completions.accept_first ~buffer
+                  ~completions:!current_completions
+              in
+              if not (String.equal accepted buffer) then (
+                Buffer.clear buf;
+                Buffer.add_string buf accepted);
+              loop ()
           | Term.Key.Left | Term.Key.Right | Term.Key.Home | Term.Key.End
-          | Term.Key.Page_up | Term.Key.Page_down | Term.Key.Tab | Term.Key.F _
+          | Term.Key.Page_up | Term.Key.Page_down | Term.Key.F _
           | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
               loop ()
         else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
@@ -1929,6 +1961,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
         let input_line = ref None in
+        let completion_hint = ref None in
         let show_help = ref false in
         let raw_state = Term.Raw.enter () in
         Fun.protect
@@ -1947,10 +1980,12 @@ let run_with_config (config : config) gameplan existing_snapshot =
               Eio.Fiber.all
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode
-                     ~show_help ~transcripts ~sorted_patch_ids ~input_line)
+                     ~show_help ~transcripts ~sorted_patch_ids ~input_line
+                     ~completion_hint)
                 :: (fun () ->
                   input_fiber ~runtime ~selected ~view_mode ~pr_registry
-                    ~project_name ~show_help ~sorted_patch_ids ~input_line)
+                    ~project_name ~show_help ~sorted_patch_ids ~input_line
+                    ~completion_hint)
                 :: common_fibers)
             with Quit_tui -> ())
 
