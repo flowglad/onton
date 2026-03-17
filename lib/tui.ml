@@ -705,6 +705,81 @@ let render_footer ~width ~view_mode ?input_line () =
       in
       [ Term.hrule width; help ]
 
+let render_help_overlay ~width ~height =
+  let pair_rows keys =
+    let col_w =
+      List.fold keys ~init:0 ~f:(fun m k -> Int.max m (String.length k))
+    in
+    let rec go acc = function
+      | a :: b :: tl -> go (Printf.sprintf "    %-*s %s" col_w a b :: acc) tl
+      | [ a ] -> List.rev (Printf.sprintf "    %s" a :: acc)
+      | [] -> List.rev acc
+    in
+    go [] keys
+  in
+  let sections =
+    [
+      ( "List View",
+        [
+          "↑/k       Move up";
+          "↓/j       Move down";
+          "PgUp      Page up";
+          "PgDn      Page down";
+          "Enter     Open detail";
+          "t         Toggle timeline";
+          ":         Enter command mode";
+          "r         Refresh";
+          "q         Quit";
+        ] );
+      ( "Detail View",
+        [
+          "↑/k       Scroll up";
+          "↓/j       Scroll down";
+          "PgUp      Page up (10 lines)";
+          "PgDn      Page down (10 lines)";
+          "Enter     Enter command mode";
+          "Esc/Bksp  Back to list";
+          "t         Toggle timeline";
+        ] );
+      ( "Timeline View",
+        [
+          "↑/k       Scroll up";
+          "↓/j       Scroll down";
+          "PgUp      Page up";
+          "PgDn      Page down";
+          "Esc/Bksp  Back to list";
+          "t         Back to list";
+        ] );
+      ( "Command Mode (:)",
+        [
+          "N> msg    Send message to patch N";
+          "+123      Add PR #123 to selected patch";
+          "w /path   Register worktree for patch";
+          "-         Remove selected patch";
+          "Esc       Cancel";
+          "Enter     Execute command";
+          "↑/↓       Browse command history";
+        ] );
+    ]
+  in
+  let dismiss = Term.styled [ Term.Sgr.dim ] "(any key to dismiss)" in
+  let title =
+    Term.styled
+      [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
+      (Printf.sprintf " Keyboard Shortcuts  %s" dismiss)
+  in
+  let body =
+    List.concat_map sections ~f:(fun (header, keys) ->
+        Term.styled [ Term.Sgr.bold ] (Printf.sprintf "  %s" header)
+        :: List.map (pair_rows keys) ~f:(fun row ->
+            Term.styled [ Term.Sgr.dim ] row))
+  in
+  let content = title :: body in
+  let overlay_h = Int.max 0 (Int.min (List.length content) (height - 1)) in
+  let visible = List.sub content ~pos:0 ~len:overlay_h in
+  let pad_line line = if width <= 0 then "" else Term.fit_width width line in
+  List.map visible ~f:pad_line
+
 (** {1 Public API} *)
 
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
@@ -740,68 +815,72 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~view_mode
-    ~(activity : activity_entry list) ~project_name ?(transcript = "")
-    ?input_line (views : patch_view list) =
-  let header = render_header ~project_name ~width in
-  let summary = [ render_summary views ] in
-  let footer = render_footer ~width ~view_mode ?input_line () in
-  match view_mode with
-  | Detail_view patch_id ->
-      let detail =
-        match
-          List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
-        with
-        | Some pv -> render_detail pv ~width ~transcript ()
-        | None -> [ " (patch not found)" ]
-      in
-      (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
+    ~(activity : activity_entry list) ~project_name ~show_help
+    ?(transcript = "") ?input_line (views : patch_view list) =
+  if show_help then
+    let overlay = render_help_overlay ~width ~height in
+    { lines = overlay; width }
+  else
+    let header = render_header ~project_name ~width in
+    let summary = [ render_summary views ] in
+    let footer = render_footer ~width ~view_mode ?input_line () in
+    match view_mode with
+    | Detail_view patch_id ->
+        let detail =
+          match
+            List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
+          with
+          | Some pv -> render_detail pv ~width ~transcript ()
+          | None -> [ " (patch not found)" ]
+        in
+        (* Chrome: header(2) + blank + summary(1) + blank + blank before footer
          + footer(2) = 7 fixed lines *)
-      let max_detail = Int.max 0 (height - 7) in
-      let total_detail = List.length detail in
-      let scroll_offset =
-        Int.min selected (Int.max 0 (total_detail - max_detail))
-      in
-      let detail =
-        List.sub detail ~pos:scroll_offset
-          ~len:(Int.min max_detail (total_detail - scroll_offset))
-      in
-      let lines =
-        header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
-      in
-      { lines; width }
-  | Timeline_view ->
-      (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
+        let max_detail = Int.max 0 (height - 7) in
+        let total_detail = List.length detail in
+        let scroll_offset =
+          Int.min selected (Int.max 0 (total_detail - max_detail))
+        in
+        let detail =
+          List.sub detail ~pos:scroll_offset
+            ~len:(Int.min max_detail (total_detail - scroll_offset))
+        in
+        let lines =
+          header @ [ "" ] @ summary @ [ "" ] @ detail @ [ "" ] @ footer
+        in
+        { lines; width }
+    | Timeline_view ->
+        (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
          + scroll indicators(2) + blank before footer + footer(2) = 11 *)
-      let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 in
-      (* = 11 *)
-      let max_rows = Int.max 0 (height - reserved) in
-      let timeline =
-        render_timeline ~width ~selected ~max_visible:max_rows activity
-      in
-      let lines =
-        header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ footer
-      in
-      { lines; width }
-  | List_view ->
-      let activity_lines = render_activity activity in
-      let activity_height =
-        if List.is_empty activity_lines then 0
-        else 1 + List.length activity_lines
-      in
-      (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
+        let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 in
+        (* = 11 *)
+        let max_rows = Int.max 0 (height - reserved) in
+        let timeline =
+          render_timeline ~width ~selected ~max_visible:max_rows activity
+        in
+        let lines =
+          header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ footer
+        in
+        { lines; width }
+    | List_view ->
+        let activity_lines = render_activity activity in
+        let activity_height =
+          if List.is_empty activity_lines then 0
+          else 1 + List.length activity_lines
+        in
+        (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
          + scroll indicators(2) + blank before footer + footer(2) +
          activity block *)
-      let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + activity_height in
-      let max_patch_rows = Int.max 0 (height - reserved) in
-      let patches =
-        render_patches ~width ~selected ~max_visible:max_patch_rows views
-      in
-      let lines =
-        header @ [ "" ] @ summary @ [ "" ] @ patches
-        @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
-        @ [ "" ] @ footer
-      in
-      { lines; width }
+        let reserved = 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + activity_height in
+        let max_patch_rows = Int.max 0 (height - reserved) in
+        let patches =
+          render_patches ~width ~selected ~max_visible:max_patch_rows views
+        in
+        let lines =
+          header @ [ "" ] @ summary @ [ "" ] @ patches
+          @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
+          @ [ "" ] @ footer
+        in
+        { lines; width }
 
 let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
 

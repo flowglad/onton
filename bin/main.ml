@@ -458,8 +458,8 @@ exception Quit_tui
 
     [selected] and [view_mode] are shared mutable refs updated by the input
     fiber. *)
-let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
-    ~sorted_patch_ids ~input_line =
+let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~show_help
+    ~transcripts ~sorted_patch_ids ~input_line =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let rec loop () =
@@ -496,8 +496,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
     in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
-        ~activity ~project_name:gp.Gameplan.project_name ~transcript
-        ?input_line:!input_line views
+        ~activity ~project_name:gp.Gameplan.project_name ~show_help:!show_help
+        ~transcript ?input_line:!input_line views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     loop ()
@@ -517,7 +517,7 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
 let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
-    ~sorted_patch_ids ~input_line =
+    ~show_help ~sorted_patch_ids ~input_line =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let sync_input () =
@@ -542,7 +542,10 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
           loop ())
     | Some key -> (
         eof_count := 0;
-        if !text_mode then
+        if !show_help then (
+          show_help := false;
+          loop ())
+        else if !text_mode then
           match key with
           | Term.Key.Escape ->
               Buffer.clear buf;
@@ -869,9 +872,12 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
                   view_mode := Tui.Timeline_view;
                   selected := 0;
                   loop ())
-          | Tui_input.Refresh | Tui_input.Help | Tui_input.Noop
-          | Tui_input.Send_message _ | Tui_input.Add_pr _
-          | Tui_input.Add_worktree _ | Tui_input.Remove_patch ->
+          | Tui_input.Help ->
+              show_help := true;
+              loop ()
+          | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
+          | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+          | Tui_input.Remove_patch ->
               loop ())
   in
   loop ()
@@ -1858,6 +1864,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
         let input_line = ref None in
+        let show_help = ref false in
         let raw_state = Term.Raw.enter () in
         Fun.protect
           ~finally:(fun () ->
@@ -1875,10 +1882,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
               Eio.Fiber.all
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode
-                     ~transcripts ~sorted_patch_ids ~input_line)
+                     ~show_help ~transcripts ~sorted_patch_ids ~input_line)
                 :: (fun () ->
                   input_fiber ~runtime ~selected ~view_mode ~pr_registry
-                    ~project_name ~sorted_patch_ids ~input_line)
+                    ~project_name ~show_help ~sorted_patch_ids ~input_line)
                 :: common_fibers)
             with Quit_tui -> ())
 
