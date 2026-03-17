@@ -7,6 +7,7 @@ module Pr_state = struct
   type t = {
     merged : bool;
     merge_state : merge_state;
+    merge_ready : bool;
     check_status : check_status;
     ci_checks : Types.Ci_check.t list;
     ci_checks_truncated : bool;
@@ -33,6 +34,7 @@ let graphql_query =
     pullRequest(number: $number) {
       merged
       mergeable
+      mergeStateStatus
       commits(last: 1) {
         nodes {
           commit {
@@ -160,6 +162,11 @@ let parse_response body =
             let merge_state =
               pr |> member "mergeable" |> to_string |> parse_merge_state
             in
+            let merge_ready =
+              match pr |> member "mergeStateStatus" |> to_string_option with
+              | Some "CLEAN" -> true
+              | _ -> false
+            in
             let check_status, ci_checks, ci_checks_truncated =
               let commits = pr |> member "commits" |> member "nodes" in
               match commits |> to_list with
@@ -207,6 +214,7 @@ let parse_response body =
                 {
                   merged;
                   merge_state;
+                  merge_ready;
                   check_status;
                   ci_checks;
                   ci_checks_truncated;
@@ -280,6 +288,8 @@ let merged (st : Pr_state.t) = st.Pr_state.merged
 let mergeable (st : Pr_state.t) =
   let open Pr_state in
   (not st.merged) && equal_merge_state st.merge_state Mergeable
+
+let merge_ready (st : Pr_state.t) = (not st.merged) && st.merge_ready
 
 let checks_passing (st : Pr_state.t) =
   let open Pr_state in

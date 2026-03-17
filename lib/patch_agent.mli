@@ -32,6 +32,7 @@ type t = private {
   addressed_comment_ids : Set.M(Types.Comment_id).t;
   removed : bool;
   mergeable : bool;
+  merge_ready : bool;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
@@ -121,6 +122,9 @@ val set_base_branch : t -> Types.Branch.t -> t
 val set_mergeable : t -> bool -> t
 (** Set the mergeable flag from GitHub merge state. *)
 
+val set_merge_ready : t -> bool -> t
+(** Set the merge_ready flag from GitHub mergeStateStatus. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -129,8 +133,9 @@ val set_no_unresolved_comments : t -> bool -> t
 
 val is_approved : t -> bool
 (** Derived predicate:
-    [has_pr && mergeable && checks_passing && no_unresolved_comments && not busy
-     && not needs_intervention]. *)
+    [has_pr && merge_ready && not busy && not needs_intervention]. [merge_ready]
+    reflects GitHub's [mergeStateStatus = CLEAN], which encapsulates required
+    reviews, passing checks, and branch protection. *)
 
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
@@ -184,6 +189,7 @@ val restore :
   addressed_comment_ids:Set.M(Types.Comment_id).t ->
   removed:bool ->
   mergeable:bool ->
+  merge_ready:bool ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
   t

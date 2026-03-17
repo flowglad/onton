@@ -1094,6 +1094,10 @@ let poller_fiber ~runtime ~clock ~net ~github ~config ~pr_registry ~branch_of
                       else Hashtbl.remove ci_checks_cache patch_id
                     in
                     let orch =
+                      Orchestrator.set_merge_ready orch patch_id
+                        poll_result.Poller.merge_ready
+                    in
+                    let orch =
                       Orchestrator.set_ci_checks orch patch_id
                         poll_result.Poller.ci_checks
                     in

@@ -6,6 +6,7 @@ type t = {
   merged : bool;
   has_conflict : bool;
   mergeable : bool;
+  merge_ready : bool;
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
   new_comments : Comment.t list;
@@ -38,6 +39,7 @@ let poll ~was_merged ~addressed_ids (pr : Github.Pr_state.t) =
     merged = was_merged || Github.merged pr;
     has_conflict = Github.has_conflict pr;
     mergeable = Github.mergeable pr;
+    merge_ready = Github.merge_ready pr;
     checks_passing = Github.checks_passing pr;
     ci_checks = pr.Github.Pr_state.ci_checks;
     new_comments;

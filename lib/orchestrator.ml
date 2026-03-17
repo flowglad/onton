@@ -250,6 +250,9 @@ let increment_ci_failure_count t patch_id =
 let set_ci_checks t patch_id checks =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_ci_checks a checks)
 
+let set_merge_ready t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_ready a v)
+
 let clear_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
 

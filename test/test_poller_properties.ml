@@ -18,6 +18,13 @@ let () =
            gen_addressed_ids) (fun (pr, addressed_ids) ->
           let result = Onton.Poller.poll ~was_merged:false ~addressed_ids pr in
           Bool.equal result.Onton.Poller.mergeable (Onton.Github.mergeable pr));
+      (* merge_ready is passed through from PR state *)
+      Test.make ~name:"merge_ready passed through" ~count:500
+        (Gen.pair Onton_test_support.Test_generators.gen_pr_state
+           gen_addressed_ids) (fun (pr, addressed_ids) ->
+          let result = Onton.Poller.poll ~was_merged:false ~addressed_ids pr in
+          Bool.equal result.Onton.Poller.merge_ready
+            (Onton.Github.merge_ready pr));
       (* checks_passing is passed through from PR state *)
       Test.make ~name:"checks_passing passed through" ~count:500
         (Gen.pair Onton_test_support.Test_generators.gen_pr_state

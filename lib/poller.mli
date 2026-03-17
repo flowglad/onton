@@ -23,6 +23,9 @@ type t = {
   merged : bool;  (** [true] if the patch is now merged (absorbing). *)
   has_conflict : bool;  (** [true] if the PR has a merge conflict. *)
   mergeable : bool;  (** [true] if the PR is currently mergeable. *)
+  merge_ready : bool;
+      (** [true] if GitHub's [mergeStateStatus] is [CLEAN] — all branch
+          protection rules (required reviews, checks, etc.) are satisfied. *)
   checks_passing : bool;  (** [true] if CI checks are currently passing. *)
   ci_checks : Ci_check.t list;
       (** Individual CI check results from the most recent poll. *)

@@ -125,12 +125,13 @@ let gen_check_status =
 let gen_pr_state =
   QCheck2.Gen.(
     let open Onton.Github.Pr_state in
-    map4
-      (fun (merged, merge_state) (check_status, ci_checks_truncated) ci_checks
-           (comments, unresolved_comment_count) ->
+    map5
+      (fun (merged, merge_state) merge_ready (check_status, ci_checks_truncated)
+           ci_checks (comments, unresolved_comment_count) ->
         {
           merged;
           merge_state;
+          merge_ready;
           check_status;
           ci_checks;
           ci_checks_truncated;
@@ -138,6 +139,7 @@ let gen_pr_state =
           unresolved_comment_count;
         })
       (pair bool gen_merge_state)
+      bool
       (pair gen_check_status bool)
       (list_small gen_ci_check)
       (pair (list_small gen_comment) (int_range 0 10)))
@@ -162,19 +164,21 @@ let gen_github_error =
 
 let gen_poller =
   QCheck2.Gen.(
-    map4
-      (fun queue (merged, has_conflict) (mergeable, checks_passing) ci_checks ->
+    map5
+      (fun queue (merged, has_conflict) (mergeable, merge_ready) checks_passing
+           ci_checks ->
         Onton.Poller.
           {
             queue;
             merged;
             has_conflict;
             mergeable;
+            merge_ready;
             checks_passing;
             ci_checks;
             new_comments = [];
           })
-      gen_operation_kind_queue (pair bool bool) (pair bool bool)
+      gen_operation_kind_queue (pair bool bool) (pair bool bool) bool
       (list_small gen_ci_check))
 
 (* -- Patch_agent -- *)
@@ -233,6 +237,7 @@ let gen_patch_agent_fully_populated =
     in
     let* pr_number = option gen_pr_number in
     let* mergeable = bool in
+    let* merge_ready = bool in
     let* checks_passing = bool in
     let* no_unresolved_comments = bool in
     let a = Onton.Patch_agent.create pid in
@@ -260,6 +265,7 @@ let gen_patch_agent_fully_populated =
       | None -> a
     in
     let a = Onton.Patch_agent.set_mergeable a mergeable in
+    let a = Onton.Patch_agent.set_merge_ready a merge_ready in
     let a = Onton.Patch_agent.set_checks_passing a checks_passing in
     let a =
       Onton.Patch_agent.set_no_unresolved_comments a no_unresolved_comments

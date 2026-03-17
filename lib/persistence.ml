@@ -111,6 +111,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
           |> List.map ~f:Comment_id.yojson_of_t) );
       ("removed", `Bool a.removed);
       ("mergeable", `Bool a.mergeable);
+      ("merge_ready", `Bool a.merge_ready);
       ("checks_passing", `Bool a.checks_passing);
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
     ]
@@ -191,6 +192,8 @@ let patch_agent_of_yojson json =
        ~removed:(bool_member_opt "removed" json |> Option.value ~default:false)
        ~mergeable:
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
+       ~merge_ready:
+         (bool_member_opt "merge_ready" json |> Option.value ~default:false)
        ~checks_passing:
          (bool_member_opt "checks_passing" json |> Option.value ~default:false)
        ~no_unresolved_comments:

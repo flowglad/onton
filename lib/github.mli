@@ -13,6 +13,7 @@ module Pr_state : sig
   type t = {
     merged : bool;
     merge_state : merge_state;
+    merge_ready : bool;
     check_status : check_status;
     ci_checks : Ci_check.t list;
     ci_checks_truncated : bool;
@@ -42,6 +43,7 @@ val pr_state :
 
 val merged : Pr_state.t -> bool
 val mergeable : Pr_state.t -> bool
+val merge_ready : Pr_state.t -> bool
 val checks_passing : Pr_state.t -> bool
 val no_unresolved_comments : Pr_state.t -> bool
 val has_conflict : Pr_state.t -> bool

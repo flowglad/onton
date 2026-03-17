@@ -354,6 +354,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
          ~value:agent.needs_intervention
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
     |> State.Patch_ctx.set_has_pr ~patch_id ~value:agent.has_pr
+    |> State.Patch_ctx.set_approved ~patch_id
+         ~value:(Patch_agent.is_approved agent)
     |> State.Patch_ctx.set_ci_failure_count ~patch_id
          ~count:agent.ci_failure_count
     |> fun ctx ->

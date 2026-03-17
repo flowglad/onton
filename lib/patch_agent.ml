@@ -32,6 +32,7 @@ type t = {
       [@sexp_of fun s -> Set.sexp_of_m__t (module Comment_id) s]
   removed : bool;
   mergeable : bool;
+  merge_ready : bool;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Operation_kind.t option;
@@ -62,6 +63,7 @@ let create patch_id =
     addressed_comment_ids = Set.empty (module Comment_id);
     removed = false;
     mergeable = false;
+    merge_ready = false;
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
@@ -88,6 +90,7 @@ let create_adhoc ~patch_id ~pr_number =
     addressed_comment_ids = Set.empty (module Comment_id);
     removed = false;
     mergeable = false;
+    merge_ready = false;
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
@@ -176,12 +179,12 @@ let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
 let set_base_branch t branch = { t with base_branch = Some branch }
 let set_mergeable t v = { t with mergeable = v }
+let set_merge_ready t v = { t with merge_ready = v }
 let set_checks_passing t v = { t with checks_passing = v }
 let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
 
 let is_approved t =
-  t.has_pr && t.mergeable && t.checks_passing && t.no_unresolved_comments
-  && (not t.busy) && not t.needs_intervention
+  t.has_pr && t.merge_ready && (not t.busy) && not t.needs_intervention
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
@@ -211,7 +214,7 @@ let reset_busy t =
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_fallback ~pending_comments ~ci_checks
-    ~addressed_comment_ids ~removed ~mergeable ~checks_passing
+    ~addressed_comment_ids ~removed ~mergeable ~merge_ready ~checks_passing
     ~no_unresolved_comments =
   {
     patch_id;
@@ -233,6 +236,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     addressed_comment_ids;
     removed;
     mergeable;
+    merge_ready;
     checks_passing;
     no_unresolved_comments;
     current_op = None;
@@ -279,6 +283,7 @@ let rebase t ~base_branch =
     queue;
     base_branch = Some base_branch;
     mergeable = false;
+    merge_ready = false;
     checks_passing = false;
     no_unresolved_comments = false;
   }
@@ -325,6 +330,7 @@ let respond t k =
     has_conflict;
     pending_comments;
     mergeable = false;
+    merge_ready = false;
     checks_passing = false;
     no_unresolved_comments = false;
   }
