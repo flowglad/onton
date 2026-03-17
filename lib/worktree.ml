@@ -9,10 +9,19 @@ let normalize_path path =
       Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
     else path
   in
-  if String.length p > 1 && String.is_suffix p ~suffix:"/" then
-    let stripped = String.rstrip p ~drop:(Char.equal '/') in
-    if String.is_empty stripped then p else stripped
-  else p
+  let p =
+    if String.length p > 1 && String.is_suffix p ~suffix:"/" then
+      let stripped = String.rstrip p ~drop:(Char.equal '/') in
+      if String.is_empty stripped then p else stripped
+    else p
+  in
+  (* Strip trailing "/." segments so "foo/." compares equal to "foo" *)
+  let rec strip_dot_suffix s =
+    if String.length s > 2 && String.is_suffix s ~suffix:"/." then
+      strip_dot_suffix (String.chop_suffix_exn s ~suffix:"/.")
+    else s
+  in
+  strip_dot_suffix p
 
 let worktree_dir ~project_name ~patch_id =
   let home =

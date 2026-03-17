@@ -437,10 +437,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           log_event runtime ~patch_id
             (Printf.sprintf "Claude process error: %s" msg);
           Runtime.update_orchestrator runtime (fun orch ->
-              let orch = Orchestrator.set_session_failed orch patch_id in
               let orch =
-                if is_fresh then Orchestrator.set_tried_fresh orch patch_id
-                else orch
+                Orchestrator.on_session_failure orch patch_id ~is_fresh
               in
               Orchestrator.complete orch patch_id);
           `Failed
