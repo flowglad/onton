@@ -1242,10 +1242,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   (Base.List.map pending_comments
                                      ~f:(fun (c : Comment.t) -> c.Comment.body))
                             | Operation_kind.Rebase ->
-                                (* Should not happen — Rebase is dispatched via
-                                   Orchestrator.Rebase, not Respond *)
-                                Prompt.render_merge_conflict_prompt
-                                  ~project_name ?pr_number ~base_branch:base ()
+                                (* Invariant: Rebase is never routed through Respond *)
+                                assert false
                           in
                           let on_pr_detected _pr_number = () in
                           run_claude_and_handle ~runtime ~process_mgr ~fs
