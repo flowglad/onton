@@ -656,20 +656,28 @@ let render_timeline ~width ~selected ~max_visible
   in
   (header :: scroll_up) @ rows @ scroll_down
 
-let render_footer ~width ~view_mode =
-  let help =
-    match view_mode with
-    | List_view ->
-        Term.styled [ Term.Sgr.dim ]
-          " q:quit  r:refresh  ↑/↓:navigate  enter:detail  t:timeline  h:help"
-    | Detail_view _ ->
-        Term.styled [ Term.Sgr.dim ]
-          " q:quit  esc/backspace:back  r:refresh  t:timeline  h:help"
-    | Timeline_view ->
-        Term.styled [ Term.Sgr.dim ]
-          " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
-  in
-  [ Term.hrule width; help ]
+let render_footer ~width ~view_mode ?(input_line = "") () =
+  match input_line with
+  | "" ->
+      let help =
+        match view_mode with
+        | List_view ->
+            Term.styled [ Term.Sgr.dim ]
+              " q:quit  r:refresh  ↑/↓:navigate  enter:detail  t:timeline  \
+               h:help"
+        | Detail_view _ ->
+            Term.styled [ Term.Sgr.dim ]
+              " q:quit  esc/backspace:back  r:refresh  t:timeline  h:help"
+        | Timeline_view ->
+            Term.styled [ Term.Sgr.dim ]
+              " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
+      in
+      [ Term.hrule width; help ]
+  | text ->
+      let prompt_str =
+        Term.fit_width (Int.max 1 (width - 2)) (Printf.sprintf ": %s" text)
+      in
+      [ Term.hrule width; prompt_str ]
 
 (** {1 Public API} *)
 
@@ -707,10 +715,10 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
 
 let render_frame ~width ~height ~selected ~view_mode
     ~(activity : activity_entry list) ~project_name ?(transcript = "")
-    (views : patch_view list) =
+    ?(input_line = "") (views : patch_view list) =
   let header = render_header ~project_name ~width in
   let summary = [ render_summary views ] in
-  let footer = render_footer ~width ~view_mode in
+  let footer = render_footer ~width ~view_mode ~input_line () in
   match view_mode with
   | Detail_view patch_id ->
       let detail =

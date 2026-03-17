@@ -450,7 +450,7 @@ exception Quit_tui
     [selected] and [view_mode] are shared mutable refs updated by the input
     fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
-    ~sorted_patch_ids =
+    ~sorted_patch_ids ~input_line =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let rec loop () =
@@ -487,7 +487,8 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
     in
     let frame =
       Tui.render_frame ~width ~height ~selected:!selected ~view_mode:!view_mode
-        ~activity ~project_name:gp.Gameplan.project_name ~transcript views
+        ~activity ~project_name:gp.Gameplan.project_name ~transcript
+        ~input_line:!input_line views
     in
     Eio.Flow.copy_string (Tui.paint_frame frame) stdout;
     loop ()
@@ -507,14 +508,18 @@ let tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode ~transcripts
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
 let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~repo_root
-    ~sorted_patch_ids =
+    ~sorted_patch_ids ~input_line =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
+  let sync_input () =
+    input_line := if !text_mode then Buffer.contents buf else ""
+  in
   let saved_list_selected = ref 0 in
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
   let eof_count = ref 0 in
   let rec loop () =
+    sync_input ();
     match Term.Key.read () with
     | None ->
         (* Transient EOF can happen if a child process (e.g. script/gh)
@@ -1751,6 +1756,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let selected = ref 0 in
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
+        let input_line = ref "" in
         let raw_state = Term.Raw.enter () in
         Fun.protect
           ~finally:(fun () ->
@@ -1768,10 +1774,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
               Eio.Fiber.all
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~selected ~view_mode
-                     ~transcripts ~sorted_patch_ids)
+                     ~transcripts ~sorted_patch_ids ~input_line)
                 :: (fun () ->
                   input_fiber ~runtime ~selected ~view_mode ~pr_registry
-                    ~repo_root:config.repo_root ~sorted_patch_ids)
+                    ~repo_root:config.repo_root ~sorted_patch_ids ~input_line)
                 :: common_fibers)
             with Quit_tui -> ())
 
