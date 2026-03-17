@@ -365,7 +365,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~repo_root ~patch_id ~prompt
               | None -> ())
         | Types.Stream_event.Tool_use { name; _ } ->
             tool_count := !tool_count + 1;
-            Buffer.add_string text_buf (Printf.sprintf "\n[tool: %s]\n" name);
+            Buffer.add_string text_buf
+              (Printf.sprintf "\n\n---\n`[tool: %s]`\n\n" name);
             Hashtbl.replace transcripts patch_id (Buffer.contents text_buf);
             log_stream_entry runtime ~patch_id
               (Activity_log.Stream_entry.Tool_use name)
