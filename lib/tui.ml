@@ -779,14 +779,13 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
   let intervention =
     if pv.needs_intervention then
       let banner_text = " NEEDS HUMAN ATTENTION " in
-      let inner_w = Int.max (String.length banner_text) (width - 6) in
+      let inner_w = Int.max 1 (width - 6) in
+      let banner_text = Term.fit_width inner_w banner_text in
       let top =
         Printf.sprintf "  \xe2\x95\x94%s\xe2\x95\x97"
           (Term.repeat inner_w "\xe2\x95\x90")
       in
-      let mid =
-        Printf.sprintf "  \xe2\x95\x91%-*s\xe2\x95\x91" inner_w banner_text
-      in
+      let mid = Printf.sprintf "  \xe2\x95\x91%s\xe2\x95\x91" banner_text in
       let bot =
         Printf.sprintf "  \xe2\x95\x9a%s\xe2\x95\x9d"
           (Term.repeat inner_w "\xe2\x95\x90")
