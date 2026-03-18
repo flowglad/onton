@@ -302,3 +302,30 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
       complete t patch_id
+
+type session_result =
+  | Session_ok
+  | Session_process_error of { is_fresh : bool }
+  | Session_no_resume
+  | Session_failed of { is_fresh : bool }
+  | Session_give_up
+  | Session_worktree_missing
+[@@deriving show, eq, sexp_of]
+
+let apply_session_result t patch_id result =
+  match result with
+  | Session_ok -> clear_session_fallback t patch_id
+  | Session_process_error { is_fresh } ->
+      let t = on_session_failure t patch_id ~is_fresh in
+      complete t patch_id
+  | Session_no_resume ->
+      let t = on_session_failure t patch_id ~is_fresh:false in
+      complete t patch_id
+  | Session_failed { is_fresh } ->
+      let t = on_session_failure t patch_id ~is_fresh in
+      complete t patch_id
+  | Session_give_up ->
+      let t = set_session_failed t patch_id in
+      let t = set_tried_fresh t patch_id in
+      complete t patch_id
+  | Session_worktree_missing -> complete t patch_id

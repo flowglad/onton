@@ -84,6 +84,23 @@ val add_agent : t -> patch_id:Patch_id.t -> pr_number:Pr_number.t -> t
 
 (** {2 Persistence support} *)
 
+type session_result =
+  | Session_ok
+  | Session_process_error of { is_fresh : bool }
+  | Session_no_resume
+  | Session_failed of { is_fresh : bool }
+  | Session_give_up
+  | Session_worktree_missing
+[@@deriving show, eq, sexp_of]
+
+val apply_session_result : t -> Patch_id.t -> session_result -> t
+(** Apply a Claude session outcome to the orchestrator. Pure function.
+    [Session_ok] -> clear_session_fallback. [Session_process_error] /
+    [Session_failed] -> on_session_failure + complete. [Session_no_resume] ->
+    on_session_failure (not fresh) + complete. [Session_give_up] ->
+    set_session_failed + set_tried_fresh + complete. [Session_worktree_missing]
+    -> complete. *)
+
 val apply_rebase_result :
   t -> Patch_id.t -> Worktree.rebase_result -> Branch.t -> t
 (** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->

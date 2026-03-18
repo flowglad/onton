@@ -114,12 +114,11 @@ let () =
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           not a.busy);
-      (* -- complete on non-busy raises -- *)
-      Test.make ~name:"complete on non-busy raises" gen_pid (fun pid ->
+      (* -- complete on non-busy is idempotent no-op -- *)
+      Test.make ~name:"complete on non-busy is no-op" gen_pid (fun pid ->
           let a = create pid in
-          match complete a with
-          | exception Invalid_argument _ -> true
-          | _ -> false);
+          let a' = complete a in
+          equal a a');
       (* -- respond requires has_pr -- *)
       Test.make ~name:"respond requires has_pr"
         Gen.(pair gen_pid gen_op)

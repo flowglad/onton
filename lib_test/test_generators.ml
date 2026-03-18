@@ -476,6 +476,21 @@ let gen_pr_json =
 
 (* -- Printers for QCheck2 shrinking/reporting -- *)
 
+let gen_session_result =
+  QCheck2.Gen.(
+    oneof
+      [
+        return Onton.Orchestrator.Session_ok;
+        map
+          (fun b -> Onton.Orchestrator.Session_process_error { is_fresh = b })
+          bool;
+        return Onton.Orchestrator.Session_no_resume;
+        map (fun b -> Onton.Orchestrator.Session_failed { is_fresh = b }) bool;
+        return Onton.Orchestrator.Session_give_up;
+        return Onton.Orchestrator.Session_worktree_missing;
+      ])
+
+let print_session_result = Onton.Orchestrator.show_session_result
 let print_patch_id = Patch_id.to_string
 let print_branch = Branch.to_string
 let print_operation_kind = Operation_kind.show

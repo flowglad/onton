@@ -348,15 +348,16 @@ let respond t k =
   }
 
 let complete t =
-  if not t.busy then invalid_arg "Patch_agent.complete: patch is not busy";
-  let needs_intervention =
-    if List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal then
-      false
-    else
-      t.ci_failure_count >= 3
-      || equal_session_fallback t.session_fallback Given_up
-  in
-  { t with busy = false; current_op = None; needs_intervention }
+  if not t.busy then t
+  else
+    let needs_intervention =
+      if List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal then
+        false
+      else
+        t.ci_failure_count >= 3
+        || equal_session_fallback t.session_fallback Given_up
+    in
+    { t with busy = false; current_op = None; needs_intervention }
 
 (* -- Tests for session failure recovery -- *)
 

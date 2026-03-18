@@ -642,4 +642,133 @@ let () =
     ];
   Stdlib.print_endline "comment dedup: all properties passed"
 
+(* ========== Session result properties ========== *)
+
+let () =
+  let open QCheck2 in
+  let open Onton in
+  let module G = Onton_test_support.Test_generators in
+  (* Helper: create a 1-patch orchestrator and fire the Start action so the
+     patch becomes busy. *)
+  let mk_busy_orch () =
+    let pid = Types.Patch_id.of_string "p1" in
+    let main = Types.Branch.of_string "main" in
+    let patches =
+      [
+        Types.Patch.
+          {
+            id = pid;
+            title = "P";
+            description = "";
+            branch = Types.Branch.of_string "b1";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+          };
+      ]
+    in
+    let orch = Orchestrator.create ~patches ~main_branch:main in
+    let orch, _ = Orchestrator.tick orch ~patches in
+    (orch, pid)
+  in
+  (* Property: complete is idempotent (no crash on already-not-busy) *)
+  let prop_complete_idempotent =
+    Test.make ~name:"session: complete is idempotent" G.gen_patch_id (fun pid ->
+        let main = Types.Branch.of_string "main" in
+        let patches =
+          [
+            Types.Patch.
+              {
+                id = pid;
+                title = "P";
+                description = "";
+                branch = Types.Branch.of_string "b1";
+                dependencies = [];
+                spec = "";
+                acceptance_criteria = [];
+                files = [];
+                classification = "";
+                changes = [];
+                test_stubs_introduced = [];
+                test_stubs_implemented = [];
+              };
+          ]
+        in
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch, _ = Orchestrator.tick orch ~patches in
+          (* First complete: busy → not-busy *)
+          let orch = Orchestrator.complete orch pid in
+          (* Second complete: should be a no-op, not crash *)
+          let orch = Orchestrator.complete orch pid in
+          not (Orchestrator.agent orch pid).Patch_agent.busy
+        with Invalid_argument _ -> false)
+  in
+  (* Property: apply_session_result never crashes on busy agent *)
+  let prop_session_result_no_crash =
+    Test.make ~name:"session: apply_session_result on busy agent never crashes"
+      ~count:500 (Gen.pair G.gen_session_result Gen.bool) (fun (result, _) ->
+        try
+          let orch, pid = mk_busy_orch () in
+          let _orch = Orchestrator.apply_session_result orch pid result in
+          true
+        with _ -> false)
+  in
+  (* Property: apply_session_result twice never crashes (double-complete bug) *)
+  let prop_session_result_double_apply =
+    Test.make
+      ~name:
+        "session: apply_session_result twice never crashes (double-complete)"
+      ~count:500 G.gen_session_result (fun result ->
+        try
+          let orch, pid = mk_busy_orch () in
+          let orch = Orchestrator.apply_session_result orch pid result in
+          let _orch = Orchestrator.apply_session_result orch pid result in
+          true
+        with _ -> false)
+  in
+  (* Property: all failure results leave agent not-busy *)
+  let prop_failure_results_complete =
+    Test.make ~name:"session: failure results leave agent not-busy" ~count:500
+      G.gen_session_result (fun result ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.apply_session_result orch pid result in
+        let a = Orchestrator.agent orch pid in
+        match result with
+        | Orchestrator.Session_ok ->
+            (* Session_ok does NOT complete — agent stays busy *)
+            true
+        | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
+        | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
+        | Orchestrator.Session_worktree_missing ->
+            not a.Patch_agent.busy)
+  in
+  (* Property: Session_give_up sets needs_intervention *)
+  let prop_give_up_intervention =
+    Test.make ~name:"session: give_up sets needs_intervention" (Gen.return ())
+      (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_give_up
+        in
+        let a = Orchestrator.agent orch pid in
+        a.Patch_agent.needs_intervention)
+  in
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
+    [
+      prop_complete_idempotent;
+      prop_session_result_no_crash;
+      prop_session_result_double_apply;
+      prop_failure_results_complete;
+      prop_give_up_intervention;
+    ];
+  Stdlib.print_endline "session result: all properties passed"
+
 let () = Stdlib.print_endline "all property tests passed"

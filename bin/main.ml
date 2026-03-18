@@ -346,7 +346,9 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
       log_event runtime ~patch_id
         "session fallback exhausted (continue failed, fresh failed), needs \
          intervention";
-      mark_session_failed runtime patch_id;
+      Runtime.update_orchestrator runtime (fun orch ->
+          Orchestrator.apply_session_result orch patch_id
+            Orchestrator.Session_give_up);
       `Failed
   | (`Continue | `Fresh) as mode ->
       let continue, is_fresh =
@@ -370,7 +372,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         log_event runtime ~patch_id
           "worktree not ready and branch unknown, waiting for poller";
         Runtime.update_orchestrator runtime (fun orch ->
-            Orchestrator.complete orch patch_id);
+            Orchestrator.apply_session_result orch patch_id
+              Orchestrator.Session_worktree_missing);
         `Failed)
       else (
         (if not (Stdlib.Sys.file_exists worktree_path) then
@@ -393,7 +396,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           log_event runtime ~patch_id
             (Printf.sprintf "worktree still missing at %s" worktree_path);
           Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.complete orch patch_id);
+              Orchestrator.apply_session_result orch patch_id
+                Orchestrator.Session_worktree_missing);
           `Failed)
         else
           let cwd = Eio.Path.(fs / worktree_path) in
@@ -491,54 +495,42 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 })
               result
           in
-          match classify ~continue outcome with
-          | Process_error msg ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "Claude process error: %s" msg);
-              Runtime.update_orchestrator runtime (fun orch ->
-                  let orch =
-                    Orchestrator.on_session_failure orch patch_id ~is_fresh
-                  in
-                  Orchestrator.complete orch patch_id);
-              `Failed
-          | No_session_to_resume ->
-              log_event runtime ~patch_id
-                "--continue produced no events (no session to resume), will \
-                 retry fresh";
-              Runtime.update_orchestrator runtime (fun orch ->
-                  let orch =
-                    Orchestrator.on_session_failure orch patch_id
-                      ~is_fresh:false
-                  in
-                  Orchestrator.complete orch patch_id);
-              `Failed
-          | Success { stream_errors } ->
-              if String.length stream_errors > 0 then
+          let session_result, user_result =
+            match classify ~continue outcome with
+            | Process_error msg ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf "Claude exited 0 but had stream errors: %s"
-                     (truncate stream_errors 500));
-              let text_len = Buffer.length text_buf in
-              let tools = !tool_count in
-              if tools = 0 && text_len < 200 then
+                  (Printf.sprintf "Claude process error: %s" msg);
+                (Orchestrator.Session_process_error { is_fresh }, `Failed)
+            | No_session_to_resume ->
+                log_event runtime ~patch_id
+                  "--continue produced no events (no session to resume), will \
+                   retry fresh";
+                (Orchestrator.Session_no_resume, `Failed)
+            | Success { stream_errors } ->
+                if String.length stream_errors > 0 then
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Claude exited 0 but had stream errors: %s"
+                       (truncate stream_errors 500));
+                let text_len = Buffer.length text_buf in
+                let tools = !tool_count in
+                if tools = 0 && text_len < 200 then
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Claude exited 0 with no tool use and %d chars of text: \
+                        %s"
+                       text_len
+                       (truncate (String.trim (Buffer.contents text_buf)) 200));
+                (Orchestrator.Session_ok, `Ok)
+            | Session_failed { exit_code; detail } ->
                 log_event runtime ~patch_id
                   (Printf.sprintf
-                     "Claude exited 0 with no tool use and %d chars of text: %s"
-                     text_len
-                     (truncate (String.trim (Buffer.contents text_buf)) 200));
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Orchestrator.clear_session_fallback orch patch_id);
-              `Ok
-          | Session_failed { exit_code; detail } ->
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Claude exited with code %d, marking session failed: %s"
-                   exit_code detail);
-              Runtime.update_orchestrator runtime (fun orch ->
-                  let orch =
-                    Orchestrator.on_session_failure orch patch_id ~is_fresh
-                  in
-                  Orchestrator.complete orch patch_id);
-              `Failed)
+                     "Claude exited with code %d, marking session failed: %s"
+                     exit_code detail);
+                (Orchestrator.Session_failed { is_fresh }, `Failed)
+          in
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.apply_session_result orch patch_id session_result);
+          user_result)
 
 (** {1 Fibers} *)
 
