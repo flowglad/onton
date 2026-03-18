@@ -83,8 +83,9 @@ let%test_unit "empty buffer offers all patch ids" =
   assert (List.mem fulls "2> " ~equal:String.equal)
 
 let%test_unit "plus sign shows hint" =
-  let result = complete ~buffer:"+" ~patch_ids:[] in
-  assert (List.length result = 1)
+  match complete ~buffer:"+" ~patch_ids:[] with
+  | [ first ] -> [%test_eq: string] first.full "+"
+  | _ -> failwith "expected exactly one completion"
 
 let%test_unit "w shows hint" =
   match complete ~buffer:"w" ~patch_ids:[] with
