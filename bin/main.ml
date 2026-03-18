@@ -348,7 +348,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
          intervention";
       mark_session_failed runtime patch_id;
       `Failed
-  | (`Continue | `Fresh) as mode -> (
+  | (`Continue | `Fresh) as mode ->
       let continue, is_fresh =
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
@@ -363,174 +363,182 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         path
       in
       (* Ensure worktree exists — create if needed *)
-      (if not (Stdlib.Sys.file_exists worktree_path) then
-         match agent.Patch_agent.head_branch with
-         | None ->
-             log_event runtime ~patch_id
-               "worktree not ready and branch unknown, waiting for poller";
-             Runtime.update_orchestrator runtime (fun orch ->
-                 Orchestrator.complete orch patch_id)
-         | Some branch ->
-             let base =
-               match agent.Patch_agent.base_branch with
-               | Some b -> Branch.to_string b
-               | None -> "HEAD"
-             in
-             log_event runtime ~patch_id
-               (Printf.sprintf "creating worktree at %s" worktree_path);
-             ignore
-               (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
-                  ~branch ~base_ref:base);
-             Runtime.update_orchestrator runtime (fun orch ->
-                 Orchestrator.set_worktree_path orch patch_id worktree_path));
-      if not (Stdlib.Sys.file_exists worktree_path) then (
+      if
+        (not (Stdlib.Sys.file_exists worktree_path))
+        && Option.is_none agent.Patch_agent.head_branch
+      then (
         log_event runtime ~patch_id
-          (Printf.sprintf "worktree still missing at %s" worktree_path);
+          "worktree not ready and branch unknown, waiting for poller";
         Runtime.update_orchestrator runtime (fun orch ->
             Orchestrator.complete orch patch_id);
         `Failed)
-      else
-        let cwd = Eio.Path.(fs / worktree_path) in
-        let text_buf =
-          let buf = Buffer.create 4096 in
-          (match Hashtbl.find_opt transcripts patch_id with
-          | Some prev when String.length prev > 0 ->
-              Buffer.add_string buf prev;
-              Buffer.add_char buf '\n'
-          | Some _ | None -> ());
-          (* Write the prompt being delivered so it appears in the transcript *)
-          let now = Unix.gettimeofday () in
-          let tm = Unix.localtime now in
-          Buffer.add_string buf
-            (Printf.sprintf
-               "\n---\n**[%02d:%02d:%02d] Delivered to Claude%s:**\n\n"
-               tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-               (if continue then " (--continue)" else ""));
-          Buffer.add_string buf prompt;
-          Buffer.add_string buf "\n\n---\n**Claude response:**\n\n";
-          Hashtbl.replace transcripts patch_id (Buffer.contents buf);
-          buf
-        in
-        let error_buf = Buffer.create 256 in
-        let tool_count = ref 0 in
-        let pr_found = ref false in
-        let needle_len =
-          String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
-        in
-        let last_sync = ref (Unix.gettimeofday ()) in
-        let sync_transcript () =
-          Hashtbl.replace transcripts patch_id (Buffer.contents text_buf)
-        in
-        let maybe_sync_transcript () =
-          let now = Unix.gettimeofday () in
-          if now -. !last_sync >= 0.2 then (
-            last_sync := now;
-            sync_transcript ())
-        in
-        let on_event (event : Types.Stream_event.t) =
-          match event with
-          | Types.Stream_event.Text_delta text -> (
-              let prev_len = Buffer.length text_buf in
-              Buffer.add_string text_buf text;
-              maybe_sync_transcript ();
-              if not !pr_found then
-                let offset = max 0 (prev_len - needle_len) in
-                let tail =
-                  Buffer.sub text_buf offset (Buffer.length text_buf - offset)
-                in
-                match extract_pr_number_from_text ~owner ~repo tail with
-                | Some pr_number ->
-                    pr_found := true;
-                    log_stream_entry runtime ~patch_id
-                      (Activity_log.Stream_entry.Text_chunk
-                         (Printf.sprintf "PR #%d detected"
-                            (Pr_number.to_int pr_number)));
-                    on_pr_detected pr_number
-                | None -> ())
-          | Types.Stream_event.Tool_use { name; _ } ->
-              tool_count := !tool_count + 1;
-              Buffer.add_string text_buf
-                (Printf.sprintf "\n\n---\n`[tool: %s]`\n\n" name);
-              sync_transcript ();
-              log_stream_entry runtime ~patch_id
-                (Activity_log.Stream_entry.Tool_use name)
-          | Types.Stream_event.Final_result { stop_reason; _ } ->
-              sync_transcript ();
-              let reason = Types.Stop_reason.show stop_reason in
-              log_stream_entry runtime ~patch_id
-                (Activity_log.Stream_entry.Finished reason)
-          | Types.Stream_event.Error msg ->
-              if Buffer.length error_buf > 0 then Buffer.add_char error_buf '\n';
-              Buffer.add_string error_buf msg;
-              log_stream_entry runtime ~patch_id
-                (Activity_log.Stream_entry.Stream_error msg)
-        in
-        let result =
-          try
-            Ok
-              (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
-                 ~continue ~on_event)
-          with exn -> Error (Printexc.to_string exn)
-        in
-        let open Run_classification in
-        let outcome =
-          Result.map
-            (fun (r : Claude_runner.result) ->
-              {
-                exit_code = r.Claude_runner.exit_code;
-                got_events = r.Claude_runner.got_events;
-                stderr = r.Claude_runner.stderr;
-                stream_errors = String.trim (Buffer.contents error_buf);
-              })
-            result
-        in
-        match classify ~continue outcome with
-        | Process_error msg ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "Claude process error: %s" msg);
-            Runtime.update_orchestrator runtime (fun orch ->
-                let orch =
-                  Orchestrator.on_session_failure orch patch_id ~is_fresh
-                in
-                Orchestrator.complete orch patch_id);
-            `Failed
-        | No_session_to_resume ->
-            log_event runtime ~patch_id
-              "--continue produced no events (no session to resume), will \
-               retry fresh";
-            Runtime.update_orchestrator runtime (fun orch ->
-                let orch =
-                  Orchestrator.on_session_failure orch patch_id ~is_fresh:false
-                in
-                Orchestrator.complete orch patch_id);
-            `Failed
-        | Success { stream_errors } ->
-            if String.length stream_errors > 0 then
+      else (
+        (if not (Stdlib.Sys.file_exists worktree_path) then
+           match agent.Patch_agent.head_branch with
+           | Some branch ->
+               let base =
+                 match agent.Patch_agent.base_branch with
+                 | Some b -> Branch.to_string b
+                 | None -> "HEAD"
+               in
+               log_event runtime ~patch_id
+                 (Printf.sprintf "creating worktree at %s" worktree_path);
+               ignore
+                 (Worktree.create ~process_mgr ~repo_root ~project_name
+                    ~patch_id ~branch ~base_ref:base);
+               Runtime.update_orchestrator runtime (fun orch ->
+                   Orchestrator.set_worktree_path orch patch_id worktree_path)
+           | None -> (* unreachable — guarded above *) ());
+        if not (Stdlib.Sys.file_exists worktree_path) then (
+          log_event runtime ~patch_id
+            (Printf.sprintf "worktree still missing at %s" worktree_path);
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.complete orch patch_id);
+          `Failed)
+        else
+          let cwd = Eio.Path.(fs / worktree_path) in
+          let text_buf =
+            let buf = Buffer.create 4096 in
+            (match Hashtbl.find_opt transcripts patch_id with
+            | Some prev when String.length prev > 0 ->
+                Buffer.add_string buf prev;
+                Buffer.add_char buf '\n'
+            | Some _ | None -> ());
+            (* Write the prompt being delivered so it appears in the transcript *)
+            let now = Unix.gettimeofday () in
+            let tm = Unix.localtime now in
+            Buffer.add_string buf
+              (Printf.sprintf
+                 "\n---\n**[%02d:%02d:%02d] Delivered to Claude%s:**\n\n"
+                 tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+                 (if continue then " (--continue)" else ""));
+            Buffer.add_string buf prompt;
+            Buffer.add_string buf "\n\n---\n**Claude response:**\n\n";
+            Hashtbl.replace transcripts patch_id (Buffer.contents buf);
+            buf
+          in
+          let error_buf = Buffer.create 256 in
+          let tool_count = ref 0 in
+          let pr_found = ref false in
+          let needle_len =
+            String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
+          in
+          let last_sync = ref (Unix.gettimeofday ()) in
+          let sync_transcript () =
+            Hashtbl.replace transcripts patch_id (Buffer.contents text_buf)
+          in
+          let maybe_sync_transcript () =
+            let now = Unix.gettimeofday () in
+            if now -. !last_sync >= 0.2 then (
+              last_sync := now;
+              sync_transcript ())
+          in
+          let on_event (event : Types.Stream_event.t) =
+            match event with
+            | Types.Stream_event.Text_delta text -> (
+                let prev_len = Buffer.length text_buf in
+                Buffer.add_string text_buf text;
+                maybe_sync_transcript ();
+                if not !pr_found then
+                  let offset = max 0 (prev_len - needle_len) in
+                  let tail =
+                    Buffer.sub text_buf offset (Buffer.length text_buf - offset)
+                  in
+                  match extract_pr_number_from_text ~owner ~repo tail with
+                  | Some pr_number ->
+                      pr_found := true;
+                      log_stream_entry runtime ~patch_id
+                        (Activity_log.Stream_entry.Text_chunk
+                           (Printf.sprintf "PR #%d detected"
+                              (Pr_number.to_int pr_number)));
+                      on_pr_detected pr_number
+                  | None -> ())
+            | Types.Stream_event.Tool_use { name; _ } ->
+                tool_count := !tool_count + 1;
+                Buffer.add_string text_buf
+                  (Printf.sprintf "\n\n---\n`[tool: %s]`\n\n" name);
+                sync_transcript ();
+                log_stream_entry runtime ~patch_id
+                  (Activity_log.Stream_entry.Tool_use name)
+            | Types.Stream_event.Final_result { stop_reason; _ } ->
+                sync_transcript ();
+                let reason = Types.Stop_reason.show stop_reason in
+                log_stream_entry runtime ~patch_id
+                  (Activity_log.Stream_entry.Finished reason)
+            | Types.Stream_event.Error msg ->
+                if Buffer.length error_buf > 0 then
+                  Buffer.add_char error_buf '\n';
+                Buffer.add_string error_buf msg;
+                log_stream_entry runtime ~patch_id
+                  (Activity_log.Stream_entry.Stream_error msg)
+          in
+          let result =
+            try
+              Ok
+                (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
+                   ~continue ~on_event)
+            with exn -> Error (Printexc.to_string exn)
+          in
+          let open Run_classification in
+          let outcome =
+            Result.map
+              (fun (r : Claude_runner.result) ->
+                {
+                  exit_code = r.Claude_runner.exit_code;
+                  got_events = r.Claude_runner.got_events;
+                  stderr = r.Claude_runner.stderr;
+                  stream_errors = String.trim (Buffer.contents error_buf);
+                })
+              result
+          in
+          match classify ~continue outcome with
+          | Process_error msg ->
               log_event runtime ~patch_id
-                (Printf.sprintf "Claude exited 0 but had stream errors: %s"
-                   (truncate stream_errors 500));
-            let text_len = Buffer.length text_buf in
-            let tools = !tool_count in
-            if tools = 0 && text_len < 200 then
+                (Printf.sprintf "Claude process error: %s" msg);
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch =
+                    Orchestrator.on_session_failure orch patch_id ~is_fresh
+                  in
+                  Orchestrator.complete orch patch_id);
+              `Failed
+          | No_session_to_resume ->
+              log_event runtime ~patch_id
+                "--continue produced no events (no session to resume), will \
+                 retry fresh";
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch =
+                    Orchestrator.on_session_failure orch patch_id
+                      ~is_fresh:false
+                  in
+                  Orchestrator.complete orch patch_id);
+              `Failed
+          | Success { stream_errors } ->
+              if String.length stream_errors > 0 then
+                log_event runtime ~patch_id
+                  (Printf.sprintf "Claude exited 0 but had stream errors: %s"
+                     (truncate stream_errors 500));
+              let text_len = Buffer.length text_buf in
+              let tools = !tool_count in
+              if tools = 0 && text_len < 200 then
+                log_event runtime ~patch_id
+                  (Printf.sprintf
+                     "Claude exited 0 with no tool use and %d chars of text: %s"
+                     text_len
+                     (truncate (String.trim (Buffer.contents text_buf)) 200));
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.clear_session_fallback orch patch_id);
+              `Ok
+          | Session_failed { exit_code; detail } ->
               log_event runtime ~patch_id
                 (Printf.sprintf
-                   "Claude exited 0 with no tool use and %d chars of text: %s"
-                   text_len
-                   (truncate (String.trim (Buffer.contents text_buf)) 200));
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.clear_session_fallback orch patch_id);
-            `Ok
-        | Session_failed { exit_code; detail } ->
-            log_event runtime ~patch_id
-              (Printf.sprintf
-                 "Claude exited with code %d, marking session failed: %s"
-                 exit_code detail);
-            Runtime.update_orchestrator runtime (fun orch ->
-                let orch =
-                  Orchestrator.on_session_failure orch patch_id ~is_fresh
-                in
-                Orchestrator.complete orch patch_id);
-            `Failed)
+                   "Claude exited with code %d, marking session failed: %s"
+                   exit_code detail);
+              Runtime.update_orchestrator runtime (fun orch ->
+                  let orch =
+                    Orchestrator.on_session_failure orch patch_id ~is_fresh
+                  in
+                  Orchestrator.complete orch patch_id);
+              `Failed)
 
 (** {1 Fibers} *)
 
