@@ -615,8 +615,10 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
         ?input_line:!input_line ?completion_hint:!completion_hint views
     in
     (* Write back the clamped scroll offset so delta-based input in
-       input_fiber works from a real value, not a sentinel like max_value. *)
+       input_fiber works from a real value, not a sentinel like max_value.
+       Re-engage auto-follow if the view ended up at the bottom. *)
     detail_scroll := Tui.detail_scroll_offset frame;
+    if Tui.detail_at_bottom frame then detail_follow := true;
     patches_start_row := Tui.patches_start_row frame;
     patches_scroll_offset := Tui.patches_scroll_offset frame;
     patches_visible_count := Tui.patch_count frame;
@@ -1115,7 +1117,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                         | Tui_input.Remove_patch ->
                             0
                       in
-                      detail_follow := false;
+                      if delta <> 0 then detail_follow := false;
                       detail_scroll := Base.Int.max 0 (!detail_scroll + delta));
                   loop ()
               | Tui_input.Select -> (
