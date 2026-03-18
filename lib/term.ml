@@ -100,7 +100,8 @@ let utf8_char_width b =
   if b land 0x80 = 0 then 1
   else if b land 0xE0 = 0xC0 then 2
   else if b land 0xF0 = 0xE0 then 3
-  else 4
+  else if b land 0xF8 = 0xF0 then 4
+  else 1
 
 (** Visible character width of a string (strips ANSI codes, counts UTF-8
     codepoints rather than bytes). *)
@@ -187,6 +188,23 @@ let%test "fit_width truncation preserves ANSI" =
   let s = styled [ Sgr.bold ] "hello" in
   let result = fit_width 3 s in
   String.equal (strip_ansi result) "hel" && not (String.equal result "hel")
+
+let%test "visible_length counts multibyte glyphs as one" =
+  visible_length "⚠" = 1
+
+let%test "visible_length multibyte with ANSI" =
+  visible_length (styled [ Sgr.fg_yellow ] "⚠ hello") = 7
+
+let%test "visible_length cross mark glyph" =
+  visible_length "✗" = 1
+
+let%test "fit_width pads multibyte string" =
+  let s = fit_width 5 "⚠" in
+  visible_length s = 5 && String.is_prefix s ~prefix:"⚠"
+
+let%test "fit_width truncates multibyte string" =
+  let s = styled [ Sgr.fg_red ] "⚠ hello" in
+  visible_length (fit_width 3 s) = 3
 
 let%test "hrule default" = String.equal (hrule 3) "───"
 let%test "repeat" = String.equal (repeat 3 "ab") "ababab"

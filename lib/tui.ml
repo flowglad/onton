@@ -307,20 +307,27 @@ type status_msg = {
 let msg_expired ~now msg =
   match msg.expires_at with Some t -> Float.( >= ) now t | None -> false
 
+let sanitize_text s =
+  let s = Term.strip_ansi s in
+  String.map s ~f:(fun c ->
+      if Char.to_int c < 0x20 then ' ' else c)
+
 let render_status_msg ~width = function
   | None -> ""
   | Some msg ->
+      let safe_text = sanitize_text msg.text in
+      let safe_w = Int.max 1 width in
       let raw =
         match msg.level with
-        | Info -> Term.styled [ Term.Sgr.dim ] msg.text
+        | Info -> Term.styled [ Term.Sgr.dim ] safe_text
         | Warning ->
-            Term.styled [ Term.Sgr.fg_yellow ] (Printf.sprintf "⚠ %s" msg.text)
+            Term.styled [ Term.Sgr.fg_yellow ] (Printf.sprintf "⚠ %s" safe_text)
         | Error ->
             Term.styled
               [ Term.Sgr.fg_red; Term.Sgr.bold ]
-              (Printf.sprintf "✗ %s" msg.text)
+              (Printf.sprintf "✗ %s" safe_text)
       in
-      Term.fit_width width raw
+      Term.fit_width safe_w raw
 
 let%test "render_status_msg None is empty" =
   String.equal (render_status_msg ~width:80 None) ""
@@ -362,6 +369,9 @@ let%test "msg_expired true when past" =
 
 let%test "msg_expired false when persistent" =
   not (msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = None })
+
+let%test "msg_expired true at exact expiry time" =
+  msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = Some 100.0 }
 
 let%test "msg_expired false when not yet expired" =
   not
