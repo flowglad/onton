@@ -107,6 +107,18 @@ val detail_scroll_offset : frame -> int
 (** The actual clamped scroll offset used for the detail view. Written back to
     the detail_scroll ref so delta-based input produces sensible values. *)
 
+val patches_start_row : frame -> int
+(** 1-indexed terminal row where the first patch line is rendered in list view.
+    Returns 0 for non-list views. *)
+
+val patches_scroll_offset : frame -> int
+(** Scroll offset of the visible patch window in list view. The first visible
+    patch row corresponds to patch index [patches_scroll_offset], not 0. *)
+
+val patch_count : frame -> int
+(** Number of actually rendered patch rows in the visible window (not total
+    patches). Only meaningful in list view; 0 otherwise. *)
+
 val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->

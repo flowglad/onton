@@ -532,7 +532,8 @@ exception Quit_tui
     shared mutable refs updated by the input fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~view_mode ~show_help ~transcripts
-    ~sorted_patch_ids ~input_line ~completion_hint =
+    ~sorted_patch_ids ~input_line ~completion_hint ~patches_start_row
+    ~patches_scroll_offset ~patches_visible_count =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -584,6 +585,9 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     (* Write back the clamped scroll offset so delta-based input in
        input_fiber works from a real value, not a sentinel like max_value. *)
     detail_scroll := Tui.detail_scroll_offset frame;
+    patches_start_row := Tui.patches_start_row frame;
+    patches_scroll_offset := Tui.patches_scroll_offset frame;
+    patches_visible_count := Tui.patch_count frame;
     let output = Tui.paint_frame frame in
     if not (String.equal output !prev_output) then (
       Eio.Flow.copy_string output stdout;
@@ -606,7 +610,8 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     - ["-"] — remove the selected patch from orchestration *)
 let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
-    ~show_help ~sorted_patch_ids ~input_line ~completion_hint =
+    ~show_help ~sorted_patch_ids ~input_line ~completion_hint ~patches_start_row
+    ~patches_scroll_offset ~patches_visible_count =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let current_completions = ref [] in
@@ -633,6 +638,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
   let eof_count = ref 0 in
+  let last_click_time = ref 0.0 in
+  let last_click_row = ref (-1) in
   let rec loop () =
     sync_input ();
     match Term.Key.read () with
@@ -945,11 +952,72 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   text_mode := true;
                   loop ()
               | Tui.List_view | Tui.Timeline_view -> loop ())
+          | Term.Key.Mouse ev -> (
+              match (ev, !view_mode) with
+              | ( Term.Click { button = Term.Left; row; press = true; _ },
+                  Tui.List_view ) ->
+                  let start = !patches_start_row in
+                  let count = !patches_visible_count in
+                  let screen_idx = row - start in
+                  let abs_idx = !patches_scroll_offset + screen_idx in
+                  if start > 0 && screen_idx >= 0 && screen_idx < count then (
+                    let now = Unix.gettimeofday () in
+                    let is_double =
+                      Float.compare (now -. !last_click_time) 0.3 <= 0
+                      && !last_click_row = abs_idx
+                    in
+                    last_click_time := now;
+                    last_click_row := abs_idx;
+                    if is_double then (
+                      let pids = !sorted_patch_ids in
+                      let pid_count = Base.List.length pids in
+                      if abs_idx < pid_count then (
+                        list_selected := abs_idx;
+                        let pid = Base.List.nth_exn pids abs_idx in
+                        view_mode := Tui.Detail_view pid;
+                        match Hashtbl.find_opt detail_scrolls pid with
+                        | Some (offset, follow) ->
+                            detail_scroll := offset;
+                            detail_follow := follow
+                        | None ->
+                            detail_scroll := 0;
+                            detail_follow := true))
+                    else list_selected := abs_idx);
+                  loop ()
+              | ( Term.Click { button = Term.Left; row; press = true; _ },
+                  Tui.Detail_view pid ) ->
+                  let size = Term.get_size () in
+                  let height =
+                    match size with Some s -> s.Term.rows | None -> 24
+                  in
+                  if row >= height - 1 then (
+                    Hashtbl.replace detail_scrolls pid
+                      (!detail_scroll, !detail_follow);
+                    view_mode := Tui.List_view);
+                  loop ()
+              | Term.Scroll { dir; _ }, Tui.List_view ->
+                  let count = Base.List.length !sorted_patch_ids in
+                  let delta = match dir with Term.Up -> -1 | Term.Down -> 1 in
+                  list_selected :=
+                    Base.Int.max 0
+                      (Base.Int.min (count - 1) (!list_selected + delta));
+                  loop ()
+              | Term.Scroll { dir; _ }, Tui.Detail_view _ ->
+                  let delta = match dir with Term.Up -> -3 | Term.Down -> 3 in
+                  detail_scroll := Base.Int.max 0 (!detail_scroll + delta);
+                  loop ()
+              | Term.Scroll { dir; _ }, Tui.Timeline_view ->
+                  let delta = match dir with Term.Up -> -3 | Term.Down -> 3 in
+                  timeline_scroll := Base.Int.max 0 (!timeline_scroll + delta);
+                  loop ()
+              | ( Term.Click { button = Term.Left | Term.Middle | Term.Right; _ },
+                  (Tui.List_view | Tui.Detail_view _ | Tui.Timeline_view) ) ->
+                  loop ())
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace
           | Term.Key.Escape | Term.Key.Up | Term.Key.Down | Term.Key.Left
           | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
           | Term.Key.Page_down | Term.Key.Delete | Term.Key.F _
-          | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ -> (
+          | Term.Key.Ctrl _ | Term.Key.Unknown _ -> (
               let cmd = Tui_input.of_key key in
               match cmd with
               | Tui_input.Quit -> raise Quit_tui
@@ -2017,6 +2085,9 @@ let run_with_config (config : config) gameplan existing_snapshot =
         let input_line = ref None in
         let completion_hint = ref None in
         let show_help = ref false in
+        let patches_start_row = ref 0 in
+        let patches_scroll_offset = ref 0 in
+        let patches_visible_count = ref 0 in
         let raw_state = Term.Raw.enter () in
         Fun.protect
           ~finally:(fun () ->
@@ -2036,12 +2107,14 @@ let run_with_config (config : config) gameplan existing_snapshot =
                    tui_fiber ~runtime ~clock ~stdout ~list_selected
                      ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
                      ~show_help ~transcripts ~sorted_patch_ids ~input_line
-                     ~completion_hint)
+                     ~completion_hint ~patches_start_row ~patches_scroll_offset
+                     ~patches_visible_count)
                 :: (fun () ->
                   input_fiber ~runtime ~list_selected ~detail_scroll
                     ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode
                     ~pr_registry ~project_name ~show_help ~sorted_patch_ids
-                    ~input_line ~completion_hint)
+                    ~input_line ~completion_hint ~patches_start_row
+                    ~patches_scroll_offset ~patches_visible_count)
                 :: common_fibers)
             with Quit_tui -> ())
 
