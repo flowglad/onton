@@ -84,9 +84,9 @@ let%test_unit "plus sign shows hint" =
   assert (List.length result = 1)
 
 let%test_unit "w shows hint" =
-  let result = complete ~buffer:"w" ~patch_ids:[] in
-  assert (List.length result = 1);
-  [%test_eq: string] (List.hd_exn result).full "w "
+  match complete ~buffer:"w" ~patch_ids:[] with
+  | [ first ] -> [%test_eq: string] first.full "w "
+  | _ -> failwith "expected exactly one completion"
 
 let%test_unit "w with path returns empty" =
   let result = complete ~buffer:"w src/foo.ml" ~patch_ids:[] in
