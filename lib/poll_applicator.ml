@@ -53,7 +53,9 @@ let apply t patch_id (poll_result : Poller.t) =
             match Patch_decision.on_ci_failure agent_before with
             | Patch_decision.Enqueue_ci ->
                 if is_new then
-                  log (Printf.sprintf "enqueued %s" (Operation_kind.show kind));
+                  log
+                    (Printf.sprintf "enqueued %s"
+                       (Operation_kind.to_label kind));
                 Orchestrator.enqueue acc patch_id kind
             | Patch_decision.Ci_already_queued -> acc
             | Patch_decision.Cap_reached ->
@@ -63,13 +65,13 @@ let apply t patch_id (poll_result : Poller.t) =
             if is_new then
               log
                 (Printf.sprintf "enqueued %s (%d new comments)"
-                   (Operation_kind.show kind)
+                   (Operation_kind.to_label kind)
                    (List.length poll_result.new_comments));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Merge_conflict ->
             if is_new then
-              log (Printf.sprintf "enqueued %s" (Operation_kind.show kind));
+              log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in

@@ -37,6 +37,13 @@ end
 module Operation_kind = struct
   type t = Rebase | Human | Merge_conflict | Ci | Review_comments
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
+
+  let to_label = function
+    | Rebase -> "rebase"
+    | Human -> "human"
+    | Merge_conflict -> "merge-conflict"
+    | Ci -> "ci"
+    | Review_comments -> "review-comments"
 end
 
 module Comment_id = struct

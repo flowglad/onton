@@ -37,6 +37,10 @@ end
 module Operation_kind : sig
   type t = Rebase | Human | Merge_conflict | Ci | Review_comments
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
+
+  val to_label : t -> string
+  (** Human-readable label for log messages (e.g. ["ci"], ["review-comments"]).
+  *)
 end
 
 (** Wrapper for GitHub comment [databaseId]. Synthetic IDs are always negative;

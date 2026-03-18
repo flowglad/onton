@@ -1569,7 +1569,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               let pr_number = agent.Patch_agent.pr_number in
                               log_event runtime ~patch_id
                                 (Printf.sprintf "delivering %s (%d comments)"
-                                   (Operation_kind.show kind)
+                                   (Operation_kind.to_label kind)
                                    (Base.List.length pending_comments));
                               let prompt =
                                 match kind with
