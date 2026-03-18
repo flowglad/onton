@@ -1732,56 +1732,80 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~f:(fun (pc : Patch_agent.pending_comment) ->
                                     pc.Patch_agent.comment)
                               in
-                              let pr_number = agent.Patch_agent.pr_number in
-                              log_event runtime ~patch_id
-                                (match kind with
-                                | Operation_kind.Review_comments
-                                | Operation_kind.Human ->
-                                    Printf.sprintf "delivering %s (%d comments)"
-                                      (Operation_kind.to_label kind)
-                                      (Base.List.length pending_comments)
-                                | Operation_kind.Ci | Operation_kind.Rebase
-                                | Operation_kind.Merge_conflict ->
-                                    Printf.sprintf "delivering %s"
-                                      (Operation_kind.to_label kind));
-                              let prompt =
-                                match kind with
-                                | Operation_kind.Ci -> (
-                                    match
-                                      Hashtbl.find_opt ci_checks_cache patch_id
-                                    with
-                                    | Some checks
-                                      when not (Base.List.is_empty checks) ->
-                                        Prompt.render_ci_failure_prompt
-                                          ~project_name ?pr_number checks
-                                    | _ ->
-                                        Prompt.render_ci_failure_unknown_prompt
-                                          ~project_name ?pr_number ())
-                                | Operation_kind.Review_comments ->
-                                    Prompt.render_review_prompt ~project_name
-                                      ?pr_number pending_comments
-                                | Operation_kind.Merge_conflict ->
-                                    Prompt.render_merge_conflict_prompt
-                                      ~project_name ?pr_number ~base_branch:base
-                                      ()
-                                | Operation_kind.Human ->
-                                    Prompt.render_human_message_prompt
-                                      ~project_name
-                                      (Base.List.map pending_comments
-                                         ~f:(fun (c : Comment.t) ->
-                                           c.Comment.body))
-                                | Operation_kind.Rebase ->
-                                    (* Invariant: Rebase is never routed
-                                       through Respond *)
-                                    assert false
+                              (* Skip empty deliveries — review/human with
+                                 no pending comments means they were already
+                                 handled in the previous Respond cycle. *)
+                              let is_comment_op =
+                                Operation_kind.equal kind
+                                  Operation_kind.Review_comments
+                                || Operation_kind.equal kind
+                                     Operation_kind.Human
                               in
-                              let on_pr_detected _pr_number = () in
-                              run_claude_and_handle ~runtime ~process_mgr ~fs
-                                ~project_name ~patch_id
-                                ~repo_root:config.repo_root ~prompt ~agent
-                                ~owner:config.github_owner
-                                ~repo:config.github_repo ~on_pr_detected
-                                ~transcripts)
+                              if
+                                is_comment_op
+                                && Base.List.is_empty pending_comments
+                              then (
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf
+                                     "%s: no pending comments, skipping"
+                                     (Operation_kind.to_label kind));
+                                Runtime.update_orchestrator runtime (fun orch ->
+                                    Orchestrator.complete orch patch_id);
+                                `Ok)
+                              else
+                                let pr_number = agent.Patch_agent.pr_number in
+                                log_event runtime ~patch_id
+                                  (match kind with
+                                  | Operation_kind.Review_comments
+                                  | Operation_kind.Human ->
+                                      Printf.sprintf
+                                        "delivering %s (%d comments)"
+                                        (Operation_kind.to_label kind)
+                                        (Base.List.length pending_comments)
+                                  | Operation_kind.Ci | Operation_kind.Rebase
+                                  | Operation_kind.Merge_conflict ->
+                                      Printf.sprintf "delivering %s"
+                                        (Operation_kind.to_label kind));
+                                let prompt =
+                                  match kind with
+                                  | Operation_kind.Ci -> (
+                                      match
+                                        Hashtbl.find_opt ci_checks_cache
+                                          patch_id
+                                      with
+                                      | Some checks
+                                        when not (Base.List.is_empty checks) ->
+                                          Prompt.render_ci_failure_prompt
+                                            ~project_name ?pr_number checks
+                                      | _ ->
+                                          Prompt
+                                          .render_ci_failure_unknown_prompt
+                                            ~project_name ?pr_number ())
+                                  | Operation_kind.Review_comments ->
+                                      Prompt.render_review_prompt ~project_name
+                                        ?pr_number pending_comments
+                                  | Operation_kind.Merge_conflict ->
+                                      Prompt.render_merge_conflict_prompt
+                                        ~project_name ?pr_number
+                                        ~base_branch:base ()
+                                  | Operation_kind.Human ->
+                                      Prompt.render_human_message_prompt
+                                        ~project_name
+                                        (Base.List.map pending_comments
+                                           ~f:(fun (c : Comment.t) ->
+                                             c.Comment.body))
+                                  | Operation_kind.Rebase ->
+                                      (* Invariant: Rebase is never routed
+                                       through Respond *)
+                                      assert false
+                                in
+                                let on_pr_detected _pr_number = () in
+                                run_claude_and_handle ~runtime ~process_mgr ~fs
+                                  ~project_name ~patch_id
+                                  ~repo_root:config.repo_root ~prompt ~agent
+                                  ~owner:config.github_owner
+                                  ~repo:config.github_repo ~on_pr_detected
+                                  ~transcripts)
                       in
                       match result with
                       | `Stale -> ()
