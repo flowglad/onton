@@ -376,24 +376,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                | Some b -> Branch.to_string b
                | None -> "HEAD"
              in
-             let patch =
-               Types.Patch.
-                 {
-                   id = patch_id;
-                   title = "";
-                   description = "";
-                   branch;
-                   dependencies = [];
-                   spec = "";
-                   acceptance_criteria = [];
-                   files = [];
-                 }
-             in
              log_event runtime ~patch_id
                (Printf.sprintf "creating worktree at %s" worktree_path);
              ignore
-               (Worktree.create ~process_mgr ~repo_root ~project_name ~patch
-                  ~base_ref:base);
+               (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
+                  ~branch ~base_ref:base);
              Runtime.update_orchestrator runtime (fun orch ->
                  Orchestrator.set_worktree_path orch patch_id worktree_path));
       if not (Stdlib.Sys.file_exists worktree_path) then (
@@ -1552,7 +1539,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ignore
                                       (Worktree.create ~process_mgr
                                          ~repo_root:config.repo_root
-                                         ~project_name ~patch
+                                         ~project_name ~patch_id
+                                         ~branch:patch.Patch.branch
                                          ~base_ref:
                                            (Branch.to_string base_branch)));
                                   Runtime.update_orchestrator runtime

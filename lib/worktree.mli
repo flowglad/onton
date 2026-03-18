@@ -13,7 +13,8 @@ val create :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
   project_name:string ->
-  patch:Types.Patch.t ->
+  patch_id:Types.Patch_id.t ->
+  branch:Types.Branch.t ->
   base_ref:string ->
   t
 

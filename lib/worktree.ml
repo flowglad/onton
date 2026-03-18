@@ -56,16 +56,14 @@ let branch_exists ~process_mgr ~repo_root branch_str =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
-let create ~process_mgr ~repo_root ~project_name ~patch ~base_ref =
-  let open Types in
-  let path = worktree_dir ~project_name ~patch_id:patch.Patch.id in
-  let branch_str = Branch.to_string patch.Patch.branch in
-  if Stdlib.Sys.file_exists path then
-    { patch_id = patch.Patch.id; branch = patch.Patch.branch; path }
+let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
+  let path = worktree_dir ~project_name ~patch_id in
+  let branch_str = Types.Branch.to_string branch in
+  if Stdlib.Sys.file_exists path then { patch_id; branch; path }
   else if branch_exists ~process_mgr ~repo_root branch_str then (
     Eio.Process.run process_mgr
       [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ];
-    { patch_id = patch.Patch.id; branch = patch.Patch.branch; path })
+    { patch_id; branch; path })
   else (
     Eio.Process.run process_mgr
       [
@@ -79,7 +77,7 @@ let create ~process_mgr ~repo_root ~project_name ~patch ~base_ref =
         path;
         base_ref;
       ];
-    { patch_id = patch.Patch.id; branch = patch.Patch.branch; path })
+    { patch_id; branch; path })
 
 let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
