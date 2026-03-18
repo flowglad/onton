@@ -570,7 +570,8 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     in
     let scroll_offset =
       match !view_mode with
-      | Tui.Detail_view _ -> !detail_scroll
+      | Tui.Detail_view _ ->
+          if !detail_follow then Base.Int.max_value else !detail_scroll
       | Tui.Timeline_view -> !timeline_scroll
       | Tui.List_view -> 0
     in
