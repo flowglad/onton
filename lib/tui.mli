@@ -27,6 +27,19 @@ val color : display_status -> string
 val to_status_display : display_status -> status_display
 val styled_label : display_status -> string
 
+(** {2 Status messages} *)
+
+type msg_level = Info | Warning | Error [@@deriving show, eq]
+
+type status_msg = {
+  level : msg_level;
+  text : string;
+  expires_at : float option;
+}
+[@@deriving show, eq]
+
+val msg_expired : now:float -> status_msg -> bool
+
 val derive_display_status :
   State.Patch_ctx.t ->
   patch_id:Patch_id.t ->
@@ -79,21 +92,8 @@ type patch_view = {
   pr_number : Pr_number.t option;
   base_branch : Branch.t option;
   worktree_path : string option;
+  intervention_reason : string option;
 }
-
-(** {2 Status messages} *)
-
-type msg_level = Info | Warning | Error [@@deriving show, eq]
-
-type status_msg = {
-  level : msg_level;
-  text : string;
-  expires_at : float option;
-}
-[@@deriving show, eq]
-
-val msg_expired : now:float -> status_msg -> bool
-val render_status_msg : width:int -> status_msg option -> string
 
 (** {2 Frame rendering} *)
 
@@ -123,6 +123,8 @@ val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->
   activity:activity_entry list ->
+  ?intervention_reasons:(Patch_id.t, string) Map.Poly.t ->
+  unit ->
   patch_view list
 
 val render_help_overlay : width:int -> height:int -> string list
@@ -137,9 +139,9 @@ val render_frame :
   project_name:string ->
   show_help:bool ->
   ?transcript:string ->
+  ?status_msg:status_msg ->
   ?input_line:string ->
   ?completion_hint:string ->
-  ?status_msg:status_msg ->
   patch_view list ->
   frame
 
