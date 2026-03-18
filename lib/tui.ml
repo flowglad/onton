@@ -561,9 +561,9 @@ let render_header ~project_name ~width =
       (width - Term.visible_length prefix - Term.visible_length project_name - 1)
   in
   let rule_suffix = Term.hrule ~ch:"─" suffix_pad in
+  let raw_title = Printf.sprintf "%s%s %s" prefix project_name rule_suffix in
   let title_line =
-    Term.styled [ c_accent ]
-      (Printf.sprintf "%s%s %s" prefix project_name rule_suffix)
+    Term.styled [ c_accent ] (Term.fit_width (Int.max 1 width) raw_title)
   in
   [ title_line ]
 
