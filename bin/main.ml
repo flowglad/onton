@@ -1552,16 +1552,32 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       ~patch_id ~agent
                                       ~branch:patch.Patch.branch ()
                                   in
-                                  if not (Stdlib.Sys.file_exists wt_path) then (
-                                    log_event runtime ~patch_id
-                                      "creating worktree";
-                                    ignore
-                                      (Worktree.create ~process_mgr
-                                         ~repo_root:config.repo_root
-                                         ~project_name ~patch_id
-                                         ~branch:patch.Patch.branch
-                                         ~base_ref:
-                                           (Branch.to_string base_branch)));
+                                  let wt_path =
+                                    if not (Stdlib.Sys.file_exists wt_path) then (
+                                      match
+                                        Worktree.find_for_branch ~process_mgr
+                                          ~repo_root:config.repo_root
+                                          patch.Patch.branch
+                                      with
+                                      | Some existing ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "found existing worktree at %s"
+                                               existing);
+                                          existing
+                                      | None ->
+                                          log_event runtime ~patch_id
+                                            "creating worktree";
+                                          ignore
+                                            (Worktree.create ~process_mgr
+                                               ~repo_root:config.repo_root
+                                               ~project_name ~patch_id
+                                               ~branch:patch.Patch.branch
+                                               ~base_ref:
+                                                 (Branch.to_string base_branch));
+                                          wt_path)
+                                    else wt_path
+                                  in
                                   Runtime.update_orchestrator runtime
                                     (fun orch ->
                                       Orchestrator.set_worktree_path orch
