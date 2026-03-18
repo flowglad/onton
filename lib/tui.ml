@@ -574,6 +574,13 @@ let short_op_name = function
   | Operation_kind.Human -> "human"
   | Operation_kind.Rebase -> "rebase"
 
+let apply_reverse_selection row =
+  let reapply = Term.Sgr.reset ^ Term.Sgr.reverse in
+  let row =
+    String.substr_replace_all row ~pattern:Term.Sgr.reset ~with_:reapply
+  in
+  Term.Sgr.reverse ^ row ^ Term.Sgr.reset
+
 let render_patch_row ~width ~selected (pv : patch_view) =
   let ind = status_indicator pv.status in
   let styled_ind = styled_status pv.status (Printf.sprintf "[%s]" ind) in
@@ -597,7 +604,7 @@ let render_patch_row ~width ~selected (pv : patch_view) =
       (Printf.sprintf "%s %s %s  %s  %s%s" cursor styled_ind pr_tag branch_str
          status_suffix op_suffix)
   in
-  if selected then Term.styled [ Term.Sgr.reverse ] row else row
+  if selected then apply_reverse_selection row else row
 
 (** Compute visible window: returns (offset, count) for scrolling. *)
 let visible_window ~selected ~total ~max_visible =
@@ -876,7 +883,7 @@ let render_timeline ~width ~selected ~max_visible
                 (Term.styled [ c_muted ] message)
         in
         let row = Term.fit_width (Int.max 1 (width - 1)) row in
-        if is_selected then Term.styled [ Term.Sgr.reverse ] row else row)
+        if is_selected then apply_reverse_selection row else row)
   in
   let scroll_up =
     if offset > 0 then
