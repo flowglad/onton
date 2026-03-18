@@ -837,7 +837,7 @@ let render_footer ~width ~view_mode ?input_line ?completion_hint () =
       let ghost =
         match completion_hint with
         | Some hint when not (String.is_empty hint) ->
-            Term.Sgr.italic ^ Term.Sgr.dim ^ hint ^ Term.Sgr.reset
+            Term.styled [ Term.Sgr.italic; Term.Sgr.dim ] hint
         | Some _ | None -> ""
       in
       let prompt_str =

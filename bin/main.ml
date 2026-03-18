@@ -568,9 +568,8 @@ let input_fiber ~runtime ~selected ~view_mode ~pr_registry ~project_name
       match !current_completions with
       | first :: _ ->
           let full = first.Completions.full in
-          let buf_str = buffer in
-          if Base.String.is_prefix full ~prefix:buf_str then
-            Some (Base.String.drop_prefix full (Base.String.length buf_str))
+          if Base.String.is_prefix full ~prefix:buffer then
+            Some (Base.String.drop_prefix full (Base.String.length buffer))
           else None
       | [] -> None
   in
