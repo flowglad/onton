@@ -70,6 +70,10 @@ let gen_patch =
             spec = "";
             acceptance_criteria = [];
             files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
           })
       gen_patch_id gen_title gen_branch gen_deps)
 
@@ -108,6 +112,10 @@ let gen_patch_list_unique =
                 spec = "";
                 acceptance_criteria = [];
                 files = [];
+                classification = "";
+                changes = [];
+                test_stubs_introduced = [];
+                test_stubs_implemented = [];
               }))
       (int_range 1 8))
 
@@ -122,6 +130,9 @@ let gen_gameplan =
             solution_summary = "test solution";
             design_decisions = "";
             patches;
+            current_state_analysis = "";
+            explicit_opinions = "";
+            acceptance_criteria = [];
           })
       gen_patch_list_unique)
 

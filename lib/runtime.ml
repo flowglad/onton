@@ -26,19 +26,33 @@ let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
   in
   { mutex = Eio.Mutex.create (); snap }
 
-let read t f = Eio.Mutex.use_ro t.mutex (fun () -> f t.snap)
+let read t f =
+  Eio.Mutex.lock t.mutex;
+  match f t.snap with
+  | v ->
+      Eio.Mutex.unlock t.mutex;
+      v
+  | exception ex ->
+      Eio.Mutex.unlock t.mutex;
+      raise ex
 
 let update t f =
-  (* ~protect:false: if [f] raises, [t.snap] is never assigned (the
-     record expression [f t.snap] fails before the [<-] executes), so
-     the snapshot remains consistent and the mutex stays healthy.
-     ~protect:true would poison the mutex on any exception, cascading
-     into all other fibers — a disproportionate response to a logic
-     bug in one patch agent. *)
-  Eio.Mutex.use_rw ~protect:false t.mutex (fun () -> t.snap <- f t.snap)
+  (* Manual lock/unlock instead of [use_rw]: [use_rw] poisons the mutex on
+     any exception (including [Cancelled]), which cascades into every other
+     fiber and crashes the process. Since [f] is a pure snapshot→snapshot
+     transform, the assignment either completes or doesn't — no inconsistent
+     state is possible, so poisoning is never warranted. *)
+  Eio.Mutex.lock t.mutex;
+  match t.snap <- f t.snap with
+  | () -> Eio.Mutex.unlock t.mutex
+  | exception ex ->
+      Eio.Mutex.unlock t.mutex;
+      raise ex
 
 let update_orchestrator t f =
   update t (fun s -> { s with orchestrator = f s.orchestrator })
 
 let update_activity_log t f =
   update t (fun s -> { s with activity_log = f s.activity_log })
+
+let snapshot_unsync t = t.snap

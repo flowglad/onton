@@ -314,6 +314,10 @@ let () =
           spec = "";
           acceptance_criteria = [];
           files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
         };
     ]
   in
@@ -367,6 +371,10 @@ let () =
         spec = "";
         acceptance_criteria = [];
         files = [];
+        classification = "";
+        changes = [];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
       }
   in
 
@@ -473,6 +481,10 @@ let () =
           spec = "";
           acceptance_criteria = [];
           files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
         };
       Types.Patch.
         {
@@ -484,6 +496,10 @@ let () =
           spec = "";
           acceptance_criteria = [];
           files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
         };
     ]
   in

@@ -82,6 +82,10 @@ module Patch : sig
     spec : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]
     files : string list; [@yojson.default []]
+    classification : string; [@yojson.default ""]
+    changes : string list; [@yojson.default []]
+    test_stubs_introduced : string list; [@yojson.default []]
+    test_stubs_implemented : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
@@ -139,6 +143,9 @@ module Gameplan : sig
     solution_summary : string;
     design_decisions : string;
     patches : Patch.t list;
+    current_state_analysis : string; [@yojson.default ""]
+    explicit_opinions : string; [@yojson.default ""]
+    acceptance_criteria : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

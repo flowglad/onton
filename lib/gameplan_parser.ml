@@ -167,6 +167,10 @@ let parse_patches lines dep_graph ~project_name =
           spec = "";
           acceptance_criteria = [];
           files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
         })
 
 let detect_cycle dep_graph =
@@ -303,9 +307,19 @@ let parse_string input =
                   solution_summary;
                   design_decisions;
                   patches;
+                  current_state_analysis = "";
+                  explicit_opinions = "";
+                  acceptance_criteria = [];
                 };
               dependency_graph = dep_graph;
             })
+
+let json_string_list json key =
+  let open Yojson.Safe.Util in
+  match json |> member key with
+  | `List items ->
+      List.filter_map items ~f:(function `String s -> Some s | _ -> None)
+  | _ -> []
 
 let parse_json_string input =
   match
@@ -317,34 +331,87 @@ let parse_json_string input =
   | Ok json -> (
       let open Yojson.Safe.Util in
       try
-        let project_name = json |> member "project" |> to_string in
-        let solution_summary = json |> member "summary" |> to_string in
+        let project_name = json |> member "projectName" |> to_string in
+        let problem_statement =
+          match json |> member "problemStatement" with
+          | `String s -> s
+          | _ -> ""
+        in
+        let solution_summary =
+          match json |> member "solutionSummary" with `String s -> s | _ -> ""
+        in
         let design_decisions =
           match json |> member "finalStateSpec" with `String s -> s | _ -> ""
         in
-        let dep_edges =
-          json |> member "dependencyGraph" |> to_list
-          |> List.map ~f:(fun edge ->
-              let from_ = edge |> member "from" |> to_string in
-              let to_ = edge |> member "to" |> to_string in
-              (Types.Patch_id.of_string from_, Types.Patch_id.of_string to_))
+        let current_state_analysis =
+          match json |> member "currentStateAnalysis" with
+          | `String s -> s
+          | _ -> ""
         in
+        let explicit_opinions =
+          match json |> member "explicitOpinions" with
+          | `List items ->
+              List.filter_map items ~f:(fun obj ->
+                  let opinion =
+                    match obj |> member "opinion" with
+                    | `String s -> s
+                    | _ -> ""
+                  in
+                  let rationale =
+                    match obj |> member "rationale" with
+                    | `String s -> s
+                    | _ -> ""
+                  in
+                  if String.is_empty opinion then None
+                  else
+                    Some
+                      (Printf.sprintf "- OPINION: %s\n  RATIONALE: %s" opinion
+                         rationale))
+              |> String.concat ~sep:"\n"
+          | _ -> ""
+        in
+        let acceptance_criteria = json_string_list json "acceptanceCriteria" in
+        (* Dependency graph: {patch, classification, dependsOn[]} format *)
         let dep_graph =
-          List.fold dep_edges
-            ~init:(Map.empty (module Types.Patch_id))
-            ~f:(fun acc (from_, to_) ->
-              Map.update acc from_ ~f:(fun existing ->
-                  to_ :: Option.value existing ~default:[]))
-          |> Map.map ~f:List.rev
+          match json |> member "dependencyGraph" with
+          | `List items ->
+              List.fold items
+                ~init:(Map.empty (module Types.Patch_id))
+                ~f:(fun acc entry ->
+                  let patch_num = entry |> member "patch" |> to_int in
+                  let patch_id =
+                    Types.Patch_id.of_string (Int.to_string patch_num)
+                  in
+                  let depends_on =
+                    match entry |> member "dependsOn" with
+                    | `List deps ->
+                        List.filter_map deps ~f:(fun d ->
+                            match d with
+                            | `Int n ->
+                                Some
+                                  (Types.Patch_id.of_string (Int.to_string n))
+                            | _ -> None)
+                    | _ -> []
+                  in
+                  Map.set acc ~key:patch_id ~data:depends_on)
+          | _ -> Map.empty (module Types.Patch_id)
         in
         let slug = slugify project_name in
         let patches =
           json |> member "patches" |> to_list
           |> List.map ~f:(fun p ->
-              let id_str = p |> member "id" |> to_string in
+              let id_num = p |> member "number" |> to_int in
+              let id_str = Int.to_string id_num in
               let id = Types.Patch_id.of_string id_str in
               let title = p |> member "title" |> to_string in
-              let description = p |> member "description" |> to_string in
+              let changes = json_string_list p "changes" in
+              let description =
+                match changes with
+                | [] -> ""
+                | items ->
+                    List.map items ~f:(fun s -> "- " ^ s)
+                    |> String.concat ~sep:"\n"
+              in
               let branch = Types.Branch.of_string (slug ^ "/patch-" ^ id_str) in
               let dependencies =
                 Map.find dep_graph id |> Option.value ~default:[]
@@ -352,20 +419,35 @@ let parse_json_string input =
               let spec =
                 match p |> member "spec" with `String s -> s | _ -> ""
               in
-              let acceptance_criteria =
-                match p |> member "acceptanceCriteria" with
-                | `List items ->
-                    List.filter_map items ~f:(function
-                      | `String s -> Some s
-                      | _ -> None)
-                | _ -> []
+              let classification =
+                match p |> member "classification" with
+                | `String s -> s
+                | _ -> ""
+              in
+              let test_stubs_introduced =
+                json_string_list p "testStubsIntroduced"
+              in
+              let test_stubs_implemented =
+                json_string_list p "testStubsImplemented"
               in
               let files =
                 match p |> member "files" with
                 | `List items ->
-                    List.filter_map items ~f:(function
-                      | `String s -> Some s
-                      | _ -> None)
+                    List.filter_map items ~f:(fun obj ->
+                        match obj |> member "path" with
+                        | `String path ->
+                            let action =
+                              match obj |> member "action" with
+                              | `String s -> s
+                              | _ -> "modify"
+                            in
+                            let desc =
+                              match obj |> member "description" with
+                              | `String s -> s
+                              | _ -> ""
+                            in
+                            Some (Printf.sprintf "%s (%s): %s" path action desc)
+                        | _ -> None)
                 | _ -> []
               in
               {
@@ -375,8 +457,12 @@ let parse_json_string input =
                 branch;
                 dependencies;
                 spec;
-                acceptance_criteria;
+                acceptance_criteria = [];
                 files;
+                classification;
+                changes;
+                test_stubs_introduced;
+                test_stubs_implemented;
               })
         in
         match validate ~patches ~dep_graph with
@@ -387,10 +473,13 @@ let parse_json_string input =
                 gameplan =
                   {
                     Types.Gameplan.project_name;
-                    problem_statement = "";
+                    problem_statement;
                     solution_summary;
                     design_decisions;
                     patches;
+                    current_state_analysis;
+                    explicit_opinions;
+                    acceptance_criteria;
                   };
                 dependency_graph = dep_graph;
               }
@@ -513,6 +602,10 @@ let%test_module "Gameplan_parser" =
               spec = "";
               acceptance_criteria = [];
               files = [];
+              classification = "";
+              changes = [];
+              test_stubs_introduced = [];
+              test_stubs_implemented = [];
             };
         ]
       in
@@ -534,6 +627,10 @@ let%test_module "Gameplan_parser" =
             spec = "";
             acceptance_criteria = [];
             files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
           }
       in
       let dep_graph = Map.of_alist_exn (module Types.Patch_id) [ (pid, []) ] in
@@ -604,40 +701,73 @@ Details here.
                ~substring:"Never mock"
       | Error _ -> false
 
-    let%test "parse_json_string: project name and summary" =
+    let%test "parse_json_string: real format fields" =
       let input =
         {|{
-          "project": "my-proj",
-          "summary": "Do things fast.",
+          "projectName": "my-proj",
+          "problemStatement": "Something is broken.",
+          "solutionSummary": "Do things fast.",
           "finalStateSpec": "must be correct",
+          "currentStateAnalysis": "current state is bad",
+          "explicitOpinions": [
+            {"opinion": "Use tests", "rationale": "Catches bugs"}
+          ],
+          "acceptanceCriteria": ["builds", "tests pass"],
           "patches": [
             {
-              "id": "P1",
+              "number": 1,
               "title": "First",
-              "description": "Implement first.",
-              "spec": "",
-              "acceptanceCriteria": [],
-              "files": []
+              "classification": "CORE",
+              "changes": ["Add module X", "Wire up Y"],
+              "spec": "module X must ...",
+              "testStubsIntroduced": ["test_x"],
+              "testStubsImplemented": [],
+              "files": [
+                {"path": "lib/x.ml", "action": "create", "description": "New module"}
+              ]
             }
           ],
-          "dependencyGraph": []
+          "dependencyGraph": [
+            {"patch": 1, "classification": "CORE", "dependsOn": []}
+          ]
         }|}
       in
       match parse_json_string input with
       | Ok result ->
           String.equal result.gameplan.project_name "my-proj"
+          && String.equal result.gameplan.problem_statement
+               "Something is broken."
           && String.equal result.gameplan.solution_summary "Do things fast."
           && String.equal result.gameplan.design_decisions "must be correct"
+          && String.equal result.gameplan.current_state_analysis
+               "current state is bad"
+          && String.is_substring result.gameplan.explicit_opinions
+               ~substring:"Use tests"
+          && List.equal String.equal result.gameplan.acceptance_criteria
+               [ "builds"; "tests pass" ]
           && List.length result.gameplan.patches = 1
-      | Error _ -> false
+          &&
+          let p = List.hd_exn result.gameplan.patches in
+          String.equal (Types.Patch_id.to_string p.Types.Patch.id) "1"
+          && String.equal p.classification "CORE"
+          && List.length p.changes = 2
+          && String.is_substring p.description ~substring:"Add module X"
+          && String.equal p.spec "module X must ..."
+          && List.equal String.equal p.test_stubs_introduced [ "test_x" ]
+          && List.is_empty p.test_stubs_implemented
+          && String.is_substring (List.hd_exn p.files)
+               ~substring:"lib/x.ml (create)"
+      | Error msg ->
+          Stdlib.Printf.eprintf "parse error: %s\n" msg;
+          false
 
-    let%test "parse_json_string: branch derived from project slug and id" =
+    let%test "parse_json_string: branch derived from project slug and number" =
       let input =
         {|{
-          "project": "My Project",
-          "summary": "S",
-          "patches": [{"id": "P1", "title": "T", "description": "D"}],
-          "dependencyGraph": []
+          "projectName": "My Project",
+          "solutionSummary": "S",
+          "patches": [{"number": 1, "title": "T", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
         }|}
       in
       match parse_json_string input with
@@ -645,56 +775,32 @@ Details here.
           let patch = List.hd_exn result.gameplan.patches in
           String.equal
             (Types.Branch.to_string patch.Types.Patch.branch)
-            "my-project/patch-P1"
+            "my-project/patch-1"
       | Error _ -> false
 
-    let%test "parse_json_string: dependency graph mapped to patch deps" =
+    let%test "parse_json_string: dependency graph with dependsOn" =
       let input =
         {|{
-          "project": "p",
-          "summary": "s",
+          "projectName": "p",
+          "solutionSummary": "s",
           "patches": [
-            {"id": "P1", "title": "A", "description": ""},
-            {"id": "P2", "title": "B", "description": ""}
+            {"number": 1, "title": "A", "changes": []},
+            {"number": 2, "title": "B", "changes": []}
           ],
-          "dependencyGraph": [{"from": "P2", "to": "P1"}]
+          "dependencyGraph": [
+            {"patch": 1, "dependsOn": []},
+            {"patch": 2, "dependsOn": [1]}
+          ]
         }|}
       in
       match parse_json_string input with
       | Ok result ->
           let p2 =
             List.find_exn result.gameplan.patches ~f:(fun p ->
-                String.equal (Types.Patch_id.to_string p.Types.Patch.id) "P2")
+                String.equal (Types.Patch_id.to_string p.Types.Patch.id) "2")
           in
           List.equal Types.Patch_id.equal p2.Types.Patch.dependencies
-            [ Types.Patch_id.of_string "P1" ]
-      | Error _ -> false
-
-    let%test "parse_json_string: spec and acceptance_criteria parsed" =
-      let input =
-        {|{
-          "project": "p",
-          "summary": "s",
-          "patches": [
-            {
-              "id": "P1",
-              "title": "T",
-              "description": "D",
-              "spec": "module FOO.",
-              "acceptanceCriteria": ["builds", "tests pass"],
-              "files": ["lib/foo.ml"]
-            }
-          ],
-          "dependencyGraph": []
-        }|}
-      in
-      match parse_json_string input with
-      | Ok result ->
-          let patch = List.hd_exn result.gameplan.patches in
-          String.equal patch.Types.Patch.spec "module FOO."
-          && List.equal String.equal patch.Types.Patch.acceptance_criteria
-               [ "builds"; "tests pass" ]
-          && List.equal String.equal patch.Types.Patch.files [ "lib/foo.ml" ]
+            [ Types.Patch_id.of_string "1" ]
       | Error _ -> false
 
     let%test "parse_json_string: invalid JSON returns Error" =
@@ -705,15 +811,15 @@ Details here.
     let%test "parse_json_string: cycle returns Error" =
       let input =
         {|{
-          "project": "p",
-          "summary": "s",
+          "projectName": "p",
+          "solutionSummary": "s",
           "patches": [
-            {"id": "P1", "title": "A", "description": ""},
-            {"id": "P2", "title": "B", "description": ""}
+            {"number": 1, "title": "A", "changes": []},
+            {"number": 2, "title": "B", "changes": []}
           ],
           "dependencyGraph": [
-            {"from": "P1", "to": "P2"},
-            {"from": "P2", "to": "P1"}
+            {"patch": 1, "dependsOn": [2]},
+            {"patch": 2, "dependsOn": [1]}
           ]
         }|}
       in

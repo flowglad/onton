@@ -11,6 +11,10 @@ let () =
           spec = "";
           acceptance_criteria = [];
           files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
         };
     ]
   in

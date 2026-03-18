@@ -1873,7 +1873,7 @@ let persistence_fiber ~runtime ~clock ~project_name ~transcripts =
         Base.Hashtbl.clear t;
         Hashtbl.iter (fun k v -> Base.Hashtbl.set t ~key:k ~data:v) transcripts;
         snap);
-    let snap = Runtime.read runtime (fun s -> s) in
+    let snap = Runtime.snapshot_unsync runtime in
     (match Persistence.save ~path snap with
     | Ok () -> ()
     | Error msg ->
@@ -1931,6 +1931,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
             solution_summary = "";
             design_decisions = "";
             patches = [];
+            current_state_analysis = "";
+            explicit_opinions = "";
+            acceptance_criteria = [];
           }
       in
       Project_store.save_config ~project_name ~github_token:token
@@ -2203,7 +2206,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
             Term.Raw.clear_suspend_handlers ();
             Term.Raw.leave raw_state;
             Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
-            let snap = Runtime.read runtime (fun s -> s) in
+            let snap = Runtime.snapshot_unsync runtime in
             ignore
               (Persistence.save
                  ~path:(Project_store.snapshot_path project_name)

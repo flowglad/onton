@@ -30,6 +30,10 @@ let mk_patches n =
           spec = "";
           acceptance_criteria = [];
           files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
         })
 
 (** Generate a random command to apply to the orchestrator. Commands model the

@@ -111,6 +111,9 @@ let () =
                 solution_summary = "t";
                 design_decisions = "";
                 patches = [];
+                current_state_analysis = "";
+                explicit_opinions = "";
+                acceptance_criteria = [];
               }
           in
           let orchestrator =
@@ -217,6 +220,9 @@ let () =
                 solution_summary = "";
                 design_decisions = "";
                 patches = [];
+                current_state_analysis = "";
+                explicit_opinions = "";
+                acceptance_criteria = [];
               }
           in
           let main_branch = Branch.of_string "main" in

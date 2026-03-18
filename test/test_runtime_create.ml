@@ -13,6 +13,9 @@ let () =
       solution_summary = "";
       design_decisions = "";
       patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
     }
   in
   let snapshot =

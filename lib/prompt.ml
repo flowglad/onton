@@ -83,8 +83,21 @@ let render_with_override ~(project_name : string) ~(name : string)
   | Some template -> substitute_variables template vars
   | None -> default ()
 
+let format_list items =
+  List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
+
+let optional_section ~header content =
+  if String.is_empty content then ""
+  else "\n## " ^ header ^ "\n" ^ content ^ "\n"
+
+let optional_list_section ~header items =
+  match items with
+  | [] -> ""
+  | _ -> optional_section ~header (format_list items)
+
 let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     (gameplan : Gameplan.t) ~(base_branch : string) =
+  let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
     | [] -> "None"
@@ -106,49 +119,9 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
     | None -> "Not yet created"
   in
-  let format_list items =
-    List.map items ~f:(fun s -> "- " ^ s) |> String.concat ~sep:"\n"
-  in
-  let vars =
-    [
-      ("project_name", project_name);
-      ("title", patch.Patch.title);
-      ("problem_statement", gameplan.Gameplan.problem_statement);
-      ("solution_summary", gameplan.Gameplan.solution_summary);
-      ("dependencies", deps);
-      ("branch", branch);
-      ("base_branch", base_branch);
-      ("patch_id", Patch_id.to_string patch.Patch.id);
-      ("patches_list", patches_list);
-      ( "pr_number",
-        match pr_number with
-        | Some n -> Int.to_string (Pr_number.to_int n)
-        | None -> "" );
-      ("spec", patch.Patch.spec);
-      ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
-      ("files", format_list patch.Patch.files);
-    ]
-  in
-  let design_decisions_section =
-    if String.is_empty gameplan.Gameplan.design_decisions then ""
-    else
-      Printf.sprintf "\n## Design Decisions (Non-negotiable)\n%s\n"
-        gameplan.Gameplan.design_decisions
-  in
-  let spec_section =
-    if String.is_empty patch.Patch.spec then ""
-    else Printf.sprintf "\n## Specification\n%s\n" patch.Patch.spec
-  in
-  let acceptance_criteria_section =
-    match patch.Patch.acceptance_criteria with
-    | [] -> ""
-    | items ->
-        Printf.sprintf "\n## Acceptance Criteria\n%s\n" (format_list items)
-  in
-  let files_section =
-    match patch.Patch.files with
-    | [] -> ""
-    | items -> Printf.sprintf "\n## Files to Modify\n%s\n" (format_list items)
+  let classification_note =
+    if String.is_empty patch.Patch.classification then ""
+    else Printf.sprintf " [%s]" patch.Patch.classification
   in
   let base_branch_note =
     if String.equal base_branch "main" then ""
@@ -166,13 +139,13 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     match pr_number with
     | Some _ -> ""
     | None ->
-        Printf.sprintf
+        substitute_variables
           {|
 **IMPORTANT: Open a draft PR immediately after your first commit.** Do not wait until implementation is complete.
 
 After your first commit, run:
 ```bash
-gh pr create --draft --title '[%s] Patch %s: %s' --body 'Work in progress' --base %s
+gh pr create --draft --title '[{{project_name}}] Patch {{patch_id}}: {{title}}' --body 'Work in progress' --base {{base_branch}}
 ```
 
 **NEVER change the PR base branch after creation.** The orchestrator manages PR base branches automatically.
@@ -181,50 +154,92 @@ Then continue implementing. When finished:
 1. Run tests to verify they pass
 2. Update the PR description with a proper summary
 3. Mark the PR as ready for review when complete|}
-          project_name
-          (Patch_id.to_string patch.Patch.id)
-          patch.Patch.title base_branch
+          [
+            ("project_name", project_name);
+            ("patch_id", patch_id);
+            ("title", patch.Patch.title);
+            ("base_branch", base_branch);
+          ]
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ("title", patch.Patch.title);
+      ("classification_note", classification_note);
+      ("problem_statement", gameplan.Gameplan.problem_statement);
+      ("solution_summary", gameplan.Gameplan.solution_summary);
+      ("dependencies", deps);
+      ("branch", branch);
+      ("base_branch", base_branch);
+      ("patch_id", patch_id);
+      ("patches_list", patches_list);
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+      ("pr_str", pr_str);
+      ("description", patch.Patch.description);
+      ("spec", patch.Patch.spec);
+      ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
+      ("files", format_list patch.Patch.files);
+      ( "design_decisions_section",
+        optional_section ~header:"Design Decisions (Non-negotiable)"
+          gameplan.Gameplan.design_decisions );
+      ( "explicit_opinions_section",
+        optional_section ~header:"Explicit Opinions (Non-negotiable)"
+          gameplan.Gameplan.explicit_opinions );
+      ( "current_state_section",
+        optional_section ~header:"Current State Analysis"
+          gameplan.Gameplan.current_state_analysis );
+      ("changes_section", optional_list_section ~header:"Changes" patch.changes);
+      ("spec_section", optional_section ~header:"Specification" patch.spec);
+      ( "acceptance_criteria_section",
+        optional_list_section ~header:"Acceptance Criteria"
+          patch.acceptance_criteria );
+      ( "files_section",
+        optional_list_section ~header:"Files to Modify" patch.files );
+      ( "test_stubs_introduced_section",
+        optional_list_section ~header:"Test Stubs Introduced"
+          patch.test_stubs_introduced );
+      ( "test_stubs_implemented_section",
+        optional_list_section ~header:"Test Stubs Implemented"
+          patch.test_stubs_implemented );
+      ("base_branch_note", base_branch_note);
+      ("pr_instructions", pr_instructions);
+    ]
   in
   render_with_override ~project_name ~name:"patch" ~vars ~default:(fun () ->
-      Printf.sprintf
-        {|# [%s] Patch %s: %s
+      substitute_variables
+        {|# [{{project_name}}] Patch {{patch_id}}{{classification_note}}: {{title}}
 
 ## Problem Statement
-%s
+{{problem_statement}}
 
 ## Solution Summary
-%s
-%s
+{{solution_summary}}
+{{design_decisions_section}}{{explicit_opinions_section}}{{current_state_section}}
 ## Dependencies
-%s
+{{dependencies}}
 
 ## Your Task
 
-%s
-%s%s%s
+{{description}}
+{{changes_section}}{{spec_section}}{{acceptance_criteria_section}}{{files_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}
 ## Git Instructions
-- Branch: %s
-- Base branch: %s
-- PR: %s
-%s%s
+- Branch: {{branch}}
+- Base branch: {{base_branch}}
+- PR: {{pr_str}}
+{{base_branch_note}}{{pr_instructions}}
 ## PR Title (CRITICAL)
 **You MUST use this EXACT title format:**
 
-`[%s] Patch %s: %s`
+`[{{project_name}}] Patch {{patch_id}}: {{title}}`
 
 Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed project name and patch number are required for tracking.
 
 ## Patches in Gameplan
-%s|}
-        project_name
-        (Patch_id.to_string patch.Patch.id)
-        patch.Patch.title gameplan.Gameplan.problem_statement
-        gameplan.Gameplan.solution_summary design_decisions_section deps
-        patch.Patch.description spec_section acceptance_criteria_section
-        files_section branch base_branch pr_str base_branch_note pr_instructions
-        project_name
-        (Patch_id.to_string patch.Patch.id)
-        patch.Patch.title patches_list)
+{{patches_list}}|}
+        vars)
 
 let render_review_prompt ~(project_name : string) ?pr_number
     (comments : Comment.t list) =
@@ -427,6 +442,10 @@ let%test "patch prompt includes title and deps" =
         spec = "";
         acceptance_criteria = [];
         files = [];
+        classification = "";
+        changes = [];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -436,19 +455,25 @@ let%test "patch prompt includes title and deps" =
         problem_statement = "Port Anton to OCaml.";
         solution_summary = "Use Eio for concurrency.";
         design_decisions = "";
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
         patches =
           [
-            Patch.
-              {
-                id = Patch_id.of_string "1";
-                title = "Core types";
-                description = "";
-                branch = Branch.of_string "onton-port/patch-1";
-                dependencies = [];
-                spec = "";
-                acceptance_criteria = [];
-                files = [];
-              };
+            {
+              Patch.id = Patch_id.of_string "1";
+              title = "Core types";
+              description = "";
+              branch = Branch.of_string "onton-port/patch-1";
+              dependencies = [];
+              spec = "";
+              acceptance_criteria = [];
+              files = [];
+              classification = "";
+              changes = [];
+              test_stubs_introduced = [];
+              test_stubs_implemented = [];
+            };
             patch;
           ];
       }
