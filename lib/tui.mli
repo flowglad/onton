@@ -123,6 +123,8 @@ val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->
   activity:activity_entry list ->
+  ?intervention_reasons:(Patch_id.t, string) Map.Poly.t ->
+  unit ->
   patch_view list
 
 val render_help_overlay : width:int -> height:int -> string list

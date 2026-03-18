@@ -1042,7 +1042,8 @@ let detail_info_height (pv : patch_view) =
 (** {1 Public API} *)
 
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
-    ~(gameplan : Gameplan.t) ~(activity : activity_entry list) =
+    ~(gameplan : Gameplan.t) ~(activity : activity_entry list)
+    ?(intervention_reasons = Map.Poly.empty) () =
   let agents = Orchestrator.all_agents orchestrator in
   let graph = Orchestrator.graph orchestrator in
   let patches_by_id =
@@ -1063,9 +1064,12 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         in
         let intervention_reason =
           if pv.needs_intervention then
-            List.find_map filtered ~f:(function
-              | Event { message; _ } -> Some message
-              | Transition _ -> None)
+            match Map.Poly.find intervention_reasons pv.patch_id with
+            | Some _ as r -> r
+            | None ->
+                List.find_map filtered ~f:(function
+                  | Event { message; _ } -> Some message
+                  | Transition _ -> None)
           else None
         in
         { pv with recent_stream = List.take filtered 10; intervention_reason })

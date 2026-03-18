@@ -526,6 +526,29 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
 exception Quit_tui
 (** Raised by the input fiber to signal a clean exit. *)
 
+(** Build a map from patch_id to the most recent event message for patches in
+    needs_intervention. Scans the full event list so the reason survives even
+    after the truncated activity feed has aged out the triggering entry. *)
+let intervention_reasons_of_log (log : Activity_log.t)
+    ~(orchestrator : Orchestrator.t) =
+  let agents = Orchestrator.all_agents orchestrator in
+  let needs =
+    Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
+        if a.Patch_agent.needs_intervention then Some a.Patch_agent.patch_id
+        else None)
+    |> Base.Hash_set.of_list (module Patch_id)
+  in
+  if Base.Hash_set.is_empty needs then Base.Map.Poly.empty
+  else
+    let events = Activity_log.recent_events log ~limit:1000 in
+    Base.List.fold events ~init:Base.Map.Poly.empty ~f:(fun acc e ->
+        match e.Activity_log.Event.patch_id with
+        | Some pid when Base.Hash_set.mem needs pid ->
+            if Base.Map.Poly.mem acc pid then acc
+            else
+              Base.Map.Poly.set acc ~key:pid ~data:e.Activity_log.Event.message
+        | _ -> acc)
+
 (** TUI rendering fiber — redraws the terminal at ~10 fps.
 
     [list_selected], [detail_scroll], [timeline_scroll], and [view_mode] are
@@ -558,8 +581,12 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
       | Tui.List_view -> 10
     in
     let activity = activity_entries_of_log ~limit log in
+    let intervention_reasons =
+      intervention_reasons_of_log log ~orchestrator:orch
+    in
     let views =
       Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp ~activity
+        ~intervention_reasons ()
     in
     sorted_patch_ids :=
       Base.List.map views ~f:(fun (pv : Tui.patch_view) -> pv.Tui.patch_id);
