@@ -426,9 +426,20 @@ module Key = struct
     in
     consume ()
 
-  (** Parse an SGR mouse sequence: CSI < Pb;Px;Py M/m. Pb encodes button
-      (0=left, 1=middle, 2=right, 64=scroll-up, 65=scroll-down). M = press, m =
+  (** Decode an SGR mouse event from parsed fields. Pb encodes button (0=left,
+      1=middle, 2=right, 64=scroll-up, 65=scroll-down). M = press, m =
       release. *)
+  let decode_sgr_mouse ~pb ~col ~row ~final =
+    let press = Char.equal final 'M' in
+    match (pb, final) with
+    | 0, ('M' | 'm') -> Mouse (Click { button = Left; row; col; press })
+    | 1, ('M' | 'm') -> Mouse (Click { button = Middle; row; col; press })
+    | 2, ('M' | 'm') -> Mouse (Click { button = Right; row; col; press })
+    | 64, 'M' -> Mouse (Scroll { dir = Up; row; col })
+    | 65, 'M' -> Mouse (Scroll { dir = Down; row; col })
+    | _ -> Unknown (Printf.sprintf "mouse:%d" pb)
+
+  (** Parse an SGR mouse sequence: CSI < Pb;Px;Py M/m. *)
   let parse_sgr_mouse () =
     (* Read decimal digits until a non-digit delimiter *)
     let read_number () =
@@ -455,15 +466,8 @@ module Key = struct
                 let col_opt = Int.of_string_opt px_s in
                 let row_opt = Int.of_string_opt py_s in
                 match (pb_opt, col_opt, row_opt) with
-                | Some pb, Some col, Some row -> (
-                    let press = Char.equal final 'M' in
-                    match pb with
-                    | 0 -> Mouse (Click { button = Left; row; col; press })
-                    | 1 -> Mouse (Click { button = Middle; row; col; press })
-                    | 2 -> Mouse (Click { button = Right; row; col; press })
-                    | 64 -> Mouse (Scroll { dir = Up; row; col })
-                    | 65 -> Mouse (Scroll { dir = Down; row; col })
-                    | _ -> Unknown (Printf.sprintf "mouse:%d" pb))
+                | Some pb, Some col, Some row ->
+                    decode_sgr_mouse ~pb ~col ~row ~final
                 | _ -> Unknown "sgr-mouse")
             | _ -> Unknown "sgr-mouse")
         | _ -> Unknown "sgr-mouse")
@@ -593,3 +597,48 @@ let%test "mouse_event Scroll equality" =
   equal_mouse_event
     (Scroll { dir = Up; row = 5; col = 10 })
     (Scroll { dir = Up; row = 5; col = 10 })
+
+let%test "decode_sgr_mouse left click press" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:0 ~col:10 ~row:5 ~final:'M')
+    (Mouse (Click { button = Left; col = 10; row = 5; press = true }))
+
+let%test "decode_sgr_mouse left click release" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:0 ~col:10 ~row:5 ~final:'m')
+    (Mouse (Click { button = Left; col = 10; row = 5; press = false }))
+
+let%test "decode_sgr_mouse middle click press" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:1 ~col:3 ~row:7 ~final:'M')
+    (Mouse (Click { button = Middle; col = 3; row = 7; press = true }))
+
+let%test "decode_sgr_mouse right click release" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:2 ~col:1 ~row:1 ~final:'m')
+    (Mouse (Click { button = Right; col = 1; row = 1; press = false }))
+
+let%test "decode_sgr_mouse scroll up" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:64 ~col:5 ~row:3 ~final:'M')
+    (Mouse (Scroll { dir = Up; col = 5; row = 3 }))
+
+let%test "decode_sgr_mouse scroll down" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:65 ~col:5 ~row:3 ~final:'M')
+    (Mouse (Scroll { dir = Down; col = 5; row = 3 }))
+
+let%test "decode_sgr_mouse scroll release is unknown" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:64 ~col:1 ~row:1 ~final:'m')
+    (Unknown "mouse:64")
+
+let%test "decode_sgr_mouse unknown button code" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:999 ~col:1 ~row:1 ~final:'M')
+    (Unknown "mouse:999")
+
+let%test "decode_sgr_mouse invalid final char" =
+  Key.equal
+    (Key.decode_sgr_mouse ~pb:0 ~col:1 ~row:1 ~final:'X')
+    (Unknown "mouse:0")
