@@ -349,11 +349,43 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 Orchestrator.set_worktree_path orch patch_id path);
             path
       in
+      (* Ensure worktree exists — create if needed *)
+      (if not (Stdlib.Sys.file_exists worktree_path) then
+         match agent.Patch_agent.head_branch with
+         | None ->
+             log_event runtime ~patch_id
+               "worktree not ready and branch unknown, waiting for poller";
+             Runtime.update_orchestrator runtime (fun orch ->
+                 Orchestrator.complete orch patch_id)
+         | Some branch ->
+             let base =
+               match agent.Patch_agent.base_branch with
+               | Some b -> Branch.to_string b
+               | None -> "HEAD"
+             in
+             let patch =
+               Types.Patch.
+                 {
+                   id = patch_id;
+                   title = "";
+                   description = "";
+                   branch;
+                   dependencies = [];
+                   spec = "";
+                   acceptance_criteria = [];
+                   files = [];
+                 }
+             in
+             log_event runtime ~patch_id
+               (Printf.sprintf "creating worktree at %s" worktree_path);
+             ignore
+               (Worktree.create ~process_mgr ~repo_root ~project_name ~patch
+                  ~base_ref:base);
+             Runtime.update_orchestrator runtime (fun orch ->
+                 Orchestrator.set_worktree_path orch patch_id worktree_path));
       if not (Stdlib.Sys.file_exists worktree_path) then (
         log_event runtime ~patch_id
-          (Printf.sprintf
-             "worktree not ready at %s, waiting for poller to discover"
-             worktree_path);
+          (Printf.sprintf "worktree still missing at %s" worktree_path);
         Runtime.update_orchestrator runtime (fun orch ->
             Orchestrator.complete orch patch_id);
         `Failed)
