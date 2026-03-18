@@ -546,6 +546,9 @@ type frame = {
   width : int;
   detail_at_bottom : bool;
   detail_scroll_offset : int;
+  patches_start_row : int;
+  patches_scroll_offset : int;
+  patch_count : int;
 }
 [@@warning "-69"]
 
@@ -607,19 +610,21 @@ let visible_window ~selected ~total ~max_visible =
 let render_patches ~width ~selected ~max_visible (views : patch_view list) =
   let total = List.length views in
   if total = 0 then
-    [
-      Term.styled [ Term.Sgr.bold ] " Patches";
-      Term.styled [ Term.Sgr.dim ]
-        (Term.fit_width
-           (Int.max 1 (width - 2))
-           "  No patches. Press : then +N to add a PR (e.g. +123)");
-    ]
+    ( [
+        Term.styled [ Term.Sgr.bold ] " Patches";
+        Term.styled [ Term.Sgr.dim ]
+          (Term.fit_width
+             (Int.max 1 (width - 2))
+             "  No patches. Press : then +N to add a PR (e.g. +123)");
+      ],
+      0,
+      0,
+      0 )
   else
     let offset, count = visible_window ~selected ~total ~max_visible in
     let section_header = Term.styled [ Term.Sgr.bold ] " Patches" in
-    let visible =
-      List.sub views ~pos:offset ~len:(min count (total - offset))
-    in
+    let vis_count = min count (total - offset) in
+    let visible = List.sub views ~pos:offset ~len:vis_count in
     let rows =
       List.mapi visible ~f:(fun i pv ->
           render_patch_row ~width ~selected:(offset + i = selected) pv)
@@ -634,7 +639,11 @@ let render_patches ~width ~selected ~max_visible (views : patch_view list) =
       if String.is_empty bottom then []
       else [ Term.styled [ Term.Sgr.dim ] (" " ^ bottom) ]
     in
-    (section_header :: scroll_up) @ rows @ scroll_down
+    let header_lines = 1 + List.length scroll_up in
+    ( (section_header :: scroll_up) @ rows @ scroll_down,
+      header_lines,
+      offset,
+      vis_count )
 
 let render_summary (views : patch_view list) =
   let count status =
@@ -1037,14 +1046,20 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~show_help
     ?(transcript = "") ?input_line ?completion_hint ?status_msg
     (views : patch_view list) =
-  if show_help then
-    let overlay = render_help_overlay ~width ~height in
+  let no_patches =
     {
-      lines = overlay;
+      lines = [];
       width;
       detail_at_bottom = false;
       detail_scroll_offset = 0;
+      patches_start_row = 0;
+      patches_scroll_offset = 0;
+      patch_count = 0;
     }
+  in
+  if show_help then
+    let overlay = render_help_overlay ~width ~height in
+    { no_patches with lines = overlay }
   else
     let header = render_header ~project_name ~width in
     let summary = [ render_summary views ] in
@@ -1079,8 +1094,8 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               @ [ "" ] @ status_line @ footer
             in
             {
+              no_patches with
               lines;
-              width;
               detail_at_bottom = at_bottom;
               detail_scroll_offset = clamped_offset;
             }
@@ -1089,8 +1104,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               header @ [ "" ] @ summary @ [ "" ] @ [ " (patch not found)" ]
               @ [ "" ] @ status_line @ footer
             in
-            { lines; width; detail_at_bottom = false; detail_scroll_offset = 0 }
-        )
+            { no_patches with lines })
     | Timeline_view ->
         (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
          + scroll indicators(2) + blank before footer + footer(2) = 11 *)
@@ -1106,7 +1120,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ status_line
           @ footer
         in
-        { lines; width; detail_at_bottom = false; detail_scroll_offset = 0 }
+        { no_patches with lines }
     | List_view ->
         let activity_lines = render_activity activity in
         let activity_height =
@@ -1121,19 +1135,29 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           + activity_height
         in
         let max_patch_rows = Int.max 0 (height - reserved) in
-        let patches =
+        let patches, patch_header_lines, scroll_off, visible_rows =
           render_patches ~width ~selected ~max_visible:max_patch_rows views
         in
+        let patches_start_row = 5 + patch_header_lines + 1 in
         let lines =
           header @ [ "" ] @ summary @ [ "" ] @ patches
           @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
           @ [ "" ] @ status_line @ footer
         in
-        { lines; width; detail_at_bottom = false; detail_scroll_offset = 0 }
+        {
+          no_patches with
+          lines;
+          patches_start_row;
+          patches_scroll_offset = scroll_off;
+          patch_count = visible_rows;
+        }
 
 let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
 let detail_at_bottom frame = frame.detail_at_bottom
 let detail_scroll_offset frame = frame.detail_scroll_offset
+let patches_start_row frame = frame.patches_start_row
+let patches_scroll_offset frame = frame.patches_scroll_offset
+let patch_count frame = frame.patch_count
 
 let paint_frame (frame : frame) =
   let buf = Buffer.create 4096 in
@@ -1148,9 +1172,10 @@ let paint_frame (frame : frame) =
 let enter_tui () =
   Term.Cursor.hide ^ Term.Clear.screen
   ^ Term.Cursor.move_to ~row:1 ~col:1
-  ^ "\027[?2004h" (* enable bracketed paste *)
+  ^ "\027[?2004h" (* enable bracketed paste *) ^ Term.enable_mouse
 
 let exit_tui () =
-  "\027[?2004l" (* disable bracketed paste *) ^ Term.Clear.screen
+  Term.disable_mouse ^ "\027[?2004l" (* disable bracketed paste *)
+  ^ Term.Clear.screen
   ^ Term.Cursor.move_to ~row:1 ~col:1
   ^ Term.Cursor.show
