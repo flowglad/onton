@@ -355,18 +355,19 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
       let worktree_path =
-        let path =
-          resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
-            ~agent ()
-        in
-        if Option.is_none agent.Patch_agent.worktree_path then
-          Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.set_worktree_path orch patch_id path);
-        path
+        ref
+          (let path =
+             resolve_worktree_path ~process_mgr ~repo_root ~project_name
+               ~patch_id ~agent ()
+           in
+           if Option.is_none agent.Patch_agent.worktree_path then
+             Runtime.update_orchestrator runtime (fun orch ->
+                 Orchestrator.set_worktree_path orch patch_id path);
+           path)
       in
       (* Ensure worktree exists — create if needed *)
       if
-        (not (Stdlib.Sys.file_exists worktree_path))
+        (not (Stdlib.Sys.file_exists !worktree_path))
         && Option.is_none agent.Patch_agent.head_branch
       then (
         log_event runtime ~patch_id
@@ -376,31 +377,47 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               Orchestrator.Session_worktree_missing);
         `Failed)
       else (
-        (if not (Stdlib.Sys.file_exists worktree_path) then
+        (if not (Stdlib.Sys.file_exists !worktree_path) then
            match agent.Patch_agent.head_branch with
-           | Some branch ->
-               let base =
-                 match agent.Patch_agent.base_branch with
-                 | Some b -> Branch.to_string b
-                 | None -> "HEAD"
-               in
-               log_event runtime ~patch_id
-                 (Printf.sprintf "creating worktree at %s" worktree_path);
-               ignore
-                 (Worktree.create ~process_mgr ~repo_root ~project_name
-                    ~patch_id ~branch ~base_ref:base);
-               Runtime.update_orchestrator runtime (fun orch ->
-                   Orchestrator.set_worktree_path orch patch_id worktree_path)
+           | Some branch -> (
+               (* Check if the branch is already checked out in another
+                  worktree (e.g. from a different project using the same
+                  repo). Reuse it instead of failing with exit code 128. *)
+               match
+                 Worktree.find_for_branch ~process_mgr ~repo_root branch
+               with
+               | Some existing_path ->
+                   log_event runtime ~patch_id
+                     (Printf.sprintf "found existing worktree for branch at %s"
+                        existing_path);
+                   worktree_path := existing_path;
+                   Runtime.update_orchestrator runtime (fun orch ->
+                       Orchestrator.set_worktree_path orch patch_id
+                         existing_path)
+               | None ->
+                   let base =
+                     match agent.Patch_agent.base_branch with
+                     | Some b -> Branch.to_string b
+                     | None -> "HEAD"
+                   in
+                   log_event runtime ~patch_id
+                     (Printf.sprintf "creating worktree at %s" !worktree_path);
+                   ignore
+                     (Worktree.create ~process_mgr ~repo_root ~project_name
+                        ~patch_id ~branch ~base_ref:base);
+                   Runtime.update_orchestrator runtime (fun orch ->
+                       Orchestrator.set_worktree_path orch patch_id
+                         !worktree_path))
            | None -> (* unreachable — guarded above *) ());
-        if not (Stdlib.Sys.file_exists worktree_path) then (
+        if not (Stdlib.Sys.file_exists !worktree_path) then (
           log_event runtime ~patch_id
-            (Printf.sprintf "worktree still missing at %s" worktree_path);
+            (Printf.sprintf "worktree still missing at %s" !worktree_path);
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.apply_session_result orch patch_id
                 Orchestrator.Session_worktree_missing);
           `Failed)
         else
-          let cwd = Eio.Path.(fs / worktree_path) in
+          let cwd = Eio.Path.(fs / !worktree_path) in
           let text_buf =
             let buf = Buffer.create 4096 in
             (match Hashtbl.find_opt transcripts patch_id with
