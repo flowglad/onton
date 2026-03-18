@@ -60,21 +60,19 @@ dune build
 ## Usage
 
 ```sh
-onton --gameplan GAMEPLAN [OPTIONS]       # Start a new project
+onton --gameplan GAMEPLAN [OPTIONS]       # Start a new project from a gameplan
 onton PROJECT [OPTIONS]                  # Resume a saved project
-onton --owner OWNER --repo REPO [OPTIONS] # Ad-hoc mode (no gameplan)
+onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `PROJECT` | (derived from gameplan) | Project name (positional). Required to resume, optional with `--gameplan` |
 | `--gameplan` | — | Path to the gameplan markdown file |
+| `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
 | `--token` | `$GITHUB_TOKEN` or `gh auth token` | GitHub API token |
-| `--owner` | inferred from `git remote` | GitHub repository owner |
-| `--repo` | inferred from `git remote` | GitHub repository name |
 | `--main-branch` | `main` | Main branch name |
 | `--poll-interval` | `30.0` | GitHub polling interval in seconds |
-| `--repo-root` | `.` | Path to the git repository root |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 | `--headless` | off | Run without TUI (plain log output to stdout) |
 
@@ -82,12 +80,19 @@ Project config and state are persisted to `~/.local/share/onton/<project>/`.
 Resuming a project reloads the saved snapshot (including agent transcripts) and
 reconciles against GitHub.
 
-Worktrees are created at `~/worktrees/<project>/patch-<id>`, outside the repo
-directory.
+Worktrees are discovered from `git worktree list`. If no existing worktree is
+found for a patch's branch, one is created at
+`~/worktrees/<project>/patch-<id>`.
 
-In ad-hoc mode (no `PROJECT` or `--gameplan`), onton starts with an empty patch
-list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each `+N`
-creates a new agent that polls and responds to the given PR.
+### Ad-hoc mode
+
+When launched without `PROJECT` or `--gameplan`, onton starts with an empty
+patch list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each
+`+N` creates a new agent that polls and responds to the given PR. Branch, base,
+and worktree are auto-discovered from GitHub and local git.
+
+State is persisted across restarts — ad-hoc agents survive session restarts and
+resume where they left off.
 
 ## Build & test
 
@@ -210,11 +215,12 @@ release, and updates the Homebrew formula.
 ## TUI
 
 Three view modes:
-- **List view** — patch table in gameplan order with status badges, CI
-  failures, current operation tag
-- **Detail view** — single patch: status, branch, base branch, PR,
-  dependencies, conflict, pending comments, CI checks, full markdown-rendered
-  transcript
+- **List view** — patch table with status badge, PR number, title (branch
+  name for ad-hoc), current operation, CI failures
+- **Detail view** — single patch: status, branch, base, worktree path, PR,
+  dependencies, conflict, pending comments, CI checks. Scrollable
+  markdown-rendered transcript with timestamped prompt delivery and Claude
+  responses. Info section pinned at top; transcript auto-follows new content
 - **Timeline view** — scrollable activity log (transitions, events, stream
   entries)
 
