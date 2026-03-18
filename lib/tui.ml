@@ -594,7 +594,7 @@ let render_patch_row ~width ~selected (pv : patch_view) =
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s  %s%s%s%s" cursor badge pr_label pv.title op_suffix
+      (Printf.sprintf "%s%s%s  %s%s%s" cursor pr_label badge pv.title op_suffix
          ci_info)
   in
   if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
