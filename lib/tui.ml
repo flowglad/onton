@@ -264,6 +264,62 @@ let%test "pending is default" =
     (derive_display_status State.Patch_ctx.empty
        ~patch_id:(Patch_id.of_string "1") ~current_op:None)
 
+(** {1 Scroll state} *)
+
+type scroll_state = { offset : int; total : int; visible : int }
+
+let make_scroll ~total ~visible = { offset = 0; total; visible }
+let scroll_max s = if s.total > s.visible then s.total - s.visible else 0
+
+let clamp_scroll s delta =
+  let new_offset = s.offset + delta in
+  let clamped = Int.max 0 (Int.min new_offset (scroll_max s)) in
+  { s with offset = clamped }
+
+let scroll_indicators s =
+  let max = scroll_max s in
+  let offset = Int.max 0 (Int.min s.offset max) in
+  let top = if offset > 0 then Printf.sprintf "↑ %d more" offset else "" in
+  let remaining = max - offset in
+  let bottom =
+    if remaining > 0 then Printf.sprintf "↓ %d more" remaining else ""
+  in
+  (top, bottom)
+
+let%test "scroll_max basic" =
+  scroll_max { offset = 0; total = 50; visible = 20 } = 30
+
+let%test "scroll_max when total <= visible" =
+  scroll_max { offset = 0; total = 10; visible = 20 } = 0
+
+let%test "clamp_scroll large negative clamps to 0" =
+  let s = { offset = 5; total = 50; visible = 20 } in
+  (clamp_scroll s (-100)).offset = 0
+
+let%test "clamp_scroll large positive clamps to scroll_max" =
+  let s = { offset = 5; total = 50; visible = 20 } in
+  (clamp_scroll s 1000).offset = 30
+
+let%test "scroll_indicators mid-scroll" =
+  let s = { offset = 5; total = 28; visible = 20 } in
+  let top, bottom = scroll_indicators s in
+  String.equal top "↑ 5 more" && String.equal bottom "↓ 3 more"
+
+let%test "scroll_indicators at top" =
+  let s = { offset = 0; total = 30; visible = 20 } in
+  let top, bottom = scroll_indicators s in
+  String.is_empty top && String.equal bottom "↓ 10 more"
+
+let%test "scroll_indicators at bottom" =
+  let s = { offset = 10; total = 30; visible = 20 } in
+  let top, bottom = scroll_indicators s in
+  String.equal top "↑ 10 more" && String.is_empty bottom
+
+let%test "scroll_indicators no scroll needed" =
+  let s = { offset = 0; total = 10; visible = 20 } in
+  let top, bottom = scroll_indicators s in
+  String.is_empty top && String.is_empty bottom
+
 (** {1 Styling} *)
 
 let status_style = function

@@ -33,6 +33,15 @@ val derive_display_status :
   current_op:Operation_kind.t option ->
   display_status
 
+(** {2 Scroll state} *)
+
+type scroll_state = { offset : int; total : int; visible : int }
+
+val make_scroll : total:int -> visible:int -> scroll_state
+val clamp_scroll : scroll_state -> int -> scroll_state
+val scroll_max : scroll_state -> int
+val scroll_indicators : scroll_state -> string * string
+
 (** {2 View mode} *)
 
 type view_mode = List_view | Detail_view of Patch_id.t | Timeline_view
