@@ -19,12 +19,12 @@ let complete ~buffer ~patch_ids =
       List.map patch_ids ~f:(fun id ->
           { display = id ^ "> "; full = id ^ "> " })
     in
-    patch_completions
-    @ [
-        { display = "+<PR number>"; full = "+" };
-        { display = "w <path>"; full = "w " };
-        { display = "-"; full = "-" };
-      ]
+    [
+      { display = "+<PR number>"; full = "+" };
+      { display = "w <path>"; full = "w " };
+      { display = "-"; full = "-" };
+    ]
+    @ patch_completions
   else if String.equal buffer "+" then
     [ { display = "+<PR number>"; full = "+" } ]
   else if String.equal buffer "w" then [ { display = "w <path>"; full = "w " } ]
@@ -36,8 +36,11 @@ let complete ~buffer ~patch_ids =
       (* No leading digits — not a recognized pattern *)
       []
     else if String.is_empty rest then
-      (* Pure digits: offer matching patch IDs *)
-      List.filter_map patch_ids ~f:(fun id ->
+      (* Pure digits: offer matching patch IDs, exact match first *)
+      let exact, others =
+        List.partition_tf patch_ids ~f:(fun id -> String.equal id digits)
+      in
+      List.filter_map (exact @ others) ~f:(fun id ->
           if String.is_prefix id ~prefix:digits then
             let tail = String.drop_prefix id (String.length digits) in
             Some { display = tail ^ "> "; full = id ^ "> " }
@@ -103,3 +106,12 @@ let%test_unit "N> completes to N> with space" =
 let%test_unit "N> with invalid patch id returns empty" =
   let result = complete ~buffer:"99>" ~patch_ids:[ "1"; "2" ] in
   [%test_eq: string list] (List.map result ~f:(fun c -> c.full)) []
+
+let%test_unit "accept_first on empty buffer returns command hint not patch id" =
+  let completions = complete ~buffer:"" ~patch_ids:[ "1"; "2" ] in
+  [%test_eq: string] (accept_first ~buffer:"" ~completions) "+"
+
+let%test_unit "exact patch id sorts before longer prefix" =
+  let result = complete ~buffer:"1" ~patch_ids:[ "10"; "1" ] in
+  let fulls = List.map result ~f:(fun c -> c.full) in
+  [%test_eq: string list] fulls [ "1> "; "10> " ]
