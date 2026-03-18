@@ -1063,10 +1063,9 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         in
         let intervention_reason =
           if pv.needs_intervention then
-            match List.hd filtered with
-            | Some (Event { message; _ }) -> Some message
-            | Some (Transition _) -> None
-            | None -> None
+            List.find_map filtered ~f:(function
+              | Event { message; _ } -> Some message
+              | Transition _ -> None)
           else None
         in
         { pv with recent_stream = List.take filtered 10; intervention_reason })
