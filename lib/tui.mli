@@ -103,6 +103,10 @@ val detail_at_bottom : frame -> bool
 (** [true] when the detail view scroll is at or past the bottom of content. Used
     by the TUI loop to auto-follow new transcript content. *)
 
+val detail_scroll_offset : frame -> int
+(** The actual clamped scroll offset used for the detail view. Written back to
+    the detail_scroll ref so delta-based input produces sensible values. *)
+
 val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->
@@ -115,6 +119,7 @@ val render_frame :
   width:int ->
   height:int ->
   selected:int ->
+  scroll_offset:int ->
   view_mode:view_mode ->
   activity:activity_entry list ->
   project_name:string ->
