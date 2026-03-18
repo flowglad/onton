@@ -1104,7 +1104,10 @@ let detail_info_height (pv : patch_view) =
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
     ~(gameplan : Gameplan.t) ~(activity : activity_entry list)
     ?(intervention_reasons = Map.Poly.empty) () =
-  let agents = Orchestrator.all_agents orchestrator in
+  let agents =
+    List.filter (Orchestrator.all_agents orchestrator) ~f:(fun a ->
+        not a.Patch_agent.removed)
+  in
   let graph = Orchestrator.graph orchestrator in
   let patches_by_id =
     List.fold gameplan.patches

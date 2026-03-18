@@ -13,6 +13,7 @@ type config = {
   repo_root : string;
   max_concurrency : int;
   headless : bool;
+  user_config : User_config.t;
 }
 
 (** Infer GitHub owner/repo from [git remote get-url origin] in [repo_root].
@@ -340,8 +341,9 @@ let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
     existing worktrees for the branch, creates one if needed, and persists the
     path. Returns [Some path] on success or [None] if the branch is unknown and
     no worktree can be created yet. *)
-let ensure_worktree ~runtime ~process_mgr ~repo_root ~project_name ~patch_id
-    ~(agent : Patch_agent.t) ?branch ?base_ref () =
+let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
+    ~(agent : Patch_agent.t) ~(user_config : User_config.t) ?branch ?base_ref ()
+    =
   let path =
     resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id ~agent
       ?branch ()
@@ -387,6 +389,24 @@ let ensure_worktree ~runtime ~process_mgr ~repo_root ~project_name ~patch_id
             if Stdlib.Sys.file_exists path then (
               Runtime.update_orchestrator runtime (fun orch ->
                   Orchestrator.set_worktree_path orch patch_id path);
+              (match user_config.User_config.on_worktree_create with
+              | Some script -> (
+                  let env =
+                    [
+                      ("ONTON_WORKTREE_PATH", path);
+                      ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
+                      ("ONTON_BRANCH", Branch.to_string br);
+                    ]
+                  in
+                  let cwd = Eio.Path.(fs / path) in
+                  match User_config.run_hook ~process_mgr ~script ~cwd ~env with
+                  | Ok () ->
+                      log_event runtime ~patch_id "on_worktree_create hook ran"
+                  | Error msg ->
+                      log_event runtime ~patch_id
+                        (Printf.sprintf "on_worktree_create hook failed: %s" msg)
+                  )
+              | None -> ());
               Some path)
             else (
               log_event runtime ~patch_id
@@ -397,7 +417,7 @@ let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
     ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
-    ~transcripts =
+    ~transcripts ~user_config =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -412,8 +432,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
       match
-        ensure_worktree ~runtime ~process_mgr ~repo_root ~project_name ~patch_id
-          ~agent ()
+        ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name
+          ~patch_id ~agent ~user_config ()
       with
       | None ->
           Runtime.update_orchestrator runtime (fun orch ->
@@ -943,9 +963,11 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   | None ->
                       log_event runtime
                         "Cannot remove patch: no selectable patch"
-                  | Some (patch_id, _busy, true, _) ->
+                  | Some (patch_id, _busy, true, false) ->
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_removed orch patch_id);
                       log_event runtime ~patch_id
-                        "Patch is already merged — nothing to do"
+                        "Merged patch removed from view"
                   | Some (patch_id, _busy, _, true) ->
                       log_event runtime ~patch_id
                         "Patch is already removed — nothing to do"
@@ -1551,9 +1573,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   `Stale)
                                 else
                                   match
-                                    ensure_worktree ~runtime ~process_mgr
+                                    ensure_worktree ~runtime ~process_mgr ~fs
                                       ~repo_root:config.repo_root ~project_name
                                       ~patch_id ~agent
+                                      ~user_config:config.user_config
                                       ~branch:patch.Patch.branch
                                       ~base_ref:(Branch.to_string base_branch)
                                       ()
@@ -1583,7 +1606,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~repo_root:config.repo_root ~prompt
                                         ~agent ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
-                                        ~transcripts)
+                                        ~transcripts
+                                        ~user_config:config.user_config)
                           in
                           match result with
                           | `Stale -> ()
@@ -1812,7 +1836,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~repo_root:config.repo_root ~prompt ~agent
                                   ~owner:config.github_owner
                                   ~repo:config.github_repo ~on_pr_detected
-                                  ~transcripts)
+                                  ~transcripts ~user_config:config.user_config)
                       in
                       match result with
                       | `Stale -> ()
@@ -1972,6 +1996,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
             repo_root;
             max_concurrency;
             headless;
+            user_config = User_config.load ~github_owner:owner ~github_repo:repo;
           },
           gameplan,
           existing_snapshot )
@@ -2005,6 +2030,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                 repo_root;
                 max_concurrency;
                 headless;
+                user_config =
+                  User_config.load ~github_owner:owner ~github_repo:repo;
               },
               gameplan,
               existing_snapshot ))
@@ -2064,6 +2091,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                         repo_root = stored.Project_store.repo_root;
                         max_concurrency = stored.Project_store.max_concurrency;
                         headless;
+                        user_config =
+                          User_config.load ~github_owner:owner ~github_repo:repo;
                       },
                       gameplan,
                       existing_snapshot )))

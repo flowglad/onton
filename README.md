@@ -80,6 +80,34 @@ Project config and state are persisted to `~/.local/share/onton/<project>/`.
 Resuming a project reloads the saved snapshot (including agent transcripts) and
 reconciles against GitHub.
 
+### User configuration
+
+Per-repo configuration lives at `~/.config/onton/<github-owner>/<github-repo>/`.
+
+| File | Description |
+|------|-------------|
+| `on_worktree_create` | Executable hook run after a new git worktree is created |
+
+The `on_worktree_create` hook receives these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `ONTON_WORKTREE_PATH` | Absolute path to the created worktree |
+| `ONTON_PATCH_ID` | Patch identifier |
+| `ONTON_BRANCH` | Branch name |
+
+Example — install dependencies in every new worktree:
+
+```sh
+mkdir -p ~/.config/onton/myorg/myrepo
+cat > ~/.config/onton/myorg/myrepo/on_worktree_create << 'EOF'
+#!/bin/bash
+cd "$ONTON_WORKTREE_PATH"
+npm install
+EOF
+chmod +x ~/.config/onton/myorg/myrepo/on_worktree_create
+```
+
 Worktrees are discovered from `git worktree list`. If no existing worktree is
 found for a patch's branch, one is created at
 `~/worktrees/<project>/patch-<id>`.
@@ -175,6 +203,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `invariants` | Runtime spec invariant checker (gated via `ONTON_CHECK_INVARIANTS`) |
 | `persistence` | JSON snapshot save/load with backward-compatible migration, transcript persistence |
 | `project_store` | Project config and gameplan storage at `~/.local/share/onton/` |
+| `user_config` | Per-repo user configuration and hook execution from `~/.config/onton/<owner>/<repo>/` |
 | `prompt` | Agent prompt rendering with per-project template override support |
 | `worktree` | Git worktree CRUD, branch detection, orchestrator-executed `git rebase` |
 | `github` | GitHub GraphQL API client (HTTPS via Eio) |
@@ -260,8 +289,9 @@ properties:
 - CI failure cap (3 failures triggers intervention)
 - Liveness (all fireable actions fire)
 - `approved?` is derived: `has_pr && merge_ready && not busy && not
-  needs_intervention` (where `merge_ready` reflects GitHub's `mergeStateStatus
-  = CLEAN`)
+  needs_intervention && base_branch = main` (where `merge_ready` reflects
+  GitHub's `mergeStateStatus = CLEAN`). Patches targeting a dependency branch
+  show `blocked-by-dep` instead
 
 ## License
 

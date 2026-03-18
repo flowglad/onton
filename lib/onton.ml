@@ -25,3 +25,4 @@ module Project_store = Project_store
 module Run_classification = Run_classification
 module Poll_applicator = Poll_applicator
 module Completions = Completions
+module User_config = User_config
