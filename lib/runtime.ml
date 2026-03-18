@@ -52,6 +52,17 @@ let update t f =
 let update_orchestrator t f =
   update t (fun s -> { s with orchestrator = f s.orchestrator })
 
+let update_orchestrator_returning t f =
+  let result = ref None in
+  update t (fun s ->
+      let orch', v = f s.orchestrator in
+      result := Some v;
+      { s with orchestrator = orch' });
+  (* [update] guarantees the callback ran exactly once before returning *)
+  match !result with
+  | Some v -> v
+  | None -> assert false
+
 let update_activity_log t f =
   update t (fun s -> { s with activity_log = f s.activity_log })
 

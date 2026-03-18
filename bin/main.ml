@@ -1442,16 +1442,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
   let with_busy_guard ~patch_id f =
     Fun.protect
       ~finally:(fun () ->
-        let still_busy =
-          Runtime.read runtime (fun snap ->
-              (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                .Patch_agent.busy)
+        (* Check-and-complete must be atomic to avoid racing with another
+           fiber that completes the same patch between read and update. *)
+        let was_busy =
+          Runtime.update_orchestrator_returning runtime (fun orch ->
+              let agent = Orchestrator.agent orch patch_id in
+              if agent.Patch_agent.busy then
+                (Orchestrator.complete orch patch_id, true)
+              else (orch, false))
         in
-        if still_busy then (
+        if was_busy then
           log_event runtime ~patch_id
-            "runner: fiber exiting with busy=true, forcing complete";
-          Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.complete orch patch_id)))
+            "runner: fiber exiting with busy=true, forcing complete")
       (fun () ->
         try f () with
         | Eio.Cancel.Cancelled _ as exn -> raise exn

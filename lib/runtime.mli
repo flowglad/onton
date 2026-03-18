@@ -35,6 +35,12 @@ val update : t -> (snapshot -> snapshot) -> unit
 val update_orchestrator : t -> (Orchestrator.t -> Orchestrator.t) -> unit
 (** Convenience: update only the orchestrator. *)
 
+val update_orchestrator_returning :
+  t -> (Orchestrator.t -> Orchestrator.t * 'a) -> 'a
+(** Like [update_orchestrator] but the callback returns a value alongside the
+    new orchestrator state. Useful when you need an atomic check-and-modify that
+    also reports what happened. *)
+
 val update_activity_log : t -> (Activity_log.t -> Activity_log.t) -> unit
 (** Convenience: update only the activity log. *)
 
