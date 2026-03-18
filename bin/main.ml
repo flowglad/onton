@@ -336,6 +336,63 @@ let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
       in
       path
 
+(** Ensure a worktree exists for the given patch. Resolves the path, discovers
+    existing worktrees for the branch, creates one if needed, and persists the
+    path. Returns [Some path] on success or [None] if the branch is unknown and
+    no worktree can be created yet. *)
+let ensure_worktree ~runtime ~process_mgr ~repo_root ~project_name ~patch_id
+    ~(agent : Patch_agent.t) ?branch ?base_ref () =
+  let path =
+    resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id ~agent
+      ?branch ()
+  in
+  if Stdlib.Sys.file_exists path then (
+    Runtime.update_orchestrator runtime (fun orch ->
+        Orchestrator.set_worktree_path orch patch_id path);
+    Some path)
+  else
+    let search_branch =
+      match branch with
+      | Some b -> Some b
+      | None -> agent.Patch_agent.head_branch
+    in
+    match search_branch with
+    | None ->
+        log_event runtime ~patch_id
+          "worktree not ready and branch unknown, waiting for poller";
+        None
+    | Some br -> (
+        match Worktree.find_for_branch ~process_mgr ~repo_root br with
+        | Some existing ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "found existing worktree for branch at %s"
+                 existing);
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.set_worktree_path orch patch_id existing);
+            Some existing
+        | None ->
+            let base =
+              match base_ref with
+              | Some b -> b
+              | None -> (
+                  match agent.Patch_agent.base_branch with
+                  | Some b -> Branch.to_string b
+                  | None -> "HEAD")
+            in
+            log_event runtime ~patch_id
+              (Printf.sprintf "creating worktree at %s" path);
+            ignore
+              (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
+                 ~branch:br ~base_ref:base);
+            if Stdlib.Sys.file_exists path then (
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.set_worktree_path orch patch_id path);
+              Some path)
+            else (
+              log_event runtime ~patch_id
+                (Printf.sprintf "worktree still missing at %s" path);
+              None))
+
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
@@ -350,74 +407,21 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           Orchestrator.apply_session_result orch patch_id
             Orchestrator.Session_give_up);
       `Failed
-  | (`Continue | `Fresh) as mode ->
+  | (`Continue | `Fresh) as mode -> (
       let continue, is_fresh =
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
-      let worktree_path =
-        ref
-          (let path =
-             resolve_worktree_path ~process_mgr ~repo_root ~project_name
-               ~patch_id ~agent ()
-           in
-           if Option.is_none agent.Patch_agent.worktree_path then
-             Runtime.update_orchestrator runtime (fun orch ->
-                 Orchestrator.set_worktree_path orch patch_id path);
-           path)
-      in
-      (* Ensure worktree exists — create if needed *)
-      if
-        (not (Stdlib.Sys.file_exists !worktree_path))
-        && Option.is_none agent.Patch_agent.head_branch
-      then (
-        log_event runtime ~patch_id
-          "worktree not ready and branch unknown, waiting for poller";
-        Runtime.update_orchestrator runtime (fun orch ->
-            Orchestrator.apply_session_result orch patch_id
-              Orchestrator.Session_worktree_missing);
-        `Failed)
-      else (
-        (if not (Stdlib.Sys.file_exists !worktree_path) then
-           match agent.Patch_agent.head_branch with
-           | Some branch -> (
-               (* Check if the branch is already checked out in another
-                  worktree (e.g. from a different project using the same
-                  repo). Reuse it instead of failing with exit code 128. *)
-               match
-                 Worktree.find_for_branch ~process_mgr ~repo_root branch
-               with
-               | Some existing_path ->
-                   log_event runtime ~patch_id
-                     (Printf.sprintf "found existing worktree for branch at %s"
-                        existing_path);
-                   worktree_path := existing_path;
-                   Runtime.update_orchestrator runtime (fun orch ->
-                       Orchestrator.set_worktree_path orch patch_id
-                         existing_path)
-               | None ->
-                   let base =
-                     match agent.Patch_agent.base_branch with
-                     | Some b -> Branch.to_string b
-                     | None -> "HEAD"
-                   in
-                   log_event runtime ~patch_id
-                     (Printf.sprintf "creating worktree at %s" !worktree_path);
-                   ignore
-                     (Worktree.create ~process_mgr ~repo_root ~project_name
-                        ~patch_id ~branch ~base_ref:base);
-                   Runtime.update_orchestrator runtime (fun orch ->
-                       Orchestrator.set_worktree_path orch patch_id
-                         !worktree_path))
-           | None -> (* unreachable — guarded above *) ());
-        if not (Stdlib.Sys.file_exists !worktree_path) then (
-          log_event runtime ~patch_id
-            (Printf.sprintf "worktree still missing at %s" !worktree_path);
+      match
+        ensure_worktree ~runtime ~process_mgr ~repo_root ~project_name ~patch_id
+          ~agent ()
+      with
+      | None ->
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.apply_session_result orch patch_id
                 Orchestrator.Session_worktree_missing);
-          `Failed)
-        else
-          let cwd = Eio.Path.(fs / !worktree_path) in
+          `Failed
+      | Some worktree_path ->
+          let cwd = Eio.Path.(fs / worktree_path) in
           let text_buf =
             let buf = Buffer.create 4096 in
             (match Hashtbl.find_opt transcripts patch_id with
@@ -1546,59 +1550,40 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                      wait, skipping";
                                   `Stale)
                                 else
-                                  let wt_path =
-                                    resolve_worktree_path ~process_mgr
+                                  match
+                                    ensure_worktree ~runtime ~process_mgr
                                       ~repo_root:config.repo_root ~project_name
                                       ~patch_id ~agent
-                                      ~branch:patch.Patch.branch ()
-                                  in
-                                  let wt_path =
-                                    if not (Stdlib.Sys.file_exists wt_path) then (
-                                      match
-                                        Worktree.find_for_branch ~process_mgr
-                                          ~repo_root:config.repo_root
-                                          patch.Patch.branch
-                                      with
-                                      | Some existing ->
-                                          log_event runtime ~patch_id
-                                            (Printf.sprintf
-                                               "found existing worktree at %s"
-                                               existing);
-                                          existing
-                                      | None ->
-                                          log_event runtime ~patch_id
-                                            "creating worktree";
-                                          ignore
-                                            (Worktree.create ~process_mgr
-                                               ~repo_root:config.repo_root
-                                               ~project_name ~patch_id
-                                               ~branch:patch.Patch.branch
-                                               ~base_ref:
-                                                 (Branch.to_string base_branch));
-                                          wt_path)
-                                    else wt_path
-                                  in
-                                  Runtime.update_orchestrator runtime
-                                    (fun orch ->
-                                      Orchestrator.set_worktree_path orch
-                                        patch_id wt_path);
-                                  let prompt =
-                                    Prompt.render_patch_prompt ~project_name
-                                      ?pr_number:agent.Patch_agent.pr_number
-                                      patch gameplan
-                                      ~base_branch:
-                                        (Branch.to_string base_branch)
-                                  in
-                                  (* PR detection from stream text is a hint
+                                      ~branch:patch.Patch.branch
+                                      ~base_ref:(Branch.to_string base_branch)
+                                      ()
+                                  with
+                                  | None ->
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.apply_session_result orch
+                                            patch_id
+                                            Orchestrator
+                                            .Session_worktree_missing);
+                                      `Failed
+                                  | Some _wt_path ->
+                                      let prompt =
+                                        Prompt.render_patch_prompt ~project_name
+                                          ?pr_number:agent.Patch_agent.pr_number
+                                          patch gameplan
+                                          ~base_branch:
+                                            (Branch.to_string base_branch)
+                                      in
+                                      (* PR detection from stream text is a hint
                                      only — always confirmed via gh pr list
                                      after Claude finishes *)
-                                  let on_pr_detected _pr_number = () in
-                                  run_claude_and_handle ~runtime ~process_mgr
-                                    ~fs ~project_name ~patch_id
-                                    ~repo_root:config.repo_root ~prompt ~agent
-                                    ~owner:config.github_owner
-                                    ~repo:config.github_repo ~on_pr_detected
-                                    ~transcripts)
+                                      let on_pr_detected _pr_number = () in
+                                      run_claude_and_handle ~runtime
+                                        ~process_mgr ~fs ~project_name ~patch_id
+                                        ~repo_root:config.repo_root ~prompt
+                                        ~agent ~owner:config.github_owner
+                                        ~repo:config.github_repo ~on_pr_detected
+                                        ~transcripts)
                           in
                           match result with
                           | `Stale -> ()
