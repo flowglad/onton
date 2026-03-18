@@ -774,8 +774,7 @@ let detail_info_rows (pv : patch_view) ~width =
       let styled_lines =
         List.mapi wrapped ~f:(fun i line ->
             let text =
-              if i = 0 then prefix ^ line
-              else String.make prefix_len ' ' ^ line
+              if i = 0 then prefix ^ line else String.make prefix_len ' ' ^ line
             in
             Term.styled [ Term.Sgr.fg_red; Term.Sgr.bold ] text)
       in
