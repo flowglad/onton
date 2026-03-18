@@ -81,6 +81,20 @@ type patch_view = {
   worktree_path : string option;
 }
 
+(** {2 Status messages} *)
+
+type msg_level = Info | Warning | Error [@@deriving show, eq]
+
+type status_msg = {
+  level : msg_level;
+  text : string;
+  expires_at : float option;
+}
+[@@deriving show, eq]
+
+val msg_expired : now:float -> status_msg -> bool
+val render_status_msg : width:int -> status_msg option -> string
+
 (** {2 Frame rendering} *)
 
 type frame
@@ -108,6 +122,7 @@ val render_frame :
   ?transcript:string ->
   ?input_line:string ->
   ?completion_hint:string ->
+  ?status_msg:status_msg ->
   patch_view list ->
   frame
 

@@ -9,6 +9,7 @@ module Sgr = struct
   let dim = "\027[2m"
   let italic = "\027[3m"
   let underline = "\027[4m"
+  let reverse = "\027[7m"
   let strikethrough = "\027[9m"
   let fg_black = "\027[30m"
   let fg_red = "\027[31m"
@@ -194,6 +195,10 @@ let%test "strip_ansi preserves plain text" =
 
 let%test "visible_length ignores ANSI" =
   visible_length (styled [ Sgr.bold ] "test") = 4
+
+let%test "visible_length counts UTF-8 codepoints" =
+  (* "── " = two U+2500 (3 bytes each) + space = 7 bytes, 3 columns *)
+  visible_length "── " = 3
 
 let%test "fit_width pads short strings" =
   String.equal (fit_width 10 "hi") "hi        "
