@@ -427,8 +427,8 @@ module Key = struct
     consume ()
 
   (** Decode an SGR mouse event from parsed fields. Pb encodes button (0=left,
-      1=middle, 2=right, 64=scroll-up, 65=scroll-down). M = press, m =
-      release. *)
+      1=middle, 2=right, 64=scroll-up, 65=scroll-down). M = press, m = release.
+  *)
   let decode_sgr_mouse ~pb ~col ~row ~final =
     let press = Char.equal final 'M' in
     match (pb, final) with
