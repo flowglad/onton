@@ -311,6 +311,31 @@ let log_stream_entry runtime ~patch_id kind =
     Implements the session fallback chain: resume → fresh → give up. On success,
     stores the session ID and clears fallback state. *)
 
+(** Resolve the worktree path for a patch. Checks the stored path first, then
+    searches git worktrees by branch, then falls back to the default computed
+    path. Persists the result so subsequent calls are instant. *)
+let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
+    ~(agent : Patch_agent.t) ?branch () =
+  match agent.Patch_agent.worktree_path with
+  | Some p -> p
+  | None ->
+      let search_branch =
+        match branch with
+        | Some b -> Some b
+        | None -> agent.Patch_agent.head_branch
+      in
+      let found =
+        match search_branch with
+        | Some b -> Worktree.find_for_branch ~process_mgr ~repo_root b
+        | None -> None
+      in
+      let path =
+        match found with
+        | Some p -> p
+        | None -> Worktree.worktree_dir ~project_name ~patch_id
+      in
+      path
+
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
@@ -328,26 +353,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         match mode with `Continue -> (true, false) | `Fresh -> (false, true)
       in
       let worktree_path =
-        match agent.Patch_agent.worktree_path with
-        | Some p -> p
-        | None ->
-            (* Try to find an existing worktree for the patch's branch before
-               falling back to the default computed path. *)
-            let found =
-              match agent.Patch_agent.head_branch with
-              | Some branch ->
-                  Worktree.find_for_branch ~process_mgr ~repo_root branch
-              | None -> None
-            in
-            let path =
-              match found with
-              | Some p -> p
-              | None -> Worktree.worktree_dir ~project_name ~patch_id
-            in
-            (* Persist so we don't re-discover every time *)
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.set_worktree_path orch patch_id path);
-            path
+        let path =
+          resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
+            ~agent ()
+        in
+        if Option.is_none agent.Patch_agent.worktree_path then
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.set_worktree_path orch patch_id path);
+        path
       in
       (* Ensure worktree exists — create if needed *)
       (if not (Stdlib.Sys.file_exists worktree_path) then
@@ -417,12 +430,22 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         let needle_len =
           String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
         in
+        let last_sync = ref (Unix.gettimeofday ()) in
+        let sync_transcript () =
+          Hashtbl.replace transcripts patch_id (Buffer.contents text_buf)
+        in
+        let maybe_sync_transcript () =
+          let now = Unix.gettimeofday () in
+          if now -. !last_sync >= 0.2 then (
+            last_sync := now;
+            sync_transcript ())
+        in
         let on_event (event : Types.Stream_event.t) =
           match event with
           | Types.Stream_event.Text_delta text -> (
               let prev_len = Buffer.length text_buf in
               Buffer.add_string text_buf text;
-              Hashtbl.replace transcripts patch_id (Buffer.contents text_buf);
+              maybe_sync_transcript ();
               if not !pr_found then
                 let offset = max 0 (prev_len - needle_len) in
                 let tail =
@@ -441,10 +464,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               tool_count := !tool_count + 1;
               Buffer.add_string text_buf
                 (Printf.sprintf "\n\n---\n`[tool: %s]`\n\n" name);
-              Hashtbl.replace transcripts patch_id (Buffer.contents text_buf);
+              sync_transcript ();
               log_stream_entry runtime ~patch_id
                 (Activity_log.Stream_entry.Tool_use name)
           | Types.Stream_event.Final_result { stop_reason; _ } ->
+              sync_transcript ();
               let reason = Types.Stop_reason.show stop_reason in
               log_stream_entry runtime ~patch_id
                 (Activity_log.Stream_entry.Finished reason)
@@ -642,6 +666,17 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     - ["+123"] — register ad-hoc PR #123 for the selected patch
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
+
+(** Normalize pasted text for single-line input: strip trailing newlines,
+    replace internal newlines/carriage returns with spaces. *)
+let normalize_paste text =
+  let text =
+    Base.String.rstrip text ~drop:(fun c ->
+        Char.equal c '\n' || Char.equal c '\r')
+  in
+  let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
+  Base.String.tr text ~target:'\r' ~replacement:' '
+
 let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
     ~show_help ~status_msg ~sorted_patch_ids ~input_line ~completion_hint
@@ -695,15 +730,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
         else if !text_mode then
           match key with
           | Term.Key.Paste text ->
-              (* Strip trailing newlines — pasted text is submitted via Enter *)
-              let text =
-                Base.String.rstrip text ~drop:(fun c ->
-                    Char.equal c '\n' || Char.equal c '\r')
-              in
-              (* Replace internal newlines with spaces for single-line input *)
-              let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
-              let text = Base.String.tr text ~target:'\r' ~replacement:' ' in
-              Buffer.add_string buf text;
+              Buffer.add_string buf (normalize_paste text);
               loop ()
           | Term.Key.Escape ->
               Buffer.clear buf;
@@ -993,17 +1020,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               match !view_mode with
               | Tui.Detail_view _ ->
                   Buffer.clear buf;
-                  let text =
-                    Base.String.rstrip text ~drop:(fun c ->
-                        Char.equal c '\n' || Char.equal c '\r')
-                  in
-                  let text =
-                    Base.String.tr text ~target:'\n' ~replacement:' '
-                  in
-                  let text =
-                    Base.String.tr text ~target:'\r' ~replacement:' '
-                  in
-                  Buffer.add_string buf text;
+                  Buffer.add_string buf (normalize_paste text);
                   text_mode := true;
                   loop ()
               | Tui.List_view | Tui.Timeline_view -> loop ())
@@ -1250,8 +1267,8 @@ type poll_intent =
 
 (** Poller fiber — periodically polls GitHub for PR state changes and
     reconciles. *)
-let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
-    ~branch_of ~ci_checks_cache =
+let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
+    ~pr_registry ~branch_of ~ci_checks_cache =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
@@ -1344,26 +1361,24 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~pr_registry
                     in
                     let orch =
                       let agent = Orchestrator.agent orch patch_id in
-                      match
-                        ( agent.Patch_agent.worktree_path,
-                          agent.Patch_agent.head_branch )
-                      with
-                      | None, Some branch -> (
-                          match
-                            Worktree.find_for_branch ~process_mgr
-                              ~repo_root:config.repo_root branch
-                          with
-                          | Some path ->
-                              let orch =
-                                Orchestrator.set_worktree_path orch patch_id
-                                  path
-                              in
-                              if agent.Patch_agent.needs_intervention then
-                                Orchestrator.clear_needs_intervention orch
-                                  patch_id
-                              else orch
-                          | None -> orch)
-                      | _ -> orch
+                      if Option.is_none agent.Patch_agent.worktree_path then
+                        let path =
+                          resolve_worktree_path ~process_mgr
+                            ~repo_root:config.repo_root ~project_name ~patch_id
+                            ~agent ()
+                        in
+                        let default =
+                          Worktree.worktree_dir ~project_name ~patch_id
+                        in
+                        if not (String.equal path default) then
+                          let orch =
+                            Orchestrator.set_worktree_path orch patch_id path
+                          in
+                          if agent.Patch_agent.needs_intervention then
+                            Orchestrator.clear_needs_intervention orch patch_id
+                          else orch
+                        else orch
+                      else orch
                     in
                     orch);
                 Base.List.iter !logs
@@ -1526,36 +1541,20 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   `Stale)
                                 else
                                   let wt_path =
-                                    match
-                                      Worktree.find_for_branch ~process_mgr
-                                        ~repo_root:config.repo_root
-                                        patch.Patch.branch
-                                    with
-                                    | Some existing_path ->
-                                        log_event runtime ~patch_id
-                                          (Printf.sprintf
-                                             "found existing worktree at %s"
-                                             existing_path);
-                                        existing_path
-                                    | None ->
-                                        let default_path =
-                                          Worktree.worktree_dir ~project_name
-                                            ~patch_id
-                                        in
-                                        if
-                                          not
-                                            (Stdlib.Sys.file_exists default_path)
-                                        then (
-                                          log_event runtime ~patch_id
-                                            "creating worktree";
-                                          ignore
-                                            (Worktree.create ~process_mgr
-                                               ~repo_root:config.repo_root
-                                               ~project_name ~patch
-                                               ~base_ref:
-                                                 (Branch.to_string base_branch)));
-                                        default_path
+                                    resolve_worktree_path ~process_mgr
+                                      ~repo_root:config.repo_root ~project_name
+                                      ~patch_id ~agent
+                                      ~branch:patch.Patch.branch ()
                                   in
+                                  if not (Stdlib.Sys.file_exists wt_path) then (
+                                    log_event runtime ~patch_id
+                                      "creating worktree";
+                                    ignore
+                                      (Worktree.create ~process_mgr
+                                         ~repo_root:config.repo_root
+                                         ~project_name ~patch
+                                         ~base_ref:
+                                           (Branch.to_string base_branch)));
                                   Runtime.update_orchestrator runtime
                                     (fun orch ->
                                       Orchestrator.set_worktree_path orch
@@ -2181,7 +2180,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
           reconciliation_fiber;
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
-              ~pr_registry ~branch_of ~ci_checks_cache);
+              ~project_name ~pr_registry ~branch_of ~ci_checks_cache);
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
