@@ -455,9 +455,9 @@ module Key = struct
                 let col_opt = Int.of_string_opt px_s in
                 let row_opt = Int.of_string_opt py_s in
                 match (pb_opt, col_opt, row_opt) with
-                | Some pb, Some col, Some row ->
+                | Some pb, Some col, Some row -> (
                     let press = Char.equal final 'M' in
-                    (match pb with
+                    match pb with
                     | 0 -> Mouse (Click { button = Left; row; col; press })
                     | 1 -> Mouse (Click { button = Middle; row; col; press })
                     | 2 -> Mouse (Click { button = Right; row; col; press })
