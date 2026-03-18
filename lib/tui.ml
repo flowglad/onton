@@ -482,7 +482,10 @@ let patch_view_of_agent (agent : Patch_agent.t)
   let title =
     match patch_opt with
     | Some p -> p.Patch.title
-    | None -> Patch_id.to_string patch_id
+    | None -> (
+        match agent.head_branch with
+        | Some b -> Branch.to_string b
+        | None -> Patch_id.to_string patch_id)
   in
   let branch =
     match patch_opt with
@@ -559,6 +562,11 @@ let short_op_name = function
 
 let render_patch_row ~width ~selected (pv : patch_view) =
   let badge = render_status_badge pv.status in
+  let pr_label =
+    match pv.pr_number with
+    | Some n -> Printf.sprintf "#%-4d " (Pr_number.to_int n)
+    | None -> ""
+  in
   let op_suffix =
     match pv.current_op with
     | Some op ->
@@ -573,7 +581,8 @@ let render_patch_row ~width ~selected (pv : patch_view) =
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s  %s%s%s" cursor badge pv.title op_suffix ci_info)
+      (Printf.sprintf "%s%s  %s%s%s%s" cursor badge pr_label pv.title op_suffix
+         ci_info)
   in
   if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
   else row
