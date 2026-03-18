@@ -1619,17 +1619,15 @@ let load_snapshot ~project_name ~gameplan =
 
 (** Resolve owner/repo/token with CLI flags, falling back to git remote and
     [gh auth token] when flags are empty. *)
-let resolve_github_credentials ~github_token ~github_owner ~repo_root =
+let resolve_github_credentials ~github_token ~repo_root =
   let token =
     let t = Base.String.strip github_token in
     if Base.String.is_empty t then infer_github_token () else t
   in
   let owner, repo =
-    let o = Base.String.strip github_owner in
     match infer_owner_repo ~repo_root with
-    | Some (inferred_o, inferred_r) ->
-        ((if Base.String.is_empty o then inferred_o else o), inferred_r)
-    | None -> (o, "")
+    | Some (o, r) -> (o, r)
+    | None -> ("", "")
   in
   (token, owner, repo)
 
@@ -1638,12 +1636,12 @@ let resolve_github_credentials ~github_token ~github_owner ~repo_root =
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
-let resolve_config ~project ~gameplan_path ~github_token ~github_owner
-    ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless =
+let resolve_config ~project ~gameplan_path ~github_token ~main_branch
+    ~poll_interval ~repo_root ~max_concurrency ~headless =
   match (project, gameplan_path) with
   | None, None ->
       let token, owner, repo =
-        resolve_github_credentials ~github_token ~github_owner ~repo_root
+        resolve_github_credentials ~github_token ~repo_root
       in
       let project_name =
         if Base.String.is_empty owner || Base.String.is_empty repo then "adhoc"
@@ -1689,7 +1687,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             | None -> gameplan.Gameplan.project_name
           in
           let token, owner, repo =
-            resolve_github_credentials ~github_token ~github_owner ~repo_root
+            resolve_github_credentials ~github_token ~repo_root
           in
           Project_store.save_config ~project_name ~github_token:token
             ~github_owner:owner ~github_repo:repo
@@ -1744,13 +1742,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
                     merge_cli_stored github_token
                       stored.Project_store.github_token
                   in
-                  let owner_from_stored =
-                    merge_cli_stored github_owner
-                      stored.Project_store.github_owner
-                  in
                   let token, owner, repo =
                     resolve_github_credentials ~github_token:token_from_stored
-                      ~github_owner:owner_from_stored
                       ~repo_root:stored.Project_store.repo_root
                   in
                   let branch =
@@ -1940,11 +1933,11 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 :: common_fibers)
             with Quit_tui -> ())
 
-let run ~project ~gameplan_path ~github_token ~github_owner ~main_branch
-    ~poll_interval ~repo_root ~max_concurrency ~headless =
+let run ~project ~gameplan_path ~github_token ~main_branch ~poll_interval
+    ~repo_root ~max_concurrency ~headless =
   match
-    resolve_config ~project ~gameplan_path ~github_token ~github_owner
-      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
+    resolve_config ~project ~gameplan_path ~github_token ~main_branch
+      ~poll_interval ~repo_root ~max_concurrency ~headless
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1977,13 +1970,6 @@ let github_token_arg =
     value & opt string ""
     & info [ "token" ] ~docv:"TOKEN" ~doc:"GitHub API token."
         ~env:(Cmd.Env.info "GITHUB_TOKEN"))
-
-let github_owner_arg =
-  let open Cmdliner in
-  Arg.(
-    value & opt string ""
-    & info [ "owner" ] ~docv:"OWNER" ~doc:"GitHub repository owner."
-        ~env:(Cmd.Env.info "GITHUB_OWNER"))
 
 let repo_arg =
   let open Cmdliner in
@@ -2022,17 +2008,17 @@ let headless_arg =
 
 let main_cmd =
   let open Cmdliner in
-  let run_cmd project gameplan_path github_token github_owner main_branch
-      poll_interval repo_root max_concurrency headless =
-    run ~project ~gameplan_path ~github_token ~github_owner
+  let run_cmd project gameplan_path github_token main_branch poll_interval
+      repo_root max_concurrency headless =
+    run ~project ~gameplan_path ~github_token
       ~main_branch:(Branch.of_string (Base.String.strip main_branch))
       ~poll_interval ~repo_root ~max_concurrency ~headless
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
-      $ github_owner_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ headless_arg)
+      $ main_branch_arg $ poll_interval_arg $ repo_arg $ max_concurrency_arg
+      $ headless_arg)
   in
   let info =
     Cmd.info "onton" ~version:"0.1.0"
