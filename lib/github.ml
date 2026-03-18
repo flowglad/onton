@@ -177,7 +177,9 @@ let parse_response_json json =
               | _ -> Pr_state.Open
             in
             let merge_state =
-              pr |> member "mergeable" |> to_string |> parse_merge_state
+              match pr |> member "mergeable" |> to_string_option with
+              | Some s -> parse_merge_state s
+              | None -> Pr_state.Unknown
             in
             let merge_ready =
               match pr |> member "mergeStateStatus" |> to_string_option with
