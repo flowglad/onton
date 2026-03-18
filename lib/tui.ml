@@ -309,8 +309,7 @@ let msg_expired ~now msg =
 
 let sanitize_text s =
   let s = Term.strip_ansi s in
-  String.map s ~f:(fun c ->
-      if Char.to_int c < 0x20 then ' ' else c)
+  String.map s ~f:(fun c -> if Char.to_int c < 0x20 then ' ' else c)
 
 let render_status_msg ~width = function
   | None -> ""

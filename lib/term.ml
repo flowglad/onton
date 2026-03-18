@@ -195,8 +195,7 @@ let%test "visible_length counts multibyte glyphs as one" =
 let%test "visible_length multibyte with ANSI" =
   visible_length (styled [ Sgr.fg_yellow ] "⚠ hello") = 7
 
-let%test "visible_length cross mark glyph" =
-  visible_length "✗" = 1
+let%test "visible_length cross mark glyph" = visible_length "✗" = 1
 
 let%test "fit_width pads multibyte string" =
   let s = fit_width 5 "⚠" in
