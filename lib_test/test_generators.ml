@@ -378,6 +378,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Review_queued -> Review_queued
     | Awaiting_ci -> Awaiting_ci
     | Awaiting_review -> Awaiting_review
+    | Blocked_by_dep -> Blocked_by_dep
     | Pending -> Pending
   in
   List.map ~f:id
@@ -396,6 +397,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Review_queued;
       Awaiting_ci;
       Awaiting_review;
+      Blocked_by_dep;
       Pending;
     ]
 

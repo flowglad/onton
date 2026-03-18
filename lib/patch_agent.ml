@@ -191,8 +191,9 @@ let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 let set_head_branch t branch = { t with head_branch = Some branch }
 
-let is_approved t =
-  t.has_pr && t.merge_ready && (not t.busy) && not t.needs_intervention
+let is_approved t ~main_branch =
+  t.has_pr && t.merge_ready && (not t.busy) && (not t.needs_intervention)
+  && Option.equal Branch.equal t.base_branch (Some main_branch)
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }

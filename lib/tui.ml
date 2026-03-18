@@ -19,6 +19,7 @@ type display_status =
   | Review_queued
   | Awaiting_ci
   | Awaiting_review
+  | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
 
@@ -41,6 +42,7 @@ let label = function
   | Review_queued -> "review-queued"
   | Awaiting_ci -> "awaiting-ci"
   | Awaiting_review -> "awaiting-review"
+  | Blocked_by_dep -> "blocked-by-dep"
   | Pending -> "pending"
 
 let color = function
@@ -59,6 +61,7 @@ let color = function
   | Review_queued -> Term.Sgr.fg_yellow
   | Awaiting_ci -> Term.Sgr.fg_blue
   | Awaiting_review -> Term.Sgr.fg_blue
+  | Blocked_by_dep -> Term.Sgr.fg_blue
   | Pending -> Term.Sgr.fg_white
 
 let to_status_display status = { label = label status; color = color status }
@@ -74,8 +77,13 @@ let styled_label status =
     [current_op] is [None] (e.g. during startup before the first operation is
     tracked), we fall back to [Starting] or [Rebasing] based on whether a PR
     exists. *)
+let is_on_main ctx ~patch_id ~main_branch =
+  match State.Patch_ctx.base_branch ctx ~patch_id with
+  | Some b -> Branch.equal b main_branch
+  | None -> true
+
 let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
-    ~(current_op : Operation_kind.t option) =
+    ~(current_op : Operation_kind.t option) ~(main_branch : Branch.t) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
   else if State.Patch_ctx.needs_intervention ctx ~patch_id then Needs_help
   else if State.Patch_ctx.is_approved ctx ~patch_id then
@@ -91,7 +99,8 @@ let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     | None ->
         if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting
   else if State.Patch_ctx.has_pr ctx ~patch_id then
-    if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Ci then Ci_queued
+    if not (is_on_main ctx ~patch_id ~main_branch) then Blocked_by_dep
+    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Ci then Ci_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Review_comments then
       Review_queued
     else if State.Patch_ctx.ci_failure_count ctx ~patch_id > 0 then Awaiting_ci
@@ -107,7 +116,7 @@ let%test "merged takes priority over everything" =
   in
   equal_display_status Merged
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "needs_help over approved" =
   let ctx =
@@ -119,7 +128,7 @@ let%test "needs_help over approved" =
   in
   equal_display_status Needs_help
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "approved idle" =
   let ctx =
@@ -129,7 +138,7 @@ let%test "approved idle" =
   in
   equal_display_status Approved_idle
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "approved running" =
   let ctx =
@@ -140,7 +149,7 @@ let%test "approved running" =
   in
   equal_display_status Approved_running
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:(Some Rebase))
+       ~current_op:(Some Rebase) ~main_branch:(Branch.of_string "main"))
 
 let%test "approved running ignores current_op" =
   let ctx =
@@ -151,7 +160,7 @@ let%test "approved running ignores current_op" =
   in
   equal_display_status Approved_running
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "busy with ci op" =
   let ctx =
@@ -160,7 +169,7 @@ let%test "busy with ci op" =
   in
   equal_display_status Fixing_ci
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:(Some Ci))
+       ~current_op:(Some Ci) ~main_branch:(Branch.of_string "main"))
 
 let%test "busy with review op" =
   let ctx =
@@ -169,7 +178,7 @@ let%test "busy with review op" =
   in
   equal_display_status Addressing_review
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:(Some Review_comments))
+       ~current_op:(Some Review_comments) ~main_branch:(Branch.of_string "main"))
 
 let%test "busy with merge conflict op" =
   let ctx =
@@ -178,7 +187,7 @@ let%test "busy with merge conflict op" =
   in
   equal_display_status Resolving_conflict
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:(Some Merge_conflict))
+       ~current_op:(Some Merge_conflict) ~main_branch:(Branch.of_string "main"))
 
 let%test "busy with human op" =
   let ctx =
@@ -187,7 +196,7 @@ let%test "busy with human op" =
   in
   equal_display_status Responding_to_human
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:(Some Human))
+       ~current_op:(Some Human) ~main_branch:(Branch.of_string "main"))
 
 let%test "busy with rebase op" =
   let ctx =
@@ -196,7 +205,7 @@ let%test "busy with rebase op" =
   in
   equal_display_status Rebasing
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:(Some Rebase))
+       ~current_op:(Some Rebase) ~main_branch:(Branch.of_string "main"))
 
 let%test "busy no op with pr falls back to updating" =
   let ctx =
@@ -206,7 +215,7 @@ let%test "busy no op with pr falls back to updating" =
   in
   equal_display_status Updating
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "busy no op without pr falls back to starting" =
   let ctx =
@@ -215,7 +224,7 @@ let%test "busy no op without pr falls back to starting" =
   in
   equal_display_status Starting
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "ci queued" =
   let ctx =
@@ -226,7 +235,7 @@ let%test "ci queued" =
   in
   equal_display_status Ci_queued
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "review queued" =
   let ctx =
@@ -237,7 +246,7 @@ let%test "review queued" =
   in
   equal_display_status Review_queued
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "awaiting ci when failure count > 0" =
   let ctx =
@@ -248,7 +257,7 @@ let%test "awaiting ci when failure count > 0" =
   in
   equal_display_status Awaiting_ci
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "awaiting review default" =
   let ctx =
@@ -257,12 +266,24 @@ let%test "awaiting review default" =
   in
   equal_display_status Awaiting_review
     (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
-       ~current_op:None)
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
+
+let%test "blocked by dep when base_branch is not main" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
+    |> State.Patch_ctx.set_base_branch ~patch_id:(Patch_id.of_string "1")
+         ~branch:(Branch.of_string "feature/dep")
+  in
+  equal_display_status Blocked_by_dep
+    (derive_display_status ctx ~patch_id:(Patch_id.of_string "1")
+       ~current_op:None ~main_branch:(Branch.of_string "main"))
 
 let%test "pending is default" =
   equal_display_status Pending
     (derive_display_status State.Patch_ctx.empty
-       ~patch_id:(Patch_id.of_string "1") ~current_op:None)
+       ~patch_id:(Patch_id.of_string "1") ~current_op:None
+       ~main_branch:(Branch.of_string "main"))
 
 (** {1 Scroll state} *)
 
@@ -334,6 +355,7 @@ let status_style = function
   | Ci_queued | Review_queued -> [ Term.Sgr.fg_yellow ]
   | Awaiting_ci -> [ Term.Sgr.fg_blue ]
   | Awaiting_review -> [ Term.Sgr.fg_blue ]
+  | Blocked_by_dep -> [ Term.Sgr.fg_blue ]
   | Pending -> [ Term.Sgr.dim ]
 
 let status_indicator = function
@@ -347,6 +369,7 @@ let status_indicator = function
   | Starting | Updating -> "▶"
   | Ci_queued | Review_queued -> "◎"
   | Awaiting_ci | Awaiting_review -> "◎"
+  | Blocked_by_dep -> "◎"
   | Pending -> "·"
 
 (** {1 Status messages} *)
@@ -477,7 +500,8 @@ type patch_view = {
 [@@warning "-69"]
 
 let patch_view_of_agent (agent : Patch_agent.t)
-    ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t) =
+    ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
+    ~(main_branch : Branch.t) =
   let patch_id = agent.patch_id in
   let patch_opt = Map.find patches_by_id patch_id in
   let title =
@@ -495,21 +519,25 @@ let patch_view_of_agent (agent : Patch_agent.t)
   in
   let current_op = Patch_agent.highest_priority agent in
   let ctx =
-    State.Patch_ctx.empty
+    ( State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
     |> State.Patch_ctx.set_needs_intervention ~patch_id
          ~value:agent.needs_intervention
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
     |> State.Patch_ctx.set_has_pr ~patch_id ~value:agent.has_pr
     |> State.Patch_ctx.set_approved ~patch_id
-         ~value:(Patch_agent.is_approved agent)
+         ~value:(Patch_agent.is_approved agent ~main_branch)
     |> State.Patch_ctx.set_ci_failure_count ~patch_id
          ~count:agent.ci_failure_count
+    |> fun ctx ->
+      match agent.base_branch with
+      | Some branch -> State.Patch_ctx.set_base_branch ctx ~patch_id ~branch
+      | None -> ctx )
     |> fun ctx ->
     List.fold agent.queue ~init:ctx ~f:(fun acc kind ->
         State.Patch_ctx.set_queued acc ~patch_id ~kind ~value:true)
   in
-  let status = derive_display_status ctx ~patch_id ~current_op in
+  let status = derive_display_status ctx ~patch_id ~current_op ~main_branch in
   let dep_count = List.length (Graph.deps graph patch_id) in
   {
     patch_id;
@@ -591,11 +619,20 @@ let render_patch_row ~width ~selected (pv : patch_view) =
         (Printf.sprintf " CI×%d" pv.ci_failures)
     else ""
   in
+  let dep_info =
+    if equal_display_status pv.status Blocked_by_dep then
+      match pv.base_branch with
+      | Some b ->
+          Term.styled [ Term.Sgr.dim ]
+            (Printf.sprintf " → %s" (Branch.to_string b))
+      | None -> ""
+    else ""
+  in
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s%s  %s%s%s" cursor pr_label badge pv.title op_suffix
-         ci_info)
+      (Printf.sprintf "%s%s%s  %s%s%s%s" cursor pr_label badge pv.title
+         op_suffix ci_info dep_info)
   in
   if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
   else row
@@ -662,7 +699,7 @@ let render_summary (views : patch_view list) =
     | Rebasing | Starting | Updating | Approved_running ->
         true
     | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
-    | Awaiting_ci | Awaiting_review | Pending ->
+    | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending ->
         false
   in
   let running = List.count views ~f:(fun v -> is_running v.status) in
@@ -1076,7 +1113,8 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
   in
   let views =
     List.map agents ~f:(fun agent ->
-        let pv = patch_view_of_agent agent ~patches_by_id ~graph in
+        let main_branch = Orchestrator.main_branch orchestrator in
+        let pv = patch_view_of_agent agent ~patches_by_id ~graph ~main_branch in
         let pid_str = Patch_id.to_string agent.patch_id in
         let filtered =
           List.filter activity ~f:(fun entry ->

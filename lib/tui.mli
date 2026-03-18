@@ -17,6 +17,7 @@ type display_status =
   | Review_queued
   | Awaiting_ci
   | Awaiting_review
+  | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
 
@@ -44,6 +45,7 @@ val derive_display_status :
   State.Patch_ctx.t ->
   patch_id:Patch_id.t ->
   current_op:Operation_kind.t option ->
+  main_branch:Branch.t ->
   display_status
 
 (** {2 Scroll state} *)

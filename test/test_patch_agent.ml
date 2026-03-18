@@ -532,7 +532,7 @@ let () =
             let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
             let a = complete a in
             let a = set_merge_ready a true in
-            is_approved a
+            is_approved a ~main_branch:br0
           with _ -> false);
       (* -- is_approved false without has_pr -- *)
       Test.make ~name:"is_approved false without has_pr" ~count:1
@@ -540,7 +540,7 @@ let () =
         (fun pid ->
           let a = create pid in
           let a = set_merge_ready a true in
-          not (is_approved a));
+          not (is_approved a ~main_branch:br0));
       (* -- is_approved false when busy -- *)
       Test.make ~name:"is_approved false when busy" ~count:1
         Gen.(pure (pid0, br0))
@@ -548,7 +548,7 @@ let () =
           try
             let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
             let a = set_merge_ready a true in
-            not (is_approved a)
+            not (is_approved a ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when not merge_ready -- *)
       Test.make ~name:"is_approved false when not merge_ready" ~count:1
@@ -557,7 +557,7 @@ let () =
           try
             let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
             let a = complete a in
-            not (is_approved a)
+            not (is_approved a ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when needs_intervention -- *)
       Test.make ~name:"is_approved false when needs_intervention" ~count:1
@@ -573,7 +573,18 @@ let () =
             let a = respond a Operation_kind.Ci in
             let a = complete a in
             let a = set_merge_ready a true in
-            not (is_approved a)
+            not (is_approved a ~main_branch:br0)
+          with _ -> false);
+      (* -- is_approved false when base_branch is not main -- *)
+      Test.make ~name:"is_approved false when base_branch is not main" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_merge_ready a true in
+            let other = Branch.of_string "feature/dep" in
+            not (is_approved a ~main_branch:other)
           with _ -> false);
       (* -- respond invalidates merge_ready -- *)
       Test.make ~name:"respond invalidates merge_ready" ~count:1
