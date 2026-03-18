@@ -531,8 +531,8 @@ exception Quit_tui
     [list_selected], [detail_scroll], [timeline_scroll], and [view_mode] are
     shared mutable refs updated by the input fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
-    ~timeline_scroll ~view_mode ~show_help ~transcripts ~sorted_patch_ids
-    ~input_line ~completion_hint =
+    ~detail_follow ~timeline_scroll ~view_mode ~show_help ~transcripts
+    ~sorted_patch_ids ~input_line ~completion_hint =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -581,9 +581,9 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
         ~show_help:!show_help ~transcript ?input_line:!input_line
         ?completion_hint:!completion_hint views
     in
-    (* Auto-follow: if detail view is at bottom, keep it pinned so new
-       transcript content stays visible without manual scrolling. *)
-    if Tui.detail_at_bottom frame then detail_scroll := Base.Int.max_value;
+    (* Write back the clamped scroll offset so delta-based input in
+       input_fiber works from a real value, not a sentinel like max_value. *)
+    detail_scroll := Tui.detail_scroll_offset frame;
     let output = Tui.paint_frame frame in
     if not (String.equal output !prev_output) then (
       Eio.Flow.copy_string output stdout;
@@ -604,9 +604,9 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     - ["+123"] — register ad-hoc PR #123 for the selected patch
     - ["w /path"] — register existing worktree directory for the selected patch
     - ["-"] — remove the selected patch from orchestration *)
-let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
-    ~detail_scrolls ~view_mode ~pr_registry ~project_name ~show_help
-    ~sorted_patch_ids ~input_line ~completion_hint =
+let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
+    ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
+    ~show_help ~sorted_patch_ids ~input_line ~completion_hint =
   let buf = Buffer.create 64 in
   let text_mode = ref false in
   let current_completions = ref [] in
@@ -961,14 +961,24 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
                       list_selected :=
                         Tui_input.apply_move ~count ~selected:!list_selected cmd
                   | Tui.Timeline_view ->
-                      let count =
+                      let total =
                         Runtime.read runtime (fun snap ->
                             let log = snap.Runtime.activity_log in
                             Base.List.length
                               (activity_entries_of_log ~limit:100 log))
                       in
+                      let height =
+                        match Term.get_size () with
+                        | Some s -> s.Term.rows
+                        | None -> 24
+                      in
+                      (* Keep in sync with render_frame Timeline_view reserved *)
+                      let reserved = 11 in
+                      let max_rows = Base.Int.max 0 (height - reserved) in
+                      let max_offset = Base.Int.max 0 (total - max_rows) in
                       timeline_scroll :=
-                        Tui_input.apply_move ~count ~selected:!timeline_scroll
+                        Tui_input.apply_move ~count:(max_offset + 1)
+                          ~selected:(Base.Int.min !timeline_scroll max_offset)
                           cmd
                   | Tui.Detail_view _ ->
                       let delta =
@@ -984,6 +994,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
                         | Tui_input.Remove_patch ->
                             0
                       in
+                      detail_follow := false;
                       detail_scroll := Base.Int.max 0 (!detail_scroll + delta));
                   loop ()
               | Tui_input.Select -> (
@@ -999,11 +1010,14 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
                         list_selected := idx;
                         let pid = Base.List.nth_exn pids idx in
                         view_mode := Tui.Detail_view pid;
-                        (* Restore per-patch scroll or default to auto-follow *)
-                        detail_scroll :=
-                          match Hashtbl.find_opt detail_scrolls pid with
-                          | Some v -> v
-                          | None -> Base.Int.max_value);
+                        (* Restore per-patch scroll+follow or default to follow *)
+                        match Hashtbl.find_opt detail_scrolls pid with
+                        | Some (offset, follow) ->
+                            detail_scroll := offset;
+                            detail_follow := follow
+                        | None ->
+                            detail_scroll := 0;
+                            detail_follow := true);
                       loop ()
                   | Tui.Detail_view _ ->
                       text_mode := true;
@@ -1012,8 +1026,9 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
               | Tui_input.Back -> (
                   match !view_mode with
                   | Tui.Detail_view pid ->
-                      (* Save per-patch scroll position *)
-                      Hashtbl.replace detail_scrolls pid !detail_scroll;
+                      (* Save per-patch scroll position and follow state *)
+                      Hashtbl.replace detail_scrolls pid
+                        (!detail_scroll, !detail_follow);
                       view_mode := Tui.List_view;
                       loop ()
                   | Tui.Timeline_view ->
@@ -1028,7 +1043,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
                   | Tui.List_view | Tui.Detail_view _ ->
                       (match !view_mode with
                       | Tui.Detail_view pid ->
-                          Hashtbl.replace detail_scrolls pid !detail_scroll
+                          Hashtbl.replace detail_scrolls pid
+                            (!detail_scroll, !detail_follow)
                       | Tui.List_view | Tui.Timeline_view -> ());
                       view_mode := Tui.Timeline_view;
                       timeline_scroll := 0;
@@ -1991,8 +2007,11 @@ let run_with_config (config : config) gameplan existing_snapshot =
       else
         let list_selected = ref 0 in
         let detail_scroll = ref 0 in
+        let detail_follow = ref false in
         let timeline_scroll = ref 0 in
-        let detail_scrolls : (Patch_id.t, int) Hashtbl.t = Hashtbl.create 16 in
+        let detail_scrolls : (Patch_id.t, int * bool) Hashtbl.t =
+          Hashtbl.create 16
+        in
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
         let input_line = ref None in
@@ -2015,13 +2034,14 @@ let run_with_config (config : config) gameplan existing_snapshot =
               Eio.Fiber.all
                 ((fun () ->
                    tui_fiber ~runtime ~clock ~stdout ~list_selected
-                     ~detail_scroll ~timeline_scroll ~view_mode ~show_help
-                     ~transcripts ~sorted_patch_ids ~input_line ~completion_hint)
+                     ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
+                     ~show_help ~transcripts ~sorted_patch_ids ~input_line
+                     ~completion_hint)
                 :: (fun () ->
                   input_fiber ~runtime ~list_selected ~detail_scroll
-                    ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
-                    ~project_name ~show_help ~sorted_patch_ids ~input_line
-                    ~completion_hint)
+                    ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode
+                    ~pr_registry ~project_name ~show_help ~sorted_patch_ids
+                    ~input_line ~completion_hint)
                 :: common_fibers)
             with Quit_tui -> ())
 
