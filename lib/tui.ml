@@ -558,7 +558,7 @@ let render_header ~project_name ~width =
   let prefix = "── " in
   let suffix_pad =
     Int.max 0
-      (width - Term.visible_length prefix - String.length project_name - 1)
+      (width - Term.visible_length prefix - Term.visible_length project_name - 1)
   in
   let rule_suffix = Term.hrule ~ch:"─" suffix_pad in
   let title_line =
@@ -734,7 +734,7 @@ let render_detail (pv : patch_view) ~width ?(transcript = "") () =
     [
       header;
       info_rule;
-      grid "Status" (Term.strip_ansi badge |> fun _ -> badge);
+      grid "Status" badge;
       grid "Patch ID" (Patch_id.to_string pv.patch_id);
       grid "Branch" (Branch.to_string pv.branch);
       grid "Base"
