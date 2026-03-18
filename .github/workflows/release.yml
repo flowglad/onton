@@ -29,14 +29,14 @@ jobs:
       - name: Install dependencies
         run: opam install . --deps-only -y
 
-      - name: Build
-        run: opam exec -- dune build
+      - name: Build and install
+        run: |
+          opam exec -- dune build
+          opam exec -- dune install --prefix _dist
 
       - name: Package binary
         run: |
-          cp _build/default/bin/main.exe onton
-          chmod +x onton
-          tar czf "onton-${{ matrix.arch }}-apple-darwin.tar.gz" onton
+          tar czf "onton-${{ matrix.arch }}-apple-darwin.tar.gz" -C _dist/bin onton
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
