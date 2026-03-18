@@ -840,11 +840,19 @@ let render_timeline ~width ~selected ~max_visible
   in
   (header :: scroll_up) @ rows @ scroll_down
 
-let render_footer ~width ~view_mode ?input_line () =
+let render_footer ~width ~view_mode ?input_line ?completion_hint () =
   match input_line with
   | Some text ->
+      let ghost =
+        match completion_hint with
+        | Some hint when not (String.is_empty hint) ->
+            Term.styled [ Term.Sgr.italic; Term.Sgr.dim ] hint
+        | Some _ | None -> ""
+      in
       let prompt_str =
-        Term.fit_width (Int.max 1 (width - 2)) (Printf.sprintf ": %s" text)
+        Term.fit_width
+          (Int.max 1 (width - 2))
+          (Printf.sprintf ": %s%s" text ghost)
       in
       [ Term.hrule width; prompt_str ]
   | None ->
@@ -974,14 +982,16 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
 
 let render_frame ~width ~height ~selected ~view_mode
     ~(activity : activity_entry list) ~project_name ~show_help
-    ?(transcript = "") ?input_line (views : patch_view list) =
+    ?(transcript = "") ?input_line ?completion_hint (views : patch_view list) =
   if show_help then
     let overlay = render_help_overlay ~width ~height in
     { lines = overlay; width; detail_at_bottom = false }
   else
     let header = render_header ~project_name ~width in
     let summary = [ render_summary views ] in
-    let footer = render_footer ~width ~view_mode ?input_line () in
+    let footer =
+      render_footer ~width ~view_mode ?input_line ?completion_hint ()
+    in
     match view_mode with
     | Detail_view patch_id ->
         let info, transcript_lines =
