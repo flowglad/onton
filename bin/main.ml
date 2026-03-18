@@ -820,6 +820,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                             in
                             Orchestrator.set_worktree_path orch patch_id
                               canonical_real);
+                        status_msg := None;
                         if String.equal canonical_real canonical_expected then
                           log_event runtime ~patch_id
                             (Printf.sprintf
@@ -1551,13 +1552,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                           match result with
                           | `Stale -> ()
                           | `Failed ->
-                              set_status ~level:Tui.Error
-                                ~text:
-                                  (Printf.sprintf
-                                     "Patch %s: session failed — human review \
-                                      needed"
-                                     (Patch_id.to_string patch_id))
-                                ()
+                              let agent =
+                                Runtime.read runtime (fun snap ->
+                                    Orchestrator.agent snap.Runtime.orchestrator
+                                      patch_id)
+                              in
+                              if agent.Patch_agent.needs_intervention then
+                                set_status ~level:Tui.Error
+                                  ~text:
+                                    (Printf.sprintf
+                                       "Patch %s: session failed — human \
+                                        review needed"
+                                       (Patch_id.to_string patch_id))
+                                  ()
                           | `Ok ->
                               (* Always confirm via gh pr list *)
                               let rec discover remaining =
@@ -1750,13 +1757,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       match result with
                       | `Stale -> ()
                       | `Failed ->
-                          set_status ~level:Tui.Error
-                            ~text:
-                              (Printf.sprintf
-                                 "Patch %s: session failed — human review \
-                                  needed"
-                                 (Patch_id.to_string patch_id))
-                            ()
+                          let agent =
+                            Runtime.read runtime (fun snap ->
+                                Orchestrator.agent snap.Runtime.orchestrator
+                                  patch_id)
+                          in
+                          if agent.Patch_agent.needs_intervention then
+                            set_status ~level:Tui.Error
+                              ~text:
+                                (Printf.sprintf
+                                   "Patch %s: session failed — human review \
+                                    needed"
+                                   (Patch_id.to_string patch_id))
+                              ()
                       | `Ok ->
                           (* Mark pending comment IDs as addressed so the
                              poller doesn't re-enqueue them next cycle. *)
