@@ -1619,22 +1619,17 @@ let load_snapshot ~project_name ~gameplan =
 
 (** Resolve owner/repo/token with CLI flags, falling back to git remote and
     [gh auth token] when flags are empty. *)
-let resolve_github_credentials ~github_token ~github_owner ~github_repo
-    ~repo_root =
+let resolve_github_credentials ~github_token ~github_owner ~repo_root =
   let token =
     let t = Base.String.strip github_token in
     if Base.String.is_empty t then infer_github_token () else t
   in
   let owner, repo =
     let o = Base.String.strip github_owner in
-    let r = Base.String.strip github_repo in
-    if Base.String.is_empty o || Base.String.is_empty r then
-      match infer_owner_repo ~repo_root with
-      | Some (inferred_o, inferred_r) ->
-          ( (if Base.String.is_empty o then inferred_o else o),
-            if Base.String.is_empty r then inferred_r else r )
-      | None -> (o, r)
-    else (o, r)
+    match infer_owner_repo ~repo_root with
+    | Some (inferred_o, inferred_r) ->
+        ((if Base.String.is_empty o then inferred_o else o), inferred_r)
+    | None -> (o, "")
   in
   (token, owner, repo)
 
@@ -1644,13 +1639,11 @@ let resolve_github_credentials ~github_token ~github_owner ~github_repo
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
 let resolve_config ~project ~gameplan_path ~github_token ~github_owner
-    ~github_repo ~main_branch ~poll_interval ~repo_root ~max_concurrency
-    ~headless =
+    ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless =
   match (project, gameplan_path) with
   | None, None ->
       let token, owner, repo =
-        resolve_github_credentials ~github_token ~github_owner ~github_repo
-          ~repo_root
+        resolve_github_credentials ~github_token ~github_owner ~repo_root
       in
       let project_name =
         if Base.String.is_empty owner || Base.String.is_empty repo then "adhoc"
@@ -1696,8 +1689,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
             | None -> gameplan.Gameplan.project_name
           in
           let token, owner, repo =
-            resolve_github_credentials ~github_token ~github_owner ~github_repo
-              ~repo_root
+            resolve_github_credentials ~github_token ~github_owner ~repo_root
           in
           Project_store.save_config ~project_name ~github_token:token
             ~github_owner:owner ~github_repo:repo
@@ -1756,16 +1748,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~github_owner
                     merge_cli_stored github_owner
                       stored.Project_store.github_owner
                   in
-                  let repo_from_stored =
-                    merge_cli_stored github_repo
-                      stored.Project_store.github_repo
-                  in
-                  (* If still empty after stored config, fall back to
-                     inference *)
                   let token, owner, repo =
                     resolve_github_credentials ~github_token:token_from_stored
                       ~github_owner:owner_from_stored
-                      ~github_repo:repo_from_stored ~repo_root
+                      ~repo_root:stored.Project_store.repo_root
                   in
                   let branch =
                     if Base.String.equal (Branch.to_string main_branch) "main"
@@ -1954,12 +1940,11 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 :: common_fibers)
             with Quit_tui -> ())
 
-let run ~project ~gameplan_path ~github_token ~github_owner ~github_repo
-    ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless =
+let run ~project ~gameplan_path ~github_token ~github_owner ~main_branch
+    ~poll_interval ~repo_root ~max_concurrency ~headless =
   match
     resolve_config ~project ~gameplan_path ~github_token ~github_owner
-      ~github_repo ~main_branch ~poll_interval ~repo_root ~max_concurrency
-      ~headless
+      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -2000,12 +1985,12 @@ let github_owner_arg =
     & info [ "owner" ] ~docv:"OWNER" ~doc:"GitHub repository owner."
         ~env:(Cmd.Env.info "GITHUB_OWNER"))
 
-let github_repo_arg =
+let repo_arg =
   let open Cmdliner in
   Arg.(
-    value & opt string ""
-    & info [ "repo" ] ~docv:"REPO" ~doc:"GitHub repository name."
-        ~env:(Cmd.Env.info "GITHUB_REPO"))
+    value & opt string "."
+    & info [ "repo" ] ~docv:"PATH"
+        ~doc:"Path to the git repository (default: current directory).")
 
 let main_branch_arg =
   let open Cmdliner in
@@ -2020,13 +2005,6 @@ let poll_interval_arg =
     value & opt float 30.0
     & info [ "poll-interval" ] ~docv:"SECONDS"
         ~doc:"Polling interval in seconds (default: 30).")
-
-let repo_root_arg =
-  let open Cmdliner in
-  Arg.(
-    value & opt string "."
-    & info [ "repo-root" ] ~docv:"PATH"
-        ~doc:"Path to the git repository root (default: .).")
 
 let max_concurrency_arg =
   let open Cmdliner in
@@ -2044,17 +2022,17 @@ let headless_arg =
 
 let main_cmd =
   let open Cmdliner in
-  let run_cmd project gameplan_path github_token github_owner github_repo
-      main_branch poll_interval repo_root max_concurrency headless =
-    run ~project ~gameplan_path ~github_token ~github_owner ~github_repo
+  let run_cmd project gameplan_path github_token github_owner main_branch
+      poll_interval repo_root max_concurrency headless =
+    run ~project ~gameplan_path ~github_token ~github_owner
       ~main_branch:(Branch.of_string (Base.String.strip main_branch))
       ~poll_interval ~repo_root ~max_concurrency ~headless
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
-      $ github_owner_arg $ github_repo_arg $ main_branch_arg $ poll_interval_arg
-      $ repo_root_arg $ max_concurrency_arg $ headless_arg)
+      $ github_owner_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
+      $ max_concurrency_arg $ headless_arg)
   in
   let info =
     Cmd.info "onton" ~version:"0.1.0"
