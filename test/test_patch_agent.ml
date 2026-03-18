@@ -386,6 +386,7 @@ let () =
                 conclusion = "success";
                 details_url = None;
                 description = None;
+                started_at = None;
               }
           in
           let cid = Comment_id.of_int 1 in
@@ -419,6 +420,7 @@ let () =
                 conclusion = "success";
                 details_url = None;
                 description = None;
+                started_at = None;
               }
           in
           let a = set_ci_checks a [ check ] in

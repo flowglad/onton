@@ -789,31 +789,29 @@ let detail_info_rows (pv : patch_view) ~width =
           "failure"; "error"; "action_required"; "timed_out"; "startup_failure";
         ]
       in
-      (* Deduplicate by name, keeping the most significant conclusion:
-         failure > pending/unknown > success > skipped *)
-      let conclusion_rank c =
-        if List.mem failure_conclusions c ~equal:String.equal then 3
-        else if String.equal c "success" then 1
-        else if String.equal c "skipped" || String.equal c "neutral" then 0
-        else 2 (* pending, unknown *)
-      in
+      (* Deduplicate by name, keeping the most recent result by started_at.
+         ISO 8601 timestamps sort lexicographically. *)
       let deduped =
         let seen = Hashtbl.create (module String) in
         List.iter pv.ci_checks ~f:(fun (c : Ci_check.t) ->
             match Hashtbl.find seen c.name with
-            | Some prev when conclusion_rank c.conclusion > conclusion_rank prev
-              ->
-                Hashtbl.set seen ~key:c.name ~data:c.conclusion
-            | Some _ -> ()
-            | None -> Hashtbl.set seen ~key:c.name ~data:c.conclusion);
+            | Some (prev : Ci_check.t) ->
+                let newer =
+                  match (c.started_at, prev.started_at) with
+                  | Some a, Some b -> String.( >= ) a b
+                  | Some _, None -> true
+                  | None, Some _ -> false
+                  | None, None -> false
+                in
+                if newer then Hashtbl.set seen ~key:c.name ~data:c
+            | None -> Hashtbl.set seen ~key:c.name ~data:c);
         (* Preserve original order by filtering to first-seen names *)
         let emitted = Hashtbl.create (module String) in
         List.filter_map pv.ci_checks ~f:(fun (c : Ci_check.t) ->
             if Hashtbl.mem emitted c.name then None
             else (
               Hashtbl.set emitted ~key:c.name ~data:();
-              let best = Hashtbl.find_exn seen c.name in
-              Some { c with conclusion = best }))
+              Some (Hashtbl.find_exn seen c.name)))
       in
       let ci_header = [ ""; Term.styled [ Term.Sgr.bold ] "  CI Checks" ] in
       let ci_rows =

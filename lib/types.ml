@@ -116,6 +116,7 @@ module Ci_check = struct
     conclusion : string;
     details_url : string option;
     description : string option;
+    started_at : string option;
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

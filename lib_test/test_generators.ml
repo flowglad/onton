@@ -83,7 +83,8 @@ let gen_ci_check =
     let gen_desc = option (string_size ~gen:printable (int_range 5 40)) in
     map4
       (fun name conclusion details_url description ->
-        Ci_check.{ name; conclusion; details_url; description })
+        Ci_check.
+          { name; conclusion; details_url; description; started_at = None })
       gen_name gen_conclusion gen_url gen_desc)
 
 let gen_patch_list_unique =
