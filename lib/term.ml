@@ -103,6 +103,21 @@ let utf8_char_width b =
   else if b land 0xF8 = 0xF0 then 4
   else 1
 
+(** Validated UTF-8 sequence width: returns [utf8_char_width] if continuation
+    bytes are present and valid, otherwise [1] to avoid over-skipping. *)
+let utf8_seq_width s i len =
+  let w = utf8_char_width (String.get s i) in
+  if w = 1 then 1
+  else
+    let rec valid k =
+      if k >= w then true
+      else if i + k >= len then false
+      else
+        let b = Char.to_int (String.get s (i + k)) in
+        if b land 0xC0 = 0x80 then valid (k + 1) else false
+    in
+    if valid 1 then w else 1
+
 (** Visible character width of a string (strips ANSI codes, counts UTF-8
     codepoints rather than bytes). *)
 let visible_length s =
@@ -110,7 +125,9 @@ let visible_length s =
   let len = String.length raw in
   let rec loop i count =
     if i >= len then count
-    else loop (i + utf8_char_width (String.get raw i)) (count + 1)
+    else
+      let w = utf8_seq_width raw i len in
+      loop (i + w) (count + 1)
   in
   loop 0 0
 
@@ -128,7 +145,7 @@ let fit_width width s =
       else if Char.equal (String.get s i) '\027' then
         copy_escape (i + 1) visible
       else
-        let w = utf8_char_width (String.get s i) in
+        let w = utf8_seq_width s i len in
         let () =
           for j = 0 to w - 1 do
             if i + j < len then Buffer.add_char buf (String.get s (i + j))
