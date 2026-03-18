@@ -9,9 +9,10 @@ open Types
 module Pr_state : sig
   type merge_state = Mergeable | Conflicting | Unknown [@@deriving show, eq]
   type check_status = Passing | Failing | Pending [@@deriving show, eq]
+  type pr_status = Open | Merged | Closed [@@deriving show, eq]
 
   type t = {
-    merged : bool;
+    status : pr_status;
     merge_state : merge_state;
     merge_ready : bool;
     check_status : check_status;
@@ -51,6 +52,7 @@ val pr_state :
     WorldCtx predicates. *)
 
 val merged : Pr_state.t -> bool
+val closed : Pr_state.t -> bool
 val mergeable : Pr_state.t -> bool
 val merge_ready : Pr_state.t -> bool
 val checks_passing : Pr_state.t -> bool

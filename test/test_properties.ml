@@ -141,7 +141,7 @@ let () =
         let result =
           Poller.poll ~was_merged:false ~addressed_ids:no_addressed pr
         in
-        Bool.equal result.merged pr.Github.Pr_state.merged)
+        Bool.equal result.merged (Github.merged pr))
   in
   let prop_conflict_queue =
     Test.make ~name:"poller: conflict in queue iff has_conflict"

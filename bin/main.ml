@@ -1347,78 +1347,113 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                 let poll_result =
                   Poller.poll ~was_merged ~addressed_ids pr_state
                 in
-                let logs = ref [] in
-                Runtime.update_orchestrator runtime (fun orch ->
-                    let orch, log_entries =
-                      Poll_applicator.apply orch patch_id poll_result
-                    in
-                    logs := log_entries;
-                    (* CI cache side-effect — not pure *)
-                    let failed =
-                      let failure_conclusions =
-                        [
-                          "failure";
-                          "error";
-                          "action_required";
-                          "timed_out";
-                          "startup_failure";
-                        ]
-                      in
-                      Base.List.filter poll_result.Poller.ci_checks
-                        ~f:(fun (c : Ci_check.t) ->
-                          Base.List.mem failure_conclusions
-                            c.Ci_check.conclusion ~equal:Base.String.equal)
-                    in
-                    if not (Base.List.is_empty failed) then
-                      Hashtbl.replace ci_checks_cache patch_id failed
-                    else Hashtbl.remove ci_checks_cache patch_id;
-                    (* head_branch and worktree discovery — side-effectful,
-                       stays outside Poll_applicator *)
-                    let orch =
-                      match pr_state.Github.Pr_state.head_branch with
-                      | Some b -> Orchestrator.set_head_branch orch patch_id b
-                      | None -> orch
-                    in
-                    let orch =
-                      let agent = Orchestrator.agent orch patch_id in
-                      match
-                        ( agent.Patch_agent.base_branch,
-                          pr_state.Github.Pr_state.base_branch )
-                      with
-                      | None, Some b ->
-                          Orchestrator.set_base_branch orch patch_id b
-                      | _ -> orch
-                    in
-                    let orch =
-                      let agent = Orchestrator.agent orch patch_id in
-                      if Option.is_none agent.Patch_agent.worktree_path then
-                        let path =
-                          resolve_worktree_path ~process_mgr
-                            ~repo_root:config.repo_root ~project_name ~patch_id
-                            ~agent ()
-                        in
-                        let default =
-                          Worktree.worktree_dir ~project_name ~patch_id
-                        in
-                        if not (String.equal path default) then
+                (* PR was closed — re-discover the current open PR *)
+                if poll_result.Poller.closed then (
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "PR #%d closed, looking for replacement"
+                       (Pr_number.to_int pr_number));
+                  let branch = branch_of patch_id in
+                  match
+                    Startup_reconciler.discover_pr ~process_mgr
+                      ~token:config.github_token ~owner:config.github_owner
+                      ~repo:config.github_repo ~branch
+                  with
+                  | Ok (Some (new_pr, base_branch, merged)) ->
+                      log_event runtime ~patch_id
+                        (Printf.sprintf "switched to PR #%d"
+                           (Pr_number.to_int new_pr));
+                      Pr_registry.register pr_registry ~patch_id
+                        ~pr_number:new_pr;
+                      Runtime.update_orchestrator runtime (fun orch ->
                           let orch =
-                            Orchestrator.set_worktree_path orch patch_id path
+                            Orchestrator.set_pr_number orch patch_id new_pr
                           in
-                          if agent.Patch_agent.needs_intervention then
-                            Orchestrator.clear_needs_intervention orch patch_id
+                          let orch =
+                            Orchestrator.set_base_branch orch patch_id
+                              base_branch
+                          in
+                          if merged then Orchestrator.mark_merged orch patch_id
+                          else orch)
+                  | Ok None ->
+                      log_event runtime ~patch_id
+                        "no open PR found — will create on next session"
+                  | Error msg ->
+                      log_event runtime ~patch_id
+                        (Printf.sprintf "PR re-discovery failed: %s" msg))
+                else
+                  let logs = ref [] in
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      let orch, log_entries =
+                        Poll_applicator.apply orch patch_id poll_result
+                      in
+                      logs := log_entries;
+                      (* CI cache side-effect — not pure *)
+                      let failed =
+                        let failure_conclusions =
+                          [
+                            "failure";
+                            "error";
+                            "action_required";
+                            "timed_out";
+                            "startup_failure";
+                          ]
+                        in
+                        Base.List.filter poll_result.Poller.ci_checks
+                          ~f:(fun (c : Ci_check.t) ->
+                            Base.List.mem failure_conclusions
+                              c.Ci_check.conclusion ~equal:Base.String.equal)
+                      in
+                      if not (Base.List.is_empty failed) then
+                        Hashtbl.replace ci_checks_cache patch_id failed
+                      else Hashtbl.remove ci_checks_cache patch_id;
+                      (* head_branch and worktree discovery — side-effectful,
+                       stays outside Poll_applicator *)
+                      let orch =
+                        match pr_state.Github.Pr_state.head_branch with
+                        | Some b -> Orchestrator.set_head_branch orch patch_id b
+                        | None -> orch
+                      in
+                      let orch =
+                        let agent = Orchestrator.agent orch patch_id in
+                        match
+                          ( agent.Patch_agent.base_branch,
+                            pr_state.Github.Pr_state.base_branch )
+                        with
+                        | None, Some b ->
+                            Orchestrator.set_base_branch orch patch_id b
+                        | _ -> orch
+                      in
+                      let orch =
+                        let agent = Orchestrator.agent orch patch_id in
+                        if Option.is_none agent.Patch_agent.worktree_path then
+                          let path =
+                            resolve_worktree_path ~process_mgr
+                              ~repo_root:config.repo_root ~project_name
+                              ~patch_id ~agent ()
+                          in
+                          let default =
+                            Worktree.worktree_dir ~project_name ~patch_id
+                          in
+                          if not (String.equal path default) then
+                            let orch =
+                              Orchestrator.set_worktree_path orch patch_id path
+                            in
+                            if agent.Patch_agent.needs_intervention then
+                              Orchestrator.clear_needs_intervention orch
+                                patch_id
+                            else orch
                           else orch
                         else orch
-                      else orch
-                    in
-                    orch);
-                Base.List.iter !logs
-                  ~f:(fun (entry : Poll_applicator.log_entry) ->
-                    log_event runtime ~patch_id:entry.Poll_applicator.patch_id
-                      entry.Poll_applicator.message);
-                if pr_state.Github.Pr_state.ci_checks_truncated then
-                  log_event runtime ~patch_id
-                    "warning: CI check list was truncated (>100 checks); some \
-                     failures may not appear in the prompt"));
+                      in
+                      orch);
+                  Base.List.iter !logs
+                    ~f:(fun (entry : Poll_applicator.log_entry) ->
+                      log_event runtime ~patch_id:entry.Poll_applicator.patch_id
+                        entry.Poll_applicator.message);
+                  if pr_state.Github.Pr_state.ci_checks_truncated then
+                    log_event runtime ~patch_id
+                      "warning: CI check list was truncated (>100 checks); \
+                       some failures may not appear in the prompt"));
     (* Reconcile *)
     let reconcile_logs = ref [] in
     Runtime.update runtime (fun snap ->

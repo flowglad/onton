@@ -21,6 +21,9 @@ open Types
 type t = {
   queue : Operation_kind.t list;  (** Operations to enqueue for this patch. *)
   merged : bool;  (** [true] if the patch is now merged (absorbing). *)
+  closed : bool;
+      (** [true] if the PR was closed without merging. The poller should
+          re-discover the current open PR for this branch. *)
   has_conflict : bool;  (** [true] if the PR has a merge conflict. *)
   mergeable : bool;  (** [true] if the PR is currently mergeable. *)
   merge_ready : bool;

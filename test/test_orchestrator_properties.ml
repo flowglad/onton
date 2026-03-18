@@ -510,6 +510,7 @@ let () =
                   {
                     queue = [];
                     merged = true;
+                    closed = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -540,6 +541,7 @@ let () =
                   {
                     queue = [];
                     merged = false;
+                    closed = false;
                     has_conflict = true;
                     mergeable = false;
                     merge_ready = false;
@@ -571,6 +573,7 @@ let () =
                   {
                     queue = [];
                     merged = false;
+                    closed = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -606,6 +609,7 @@ let () =
                   {
                     queue = [];
                     merged = false;
+                    closed = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -636,6 +640,7 @@ let () =
                   {
                     queue = [];
                     merged = false;
+                    closed = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;

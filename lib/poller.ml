@@ -4,6 +4,7 @@ open Types
 type t = {
   queue : Operation_kind.t list;
   merged : bool;
+  closed : bool;
   has_conflict : bool;
   mergeable : bool;
   merge_ready : bool;
@@ -37,6 +38,7 @@ let poll ~was_merged ~addressed_ids (pr : Github.Pr_state.t) =
   {
     queue;
     merged = was_merged || Github.merged pr;
+    closed = Github.closed pr;
     has_conflict = Github.has_conflict pr;
     mergeable = Github.mergeable pr;
     merge_ready = Github.merge_ready pr;

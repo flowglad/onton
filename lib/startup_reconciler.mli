@@ -51,6 +51,16 @@ val discover_pr_from_json :
 (** Parse raw JSON output from [gh pr list --json number,state,baseRefName].
     Returns the first non-CLOSED PR entry or [None]. Pure function. *)
 
+val discover_pr :
+  process_mgr:_ Eio.Process.mgr ->
+  token:string ->
+  owner:string ->
+  repo:string ->
+  branch:Branch.t ->
+  ((Pr_number.t * Branch.t * bool) option, string) Result.t
+(** Query [gh pr list] for a branch, returning the first non-CLOSED PR as
+    [(pr_number, base_branch, merged)] or [None]. *)
+
 val reconcile :
   process_mgr:_ Eio.Process.mgr ->
   token:string ->

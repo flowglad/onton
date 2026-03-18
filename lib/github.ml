@@ -3,9 +3,10 @@ open Base
 module Pr_state = struct
   type merge_state = Mergeable | Conflicting | Unknown [@@deriving show, eq]
   type check_status = Passing | Failing | Pending [@@deriving show, eq]
+  type pr_status = Open | Merged | Closed [@@deriving show, eq]
 
   type t = {
-    merged : bool;
+    status : pr_status;
     merge_state : merge_state;
     merge_ready : bool;
     check_status : check_status;
@@ -34,7 +35,7 @@ let graphql_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
-      merged
+      state
       mergeable
       mergeStateStatus
       headRefName
@@ -169,7 +170,12 @@ let parse_response_json json =
         match pr with
         | `Null -> Error (Json_parse_error "pullRequest not found")
         | pr ->
-            let merged = pr |> member "merged" |> to_bool in
+            let status =
+              match pr |> member "state" |> to_string with
+              | "MERGED" -> Pr_state.Merged
+              | "CLOSED" -> Pr_state.Closed
+              | _ -> Pr_state.Open
+            in
             let merge_state =
               pr |> member "mergeable" |> to_string |> parse_merge_state
             in
@@ -231,7 +237,7 @@ let parse_response_json json =
             Ok
               Pr_state.
                 {
-                  merged;
+                  status;
                   merge_state;
                   merge_ready;
                   check_status;
@@ -306,13 +312,18 @@ let pr_state ~net t pr =
 
 (* WorldCtx predicate accessors *)
 
-let merged (st : Pr_state.t) = st.Pr_state.merged
+let merged (st : Pr_state.t) =
+  Pr_state.equal_pr_status st.Pr_state.status Pr_state.Merged
+
+let closed (st : Pr_state.t) =
+  Pr_state.equal_pr_status st.Pr_state.status Pr_state.Closed
 
 let mergeable (st : Pr_state.t) =
   let open Pr_state in
-  (not st.merged) && equal_merge_state st.merge_state Mergeable
+  equal_pr_status st.status Open && equal_merge_state st.merge_state Mergeable
 
-let merge_ready (st : Pr_state.t) = (not st.merged) && st.merge_ready
+let merge_ready (st : Pr_state.t) =
+  Pr_state.equal_pr_status st.status Open && st.merge_ready
 
 let checks_passing (st : Pr_state.t) =
   let open Pr_state in

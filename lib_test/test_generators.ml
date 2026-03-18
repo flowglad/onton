@@ -140,6 +140,9 @@ let gen_graph = QCheck2.Gen.(map Onton.Graph.of_patches gen_patch_list_unique)
 
 (* -- Github types -- *)
 
+let gen_pr_status =
+  QCheck2.Gen.oneof_list Onton.Github.Pr_state.[ Open; Merged; Closed ]
+
 let gen_merge_state =
   QCheck2.Gen.oneof_list
     Onton.Github.Pr_state.[ Mergeable; Conflicting; Unknown ]
@@ -151,10 +154,10 @@ let gen_pr_state =
   QCheck2.Gen.(
     let open Onton.Github.Pr_state in
     map5
-      (fun (merged, merge_state) merge_ready (check_status, ci_checks_truncated)
+      (fun (status, merge_state) merge_ready (check_status, ci_checks_truncated)
            ci_checks (comments, unresolved_comment_count) ->
         {
-          merged;
+          status;
           merge_state;
           merge_ready;
           check_status;
@@ -165,7 +168,7 @@ let gen_pr_state =
           head_branch = None;
           base_branch = None;
         })
-      (pair bool gen_merge_state)
+      (pair gen_pr_status gen_merge_state)
       bool
       (pair gen_check_status bool)
       (list_small gen_ci_check)
@@ -192,12 +195,13 @@ let gen_github_error =
 let gen_poller =
   QCheck2.Gen.(
     map5
-      (fun queue (merged, has_conflict) (mergeable, merge_ready) checks_passing
-           ci_checks ->
+      (fun queue (merged, closed, has_conflict) (mergeable, merge_ready)
+           checks_passing ci_checks ->
         Onton.Poller.
           {
             queue;
             merged;
+            closed;
             has_conflict;
             mergeable;
             merge_ready;
@@ -205,7 +209,7 @@ let gen_poller =
             ci_checks;
             new_comments = [];
           })
-      gen_operation_kind_queue (pair bool bool) (pair bool bool) bool
+      gen_operation_kind_queue (triple bool bool bool) (pair bool bool) bool
       (list_small gen_ci_check))
 
 (* -- Patch_agent -- *)
