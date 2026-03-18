@@ -94,8 +94,42 @@ let strip_ansi s =
   in
   loop 0
 
-(** Visible character width of a string (strips ANSI codes). *)
-let visible_length s = String.length (strip_ansi s)
+(** Number of bytes in a UTF-8 sequence starting with byte [b]. *)
+let utf8_char_width b =
+  let b = Char.to_int b in
+  if b land 0x80 = 0 then 1
+  else if b land 0xE0 = 0xC0 then 2
+  else if b land 0xF0 = 0xE0 then 3
+  else if b land 0xF8 = 0xF0 then 4
+  else 1
+
+(** Validated UTF-8 sequence width: returns [utf8_char_width] if continuation
+    bytes are present and valid, otherwise [1] to avoid over-skipping. *)
+let utf8_seq_width s i len =
+  let w = utf8_char_width (String.get s i) in
+  if w = 1 then 1
+  else
+    let rec valid k =
+      if k >= w then true
+      else if i + k >= len then false
+      else
+        let b = Char.to_int (String.get s (i + k)) in
+        if b land 0xC0 = 0x80 then valid (k + 1) else false
+    in
+    if valid 1 then w else 1
+
+(** Visible character width of a string (strips ANSI codes, counts UTF-8
+    codepoints rather than bytes). *)
+let visible_length s =
+  let raw = strip_ansi s in
+  let len = String.length raw in
+  let rec loop i count =
+    if i >= len then count
+    else
+      let w = utf8_seq_width raw i len in
+      loop (i + w) (count + 1)
+  in
+  loop 0 0
 
 (** Pad or truncate to fit a visible width, preserving ANSI formatting.
     Truncation walks the original string, copying escape sequences verbatim and
@@ -110,10 +144,14 @@ let fit_width width s =
       if visible >= width || i >= len then Buffer.contents buf
       else if Char.equal (String.get s i) '\027' then
         copy_escape (i + 1) visible
-      else begin
-        Buffer.add_char buf (String.get s i);
-        loop (i + 1) (visible + 1)
-      end
+      else
+        let w = utf8_seq_width s i len in
+        let () =
+          for j = 0 to w - 1 do
+            if i + j < len then Buffer.add_char buf (String.get s (i + j))
+          done
+        in
+        loop (i + w) (visible + 1)
     and copy_escape i visible =
       Buffer.add_char buf '\027';
       if i >= len then Buffer.contents buf
@@ -167,6 +205,22 @@ let%test "fit_width truncation preserves ANSI" =
   let s = styled [ Sgr.bold ] "hello" in
   let result = fit_width 3 s in
   String.equal (strip_ansi result) "hel" && not (String.equal result "hel")
+
+let%test "visible_length counts multibyte glyphs as one" =
+  visible_length "⚠" = 1
+
+let%test "visible_length multibyte with ANSI" =
+  visible_length (styled [ Sgr.fg_yellow ] "⚠ hello") = 7
+
+let%test "visible_length cross mark glyph" = visible_length "✗" = 1
+
+let%test "fit_width pads multibyte string" =
+  let s = fit_width 5 "⚠" in
+  visible_length s = 5 && String.is_prefix s ~prefix:"⚠"
+
+let%test "fit_width truncates multibyte string" =
+  let s = styled [ Sgr.fg_red ] "⚠ hello" in
+  visible_length (fit_width 3 s) = 3
 
 let%test "hrule default" = String.equal (hrule 3) "───"
 let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
