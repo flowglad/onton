@@ -963,15 +963,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~timeline_scroll
                       let count =
                         Runtime.read runtime (fun snap ->
                             let log = snap.Runtime.activity_log in
-                            let events =
-                              Base.List.length
-                                (Activity_log.recent_events log ~limit:100)
-                            in
-                            let transitions =
-                              Base.List.length
-                                (Activity_log.recent_transitions log ~limit:100)
-                            in
-                            events + transitions)
+                            Base.List.length
+                              (activity_entries_of_log ~limit:100 log))
                       in
                       timeline_scroll :=
                         Tui_input.apply_move ~count ~selected:!timeline_scroll
