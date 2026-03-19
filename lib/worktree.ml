@@ -263,19 +263,9 @@ let rebase_onto ~process_mgr ~path ~target =
             (Printf.sprintf "rebase failed (fallback, %s) (exit %d): %s" msg
                rebase_code
                (String.strip rebase_stderr))
-        else begin
-          let abort_code, _, abort_stderr =
-            run_git_exit_code ~process_mgr
-              [ "git"; "-C"; path; "rebase"; "--abort" ]
-          in
-          if abort_code <> 0 then
-            Error
-              (Printf.sprintf
-                 "rebase conflict but abort also failed (exit %d): %s"
-                 abort_code
-                 (String.strip abort_stderr))
-          else Conflict
-        end
+        else
+          (* Leave rebase in progress for agent to resolve *)
+          Conflict
     | Result.Ok old_base ->
         let rebase_code, _, rebase_stderr =
           run_git_exit_code ~process_mgr
@@ -286,19 +276,9 @@ let rebase_onto ~process_mgr ~path ~target =
           Error
             (Printf.sprintf "rebase --onto failed (exit %d): %s" rebase_code
                (String.strip rebase_stderr))
-        else begin
-          let abort_code, _, abort_stderr =
-            run_git_exit_code ~process_mgr
-              [ "git"; "-C"; path; "rebase"; "--abort" ]
-          in
-          if abort_code <> 0 then
-            Error
-              (Printf.sprintf
-                 "rebase conflict but abort also failed (exit %d): %s"
-                 abort_code
-                 (String.strip abort_stderr))
-          else Conflict
-        end
+        else
+          (* Leave rebase in progress for agent to resolve *)
+          Conflict
 
 let find_for_branch ~process_mgr ~repo_root branch =
   let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in

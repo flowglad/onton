@@ -396,14 +396,20 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number
       Printf.sprintf
         {|# Merge Conflict%s
 
-Your branch has conflicts with `%s`. Please rebase and resolve conflicts:
+A rebase onto `%s` is already in progress but hit conflicts.
+
+Resolve each conflicted file, then stage and continue:
 
 ```
-git fetch origin
-git rebase origin/%s
+git add <resolved files>
+git rebase --continue
 ```
 
-Resolve any conflicts, then continue with `git rebase --continue`.|}
+If the rebase continues and hits further conflicts, repeat the process.
+
+Do NOT run `git rebase origin/%s` — the rebase is already set up with the
+correct --onto range. Starting a new rebase would re-introduce dependency
+commits that have already been stripped.|}
         pr_ctx base_branch base_branch)
 
 let render_human_message_prompt ~(project_name : string)

@@ -298,10 +298,12 @@ let () =
        ~target:(Types.Branch.of_string "main")
    in
    assert_rebase_conflict "test5: conflict" result;
-   (* Rebase should have been aborted — no .git/rebase-merge dir *)
+   (* Rebase should be left in progress for the agent to resolve *)
    let rebase_dir = Stdlib.Filename.concat dir ".git/rebase-merge" in
-   if Stdlib.Sys.file_exists rebase_dir then
-     failwith "test5: rebase was not aborted";
+   if not (Stdlib.Sys.file_exists rebase_dir) then
+     failwith "test5: rebase should still be in progress";
+   (* Clean up: abort so we can delete the dir *)
+   git ~process_mgr ~dir [ "rebase"; "--abort" ] |> ignore;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 6: chained deps — dep1 merged, dep2 still open ────────── *)
