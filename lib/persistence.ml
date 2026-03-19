@@ -109,7 +109,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         `List
           (Set.to_list a.addressed_comment_ids
           |> List.map ~f:Comment_id.yojson_of_t) );
-      ("removed", `Bool a.removed);
       ("mergeable", `Bool a.mergeable);
       ("merge_ready", `Bool a.merge_ready);
       ("checks_passing", `Bool a.checks_passing);
@@ -195,7 +194,6 @@ let patch_agent_of_yojson json =
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~pending_comments ~ci_checks ~addressed_comment_ids
-       ~removed:(bool_member_opt "removed" json |> Option.value ~default:false)
        ~mergeable:
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
@@ -274,6 +272,22 @@ let orchestrator_of_yojson ~gameplan json =
                         "agent key/payload mismatch: key=%s payload=%s" key
                         payload_id)))))
       ~f:(fun agents ->
+        (* Filter out agents that were marked removed in old snapshots.
+           The removed field no longer exists — ad-hoc patches are now
+           truly deleted. We detect legacy removed agents by checking the
+           raw JSON. *)
+        let legacy_removed =
+          Yojson.Safe.Util.member "agents" json
+          |> Yojson.Safe.Util.to_assoc
+          |> List.filter_map ~f:(fun (key, value) ->
+              if bool_member_opt "removed" value |> Option.value ~default:false
+              then Some (Patch_id.of_string key)
+              else None)
+          |> Set.of_list (module Patch_id)
+        in
+        let agents =
+          List.filter agents ~f:(fun (k, _) -> not (Set.mem legacy_removed k))
+        in
         let agents_map =
           List.fold agents
             ~init:(Map.empty (module Patch_id))

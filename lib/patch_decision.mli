@@ -8,7 +8,7 @@ open Types
 (** {2 Disposition — what should the orchestrator do with this patch?} *)
 
 type disposition =
-  | Skip  (** Patch is merged or removed — nothing to do. *)
+  | Skip  (** Patch is merged — nothing to do. *)
   | Blocked  (** Patch needs intervention — waiting for human. *)
   | Busy  (** Patch is already executing — queue any new work. *)
   | Idle  (** Patch is idle with no queued work. *)

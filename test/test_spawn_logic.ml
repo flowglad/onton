@@ -29,21 +29,17 @@ let prepare_with_prs orch patches =
 let () =
   let open QCheck2 in
   let open Onton_test_support.Test_generators in
-  (* No action targets a busy, merged, or removed agent *)
+  (* No action targets a busy or merged agent *)
   let prop_only_eligible_agents =
-    Test.make ~name:"plan_spawns: only non-busy, non-merged, non-removed agents"
+    Test.make ~name:"plan_spawns: only non-busy, non-merged agents"
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
           (* Prepare PRs so agents have varied state *)
           let orch = prepare_with_prs orch patches in
-          (* Mark every 3rd patch as removed, every 4th as merged *)
+          (* Mark every 4th as merged *)
           let orch =
             List.foldi patches ~init:orch ~f:(fun i o (p : Patch.t) ->
-                let o =
-                  if i % 3 = 1 then Orchestrator.mark_removed o p.Patch.id
-                  else o
-                in
                 if i % 4 = 0 && i > 0 then Orchestrator.mark_merged o p.Patch.id
                 else o)
           in
@@ -51,8 +47,7 @@ let () =
           List.for_all spawns ~f:(fun s ->
               let pid = Onton.Spawn_logic.patch_id_of s in
               let a = Orchestrator.agent orch pid in
-              (not a.Patch_agent.busy) && (not a.Patch_agent.merged)
-              && not a.Patch_agent.removed)
+              (not a.Patch_agent.busy) && not a.Patch_agent.merged)
         with _ -> false)
   in
 
@@ -143,11 +138,9 @@ let () =
               | `Start pid ->
                   Graph.deps_satisfied graph pid
                     ~has_merged:(fun p ->
-                      (Orchestrator.agent orch p).Patch_agent.merged
-                      && not (Orchestrator.agent orch p).Patch_agent.removed)
+                      (Orchestrator.agent orch p).Patch_agent.merged)
                     ~has_pr:(fun p ->
-                      (Orchestrator.agent orch p).Patch_agent.has_pr
-                      && not (Orchestrator.agent orch p).Patch_agent.removed)
+                      (Orchestrator.agent orch p).Patch_agent.has_pr)
               | `Respond _ | `Rebase _ -> true)
         with _ -> false)
   in
@@ -171,14 +164,11 @@ let () =
               if
                 (not a.Patch_agent.has_pr) && (not a.Patch_agent.busy)
                 && (not a.Patch_agent.merged)
-                && (not a.Patch_agent.removed)
                 && Graph.deps_satisfied graph pid
                      ~has_merged:(fun p ->
-                       (Orchestrator.agent orch p).Patch_agent.merged
-                       && not (Orchestrator.agent orch p).Patch_agent.removed)
+                       (Orchestrator.agent orch p).Patch_agent.merged)
                      ~has_pr:(fun p ->
-                       (Orchestrator.agent orch p).Patch_agent.has_pr
-                       && not (Orchestrator.agent orch p).Patch_agent.removed)
+                       (Orchestrator.agent orch p).Patch_agent.has_pr)
               then List.mem started_ids pid ~equal:Patch_id.equal
               else true)
         with _ -> false)
@@ -238,8 +228,7 @@ let () =
               | None ->
                   (* No respond is ok whenever Respond preconditions fail *)
                   (not a.Patch_agent.has_pr) || a.Patch_agent.needs_intervention
-                  || a.Patch_agent.busy || a.Patch_agent.merged
-                  || a.Patch_agent.removed)
+                  || a.Patch_agent.busy || a.Patch_agent.merged)
         with _ -> false)
   in
 

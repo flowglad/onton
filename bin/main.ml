@@ -109,6 +109,10 @@ module Pr_registry = struct
 
   let find (t : t) ~patch_id =
     Eio.Mutex.use_ro t.mutex (fun () -> Hashtbl.find_opt t.table patch_id)
+
+  let unregister (t : t) ~patch_id =
+    Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
+        Hashtbl.remove t.table patch_id)
 end
 
 (** Discover PR number for a branch by calling [gh pr list]. Returns [Ok] with
@@ -973,34 +977,32 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                           let agent =
                             Orchestrator.agent snap.Runtime.orchestrator pid
                           in
+                          let in_gameplan =
+                            Base.List.exists
+                              snap.Runtime.gameplan.Gameplan.patches
+                              ~f:(fun (p : Patch.t) ->
+                                Patch_id.equal p.Patch.id pid)
+                          in
                           Some
                             ( agent.Patch_agent.patch_id,
                               agent.Patch_agent.busy,
-                              agent.Patch_agent.merged,
-                              agent.Patch_agent.removed ))
+                              in_gameplan ))
                   in
                   match info_opt with
                   | None ->
                       log_event runtime
                         "Cannot remove patch: no selectable patch"
-                  | Some (patch_id, _busy, true, false) ->
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.mark_removed orch patch_id);
-                      log_event runtime ~patch_id
-                        "Merged patch removed from view"
-                  | Some (patch_id, _busy, _, true) ->
-                      log_event runtime ~patch_id
-                        "Patch is already removed — nothing to do"
-                  | Some (patch_id, busy, false, false) ->
+                  | Some (patch_id, _busy, true) ->
+                      log_event runtime ~patch_id "Cannot remove gameplan patch"
+                  | Some (patch_id, busy, false) ->
                       if busy then
                         log_event runtime ~patch_id
                           "Warning: patch is currently running — it may create \
                            a GitHub PR before stopping";
                       Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.mark_removed orch patch_id);
-                      log_event runtime ~patch_id
-                        "Patch removed from orchestration (dependents remain \
-                         blocked)")
+                          Orchestrator.remove_agent orch patch_id);
+                      Pr_registry.unregister pr_registry ~patch_id;
+                      log_event runtime ~patch_id "Ad-hoc patch removed")
               | Some
                   ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
                   | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up

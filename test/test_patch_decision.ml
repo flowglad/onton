@@ -44,18 +44,6 @@ let () =
         (fun (pid, br) ->
           let a = with_pr pid br |> mark_merged in
           equal_disposition (disposition a) Skip);
-      (* ---- disposition: removed always Skip ---- *)
-      Test.make ~name:"disposition: removed -> Skip"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br |> mark_removed in
-          equal_disposition (disposition a) Skip);
-      (* ---- disposition: merged+removed still Skip ---- *)
-      Test.make ~name:"disposition: merged+removed -> Skip"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br |> mark_merged |> mark_removed in
-          equal_disposition (disposition a) Skip);
       (* ---- disposition: needs_intervention -> Blocked ---- *)
       Test.make ~name:"disposition: needs_intervention -> Blocked"
         Gen.(pair gen_pid gen_branch)

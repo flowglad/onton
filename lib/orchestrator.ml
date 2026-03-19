@@ -76,16 +76,10 @@ let startable_patches t ~branch_map =
       if
         (not a.Patch_agent.has_pr) && (not a.Patch_agent.busy)
         && (not a.Patch_agent.merged)
-        && (not a.Patch_agent.removed)
-        && Graph.deps_satisfied t.graph pid
-             ~has_merged:(fun pid ->
-               has_merged t pid && not (agent t pid).Patch_agent.removed)
-             ~has_pr:(fun pid ->
-               has_pr t pid && not (agent t pid).Patch_agent.removed)
+        && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
+             ~has_pr:(has_pr t)
       then
-        let has_merged_excluding_removed pid =
-          has_merged t pid && not (agent t pid).Patch_agent.removed
-        in
+        let has_merged' = has_merged t in
         let branch_of pid =
           match Map.find branch_map pid with
           | Some b -> b
@@ -96,8 +90,7 @@ let startable_patches t ~branch_map =
                    (Patch_id.to_string pid))
         in
         let base =
-          Graph.initial_base t.graph pid
-            ~has_merged:has_merged_excluding_removed ~branch_of
+          Graph.initial_base t.graph pid ~has_merged:has_merged' ~branch_of
             ~main:t.main_branch
         in
         Some (Start (pid, base))
@@ -109,16 +102,13 @@ let rebaseable_patches t ~branch_map =
       let (a : Patch_agent.t) = agent t pid in
       if
         a.Patch_agent.has_pr && (not a.Patch_agent.merged)
-        && (not a.Patch_agent.removed)
         && (not a.Patch_agent.busy)
         && List.mem a.Patch_agent.queue Operation_kind.Rebase
              ~equal:Operation_kind.equal
       then
         match Patch_agent.highest_priority a with
         | Some hp when Operation_kind.equal hp Operation_kind.Rebase ->
-            let has_merged_excluding_removed pid =
-              has_merged t pid && not (agent t pid).Patch_agent.removed
-            in
+            let has_merged' = has_merged t in
             let branch_of dep_pid =
               match Map.find branch_map dep_pid with
               | Some b -> b
@@ -127,8 +117,7 @@ let rebaseable_patches t ~branch_map =
                     ~default:t.main_branch
             in
             let new_base =
-              Graph.initial_base t.graph pid
-                ~has_merged:has_merged_excluding_removed ~branch_of
+              Graph.initial_base t.graph pid ~has_merged:has_merged' ~branch_of
                 ~main:t.main_branch
             in
             Some (Rebase (pid, new_base))
@@ -141,7 +130,6 @@ let respondable_patches t =
       let (a : Patch_agent.t) = agent t pid in
       if
         a.Patch_agent.has_pr && (not a.Patch_agent.merged)
-        && (not a.Patch_agent.removed)
         && (not a.Patch_agent.busy)
         && not a.Patch_agent.needs_intervention
       then
@@ -194,8 +182,12 @@ let enqueue t patch_id kind =
 
 let mark_merged t patch_id = update_agent t patch_id ~f:Patch_agent.mark_merged
 
-let mark_removed t patch_id =
-  update_agent t patch_id ~f:Patch_agent.mark_removed
+let remove_agent t patch_id =
+  {
+    t with
+    graph = Graph.remove_patch t.graph patch_id;
+    agents = Map.remove t.agents patch_id;
+  }
 
 let add_pending_comment t patch_id comment ~valid =
   update_agent t patch_id ~f:(fun a ->

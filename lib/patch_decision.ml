@@ -19,7 +19,7 @@ type disposition =
 [@@deriving show, eq, sexp_of, compare]
 
 let disposition (a : Patch_agent.t) : disposition =
-  if a.merged || a.removed then Skip
+  if a.merged then Skip
   else if a.needs_intervention then Blocked
   else if a.busy then Busy
   else if not a.has_pr then Ready_start

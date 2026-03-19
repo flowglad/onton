@@ -69,3 +69,11 @@ let add_patch t patch_id =
       dependents_map = t.dependents_map;
       all_ids = t.all_ids @ [ patch_id ];
     }
+
+let remove_patch t patch_id =
+  {
+    deps_map = Map.remove t.deps_map patch_id;
+    dependents_map = Map.remove t.dependents_map patch_id;
+    all_ids =
+      List.filter t.all_ids ~f:(fun id -> not (Patch_id.equal id patch_id));
+  }

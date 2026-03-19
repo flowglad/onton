@@ -30,7 +30,6 @@ type t = private {
   pending_comments : pending_comment list;
   ci_checks : Types.Ci_check.t list;
   addressed_comment_ids : Set.M(Types.Comment_id).t;
-  removed : bool;
   mergeable : bool;
   merge_ready : bool;
   checks_passing : bool;
@@ -60,7 +59,7 @@ val start : t -> base_branch:Types.Branch.t -> t
 
 val rebase : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:
-    [has_pr], [~merged], [~removed], [~busy], [Rebase] in [queue], [Rebase] is
+    [has_pr], [~merged], [~busy], [Rebase] in [queue], [Rebase] is
     [highest_priority]. Postconditions: [busy]; dequeues [Rebase]; preserves
     [has_session] (does not force true); updates [base_branch]. *)
 
@@ -83,11 +82,6 @@ val enqueue : t -> Types.Operation_kind.t -> t
 
 val mark_merged : t -> t
 (** Mark the patch as merged. *)
-
-val mark_removed : t -> t
-(** Mark the patch as removed from orchestration. Unlike [mark_merged], removed
-    patches are not treated as satisfied dependencies — dependents remain
-    blocked. *)
 
 val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
 (** Add a pending review comment. *)
@@ -196,7 +190,6 @@ val restore :
   pending_comments:pending_comment list ->
   ci_checks:Types.Ci_check.t list ->
   addressed_comment_ids:Set.M(Types.Comment_id).t ->
-  removed:bool ->
   mergeable:bool ->
   merge_ready:bool ->
   checks_passing:bool ->

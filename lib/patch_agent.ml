@@ -30,7 +30,6 @@ type t = {
       [@equal Set.equal]
       [@compare Set.compare_direct]
       [@sexp_of fun s -> Set.sexp_of_m__t (module Comment_id) s]
-  removed : bool;
   mergeable : bool;
   merge_ready : bool;
   checks_passing : bool;
@@ -63,7 +62,6 @@ let create patch_id =
     pending_comments = [];
     ci_checks = [];
     addressed_comment_ids = Set.empty (module Comment_id);
-    removed = false;
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
@@ -92,7 +90,6 @@ let create_adhoc ~patch_id ~pr_number =
     pending_comments = [];
     ci_checks = [];
     addressed_comment_ids = Set.empty (module Comment_id);
-    removed = false;
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
@@ -111,7 +108,6 @@ let enqueue t k =
   else { t with queue = k :: t.queue }
 
 let mark_merged t = { t with merged = true }
-let mark_removed t = { t with removed = true }
 
 let add_pending_comment t comment ~valid =
   let is_synthetic id = Comment_id.to_int id < 0 in
@@ -223,7 +219,7 @@ let reset_busy t =
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_fallback ~pending_comments ~ci_checks
-    ~addressed_comment_ids ~removed ~mergeable ~merge_ready ~checks_passing
+    ~addressed_comment_ids ~mergeable ~merge_ready ~checks_passing
     ~no_unresolved_comments ~worktree_path ~head_branch =
   {
     patch_id;
@@ -243,7 +239,6 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     pending_comments;
     ci_checks;
     addressed_comment_ids;
-    removed;
     mergeable;
     merge_ready;
     checks_passing;
@@ -276,7 +271,7 @@ let start t ~base_branch =
 let rebase t ~base_branch =
   if not t.has_pr then invalid_arg "Patch_agent.rebase: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
-  if t.removed then invalid_arg "Patch_agent.rebase: patch is removed";
+
   if t.busy then invalid_arg "Patch_agent.rebase: patch is busy";
   if not (List.mem t.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
   then invalid_arg "Patch_agent.rebase: Rebase not in queue";
@@ -302,7 +297,7 @@ let rebase t ~base_branch =
 let respond t k =
   if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
-  if t.removed then invalid_arg "Patch_agent.respond: patch is removed";
+
   if t.busy then invalid_arg "Patch_agent.respond: patch is busy";
   if t.needs_intervention then
     invalid_arg "Patch_agent.respond: patch needs intervention";

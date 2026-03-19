@@ -23,7 +23,7 @@ val plan_spawns : Orchestrator.t -> patches:Patch.t list -> spawn list
     [Orchestrator.fire] on each returned action.
 
     Properties:
-    - Only non-busy, non-merged, non-removed agents produce actions.
+    - Only non-busy, non-merged agents produce actions.
     - Start only for patches without PRs where deps are satisfied.
     - Respond only for patches with PRs, picking highest-priority feedback.
     - Rebase only when Rebase is the highest-priority queued operation.

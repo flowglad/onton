@@ -68,3 +68,8 @@ val all_patch_ids : t -> Types.Patch_id.t list
 val add_patch : t -> Types.Patch_id.t -> t
 (** [add_patch t pid] registers an ad-hoc patch with no dependencies. No-op if
     [pid] is already in the graph. Per spec: "Added patches have no deps." *)
+
+val remove_patch : t -> Types.Patch_id.t -> t
+(** [remove_patch t pid] removes an ad-hoc patch from the graph. The patch must
+    have no dependents — removing a patch that others depend on is not
+    supported. *)

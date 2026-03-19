@@ -43,7 +43,7 @@ val fire : t -> action -> t
 val complete : t -> Patch_id.t -> t
 val enqueue : t -> Patch_id.t -> Operation_kind.t -> t
 val mark_merged : t -> Patch_id.t -> t
-val mark_removed : t -> Patch_id.t -> t
+val remove_agent : t -> Patch_id.t -> t
 val add_pending_comment : t -> Patch_id.t -> Comment.t -> valid:bool -> t
 
 val send_human_message : t -> Patch_id.t -> string -> t
