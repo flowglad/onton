@@ -1487,8 +1487,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
   let fs = Eio.Stdenv.fs env in
   let backend =
     match Stdlib.Sys.getenv_opt "ONTON_BACKEND" with
+    | None | Some "claude" -> Claude_backend.create ~process_mgr
     | Some "codex" -> Codex_backend.create ~process_mgr
-    | _ -> Claude_backend.create ~process_mgr
+    | Some other ->
+        invalid_arg
+          (Printf.sprintf
+             "Unsupported ONTON_BACKEND=%S (expected \"claude\" or \"codex\")"
+             other)
   in
   let clock = Eio.Stdenv.clock env in
   let set_status ~level ~text ?expires_at () =
