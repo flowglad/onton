@@ -39,16 +39,6 @@ let () =
         line = None;
       }
   in
-  let c_invalid =
-    Comment.
-      {
-        id = Comment_id.of_int 2;
-        thread_id = None;
-        body = "nit";
-        path = None;
-        line = None;
-      }
-  in
   let tests =
     [
       (* -- create -- *)
@@ -270,17 +260,16 @@ let () =
           let a = enqueue a Operation_kind.Review_comments in
           let a = respond a Operation_kind.Review_comments in
           a.changed);
-      (* -- respond Review_comments does not set changed without valid comment -- *)
-      Test.make ~name:"respond Review_comments no changed without valid comment"
+      (* -- respond Review_comments always sets changed (lazy fetch) -- *)
+      Test.make ~name:"respond Review_comments always sets changed (lazy fetch)"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
-          let a = add_pending_comment a c_invalid ~valid:false in
           let a = enqueue a Operation_kind.Review_comments in
           let a = respond a Operation_kind.Review_comments in
-          not a.changed);
+          a.changed);
       (* -- 2 ci failures does NOT trigger needs_intervention (boundary) -- *)
       Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
         Gen.(pure (pid0, br0))

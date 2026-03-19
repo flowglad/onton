@@ -76,17 +76,8 @@ let apply t patch_id (poll_result : Poller.t) =
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
-  (* Don't add comments while the agent is actively handling review comments —
-     they'll be re-discovered on the next poll after complete, at which point
-     addressed_comment_ids will filter out the handled ones. *)
-  let t =
-    let agent = Orchestrator.agent t patch_id in
-    if
-      Option.equal Operation_kind.equal agent.Patch_agent.current_op
-        (Some Operation_kind.Review_comments)
-    then t
-    else
-      List.fold poll_result.new_comments ~init:t ~f:(fun acc comment ->
-          Orchestrator.add_pending_comment acc patch_id comment ~valid:true)
-  in
+  (* Review comments are fetched lazily at delivery time — we only enqueue the
+     operation here.  The runner will query GitHub for fresh unaddressed comments
+     when the agent is actually ready, avoiding stale data. *)
+  let _ = poll_result.new_comments in
   (t, List.rev !logs)

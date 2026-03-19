@@ -1505,7 +1505,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-    ~ci_checks_cache ~transcripts ?status_msg () =
+    ~ci_checks_cache ~transcripts ~github ~net ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
@@ -1768,6 +1768,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               in
               Some
                 (fun () ->
+                  let delivered_comments = ref [] in
                   with_busy_guard ~patch_id (fun () ->
                       let result =
                         with_claude_slot (fun () ->
@@ -1795,15 +1796,68 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               let source_agent =
                                 Base.Option.value pre_fire_agent ~default:agent
                               in
+                              (* For Human messages, use locally-stored
+                                 pending_comments.  For Review_comments, fetch
+                                 fresh unaddressed comments from GitHub to avoid
+                                 delivering stale data. *)
+                              (* For Review_comments, fetch fresh unaddressed
+                                 comments from GitHub at delivery time to avoid
+                                 stale data.  For Human messages, use locally
+                                 stored pending_comments as before. *)
+                              let fetch_fresh_review_comments () =
+                                match agent.Patch_agent.pr_number with
+                                | Some pr_num -> (
+                                    log_event runtime ~patch_id
+                                      "fetching fresh review comments from \
+                                       GitHub";
+                                    match
+                                      Github.pr_state ~net github pr_num
+                                    with
+                                    | Ok pr_state ->
+                                        let addressed =
+                                          source_agent
+                                            .Patch_agent.addressed_comment_ids
+                                        in
+                                        Base.List.filter
+                                          pr_state.Github.Pr_state.comments
+                                          ~f:(fun (c : Comment.t) ->
+                                            not
+                                              (Base.Set.mem addressed
+                                                 c.Comment.id))
+                                    | Error _err ->
+                                        log_event runtime ~patch_id
+                                          "failed to fetch fresh comments, \
+                                           falling back to pending";
+                                        Base.List.map
+                                          source_agent
+                                            .Patch_agent.pending_comments
+                                          ~f:(fun
+                                              (pc : Patch_agent.pending_comment)
+                                            -> pc.Patch_agent.comment))
+                                | None -> []
+                              in
                               let pending_comments =
-                                Base.List.map
-                                  source_agent.Patch_agent.pending_comments
-                                  ~f:(fun (pc : Patch_agent.pending_comment) ->
-                                    pc.Patch_agent.comment)
+                                if
+                                  Operation_kind.equal kind
+                                    Operation_kind.Review_comments
+                                then (
+                                  let fresh = fetch_fresh_review_comments () in
+                                  delivered_comments := fresh;
+                                  fresh)
+                                else
+                                  let pc =
+                                    Base.List.map
+                                      source_agent.Patch_agent.pending_comments
+                                      ~f:(fun
+                                          (pc : Patch_agent.pending_comment) ->
+                                        pc.Patch_agent.comment)
+                                  in
+                                  delivered_comments := pc;
+                                  pc
                               in
                               (* Skip empty deliveries — review/human with
-                                 no pending comments means they were already
-                                 handled in the previous Respond cycle. *)
+                                 no comments means they were already handled
+                                 or resolved externally. *)
                               let is_comment_op =
                                 Operation_kind.equal kind
                                   Operation_kind.Review_comments
@@ -1893,15 +1947,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    (Patch_id.to_string patch_id))
                               ()
                       | `Ok ->
-                          (* Mark pending comment IDs as addressed so the
-                             poller doesn't re-enqueue them next cycle. *)
+                          (* Mark delivered comment IDs as addressed so the
+                             poller doesn't re-enqueue them next cycle.  For
+                             review comments we use the freshly fetched list;
+                             for human messages we use pending_comments. *)
                           let comment_ids =
-                            match pre_fire_agent with
-                            | Some a ->
-                                Base.List.map a.Patch_agent.pending_comments
-                                  ~f:(fun (pc : Patch_agent.pending_comment) ->
-                                    pc.Patch_agent.comment.Comment.id)
-                            | None -> []
+                            Base.List.map !delivered_comments
+                              ~f:(fun (c : Comment.t) -> c.Comment.id)
                           in
                           Runtime.update_orchestrator runtime (fun orch ->
                               let orch =
@@ -2268,7 +2320,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~ci_checks_cache ~transcripts ())
+              ~ci_checks_cache ~transcripts ~github ~net ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -2317,7 +2369,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
                     ~patches_visible_count)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-                    ~ci_checks_cache ~transcripts ~status_msg ())
+                    ~ci_checks_cache ~transcripts ~github ~net ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

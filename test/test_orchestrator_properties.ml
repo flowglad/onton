@@ -623,10 +623,11 @@ let () =
         with _ -> false)
   in
 
-  (* New comments are added as pending *)
+  (* New comments enqueue Review_comments but don't store pending_comments
+     (comments are fetched lazily at delivery time) *)
   let prop_poll_new_comments =
     Test.make ~name:"apply_poll_result: new comments added"
-      (Gen.pair gen_patch_list_unique gen_comment) (fun (patches, comment) ->
+      (Gen.pair gen_patch_list_unique gen_comment) (fun (patches, _comment) ->
         try
           match patches with
           | [] -> true
@@ -638,7 +639,7 @@ let () =
               let poll =
                 Poller.
                   {
-                    queue = [];
+                    queue = [ Operation_kind.Review_comments ];
                     merged = false;
                     closed = false;
                     has_conflict = false;
@@ -646,12 +647,14 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
-                    new_comments = [ comment ];
+                    new_comments = [];
                   }
               in
               let orch', _logs = Poll_applicator.apply orch pid poll in
               let a = Orchestrator.agent orch' pid in
-              not (List.is_empty a.Patch_agent.pending_comments)
+              List.is_empty a.Patch_agent.pending_comments
+              && List.mem a.Patch_agent.queue Operation_kind.Review_comments
+                   ~equal:Operation_kind.equal
         with _ -> false)
   in
 
