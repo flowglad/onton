@@ -5,39 +5,6 @@ type t = {
   dependency_graph : Types.Patch_id.t list Map.M(Types.Patch_id).t;
 }
 
-let extract_section ~header lines =
-  let header_prefix = "## " ^ header in
-  let rec find_start = function
-    | [] -> None
-    | line :: rest ->
-        if String.is_prefix line ~prefix:header_prefix then collect_body rest []
-        else find_start rest
-  and collect_body lines acc =
-    match lines with
-    | [] -> Some (String.concat ~sep:"\n" (List.rev acc) |> String.strip)
-    | line :: rest ->
-        if String.is_prefix line ~prefix:"## " then
-          Some (String.concat ~sep:"\n" (List.rev acc) |> String.strip)
-        else collect_body rest (line :: acc)
-  in
-  find_start lines
-
-let parse_project_name lines =
-  let rec find = function
-    | [] ->
-        Error
-          "No project name found (expected '# Gameplan: {name}' or '# {name}')"
-    | line :: rest -> (
-        match String.chop_prefix line ~prefix:"# Gameplan: " with
-        | Some name -> Ok (String.strip name)
-        | None -> (
-            match String.chop_prefix line ~prefix:"# " with
-            | Some name when not (String.is_prefix name ~prefix:"#") ->
-                Ok (String.strip name)
-            | _ -> find rest))
-  in
-  find lines
-
 let slugify name =
   String.lowercase name
   |> String.map ~f:(fun c ->
@@ -51,127 +18,6 @@ let is_valid_patch_id s =
   (not (String.is_empty s))
   && String.for_all s ~f:(fun c -> Char.is_alphanum c)
   && not (String.is_substring s ~substring:"..")
-
-let parse_dep_graph_line line =
-  (* Format: "- Patch ID [CLASS] -> [deps]" *)
-  let line = String.strip line in
-  match String.chop_prefix line ~prefix:"- Patch " with
-  | None -> None
-  | Some rest -> (
-      let parts = String.lsplit2 rest ~on:' ' in
-      match parts with
-      | None -> None
-      | Some (patch_id, after_id) -> (
-          (* Find the -> *)
-          match String.substr_index after_id ~pattern:"->" with
-          | None -> None
-          | Some arrow_idx ->
-              let deps_str =
-                String.drop_prefix after_id (arrow_idx + 2) |> String.strip
-              in
-              let deps_str =
-                deps_str
-                |> String.chop_prefix_if_exists ~prefix:"["
-                |> String.chop_suffix_if_exists ~suffix:"]"
-                |> String.strip
-              in
-              let deps =
-                if String.is_empty deps_str then []
-                else
-                  String.split deps_str ~on:','
-                  |> List.map ~f:(fun s ->
-                      Types.Patch_id.of_string (String.strip s))
-              in
-              Some (Types.Patch_id.of_string patch_id, deps)))
-
-let parse_dep_graph lines =
-  let _in_graph, result =
-    List.fold lines
-      ~init:(false, Map.empty (module Types.Patch_id))
-      ~f:(fun (in_graph, acc) line ->
-        let stripped = String.strip line in
-        if String.is_prefix stripped ~prefix:"## Dependency Graph" then
-          (true, acc)
-        else if in_graph && String.is_prefix stripped ~prefix:"## " then
-          (false, acc)
-        else if in_graph then
-          match parse_dep_graph_line line with
-          | Some (id, deps) -> (true, Map.set acc ~key:id ~data:deps)
-          | None -> (in_graph, acc)
-        else (in_graph, acc))
-  in
-  result
-
-let parse_patch_header line =
-  (* Format: "### Patch N [CLASS]: Title" *)
-  let line = String.strip line in
-  match String.chop_prefix line ~prefix:"### Patch " with
-  | None -> None
-  | Some rest -> (
-      match String.lsplit2 rest ~on:' ' with
-      | None -> None
-      | Some (patch_id, after_id) -> (
-          (* Skip [CLASS]: and get title *)
-          match String.substr_index after_id ~pattern:"]: " with
-          | None -> None
-          | Some idx ->
-              let title =
-                String.drop_prefix after_id (idx + 3) |> String.strip
-              in
-              Some (patch_id, title)))
-
-let parse_patches lines dep_graph ~project_name =
-  let slug = slugify project_name in
-  (* Collect patch headers with their body lines *)
-  let rec collect acc current lines =
-    match lines with
-    | [] ->
-        let acc =
-          match current with
-          | Some (h, body) -> (h, List.rev body) :: acc
-          | None -> acc
-        in
-        List.rev acc
-    | line :: rest -> (
-        match parse_patch_header line with
-        | Some header ->
-            let acc =
-              match current with
-              | Some (h, body) -> (h, List.rev body) :: acc
-              | None -> acc
-            in
-            collect acc (Some (header, [])) rest
-        | None -> (
-            match current with
-            | Some (h, body) ->
-                (* Stop collecting at next ## section *)
-                if String.is_prefix (String.strip line) ~prefix:"## " then
-                  let acc = (h, List.rev body) :: acc in
-                  collect acc None rest
-                else collect acc (Some (h, line :: body)) rest
-            | None -> collect acc None rest))
-  in
-  let patch_entries = collect [] None lines in
-  List.filter_map patch_entries ~f:(fun ((patch_id_str, title), body_lines) ->
-      let id = Types.Patch_id.of_string patch_id_str in
-      let dependencies = Map.find dep_graph id |> Option.value ~default:[] in
-      let branch = Types.Branch.of_string (slug ^ "/patch-" ^ patch_id_str) in
-      let description = String.concat ~sep:"\n" body_lines |> String.strip in
-      Some
-        {
-          Types.Patch.id;
-          title;
-          description;
-          branch;
-          dependencies;
-          spec = "";
-          acceptance_criteria = [];
-          files = [];
-          classification = "";
-          changes = [];
-          test_stubs_introduced = [];
-          test_stubs_implemented = [];
-        })
 
 let detect_cycle dep_graph =
   (* DFS cycle detection *)
@@ -270,49 +116,6 @@ let validate ~patches ~dep_graph =
                     match detect_cycle dep_graph with
                     | Some msg -> Error msg
                     | None -> Ok ()))))
-
-let parse_string input =
-  let lines = String.split_lines input in
-  match parse_project_name lines with
-  | Error e -> Error e
-  | Ok project_name -> (
-      let problem_statement =
-        extract_section ~header:"Problem Statement" lines
-        |> Option.value ~default:""
-      in
-      let solution_summary =
-        extract_section ~header:"Solution Summary" lines
-        |> Option.value ~default:""
-      in
-      let design_decisions =
-        let d = extract_section ~header:"Explicit Opinions" lines in
-        let d =
-          match d with
-          | Some _ -> d
-          | None -> extract_section ~header:"Design Decisions" lines
-        in
-        Option.value d ~default:""
-      in
-      let dep_graph = parse_dep_graph lines in
-      let patches = parse_patches lines dep_graph ~project_name in
-      match validate ~patches ~dep_graph with
-      | Error e -> Error e
-      | Ok () ->
-          Ok
-            {
-              gameplan =
-                {
-                  Types.Gameplan.project_name;
-                  problem_statement;
-                  solution_summary;
-                  design_decisions;
-                  patches;
-                  current_state_analysis = "";
-                  explicit_opinions = "";
-                  acceptance_criteria = [];
-                };
-              dependency_graph = dep_graph;
-            })
 
 let json_string_list json key =
   let open Yojson.Safe.Util in
@@ -505,10 +308,7 @@ let parse_json_file path =
 let parse_file path =
   match read_file path with
   | Error e -> Error e
-  | Ok contents ->
-      if Stdlib.Filename.check_suffix path ".json" then
-        parse_json_string contents
-      else parse_string contents
+  | Ok contents -> parse_json_string contents
 
 let%test_module "Gameplan_parser" =
   (module struct
@@ -520,51 +320,6 @@ let%test_module "Gameplan_parser" =
 
     let%test "slugify already clean" =
       String.equal (slugify "clean-name") "clean-name"
-
-    let%test "parse_project_name from gameplan header" =
-      let lines = [ "# Gameplan: My Project"; "## Problem" ] in
-      match parse_project_name lines with
-      | Ok name -> String.equal name "My Project"
-      | Error _ -> false
-
-    let%test "parse_project_name from h1" =
-      let lines = [ "# Simple Name" ] in
-      match parse_project_name lines with
-      | Ok name -> String.equal name "Simple Name"
-      | Error _ -> false
-
-    let%test "parse_project_name missing" =
-      let lines = [ "no heading here" ] in
-      match parse_project_name lines with Ok _ -> false | Error _ -> true
-
-    let%test "extract_section finds section" =
-      let lines =
-        [
-          "## Problem Statement";
-          "The problem is X.";
-          "";
-          "## Solution Summary";
-          "We fix it.";
-        ]
-      in
-      match extract_section ~header:"Problem Statement" lines with
-      | Some s -> String.is_substring s ~substring:"problem is X"
-      | None -> false
-
-    let%test "extract_section missing" =
-      let lines = [ "## Other"; "stuff" ] in
-      Option.is_none (extract_section ~header:"Problem Statement" lines)
-
-    let%test "parse_dep_graph_line valid" =
-      match parse_dep_graph_line "- Patch 1 [CORE] -> [2, 3]" with
-      | Some (id, deps) ->
-          String.equal (Types.Patch_id.to_string id) "1" && List.length deps = 2
-      | None -> false
-
-    let%test "parse_dep_graph_line no deps" =
-      match parse_dep_graph_line "- Patch 1 [CORE] -> []" with
-      | Some (_, deps) -> List.is_empty deps
-      | None -> false
 
     let%test "detect_cycle finds cycle" =
       let dep_graph =
@@ -637,69 +392,6 @@ let%test_module "Gameplan_parser" =
       match validate ~patches:[ patch; patch ] ~dep_graph with
       | Ok () -> false
       | Error _ -> true
-
-    let%test "parse_string roundtrip" =
-      let input =
-        {|# Gameplan: Test Project
-
-## Problem Statement
-A problem.
-
-## Solution Summary
-A solution.
-
-## Dependency Graph
-- Patch 1 [CORE] -> []
-- Patch 2 [CORE] -> [1]
-
-## Patches
-
-### Patch 1 [CORE]: First patch
-Do thing 1.
-
-### Patch 2 [CORE]: Second patch
-Do thing 2.
-|}
-      in
-      match parse_string input with
-      | Ok result ->
-          List.length result.gameplan.patches = 2
-          && String.equal result.gameplan.project_name "Test Project"
-          && String.equal
-               (List.hd_exn result.gameplan.patches).Types.Patch.description
-               "Do thing 1."
-      | Error _ -> false
-
-    let%test "parse_string extracts design decisions" =
-      let input =
-        {|# Gameplan: Test
-
-## Problem Statement
-P.
-
-## Solution Summary
-S.
-
-## Explicit Opinions
-Always use property tests.
-Never mock.
-
-## Dependency Graph
-- Patch 1 [CORE] -> []
-
-## Patches
-
-### Patch 1 [CORE]: First
-Details here.
-|}
-      in
-      match parse_string input with
-      | Ok result ->
-          String.is_substring result.gameplan.design_decisions
-            ~substring:"property tests"
-          && String.is_substring result.gameplan.design_decisions
-               ~substring:"Never mock"
-      | Error _ -> false
 
     let%test "parse_json_string: real format fields" =
       let input =
