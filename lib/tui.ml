@@ -485,7 +485,7 @@ type patch_view = {
   queue_len : int;
   current_op : Operation_kind.t option;
   ci_failures : int;
-  dep_count : int;
+  dep_ids : (Patch_id.t * display_status) list;
   has_pr : bool;
   has_conflict : bool;
   needs_intervention : bool;
@@ -501,7 +501,8 @@ type patch_view = {
 
 let patch_view_of_agent (agent : Patch_agent.t)
     ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
-    ~(main_branch : Branch.t) =
+    ~(main_branch : Branch.t) ~(agents_by_id : Patch_agent.t Map.M(Patch_id).t)
+    =
   let patch_id = agent.patch_id in
   let patch_opt = Map.find patches_by_id patch_id in
   let title =
@@ -538,7 +539,43 @@ let patch_view_of_agent (agent : Patch_agent.t)
         State.Patch_ctx.set_queued acc ~patch_id ~kind ~value:true)
   in
   let status = derive_display_status ctx ~patch_id ~current_op ~main_branch in
-  let dep_count = List.length (Graph.deps graph patch_id) in
+  let dep_ids =
+    List.map (Graph.deps graph patch_id) ~f:(fun dep_id ->
+        let dep_status =
+          match Map.find agents_by_id dep_id with
+          | Some dep_agent ->
+              let dep_op = Patch_agent.highest_priority dep_agent in
+              let dep_ctx =
+                ( State.Patch_ctx.empty
+                |> State.Patch_ctx.set_merged ~patch_id:dep_id
+                     ~value:dep_agent.merged
+                |> State.Patch_ctx.set_needs_intervention ~patch_id:dep_id
+                     ~value:dep_agent.needs_intervention
+                |> State.Patch_ctx.set_busy ~patch_id:dep_id
+                     ~value:dep_agent.busy
+                |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
+                     ~value:dep_agent.has_pr
+                |> State.Patch_ctx.set_approved ~patch_id:dep_id
+                     ~value:(Patch_agent.is_approved dep_agent ~main_branch)
+                |> State.Patch_ctx.set_ci_failure_count ~patch_id:dep_id
+                     ~count:dep_agent.ci_failure_count
+                |> fun ctx ->
+                  match dep_agent.base_branch with
+                  | Some branch ->
+                      State.Patch_ctx.set_base_branch ctx ~patch_id:dep_id
+                        ~branch
+                  | None -> ctx )
+                |> fun ctx ->
+                List.fold dep_agent.queue ~init:ctx ~f:(fun acc kind ->
+                    State.Patch_ctx.set_queued acc ~patch_id:dep_id ~kind
+                      ~value:true)
+              in
+              derive_display_status dep_ctx ~patch_id:dep_id ~current_op:dep_op
+                ~main_branch
+          | None -> Pending
+        in
+        (dep_id, dep_status))
+  in
   {
     patch_id;
     title;
@@ -547,7 +584,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     queue_len = List.length agent.queue;
     current_op;
     ci_failures = agent.ci_failure_count;
-    dep_count;
+    dep_ids;
     has_pr = agent.has_pr;
     has_conflict = agent.has_conflict;
     needs_intervention = agent.needs_intervention;
@@ -770,7 +807,13 @@ let detail_info_rows (pv : patch_view) ~width =
         (match pv.pr_number with
         | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
         | None -> if pv.has_pr then "yes" else "no");
-      Printf.sprintf "  Dependencies: %d" pv.dep_count;
+      Printf.sprintf "  Dependencies: %s"
+        (match pv.dep_ids with
+        | [] -> "none"
+        | ids ->
+            List.map ids ~f:(fun (id, st) ->
+                styled_status st (Patch_id.to_string id))
+            |> String.concat ~sep:", ");
       Printf.sprintf "  CI failures: %d" pv.ci_failures;
       Printf.sprintf "  Queue depth: %d" pv.queue_len;
       Printf.sprintf "  Conflict:    %s"
@@ -1097,10 +1140,18 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc (p : Patch.t) -> Map.set acc ~key:p.Patch.id ~data:p)
   in
+  let agents_by_id =
+    List.fold agents
+      ~init:(Map.empty (module Patch_id))
+      ~f:(fun acc (a : Patch_agent.t) -> Map.set acc ~key:a.patch_id ~data:a)
+  in
   let views =
     List.map agents ~f:(fun agent ->
         let main_branch = Orchestrator.main_branch orchestrator in
-        let pv = patch_view_of_agent agent ~patches_by_id ~graph ~main_branch in
+        let pv =
+          patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
+            ~agents_by_id
+        in
         let pid_str = Patch_id.to_string agent.patch_id in
         let filtered =
           List.filter activity ~f:(fun entry ->
