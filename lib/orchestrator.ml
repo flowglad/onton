@@ -189,23 +189,12 @@ let remove_agent t patch_id =
     agents = Map.remove t.agents patch_id;
   }
 
-let add_pending_comment t patch_id comment ~valid =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.add_pending_comment a comment ~valid)
-
 let send_human_message t patch_id message =
-  let comment =
-    Comment.
-      {
-        id = Comment_id.next_synthetic ();
-        thread_id = None;
-        body = message;
-        path = None;
-        line = None;
-      }
-  in
   let t = update_agent t patch_id ~f:Patch_agent.clear_needs_intervention in
-  let t = add_pending_comment t patch_id comment ~valid:true in
+  let t =
+    update_agent t patch_id ~f:(fun a ->
+        Patch_agent.add_human_message a message)
+  in
   enqueue t patch_id Operation_kind.Human
 
 let set_pr_number t patch_id pr_number =
@@ -247,10 +236,6 @@ let set_merge_ready t patch_id v =
 
 let clear_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
-
-let add_addressed_comment_id t patch_id id =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.add_addressed_comment_id a id)
 
 let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
 

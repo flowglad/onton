@@ -29,16 +29,6 @@ let () =
   let open QCheck2 in
   let pid0 = Patch_id.of_string "p" in
   let br0 = Branch.of_string "main" in
-  let c_valid =
-    Comment.
-      {
-        id = Comment_id.of_int 1;
-        thread_id = None;
-        body = "fix";
-        path = None;
-        line = None;
-      }
-  in
   let tests =
     [
       (* -- create -- *)
@@ -51,10 +41,9 @@ let () =
           && Option.is_none t.base_branch
           && t.ci_failure_count = 0
           && equal_session_fallback t.session_fallback Fresh_available
-          && List.is_empty t.pending_comments
-          && List.is_empty t.ci_checks
-          && Set.is_empty t.addressed_comment_ids
-          && (not t.mergeable) && (not t.merge_ready) && (not t.checks_passing)
+          && List.is_empty t.human_messages
+          && List.is_empty t.ci_checks && (not t.mergeable)
+          && (not t.merge_ready) && (not t.checks_passing)
           && not t.no_unresolved_comments);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
@@ -239,27 +228,6 @@ let () =
           let a = enqueue a Operation_kind.Merge_conflict in
           let a = respond a Operation_kind.Merge_conflict in
           not a.has_conflict);
-      (* -- respond Review_comments clears pending_comments -- *)
-      Test.make ~name:"respond Review_comments clears pending_comments" ~count:1
-        Gen.(pure (pid0, br0))
-        (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = add_pending_comment a c_valid ~valid:true in
-          let a = enqueue a Operation_kind.Review_comments in
-          let a = respond a Operation_kind.Review_comments in
-          List.is_empty a.pending_comments);
-      (* -- respond Review_comments sets changed with valid comment -- *)
-      Test.make ~name:"respond Review_comments sets changed with valid comment"
-        ~count:1
-        Gen.(pure (pid0, br0))
-        (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = add_pending_comment a c_valid ~valid:true in
-          let a = enqueue a Operation_kind.Review_comments in
-          let a = respond a Operation_kind.Review_comments in
-          a.changed);
       (* -- respond Review_comments always sets changed (lazy fetch) -- *)
       Test.make ~name:"respond Review_comments always sets changed (lazy fetch)"
         ~count:1
@@ -270,6 +238,36 @@ let () =
           let a = enqueue a Operation_kind.Review_comments in
           let a = respond a Operation_kind.Review_comments in
           a.changed);
+      (* -- add_human_message prepends to list -- *)
+      Test.make ~name:"add_human_message prepends to list"
+        Gen.(pair gen_pid (list_size (int_range 1 5) (pure "msg")))
+        (fun (pid, msgs) ->
+          let a = create pid in
+          let a =
+            List.fold msgs ~init:a ~f:(fun a m -> add_human_message a m)
+          in
+          List.length a.human_messages = List.length msgs);
+      (* -- respond Human clears human_messages -- *)
+      Test.make ~name:"respond Human clears human_messages" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+          let a = complete a in
+          let a = add_human_message a "hello" in
+          let a = enqueue a Operation_kind.Human in
+          let a = respond a Operation_kind.Human in
+          List.is_empty a.human_messages);
+      (* -- respond Review_comments does not clear human_messages -- *)
+      Test.make ~name:"respond Review_comments preserves human_messages"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+          let a = complete a in
+          let a = add_human_message a "hello" in
+          let a = enqueue a Operation_kind.Review_comments in
+          let a = respond a Operation_kind.Review_comments in
+          List.length a.human_messages = 1);
       (* -- 2 ci failures does NOT trigger needs_intervention (boundary) -- *)
       Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
         Gen.(pure (pid0, br0))
@@ -361,8 +359,8 @@ let () =
           let a = create pid in
           let a = set_pr_number a pr in
           Option.equal Pr_number.equal a.pr_number (Some pr));
-      (* -- start clears ci_checks and addressed_comment_ids -- *)
-      Test.make ~name:"start clears ci_checks and addressed_comment_ids"
+      (* -- start clears ci_checks -- *)
+      Test.make ~name:"start clears ci_checks"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = create pid in
@@ -377,9 +375,7 @@ let () =
                 started_at = None;
               }
           in
-          let cid = Comment_id.of_int 1 in
           let a = set_ci_checks a [ check ] in
-          let a = add_addressed_comment_id a cid in
           let a = complete a in
           let a = mark_merged a in
           let a =
@@ -388,14 +384,13 @@ let () =
               ~needs_intervention:false ~queue:[] ~satisfies:false
               ~changed:false ~has_conflict:false ~base_branch:None
               ~ci_failure_count:0 ~session_fallback:Fresh_available
-              ~pending_comments:[] ~ci_checks:a.ci_checks
-              ~addressed_comment_ids:a.addressed_comment_ids ~mergeable:false
+              ~human_messages:[] ~ci_checks:a.ci_checks ~mergeable:false
               ~merge_ready:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
               ~head_branch:None
           in
           let a = start a ~base_branch:br in
-          List.is_empty a.ci_checks && Set.is_empty a.addressed_comment_ids);
+          List.is_empty a.ci_checks);
       (* -- set_ci_checks stores checks -- *)
       Test.make ~name:"set_ci_checks stores checks" ~count:1
         Gen.(pure (pid0, br0))
@@ -413,23 +408,6 @@ let () =
           in
           let a = set_ci_checks a [ check ] in
           List.length a.ci_checks = 1);
-      (* -- add_addressed_comment_id is idempotent -- *)
-      Test.make ~name:"add_addressed_comment_id is idempotent"
-        Gen.(pair gen_pid (map Comment_id.of_int (int_range 1 100)))
-        (fun (pid, cid) ->
-          let a = create pid in
-          let a = add_addressed_comment_id a cid in
-          let a = add_addressed_comment_id a cid in
-          Set.length a.addressed_comment_ids = 1);
-      (* -- is_comment_addressed reflects add -- *)
-      Test.make ~name:"is_comment_addressed reflects add"
-        Gen.(pair gen_pid (map Comment_id.of_int (int_range 1 100)))
-        (fun (pid, cid) ->
-          let a = create pid in
-          let before = is_comment_addressed a cid in
-          let a = add_addressed_comment_id a cid in
-          let after = is_comment_addressed a cid in
-          (not before) && after);
       (* -- set_tried_fresh from Fresh_available -> Tried_fresh -- *)
       Test.make ~name:"set_tried_fresh from Fresh_available" gen_pid (fun pid ->
           let a = create pid in
@@ -475,9 +453,7 @@ let () =
               ~has_session:false ~busy:false ~merged:false
               ~needs_intervention:false ~queue:[] ~satisfies:true ~changed:false
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
-              ~session_fallback:Fresh_available ~pending_comments:[]
-              ~ci_checks:[]
-              ~addressed_comment_ids:(Set.empty (module Comment_id))
+              ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
               ~mergeable:false ~merge_ready:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
               ~head_branch:None

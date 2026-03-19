@@ -88,7 +88,7 @@ type patch_view = {
   has_pr : bool;
   has_conflict : bool;
   needs_intervention : bool;
-  pending_comments : int;
+  human_messages : int;
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;

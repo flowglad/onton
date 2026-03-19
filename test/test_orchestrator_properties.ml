@@ -380,6 +380,39 @@ let () =
         with _ -> false)
   in
 
+  (* ========== send_human_message properties ========== *)
+
+  (* send_human_message adds message, clears intervention, enqueues Human *)
+  let prop_send_human_message =
+    Test.make
+      ~name:"send_human_message: adds msg + clears intervention + enqueues"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch =
+                Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
+              in
+              (* Drive to needs_intervention *)
+              let orch = Orchestrator.set_session_failed orch pid in
+              let orch = Orchestrator.set_tried_fresh orch pid in
+              let orch = Orchestrator.complete orch pid in
+              let a = Orchestrator.agent orch pid in
+              let was_intervening = a.Patch_agent.needs_intervention in
+              let orch = Orchestrator.send_human_message orch pid "fix this" in
+              let a = Orchestrator.agent orch pid in
+              was_intervening
+              && (not a.Patch_agent.needs_intervention)
+              && List.length a.Patch_agent.human_messages = 1
+              && List.mem a.Patch_agent.queue Operation_kind.Human
+                   ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
   (* ========== apply_rebase_result properties ========== *)
 
   (* All outcomes set base_branch to new_base *)
@@ -516,7 +549,6 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
-                    new_comments = [];
                   }
               in
               let orch', _logs = Poll_applicator.apply orch pid poll in
@@ -547,7 +579,6 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
-                    new_comments = [];
                   }
               in
               let orch', _logs = Poll_applicator.apply orch pid poll in
@@ -579,7 +610,6 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
-                    new_comments = [];
                   }
               in
               let orch', _logs = Poll_applicator.apply orch pid poll in
@@ -615,7 +645,6 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
-                    new_comments = [];
                   }
               in
               let orch', _logs = Poll_applicator.apply orch pid poll in
@@ -623,7 +652,7 @@ let () =
         with _ -> false)
   in
 
-  (* New comments enqueue Review_comments but don't store pending_comments
+  (* New comments enqueue Review_comments
      (comments are fetched lazily at delivery time) *)
   let prop_poll_new_comments =
     Test.make ~name:"apply_poll_result: new comments added"
@@ -647,14 +676,12 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
-                    new_comments = [];
                   }
               in
               let orch', _logs = Poll_applicator.apply orch pid poll in
               let a = Orchestrator.agent orch' pid in
-              List.is_empty a.Patch_agent.pending_comments
-              && List.mem a.Patch_agent.queue Operation_kind.Review_comments
-                   ~equal:Operation_kind.equal
+              List.mem a.Patch_agent.queue Operation_kind.Review_comments
+                ~equal:Operation_kind.equal
         with _ -> false)
   in
 
@@ -685,5 +712,6 @@ let () =
       prop_poll_conflict_cleared;
       prop_poll_conflict_not_cleared_with_local_merge_conflict;
       prop_poll_new_comments;
+      prop_send_human_message;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

@@ -45,17 +45,6 @@ let on_ci_failure (a : Patch_agent.t) : ci_decision =
     Ci_already_queued
   else Enqueue_ci
 
-type comment_decision = { new_comments : Comment.t list; should_enqueue : bool }
-[@@deriving show, eq]
-
-let on_review_comments (a : Patch_agent.t) ~(comments : Comment.t list) :
-    comment_decision =
-  let new_comments =
-    List.filter comments ~f:(fun (c : Comment.t) ->
-        not (Patch_agent.is_comment_addressed a c.id))
-  in
-  { new_comments; should_enqueue = not (List.is_empty new_comments) }
-
 type human_decision =
   | Enqueue_human  (** Queue human feedback for processing. *)
   | Already_queued  (** Human feedback already in queue. *)

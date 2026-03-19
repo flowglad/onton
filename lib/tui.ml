@@ -489,7 +489,7 @@ type patch_view = {
   has_pr : bool;
   has_conflict : bool;
   needs_intervention : bool;
-  pending_comments : int;
+  human_messages : int;
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
@@ -551,7 +551,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     has_pr = agent.has_pr;
     has_conflict = agent.has_conflict;
     needs_intervention = agent.needs_intervention;
-    pending_comments = List.length agent.pending_comments;
+    human_messages = List.length agent.human_messages;
     ci_checks = agent.ci_checks;
     recent_stream = [];
     pr_number = agent.pr_number;
@@ -775,7 +775,7 @@ let detail_info_rows (pv : patch_view) ~width =
       Printf.sprintf "  Queue depth: %d" pv.queue_len;
       Printf.sprintf "  Conflict:    %s"
         (if pv.has_conflict then "yes" else "no");
-      Printf.sprintf "  Comments:    %d pending" pv.pending_comments;
+      Printf.sprintf "  Messages:    %d queued" pv.human_messages;
     ]
   in
   let op_line =

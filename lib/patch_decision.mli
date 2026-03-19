@@ -32,14 +32,6 @@ type ci_decision =
 val on_ci_failure : Patch_agent.t -> ci_decision
 (** Decide whether to enqueue a CI failure response or cap. *)
 
-type comment_decision = { new_comments : Comment.t list; should_enqueue : bool }
-[@@deriving show, eq]
-
-val on_review_comments :
-  Patch_agent.t -> comments:Comment.t list -> comment_decision
-(** Filter comments by addressed IDs. Returns new (unaddressed) comments and
-    whether to enqueue review feedback. *)
-
 type human_decision =
   | Enqueue_human  (** Queue human feedback for processing. *)
   | Already_queued  (** Human feedback already in queue. *)

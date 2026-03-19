@@ -286,7 +286,7 @@ let () =
         ("base_branch", `String "main");
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool true);
-        ("pending_comments", `List []);
+        ("human_messages", `List []);
         ("tried_fresh", `Bool false);
       ]
   in
@@ -313,7 +313,7 @@ let () =
         ("base_branch", `String "main");
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool false);
-        ("pending_comments", `List []);
+        ("human_messages", `List []);
         ("tried_fresh", `Bool true);
       ]
   in
@@ -340,7 +340,7 @@ let () =
         ("base_branch", `String "main");
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool true);
-        ("pending_comments", `List []);
+        ("human_messages", `List []);
         ("tried_fresh", `Bool true);
       ]
   in
@@ -367,7 +367,7 @@ let () =
         ("base_branch", `String "main");
         ("ci_failure_count", `Int 0);
         ("session_failed", `Bool false);
-        ("pending_comments", `List []);
+        ("human_messages", `List []);
         ("tried_fresh", `Bool false);
       ]
   in

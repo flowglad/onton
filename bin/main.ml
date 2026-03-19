@@ -1325,18 +1325,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                 log_event runtime ~patch_id
                   (Printf.sprintf "poll error: %s" (Github.show_error err))
             | Ok pr_state ->
-                let addressed_ids =
-                  Runtime.read runtime (fun snap ->
-                      match
-                        Orchestrator.find_agent snap.Runtime.orchestrator
-                          patch_id
-                      with
-                      | None -> Base.Set.empty (module Types.Comment_id)
-                      | Some a -> a.Patch_agent.addressed_comment_ids)
-                in
-                let poll_result =
-                  Poller.poll ~was_merged ~addressed_ids pr_state
-                in
+                let poll_result = Poller.poll ~was_merged pr_state in
                 (* PR was closed — re-discover the current open PR *)
                 if poll_result.Poller.closed then (
                   log_event runtime ~patch_id
@@ -1539,8 +1528,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
             Orchestrator.pending_actions orch
               ~patches:snap.Runtime.gameplan.Gameplan.patches
           in
-          (* Capture agent state BEFORE fire clears pending_comments.
-             Respond clears pending_comments as a postcondition, but the
+          (* Capture agent state BEFORE fire clears human_messages.
+             Respond clears human_messages as a postcondition, but the
              runner needs them to build the prompt. *)
           let agent_map =
             Base.List.filter_map actions ~f:(fun action ->
@@ -1747,7 +1736,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                           | _ -> ())
                       | Worktree.Conflict | Worktree.Error _ -> ()))
           | Orchestrator.Respond (patch_id, kind) ->
-              (* Use pre-fire agent state for pending_comments — fire/respond
+              (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)
               let pre_fire_agent =
                 Base.List.Assoc.find pre_fire_agents patch_id
@@ -1765,34 +1754,20 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                     if is_review then
                       match
                         Runtime.read runtime (fun snap ->
-                            let agent =
-                              Orchestrator.agent snap.Runtime.orchestrator
-                                patch_id
-                            in
-                            (agent.Patch_agent.pr_number, agent))
+                            (Orchestrator.agent snap.Runtime.orchestrator
+                               patch_id)
+                              .Patch_agent.pr_number)
                       with
-                      | Some pr_num, agent -> (
+                      | Some pr_num -> (
                           log_event runtime ~patch_id
                             "fetching fresh review comments from GitHub";
-                          let source =
-                            Base.Option.value pre_fire_agent ~default:agent
-                          in
                           match Github.pr_state ~net github pr_num with
-                          | Ok pr_state ->
-                              let addressed =
-                                source.Patch_agent.addressed_comment_ids
-                              in
-                              Base.List.filter pr_state.Github.Pr_state.comments
-                                ~f:(fun (c : Comment.t) ->
-                                  not (Base.Set.mem addressed c.Comment.id))
+                          | Ok pr_state -> pr_state.Github.Pr_state.comments
                           | Error _err ->
                               log_event runtime ~patch_id
-                                "failed to fetch fresh comments, falling back \
-                                 to pending";
-                              Base.List.map source.Patch_agent.pending_comments
-                                ~f:(fun (pc : Patch_agent.pending_comment) ->
-                                  pc.Patch_agent.comment))
-                      | None, _ -> []
+                                "failed to fetch fresh comments";
+                              [])
+                      | None -> []
                     else []
                   in
                   with_busy_guard ~patch_id (fun () ->
@@ -1822,30 +1797,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               let source_agent =
                                 Base.Option.value pre_fire_agent ~default:agent
                               in
-                              let pending_comments =
-                                if is_review then prefetched_comments
-                                else
-                                  Base.List.map
-                                    source_agent.Patch_agent.pending_comments
-                                    ~f:(fun
-                                        (pc : Patch_agent.pending_comment) ->
-                                      pc.Patch_agent.comment)
-                              in
                               (* Skip empty deliveries — review/human with
-                                 no comments means they were already handled
-                                 or resolved externally. *)
-                              let is_comment_op =
-                                is_review
-                                || Operation_kind.equal kind
-                                     Operation_kind.Human
+                                 nothing to deliver means they were already
+                                 handled or resolved externally. *)
+                              let is_empty_delivery =
+                                if is_review then
+                                  Base.List.is_empty prefetched_comments
+                                else if
+                                  Operation_kind.equal kind Operation_kind.Human
+                                then
+                                  Base.List.is_empty
+                                    source_agent.Patch_agent.human_messages
+                                else false
                               in
-                              if
-                                is_comment_op
-                                && Base.List.is_empty pending_comments
-                              then (
+                              if is_empty_delivery then (
                                 log_event runtime ~patch_id
                                   (Printf.sprintf
-                                     "%s: no pending comments, skipping"
+                                     "%s: nothing to deliver, skipping"
                                      (Operation_kind.to_label kind));
                                 Runtime.update_orchestrator runtime (fun orch ->
                                     Orchestrator.complete orch patch_id);
@@ -1854,12 +1822,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 let pr_number = agent.Patch_agent.pr_number in
                                 log_event runtime ~patch_id
                                   (match kind with
-                                  | Operation_kind.Review_comments
-                                  | Operation_kind.Human ->
+                                  | Operation_kind.Review_comments ->
                                       Printf.sprintf
                                         "delivering %s (%d comments)"
                                         (Operation_kind.to_label kind)
-                                        (Base.List.length pending_comments)
+                                        (Base.List.length prefetched_comments)
+                                  | Operation_kind.Human ->
+                                      Printf.sprintf
+                                        "delivering %s (%d messages)"
+                                        (Operation_kind.to_label kind)
+                                        (Base.List.length
+                                           source_agent
+                                             .Patch_agent.human_messages)
                                   | Operation_kind.Ci | Operation_kind.Rebase
                                   | Operation_kind.Merge_conflict ->
                                       Printf.sprintf "delivering %s"
@@ -1881,7 +1855,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                             ~project_name ?pr_number ())
                                   | Operation_kind.Review_comments ->
                                       Prompt.render_review_prompt ~project_name
-                                        ?pr_number pending_comments
+                                        ?pr_number prefetched_comments
                                   | Operation_kind.Merge_conflict ->
                                       Prompt.render_merge_conflict_prompt
                                         ~project_name ?pr_number
@@ -1889,9 +1863,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   | Operation_kind.Human ->
                                       Prompt.render_human_message_prompt
                                         ~project_name
-                                        (Base.List.map pending_comments
-                                           ~f:(fun (c : Comment.t) ->
-                                             c.Comment.body))
+                                        (Base.List.rev
+                                           source_agent
+                                             .Patch_agent.human_messages)
                                   | Operation_kind.Rebase ->
                                       (* Invariant: Rebase is never routed
                                        through Respond *)
@@ -1922,30 +1896,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    (Patch_id.to_string patch_id))
                               ()
                       | `Ok ->
-                          (* Mark human message IDs as addressed so the
-                             poller doesn't re-enqueue them.  Review comments
-                             don't need this — they're fetched lazily from
-                             GitHub which only returns unresolved threads;
-                             once the agent resolves a thread it disappears
-                             from the next poll. *)
-                          let comment_ids =
-                            if is_review then []
-                            else
-                              match pre_fire_agent with
-                              | Some a ->
-                                  Base.List.map a.Patch_agent.pending_comments
-                                    ~f:(fun
-                                        (pc : Patch_agent.pending_comment) ->
-                                      pc.Patch_agent.comment.Comment.id)
-                              | None -> []
-                          in
                           Runtime.update_orchestrator runtime (fun orch ->
-                              let orch =
-                                Base.List.fold comment_ids ~init:orch
-                                  ~f:(fun orch cid ->
-                                    Orchestrator.add_addressed_comment_id orch
-                                      patch_id cid)
-                              in
                               let orch =
                                 if
                                   Operation_kind.equal kind

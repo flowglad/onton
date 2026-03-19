@@ -35,38 +35,6 @@ let try_of_yojson f json =
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed json: %s" msg)
 
-(* ---------- Comment ---------- *)
-
-(* comment_of_yojson is hand-rolled: missing "id" fields get a synthetic ID. *)
-let comment_of_yojson json =
-  try
-    let open Yojson.Safe.Util in
-    Ok
-      {
-        Comment.id =
-          (match member "id" json |> to_int_option with
-          | Some n -> Comment_id.of_int n
-          | None -> Comment_id.next_synthetic ());
-        thread_id = member "thread_id" json |> to_string_option;
-        body = member "body" json |> to_string;
-        path = member "path" json |> to_string_option;
-        line = member "line" json |> to_int_option;
-      }
-  with Yojson.Safe.Util.Type_error (msg, _) ->
-    Error (Printf.sprintf "malformed comment: %s" msg)
-
-(* ---------- pending_comment ---------- *)
-
-let pending_comment_of_yojson json =
-  try
-    Result.map
-      (comment_of_yojson (Yojson.Safe.Util.member "comment" json))
-      ~f:(fun comment ->
-        Patch_agent.restore_pending_comment ~comment
-          ~valid:(bool_member "valid" json))
-  with Yojson.Safe.Util.Type_error (msg, _) ->
-    Error (Printf.sprintf "malformed pending_comment: %s" msg)
-
 (* ---------- Patch_agent ---------- *)
 
 let session_fallback_of_legacy ~session_failed ~tried_fresh =
@@ -100,15 +68,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("ci_failure_count", `Int a.ci_failure_count);
       ( "session_fallback",
         Patch_agent.yojson_of_session_fallback a.session_fallback );
-      ( "pending_comments",
-        `List
-          (List.map a.pending_comments ~f:Patch_agent.yojson_of_pending_comment)
-      );
+      ( "human_messages",
+        `List (List.map a.human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
-      ( "addressed_comment_ids",
-        `List
-          (Set.to_list a.addressed_comment_ids
-          |> List.map ~f:Comment_id.yojson_of_t) );
       ("mergeable", `Bool a.mergeable);
       ("merge_ready", `Bool a.merge_ready);
       ("checks_passing", `Bool a.checks_passing);
@@ -137,11 +99,11 @@ let patch_agent_of_yojson json =
       (List.map (list_member "queue" json) ~f:(fun j ->
            try_of_yojson Operation_kind.t_of_yojson j))
   in
-  let* pending_comments =
-    result_all
-      (List.map
-         (list_member "pending_comments" json)
-         ~f:pending_comment_of_yojson)
+  let human_messages =
+    match Yojson.Safe.Util.member "human_messages" json with
+    | `List items ->
+        List.filter_map items ~f:(fun j -> Yojson.Safe.Util.to_string_option j)
+    | _ -> []
   in
   let* session_fallback =
     match json with
@@ -166,16 +128,6 @@ let patch_agent_of_yojson json =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
-  let* addressed_raw = list_member_opt "addressed_comment_ids" json in
-  let addressed_raw = Option.value addressed_raw ~default:[] in
-  let* addressed_comment_ids_list =
-    result_all
-      (List.map addressed_raw ~f:(fun j ->
-           try_of_yojson Comment_id.t_of_yojson j))
-  in
-  let addressed_comment_ids =
-    Set.of_list (module Comment_id) addressed_comment_ids_list
-  in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
@@ -193,7 +145,7 @@ let patch_agent_of_yojson json =
        ~base_branch:
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
-       ~session_fallback ~pending_comments ~ci_checks ~addressed_comment_ids
+       ~session_fallback ~human_messages ~ci_checks
        ~mergeable:
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
@@ -401,21 +353,5 @@ let load ~path ~gameplan =
     in
     let json = Yojson.Safe.from_string content in
     let result = snapshot_of_yojson ~gameplan json in
-    (match result with
-    | Ok snap ->
-        (* NOTE: seeds only from pending_comments. If Comment_id.t is ever
-           stored outside of pending_comments (e.g. a processed-comments log),
-           those IDs must be included here to prevent synthetic reuse. *)
-        let ids =
-          Orchestrator.all_agents snap.orchestrator
-          |> List.concat_map ~f:(fun (a : Patch_agent.t) ->
-              let pc_ids =
-                List.map a.pending_comments ~f:(fun pc -> pc.comment.Comment.id)
-              in
-              let addressed_ids = Set.to_list a.addressed_comment_ids in
-              pc_ids @ addressed_ids)
-        in
-        Comment_id.seed_synthetic_counter ids
-    | Error _ -> ());
     result
   with exn -> Error (Stdlib.Printexc.to_string exn)

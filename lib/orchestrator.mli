@@ -44,11 +44,10 @@ val complete : t -> Patch_id.t -> t
 val enqueue : t -> Patch_id.t -> Operation_kind.t -> t
 val mark_merged : t -> Patch_id.t -> t
 val remove_agent : t -> Patch_id.t -> t
-val add_pending_comment : t -> Patch_id.t -> Comment.t -> valid:bool -> t
 
 val send_human_message : t -> Patch_id.t -> string -> t
-(** Convenience: add a human message as a pending comment and enqueue
-    [Operation_kind.Human] for the given patch. *)
+(** Append a human message to the agent's [human_messages] queue, clear
+    [needs_intervention], and enqueue [Operation_kind.Human]. *)
 
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val set_session_failed : t -> Patch_id.t -> t
@@ -63,7 +62,6 @@ val increment_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
-val add_addressed_comment_id : t -> Patch_id.t -> Types.Comment_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
 val set_worktree_path : t -> Patch_id.t -> string -> t
 val set_head_branch : t -> Patch_id.t -> Branch.t -> t

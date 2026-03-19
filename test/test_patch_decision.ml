@@ -15,16 +15,6 @@ let gen_branch =
     map Branch.of_string
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
-let gen_comment_id = QCheck2.Gen.(map Comment_id.of_int (int_range 1 10000))
-
-let gen_comment =
-  QCheck2.Gen.(
-    map2
-      (fun id body ->
-        Comment.{ id; thread_id = None; body; path = None; line = None })
-      gen_comment_id
-      (string_size ~gen:(char_range 'a' 'z') (int_range 1 30)))
-
 let feedback_ops = Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
@@ -133,72 +123,6 @@ let () =
           let a = with_pr pid br in
           let a = enqueue a Operation_kind.Ci in
           equal_ci_decision (on_ci_failure a) Ci_already_queued);
-      (* ---- on_review_comments: filters addressed ---- *)
-      Test.make ~name:"on_review_comments: filters addressed comments"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          let c1 =
-            Comment.
-              {
-                id = Comment_id.of_int 100;
-                body = "fix";
-                thread_id = None;
-                path = None;
-                line = None;
-              }
-          in
-          let c2 =
-            Comment.
-              {
-                id = Comment_id.of_int 200;
-                body = "nit";
-                thread_id = None;
-                path = None;
-                line = None;
-              }
-          in
-          let a = add_addressed_comment_id a (Comment_id.of_int 100) in
-          let result = on_review_comments a ~comments:[ c1; c2 ] in
-          result.should_enqueue
-          &&
-          match result.new_comments with
-          | [ c ] -> Comment_id.equal c.Comment.id (Comment_id.of_int 200)
-          | _ -> false);
-      (* ---- on_review_comments: all addressed -> should_enqueue=false ---- *)
-      Test.make ~name:"on_review_comments: all addressed -> no enqueue"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          let c1 =
-            Comment.
-              {
-                id = Comment_id.of_int 100;
-                body = "fix";
-                thread_id = None;
-                path = None;
-                line = None;
-              }
-          in
-          let a = add_addressed_comment_id a (Comment_id.of_int 100) in
-          let result = on_review_comments a ~comments:[ c1 ] in
-          List.is_empty result.new_comments && not result.should_enqueue);
-      (* ---- on_review_comments: empty -> should_enqueue=false ---- *)
-      Test.make ~name:"on_review_comments: empty input -> no enqueue"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          let result = on_review_comments a ~comments:[] in
-          List.is_empty result.new_comments && not result.should_enqueue);
-      (* ---- on_review_comments: property — new_comments ⊆ input ---- *)
-      Test.make ~name:"on_review_comments: new_comments subset of input"
-        Gen.(triple gen_pid gen_branch (list_size (int_range 0 10) gen_comment))
-        (fun (pid, br, comments) ->
-          let a = with_pr pid br in
-          let result = on_review_comments a ~comments in
-          List.for_all result.new_comments ~f:(fun c ->
-              List.exists comments ~f:(fun c2 ->
-                  Comment_id.equal c.Comment.id c2.Comment.id)));
       (* ---- on_human_message: fresh queue -> Enqueue_human ---- *)
       Test.make ~name:"on_human_message: no Human in queue -> Enqueue_human"
         Gen.(pair gen_pid gen_branch)

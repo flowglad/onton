@@ -1,10 +1,6 @@
 open Base
-open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 open Types
 open Operation_kind
-
-type pending_comment = { comment : Comment.t; valid : bool }
-[@@deriving show, eq, sexp_of, compare, yojson]
 
 type session_fallback = Fresh_available | Tried_fresh | Given_up
 [@@deriving show, eq, sexp_of, compare, yojson]
@@ -24,12 +20,8 @@ type t = {
   base_branch : Branch.t option;
   ci_failure_count : int;
   session_fallback : session_fallback;
-  pending_comments : pending_comment list;
+  human_messages : string list;
   ci_checks : Ci_check.t list;
-  addressed_comment_ids : Set.M(Comment_id).t;
-      [@equal Set.equal]
-      [@compare Set.compare_direct]
-      [@sexp_of fun s -> Set.sexp_of_m__t (module Comment_id) s]
   mergeable : bool;
   merge_ready : bool;
   checks_passing : bool;
@@ -59,9 +51,8 @@ let create patch_id =
     base_branch = None;
     ci_failure_count = 0;
     session_fallback = Fresh_available;
-    pending_comments = [];
+    human_messages = [];
     ci_checks = [];
-    addressed_comment_ids = Set.empty (module Comment_id);
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
@@ -87,9 +78,8 @@ let create_adhoc ~patch_id ~pr_number =
     base_branch = None;
     ci_failure_count = 0;
     session_fallback = Fresh_available;
-    pending_comments = [];
+    human_messages = [];
     ci_checks = [];
-    addressed_comment_ids = Set.empty (module Comment_id);
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
@@ -109,44 +99,8 @@ let enqueue t k =
 
 let mark_merged t = { t with merged = true }
 
-let add_pending_comment t comment ~valid =
-  let is_synthetic id = Comment_id.to_int id < 0 in
-  let is_content_match (a : Comment.t) (b : Comment.t) =
-    String.equal a.body b.body
-    && Option.equal String.equal a.path b.path
-    && Option.equal Int.equal a.line b.line
-  in
-  (* Migration: if a pending comment has a synthetic ID and the incoming
-     comment has a real ID with matching content, upgrade the synthetic entry's
-     ID in-place so subsequent polls match by ID directly.
-     Assumption: the GraphQL query only fetches review-thread comments, which
-     always have path/line set. If PR-level comments (path=None, line=None)
-     are ever fetched, this could falsely match a human message. *)
-  let migration_matched = ref false in
-  let pending_comments =
-    List.map t.pending_comments ~f:(fun pc ->
-        if
-          is_synthetic pc.comment.Comment.id
-          && (not (is_synthetic comment.Comment.id))
-          && is_content_match pc.comment comment
-        then (
-          migration_matched := true;
-          {
-            comment = { pc.comment with Comment.id = comment.Comment.id };
-            valid;
-          })
-        else pc)
-  in
-  let t = { t with pending_comments } in
-  let already_present =
-    !migration_matched
-    || List.exists t.pending_comments ~f:(fun pc ->
-        if is_synthetic pc.comment.Comment.id then
-          is_content_match pc.comment comment
-        else Comment_id.equal pc.comment.Comment.id comment.Comment.id)
-  in
-  if already_present then t
-  else { t with pending_comments = { comment; valid } :: t.pending_comments }
+let add_human_message t msg =
+  { t with human_messages = msg :: t.human_messages }
 
 let set_session_failed t =
   match t.session_fallback with
@@ -196,11 +150,6 @@ let increment_ci_failure_count t =
 
 let set_ci_checks t checks = { t with ci_checks = checks }
 
-let add_addressed_comment_id t id =
-  { t with addressed_comment_ids = Set.add t.addressed_comment_ids id }
-
-let is_comment_addressed t id = Set.mem t.addressed_comment_ids id
-
 let clear_needs_intervention t =
   { t with needs_intervention = false; session_fallback = Fresh_available }
 
@@ -218,9 +167,9 @@ let reset_busy t =
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
-    ~ci_failure_count ~session_fallback ~pending_comments ~ci_checks
-    ~addressed_comment_ids ~mergeable ~merge_ready ~checks_passing
-    ~no_unresolved_comments ~worktree_path ~head_branch =
+    ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~mergeable
+    ~merge_ready ~checks_passing ~no_unresolved_comments ~worktree_path
+    ~head_branch =
   {
     patch_id;
     has_pr;
@@ -236,9 +185,8 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     base_branch;
     ci_failure_count;
     session_fallback;
-    pending_comments;
+    human_messages;
     ci_checks;
-    addressed_comment_ids;
     mergeable;
     merge_ready;
     checks_passing;
@@ -247,8 +195,6 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     worktree_path;
     head_branch;
   }
-
-let restore_pending_comment ~comment ~valid = { comment; valid }
 
 let set_pr_number t pr_number =
   { t with pr_number = Some pr_number; has_pr = true }
@@ -265,7 +211,6 @@ let start t ~base_branch =
     base_branch = Some base_branch;
     session_fallback = Fresh_available;
     ci_checks = [];
-    addressed_comment_ids = Set.empty (module Comment_id);
   }
 
 let rebase t ~base_branch =
@@ -319,9 +264,7 @@ let respond t k =
   let satisfies = if is_human then false else t.satisfies in
   let changed = if is_ci || is_review then true else t.changed in
   let has_conflict = if is_merge_conflict then false else t.has_conflict in
-  let pending_comments =
-    if is_review || is_human then [] else t.pending_comments
-  in
+  let human_messages = if is_human then [] else t.human_messages in
   {
     t with
     has_session = true;
@@ -331,7 +274,7 @@ let respond t k =
     satisfies;
     changed;
     has_conflict;
-    pending_comments;
+    human_messages;
     mergeable = false;
     merge_ready = false;
     checks_passing = false;

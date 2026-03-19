@@ -207,7 +207,6 @@ let gen_poller =
             merge_ready;
             checks_passing;
             ci_checks;
-            new_comments = [];
           })
       gen_operation_kind_queue (triple bool bool bool) (pair bool bool) bool
       (list_small gen_ci_check))
@@ -235,20 +234,20 @@ let gen_patch_agent_with_queue =
         List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
       gen_patch_id gen_branch gen_operation_kind_queue)
 
-let gen_patch_agent_with_comments =
+let gen_patch_agent_with_messages =
   QCheck2.Gen.(
     map4
-      (fun pid branch comments ops ->
+      (fun pid branch messages ops ->
         let a = Onton.Patch_agent.create pid in
         let a = Onton.Patch_agent.start a ~base_branch:branch in
         let a =
-          List.fold comments ~init:a ~f:(fun a (comment, valid) ->
-              Onton.Patch_agent.add_pending_comment a comment ~valid)
+          List.fold messages ~init:a ~f:(fun a msg ->
+              Onton.Patch_agent.add_human_message a msg)
         in
         let a = Onton.Patch_agent.complete a in
         List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
       gen_patch_id gen_branch
-      (list_small (pair gen_comment bool))
+      (list_small (string_size ~gen:printable (int_range 1 80)))
       gen_operation_kind_queue)
 
 let gen_session_fallback =
@@ -259,13 +258,10 @@ let gen_patch_agent_fully_populated =
   QCheck2.Gen.(
     let* pid = gen_patch_id in
     let* branch = gen_branch in
-    let* comments = list_small (pair gen_comment bool) in
+    let* messages = list_small (string_size ~gen:printable (int_range 1 80)) in
     let* ops = gen_operation_kind_queue in
     let* ci_checks = list_small gen_ci_check in
     let* fallback = gen_session_fallback in
-    let* addressed_ids =
-      list_small (map Comment_id.of_int (int_range 1 100_000))
-    in
     let* pr_number = option gen_pr_number in
     let* mergeable = bool in
     let* merge_ready = bool in
@@ -274,8 +270,8 @@ let gen_patch_agent_fully_populated =
     let a = Onton.Patch_agent.create pid in
     let a = Onton.Patch_agent.start a ~base_branch:branch in
     let a =
-      List.fold comments ~init:a ~f:(fun a (comment, valid) ->
-          Onton.Patch_agent.add_pending_comment a comment ~valid)
+      List.fold messages ~init:a ~f:(fun a msg ->
+          Onton.Patch_agent.add_human_message a msg)
     in
     let a =
       match fallback with
@@ -286,10 +282,6 @@ let gen_patch_agent_fully_populated =
     let a = Onton.Patch_agent.complete a in
     let a = List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue in
     let a = Onton.Patch_agent.set_ci_checks a ci_checks in
-    let a =
-      List.fold addressed_ids ~init:a
-        ~f:Onton.Patch_agent.add_addressed_comment_id
-    in
     let a =
       match pr_number with
       | Some n -> Onton.Patch_agent.set_pr_number a n

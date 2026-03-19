@@ -10,16 +10,11 @@ type t = {
   merge_ready : bool;
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
-  new_comments : Comment.t list;
 }
 [@@deriving show, eq]
 
-let poll ~was_merged ~addressed_ids (pr : Github.Pr_state.t) =
-  let new_comments =
-    List.filter pr.comments ~f:(fun (c : Comment.t) ->
-        not (Set.mem addressed_ids c.id))
-  in
-  let unresolved = not (List.is_empty new_comments) in
+let poll ~was_merged (pr : Github.Pr_state.t) =
+  let unresolved = not (List.is_empty pr.comments) in
   let queue =
     let acc = [] in
     (* world-has-comment c p and ~resolved c -> queue' p review-comments *)
@@ -44,5 +39,4 @@ let poll ~was_merged ~addressed_ids (pr : Github.Pr_state.t) =
     merge_ready = Github.merge_ready pr;
     checks_passing = Github.checks_passing pr;
     ci_checks = pr.Github.Pr_state.ci_checks;
-    new_comments;
   }

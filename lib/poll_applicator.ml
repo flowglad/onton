@@ -73,8 +73,4 @@ let apply t patch_id (poll_result : Poller.t) =
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
-  (* Review comments are fetched lazily at delivery time — we only enqueue the
-     operation here.  The runner will query GitHub for fresh unaddressed comments
-     when the agent is actually ready, avoiding stale data. *)
-  let _ = poll_result.new_comments in
   (t, List.rev !logs)

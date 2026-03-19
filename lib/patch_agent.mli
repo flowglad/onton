@@ -6,9 +6,6 @@ open Base
     [t] is private — external code can inspect fields but must use smart
     constructors that enforce spec preconditions. *)
 
-type pending_comment = private { comment : Types.Comment.t; valid : bool }
-[@@deriving show, eq, sexp_of, compare, yojson]
-
 type session_fallback = Fresh_available | Tried_fresh | Given_up
 [@@deriving show, eq, sexp_of, compare, yojson]
 
@@ -27,9 +24,8 @@ type t = private {
   base_branch : Types.Branch.t option;
   ci_failure_count : int;
   session_fallback : session_fallback;
-  pending_comments : pending_comment list;
+  human_messages : string list;
   ci_checks : Types.Ci_check.t list;
-  addressed_comment_ids : Set.M(Types.Comment_id).t;
   mergeable : bool;
   merge_ready : bool;
   checks_passing : bool;
@@ -83,8 +79,8 @@ val enqueue : t -> Types.Operation_kind.t -> t
 val mark_merged : t -> t
 (** Mark the patch as merged. *)
 
-val add_pending_comment : t -> Types.Comment.t -> valid:bool -> t
-(** Add a pending review comment. *)
+val add_human_message : t -> string -> t
+(** Add a human message to the pending list. *)
 
 val set_session_failed : t -> t
 (** Mark session fallback as [Given_up]. *)
@@ -149,12 +145,6 @@ val clear_needs_intervention : t -> t
 val set_ci_checks : t -> Types.Ci_check.t list -> t
 (** Replace the stored CI check details. *)
 
-val add_addressed_comment_id : t -> Types.Comment_id.t -> t
-(** Record a comment ID as addressed. *)
-
-val is_comment_addressed : t -> Types.Comment_id.t -> bool
-(** Check whether a comment has been addressed. *)
-
 val reset_busy : t -> t
 (** Reset a stale [busy] flag from a crashed session. If [busy], clears it and
     re-evaluates [needs_intervention] using the same logic as [complete]
@@ -187,9 +177,8 @@ val restore :
   base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
   session_fallback:session_fallback ->
-  pending_comments:pending_comment list ->
+  human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
-  addressed_comment_ids:Set.M(Types.Comment_id).t ->
   mergeable:bool ->
   merge_ready:bool ->
   checks_passing:bool ->
@@ -199,7 +188,3 @@ val restore :
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)
-
-val restore_pending_comment :
-  comment:Types.Comment.t -> valid:bool -> pending_comment
-(** Reconstruct a pending comment from persisted values. *)
