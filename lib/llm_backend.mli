@@ -15,6 +15,7 @@ type result = {
 [@@deriving show, eq, sexp_of, compare]
 
 type t = {
+  name : string;
   run_streaming :
     cwd:Eio.Fs.dir_ty Eio.Path.t ->
     patch_id:Types.Patch_id.t ->

@@ -109,6 +109,7 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
 
 let create ~process_mgr : Llm_backend.t =
   {
+    name = "Codex";
     run_streaming =
       (fun ~cwd ~patch_id ~prompt ~continue ~on_event ->
         run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event);

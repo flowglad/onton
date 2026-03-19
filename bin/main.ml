@@ -564,7 +564,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
             match classify ~continue outcome with
             | Process_error msg ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf "Claude process error: %s" msg);
+                  (Printf.sprintf "%s process error: %s"
+                     backend.Llm_backend.name msg);
                 (Orchestrator.Session_process_error { is_fresh }, `Failed)
             | No_session_to_resume ->
                 log_event runtime ~patch_id
@@ -574,23 +575,23 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
             | Success { stream_errors } ->
                 if String.length stream_errors > 0 then
                   log_event runtime ~patch_id
-                    (Printf.sprintf "Claude exited 0 but had stream errors: %s"
+                    (Printf.sprintf "%s exited 0 but had stream errors: %s"
+                       backend.Llm_backend.name
                        (truncate stream_errors 500));
                 let text_len = Buffer.length text_buf in
                 let tools = !tool_count in
                 if tools = 0 && text_len < 200 then
                   log_event runtime ~patch_id
                     (Printf.sprintf
-                       "Claude exited 0 with no tool use and %d chars of text: \
-                        %s"
-                       text_len
+                       "%s exited 0 with no tool use and %d chars of text: %s"
+                       backend.Llm_backend.name text_len
                        (truncate (String.trim (Buffer.contents text_buf)) 200));
                 (Orchestrator.Session_ok, `Ok)
             | Session_failed { exit_code; detail } ->
                 log_event runtime ~patch_id
                   (Printf.sprintf
-                     "Claude exited with code %d, marking session failed: %s"
-                     exit_code detail);
+                     "%s exited with code %d, marking session failed: %s"
+                     backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
           Runtime.update_orchestrator runtime (fun orch ->
