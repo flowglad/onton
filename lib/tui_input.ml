@@ -66,8 +66,6 @@ let apply_move ~count ~selected (cmd : command) =
     in
     clamp next
 
-let equal_command_option = Option.equal equal_command
-let _ = equal_command_option
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
 let%test "ctrl-c maps to Quit" = equal_command (of_key (Ctrl 'c')) Quit
 let%test "r maps to Refresh" = equal_command (of_key (Char 'r')) Refresh

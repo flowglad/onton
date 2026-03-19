@@ -728,6 +728,14 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     ~show_help ~status_msg ~sorted_patch_ids ~input_mode ~prompt_line
     ~patches_start_row ~patches_scroll_offset ~patches_visible_count =
   let buf = Buffer.create 64 in
+  let selected_pid () =
+    let pids = !sorted_patch_ids in
+    let count = Base.List.length pids in
+    if count = 0 then None
+    else
+      let idx = Base.Int.max 0 (Base.Int.min !list_selected (count - 1)) in
+      Some (Base.List.nth_exn pids idx)
+  in
   let sync_input () =
     match !input_mode with
     | Tui_input.Normal -> prompt_line := None
@@ -830,28 +838,17 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               | Tui_input.Prompt_worktree -> (
                   if not (Base.String.is_empty line) then
                     let path = line in
-                    let info_opt =
-                      let pids = !sorted_patch_ids in
-                      let count = Base.List.length pids in
-                      if count = 0 then None
-                      else
-                        let idx =
-                          Base.Int.max 0
-                            (Base.Int.min !list_selected (count - 1))
-                        in
-                        let pid = Base.List.nth_exn pids idx in
-                        let busy =
-                          Runtime.read runtime (fun snap ->
-                              (Orchestrator.agent snap.Runtime.orchestrator pid)
-                                .Patch_agent.busy)
-                        in
-                        Some (pid, busy)
-                    in
-                    match info_opt with
+                    match selected_pid () with
                     | None ->
                         log_event runtime
                           "Cannot add worktree: no selectable patch"
-                    | Some (patch_id, busy) -> (
+                    | Some patch_id -> (
+                        let busy =
+                          Runtime.read runtime (fun snap ->
+                              (Orchestrator.agent snap.Runtime.orchestrator
+                                 patch_id)
+                                .Patch_agent.busy)
+                        in
                         if busy then
                           log_event runtime ~patch_id
                             "Warning: patch is currently running — changing \
@@ -1183,47 +1180,37 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               | Tui_input.Remove_patch ->
                   (match !view_mode with
                   | Tui.List_view -> (
-                      let info_opt =
-                        let pids = !sorted_patch_ids in
-                        let count = Base.List.length pids in
-                        if count = 0 then None
-                        else
-                          let idx =
-                            Base.Int.max 0
-                              (Base.Int.min !list_selected (count - 1))
-                          in
-                          let pid = Base.List.nth_exn pids idx in
-                          Runtime.read runtime (fun snap ->
-                              let agent =
-                                Orchestrator.agent snap.Runtime.orchestrator pid
-                              in
-                              let in_gameplan =
-                                Base.List.exists
-                                  snap.Runtime.gameplan.Gameplan.patches
-                                  ~f:(fun (p : Patch.t) ->
-                                    Patch_id.equal p.Patch.id pid)
-                              in
-                              Some
-                                ( agent.Patch_agent.patch_id,
-                                  agent.Patch_agent.busy,
-                                  in_gameplan ))
-                      in
-                      match info_opt with
+                      match selected_pid () with
                       | None ->
                           log_event runtime
                             "Cannot remove patch: no selectable patch"
-                      | Some (patch_id, _busy, true) ->
-                          log_event runtime ~patch_id
-                            "Cannot remove gameplan patch"
-                      | Some (patch_id, busy, false) ->
-                          if busy then
+                      | Some patch_id ->
+                          let busy, in_gameplan =
+                            Runtime.read runtime (fun snap ->
+                                let agent =
+                                  Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id
+                                in
+                                let in_gp =
+                                  Base.List.exists
+                                    snap.Runtime.gameplan.Gameplan.patches
+                                    ~f:(fun (p : Patch.t) ->
+                                      Patch_id.equal p.Patch.id patch_id)
+                                in
+                                (agent.Patch_agent.busy, in_gp))
+                          in
+                          if in_gameplan then
                             log_event runtime ~patch_id
-                              "Warning: patch is currently running — it may \
-                               create a GitHub PR before stopping";
-                          Runtime.update_orchestrator runtime (fun orch ->
-                              Orchestrator.remove_agent orch patch_id);
-                          Pr_registry.unregister pr_registry ~patch_id;
-                          log_event runtime ~patch_id "Ad-hoc patch removed")
+                              "Cannot remove gameplan patch"
+                          else (
+                            if busy then
+                              log_event runtime ~patch_id
+                                "Warning: patch is currently running — it may \
+                                 create a GitHub PR before stopping";
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.remove_agent orch patch_id);
+                            Pr_registry.unregister pr_registry ~patch_id;
+                            log_event runtime ~patch_id "Ad-hoc patch removed"))
                   | Tui.Detail_view _ | Tui.Timeline_view -> ());
                   loop ()
               | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
@@ -1768,7 +1755,46 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
               in
               Some
                 (fun () ->
-                  let delivered_comments = ref [] in
+                  (* For Review_comments, fetch fresh unaddressed comments
+                     from GitHub before acquiring a Claude slot to avoid
+                     blocking concurrency on GitHub API I/O. *)
+                  let is_review =
+                    Operation_kind.equal kind Operation_kind.Review_comments
+                  in
+                  let prefetched_comments =
+                    if is_review then
+                      match
+                        Runtime.read runtime (fun snap ->
+                            let agent =
+                              Orchestrator.agent snap.Runtime.orchestrator
+                                patch_id
+                            in
+                            (agent.Patch_agent.pr_number, agent))
+                      with
+                      | Some pr_num, agent -> (
+                          log_event runtime ~patch_id
+                            "fetching fresh review comments from GitHub";
+                          let source =
+                            Base.Option.value pre_fire_agent ~default:agent
+                          in
+                          match Github.pr_state ~net github pr_num with
+                          | Ok pr_state ->
+                              let addressed =
+                                source.Patch_agent.addressed_comment_ids
+                              in
+                              Base.List.filter pr_state.Github.Pr_state.comments
+                                ~f:(fun (c : Comment.t) ->
+                                  not (Base.Set.mem addressed c.Comment.id))
+                          | Error _err ->
+                              log_event runtime ~patch_id
+                                "failed to fetch fresh comments, falling back \
+                                 to pending";
+                              Base.List.map source.Patch_agent.pending_comments
+                                ~f:(fun (pc : Patch_agent.pending_comment) ->
+                                  pc.Patch_agent.comment))
+                      | None, _ -> []
+                    else []
+                  in
                   with_busy_guard ~patch_id (fun () ->
                       let result =
                         with_claude_slot (fun () ->
@@ -1796,71 +1822,20 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               let source_agent =
                                 Base.Option.value pre_fire_agent ~default:agent
                               in
-                              (* For Human messages, use locally-stored
-                                 pending_comments.  For Review_comments, fetch
-                                 fresh unaddressed comments from GitHub to avoid
-                                 delivering stale data. *)
-                              (* For Review_comments, fetch fresh unaddressed
-                                 comments from GitHub at delivery time to avoid
-                                 stale data.  For Human messages, use locally
-                                 stored pending_comments as before. *)
-                              let fetch_fresh_review_comments () =
-                                match agent.Patch_agent.pr_number with
-                                | Some pr_num -> (
-                                    log_event runtime ~patch_id
-                                      "fetching fresh review comments from \
-                                       GitHub";
-                                    match
-                                      Github.pr_state ~net github pr_num
-                                    with
-                                    | Ok pr_state ->
-                                        let addressed =
-                                          source_agent
-                                            .Patch_agent.addressed_comment_ids
-                                        in
-                                        Base.List.filter
-                                          pr_state.Github.Pr_state.comments
-                                          ~f:(fun (c : Comment.t) ->
-                                            not
-                                              (Base.Set.mem addressed
-                                                 c.Comment.id))
-                                    | Error _err ->
-                                        log_event runtime ~patch_id
-                                          "failed to fetch fresh comments, \
-                                           falling back to pending";
-                                        Base.List.map
-                                          source_agent
-                                            .Patch_agent.pending_comments
-                                          ~f:(fun
-                                              (pc : Patch_agent.pending_comment)
-                                            -> pc.Patch_agent.comment))
-                                | None -> []
-                              in
                               let pending_comments =
-                                if
-                                  Operation_kind.equal kind
-                                    Operation_kind.Review_comments
-                                then (
-                                  let fresh = fetch_fresh_review_comments () in
-                                  delivered_comments := fresh;
-                                  fresh)
+                                if is_review then prefetched_comments
                                 else
-                                  let pc =
-                                    Base.List.map
-                                      source_agent.Patch_agent.pending_comments
-                                      ~f:(fun
-                                          (pc : Patch_agent.pending_comment) ->
-                                        pc.Patch_agent.comment)
-                                  in
-                                  delivered_comments := pc;
-                                  pc
+                                  Base.List.map
+                                    source_agent.Patch_agent.pending_comments
+                                    ~f:(fun
+                                        (pc : Patch_agent.pending_comment) ->
+                                      pc.Patch_agent.comment)
                               in
                               (* Skip empty deliveries — review/human with
                                  no comments means they were already handled
                                  or resolved externally. *)
                               let is_comment_op =
-                                Operation_kind.equal kind
-                                  Operation_kind.Review_comments
+                                is_review
                                 || Operation_kind.equal kind
                                      Operation_kind.Human
                               in
@@ -1954,13 +1929,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                              once the agent resolves a thread it disappears
                              from the next poll. *)
                           let comment_ids =
-                            if
-                              Operation_kind.equal kind
-                                Operation_kind.Review_comments
-                            then []
+                            if is_review then []
                             else
-                              Base.List.map !delivered_comments
-                                ~f:(fun (c : Comment.t) -> c.Comment.id)
+                              match pre_fire_agent with
+                              | Some a ->
+                                  Base.List.map a.Patch_agent.pending_comments
+                                    ~f:(fun
+                                        (pc : Patch_agent.pending_comment) ->
+                                      pc.Patch_agent.comment.Comment.id)
+                              | None -> []
                           in
                           Runtime.update_orchestrator runtime (fun orch ->
                               let orch =

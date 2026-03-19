@@ -63,10 +63,7 @@ let apply t patch_id (poll_result : Poller.t) =
                 acc)
         | Operation_kind.Review_comments ->
             if is_new then
-              log
-                (Printf.sprintf "enqueued %s (%d new comments)"
-                   (Operation_kind.to_label kind)
-                   (List.length poll_result.new_comments));
+              log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Merge_conflict ->
