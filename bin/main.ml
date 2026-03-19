@@ -1947,13 +1947,20 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    (Patch_id.to_string patch_id))
                               ()
                       | `Ok ->
-                          (* Mark delivered comment IDs as addressed so the
-                             poller doesn't re-enqueue them next cycle.  For
-                             review comments we use the freshly fetched list;
-                             for human messages we use pending_comments. *)
+                          (* Mark human message IDs as addressed so the
+                             poller doesn't re-enqueue them.  Review comments
+                             don't need this — they're fetched lazily from
+                             GitHub which only returns unresolved threads;
+                             once the agent resolves a thread it disappears
+                             from the next poll. *)
                           let comment_ids =
-                            Base.List.map !delivered_comments
-                              ~f:(fun (c : Comment.t) -> c.Comment.id)
+                            if
+                              Operation_kind.equal kind
+                                Operation_kind.Review_comments
+                            then []
+                            else
+                              Base.List.map !delivered_comments
+                                ~f:(fun (c : Comment.t) -> c.Comment.id)
                           in
                           Runtime.update_orchestrator runtime (fun orch ->
                               let orch =
