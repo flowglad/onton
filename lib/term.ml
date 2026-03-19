@@ -227,6 +227,55 @@ let%test "fit_width truncates multibyte string" =
   let s = styled [ Sgr.fg_red ] "⚠ hello" in
   visible_length (fit_width 3 s) = 3
 
+(** Break a plain string into lines of at most [width] visible characters. Does
+    not attempt to split on word boundaries — just hard-wraps at the column
+    limit. Each resulting line is padded to [width] with spaces. Returns at
+    least one line (possibly empty/padded). *)
+let wrap_lines width s =
+  if width <= 0 then [ "" ]
+  else
+    let raw = strip_ansi s in
+    let len = String.length raw in
+    let lines = ref [] in
+    let buf = Buffer.create width in
+    let col = ref 0 in
+    let i = ref 0 in
+    while !i < len do
+      let w = utf8_seq_width raw !i len in
+      if !col >= width then begin
+        let line = Buffer.contents buf in
+        lines :=
+          (line ^ String.make (width - visible_length line) ' ') :: !lines;
+        Buffer.clear buf;
+        col := 0
+      end;
+      for j = 0 to w - 1 do
+        if !i + j < len then Buffer.add_char buf (String.get raw (!i + j))
+      done;
+      i := !i + w;
+      col := !col + 1
+    done;
+    let last = Buffer.contents buf in
+    let last_padded =
+      last ^ String.make (Int.max 0 (width - visible_length last)) ' '
+    in
+    List.rev (last_padded :: !lines)
+
+let%test "wrap_lines short string" =
+  let lines = wrap_lines 10 "hello" in
+  List.length lines = 1
+  && String.equal (String.rstrip (List.hd_exn lines)) "hello"
+
+let%test "wrap_lines wraps at width" =
+  let lines = wrap_lines 3 "abcdef" in
+  List.length lines = 2
+  && String.equal (String.rstrip (List.hd_exn lines)) "abc"
+  && String.equal (String.rstrip (List.nth_exn lines 1)) "def"
+
+let%test "wrap_lines empty" =
+  let lines = wrap_lines 5 "" in
+  List.length lines = 1
+
 let%test "hrule default" = String.equal (hrule 3) "───"
 let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
 

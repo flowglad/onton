@@ -990,8 +990,9 @@ let render_timeline ~width ~scroll (entries : activity_entry list) =
 let render_footer ~width ~view_mode ?prompt_line () =
   match prompt_line with
   | Some text ->
-      let prompt_str = Term.fit_width (Int.max 1 (width - 2)) text in
-      [ Term.hrule width; prompt_str ]
+      let usable = Int.max 1 (width - 2) in
+      let wrapped = Term.wrap_lines usable text in
+      Term.hrule width :: wrapped
   | None ->
       let help =
         match view_mode with
@@ -1163,9 +1164,10 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
         | Some pv ->
             let info_h = detail_info_height pv in
             (* Chrome: header(2) + blank + summary(1) + blank + info + blank
-               before footer + footer(2) *)
+               before footer + footer *)
             let fixed =
-              2 + 1 + 1 + 1 + info_h + 1 + List.length status_line + 2
+              2 + 1 + 1 + 1 + info_h + 1 + List.length status_line
+              + List.length footer
             in
             let max_section = Int.max 0 (height - fixed) in
             let scroll =
@@ -1192,9 +1194,10 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
             { no_patches with lines })
     | Timeline_view ->
         (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
-         + scroll indicators(2) + blank before footer + footer(2) = 11 *)
+         + scroll indicators(2) + blank before footer + footer *)
         let reserved =
-          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line + 2
+          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line
+          + List.length footer
         in
         let max_rows = Int.max 0 (height - reserved) in
         let scroll =
@@ -1213,11 +1216,11 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           else 1 + List.length activity_lines
         in
         (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
-         + scroll indicators(2) + blank before footer + footer(2) +
+         + scroll indicators(2) + blank before footer + footer +
          activity block *)
         let reserved =
-          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line + 2
-          + activity_height
+          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line
+          + List.length footer + activity_height
         in
         let max_patch_rows = Int.max 0 (height - reserved) in
         let patches, patch_header_lines, scroll_off, visible_rows =
