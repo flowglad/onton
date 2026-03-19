@@ -8,6 +8,44 @@ type result = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
+let spawn_and_stream ~process_mgr ~cwd ~args
+    ~(process_line : string -> Types.Stream_event.t list) ~on_event =
+  let stderr_content, exit_code, got_events =
+    Eio.Switch.run @@ fun sw ->
+    let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
+    let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
+    let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
+    let child =
+      Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
+        ~stderr:stderr_w args
+    in
+    Eio.Flow.close stdin_r;
+    Eio.Flow.close stdin_w;
+    Eio.Flow.close stdout_w;
+    Eio.Flow.close stderr_w;
+    let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
+    let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
+    let err_ref = ref "" in
+    let got_events_ref = ref false in
+    Eio.Fiber.both
+      (fun () ->
+        let rec read_lines () =
+          match Eio.Buf_read.line stdout_buf with
+          | line ->
+              let events = process_line line in
+              if not (List.is_empty events) then got_events_ref := true;
+              List.iter events ~f:on_event;
+              read_lines ()
+          | exception End_of_file -> ()
+        in
+        read_lines ())
+      (fun () -> err_ref := Eio.Buf_read.take_all stderr_buf);
+    let status = Eio.Process.await child in
+    let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
+    (!err_ref, code, !got_events_ref)
+  in
+  { exit_code; stdout = ""; stderr = stderr_content; got_events }
+
 type t = {
   name : string;
   run_streaming :

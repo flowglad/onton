@@ -44,12 +44,11 @@ let parse_event (line : string) : Types.Stream_event.t list =
           let item = member "item" json in
           let item_type = member "type" item |> to_string_option in
           match item_type with
-          | Some "command_execution" ->
-              let command =
-                member "command" item |> to_string_option
-                |> Option.value ~default:""
-              in
-              [ Types.Stream_event.Tool_use { name = "Bash"; input = command } ]
+          | Some "command_execution" -> (
+              match member "command" item |> to_string_option with
+              | Some cmd when not (String.is_empty cmd) ->
+                  [ Types.Stream_event.Tool_use { name = "Bash"; input = cmd } ]
+              | _ -> [])
           | _ -> [])
       | Some "turn.completed" ->
           [
@@ -64,48 +63,17 @@ let parse_event (line : string) : Types.Stream_event.t list =
           [ Types.Stream_event.Error msg ]
       | _ -> [])
   | exception Yojson.Json_error _ -> []
+  | exception Yojson.Safe.Util.Type_error _ -> []
 
 let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
   ignore (patch_id : Types.Patch_id.t);
   let cwd_path = snd cwd in
   let args = build_args ~cwd_path ~prompt ~continue in
-  let stderr_content, exit_code, got_events =
-    Eio.Switch.run @@ fun sw ->
-    let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
-    let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
-    let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
-    let child =
-      Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
-        ~stderr:stderr_w args
-    in
-    Eio.Flow.close stdin_r;
-    Eio.Flow.close stdin_w;
-    Eio.Flow.close stdout_w;
-    Eio.Flow.close stderr_w;
-    let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
-    let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
-    let err_ref = ref "" in
-    let got_events_ref = ref false in
-    Eio.Fiber.both
-      (fun () ->
-        let rec read_lines () =
-          match Eio.Buf_read.line stdout_buf with
-          | line ->
-              let trimmed = String.strip line in
-              if not (String.is_empty trimmed) then (
-                let events = parse_event trimmed in
-                if not (List.is_empty events) then got_events_ref := true;
-                List.iter events ~f:on_event);
-              read_lines ()
-          | exception End_of_file -> ()
-        in
-        read_lines ())
-      (fun () -> err_ref := Eio.Buf_read.take_all stderr_buf);
-    let status = Eio.Process.await child in
-    let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
-    (!err_ref, code, !got_events_ref)
+  let process_line line =
+    let trimmed = String.strip line in
+    if String.is_empty trimmed then [] else parse_event trimmed
   in
-  { Llm_backend.exit_code; stdout = ""; stderr = stderr_content; got_events }
+  Llm_backend.spawn_and_stream ~process_mgr ~cwd ~args ~process_line ~on_event
 
 let create ~process_mgr : Llm_backend.t =
   {
