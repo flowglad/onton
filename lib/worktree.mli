@@ -33,6 +33,11 @@ val list_with_branches :
   repo_root:string ->
   (string * Types.Branch.t) list
 
+val oldest_unique_commit : string -> (string, string) Result.t
+(** Pure: extract the oldest unique commit SHA from
+    [git rev-list --cherry-pick --right-only] output (newest-first). Returns
+    [Error] when the output is empty (all commits already in target). *)
+
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]
 

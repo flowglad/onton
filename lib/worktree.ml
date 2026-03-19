@@ -189,11 +189,57 @@ let run_git_exit_code ~process_mgr args =
   let code =
     match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
   in
-  (code, Buffer.contents stderr_buf)
+  (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
+
+(** Pure: extract the oldest unique commit SHA from [rev-list --cherry-pick]
+    output. Returns [Error] when the output is empty (all commits already in
+    target). The output is newest-first, so the last line is the oldest. *)
+let oldest_unique_commit rev_list_output =
+  let trimmed = String.strip rev_list_output in
+  if String.is_empty trimmed then Result.Error "no unique commits found"
+  else
+    let lines = String.split_lines trimmed in
+    Result.Ok (List.last_exn lines)
+
+(** Find the old base commit for [--onto] rebase by identifying which commits on
+    our branch are unique (not in target by patch-id). Returns the parent of the
+    oldest unique commit — i.e., the last dependency commit in our branch's
+    history. *)
+let find_old_base ~process_mgr ~path ~target =
+  let code, stdout, stderr =
+    run_git_exit_code ~process_mgr
+      [
+        "git";
+        "-C";
+        path;
+        "rev-list";
+        "--cherry-pick";
+        "--right-only";
+        "--no-merges";
+        Printf.sprintf "%s...HEAD" target;
+      ]
+  in
+  if code <> 0 then
+    Result.Error
+      (Printf.sprintf "rev-list cherry-pick failed (exit %d): %s" code
+         (String.strip stderr))
+  else
+    match oldest_unique_commit stdout with
+    | Result.Error _ as e -> e
+    | Result.Ok oldest_sha ->
+        let code, stdout, stderr =
+          run_git_exit_code ~process_mgr
+            [ "git"; "-C"; path; "rev-parse"; Printf.sprintf "%s~1" oldest_sha ]
+        in
+        if code <> 0 then
+          Result.Error
+            (Printf.sprintf "rev-parse oldest~1 failed (exit %d): %s" code
+               (String.strip stderr))
+        else Result.Ok (String.strip stdout)
 
 let rebase_onto ~process_mgr ~path ~target =
   let target = Types.Branch.to_string target in
-  let ancestor_code, ancestor_stderr =
+  let ancestor_code, _, ancestor_stderr =
     run_git_exit_code ~process_mgr
       [ "git"; "-C"; path; "merge-base"; "--is-ancestor"; target; "HEAD" ]
   in
@@ -205,26 +251,54 @@ let rebase_onto ~process_mgr ~path ~target =
          ancestor_code
          (String.strip ancestor_stderr))
   else
-    let rebase_code, rebase_stderr =
-      run_git_exit_code ~process_mgr [ "git"; "-C"; path; "rebase"; target ]
-    in
-    if rebase_code = 0 then Ok
-    else if rebase_code <> 1 then
-      Error
-        (Printf.sprintf "rebase failed (exit %d): %s" rebase_code
-           (String.strip rebase_stderr))
-    else begin
-      let abort_code, abort_stderr =
-        run_git_exit_code ~process_mgr
-          [ "git"; "-C"; path; "rebase"; "--abort" ]
-      in
-      if abort_code <> 0 then
-        Error
-          (Printf.sprintf "rebase conflict but abort also failed (exit %d): %s"
-             abort_code
-             (String.strip abort_stderr))
-      else Conflict
-    end
+    match find_old_base ~process_mgr ~path ~target with
+    | Result.Error msg ->
+        (* If we can't find unique commits, fall back to plain rebase *)
+        let rebase_code, _, rebase_stderr =
+          run_git_exit_code ~process_mgr [ "git"; "-C"; path; "rebase"; target ]
+        in
+        if rebase_code = 0 then Ok
+        else if rebase_code <> 1 then
+          Error
+            (Printf.sprintf "rebase failed (fallback, %s) (exit %d): %s" msg
+               rebase_code
+               (String.strip rebase_stderr))
+        else begin
+          let abort_code, _, abort_stderr =
+            run_git_exit_code ~process_mgr
+              [ "git"; "-C"; path; "rebase"; "--abort" ]
+          in
+          if abort_code <> 0 then
+            Error
+              (Printf.sprintf
+                 "rebase conflict but abort also failed (exit %d): %s"
+                 abort_code
+                 (String.strip abort_stderr))
+          else Conflict
+        end
+    | Result.Ok old_base ->
+        let rebase_code, _, rebase_stderr =
+          run_git_exit_code ~process_mgr
+            [ "git"; "-C"; path; "rebase"; "--onto"; target; old_base ]
+        in
+        if rebase_code = 0 then Ok
+        else if rebase_code <> 1 then
+          Error
+            (Printf.sprintf "rebase --onto failed (exit %d): %s" rebase_code
+               (String.strip rebase_stderr))
+        else begin
+          let abort_code, _, abort_stderr =
+            run_git_exit_code ~process_mgr
+              [ "git"; "-C"; path; "rebase"; "--abort" ]
+          in
+          if abort_code <> 0 then
+            Error
+              (Printf.sprintf
+                 "rebase conflict but abort also failed (exit %d): %s"
+                 abort_code
+                 (String.strip abort_stderr))
+          else Conflict
+        end
 
 let find_for_branch ~process_mgr ~repo_root branch =
   let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in
