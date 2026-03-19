@@ -13,27 +13,20 @@ open Base
     Design decision: one fiber per Claude process for natural backpressure —
     busy patches don't get new work. *)
 
-type result = {
-  exit_code : int;
-  stdout : string;
-  stderr : string;
-  got_events : bool;
-}
-[@@deriving show, eq, sexp_of, compare]
-
 val run :
   process_mgr:_ Eio.Process.mgr ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
   patch_id:Types.Patch_id.t ->
   prompt:string ->
   continue:bool ->
-  result
+  Llm_backend.result
 (** Spawn a Claude CLI process for [patch_id] in directory [cwd].
 
     If [continue] is [true], the session is resumed with [--continue]. Otherwise
     a new session is created.
 
-    Returns a {!result} with exit code and captured stdout/stderr. *)
+    Returns a {!Llm_backend.result} with exit code and captured stdout/stderr.
+*)
 
 val run_streaming :
   process_mgr:_ Eio.Process.mgr ->
@@ -42,11 +35,11 @@ val run_streaming :
   prompt:string ->
   continue:bool ->
   on_event:(Types.Stream_event.t -> unit) ->
-  result
+  Llm_backend.result
 (** Like {!run} but uses [--output-format stream-json]. Each NDJSON line is
     parsed into a {!Types.Stream_event.t} and passed to [on_event] as it
-    arrives. The returned {!result} has an empty [stdout] since output was
-    consumed incrementally. If [got_events] is [false] on return, the
+    arrives. The returned {!Llm_backend.result} has an empty [stdout] since
+    output was consumed incrementally. If [got_events] is [false] on return, the
     [--continue] likely failed to find a session. *)
 
 val parse_stream_event : string -> Types.Stream_event.t option

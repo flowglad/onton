@@ -1,13 +1,5 @@
 open Base
 
-type result = {
-  exit_code : int;
-  stdout : string;
-  stderr : string;
-  got_events : bool;
-}
-[@@deriving show, eq, sexp_of, compare]
-
 (** Compiled regex for ANSI escape sequences and carriage returns. Matches CSI
     sequences (ESC\[ ... letter), OSC sequences (ESC\] ... BEL/ST), and bare \r
     from PTY line endings. Compiled once at module load. *)
@@ -193,7 +185,7 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
     (out, err, code)
   in
   {
-    exit_code;
+    Llm_backend.exit_code;
     stdout = strip_ansi stdout_content;
     stderr = stderr_content;
     got_events = true;
@@ -238,7 +230,7 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (!err_ref, code, !got_events_ref)
   in
-  { exit_code; stdout = ""; stderr = stderr_content; got_events }
+  { Llm_backend.exit_code; stdout = ""; stderr = stderr_content; got_events }
 
 let%test "build_args without continue" =
   let args = build_args ~prompt:"do stuff" ~continue:false in
