@@ -506,9 +506,6 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                   | None -> ())
             | Types.Stream_event.Tool_use { name; input } ->
                 tool_count := !tool_count + 1;
-                Buffer.add_string text_buf
-                  (Printf.sprintf "\n\n---\n`[tool: %s]`\n\n" name);
-                sync_transcript ();
                 let summary =
                   try
                     let json = Yojson.Safe.from_string input in
@@ -527,6 +524,24 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                     match s with Some v -> truncate v 80 | None -> ""
                   with _ -> ""
                 in
+                let detail =
+                  if summary <> "" then Printf.sprintf " `%s`" summary else ""
+                in
+                let sep =
+                  let len = Buffer.length text_buf in
+                  if len = 0 then ""
+                  else if
+                    len >= 2
+                    && Char.equal (Buffer.nth text_buf (len - 1)) '\n'
+                    && Char.equal (Buffer.nth text_buf (len - 2)) '\n'
+                  then ""
+                  else if Char.equal (Buffer.nth text_buf (len - 1)) '\n' then
+                    "\n"
+                  else "\n\n"
+                in
+                Buffer.add_string text_buf
+                  (Printf.sprintf "%s`[tool: %s]`%s\n" sep name detail);
+                sync_transcript ();
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Tool_use (name, summary))
             | Types.Stream_event.Final_result { stop_reason; _ } ->
