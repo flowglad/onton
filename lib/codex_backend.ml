@@ -79,6 +79,7 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
         ~stderr:stderr_w args
     in
     Eio.Flow.close stdin_r;
+    Eio.Flow.close stdin_w;
     Eio.Flow.close stdout_w;
     Eio.Flow.close stderr_w;
     let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
@@ -101,7 +102,6 @@ let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
         read_lines ())
       (fun () -> err_ref := Eio.Buf_read.take_all stderr_buf);
     let status = Eio.Process.await child in
-    Eio.Flow.close stdin_w;
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (!err_ref, code, !got_events_ref)
   in
