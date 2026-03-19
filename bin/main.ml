@@ -746,7 +746,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
   let selected_pid () =
     let pids = !sorted_patch_ids in
     let count = Base.List.length pids in
-    if count = 0 then None
+    if count = 0 || !list_selected < 0 then None
     else
       let idx = Base.Int.max 0 (Base.Int.min !list_selected (count - 1)) in
       Some (Base.List.nth_exn pids idx)
@@ -1061,7 +1061,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   let count = Base.List.length !sorted_patch_ids in
                   let delta = match dir with Term.Up -> -1 | Term.Down -> 1 in
                   list_selected :=
-                    Base.Int.max 0
+                    Base.Int.max (-1)
                       (Base.Int.min (count - 1) (!list_selected + delta));
                   loop ()
               | Term.Scroll { dir; _ }, Tui.Detail_view _ ->
@@ -1142,11 +1142,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   | Tui.List_view ->
                       let pids = !sorted_patch_ids in
                       let count = Base.List.length pids in
-                      if count > 0 then (
-                        let idx =
-                          Base.Int.max 0
-                            (Base.Int.min !list_selected (count - 1))
-                        in
+                      if count > 0 && !list_selected >= 0 then (
+                        let idx = Base.Int.min !list_selected (count - 1) in
                         list_selected := idx;
                         let pid = Base.List.nth_exn pids idx in
                         view_mode := Tui.Detail_view pid;

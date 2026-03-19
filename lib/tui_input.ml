@@ -49,22 +49,25 @@ let of_key (key : Term.Key.t) : command =
   | Mouse _ | Unknown _ ->
       Noop
 
-(** Apply a command to the selected index, clamping to [0, count-1]. *)
+(** Apply a command to the selected index. Returns [-1] when no patch should be
+    selected (arrowing past the first or last item deselects). Page moves clamp
+    to boundaries instead of deselecting. Valid range: [-1, count-1]. *)
 let apply_move ~count ~selected (cmd : command) =
-  if count <= 0 then 0
+  if count <= 0 then -1
   else
     let clamp n = Int.max 0 (Int.min (count - 1) n) in
-    let next =
-      match cmd with
-      | Move_up -> selected - 1
-      | Move_down -> selected + 1
-      | Page_up -> selected - 5
-      | Page_down -> selected + 5
-      | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
-      | Add_pr _ | Add_worktree _ | Remove_patch ->
-          selected
-    in
-    clamp next
+    match cmd with
+    | Move_up ->
+        let n = selected - 1 in
+        if n < -1 then -1 else n
+    | Move_down ->
+        let n = if selected = -1 then 0 else selected + 1 in
+        if n >= count then -1 else n
+    | Page_up -> if selected = -1 then -1 else clamp (selected - 5)
+    | Page_down -> if selected = -1 then 0 else clamp (selected + 5)
+    | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
+    | Add_pr _ | Add_worktree _ | Remove_patch ->
+        if selected >= count then -1 else selected
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
 let%test "ctrl-c maps to Quit" = equal_command (of_key (Ctrl 'c')) Quit
@@ -96,11 +99,11 @@ let%test "tab maps to Noop" = equal_command (of_key Tab) Noop
 let%test "apply_move down from 0" =
   apply_move ~count:5 ~selected:0 Move_down = 1
 
-let%test "apply_move up from 0 clamps" =
-  apply_move ~count:5 ~selected:0 Move_up = 0
+let%test "apply_move up from 0 deselects" =
+  apply_move ~count:5 ~selected:0 Move_up = -1
 
-let%test "apply_move down at end clamps" =
-  apply_move ~count:5 ~selected:4 Move_down = 4
+let%test "apply_move down at end deselects" =
+  apply_move ~count:5 ~selected:4 Move_down = -1
 
 let%test "apply_move page_down" = apply_move ~count:20 ~selected:3 Page_down = 8
 
@@ -108,12 +111,21 @@ let%test "apply_move page_up clamps at 0" =
   apply_move ~count:20 ~selected:2 Page_up = 0
 
 let%test "apply_move with count 0" =
-  apply_move ~count:0 ~selected:0 Move_down = 0
+  apply_move ~count:0 ~selected:0 Move_down = -1
 
 let%test "apply_move noop preserves" = apply_move ~count:5 ~selected:3 Noop = 3
 
-let%test "apply_move noop clamps stale selection" =
-  apply_move ~count:3 ~selected:9 Noop = 2
+let%test "apply_move noop deselects stale selection" =
+  apply_move ~count:3 ~selected:9 Noop = -1
+
+let%test "apply_move down past last deselects" =
+  apply_move ~count:5 ~selected:4 Move_down = -1
+
+let%test "apply_move down from deselected selects first" =
+  apply_move ~count:5 ~selected:(-1) Move_down = 0
+
+let%test "apply_move up from deselected stays deselected" =
+  apply_move ~count:5 ~selected:(-1) Move_up = -1
 
 (** Input history for the text-mode prompt.
 
