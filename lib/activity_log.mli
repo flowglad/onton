@@ -37,7 +37,7 @@ end
 
 module Stream_entry : sig
   type kind =
-    | Tool_use of string  (** tool name *)
+    | Tool_use of string * string  (** tool name, truncated input *)
     | Text_chunk of string  (** accumulated text snippet *)
     | Finished of string  (** stop reason *)
     | Stream_error of string

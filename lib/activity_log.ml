@@ -28,7 +28,7 @@ end
 
 module Stream_entry = struct
   type kind =
-    | Tool_use of string
+    | Tool_use of string * string
     | Text_chunk of string
     | Finished of string
     | Stream_error of string

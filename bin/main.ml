@@ -191,7 +191,9 @@ let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
 
 let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
   match kind with
-  | Activity_log.Stream_entry.Tool_use name -> Printf.sprintf "Tool: %s" name
+  | Activity_log.Stream_entry.Tool_use (name, input) ->
+      if String.length input > 0 then Printf.sprintf "Tool: %s — %s" name input
+      else Printf.sprintf "Tool: %s" name
   | Activity_log.Stream_entry.Text_chunk text -> text
   | Activity_log.Stream_entry.Finished reason ->
       Printf.sprintf "Finished (%s)" reason
@@ -498,13 +500,31 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                               (Pr_number.to_int pr_number)));
                       on_pr_detected pr_number
                   | None -> ())
-            | Types.Stream_event.Tool_use { name; _ } ->
+            | Types.Stream_event.Tool_use { name; input } ->
                 tool_count := !tool_count + 1;
                 Buffer.add_string text_buf
                   (Printf.sprintf "\n\n---\n`[tool: %s]`\n\n" name);
                 sync_transcript ();
+                let summary =
+                  try
+                    let json = Yojson.Safe.from_string input in
+                    let field key =
+                      Yojson.Safe.Util.(member key json |> to_string_option)
+                    in
+                    let s =
+                      match name with
+                      | "Bash" -> field "command"
+                      | "Read" | "Write" -> field "file_path"
+                      | "Edit" -> field "file_path"
+                      | "Glob" -> field "pattern"
+                      | "Grep" -> field "pattern"
+                      | _ -> None
+                    in
+                    match s with Some v -> truncate v 80 | None -> ""
+                  with _ -> ""
+                in
                 log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Tool_use name)
+                  (Activity_log.Stream_entry.Tool_use (name, summary))
             | Types.Stream_event.Final_result { stop_reason; _ } ->
                 sync_transcript ();
                 let reason = Types.Stop_reason.show stop_reason in

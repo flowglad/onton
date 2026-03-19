@@ -97,7 +97,12 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
                     member "name" block |> to_string_option
                     |> Option.value ~default:""
                   in
-                  Some (Types.Stream_event.Tool_use { name; input = "" })
+                  let input =
+                    match member "input" block with
+                    | `Null -> ""
+                    | v -> Yojson.Safe.to_string v
+                  in
+                  Some (Types.Stream_event.Tool_use { name; input })
               | Some "text" ->
                   let text =
                     member "text" block |> to_string_option
