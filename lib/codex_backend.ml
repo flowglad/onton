@@ -38,12 +38,7 @@ let parse_event (line : string) : Types.Stream_event.t list =
               let text = String.concat ~sep:"" content in
               if String.is_empty text then []
               else [ Types.Stream_event.Text_delta text ]
-          | Some "command_execution" ->
-              let command =
-                member "command" item |> to_string_option
-                |> Option.value ~default:""
-              in
-              [ Types.Stream_event.Tool_use { name = "Bash"; input = command } ]
+          | Some "command_execution" -> []
           | _ -> [])
       | Some "item.started" -> (
           let item = member "item" json in
@@ -155,12 +150,11 @@ let%test "parse_event command_execution started" =
   List.equal Types.Stream_event.equal (parse_event line)
     [ Types.Stream_event.Tool_use { name = "Bash"; input = "ls -la" } ]
 
-let%test "parse_event command_execution completed" =
+let%test "parse_event command_execution completed is ignored" =
   let line =
     {|{"type":"item.completed","item":{"type":"command_execution","command":"ls -la"}}|}
   in
-  List.equal Types.Stream_event.equal (parse_event line)
-    [ Types.Stream_event.Tool_use { name = "Bash"; input = "ls -la" } ]
+  List.is_empty (parse_event line)
 
 let%test "parse_event turn.completed" =
   let line = {|{"type":"turn.completed"}|} in
