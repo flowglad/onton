@@ -987,31 +987,21 @@ let render_timeline ~width ~scroll (entries : activity_entry list) =
   in
   (header :: scroll_up) @ rows @ scroll_down
 
-let render_footer ~width ~view_mode ?input_line ?completion_hint () =
-  match input_line with
+let render_footer ~width ~view_mode ?prompt_line () =
+  match prompt_line with
   | Some text ->
-      let ghost =
-        match completion_hint with
-        | Some hint when not (String.is_empty hint) ->
-            Term.styled [ Term.Sgr.italic; Term.Sgr.dim ] hint
-        | Some _ | None -> ""
-      in
-      let prompt_str =
-        Term.fit_width
-          (Int.max 1 (width - 2))
-          (Printf.sprintf ": %s%s" text ghost)
-      in
+      let prompt_str = Term.fit_width (Int.max 1 (width - 2)) text in
       [ Term.hrule width; prompt_str ]
   | None ->
       let help =
         match view_mode with
         | List_view ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  r:refresh  ↑/↓:navigate  enter:detail  t:timeline  \
-               h:help"
+              " q:quit  r:refresh  ↑/↓:navigate  enter:detail  +:add PR  \
+               w:worktree  -:remove  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  esc/backspace:back  enter:command  t:timeline  h:help"
+              " q:quit  esc/backspace:back  enter:message  t:timeline  h:help"
         | Timeline_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
@@ -1039,8 +1029,10 @@ let render_help_overlay ~width ~height =
           "PgUp      Page up";
           "PgDn      Page down";
           "Enter     Open detail";
+          "+         Add PR (enter number)";
+          "w         Register worktree (enter path)";
+          "-/x       Remove selected patch";
           "t         Toggle timeline";
-          ":         Enter command mode";
           "r         Refresh";
           "q         Quit";
         ] );
@@ -1050,7 +1042,7 @@ let render_help_overlay ~width ~height =
           "↓/j       Scroll down";
           "PgUp      Page up (10 lines)";
           "PgDn      Page down (10 lines)";
-          "Enter     Enter command mode";
+          "Enter     Send message";
           "Esc/Bksp  Back to list";
           "t         Toggle timeline";
         ] );
@@ -1063,16 +1055,9 @@ let render_help_overlay ~width ~height =
           "Esc/Bksp  Back to list";
           "t         Back to list";
         ] );
-      ( "Command Mode (:)",
-        [
-          "N> msg    Send message to patch N";
-          "+123      Add PR #123 to selected patch";
-          "w /path   Register worktree for patch";
-          "-         Remove selected patch";
-          "Esc       Cancel";
-          "Enter     Execute command";
-          "↑/↓       Browse command history";
-        ] );
+      ( "Prompts",
+        [ "Enter     Confirm"; "Esc       Cancel"; "↑/↓       Browse history" ]
+      );
     ]
   in
   let dismiss = Term.styled [ Term.Sgr.dim ] "(any key to dismiss)" in
@@ -1147,8 +1132,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~show_help
-    ?(transcript = "") ?status_msg ?input_line ?completion_hint
-    (views : patch_view list) =
+    ?(transcript = "") ?status_msg ?prompt_line (views : patch_view list) =
   let no_patches =
     {
       lines = [];
@@ -1166,9 +1150,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
   else
     let header = render_header ~project_name ~width in
     let summary = [ render_summary views ] in
-    let footer =
-      render_footer ~width ~view_mode ?input_line ?completion_hint ()
-    in
+    let footer = render_footer ~width ~view_mode ?prompt_line () in
     let status_line =
       let rendered = render_status_msg ~width status_msg in
       if String.is_empty rendered then [] else [ rendered ]

@@ -631,8 +631,8 @@ let intervention_reasons_of_log (log : Activity_log.t)
     shared mutable refs updated by the input fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
-    ~transcripts ~sorted_patch_ids ~input_line ~completion_hint
-    ~patches_start_row ~patches_scroll_offset ~patches_visible_count =
+    ~transcripts ~sorted_patch_ids ~prompt_line ~patches_start_row
+    ~patches_scroll_offset ~patches_visible_count =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -688,7 +688,7 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
       Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
         ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
         ~show_help:!show_help ~transcript ?status_msg:!status_msg
-        ?input_line:!input_line ?completion_hint:!completion_hint views
+        ?prompt_line:!prompt_line views
     in
     (* Write back the clamped scroll offset so delta-based input in
        input_fiber works from a real value, not a sentinel like max_value.
@@ -709,15 +709,9 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
 (** Input fiber — reads keypresses and dispatches TUI commands.
 
     Supports two modes:
-    - Normal mode: single-key navigation (j/k, arrows, q to quit, enter for
-      detail)
-    - Text mode: entered via [:], accumulates a line buffer, dispatched on Enter
-
-    Text-mode commands (parsed by {!Tui_input.parse_line}):
-    - ["N> message"] — send human message to patch N
-    - ["+123"] — register ad-hoc PR #123 for the selected patch
-    - ["w /path"] — register existing worktree directory for the selected patch
-    - ["-"] — remove the selected patch from orchestration *)
+    - Normal mode: single-key navigation and direct actions
+    - Prompt mode: purpose-specific mini-prompts for PR numbers, worktree paths,
+      and messages *)
 
 (** Normalize pasted text for single-line input: strip trailing newlines,
     replace internal newlines/carriage returns with spaces. *)
@@ -731,30 +725,16 @@ let normalize_paste text =
 
 let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
-    ~show_help ~status_msg ~sorted_patch_ids ~input_line ~completion_hint
+    ~show_help ~status_msg ~sorted_patch_ids ~input_mode ~prompt_line
     ~patches_start_row ~patches_scroll_offset ~patches_visible_count =
   let buf = Buffer.create 64 in
-  let text_mode = ref false in
-  let current_completions = ref [] in
-  let recompute_completions () =
-    let buffer = Buffer.contents buf in
-    let patch_ids = Base.List.map !sorted_patch_ids ~f:Patch_id.to_string in
-    current_completions := Completions.complete ~buffer ~patch_ids;
-    completion_hint :=
-      match !current_completions with
-      | first :: _ ->
-          let full = first.Completions.full in
-          if Base.String.is_prefix full ~prefix:buffer then
-            Some (Base.String.drop_prefix full (Base.String.length buffer))
-          else None
-      | [] -> None
-  in
   let sync_input () =
-    input_line := if !text_mode then Some (Buffer.contents buf) else None;
-    if !text_mode then recompute_completions ()
-    else (
-      current_completions := [];
-      completion_hint := None)
+    match !input_mode with
+    | Tui_input.Normal -> prompt_line := None
+    | Tui_input.Prompt_pr | Tui_input.Prompt_worktree | Tui_input.Prompt_message
+      ->
+        let prefix = Tui_input.prompt_prefix !input_mode in
+        prompt_line := Some (prefix ^ Buffer.contents buf)
   in
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
@@ -779,7 +759,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
         if !show_help then (
           show_help := false;
           loop ())
-        else if !text_mode then
+        else if not (Tui_input.equal_input_mode !input_mode Tui_input.Normal)
+        then
           match key with
           | Term.Key.Paste text ->
               Buffer.add_string buf (normalize_paste text);
@@ -788,229 +769,188 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               Buffer.clear buf;
               saved_draft := "";
               Tui_input.History.reset_browse history;
-              text_mode := false;
+              input_mode := Tui_input.Normal;
               loop ()
           | Term.Key.Enter ->
               let line = Buffer.contents buf in
               Tui_input.History.push history line;
-              (* Always exit browse mode on Enter, even for empty input that push ignores *)
               Tui_input.History.reset_browse history;
+              let mode = !input_mode in
               Buffer.clear buf;
               saved_draft := "";
-              text_mode := false;
-              (* In detail view, bare text (no N> prefix) is sent to the
-                 currently viewed patch as a human message. *)
-              let parsed =
-                let p = Tui_input.parse_line line in
-                match (p, !view_mode) with
-                | None, Tui.Detail_view pid
-                  when not (Base.String.is_empty (Base.String.strip line)) ->
-                    Some (Tui_input.Send_message (pid, Base.String.strip line))
-                | None, (Tui.List_view | Tui.Timeline_view | Tui.Detail_view _)
-                | Some _, _ ->
-                    p
-              in
-              (match parsed with
-              | Some (Tui_input.Send_message (patch_id, msg)) ->
-                  let patch_exists =
-                    Runtime.read runtime (fun snap ->
-                        Base.Map.mem
-                          (Orchestrator.agents_map snap.Runtime.orchestrator)
-                          patch_id)
-                  in
-                  if patch_exists then (
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.send_human_message orch patch_id msg);
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Human message sent: %s" msg))
-                  else
-                    log_event runtime
-                      (Printf.sprintf
-                         "Cannot send human message: unknown patch %s"
-                         (Patch_id.to_string patch_id))
-              | Some (Tui_input.Add_pr pr_number) ->
-                  let patch_id =
-                    Patch_id.of_string
-                      (Int.to_string (Pr_number.to_int pr_number))
-                  in
-                  let already_exists =
-                    Runtime.read runtime (fun snap ->
-                        Base.Option.is_some
-                          (Orchestrator.find_agent snap.Runtime.orchestrator
-                             patch_id))
-                  in
-                  if already_exists then
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Ad-hoc PR #%d already registered"
-                         (Pr_number.to_int pr_number))
-                  else (
-                    Pr_registry.register pr_registry ~patch_id ~pr_number;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.add_agent orch ~patch_id ~pr_number);
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Ad-hoc PR #%d added"
-                         (Pr_number.to_int pr_number)))
-              | Some (Tui_input.Add_worktree path) -> (
-                  let info_opt =
-                    let pids = !sorted_patch_ids in
-                    let count = Base.List.length pids in
-                    if count = 0 then None
-                    else
-                      let idx =
-                        Base.Int.max 0 (Base.Int.min !list_selected (count - 1))
-                      in
-                      let pid = Base.List.nth_exn pids idx in
-                      let busy =
-                        Runtime.read runtime (fun snap ->
-                            (Orchestrator.agent snap.Runtime.orchestrator pid)
-                              .Patch_agent.busy)
-                      in
-                      Some (pid, busy)
-                  in
-                  match info_opt with
-                  | None ->
-                      log_event runtime
-                        "Cannot add worktree: no selectable patch"
-                  | Some (patch_id, busy) -> (
-                      if busy then
-                        log_event runtime ~patch_id
-                          "Warning: patch is currently running — changing \
-                           worktree may affect the live session";
-                      let expected =
-                        Worktree.worktree_dir ~project_name ~patch_id
-                      in
-                      try
-                        let raw_path = Worktree.normalize_path path in
-                        if not (Stdlib.Sys.file_exists raw_path) then
-                          failwith ("Worktree path not found: " ^ raw_path);
-                        if not (Stdlib.Sys.is_directory raw_path) then
-                          failwith
-                            ("Worktree path is not a directory: " ^ raw_path);
-                        let canonical_real = Unix.realpath raw_path in
-                        let git_file = Stdlib.Filename.concat raw_path ".git" in
-                        if
-                          (not (Stdlib.Sys.file_exists git_file))
-                          || Stdlib.Sys.is_directory git_file
-                        then
-                          failwith
-                            ("Path is not a git worktree (no .git file): "
-                           ^ raw_path);
-                        let canonical_expected =
-                          try Unix.realpath expected
-                          with Unix.Unix_error (Unix.ENOENT, _, _) -> expected
+              input_mode := Tui_input.Normal;
+              let line = Base.String.strip line in
+              (match mode with
+              | Tui_input.Prompt_message -> (
+                  if not (Base.String.is_empty line) then
+                    match !view_mode with
+                    | Tui.Detail_view patch_id ->
+                        let patch_exists =
+                          Runtime.read runtime (fun snap ->
+                              Base.Map.mem
+                                (Orchestrator.agents_map
+                                   snap.Runtime.orchestrator)
+                                patch_id)
                         in
-                        if not (String.equal canonical_real canonical_expected)
-                        then (
-                          let parent = Stdlib.Filename.dirname expected in
-                          (try Unix.mkdir parent 0o755 with
-                          | Unix.Unix_error (Unix.ENOENT, _, _) ->
-                              failwith
-                                ("Cannot create parent directory: " ^ parent)
-                          | Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-                          (match Unix.lstat expected with
-                          | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
-                          | { Unix.st_kind = Unix.S_LNK; _ } ->
-                              Unix.unlink expected
-                          | {
-                           Unix.st_kind =
-                             ( Unix.S_REG | Unix.S_DIR | Unix.S_CHR | Unix.S_BLK
-                             | Unix.S_FIFO | Unix.S_SOCK );
-                           _;
-                          } ->
-                              failwith
-                                (Printf.sprintf
-                                   "Cannot overwrite non-symlink at %s" expected));
-                          Unix.symlink canonical_real expected);
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            let orch =
-                              Orchestrator.clear_needs_intervention orch
-                                patch_id
-                            in
-                            Orchestrator.set_worktree_path orch patch_id
-                              canonical_real);
-                        status_msg := None;
-                        if String.equal canonical_real canonical_expected then
+                        if patch_exists then (
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              Orchestrator.send_human_message orch patch_id line);
                           log_event runtime ~patch_id
-                            (Printf.sprintf
-                               "Worktree already at expected path %s"
-                               canonical_real)
+                            (Printf.sprintf "Human message sent: %s" line))
                         else
-                          log_event runtime ~patch_id
+                          log_event runtime
                             (Printf.sprintf
-                               "Worktree registered: symlinked %s → %s" expected
-                               canonical_real)
-                      with
-                      | Failure msg ->
-                          status_msg :=
-                            Some
-                              {
-                                Tui.level = Tui.Error;
-                                text = msg;
-                                expires_at = None;
-                              };
-                          log_event runtime ~patch_id
-                            (Printf.sprintf "Failed to add worktree: %s" msg)
-                      | exn ->
-                          let msg = Printexc.to_string exn in
-                          status_msg :=
-                            Some
-                              {
-                                Tui.level = Tui.Error;
-                                text =
-                                  Printf.sprintf "Failed to add worktree: %s"
-                                    msg;
-                                expires_at = None;
-                              };
-                          log_event runtime ~patch_id
-                            (Printf.sprintf "Failed to add worktree: %s" msg)))
-              | Some Tui_input.Remove_patch -> (
-                  let info_opt =
-                    let pids = !sorted_patch_ids in
-                    let count = Base.List.length pids in
-                    if count = 0 then None
-                    else
-                      let idx =
-                        Base.Int.max 0 (Base.Int.min !list_selected (count - 1))
+                               "Cannot send human message: unknown patch %s"
+                               (Patch_id.to_string patch_id))
+                    | Tui.List_view | Tui.Timeline_view -> ())
+              | Tui_input.Prompt_pr -> (
+                  match Base.Int.of_string_opt line with
+                  | Some n when n > 0 ->
+                      let pr_number = Pr_number.of_int n in
+                      let patch_id = Patch_id.of_string (Int.to_string n) in
+                      let already_exists =
+                        Runtime.read runtime (fun snap ->
+                            Base.Option.is_some
+                              (Orchestrator.find_agent snap.Runtime.orchestrator
+                                 patch_id))
                       in
-                      let pid = Base.List.nth_exn pids idx in
-                      Runtime.read runtime (fun snap ->
-                          let agent =
-                            Orchestrator.agent snap.Runtime.orchestrator pid
-                          in
-                          let in_gameplan =
-                            Base.List.exists
-                              snap.Runtime.gameplan.Gameplan.patches
-                              ~f:(fun (p : Patch.t) ->
-                                Patch_id.equal p.Patch.id pid)
-                          in
-                          Some
-                            ( agent.Patch_agent.patch_id,
-                              agent.Patch_agent.busy,
-                              in_gameplan ))
-                  in
-                  match info_opt with
-                  | None ->
-                      log_event runtime
-                        "Cannot remove patch: no selectable patch"
-                  | Some (patch_id, _busy, true) ->
-                      log_event runtime ~patch_id "Cannot remove gameplan patch"
-                  | Some (patch_id, busy, false) ->
-                      if busy then
+                      if already_exists then
                         log_event runtime ~patch_id
-                          "Warning: patch is currently running — it may create \
-                           a GitHub PR before stopping";
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.remove_agent orch patch_id);
-                      Pr_registry.unregister pr_registry ~patch_id;
-                      log_event runtime ~patch_id "Ad-hoc patch removed")
-              | Some
-                  ( Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
-                  | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
-                  | Tui_input.Page_down | Tui_input.Select | Tui_input.Back
-                  | Tui_input.Timeline | Tui_input.Noop )
-              | None ->
-                  log_event runtime
-                    (Printf.sprintf "Unrecognised input: %s" line));
+                          (Printf.sprintf "Ad-hoc PR #%d already registered" n)
+                      else (
+                        Pr_registry.register pr_registry ~patch_id ~pr_number;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.add_agent orch ~patch_id ~pr_number);
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "Ad-hoc PR #%d added" n))
+                  | _ ->
+                      if not (Base.String.is_empty line) then
+                        log_event runtime
+                          (Printf.sprintf "Invalid PR number: %s" line))
+              | Tui_input.Prompt_worktree -> (
+                  if not (Base.String.is_empty line) then
+                    let path = line in
+                    let info_opt =
+                      let pids = !sorted_patch_ids in
+                      let count = Base.List.length pids in
+                      if count = 0 then None
+                      else
+                        let idx =
+                          Base.Int.max 0
+                            (Base.Int.min !list_selected (count - 1))
+                        in
+                        let pid = Base.List.nth_exn pids idx in
+                        let busy =
+                          Runtime.read runtime (fun snap ->
+                              (Orchestrator.agent snap.Runtime.orchestrator pid)
+                                .Patch_agent.busy)
+                        in
+                        Some (pid, busy)
+                    in
+                    match info_opt with
+                    | None ->
+                        log_event runtime
+                          "Cannot add worktree: no selectable patch"
+                    | Some (patch_id, busy) -> (
+                        if busy then
+                          log_event runtime ~patch_id
+                            "Warning: patch is currently running — changing \
+                             worktree may affect the live session";
+                        let expected =
+                          Worktree.worktree_dir ~project_name ~patch_id
+                        in
+                        try
+                          let raw_path = Worktree.normalize_path path in
+                          if not (Stdlib.Sys.file_exists raw_path) then
+                            failwith ("Worktree path not found: " ^ raw_path);
+                          if not (Stdlib.Sys.is_directory raw_path) then
+                            failwith
+                              ("Worktree path is not a directory: " ^ raw_path);
+                          let canonical_real = Unix.realpath raw_path in
+                          let git_file =
+                            Stdlib.Filename.concat raw_path ".git"
+                          in
+                          if
+                            (not (Stdlib.Sys.file_exists git_file))
+                            || Stdlib.Sys.is_directory git_file
+                          then
+                            failwith
+                              ("Path is not a git worktree (no .git file): "
+                             ^ raw_path);
+                          let canonical_expected =
+                            try Unix.realpath expected
+                            with Unix.Unix_error (Unix.ENOENT, _, _) ->
+                              expected
+                          in
+                          if
+                            not (String.equal canonical_real canonical_expected)
+                          then (
+                            let parent = Stdlib.Filename.dirname expected in
+                            (try Unix.mkdir parent 0o755 with
+                            | Unix.Unix_error (Unix.ENOENT, _, _) ->
+                                failwith
+                                  ("Cannot create parent directory: " ^ parent)
+                            | Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+                            (match Unix.lstat expected with
+                            | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+                                ()
+                            | { Unix.st_kind = Unix.S_LNK; _ } ->
+                                Unix.unlink expected
+                            | {
+                             Unix.st_kind =
+                               ( Unix.S_REG | Unix.S_DIR | Unix.S_CHR
+                               | Unix.S_BLK | Unix.S_FIFO | Unix.S_SOCK );
+                             _;
+                            } ->
+                                failwith
+                                  (Printf.sprintf
+                                     "Cannot overwrite non-symlink at %s"
+                                     expected));
+                            Unix.symlink canonical_real expected);
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                Orchestrator.clear_needs_intervention orch
+                                  patch_id
+                              in
+                              Orchestrator.set_worktree_path orch patch_id
+                                canonical_real);
+                          status_msg := None;
+                          if String.equal canonical_real canonical_expected then
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Worktree already at expected path %s"
+                                 canonical_real)
+                          else
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Worktree registered: symlinked %s → %s"
+                                 expected canonical_real)
+                        with
+                        | Failure msg ->
+                            status_msg :=
+                              Some
+                                {
+                                  Tui.level = Tui.Error;
+                                  text = msg;
+                                  expires_at = None;
+                                };
+                            log_event runtime ~patch_id
+                              (Printf.sprintf "Failed to add worktree: %s" msg)
+                        | exn ->
+                            let msg = Printexc.to_string exn in
+                            status_msg :=
+                              Some
+                                {
+                                  Tui.level = Tui.Error;
+                                  text =
+                                    Printf.sprintf "Failed to add worktree: %s"
+                                      msg;
+                                  expires_at = None;
+                                };
+                            log_event runtime ~patch_id
+                              (Printf.sprintf "Failed to add worktree: %s" msg))
+                  )
+              | Tui_input.Normal -> ());
               loop ()
           | Term.Key.Backspace | Term.Key.Delete ->
               let len = Buffer.length buf in
@@ -1044,36 +984,22 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                      Buffer.clear buf;
                      Buffer.add_string buf !saved_draft);
               loop ()
-          | Term.Key.Tab ->
-              let buffer = Buffer.contents buf in
-              let accepted =
-                Completions.accept_first ~buffer
-                  ~completions:!current_completions
-              in
-              if not (String.equal accepted buffer) then (
-                Buffer.clear buf;
-                Buffer.add_string buf accepted);
-              loop ()
-          | Term.Key.Left | Term.Key.Right | Term.Key.Home | Term.Key.End
-          | Term.Key.Page_up | Term.Key.Page_down | Term.Key.F _
+          | Term.Key.Tab | Term.Key.Left | Term.Key.Right | Term.Key.Home
+          | Term.Key.End | Term.Key.Page_up | Term.Key.Page_down | Term.Key.F _
           | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
               loop ()
         else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
           Term.Raw.suspend ();
           loop ())
-        else if Term.Key.equal key (Term.Key.Char ':') then (
-          Buffer.clear buf;
-          text_mode := true;
-          loop ())
         else
           match key with
           | Term.Key.Paste text -> (
-              (* In detail view, auto-enter text mode and buffer the paste *)
+              (* In detail view, auto-enter message mode and buffer the paste *)
               match !view_mode with
               | Tui.Detail_view _ ->
                   Buffer.clear buf;
                   Buffer.add_string buf (normalize_paste text);
-                  text_mode := true;
+                  input_mode := Tui_input.Prompt_message;
                   loop ()
               | Tui.List_view | Tui.Timeline_view -> loop ())
           | Term.Key.Mouse ev -> (
@@ -1137,6 +1063,16 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               | ( Term.Click { button = Term.Left | Term.Middle | Term.Right; _ },
                   (Tui.List_view | Tui.Detail_view _ | Tui.Timeline_view) ) ->
                   loop ())
+          | Term.Key.Char '+' when Tui.equal_view_mode !view_mode Tui.List_view
+            ->
+              Buffer.clear buf;
+              input_mode := Tui_input.Prompt_pr;
+              loop ()
+          | Term.Key.Char 'w' when Tui.equal_view_mode !view_mode Tui.List_view
+            ->
+              Buffer.clear buf;
+              input_mode := Tui_input.Prompt_worktree;
+              loop ()
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace
           | Term.Key.Escape | Term.Key.Up | Term.Key.Down | Term.Key.Left
           | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
@@ -1212,7 +1148,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                             detail_follow := true);
                       loop ()
                   | Tui.Detail_view _ ->
-                      text_mode := true;
+                      input_mode := Tui_input.Prompt_message;
                       loop ()
                   | Tui.Timeline_view -> loop ())
               | Tui_input.Back -> (
@@ -1244,9 +1180,54 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               | Tui_input.Help ->
                   show_help := true;
                   loop ()
-              | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
-              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
               | Tui_input.Remove_patch ->
+                  (match !view_mode with
+                  | Tui.List_view -> (
+                      let info_opt =
+                        let pids = !sorted_patch_ids in
+                        let count = Base.List.length pids in
+                        if count = 0 then None
+                        else
+                          let idx =
+                            Base.Int.max 0
+                              (Base.Int.min !list_selected (count - 1))
+                          in
+                          let pid = Base.List.nth_exn pids idx in
+                          Runtime.read runtime (fun snap ->
+                              let agent =
+                                Orchestrator.agent snap.Runtime.orchestrator pid
+                              in
+                              let in_gameplan =
+                                Base.List.exists
+                                  snap.Runtime.gameplan.Gameplan.patches
+                                  ~f:(fun (p : Patch.t) ->
+                                    Patch_id.equal p.Patch.id pid)
+                              in
+                              Some
+                                ( agent.Patch_agent.patch_id,
+                                  agent.Patch_agent.busy,
+                                  in_gameplan ))
+                      in
+                      match info_opt with
+                      | None ->
+                          log_event runtime
+                            "Cannot remove patch: no selectable patch"
+                      | Some (patch_id, _busy, true) ->
+                          log_event runtime ~patch_id
+                            "Cannot remove gameplan patch"
+                      | Some (patch_id, busy, false) ->
+                          if busy then
+                            log_event runtime ~patch_id
+                              "Warning: patch is currently running — it may \
+                               create a GitHub PR before stopping";
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              Orchestrator.remove_agent orch patch_id);
+                          Pr_registry.unregister pr_registry ~patch_id;
+                          log_event runtime ~patch_id "Ad-hoc patch removed")
+                  | Tui.Detail_view _ | Tui.Timeline_view -> ());
+                  loop ()
+              | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
+              | Tui_input.Add_pr _ | Tui_input.Add_worktree _ ->
                   loop ()))
   in
   loop ()
@@ -2299,8 +2280,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
         in
         let view_mode = ref Tui.List_view in
         let sorted_patch_ids = ref [] in
-        let input_line = ref None in
-        let completion_hint = ref None in
+        let input_mode = ref Tui_input.Normal in
+        let prompt_line = ref None in
         let show_help = ref false in
         let status_msg : Tui.status_msg option ref = ref None in
         let patches_start_row = ref 0 in
@@ -2325,13 +2306,13 @@ let run_with_config (config : config) gameplan existing_snapshot =
                    tui_fiber ~runtime ~clock ~stdout ~list_selected
                      ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
-                     ~input_line ~completion_hint ~patches_start_row
-                     ~patches_scroll_offset ~patches_visible_count)
+                     ~prompt_line ~patches_start_row ~patches_scroll_offset
+                     ~patches_visible_count)
                 :: (fun () ->
                   input_fiber ~runtime ~list_selected ~detail_scroll
                     ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode
                     ~pr_registry ~project_name ~show_help ~status_msg
-                    ~sorted_patch_ids ~input_line ~completion_hint
+                    ~sorted_patch_ids ~input_mode ~prompt_line
                     ~patches_start_row ~patches_scroll_offset
                     ~patches_visible_count)
                 :: (fun () ->

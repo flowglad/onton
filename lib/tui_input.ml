@@ -17,11 +17,20 @@ type command =
   | Back
   | Noop
   | Timeline
-  | Send_message of Types.Patch_id.t * string
+  | Send_message of string
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string
   | Remove_patch
 [@@deriving show, eq]
+
+type input_mode = Normal | Prompt_pr | Prompt_worktree | Prompt_message
+[@@deriving show, eq]
+
+let prompt_prefix = function
+  | Normal -> ""
+  | Prompt_pr -> "PR #: "
+  | Prompt_worktree -> "Worktree: "
+  | Prompt_message -> "> "
 
 let of_key (key : Term.Key.t) : command =
   match key with
@@ -35,6 +44,7 @@ let of_key (key : Term.Key.t) : command =
   | Page_down -> Page_down
   | Enter -> Select
   | Escape | Backspace -> Back
+  | Char '-' | Char 'x' -> Remove_patch
   | Char _ | Tab | Delete | Home | End | Left | Right | F _ | Ctrl _ | Paste _
   | Mouse _ | Unknown _ ->
       Noop
@@ -57,81 +67,7 @@ let apply_move ~count ~selected (cmd : command) =
     clamp next
 
 let equal_command_option = Option.equal equal_command
-
-(** Parse a text-mode input line into a command.
-
-    Supported formats:
-    - ["N> message"] — send a human message to patch N
-    - ["+123"] — register ad-hoc PR #123 for the currently selected patch
-
-    Returns [None] for empty or unrecognised input. *)
-let parse_line (line : string) : command option =
-  let line = String.strip line in
-  if String.is_empty line then None
-  else if String.equal line "-" then Some Remove_patch
-  else if String.is_prefix line ~prefix:"w " then
-    let path = String.strip (String.drop_prefix line 2) in
-    if String.is_empty path then None else Some (Add_worktree path)
-  else if String.is_prefix line ~prefix:"+" then
-    let rest = String.drop_prefix line 1 in
-    match Int.of_string_opt rest with
-    | Some n when n > 0 -> Some (Add_pr (Types.Pr_number.of_int n))
-    | _ -> None
-  else
-    match String.lsplit2 line ~on:'>' with
-    | Some (num_str, msg) -> (
-        let num_str = String.strip num_str in
-        let msg = String.strip msg in
-        match Int.of_string_opt num_str with
-        | Some n when n > 0 && not (String.is_empty msg) ->
-            Some
-              (Send_message (Types.Patch_id.of_string (Int.to_string n), msg))
-        | _ -> None)
-    | None -> None
-
-let%test "parse_line: message input" =
-  equal_command_option
-    (parse_line "3> fix the tests")
-    (Some (Send_message (Types.Patch_id.of_string "3", "fix the tests")))
-
-let%test "parse_line: add PR" =
-  equal_command_option (parse_line "+123")
-    (Some (Add_pr (Types.Pr_number.of_int 123)))
-
-let%test "parse_line: empty" = Option.is_none (parse_line "")
-let%test "parse_line: whitespace" = Option.is_none (parse_line "   ")
-let%test "parse_line: invalid" = Option.is_none (parse_line "hello")
-
-let%test "parse_line: message with spaces in number" =
-  equal_command_option
-    (parse_line " 5 > rewrite module")
-    (Some (Send_message (Types.Patch_id.of_string "5", "rewrite module")))
-
-let%test "parse_line: add worktree" =
-  equal_command_option
-    (parse_line "w /tmp/my-worktree")
-    (Some (Add_worktree "/tmp/my-worktree"))
-
-let%test "parse_line: add worktree strips whitespace" =
-  equal_command_option
-    (parse_line "w   /tmp/wt  ")
-    (Some (Add_worktree "/tmp/wt"))
-
-let%test "parse_line: w with no path rejected" =
-  Option.is_none (parse_line "w ")
-
-let%test "parse_line: remove patch" =
-  equal_command_option (parse_line "-") (Some Remove_patch)
-
-let%test "parse_line: remove patch with surrounding whitespace" =
-  equal_command_option (parse_line "  -  ") (Some Remove_patch)
-
-let%test "parse_line: zero PR rejected" = Option.is_none (parse_line "+0")
-let%test "parse_line: negative PR rejected" = Option.is_none (parse_line "+-1")
-
-let%test "parse_line: empty message rejected" =
-  Option.is_none (parse_line "3>  ")
-
+let _ = equal_command_option
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
 let%test "ctrl-c maps to Quit" = equal_command (of_key (Ctrl 'c')) Quit
 let%test "r maps to Refresh" = equal_command (of_key (Char 'r')) Refresh
@@ -149,6 +85,13 @@ let%test "page_down maps to Page_down" =
 let%test "enter maps to Select" = equal_command (of_key Enter) Select
 let%test "escape maps to Back" = equal_command (of_key Escape) Back
 let%test "backspace maps to Back" = equal_command (of_key Backspace) Back
+
+let%test "- maps to Remove_patch" =
+  equal_command (of_key (Char '-')) Remove_patch
+
+let%test "x maps to Remove_patch" =
+  equal_command (of_key (Char 'x')) Remove_patch
+
 let%test "unknown key maps to Noop" = equal_command (of_key (Char 'z')) Noop
 let%test "tab maps to Noop" = equal_command (of_key Tab) Noop
 
