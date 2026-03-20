@@ -423,7 +423,7 @@ let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
     ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
-    ~transcripts ~user_config =
+    ~transcripts ~user_config ~backend =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -559,18 +559,18 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           let result =
             try
               Ok
-                (Claude_runner.run_streaming ~process_mgr ~cwd ~patch_id ~prompt
+                (backend.Llm_backend.run_streaming ~cwd ~patch_id ~prompt
                    ~continue ~on_event)
             with exn -> Error (Printexc.to_string exn)
           in
           let open Run_classification in
           let outcome =
             Result.map
-              (fun (r : Claude_runner.result) ->
+              (fun (r : Llm_backend.result) ->
                 {
-                  exit_code = r.Claude_runner.exit_code;
-                  got_events = r.Claude_runner.got_events;
-                  stderr = r.Claude_runner.stderr;
+                  exit_code = r.Llm_backend.exit_code;
+                  got_events = r.Llm_backend.got_events;
+                  stderr = r.Llm_backend.stderr;
                   stream_errors = String.trim (Buffer.contents error_buf);
                 })
               result
@@ -579,7 +579,8 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
             match classify ~continue outcome with
             | Process_error msg ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf "Claude process error: %s" msg);
+                  (Printf.sprintf "%s process error: %s"
+                     backend.Llm_backend.name msg);
                 (Orchestrator.Session_process_error { is_fresh }, `Failed)
             | No_session_to_resume ->
                 log_event runtime ~patch_id
@@ -589,23 +590,23 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
             | Success { stream_errors } ->
                 if String.length stream_errors > 0 then
                   log_event runtime ~patch_id
-                    (Printf.sprintf "Claude exited 0 but had stream errors: %s"
+                    (Printf.sprintf "%s exited 0 but had stream errors: %s"
+                       backend.Llm_backend.name
                        (truncate stream_errors 500));
                 let text_len = Buffer.length text_buf in
                 let tools = !tool_count in
                 if tools = 0 && text_len < 200 then
                   log_event runtime ~patch_id
                     (Printf.sprintf
-                       "Claude exited 0 with no tool use and %d chars of text: \
-                        %s"
-                       text_len
+                       "%s exited 0 with no tool use and %d chars of text: %s"
+                       backend.Llm_backend.name text_len
                        (truncate (String.trim (Buffer.contents text_buf)) 200));
                 (Orchestrator.Session_ok, `Ok)
             | Session_failed { exit_code; detail } ->
                 log_event runtime ~patch_id
                   (Printf.sprintf
-                     "Claude exited with code %d, marking session failed: %s"
-                     exit_code detail);
+                     "%s exited with code %d, marking session failed: %s"
+                     backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
           Runtime.update_orchestrator runtime (fun orch ->
@@ -1497,6 +1498,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
+  let backend =
+    match Stdlib.Sys.getenv_opt "ONTON_BACKEND" with
+    | None | Some "claude" -> Claude_backend.create ~process_mgr
+    | Some "codex" -> Codex_backend.create ~process_mgr
+    | Some other ->
+        invalid_arg
+          (Printf.sprintf
+             "Unsupported ONTON_BACKEND=%S (expected \"claude\" or \"codex\")"
+             other)
+  in
   let clock = Eio.Stdenv.clock env in
   let set_status ~level ~text ?expires_at () =
     match status_msg with
@@ -1633,7 +1644,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~agent ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
-                                        ~user_config:config.user_config)
+                                        ~user_config:config.user_config ~backend)
                           in
                           match result with
                           | `Stale -> ()
@@ -1889,7 +1900,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~repo_root:config.repo_root ~prompt ~agent
                                   ~owner:config.github_owner
                                   ~repo:config.github_repo ~on_pr_detected
-                                  ~transcripts ~user_config:config.user_config)
+                                  ~transcripts ~user_config:config.user_config
+                                  ~backend)
                       in
                       match result with
                       | `Stale -> ()
