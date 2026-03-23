@@ -190,12 +190,22 @@ let list_with_branches ~process_mgr ~repo_root =
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
+let clean_git_env () =
+  Unix.environment ()
+  |> Array.to_list
+  |> List.filter ~f:(fun s ->
+         (not (String.is_prefix s ~prefix:"GIT_DIR="))
+         && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
+         && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
+  |> Array.of_list
+
 let run_git_exit_code ~process_mgr args =
   Eio.Switch.run @@ fun sw ->
   let stdout_buf = Buffer.create 0 in
   let stderr_buf = Buffer.create 64 in
+  let env = clean_git_env () in
   let child =
-    Eio.Process.spawn ~sw process_mgr
+    Eio.Process.spawn ~sw process_mgr ~env
       ~stdout:(Eio.Flow.buffer_sink stdout_buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
       args
