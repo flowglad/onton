@@ -1390,80 +1390,88 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                 else
                   let logs = ref [] in
                   Runtime.update_orchestrator runtime (fun orch ->
-                      let orch, log_entries =
-                        Poll_applicator.apply orch patch_id poll_result
-                      in
-                      logs := log_entries;
-                      (* CI cache side-effect — not pure *)
-                      let failed =
-                        let failure_conclusions =
-                          [
-                            "failure";
-                            "error";
-                            "action_required";
-                            "timed_out";
-                            "startup_failure";
-                          ]
-                        in
-                        Base.List.filter poll_result.Poller.ci_checks
-                          ~f:(fun (c : Ci_check.t) ->
-                            Base.List.mem failure_conclusions
-                              c.Ci_check.conclusion ~equal:Base.String.equal)
-                      in
-                      if not (Base.List.is_empty failed) then
-                        Hashtbl.replace ci_checks_cache patch_id failed
-                      else Hashtbl.remove ci_checks_cache patch_id;
-                      (* head_branch and worktree discovery — side-effectful,
-                       stays outside Poll_applicator *)
-                      let orch =
-                        match pr_state.Github.Pr_state.head_branch with
-                        | Some b ->
-                            if
-                              Worktree.is_checked_out_in_repo_root ~process_mgr
-                                ~repo_root:config.repo_root b
-                            then
-                              log_event runtime ~patch_id
-                                (Printf.sprintf
-                                   "branch %s is checked out in %s — release \
-                                    it (e.g. `git checkout main`) before onton \
-                                    can work on this patch"
-                                   (Branch.to_string b) config.repo_root);
-                            Orchestrator.set_head_branch orch patch_id b
-                        | None -> orch
-                      in
-                      let orch =
-                        let agent = Orchestrator.agent orch patch_id in
-                        match
-                          ( agent.Patch_agent.base_branch,
-                            pr_state.Github.Pr_state.base_branch )
-                        with
-                        | None, Some b ->
-                            Orchestrator.set_base_branch orch patch_id b
-                        | _ -> orch
-                      in
-                      let orch =
-                        let agent = Orchestrator.agent orch patch_id in
-                        if Option.is_none agent.Patch_agent.worktree_path then
-                          let path =
-                            resolve_worktree_path ~process_mgr
-                              ~repo_root:config.repo_root ~project_name
-                              ~patch_id ~agent ()
+                      match Orchestrator.find_agent orch patch_id with
+                      | None ->
+                          (* Agent was removed between intent collection and
+                             application (e.g. user pressed '-'). *)
+                          orch
+                      | Some _ ->
+                          let orch, log_entries =
+                            Poll_applicator.apply orch patch_id poll_result
                           in
-                          let default =
-                            Worktree.worktree_dir ~project_name ~patch_id
-                          in
-                          if not (String.equal path default) then
-                            let orch =
-                              Orchestrator.set_worktree_path orch patch_id path
+                          logs := log_entries;
+                          (* CI cache side-effect — not pure *)
+                          let failed =
+                            let failure_conclusions =
+                              [
+                                "failure";
+                                "error";
+                                "action_required";
+                                "timed_out";
+                                "startup_failure";
+                              ]
                             in
-                            if agent.Patch_agent.needs_intervention then
-                              Orchestrator.clear_needs_intervention orch
-                                patch_id
+                            Base.List.filter poll_result.Poller.ci_checks
+                              ~f:(fun (c : Ci_check.t) ->
+                                Base.List.mem failure_conclusions
+                                  c.Ci_check.conclusion ~equal:Base.String.equal)
+                          in
+                          if not (Base.List.is_empty failed) then
+                            Hashtbl.replace ci_checks_cache patch_id failed
+                          else Hashtbl.remove ci_checks_cache patch_id;
+                          (* head_branch and worktree discovery — side-effectful,
+                       stays outside Poll_applicator *)
+                          let orch =
+                            match pr_state.Github.Pr_state.head_branch with
+                            | Some b ->
+                                if
+                                  Worktree.is_checked_out_in_repo_root
+                                    ~process_mgr ~repo_root:config.repo_root b
+                                then
+                                  log_event runtime ~patch_id
+                                    (Printf.sprintf
+                                       "branch %s is checked out in %s — \
+                                        release it (e.g. `git checkout main`) \
+                                        before onton can work on this patch"
+                                       (Branch.to_string b) config.repo_root);
+                                Orchestrator.set_head_branch orch patch_id b
+                            | None -> orch
+                          in
+                          let orch =
+                            let agent = Orchestrator.agent orch patch_id in
+                            match
+                              ( agent.Patch_agent.base_branch,
+                                pr_state.Github.Pr_state.base_branch )
+                            with
+                            | None, Some b ->
+                                Orchestrator.set_base_branch orch patch_id b
+                            | _ -> orch
+                          in
+                          let orch =
+                            let agent = Orchestrator.agent orch patch_id in
+                            if Option.is_none agent.Patch_agent.worktree_path
+                            then
+                              let path =
+                                resolve_worktree_path ~process_mgr
+                                  ~repo_root:config.repo_root ~project_name
+                                  ~patch_id ~agent ()
+                              in
+                              let default =
+                                Worktree.worktree_dir ~project_name ~patch_id
+                              in
+                              if not (String.equal path default) then
+                                let orch =
+                                  Orchestrator.set_worktree_path orch patch_id
+                                    path
+                                in
+                                if agent.Patch_agent.needs_intervention then
+                                  Orchestrator.clear_needs_intervention orch
+                                    patch_id
+                                else orch
+                              else orch
                             else orch
-                          else orch
-                        else orch
-                      in
-                      orch);
+                          in
+                          orch);
                   Base.List.iter !logs
                     ~f:(fun (entry : Poll_applicator.log_entry) ->
                       log_event runtime ~patch_id:entry.Poll_applicator.patch_id
