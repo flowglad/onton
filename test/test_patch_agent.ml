@@ -387,7 +387,7 @@ let () =
               ~human_messages:[] ~ci_checks:a.ci_checks ~mergeable:false
               ~merge_ready:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
-              ~head_branch:None
+              ~head_branch:None ~branch_blocked:false
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -456,7 +456,7 @@ let () =
               ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
               ~mergeable:false ~merge_ready:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
-              ~head_branch:None
+              ~head_branch:None ~branch_blocked:false
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in

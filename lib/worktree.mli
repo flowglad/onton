@@ -9,6 +9,12 @@ type t = private {
 
 val worktree_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
 
+val is_checked_out_in_repo_root :
+  process_mgr:_ Eio.Process.mgr -> repo_root:string -> Types.Branch.t -> bool
+(** Returns [true] if [branch] is currently the HEAD of the repo root (common
+    dir). A worktree cannot be created for a branch that is checked out there.
+*)
+
 val create :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->

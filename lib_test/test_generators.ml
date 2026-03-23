@@ -300,12 +300,21 @@ let gen_patch_agent_fully_populated =
 let gen_patch_view =
   QCheck2.Gen.(
     map3
-      (fun (id, base_branch) (has_pr, merged, busy) (needs_intervention, queue)
-         ->
+      (fun (id, base_branch) (has_pr, merged, busy, branch_blocked)
+           (needs_intervention, queue) ->
         Onton.Reconciler.
-          { id; has_pr; merged; busy; needs_intervention; queue; base_branch })
+          {
+            id;
+            has_pr;
+            merged;
+            busy;
+            needs_intervention;
+            branch_blocked;
+            queue;
+            base_branch;
+          })
       (pair gen_patch_id gen_branch)
-      (triple bool bool bool)
+      (quad bool bool bool bool)
       (pair bool gen_operation_kind_queue))
 
 let gen_reconciler_action =

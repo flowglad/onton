@@ -78,13 +78,23 @@ let () =
    then calls rebase_onto and checks the result.
    ─────────────────────────────────────────────────────────────────────── *)
 
+(** Strip GIT_DIR etc. so tests are not affected when run inside a git hook. *)
+let clean_git_env () =
+  Unix.environment () |> Array.to_list
+  |> List.filter ~f:(fun s ->
+      (not (String.is_prefix s ~prefix:"GIT_DIR="))
+      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
+      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
+  |> Array.of_list
+
 (** Run a git command in [dir], fail on non-zero exit. *)
 let git ~process_mgr ~dir args =
   Eio.Switch.run @@ fun sw ->
   let stdout_buf = Buffer.create 64 in
   let stderr_buf = Buffer.create 64 in
+  let env = clean_git_env () in
   let child =
-    Eio.Process.spawn ~sw process_mgr
+    Eio.Process.spawn ~sw process_mgr ~env
       ~stdout:(Eio.Flow.buffer_sink stdout_buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
       ([ "git"; "-C"; dir ] @ args)

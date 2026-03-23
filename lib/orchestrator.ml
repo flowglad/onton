@@ -131,7 +131,8 @@ let respondable_patches t =
       if
         a.Patch_agent.has_pr && (not a.Patch_agent.merged)
         && (not a.Patch_agent.busy)
-        && not a.Patch_agent.needs_intervention
+        && (not a.Patch_agent.needs_intervention)
+        && not a.Patch_agent.branch_blocked
       then
         Patch_agent.highest_priority a
         |> Option.bind ~f:(fun k ->
@@ -234,8 +235,17 @@ let set_ci_checks t patch_id checks =
 let set_merge_ready t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_ready a v)
 
+let set_needs_intervention t patch_id =
+  update_agent t patch_id ~f:Patch_agent.set_needs_intervention
+
 let clear_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
+
+let set_branch_blocked t patch_id =
+  update_agent t patch_id ~f:Patch_agent.set_branch_blocked
+
+let clear_branch_blocked t patch_id =
+  update_agent t patch_id ~f:Patch_agent.clear_branch_blocked
 
 let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
 

@@ -38,10 +38,19 @@ let rec has_cancellation = function
       List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
   | _ -> false
 
+let clean_git_env () =
+  Unix.environment () |> Array.to_list
+  |> List.filter ~f:(fun s ->
+      (not (String.is_prefix s ~prefix:"GIT_DIR="))
+      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
+      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
+  |> Array.of_list
+
 let branch_exists ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 16 in
   match
-    Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
+      ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
       [
         "git";
@@ -56,16 +65,31 @@ let branch_exists ~process_mgr ~repo_root branch_str =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
+let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
+  let buf = Buffer.create 128 in
+  let stderr_buf = Buffer.create 64 in
+  match
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
+      ~stdout:(Eio.Flow.buffer_sink buf)
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      [ "git"; "-C"; repo_root; "rev-parse"; "--abbrev-ref"; "HEAD" ]
+  with
+  | () ->
+      let current = String.strip (Buffer.contents buf) in
+      String.equal current (Types.Branch.to_string branch)
+  | exception e when has_cancellation e -> raise e
+  | exception _ -> false
+
 let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
   if Stdlib.Sys.file_exists path then { patch_id; branch; path }
   else if branch_exists ~process_mgr ~repo_root branch_str then (
-    Eio.Process.run process_mgr
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
       [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ];
     { patch_id; branch; path })
   else (
-    Eio.Process.run process_mgr
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
       [
         "git";
         "-C";
@@ -80,7 +104,7 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
     { patch_id; branch; path })
 
 let remove ~process_mgr ~repo_root t =
-  Eio.Process.run process_mgr
+  Eio.Process.run process_mgr ~env:(clean_git_env ())
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
 
 let detect_branch ~process_mgr ~path =
@@ -88,7 +112,8 @@ let detect_branch ~process_mgr ~path =
   let path = normalize_path path in
   let stderr_buf = Buffer.create 64 in
   (match
-     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+     Eio.Process.run process_mgr ~env:(clean_git_env ())
+       ~stdout:(Eio.Flow.buffer_sink buf)
        ~stderr:(Eio.Flow.buffer_sink stderr_buf)
        [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
    with
@@ -160,7 +185,8 @@ let list_with_branches ~process_mgr ~repo_root =
   let buf = Buffer.create 512 in
   let stderr_buf = Buffer.create 64 in
   (match
-     Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+     Eio.Process.run process_mgr ~env:(clean_git_env ())
+       ~stdout:(Eio.Flow.buffer_sink buf)
        ~stderr:(Eio.Flow.buffer_sink stderr_buf)
        [ "git"; "-C"; repo_root; "worktree"; "list"; "--porcelain" ]
    with
@@ -180,8 +206,9 @@ let run_git_exit_code ~process_mgr args =
   Eio.Switch.run @@ fun sw ->
   let stdout_buf = Buffer.create 0 in
   let stderr_buf = Buffer.create 64 in
+  let env = clean_git_env () in
   let child =
-    Eio.Process.spawn ~sw process_mgr
+    Eio.Process.spawn ~sw process_mgr ~env
       ~stdout:(Eio.Flow.buffer_sink stdout_buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
       args

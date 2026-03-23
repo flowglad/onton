@@ -15,6 +15,7 @@ type patch_view = {
   merged : bool;
   busy : bool;
   needs_intervention : bool;
+  branch_blocked : bool;
   queue : Types.Operation_kind.t list;
   base_branch : Types.Branch.t;
 }

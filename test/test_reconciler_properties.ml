@@ -89,6 +89,7 @@ let gen_rebase_scenario =
                   merged = false;
                   busy = false;
                   needs_intervention = false;
+                  branch_blocked = false;
                   queue = [];
                   base_branch = main;
                 })
@@ -149,6 +150,7 @@ let prop_detect_rebases_skips_already_queued =
                 merged = false;
                 busy = false;
                 needs_intervention = false;
+                branch_blocked = false;
                 queue = [ Types.Operation_kind.Rebase ];
                 base_branch = main;
               })
@@ -184,6 +186,7 @@ let gen_plan_scenario =
                   merged = false;
                   busy;
                   needs_intervention = intervention;
+                  branch_blocked = false;
                   queue;
                   base_branch = main;
                 }))))
@@ -329,6 +332,7 @@ let gen_reconcile_scenario =
                   merged = false;
                   busy = false;
                   needs_intervention = false;
+                  branch_blocked = false;
                   queue = [];
                   base_branch = main;
                 }))))

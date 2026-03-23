@@ -379,45 +379,60 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                 Orchestrator.set_worktree_path orch patch_id existing);
             Some existing
         | None ->
-            let base =
-              match base_ref with
-              | Some b -> b
-              | None -> (
-                  match agent.Patch_agent.base_branch with
-                  | Some b -> Branch.to_string b
-                  | None -> "HEAD")
-            in
-            log_event runtime ~patch_id
-              (Printf.sprintf "creating worktree at %s" path);
-            ignore
-              (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
-                 ~branch:br ~base_ref:base);
-            if Stdlib.Sys.file_exists path then (
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Orchestrator.set_worktree_path orch patch_id path);
-              (match user_config.User_config.on_worktree_create with
-              | Some script -> (
-                  let env =
-                    [
-                      ("ONTON_WORKTREE_PATH", path);
-                      ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
-                      ("ONTON_BRANCH", Branch.to_string br);
-                    ]
-                  in
-                  let cwd = Eio.Path.(fs / path) in
-                  match User_config.run_hook ~process_mgr ~script ~cwd ~env with
-                  | Ok () ->
-                      log_event runtime ~patch_id "on_worktree_create hook ran"
-                  | Error msg ->
-                      log_event runtime ~patch_id
-                        (Printf.sprintf "on_worktree_create hook failed: %s" msg)
-                  )
-              | None -> ());
-              Some path)
-            else (
+            if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br
+            then (
               log_event runtime ~patch_id
-                (Printf.sprintf "worktree still missing at %s" path);
-              None))
+                (Printf.sprintf
+                   "branch %s is currently checked out in the repo root (%s). \
+                    Cannot create a worktree for a branch that is checked out \
+                    in the common directory. Please switch the repo root to a \
+                    different branch (e.g. `git -C %s checkout \
+                    <default-branch>`) before continuing."
+                   (Branch.to_string br) repo_root repo_root);
+              None)
+            else
+              let base =
+                match base_ref with
+                | Some b -> b
+                | None -> (
+                    match agent.Patch_agent.base_branch with
+                    | Some b -> Branch.to_string b
+                    | None -> "HEAD")
+              in
+              log_event runtime ~patch_id
+                (Printf.sprintf "creating worktree at %s" path);
+              ignore
+                (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
+                   ~branch:br ~base_ref:base);
+              if Stdlib.Sys.file_exists path then (
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Orchestrator.set_worktree_path orch patch_id path);
+                (match user_config.User_config.on_worktree_create with
+                | Some script -> (
+                    let env =
+                      [
+                        ("ONTON_WORKTREE_PATH", path);
+                        ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
+                        ("ONTON_BRANCH", Branch.to_string br);
+                      ]
+                    in
+                    let cwd = Eio.Path.(fs / path) in
+                    match
+                      User_config.run_hook ~process_mgr ~script ~cwd ~env
+                    with
+                    | Ok () ->
+                        log_event runtime ~patch_id
+                          "on_worktree_create hook ran"
+                    | Error msg ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "on_worktree_create hook failed: %s"
+                             msg))
+                | None -> ());
+                Some path)
+              else (
+                log_event runtime ~patch_id
+                  (Printf.sprintf "worktree still missing at %s" path);
+                None))
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
@@ -626,7 +641,8 @@ let intervention_reasons_of_log (log : Activity_log.t)
   let agents = Orchestrator.all_agents orchestrator in
   let needs =
     Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-        if a.Patch_agent.needs_intervention then Some a.Patch_agent.patch_id
+        if a.Patch_agent.needs_intervention || a.Patch_agent.branch_blocked then
+          Some a.Patch_agent.patch_id
         else None)
     |> Base.Hash_set.of_list (module Patch_id)
   in
@@ -1373,51 +1389,46 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       log_event runtime ~patch_id
                         (Printf.sprintf "PR re-discovery failed: %s" msg))
                 else
-                  let logs = ref [] in
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      let orch, log_entries =
-                        Poll_applicator.apply orch patch_id poll_result
-                      in
-                      logs := log_entries;
-                      (* CI cache side-effect — not pure *)
-                      let failed =
-                        let failure_conclusions =
-                          [
-                            "failure";
-                            "error";
-                            "action_required";
-                            "timed_out";
-                            "startup_failure";
-                          ]
-                        in
-                        Base.List.filter poll_result.Poller.ci_checks
-                          ~f:(fun (c : Ci_check.t) ->
-                            Base.List.mem failure_conclusions
-                              c.Ci_check.conclusion ~equal:Base.String.equal)
-                      in
-                      if not (Base.List.is_empty failed) then
-                        Hashtbl.replace ci_checks_cache patch_id failed
-                      else Hashtbl.remove ci_checks_cache patch_id;
-                      (* head_branch and worktree discovery — side-effectful,
-                       stays outside Poll_applicator *)
-                      let orch =
-                        match pr_state.Github.Pr_state.head_branch with
-                        | Some b -> Orchestrator.set_head_branch orch patch_id b
-                        | None -> orch
-                      in
-                      let orch =
-                        let agent = Orchestrator.agent orch patch_id in
-                        match
-                          ( agent.Patch_agent.base_branch,
-                            pr_state.Github.Pr_state.base_branch )
-                        with
-                        | None, Some b ->
-                            Orchestrator.set_base_branch orch patch_id b
-                        | _ -> orch
-                      in
-                      let orch =
-                        let agent = Orchestrator.agent orch patch_id in
-                        if Option.is_none agent.Patch_agent.worktree_path then
+                  let branch_in_root =
+                    match pr_state.Github.Pr_state.head_branch with
+                    | Some b ->
+                        Worktree.is_checked_out_in_repo_root ~process_mgr
+                          ~repo_root:config.repo_root b
+                    | None -> false
+                  in
+                  (* CI failed-checks computation is pure — compute before
+                     entering the orchestrator callback so Hashtbl mutation
+                     stays outside the lock. *)
+                  let failed_ci =
+                    let failure_conclusions =
+                      [
+                        "failure";
+                        "error";
+                        "action_required";
+                        "timed_out";
+                        "startup_failure";
+                      ]
+                    in
+                    Base.List.filter poll_result.Poller.ci_checks
+                      ~f:(fun (c : Ci_check.t) ->
+                        Base.List.mem failure_conclusions c.Ci_check.conclusion
+                          ~equal:Base.String.equal)
+                  in
+                  (* Precompute worktree candidate path outside the lock so
+                     resolve_worktree_path (which shells out to git) does not
+                     run while holding the orchestrator mutex. *)
+                  let worktree_candidate =
+                    let agent =
+                      Runtime.read runtime (fun snap ->
+                          Orchestrator.find_agent snap.Runtime.orchestrator
+                            patch_id)
+                    in
+                    match agent with
+                    | None -> None
+                    | Some agent ->
+                        if Option.is_some agent.Patch_agent.worktree_path then
+                          None
+                        else
                           let path =
                             resolve_worktree_path ~process_mgr
                               ~repo_root:config.repo_root ~project_name
@@ -1426,22 +1437,106 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                           let default =
                             Worktree.worktree_dir ~project_name ~patch_id
                           in
-                          if not (String.equal path default) then
-                            let orch =
-                              Orchestrator.set_worktree_path orch patch_id path
+                          if not (String.equal path default) then Some path
+                          else None
+                  in
+                  let log_entries, (newly_blocked, agent_present) =
+                    Runtime.update_orchestrator_returning runtime (fun orch ->
+                        match Orchestrator.find_agent orch patch_id with
+                        | None ->
+                            (* Agent was removed between intent collection and
+                               application (e.g. user pressed '-'). *)
+                            (orch, ([], (false, false)))
+                        | Some _ ->
+                            let orch, log_entries =
+                              Poll_applicator.apply orch patch_id poll_result
                             in
-                            if agent.Patch_agent.needs_intervention then
-                              Orchestrator.clear_needs_intervention orch
-                                patch_id
-                            else orch
-                          else orch
-                        else orch
-                      in
-                      orch);
-                  Base.List.iter !logs
+                            (* head_branch and intervention management *)
+                            let orch, newly_blocked =
+                              match pr_state.Github.Pr_state.head_branch with
+                              | Some b ->
+                                  let orch =
+                                    Orchestrator.set_head_branch orch patch_id b
+                                  in
+                                  if branch_in_root then
+                                    let agent =
+                                      Orchestrator.agent orch patch_id
+                                    in
+                                    if not agent.Patch_agent.branch_blocked then
+                                      ( Orchestrator.set_branch_blocked orch
+                                          patch_id,
+                                        true )
+                                    else
+                                      ( Orchestrator.set_branch_blocked orch
+                                          patch_id,
+                                        false )
+                                  else
+                                    let agent =
+                                      Orchestrator.agent orch patch_id
+                                    in
+                                    (* Branch is no longer checked out in root —
+                                       clear branch_blocked if it was set. *)
+                                    if agent.Patch_agent.branch_blocked then
+                                      ( Orchestrator.clear_branch_blocked orch
+                                          patch_id,
+                                        false )
+                                    else (orch, false)
+                              | None -> (orch, false)
+                            in
+                            let orch =
+                              let agent = Orchestrator.agent orch patch_id in
+                              match
+                                ( agent.Patch_agent.base_branch,
+                                  pr_state.Github.Pr_state.base_branch )
+                              with
+                              | None, Some b ->
+                                  Orchestrator.set_base_branch orch patch_id b
+                              | _ -> orch
+                            in
+                            let orch =
+                              let current_agent =
+                                Orchestrator.agent orch patch_id
+                              in
+                              match worktree_candidate with
+                              | Some path
+                                when Option.is_none
+                                       current_agent.Patch_agent.worktree_path
+                                ->
+                                  let orch =
+                                    Orchestrator.set_worktree_path orch patch_id
+                                      path
+                                  in
+                                  let agent =
+                                    Orchestrator.agent orch patch_id
+                                  in
+                                  if agent.Patch_agent.branch_blocked then
+                                    Orchestrator.clear_branch_blocked orch
+                                      patch_id
+                                  else orch
+                              | _ -> orch
+                            in
+                            (orch, (log_entries, (newly_blocked, true))))
+                  in
+                  (* Side-effects applied after the callback returns *)
+                  if agent_present then
+                    if not (Base.List.is_empty failed_ci) then
+                      Hashtbl.replace ci_checks_cache patch_id failed_ci
+                    else Hashtbl.remove ci_checks_cache patch_id;
+                  Base.List.iter log_entries
                     ~f:(fun (entry : Poll_applicator.log_entry) ->
                       log_event runtime ~patch_id:entry.Poll_applicator.patch_id
                         entry.Poll_applicator.message);
+                  (if newly_blocked then
+                     match pr_state.Github.Pr_state.head_branch with
+                     | Some b ->
+                         log_event runtime ~patch_id
+                           (Printf.sprintf
+                              "branch %s is checked out in %s — release it \
+                               (e.g. `git -C %s checkout <default-branch>`) \
+                               before onton can work on this patch"
+                              (Branch.to_string b) config.repo_root
+                              config.repo_root)
+                     | None -> ());
                   if pr_state.Github.Pr_state.ci_checks_truncated then
                     log_event runtime ~patch_id
                       "warning: CI check list was truncated (>100 checks); \
@@ -1460,6 +1555,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                   merged = a.Patch_agent.merged;
                   busy = a.Patch_agent.busy;
                   needs_intervention = a.Patch_agent.needs_intervention;
+                  branch_blocked = a.Patch_agent.branch_blocked;
                   queue = a.Patch_agent.queue;
                   base_branch =
                     Base.Option.value a.Patch_agent.base_branch ~default:main;
@@ -1602,6 +1698,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 if
                                   agent.Patch_agent.merged
                                   || agent.Patch_agent.needs_intervention
+                                  || agent.Patch_agent.branch_blocked
                                   || not agent.Patch_agent.busy
                                 then (
                                   log_event runtime ~patch_id
@@ -1804,6 +1901,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             if
                               agent.Patch_agent.merged
                               || agent.Patch_agent.needs_intervention
+                              || agent.Patch_agent.branch_blocked
                               || not agent.Patch_agent.busy
                             then (
                               log_event runtime ~patch_id

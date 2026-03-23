@@ -29,6 +29,7 @@ type t = {
   current_op : Operation_kind.t option;
   worktree_path : string option;
   head_branch : Branch.t option;
+  branch_blocked : bool;
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -60,6 +61,7 @@ let create patch_id =
     current_op = None;
     worktree_path = None;
     head_branch = None;
+    branch_blocked = false;
   }
 
 let create_adhoc ~patch_id ~pr_number =
@@ -87,6 +89,7 @@ let create_adhoc ~patch_id ~pr_number =
     current_op = None;
     worktree_path = None;
     head_branch = None;
+    branch_blocked = false;
   }
 
 let highest_priority t =
@@ -143,12 +146,16 @@ let set_head_branch t branch = { t with head_branch = Some branch }
 
 let is_approved t ~main_branch =
   t.has_pr && t.merge_ready && (not t.busy) && (not t.needs_intervention)
+  && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
 let set_ci_checks t checks = { t with ci_checks = checks }
+let set_needs_intervention t = { t with needs_intervention = true }
+let set_branch_blocked t = { t with branch_blocked = true }
+let clear_branch_blocked t = { t with branch_blocked = false }
 
 let clear_needs_intervention t =
   { t with needs_intervention = false; session_fallback = Fresh_available }
@@ -169,7 +176,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~mergeable
     ~merge_ready ~checks_passing ~no_unresolved_comments ~worktree_path
-    ~head_branch =
+    ~head_branch ~branch_blocked =
   {
     patch_id;
     has_pr;
@@ -194,6 +201,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     current_op = None;
     worktree_path;
     head_branch;
+    branch_blocked;
   }
 
 let set_pr_number t pr_number =
