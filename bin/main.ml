@@ -1389,6 +1389,13 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         (Printf.sprintf "PR re-discovery failed: %s" msg))
                 else
                   let logs = ref [] in
+                  let branch_in_root =
+                    match pr_state.Github.Pr_state.head_branch with
+                    | Some b ->
+                        Worktree.is_checked_out_in_repo_root ~process_mgr
+                          ~repo_root:config.repo_root b
+                    | None -> false
+                  in
                   Runtime.update_orchestrator runtime (fun orch ->
                       match Orchestrator.find_agent orch patch_id with
                       | None ->
@@ -1424,10 +1431,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                           let orch =
                             match pr_state.Github.Pr_state.head_branch with
                             | Some b ->
-                                if
-                                  Worktree.is_checked_out_in_repo_root
-                                    ~process_mgr ~repo_root:config.repo_root b
-                                then
+                                if branch_in_root then
                                   log_event runtime ~patch_id
                                     (Printf.sprintf
                                        "branch %s is checked out in %s — \
