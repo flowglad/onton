@@ -38,6 +38,14 @@ let rec has_cancellation = function
       List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
   | _ -> false
 
+let clean_git_env () =
+  Unix.environment () |> Array.to_list
+  |> List.filter ~f:(fun s ->
+      (not (String.is_prefix s ~prefix:"GIT_DIR="))
+      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
+      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
+  |> Array.of_list
+
 let branch_exists ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 16 in
   match
@@ -60,7 +68,8 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
+      ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
       [ "git"; "-C"; repo_root; "rev-parse"; "--abbrev-ref"; "HEAD" ]
   with
@@ -189,14 +198,6 @@ let list_with_branches ~process_mgr ~repo_root =
 
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]
-
-let clean_git_env () =
-  Unix.environment () |> Array.to_list
-  |> List.filter ~f:(fun s ->
-      (not (String.is_prefix s ~prefix:"GIT_DIR="))
-      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
-      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
-  |> Array.of_list
 
 let run_git_exit_code ~process_mgr args =
   Eio.Switch.run @@ fun sw ->
