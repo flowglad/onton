@@ -61,6 +61,7 @@ val set_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
+val set_needs_intervention : t -> Patch_id.t -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
 val set_worktree_path : t -> Patch_id.t -> string -> t

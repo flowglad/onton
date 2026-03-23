@@ -149,6 +149,7 @@ let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
 let set_ci_checks t checks = { t with ci_checks = checks }
+let set_needs_intervention t = { t with needs_intervention = true }
 
 let clear_needs_intervention t =
   { t with needs_intervention = false; session_fallback = Fresh_available }

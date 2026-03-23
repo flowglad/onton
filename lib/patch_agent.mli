@@ -139,6 +139,9 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
 
+val set_needs_intervention : t -> t
+(** Set the needs-intervention flag (e.g., branch checked out in repo root). *)
+
 val clear_needs_intervention : t -> t
 (** Clear the needs-intervention flag (e.g., after manual resolution). *)
 
