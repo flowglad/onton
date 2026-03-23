@@ -1494,8 +1494,14 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                               | _ -> orch
                             in
                             let orch =
+                              let current_agent =
+                                Orchestrator.agent orch patch_id
+                              in
                               match worktree_candidate with
-                              | Some path ->
+                              | Some path
+                                when Option.is_none
+                                       current_agent.Patch_agent.worktree_path
+                                ->
                                   let orch =
                                     Orchestrator.set_worktree_path orch patch_id
                                       path
@@ -1507,7 +1513,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                     Orchestrator.clear_needs_intervention orch
                                       patch_id
                                   else orch
-                              | None -> orch
+                              | _ -> orch
                             in
                             (orch, (log_entries, (newly_blocked, true))))
                   in
