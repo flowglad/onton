@@ -33,6 +33,7 @@ type t = private {
   current_op : Types.Operation_kind.t option;
   worktree_path : string option;
   head_branch : Types.Branch.t option;
+  branch_blocked : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -140,10 +141,17 @@ val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
 
 val set_needs_intervention : t -> t
-(** Set the needs-intervention flag (e.g., branch checked out in repo root). *)
+(** Set the needs-intervention flag (e.g., session failure escalation). *)
 
 val clear_needs_intervention : t -> t
-(** Clear the needs-intervention flag (e.g., after manual resolution). *)
+(** Clear the needs-intervention flag (e.g., after manual resolution). Also
+    resets [session_fallback] to [Fresh_available]. *)
+
+val set_branch_blocked : t -> t
+(** Set the branch-blocked flag (branch is checked out in repo root). *)
+
+val clear_branch_blocked : t -> t
+(** Clear the branch-blocked flag (branch is no longer in repo root). *)
 
 val set_ci_checks : t -> Types.Ci_check.t list -> t
 (** Replace the stored CI check details. *)
@@ -188,6 +196,7 @@ val restore :
   no_unresolved_comments:bool ->
   worktree_path:string option ->
   head_branch:Types.Branch.t option ->
+  branch_blocked:bool ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

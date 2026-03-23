@@ -641,7 +641,8 @@ let intervention_reasons_of_log (log : Activity_log.t)
   let agents = Orchestrator.all_agents orchestrator in
   let needs =
     Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-        if a.Patch_agent.needs_intervention then Some a.Patch_agent.patch_id
+        if a.Patch_agent.needs_intervention || a.Patch_agent.branch_blocked then
+          Some a.Patch_agent.patch_id
         else None)
     |> Base.Hash_set.of_list (module Patch_id)
   in
@@ -1461,13 +1462,12 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                     let agent =
                                       Orchestrator.agent orch patch_id
                                     in
-                                    if not agent.Patch_agent.needs_intervention
-                                    then
-                                      ( Orchestrator.set_needs_intervention orch
+                                    if not agent.Patch_agent.branch_blocked then
+                                      ( Orchestrator.set_branch_blocked orch
                                           patch_id,
                                         true )
                                     else
-                                      ( Orchestrator.set_needs_intervention orch
+                                      ( Orchestrator.set_branch_blocked orch
                                           patch_id,
                                         false )
                                   else
@@ -1475,10 +1475,10 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                       Orchestrator.agent orch patch_id
                                     in
                                     (* Branch is no longer checked out in root —
-                                       clear intervention if it was set. *)
-                                    if agent.Patch_agent.needs_intervention then
-                                      ( Orchestrator.clear_needs_intervention
-                                          orch patch_id,
+                                       clear branch_blocked if it was set. *)
+                                    if agent.Patch_agent.branch_blocked then
+                                      ( Orchestrator.clear_branch_blocked orch
+                                          patch_id,
                                         false )
                                     else (orch, false)
                               | None -> (orch, false)
@@ -1509,8 +1509,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                   let agent =
                                     Orchestrator.agent orch patch_id
                                   in
-                                  if agent.Patch_agent.needs_intervention then
-                                    Orchestrator.clear_needs_intervention orch
+                                  if agent.Patch_agent.branch_blocked then
+                                    Orchestrator.clear_branch_blocked orch
                                       patch_id
                                   else orch
                               | _ -> orch
@@ -1555,6 +1555,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                   merged = a.Patch_agent.merged;
                   busy = a.Patch_agent.busy;
                   needs_intervention = a.Patch_agent.needs_intervention;
+                  branch_blocked = a.Patch_agent.branch_blocked;
                   queue = a.Patch_agent.queue;
                   base_branch =
                     Base.Option.value a.Patch_agent.base_branch ~default:main;
@@ -1697,6 +1698,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 if
                                   agent.Patch_agent.merged
                                   || agent.Patch_agent.needs_intervention
+                                  || agent.Patch_agent.branch_blocked
                                   || not agent.Patch_agent.busy
                                 then (
                                   log_event runtime ~patch_id
@@ -1899,6 +1901,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             if
                               agent.Patch_agent.merged
                               || agent.Patch_agent.needs_intervention
+                              || agent.Patch_agent.branch_blocked
                               || not agent.Patch_agent.busy
                             then (
                               log_event runtime ~patch_id

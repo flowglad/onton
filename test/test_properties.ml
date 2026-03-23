@@ -320,7 +320,7 @@ let () =
   let pid = Types.Patch_id.of_string "p1" in
   let main = Types.Branch.of_string "main" in
   let mk_view ?(has_pr = true) ?(merged = false) ?(busy = false)
-      ?(needs_intervention = false) ?(queue = []) id =
+      ?(needs_intervention = false) ?(branch_blocked = false) ?(queue = []) id =
     Reconciler.
       {
         id;
@@ -328,6 +328,7 @@ let () =
         merged;
         busy;
         needs_intervention;
+        branch_blocked;
         queue;
         base_branch = main;
       }

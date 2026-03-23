@@ -81,6 +81,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         match a.head_branch with
         | None -> `Null
         | Some b -> Branch.yojson_of_t b );
+      ("branch_blocked", `Bool a.branch_blocked);
     ]
 
 let list_member_opt key json =
@@ -157,7 +158,9 @@ let patch_agent_of_yojson json =
          |> Option.value ~default:false)
        ~worktree_path:(string_member_opt "worktree_path" json)
        ~head_branch:
-         (string_member_opt "head_branch" json |> Option.map ~f:Branch.of_string))
+         (string_member_opt "head_branch" json |> Option.map ~f:Branch.of_string)
+       ~branch_blocked:
+         (bool_member_opt "branch_blocked" json |> Option.value ~default:false))
 
 (* ---------- Activity_log ---------- *)
 

@@ -7,6 +7,7 @@ type patch_view = {
   merged : bool;
   busy : bool;
   needs_intervention : bool;
+  branch_blocked : bool;
   queue : Operation_kind.t list;
   base_branch : Branch.t;
 }
@@ -82,7 +83,9 @@ let detect_stale_bases graph views ~has_merged ~branch_of ~main =
 
 let plan_operations views ~has_merged ~branch_of ~graph ~main =
   List.filter_map views ~f:(fun v ->
-      if v.has_pr && (not v.merged) && (not v.busy) && not v.needs_intervention
+      if
+        v.has_pr && (not v.merged) && (not v.busy) && (not v.needs_intervention)
+        && not v.branch_blocked
       then
         match highest_priority_op v.queue with
         | Some kind ->
