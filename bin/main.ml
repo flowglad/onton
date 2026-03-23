@@ -1417,7 +1417,18 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                        stays outside Poll_applicator *)
                       let orch =
                         match pr_state.Github.Pr_state.head_branch with
-                        | Some b -> Orchestrator.set_head_branch orch patch_id b
+                        | Some b ->
+                            if
+                              Worktree.is_checked_out_in_repo_root ~process_mgr
+                                ~repo_root:config.repo_root b
+                            then
+                              log_event runtime ~patch_id
+                                (Printf.sprintf
+                                   "branch %s is checked out in %s — release \
+                                    it (e.g. `git checkout main`) before onton \
+                                    can work on this patch"
+                                   (Branch.to_string b) config.repo_root);
+                            Orchestrator.set_head_branch orch patch_id b
                         | None -> orch
                       in
                       let orch =
