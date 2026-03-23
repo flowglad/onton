@@ -56,6 +56,20 @@ let branch_exists ~process_mgr ~repo_root branch_str =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
+let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
+  let buf = Buffer.create 128 in
+  let stderr_buf = Buffer.create 64 in
+  match
+    Eio.Process.run process_mgr ~stdout:(Eio.Flow.buffer_sink buf)
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      [ "git"; "-C"; repo_root; "rev-parse"; "--abbrev-ref"; "HEAD" ]
+  with
+  | () ->
+      let current = String.strip (Buffer.contents buf) in
+      String.equal current (Types.Branch.to_string branch)
+  | exception e when has_cancellation e -> raise e
+  | exception _ -> false
+
 let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in

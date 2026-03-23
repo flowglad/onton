@@ -379,45 +379,60 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                 Orchestrator.set_worktree_path orch patch_id existing);
             Some existing
         | None ->
-            let base =
-              match base_ref with
-              | Some b -> b
-              | None -> (
-                  match agent.Patch_agent.base_branch with
-                  | Some b -> Branch.to_string b
-                  | None -> "HEAD")
-            in
-            log_event runtime ~patch_id
-              (Printf.sprintf "creating worktree at %s" path);
-            ignore
-              (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
-                 ~branch:br ~base_ref:base);
-            if Stdlib.Sys.file_exists path then (
-              Runtime.update_orchestrator runtime (fun orch ->
-                  Orchestrator.set_worktree_path orch patch_id path);
-              (match user_config.User_config.on_worktree_create with
-              | Some script -> (
-                  let env =
-                    [
-                      ("ONTON_WORKTREE_PATH", path);
-                      ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
-                      ("ONTON_BRANCH", Branch.to_string br);
-                    ]
-                  in
-                  let cwd = Eio.Path.(fs / path) in
-                  match User_config.run_hook ~process_mgr ~script ~cwd ~env with
-                  | Ok () ->
-                      log_event runtime ~patch_id "on_worktree_create hook ran"
-                  | Error msg ->
-                      log_event runtime ~patch_id
-                        (Printf.sprintf "on_worktree_create hook failed: %s" msg)
-                  )
-              | None -> ());
-              Some path)
-            else (
+            if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br
+            then (
               log_event runtime ~patch_id
-                (Printf.sprintf "worktree still missing at %s" path);
-              None))
+                (Printf.sprintf
+                   "branch %s is currently checked out in the repo root (%s). \
+                    Cannot create a worktree for a branch that is checked out \
+                    in the common directory. Please switch the repo root to a \
+                    different branch (e.g. `git -C %s checkout main`) before \
+                    continuing."
+                   (Branch.to_string br) repo_root repo_root);
+              None)
+            else
+              let base =
+                match base_ref with
+                | Some b -> b
+                | None -> (
+                    match agent.Patch_agent.base_branch with
+                    | Some b -> Branch.to_string b
+                    | None -> "HEAD")
+              in
+              log_event runtime ~patch_id
+                (Printf.sprintf "creating worktree at %s" path);
+              ignore
+                (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
+                   ~branch:br ~base_ref:base);
+              if Stdlib.Sys.file_exists path then (
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Orchestrator.set_worktree_path orch patch_id path);
+                (match user_config.User_config.on_worktree_create with
+                | Some script -> (
+                    let env =
+                      [
+                        ("ONTON_WORKTREE_PATH", path);
+                        ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
+                        ("ONTON_BRANCH", Branch.to_string br);
+                      ]
+                    in
+                    let cwd = Eio.Path.(fs / path) in
+                    match
+                      User_config.run_hook ~process_mgr ~script ~cwd ~env
+                    with
+                    | Ok () ->
+                        log_event runtime ~patch_id
+                          "on_worktree_create hook ran"
+                    | Error msg ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "on_worktree_create hook failed: %s"
+                             msg))
+                | None -> ());
+                Some path)
+              else (
+                log_event runtime ~patch_id
+                  (Printf.sprintf "worktree still missing at %s" path);
+                None))
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
