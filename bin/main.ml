@@ -1389,13 +1389,19 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         (Printf.sprintf "PR re-discovery failed: %s" msg))
                 else
                   let logs = ref [] in
-                  let branch_in_root =
-                    match pr_state.Github.Pr_state.head_branch with
-                    | Some b ->
-                        Worktree.is_checked_out_in_repo_root ~process_mgr
-                          ~repo_root:config.repo_root b
-                    | None -> false
-                  in
+                  let branch_in_root_warn = ref None in
+                  (match pr_state.Github.Pr_state.head_branch with
+                  | Some b
+                    when Worktree.is_checked_out_in_repo_root ~process_mgr
+                           ~repo_root:config.repo_root b ->
+                      branch_in_root_warn :=
+                        Some
+                          (Printf.sprintf
+                             "branch %s is checked out in %s — release it \
+                              (e.g. `git checkout main`) before onton can work \
+                              on this patch"
+                             (Branch.to_string b) config.repo_root)
+                  | _ -> ());
                   Runtime.update_orchestrator runtime (fun orch ->
                       match Orchestrator.find_agent orch patch_id with
                       | None ->
@@ -1431,13 +1437,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                           let orch =
                             match pr_state.Github.Pr_state.head_branch with
                             | Some b ->
-                                if branch_in_root then
-                                  log_event runtime ~patch_id
-                                    (Printf.sprintf
-                                       "branch %s is checked out in %s — \
-                                        release it (e.g. `git checkout main`) \
-                                        before onton can work on this patch"
-                                       (Branch.to_string b) config.repo_root);
                                 Orchestrator.set_head_branch orch patch_id b
                             | None -> orch
                           in
@@ -1480,6 +1479,9 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                     ~f:(fun (entry : Poll_applicator.log_entry) ->
                       log_event runtime ~patch_id:entry.Poll_applicator.patch_id
                         entry.Poll_applicator.message);
+                  (match !branch_in_root_warn with
+                  | Some msg -> log_event runtime ~patch_id msg
+                  | None -> ());
                   if pr_state.Github.Pr_state.ci_checks_truncated then
                     log_event runtime ~patch_id
                       "warning: CI check list was truncated (>100 checks); \
