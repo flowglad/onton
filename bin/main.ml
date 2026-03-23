@@ -386,8 +386,8 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                    "branch %s is currently checked out in the repo root (%s). \
                     Cannot create a worktree for a branch that is checked out \
                     in the common directory. Please switch the repo root to a \
-                    different branch (e.g. `git -C %s checkout main`) before \
-                    continuing."
+                    different branch (e.g. `git -C %s checkout <default-branch>`) \
+                    before continuing."
                    (Branch.to_string br) repo_root repo_root);
               None)
             else
@@ -1388,7 +1388,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       log_event runtime ~patch_id
                         (Printf.sprintf "PR re-discovery failed: %s" msg))
                 else
-                  let logs = ref [] in
                   let branch_in_root =
                     match pr_state.Github.Pr_state.head_branch with
                     | Some b ->
@@ -1396,38 +1395,35 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                           ~repo_root:config.repo_root b
                     | None -> false
                   in
-                  let newly_blocked =
+                  (* CI failed-checks computation is pure — compute before
+                     entering the orchestrator callback so Hashtbl mutation
+                     stays outside the lock. *)
+                  let failed_ci =
+                    let failure_conclusions =
+                      [
+                        "failure";
+                        "error";
+                        "action_required";
+                        "timed_out";
+                        "startup_failure";
+                      ]
+                    in
+                    Base.List.filter poll_result.Poller.ci_checks
+                      ~f:(fun (c : Ci_check.t) ->
+                        Base.List.mem failure_conclusions
+                          c.Ci_check.conclusion ~equal:Base.String.equal)
+                  in
+                  let log_entries, newly_blocked =
                     Runtime.update_orchestrator_returning runtime (fun orch ->
                         match Orchestrator.find_agent orch patch_id with
                         | None ->
                             (* Agent was removed between intent collection and
                                application (e.g. user pressed '-'). *)
-                            (orch, false)
+                            (orch, ([], false))
                         | Some _ ->
                             let orch, log_entries =
                               Poll_applicator.apply orch patch_id poll_result
                             in
-                            logs := log_entries;
-                            (* CI cache side-effect — not pure *)
-                            let failed =
-                              let failure_conclusions =
-                                [
-                                  "failure";
-                                  "error";
-                                  "action_required";
-                                  "timed_out";
-                                  "startup_failure";
-                                ]
-                              in
-                              Base.List.filter poll_result.Poller.ci_checks
-                                ~f:(fun (c : Ci_check.t) ->
-                                  Base.List.mem failure_conclusions
-                                    c.Ci_check.conclusion
-                                    ~equal:Base.String.equal)
-                            in
-                            if not (Base.List.is_empty failed) then
-                              Hashtbl.replace ci_checks_cache patch_id failed
-                            else Hashtbl.remove ci_checks_cache patch_id;
                             (* head_branch and worktree discovery —
                                side-effectful, stays outside Poll_applicator *)
                             let orch, newly_blocked =
@@ -1488,9 +1484,13 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                 else orch
                               else orch
                             in
-                            (orch, newly_blocked))
+                            (orch, (log_entries, newly_blocked)))
                   in
-                  Base.List.iter !logs
+                  (* Side-effects applied after the callback returns *)
+                  if not (Base.List.is_empty failed_ci) then
+                    Hashtbl.replace ci_checks_cache patch_id failed_ci
+                  else Hashtbl.remove ci_checks_cache patch_id;
+                  Base.List.iter log_entries
                     ~f:(fun (entry : Poll_applicator.log_entry) ->
                       log_event runtime ~patch_id:entry.Poll_applicator.patch_id
                         entry.Poll_applicator.message);
@@ -1500,9 +1500,10 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                          log_event runtime ~patch_id
                            (Printf.sprintf
                               "branch %s is checked out in %s — release it \
-                               (e.g. `git checkout main`) before onton can \
-                               work on this patch"
-                              (Branch.to_string b) config.repo_root)
+                               (e.g. `git -C %s checkout <default-branch>`) \
+                               before onton can work on this patch"
+                              (Branch.to_string b) config.repo_root
+                              config.repo_root)
                      | None -> ());
                   if pr_state.Github.Pr_state.ci_checks_truncated then
                     log_event runtime ~patch_id
