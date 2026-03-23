@@ -80,12 +80,11 @@ let () =
 
 (** Strip GIT_DIR etc. so tests are not affected when run inside a git hook. *)
 let clean_git_env () =
-  Unix.environment ()
-  |> Array.to_list
+  Unix.environment () |> Array.to_list
   |> List.filter ~f:(fun s ->
-         (not (String.is_prefix s ~prefix:"GIT_DIR="))
-         && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
-         && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
+      (not (String.is_prefix s ~prefix:"GIT_DIR="))
+      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
+      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
   |> Array.of_list
 
 (** Run a git command in [dir], fail on non-zero exit. *)

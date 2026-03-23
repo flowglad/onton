@@ -191,12 +191,11 @@ type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
 let clean_git_env () =
-  Unix.environment ()
-  |> Array.to_list
+  Unix.environment () |> Array.to_list
   |> List.filter ~f:(fun s ->
-         (not (String.is_prefix s ~prefix:"GIT_DIR="))
-         && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
-         && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
+      (not (String.is_prefix s ~prefix:"GIT_DIR="))
+      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
+      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
   |> Array.of_list
 
 let run_git_exit_code ~process_mgr args =

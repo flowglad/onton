@@ -386,8 +386,8 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                    "branch %s is currently checked out in the repo root (%s). \
                     Cannot create a worktree for a branch that is checked out \
                     in the common directory. Please switch the repo root to a \
-                    different branch (e.g. `git -C %s checkout <default-branch>`) \
-                    before continuing."
+                    different branch (e.g. `git -C %s checkout \
+                    <default-branch>`) before continuing."
                    (Branch.to_string br) repo_root repo_root);
               None)
             else
@@ -1410,8 +1410,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                     in
                     Base.List.filter poll_result.Poller.ci_checks
                       ~f:(fun (c : Ci_check.t) ->
-                        Base.List.mem failure_conclusions
-                          c.Ci_check.conclusion ~equal:Base.String.equal)
+                        Base.List.mem failure_conclusions c.Ci_check.conclusion
+                          ~equal:Base.String.equal)
                   in
                   let log_entries, newly_blocked =
                     Runtime.update_orchestrator_returning runtime (fun orch ->
@@ -1436,9 +1436,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                     let agent =
                                       Orchestrator.agent orch patch_id
                                     in
-                                    if
-                                      not
-                                        agent.Patch_agent.needs_intervention
+                                    if not agent.Patch_agent.needs_intervention
                                     then
                                       ( Orchestrator.set_needs_intervention orch
                                           patch_id,
