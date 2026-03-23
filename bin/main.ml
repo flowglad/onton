@@ -1413,19 +1413,44 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         Base.List.mem failure_conclusions c.Ci_check.conclusion
                           ~equal:Base.String.equal)
                   in
-                  let log_entries, newly_blocked =
+                  (* Precompute worktree candidate path outside the lock so
+                     resolve_worktree_path (which shells out to git) does not
+                     run while holding the orchestrator mutex. *)
+                  let worktree_candidate =
+                    let agent =
+                      Runtime.read runtime (fun snap ->
+                          Orchestrator.find_agent snap.Runtime.orchestrator
+                            patch_id)
+                    in
+                    match agent with
+                    | None -> None
+                    | Some agent ->
+                        if Option.is_some agent.Patch_agent.worktree_path then
+                          None
+                        else
+                          let path =
+                            resolve_worktree_path ~process_mgr
+                              ~repo_root:config.repo_root ~project_name
+                              ~patch_id ~agent ()
+                          in
+                          let default =
+                            Worktree.worktree_dir ~project_name ~patch_id
+                          in
+                          if not (String.equal path default) then Some path
+                          else None
+                  in
+                  let log_entries, (newly_blocked, agent_present) =
                     Runtime.update_orchestrator_returning runtime (fun orch ->
                         match Orchestrator.find_agent orch patch_id with
                         | None ->
                             (* Agent was removed between intent collection and
                                application (e.g. user pressed '-'). *)
-                            (orch, ([], false))
+                            (orch, ([], (false, false)))
                         | Some _ ->
                             let orch, log_entries =
                               Poll_applicator.apply orch patch_id poll_result
                             in
-                            (* head_branch and worktree discovery —
-                               side-effectful, stays outside Poll_applicator *)
+                            (* head_branch and intervention management *)
                             let orch, newly_blocked =
                               match pr_state.Github.Pr_state.head_branch with
                               | Some b ->
@@ -1445,7 +1470,17 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                       ( Orchestrator.set_needs_intervention orch
                                           patch_id,
                                         false )
-                                  else (orch, false)
+                                  else
+                                    let agent =
+                                      Orchestrator.agent orch patch_id
+                                    in
+                                    (* Branch is no longer checked out in root —
+                                       clear intervention if it was set. *)
+                                    if agent.Patch_agent.needs_intervention then
+                                      ( Orchestrator.clear_needs_intervention
+                                          orch patch_id,
+                                        false )
+                                    else (orch, false)
                               | None -> (orch, false)
                             in
                             let orch =
@@ -1459,35 +1494,28 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                               | _ -> orch
                             in
                             let orch =
-                              let agent = Orchestrator.agent orch patch_id in
-                              if Option.is_none agent.Patch_agent.worktree_path
-                              then
-                                let path =
-                                  resolve_worktree_path ~process_mgr
-                                    ~repo_root:config.repo_root ~project_name
-                                    ~patch_id ~agent ()
-                                in
-                                let default =
-                                  Worktree.worktree_dir ~project_name ~patch_id
-                                in
-                                if not (String.equal path default) then
+                              match worktree_candidate with
+                              | Some path ->
                                   let orch =
                                     Orchestrator.set_worktree_path orch patch_id
                                       path
+                                  in
+                                  let agent =
+                                    Orchestrator.agent orch patch_id
                                   in
                                   if agent.Patch_agent.needs_intervention then
                                     Orchestrator.clear_needs_intervention orch
                                       patch_id
                                   else orch
-                                else orch
-                              else orch
+                              | None -> orch
                             in
-                            (orch, (log_entries, newly_blocked)))
+                            (orch, (log_entries, (newly_blocked, true))))
                   in
                   (* Side-effects applied after the callback returns *)
-                  if not (Base.List.is_empty failed_ci) then
-                    Hashtbl.replace ci_checks_cache patch_id failed_ci
-                  else Hashtbl.remove ci_checks_cache patch_id;
+                  if agent_present then
+                    if not (Base.List.is_empty failed_ci) then
+                      Hashtbl.replace ci_checks_cache patch_id failed_ci
+                    else Hashtbl.remove ci_checks_cache patch_id;
                   Base.List.iter log_entries
                     ~f:(fun (entry : Poll_applicator.log_entry) ->
                       log_event runtime ~patch_id:entry.Poll_applicator.patch_id
