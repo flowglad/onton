@@ -381,14 +381,17 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
         | None ->
             if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br
             then (
+              let main_root =
+                Worktree.resolve_main_root ~process_mgr ~repo_root
+              in
               log_event runtime ~patch_id
                 (Printf.sprintf
-                   "branch %s is currently checked out in the repo root (%s). \
-                    Cannot create a worktree for a branch that is checked out \
-                    in the common directory. Please switch the repo root to a \
-                    different branch (e.g. `git -C %s checkout \
-                    <default-branch>`) before continuing."
-                   (Branch.to_string br) repo_root repo_root);
+                   "branch %s is currently checked out in the main working \
+                    tree (%s). Cannot create a worktree for a branch that is \
+                    checked out there. Please switch to a different branch \
+                    (e.g. `git -C %s checkout <default-branch>`) before \
+                    continuing."
+                   (Branch.to_string br) main_root main_root);
               None)
             else
               let base =
@@ -1529,13 +1532,17 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                   (if newly_blocked then
                      match pr_state.Github.Pr_state.head_branch with
                      | Some b ->
+                         let main_root =
+                           Worktree.resolve_main_root ~process_mgr
+                             ~repo_root:config.repo_root
+                         in
                          log_event runtime ~patch_id
                            (Printf.sprintf
-                              "branch %s is checked out in %s — release it \
-                               (e.g. `git -C %s checkout <default-branch>`) \
-                               before onton can work on this patch"
-                              (Branch.to_string b) config.repo_root
-                              config.repo_root)
+                              "branch %s is checked out in the main working \
+                               tree (%s) — release it (e.g. `git -C %s \
+                               checkout <default-branch>`) before onton can \
+                               work on this patch"
+                              (Branch.to_string b) main_root main_root)
                      | None -> ());
                   if pr_state.Github.Pr_state.ci_checks_truncated then
                     log_event runtime ~patch_id

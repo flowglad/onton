@@ -65,14 +65,39 @@ let branch_exists ~process_mgr ~repo_root branch_str =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
-let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
+let resolve_main_root ~process_mgr ~repo_root =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
     Eio.Process.run process_mgr ~env:(clean_git_env ())
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      [ "git"; "-C"; repo_root; "rev-parse"; "--abbrev-ref"; "HEAD" ]
+      [
+        "git";
+        "-C";
+        repo_root;
+        "rev-parse";
+        "--path-format=absolute";
+        "--git-common-dir";
+      ]
+  with
+  | () ->
+      let common_git_dir = String.strip (Buffer.contents buf) in
+      (* The common git dir is the .git directory of the main working tree.
+         Its parent is the main working tree root. *)
+      Stdlib.Filename.dirname common_git_dir
+  | exception e when has_cancellation e -> raise e
+  | exception _ -> repo_root
+
+let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
+  let main_root = resolve_main_root ~process_mgr ~repo_root in
+  let buf = Buffer.create 128 in
+  let stderr_buf = Buffer.create 64 in
+  match
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
+      ~stdout:(Eio.Flow.buffer_sink buf)
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      [ "git"; "-C"; main_root; "rev-parse"; "--abbrev-ref"; "HEAD" ]
   with
   | () ->
       let current = String.strip (Buffer.contents buf) in
@@ -182,6 +207,7 @@ let parse_porcelain ~repo_root raw =
   parse [] None None lines
 
 let list_with_branches ~process_mgr ~repo_root =
+  let main_root = resolve_main_root ~process_mgr ~repo_root in
   let buf = Buffer.create 512 in
   let stderr_buf = Buffer.create 64 in
   (match
@@ -197,7 +223,7 @@ let list_with_branches ~process_mgr ~repo_root =
       failwith
         (Printf.sprintf "list_with_branches failed at %s: %s\ngit stderr: %s"
            repo_root (Exn.to_string exn) msg));
-  parse_porcelain ~repo_root (Buffer.contents buf)
+  parse_porcelain ~repo_root:main_root (Buffer.contents buf)
 
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]

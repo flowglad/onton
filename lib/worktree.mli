@@ -9,11 +9,17 @@ type t = private {
 
 val worktree_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
 
+val resolve_main_root :
+  process_mgr:_ Eio.Process.mgr -> repo_root:string -> string
+(** Resolve the main working tree (git common dir's parent) from any repo path.
+    If [repo_root] is itself a worktree, this returns the path of the main
+    checkout, not the worktree. Falls back to [repo_root] on error. *)
+
 val is_checked_out_in_repo_root :
   process_mgr:_ Eio.Process.mgr -> repo_root:string -> Types.Branch.t -> bool
-(** Returns [true] if [branch] is currently the HEAD of the repo root (common
-    dir). A worktree cannot be created for a branch that is checked out there.
-*)
+(** Returns [true] if [branch] is currently the HEAD of the main working tree
+    (resolved via the git common dir, not necessarily [repo_root] itself).
+    A worktree cannot be created for a branch that is checked out there. *)
 
 val create :
   process_mgr:_ Eio.Process.mgr ->
