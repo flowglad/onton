@@ -24,7 +24,7 @@ jobs:
 
       - name: Build and install
         run: |
-          opam exec -- dune build
+          opam exec -- dune build bin/main.exe
           opam exec -- dune install --prefix _dist
 
       - name: Package binary
