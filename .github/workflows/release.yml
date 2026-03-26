@@ -86,8 +86,7 @@ jobs:
           sed -e "s/VERSION/$VERSION/g" \
               -e "s/SHA256_ARM64/${{ steps.sha.outputs.arm64 }}/g" \
               -e "s/SHA256_X86_64/${{ steps.sha.outputs.x86_64 }}/g" \
-              Formula/onton.rb > Formula/onton.rb.tmp
-          mv Formula/onton.rb.tmp Formula/onton.rb
+              Formula/onton.rb.template > Formula/onton.rb
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/onton.rb
