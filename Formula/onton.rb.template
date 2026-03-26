@@ -10,8 +10,17 @@ class Onton < Formula
   url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-arm64-apple-darwin.tar.gz"
   sha256 "SHA256_ARM64"
 
+  depends_on "gmp"
+
   def install
     bin.install "onton"
+    # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
+    old_path = Utils.popen_read("otool", "-L", bin/"onton")
+      .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
+    gmp_lib = (Formula["gmp"].opt_lib/"libgmp.10.dylib").to_s
+    if old_path && old_path != gmp_lib
+      system "install_name_tool", "-change", old_path, gmp_lib, bin/"onton"
+    end
   end
 
   test do

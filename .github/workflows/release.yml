@@ -31,11 +31,8 @@ jobs:
         if: steps.cache-opam.outputs.cache-hit != 'true'
         run: opam install . --deps-only --with-test -y
 
-      - name: Build with static gmp
-        run: |
-          mkdir -p _static_libs
-          cp "$(brew --prefix gmp)/lib/libgmp.a" _static_libs/
-          LIBRARY_PATH="$PWD/_static_libs:$LIBRARY_PATH" opam exec -- dune build bin/main.exe
+      - name: Build
+        run: opam exec -- dune build bin/main.exe
 
       - name: Package binary
         run: |
