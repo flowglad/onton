@@ -30,7 +30,8 @@ logic, and spawn planning.
 ### Homebrew (macOS)
 
 ```sh
-brew install flowglad/onton/onton
+brew tap flowglad/onton https://github.com/flowglad/onton
+brew install onton
 ```
 
 ### GitHub Releases
