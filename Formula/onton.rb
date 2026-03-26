@@ -4,14 +4,23 @@
 class Onton < Formula
   desc "OCaml orchestrator for parallel Claude Code agents executing gameplan patches"
   homepage "https://github.com/flowglad/onton"
-  version "0.2.5"
+  version "0.2.6"
   license "MIT"
 
-  url "https://github.com/flowglad/onton/releases/download/v0.2.5/onton-arm64-apple-darwin.tar.gz"
-  sha256 "ba28878cada79b76c493a9bd280b36adba7e005c03fe37a34a4e119e3d1e56ec"
+  url "https://github.com/flowglad/onton/releases/download/v0.2.6/onton-arm64-apple-darwin.tar.gz"
+  sha256 "8f4caa9284eeb38468d08e211884bcd86bed8a58f6276f93c757c11af06ed079"
+
+  depends_on "gmp"
 
   def install
     bin.install "onton"
+    # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
+    old_path = Utils.popen_read("otool", "-L", bin/"onton")
+      .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
+    gmp_lib = (Formula["gmp"].opt_lib/"libgmp.10.dylib").to_s
+    if old_path && old_path != gmp_lib
+      system "install_name_tool", "-change", old_path, gmp_lib, bin/"onton"
+    end
   end
 
   test do
