@@ -38,6 +38,10 @@ jobs:
         run: |
           mkdir -p _dist/bin
           cp _build/default/bin/main.exe _dist/bin/onton
+          GMP_PATH=$(otool -L _dist/bin/onton | grep libgmp | awk '{print $1}')
+          if [ -n "$GMP_PATH" ] && [ "$GMP_PATH" != "/opt/homebrew/opt/gmp/lib/libgmp.10.dylib" ]; then
+            install_name_tool -change "$GMP_PATH" /opt/homebrew/opt/gmp/lib/libgmp.10.dylib _dist/bin/onton
+          fi
           tar czf onton-arm64-apple-darwin.tar.gz -C _dist/bin onton
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
