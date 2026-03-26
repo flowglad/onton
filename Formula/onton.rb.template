@@ -10,8 +10,6 @@ class Onton < Formula
   url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-arm64-apple-darwin.tar.gz"
   sha256 "SHA256_ARM64"
 
-  depends_on "gmp"
-
   def install
     bin.install "onton"
   end
