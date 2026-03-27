@@ -23,7 +23,12 @@ type command =
   | Remove_patch
 [@@deriving show, eq]
 
-type input_mode = Normal | Prompt_pr | Prompt_worktree | Prompt_message
+type input_mode =
+  | Normal
+  | Prompt_pr
+  | Prompt_worktree
+  | Prompt_message
+  | Prompt_broadcast
 [@@deriving show, eq]
 
 let prompt_prefix = function
@@ -31,6 +36,7 @@ let prompt_prefix = function
   | Prompt_pr -> "PR #: "
   | Prompt_worktree -> "Worktree: "
   | Prompt_message -> "> "
+  | Prompt_broadcast -> "broadcast> "
 
 let of_key (key : Term.Key.t) : command =
   match key with
