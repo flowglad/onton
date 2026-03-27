@@ -2561,7 +2561,7 @@ let main_cmd =
       $ headless_arg)
   in
   let info =
-    Cmd.info "onton" ~version:"0.1.0"
+    Cmd.info "onton" ~version:Version.s
       ~doc:
         "Orchestrate parallel patch development with Claude.\n\n\
          Usage:\n\
