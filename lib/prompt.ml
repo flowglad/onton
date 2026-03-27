@@ -225,7 +225,7 @@ Then continue implementing. When finished:
            - **Invariants** (non-primed propositions) → safety properties that must hold before and after every operation\n\
            - **`all`/`some` quantifiers** → iteration or existence checks over collections\n\n\
            ### Spec\n\
-           ```\n" ^ patch.spec ^ "```\n" );
+           ```\n" ^ patch.spec ^ "\n```\n" );
       ( "acceptance_criteria_section",
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
