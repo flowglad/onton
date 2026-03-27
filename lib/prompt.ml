@@ -192,7 +192,40 @@ Then continue implementing. When finished:
         optional_section ~header:"Current State Analysis"
           gameplan.Gameplan.current_state_analysis );
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
-      ("spec_section", optional_section ~header:"Specification" patch.spec);
+      ( "spec_section",
+        if String.is_empty patch.spec then ""
+        else
+          "\n## Specification\n\n\
+           The following Pantagruel specification defines the formal invariants and \
+           post-conditions for this patch. After implementing, verify your code \
+           satisfies every clause. Call out any clause you cannot map to your \
+           implementation.\n\n\
+           ### How to Read This Spec\n\n\
+           | Syntax | Meaning |\n\
+           |--------|----------|\n\
+           | `Domain.` | Entity type declaration |\n\
+           | `rule x: T => R.` | State mapping (function from T to R) |\n\
+           | `~> Action @ params.` | State transition (modifies state, no return) |\n\
+           | `~> Action @ params, guard.` | Action with precondition |\n\
+           | `rule' x` | Post-state value of rule (after action executes) |\n\
+           | `all x: T \\| P.` | For all x of type T, P must hold (invariant) |\n\
+           | `some x: T \\| P.` | There exists x of type T where P holds |\n\
+           | `p -> q` | Implication: if p then q |\n\
+           | `~p` | Negation |\n\
+           | `x in Domain` | Membership test |\n\
+           | `Context ~> Action` | Action operates within write-permission boundary |\n\
+           | `{Context} rule` | Rule belongs to context (only modifiable by that context's actions) |\n\
+           | `initially P.` | Constraint on initial state only |\n\
+           | `---` | Separator between declarations (above) and propositions (below) |\n\
+           | `where` | Introduces a new chapter (progressive disclosure) |\n\n\
+           **Mapping spec to code:**\n\
+           - **Rules** → fields, columns, computed properties, or lookups\n\
+           - **Primed rules** (`f'`) → what your code must do (post-conditions)\n\
+           - **Guards on actions** → what your code must check (preconditions)\n\
+           - **Invariants** (non-primed propositions) → safety properties that must hold before and after every operation\n\
+           - **`all`/`some` quantifiers** → iteration or existence checks over collections\n\n\
+           ### Spec\n\
+           ```\n" ^ patch.spec ^ "```\n" );
       ( "acceptance_criteria_section",
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
@@ -224,7 +257,7 @@ Then continue implementing. When finished:
 ## Your Task
 
 {{description}}
-{{changes_section}}{{spec_section}}{{acceptance_criteria_section}}{{files_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}
+{{changes_section}}{{files_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
