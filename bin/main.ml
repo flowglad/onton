@@ -775,7 +775,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     match !input_mode with
     | Tui_input.Normal -> prompt_line := None
     | Tui_input.Prompt_pr | Tui_input.Prompt_worktree | Tui_input.Prompt_message
-      ->
+    | Tui_input.Prompt_broadcast ->
         let prefix = Tui_input.prompt_prefix !input_mode in
         prompt_line := Some (prefix ^ Buffer.contents buf)
   in
@@ -846,6 +846,29 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                                "Cannot send human message: unknown patch %s"
                                (Patch_id.to_string patch_id))
                     | Tui.List_view | Tui.Timeline_view -> ())
+              | Tui_input.Prompt_broadcast ->
+                  if not (Base.String.is_empty line) then begin
+                    let views =
+                      Runtime.read runtime (fun snap ->
+                          Tui.views_of_orchestrator
+                            ~orchestrator:snap.Runtime.orchestrator
+                            ~gameplan:snap.Runtime.gameplan ~activity:[] ())
+                    in
+                    let active =
+                      Base.List.filter views ~f:(fun (pv : Tui.patch_view) ->
+                          (not (Tui.equal_display_status pv.Tui.status Tui.Merged))
+                          && not
+                               (Tui.equal_display_status pv.Tui.status Tui.Pending))
+                    in
+                    let count = Base.List.length active in
+                    Base.List.iter active ~f:(fun (pv : Tui.patch_view) ->
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.send_human_message orch pv.Tui.patch_id
+                              line));
+                    log_event runtime
+                      (Printf.sprintf "Broadcast to %d active patches: %s" count
+                         line)
+                  end
               | Tui_input.Prompt_pr -> (
                   match Base.Int.of_string_opt line with
                   | Some n when n > 0 ->
@@ -1095,6 +1118,11 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               | ( Term.Click { button = Term.Left | Term.Middle | Term.Right; _ },
                   (Tui.List_view | Tui.Detail_view _ | Tui.Timeline_view) ) ->
                   loop ())
+          | Term.Key.Char '*' when Tui.equal_view_mode !view_mode Tui.List_view
+            ->
+              Buffer.clear buf;
+              input_mode := Tui_input.Prompt_broadcast;
+              loop ()
           | Term.Key.Char '+' when Tui.equal_view_mode !view_mode Tui.List_view
             ->
               Buffer.clear buf;

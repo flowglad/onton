@@ -27,6 +27,7 @@ type input_mode =
   | Prompt_pr  (** Buffer holds digits for PR number *)
   | Prompt_worktree  (** Buffer holds path string *)
   | Prompt_message  (** Buffer holds message text, detail view only *)
+  | Prompt_broadcast  (** Buffer holds message to send to all active patches *)
 [@@deriving show, eq]
 
 val prompt_prefix : input_mode -> string
