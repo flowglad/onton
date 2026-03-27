@@ -858,12 +858,12 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                       Base.List.filter views ~f:(fun (pv : Tui.patch_view) ->
                           (not
                              (Tui.equal_display_status pv.Tui.status Tui.Merged))
-                          && not
-                               (Tui.equal_display_status pv.Tui.status
-                                  Tui.Pending)
-                          && not
-                               (Tui.equal_display_status pv.Tui.status
-                                  Tui.Needs_help)
+                          && (not
+                                (Tui.equal_display_status pv.Tui.status
+                                   Tui.Pending))
+                          && (not
+                                (Tui.equal_display_status pv.Tui.status
+                                   Tui.Needs_help))
                           && not
                                (Tui.equal_display_status pv.Tui.status
                                   Tui.Blocked_by_dep))
