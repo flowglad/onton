@@ -860,7 +860,13 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                              (Tui.equal_display_status pv.Tui.status Tui.Merged))
                           && not
                                (Tui.equal_display_status pv.Tui.status
-                                  Tui.Pending))
+                                  Tui.Pending)
+                          && not
+                               (Tui.equal_display_status pv.Tui.status
+                                  Tui.Needs_help)
+                          && not
+                               (Tui.equal_display_status pv.Tui.status
+                                  Tui.Blocked_by_dep))
                     in
                     let count = Base.List.length active in
                     Base.List.iter active ~f:(fun (pv : Tui.patch_view) ->
