@@ -124,11 +124,47 @@ let render s =
   let lines = render_block (Cmarkit.Doc.block doc) in
   String.concat ~sep:"\n" lines
 
+(** Test whether a raw line is a tool marker (e.g. [`[tool: Read]` `/path`]).
+    These are structural elements we inject — they should not be parsed as
+    CommonMark, which would collapse them into adjacent paragraphs. *)
+let is_tool_marker line =
+  let s = String.strip line in
+  String.is_prefix s ~prefix:"`[tool: "
+
+(** Style a tool-marker line directly (no CommonMark parsing). *)
+let style_tool_marker line =
+  Term.styled [ Term.Sgr.dim ] line
+
 (** Render a full markdown string to a list of styled lines. Consecutive blank
-    lines are collapsed to at most one. *)
+    lines are collapsed to at most one.
+
+    Tool-marker lines (injected by the harness) are extracted and styled
+    directly — only actual agent text goes through CommonMark. This avoids
+    CommonMark paragraph-collapsing tool markers with adjacent text. *)
 let render_to_lines s =
-  let doc = Cmarkit.Doc.of_string ~strict:false s in
-  let lines = render_block (Cmarkit.Doc.block doc) in
+  let raw_lines = String.split_lines s in
+  (* Partition into contiguous runs: either a tool-marker line or a chunk of
+     markdown text lines. Render each chunk independently. *)
+  let flush_md acc md_lines =
+    match md_lines with
+    | [] -> acc
+    | _ ->
+        let chunk = String.concat ~sep:"\n" (List.rev md_lines) in
+        let doc = Cmarkit.Doc.of_string ~strict:false chunk in
+        let rendered = render_block (Cmarkit.Doc.block doc) in
+        List.rev_append rendered acc
+  in
+  let rec walk acc md_lines = function
+    | [] -> flush_md acc md_lines
+    | line :: rest ->
+        if is_tool_marker line then
+          let acc = flush_md acc md_lines in
+          (* Blank lines before and after the marker for visual separation *)
+          let acc = "" :: style_tool_marker line :: "" :: acc in
+          walk acc [] rest
+        else walk acc (line :: md_lines) rest
+  in
+  let lines = List.rev (walk [] [] raw_lines) in
   let rec collapse acc prev_blank = function
     | [] -> List.rev acc
     | line :: rest ->
@@ -191,4 +227,34 @@ let%expect_test "render hrule" =
   Stdio.print_string stripped;
   [%expect {|
     ───
+    |}]
+
+let%expect_test "tool markers rendered as separate lines" =
+  let s =
+    "`[tool: Edit]` `/some/file.ml`\nFix the stale comment on taskResults:"
+  in
+  let lines = render_to_lines s in
+  let stripped = List.map lines ~f:Term.strip_ansi in
+  List.iter stripped ~f:Stdio.print_endline;
+  [%expect
+    {|
+    `[tool: Edit]` `/some/file.ml`
+
+    Fix the stale comment on taskResults:
+    |}]
+
+let%expect_test "consecutive tool markers" =
+  let s =
+    "`[tool: Read]` `/a.ml`\n`[tool: Edit]` `/b.ml`\nSome agent text."
+  in
+  let lines = render_to_lines s in
+  let stripped = List.map lines ~f:Term.strip_ansi in
+  List.iter stripped ~f:Stdio.print_endline;
+  [%expect
+    {|
+    `[tool: Read]` `/a.ml`
+
+    `[tool: Edit]` `/b.ml`
+
+    Some agent text.
     |}]

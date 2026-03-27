@@ -558,7 +558,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                   else "\n\n"
                 in
                 Buffer.add_string text_buf
-                  (Printf.sprintf "%s`[tool: %s]`%s\n\n" sep name detail);
+                  (Printf.sprintf "%s`[tool: %s]`%s\n" sep name detail);
                 sync_transcript ();
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Tool_use (name, summary))
