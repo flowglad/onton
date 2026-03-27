@@ -18,8 +18,8 @@ val resolve_main_root :
 val is_checked_out_in_repo_root :
   process_mgr:_ Eio.Process.mgr -> repo_root:string -> Types.Branch.t -> bool
 (** Returns [true] if [branch] is currently the HEAD of the main working tree
-    (resolved via the git common dir, not necessarily [repo_root] itself).
-    A worktree cannot be created for a branch that is checked out there. *)
+    (resolved via the git common dir, not necessarily [repo_root] itself). A
+    worktree cannot be created for a branch that is checked out there. *)
 
 val create :
   process_mgr:_ Eio.Process.mgr ->
