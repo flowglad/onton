@@ -1429,7 +1429,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         (Printf.sprintf "PR re-discovery failed: %s" msg))
                 else
                   let branch_in_root =
-                    match pr_state.Github.Pr_state.head_branch with
+                    match pr_state.Pr_state.head_branch with
                     | Some b ->
                         Worktree.is_checked_out_in_repo_root ~process_mgr
                           ~repo_root:config.repo_root b
@@ -1492,7 +1492,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                             in
                             (* head_branch and intervention management *)
                             let orch, newly_blocked =
-                              match pr_state.Github.Pr_state.head_branch with
+                              match pr_state.Pr_state.head_branch with
                               | Some b ->
                                   let orch =
                                     Orchestrator.set_head_branch orch patch_id b
@@ -1526,7 +1526,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                               let agent = Orchestrator.agent orch patch_id in
                               match
                                 ( agent.Patch_agent.base_branch,
-                                  pr_state.Github.Pr_state.base_branch )
+                                  pr_state.Pr_state.base_branch )
                               with
                               | None, Some b ->
                                   Orchestrator.set_base_branch orch patch_id b
@@ -1566,7 +1566,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       log_event runtime ~patch_id:entry.Poll_applicator.patch_id
                         entry.Poll_applicator.message);
                   (if newly_blocked then
-                     match pr_state.Github.Pr_state.head_branch with
+                     match pr_state.Pr_state.head_branch with
                      | Some b ->
                          let main_root =
                            Worktree.resolve_main_root ~process_mgr
@@ -1580,7 +1580,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                work on this patch"
                               (Branch.to_string b) main_root main_root)
                      | None -> ());
-                  if pr_state.Github.Pr_state.ci_checks_truncated then
+                  if pr_state.Pr_state.ci_checks_truncated then
                     log_event runtime ~patch_id
                       "warning: CI check list was truncated (>100 checks); \
                        some failures may not appear in the prompt"));
@@ -1925,7 +1925,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                           log_event runtime ~patch_id
                             "fetching fresh review comments from GitHub";
                           match Github.pr_state ~net github pr_num with
-                          | Ok pr_state -> pr_state.Github.Pr_state.comments
+                          | Ok pr_state -> pr_state.Pr_state.comments
                           | Error _err ->
                               log_event runtime ~patch_id
                                 "failed to fetch fresh comments";

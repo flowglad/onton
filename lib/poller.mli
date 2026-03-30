@@ -36,9 +36,9 @@ type t = {
 [@@deriving show, eq]
 (** The result of polling a single patch's PR state. *)
 
-val poll : was_merged:bool -> Github.Pr_state.t -> t
+val poll : was_merged:bool -> Pr_state.t -> t
 (** [poll ~was_merged pr_state] computes the patch state updates from the
-    current GitHub PR state.
+    current PR state.
 
     [was_merged] is the patch's current merged status (from PatchCtx). Once
     merged, a patch stays merged regardless of what the world reports.

@@ -1,25 +1,5 @@
 open Base
 
-module Pr_state = struct
-  type merge_state = Mergeable | Conflicting | Unknown [@@deriving show, eq]
-  type check_status = Passing | Failing | Pending [@@deriving show, eq]
-  type pr_status = Open | Merged | Closed [@@deriving show, eq]
-
-  type t = {
-    status : pr_status;
-    merge_state : merge_state;
-    merge_ready : bool;
-    check_status : check_status;
-    ci_checks : Types.Ci_check.t list;
-    ci_checks_truncated : bool;
-    comments : Types.Comment.t list;
-    unresolved_comment_count : int;
-    head_branch : Types.Branch.t option;
-    base_branch : Types.Branch.t option;
-  }
-  [@@deriving show, eq]
-end
-
 type error =
   | Http_error of int * string
   | Json_parse_error of string
@@ -237,19 +217,18 @@ let parse_response_json json =
               |> Option.map ~f:Types.Branch.of_string
             in
             Ok
-              Pr_state.
-                {
-                  status;
-                  merge_state;
-                  merge_ready;
-                  check_status;
-                  ci_checks;
-                  ci_checks_truncated;
-                  comments;
-                  unresolved_comment_count;
-                  head_branch;
-                  base_branch;
-                })
+              {
+                Pr_state.status;
+                merge_state;
+                merge_ready;
+                check_status;
+                ci_checks;
+                ci_checks_truncated;
+                comments;
+                unresolved_comment_count;
+                head_branch;
+                base_branch;
+              })
     | errors ->
         let msgs =
           errors |> to_list
@@ -312,32 +291,12 @@ let pr_state ~net t pr =
         else Error (Http_error (status, resp_str)))
   with exn -> Error (Transport_error (Exn.to_string exn))
 
-(* WorldCtx predicate accessors *)
+(* Static assertion: Github satisfies Forge.S *)
+let (_ : (module Forge.S)) =
+  (module struct
+    type nonrec t = t
+    type nonrec error = error
 
-let merged (st : Pr_state.t) =
-  Pr_state.equal_pr_status st.Pr_state.status Pr_state.Merged
-
-let closed (st : Pr_state.t) =
-  Pr_state.equal_pr_status st.Pr_state.status Pr_state.Closed
-
-let mergeable (st : Pr_state.t) =
-  let open Pr_state in
-  equal_pr_status st.status Open && equal_merge_state st.merge_state Mergeable
-
-let merge_ready (st : Pr_state.t) =
-  Pr_state.equal_pr_status st.status Open && st.merge_ready
-
-let checks_passing (st : Pr_state.t) =
-  let open Pr_state in
-  equal_check_status st.check_status Passing
-
-let no_unresolved_comments (st : Pr_state.t) =
-  st.Pr_state.unresolved_comment_count = 0
-
-let has_conflict (st : Pr_state.t) =
-  let open Pr_state in
-  equal_merge_state st.merge_state Conflicting
-
-let ci_failed (st : Pr_state.t) =
-  let open Pr_state in
-  equal_check_status st.check_status Failing
+    let show_error = show_error
+    let pr_state = pr_state
+  end)
