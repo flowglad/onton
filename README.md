@@ -60,22 +60,25 @@ logic, and spawn planning.
 
 ## Install
 
-### Homebrew (macOS)
+Pick **one** of the following methods:
+
+### Option A: Homebrew (macOS)
 
 ```sh
 brew tap flowglad/onton https://github.com/flowglad/onton
 brew install onton
 ```
 
-### GitHub Releases
+### Option B: GitHub Releases
 
 Download a prebuilt binary from
 [Releases](https://github.com/flowglad/onton/releases) (macOS ARM64 and
 x86_64).
 
-### From source
+### Option C: From source
 
-Requires OCaml 5.4.0, dune 3.21, and opam:
+Only needed if you want to modify onton or are on a platform without prebuilt
+binaries. Requires OCaml 5.4.0, dune 3.21, and opam:
 
 ```sh
 git clone https://github.com/flowglad/onton.git
