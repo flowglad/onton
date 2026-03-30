@@ -140,7 +140,7 @@ The OCaml project has a build skeleton (dune 3.21, OCaml 5.4, Jane Street ppx ec
 
 ## Dependency Graph
 
-```
+```text
 1 (onton-port) → []
 2 (onton-complete) → [1]
 3 (onton-completeness) → [2]

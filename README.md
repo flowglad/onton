@@ -33,7 +33,7 @@ The `skills/` directory contains Claude Code skills for the planning layers:
   challenges, milestones, dependencies.
 
 - **write-gameplan** — Create a structured JSON gameplan with typed
-  sections, patch classifications (INFRA/GATED/BEHAVIOR), Pantagruel specs,
+  sections, patch classifications (INFRA/GATED/BEHAVIOR), formal specs,
   test maps, and a dependency graph. Designed so it's 5-10x easier to review
   the gameplan than the code it produces.
 
