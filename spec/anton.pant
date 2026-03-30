@@ -207,7 +207,6 @@ where
 >   ~has-pr              -> pending
 
 approved? p: Patch => Bool.
-is-feedback-busy p: Patch => Bool.
 ---
 > Definitions (not invariants — these are derivations, not constraints):
 >   approved? p  <->  has-pr p, merge-ready p, ~busy p,
