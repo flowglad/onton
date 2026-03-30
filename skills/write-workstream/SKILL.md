@@ -1,4 +1,4 @@
-# Create Workstream
+# Write Workstream
 
 You are helping the user define a **workstream** — a large-scale project that will span weeks or months of work and consist of multiple gameplans as milestones.
 

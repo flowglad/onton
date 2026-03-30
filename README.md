@@ -20,19 +20,19 @@ The approach has three layers:
 
 | Layer | What | Where |
 |-------|------|-------|
-| **Scoping** | Break a large project into sequenced gameplans (milestones) | `skills/create-workstream/` |
-| **Planning** | Structure a change into patches with specs, tests, and a dependency graph | `skills/create-gameplan-v2/` |
+| **Scoping** | Break a large project into sequenced gameplans (milestones) | `skills/write-workstream/` |
+| **Planning** | Structure a change into patches with specs, tests, and a dependency graph | `skills/write-gameplan/` |
 | **Execution** | Orchestrate parallel agents, poll GitHub, react to events | `onton` (this binary) |
 
 ### Skills
 
 The `skills/` directory contains Claude Code skills for the planning layers:
 
-- **create-workstream** — Define a large project as a sequence of gameplans
+- **write-workstream** — Define a large project as a sequence of gameplans
   (milestones), each a safe stopping point. Guided discovery process: vision,
   challenges, milestones, dependencies.
 
-- **create-gameplan-v2** — Create a structured JSON gameplan with typed
+- **write-gameplan** — Create a structured JSON gameplan with typed
   sections, patch classifications (INFRA/GATED/BEHAVIOR), Pantagruel specs,
   test maps, and a dependency graph. Designed so it's 5-10x easier to review
   the gameplan than the code it produces.

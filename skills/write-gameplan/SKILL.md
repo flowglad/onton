@@ -1,4 +1,4 @@
-# Create Gameplan (v2 — Structured + Specified)
+# Write Gameplan
 
 Create a structured, machine-readable gameplan for a complex codebase change. The gameplan is a JSON object with typed sections, and each patch includes a formal specification articulating the invariants that must hold after that patch is applied. A final-state spec describes what must be true when the entire gameplan is complete.
 
