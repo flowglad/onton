@@ -22,7 +22,7 @@ Comment.
 {PatchCtx} changed p: Patch => Bool.
 {PatchCtx} in-gameplan p: Patch => Bool.
 {PatchCtx} base-branch p: Patch => Branch.
-{PatchCtx} ci-failure-count p: Patch => Nat.
+{PatchCtx} ci-failure-count p: Patch => Nat0.
 {PatchCtx} session-failed p: Patch => Bool.
 
 {WorldCtx} merged p: Patch => Bool.
@@ -112,8 +112,8 @@ busy' p.
 satisfies' p.
 base-branch' p = initial-base p.
 
-> Start is biconditional with its preconditions.
-all p: Patch | in-gameplan p and deps-satisfied p and ~has-pr p <->
+> Start's preconditions guarantee its postconditions.
+all p: Patch | in-gameplan p and deps-satisfied p and ~has-pr p ->
     has-pr' p and satisfies' p.
 
 where
@@ -186,8 +186,8 @@ all p: Patch | world-merged p -> merged' p.
 > Merged is terminal and absorbing.
 all p: Patch | merged p -> merged' p.
 
-> Merge readiness is observed.
-all p: Patch | merge-ready' p = world-merge-ready p.
+> Merge readiness is observed (only meaningful for patches with PRs).
+all p: Patch | has-pr p -> merge-ready' p = world-merge-ready p.
 
 > Liveness: pending operations on an idle, living patch must be addressed.
 all p: Patch, k: OperationKind |
