@@ -1,30 +1,6 @@
-open Types
+(** GitHub forge implementation.
 
-(** GitHub API client for querying PR/world state.
-
-    Provides the data source for WorldCtx predicates from the spec: merged,
-    mergeable, checks-passing, no-unresolved-comments, world-has-comment,
-    world-has-conflict, world-ci-failed. *)
-
-module Pr_state : sig
-  type merge_state = Mergeable | Conflicting | Unknown [@@deriving show, eq]
-  type check_status = Passing | Failing | Pending [@@deriving show, eq]
-  type pr_status = Open | Merged | Closed [@@deriving show, eq]
-
-  type t = {
-    status : pr_status;
-    merge_state : merge_state;
-    merge_ready : bool;
-    check_status : check_status;
-    ci_checks : Ci_check.t list;
-    ci_checks_truncated : bool;
-    comments : Comment.t list;
-    unresolved_comment_count : int;
-    head_branch : Branch.t option;
-    base_branch : Branch.t option;
-  }
-  [@@deriving show, eq]
-end
+    Queries the GitHub GraphQL API for PR/world state. Satisfies {!Forge.S}. *)
 
 type error =
   | Http_error of int * string
@@ -46,16 +22,6 @@ val parse_response : string -> (Pr_state.t, error) Result.t
 (** Parse a GitHub GraphQL response body string into a [Pr_state.t]. *)
 
 val pr_state :
-  net:_ Eio.Net.t -> t -> Pr_number.t -> (Pr_state.t, error) Result.t
+  net:_ Eio.Net.t -> t -> Types.Pr_number.t -> (Pr_state.t, error) Result.t
 (** [pr_state ~net client pr] fetches the current state of a pull request via
-    the GitHub GraphQL API over HTTPS. This is the primary data source for
-    WorldCtx predicates. *)
-
-val merged : Pr_state.t -> bool
-val closed : Pr_state.t -> bool
-val mergeable : Pr_state.t -> bool
-val merge_ready : Pr_state.t -> bool
-val checks_passing : Pr_state.t -> bool
-val no_unresolved_comments : Pr_state.t -> bool
-val has_conflict : Pr_state.t -> bool
-val ci_failed : Pr_state.t -> bool
+    the GitHub GraphQL API over HTTPS. *)

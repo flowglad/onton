@@ -136,7 +136,7 @@ let () =
     Test.make ~name:"poller: merged reflects pr state"
       Onton_test_support.Test_generators.gen_pr_state (fun pr ->
         let result = Poller.poll ~was_merged:false pr in
-        Bool.equal result.merged (Github.merged pr))
+        Bool.equal result.merged (Pr_state.merged pr))
   in
   let prop_conflict_queue =
     Test.make ~name:"poller: conflict in queue iff has_conflict"
@@ -156,7 +156,7 @@ let () =
           List.mem result.queue Types.Operation_kind.Ci
             ~equal:Types.Operation_kind.equal
         in
-        Bool.equal in_queue (Github.ci_failed pr))
+        Bool.equal in_queue (Pr_state.ci_failed pr))
   in
   let prop_review_queue =
     Test.make ~name:"poller: review in queue iff unresolved comments"
@@ -166,7 +166,7 @@ let () =
           List.mem result.queue Types.Operation_kind.Review_comments
             ~equal:Types.Operation_kind.equal
         in
-        Bool.equal in_queue (not (List.is_empty pr.Github.Pr_state.comments)))
+        Bool.equal in_queue (not (List.is_empty pr.Pr_state.comments)))
   in
   let prop_no_rebase =
     Test.make ~name:"poller: rebase never in poll queue"

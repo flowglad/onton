@@ -138,21 +138,20 @@ let gen_gameplan =
 
 let gen_graph = QCheck2.Gen.(map Onton.Graph.of_patches gen_patch_list_unique)
 
-(* -- Github types -- *)
+(* -- Pr_state types -- *)
 
 let gen_pr_status =
-  QCheck2.Gen.oneof_list Onton.Github.Pr_state.[ Open; Merged; Closed ]
+  QCheck2.Gen.oneof_list Onton.Pr_state.[ Open; Merged; Closed ]
 
 let gen_merge_state =
-  QCheck2.Gen.oneof_list
-    Onton.Github.Pr_state.[ Mergeable; Conflicting; Unknown ]
+  QCheck2.Gen.oneof_list Onton.Pr_state.[ Mergeable; Conflicting; Unknown ]
 
 let gen_check_status =
-  QCheck2.Gen.oneof_list Onton.Github.Pr_state.[ Passing; Failing; Pending ]
+  QCheck2.Gen.oneof_list Onton.Pr_state.[ Passing; Failing; Pending ]
 
 let gen_pr_state =
   QCheck2.Gen.(
-    let open Onton.Github.Pr_state in
+    let open Onton.Pr_state in
     map5
       (fun (status, merge_state) merge_ready (check_status, ci_checks_truncated)
            ci_checks (comments, unresolved_comment_count) ->
@@ -507,5 +506,5 @@ let print_ci_check = Ci_check.show
 let print_gameplan = Gameplan.show
 let print_patch_agent = Onton.Patch_agent.show
 let print_poller = Onton.Poller.show
-let print_pr_state = Onton.Github.Pr_state.show
+let print_pr_state = Onton.Pr_state.show
 let print_github_error = Onton.Github.show_error

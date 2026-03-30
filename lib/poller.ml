@@ -13,7 +13,7 @@ type t = {
 }
 [@@deriving show, eq]
 
-let poll ~was_merged (pr : Github.Pr_state.t) =
+let poll ~was_merged (pr : Pr_state.t) =
   let unresolved = not (List.is_empty pr.comments) in
   let queue =
     let acc = [] in
@@ -23,20 +23,20 @@ let poll ~was_merged (pr : Github.Pr_state.t) =
     in
     (* world-has-conflict p -> queue' p merge-conflict *)
     let acc =
-      if Github.has_conflict pr then Operation_kind.Merge_conflict :: acc
+      if Pr_state.has_conflict pr then Operation_kind.Merge_conflict :: acc
       else acc
     in
     (* world-ci-failed p -> queue' p ci *)
-    let acc = if Github.ci_failed pr then Operation_kind.Ci :: acc else acc in
+    let acc = if Pr_state.ci_failed pr then Operation_kind.Ci :: acc else acc in
     List.rev acc
   in
   {
     queue;
-    merged = was_merged || Github.merged pr;
-    closed = Github.closed pr;
-    has_conflict = Github.has_conflict pr;
-    mergeable = Github.mergeable pr;
-    merge_ready = Github.merge_ready pr;
-    checks_passing = Github.checks_passing pr;
-    ci_checks = pr.Github.Pr_state.ci_checks;
+    merged = was_merged || Pr_state.merged pr;
+    closed = Pr_state.closed pr;
+    has_conflict = Pr_state.has_conflict pr;
+    mergeable = Pr_state.mergeable pr;
+    merge_ready = Pr_state.merge_ready pr;
+    checks_passing = Pr_state.checks_passing pr;
+    ci_checks = pr.Pr_state.ci_checks;
   }
