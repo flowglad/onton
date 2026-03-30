@@ -293,6 +293,10 @@ let gen_patch_agent_fully_populated =
     let a =
       Onton.Patch_agent.set_no_unresolved_comments a no_unresolved_comments
     in
+    let* ci_fix_running = bool in
+    let a =
+      if ci_fix_running then Onton.Patch_agent.set_ci_fix_running a else a
+    in
     return a)
 
 (* -- Reconciler -- *)

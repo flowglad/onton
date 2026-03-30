@@ -124,16 +124,15 @@ let render s =
   let lines = render_block (Cmarkit.Doc.block doc) in
   String.concat ~sep:"\n" lines
 
-(** Test whether a raw line is a tool marker (e.g. [[tool: Read] /path]).
-    These are structural elements we inject — they should not be parsed as
-    CommonMark, which would collapse them into adjacent paragraphs. *)
+(** Test whether a raw line is a tool marker (e.g. [[tool: Read] /path]). These
+    are structural elements we inject — they should not be parsed as CommonMark,
+    which would collapse them into adjacent paragraphs. *)
 let is_tool_marker line =
   let s = String.strip line in
   String.is_prefix s ~prefix:"[tool: "
 
 (** Style a tool-marker line directly (no CommonMark parsing). *)
-let style_tool_marker line =
-  Term.styled [ Term.Sgr.dim ] line
+let style_tool_marker line = Term.styled [ Term.Sgr.dim ] line
 
 (** Render a full markdown string to a list of styled lines. Consecutive blank
     lines are collapsed to at most one.
@@ -230,9 +229,7 @@ let%expect_test "render hrule" =
     |}]
 
 let%expect_test "tool markers rendered as separate lines" =
-  let s =
-    "[tool: Edit] /some/file.ml\nFix the stale comment on taskResults:"
-  in
+  let s = "[tool: Edit] /some/file.ml\nFix the stale comment on taskResults:" in
   let lines = render_to_lines s in
   let stripped = List.map lines ~f:Term.strip_ansi in
   List.iter stripped ~f:Stdio.print_endline;
@@ -244,9 +241,7 @@ let%expect_test "tool markers rendered as separate lines" =
     |}]
 
 let%expect_test "consecutive tool markers" =
-  let s =
-    "[tool: Read] /a.ml\n[tool: Edit] /b.ml\nSome agent text."
-  in
+  let s = "[tool: Read] /a.ml\n[tool: Edit] /b.ml\nSome agent text." in
   let lines = render_to_lines s in
   let stripped = List.map lines ~f:Term.strip_ansi in
   List.iter stripped ~f:Stdio.print_endline;

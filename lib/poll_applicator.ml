@@ -58,6 +58,7 @@ let apply t patch_id (poll_result : Poller.t) =
                        (Operation_kind.to_label kind));
                 Orchestrator.enqueue acc patch_id kind
             | Patch_decision.Ci_already_queued -> acc
+            | Patch_decision.Ci_fix_in_progress -> acc
             | Patch_decision.Cap_reached ->
                 log "CI failure cap reached (>=3), skipping CI enqueue";
                 acc)
@@ -73,4 +74,14 @@ let apply t patch_id (poll_result : Poller.t) =
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
+  (* Clear ci_fix_running when CI passes after a fix attempt.
+     Matches Elixir reference: clear_ci_fix_running when failed == [] and
+     not all_pending and has_pending_ci. *)
+  let t =
+    let agent = Orchestrator.agent t patch_id in
+    if agent.Patch_agent.ci_fix_running && poll_result.checks_passing then (
+      log "CI checks passed, clearing ci_fix_running";
+      Orchestrator.clear_ci_fix_running t patch_id)
+    else t
+  in
   (t, List.rev !logs)

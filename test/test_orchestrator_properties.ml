@@ -685,6 +685,77 @@ let () =
         with _ -> false)
   in
 
+  (* ci_fix_running suppresses CI re-enqueue *)
+  let prop_poll_ci_fix_running_suppresses =
+    Test.make ~name:"apply_poll_result: ci_fix_running suppresses CI enqueue"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.complete orch pid in
+              (* Simulate: agent responded to CI, ci_fix_running is now true *)
+              let orch = Orchestrator.set_ci_fix_running orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [ Operation_kind.Ci ];
+                    merged = false;
+                    closed = false;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = false;
+                    ci_checks = [];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let a = Orchestrator.agent orch' pid in
+              (* CI should NOT be enqueued *)
+              not
+                (List.mem a.Patch_agent.queue Operation_kind.Ci
+                   ~equal:Operation_kind.equal)
+        with _ -> false)
+  in
+
+  (* CI passing clears ci_fix_running *)
+  let prop_poll_ci_pass_clears_fix_running =
+    Test.make ~name:"apply_poll_result: checks_passing clears ci_fix_running"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch = Orchestrator.complete orch pid in
+              let orch = Orchestrator.set_ci_fix_running orch pid in
+              let orch = Orchestrator.increment_ci_failure_count orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    closed = false;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = true;
+                    ci_checks = [];
+                  }
+              in
+              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let a = Orchestrator.agent orch' pid in
+              (* ci_fix_running should be cleared and ci_failure_count reset *)
+              (not a.Patch_agent.ci_fix_running)
+              && a.Patch_agent.ci_failure_count = 0
+        with _ -> false)
+  in
+
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
@@ -713,5 +784,7 @@ let () =
       prop_poll_conflict_not_cleared_with_local_merge_conflict;
       prop_poll_new_comments;
       prop_send_human_message;
+      prop_poll_ci_fix_running_suppresses;
+      prop_poll_ci_pass_clears_fix_running;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"
