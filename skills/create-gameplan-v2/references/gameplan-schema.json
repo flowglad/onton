@@ -1,0 +1,340 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Gameplan",
+  "description": "A structured plan for a complex codebase change, broken into mergeable patches.",
+  "type": "object",
+  "required": [
+    "projectName",
+    "specFile",
+    "problemStatement",
+    "solutionSummary",
+    "mergabilityStrategy",
+    "currentStateAnalysis",
+    "requiredChanges",
+    "acceptanceCriteria",
+    "openQuestions",
+    "explicitOpinions",
+    "patches",
+    "testMap",
+    "dependencyGraph",
+    "mergabilityChecklist",
+    "mergabilityInsight",
+    "finalStateSpec"
+  ],
+  "properties": {
+    "projectName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "description": "Short kebab-case identifier. Used in branch names (zax--<projectName>), PR titles ([<projectName>] Patch N: <title>), and file paths (gameplans/<projectName>.json)."
+    },
+    "specFile": {
+      "type": ["string", "null"],
+      "description": "Path to the specification file the user provided, if any."
+    },
+    "workstream": {
+      "oneOf": [{ "$ref": "#/$defs/workstream" }, { "type": "null" }],
+      "description": "The workstream and milestone this gameplan belongs to, if any."
+    },
+    "problemStatement": {
+      "type": "string",
+      "description": "2-4 sentences: what problem this solves and why it matters."
+    },
+    "solutionSummary": {
+      "type": "string",
+      "description": "3-5 sentences: high-level approach."
+    },
+    "mergabilityStrategy": {
+      "$ref": "#/$defs/mergabilityStrategy"
+    },
+    "currentStateAnalysis": {
+      "type": "string",
+      "description": "Where the codebase is now vs. where it needs to be."
+    },
+    "requiredChanges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/requiredChange" }
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Each item is a 'done' condition."
+    },
+    "openQuestions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Decisions for the team."
+    },
+    "explicitOpinions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/explicitOpinion" }
+    },
+    "patches": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/patch" }
+    },
+    "testMap": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/testMapEntry" }
+    },
+    "dependencyGraph": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/dependencyGraphEntry" },
+      "description": "Must be a valid DAG. dependsOn: [] means no dependencies. Used to identify which patches can be executed in parallel."
+    },
+    "mergabilityChecklist": {
+      "$ref": "#/$defs/mergabilityChecklist"
+    },
+    "mergabilityInsight": {
+      "type": "string",
+      "description": "Summary, e.g. 'X of Y patches are INFRA/GATED and can ship without changing observable behavior.'"
+    },
+    "finalStateSpec": {
+      "type": "string",
+      "description": "Formal specification source describing what must be true when ALL patches are complete. This is the union of all patch specs plus any cross-cutting invariants. Should be reviewable independently — a reader should understand the end state without reading individual patches."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "workstream": {
+      "type": "object",
+      "required": ["name", "milestone", "priorMilestones", "unlocks"],
+      "properties": {
+        "name": { "type": "string" },
+        "milestone": { "type": "string" },
+        "priorMilestones": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unlocks": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "mergabilityStrategy": {
+      "type": "object",
+      "required": ["featureFlagStrategy", "featureFlags", "patchOrderingStrategy"],
+      "properties": {
+        "featureFlagStrategy": {
+          "type": "string",
+          "description": "Flag approach, or why not needed."
+        },
+        "featureFlags": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/featureFlag" }
+        },
+        "patchOrderingStrategy": {
+          "type": "string",
+          "description": "How patches are ordered: early/middle/late."
+        }
+      },
+      "additionalProperties": false
+    },
+    "featureFlag": {
+      "oneOf": [{ "$ref": "#/$defs/environmentVariableFlag" }, { "$ref": "#/$defs/serviceManagedFlag" }]
+    },
+    "environmentVariableFlag": {
+      "type": "object",
+      "required": ["type", "name", "introducedInPatch", "activatedInPatch"],
+      "properties": {
+        "type": { "const": "environment-variable" },
+        "name": {
+          "type": "string",
+          "description": "e.g. ENABLE_MY_FEATURE"
+        },
+        "introducedInPatch": {
+          "$ref": "#/$defs/patchId"
+        },
+        "activatedInPatch": {
+          "$ref": "#/$defs/patchId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "serviceManagedFlag": {
+      "type": "object",
+      "required": ["type", "flagName", "rolloutStrategy", "introducedInPatch", "activatedInPatch"],
+      "properties": {
+        "type": { "const": "service-managed" },
+        "flagName": {
+          "type": "string",
+          "description": "Flag identifier in the feature flag service."
+        },
+        "rolloutStrategy": {
+          "type": "string",
+          "enum": ["percentage", "allowlist"]
+        },
+        "introducedInPatch": {
+          "$ref": "#/$defs/patchId"
+        },
+        "activatedInPatch": {
+          "$ref": "#/$defs/patchId"
+        }
+      },
+      "additionalProperties": false
+    },
+    "requiredChange": {
+      "type": "object",
+      "required": ["file", "description"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "File path."
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "Approximate line number."
+        },
+        "description": { "type": "string" },
+        "signature": {
+          "type": ["string", "null"],
+          "description": "Function signature in the project's language, if applicable."
+        }
+      },
+      "additionalProperties": false
+    },
+    "explicitOpinion": {
+      "type": "object",
+      "required": ["opinion", "rationale"],
+      "properties": {
+        "opinion": {
+          "type": "string",
+          "description": "The design decision."
+        },
+        "rationale": {
+          "type": "string",
+          "description": "Why."
+        }
+      },
+      "additionalProperties": false
+    },
+    "patch": {
+      "type": "object",
+      "required": ["number", "classification", "title", "files", "changes", "spec"],
+      "properties": {
+        "number": {
+          "$ref": "#/$defs/patchId"
+        },
+        "classification": {
+          "$ref": "#/$defs/patchClassification"
+        },
+        "title": {
+          "type": "string",
+          "description": "Short description."
+        },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/patchFile" }
+        },
+        "changes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Each item is a specific change to make."
+        },
+        "testStubsIntroduced": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Test names from testMap where stubPatch = this patch."
+        },
+        "testStubsImplemented": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "description": "Test names from testMap where implPatch = this patch."
+        },
+        "spec": {
+          "type": "string",
+          "description": "Formal specification source — invariants that hold after this patch. Focus on the delta — only what this patch introduces or changes. Each patch spec is self-contained — redeclare any domains/rules from prior patches that this patch references. For INFRA patches that only add types, the spec may declare domains and rules with no body propositions (the types themselves are the contribution). For BEHAVIOR patches, include invariants about the new behavior. Keep specs minimal — only what this patch guarantees, not the entire system."
+        }
+      },
+      "additionalProperties": false
+    },
+    "patchId": {
+      "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }],
+      "description": "Patch identifier. Usually a 1-indexed integer, but may be a string (e.g. '3b') for sub-patches."
+    },
+    "patchClassification": {
+      "type": "string",
+      "enum": ["INFRA", "GATED", "BEHAVIOR"]
+    },
+    "patchFile": {
+      "type": "object",
+      "required": ["path", "action", "description"],
+      "properties": {
+        "path": { "type": "string" },
+        "action": {
+          "type": "string",
+          "enum": ["create", "modify", "delete"]
+        },
+        "description": {
+          "type": "string",
+          "description": "What changes in this file."
+        }
+      },
+      "additionalProperties": false
+    },
+    "testMapEntry": {
+      "type": "object",
+      "required": ["testName", "file", "stubPatch", "implPatch"],
+      "properties": {
+        "testName": {
+          "type": "string",
+          "description": "Full describe/it path."
+        },
+        "file": {
+          "type": "string",
+          "description": "Test file path."
+        },
+        "stubPatch": {
+          "$ref": "#/$defs/patchId"
+        },
+        "implPatch": {
+          "allOf": [{ "$ref": "#/$defs/patchId" }],
+          "description": "Must match the patch that implements the code being tested (not just the patch that unskips the test)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencyGraphEntry": {
+      "type": "object",
+      "required": ["patch", "classification", "dependsOn"],
+      "properties": {
+        "patch": {
+          "$ref": "#/$defs/patchId"
+        },
+        "classification": {
+          "$ref": "#/$defs/patchClassification"
+        },
+        "dependsOn": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/patchId" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "mergabilityChecklist": {
+      "type": "object",
+      "required": [
+        "featureFlagStrategyDocumented",
+        "earlyPatchesNonFunctional",
+        "testStubsInInfraPatches",
+        "testImplsColocated",
+        "testMapComplete",
+        "testMapImplPatchMatchesCode",
+        "behaviorPatchesMinimal",
+        "dependencyGraphOrdered",
+        "behaviorPatchesJustified"
+      ],
+      "properties": {
+        "featureFlagStrategyDocumented": { "type": "boolean" },
+        "earlyPatchesNonFunctional": { "type": "boolean" },
+        "testStubsInInfraPatches": { "type": "boolean" },
+        "testImplsColocated": { "type": "boolean" },
+        "testMapComplete": { "type": "boolean" },
+        "testMapImplPatchMatchesCode": { "type": "boolean" },
+        "behaviorPatchesMinimal": { "type": "boolean" },
+        "dependencyGraphOrdered": { "type": "boolean" },
+        "behaviorPatchesJustified": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
