@@ -1,0 +1,245 @@
+module ANTON.
+
+> The primary action: responding to feedback from the world.
+> A patch receives an operation, the highest-priority one is selected,
+> and the system ensures everything needed to respond, then responds.
+
+context PatchCtx.
+context WorldCtx.
+context Comments.
+
+Patch.
+OperationKind.
+Branch.
+Comment.
+
+{PatchCtx} queue p: Patch, k: OperationKind => Bool.
+{PatchCtx} busy p: Patch => Bool.
+{PatchCtx} has-pr p: Patch => Bool.
+{PatchCtx} has-session p: Patch => Bool.
+{PatchCtx} needs-intervention p: Patch => Bool.
+{PatchCtx} satisfies p: Patch => Bool.
+{PatchCtx} changed p: Patch => Bool.
+{PatchCtx} in-gameplan p: Patch => Bool.
+{PatchCtx} base-branch p: Patch => Branch.
+{PatchCtx} ci-failure-count p: Patch => Nat.
+{PatchCtx} session-failed p: Patch => Bool.
+
+{WorldCtx} merged p: Patch => Bool.
+{WorldCtx} merge-ready p: Patch => Bool.
+{PatchCtx} has-conflict p: Patch => Bool.
+
+{Comments} resolved c: Comment => Bool.
+{Comments} replied c: Comment => Bool.
+{Comments} pending c: Comment, p: Patch => Bool.
+{Comments} valid c: Comment => Bool.
+
+is-feedback k: OperationKind => Bool.
+highest-priority p: Patch, k: OperationKind => Bool.
+
+PatchCtx, Comments ~> Respond @ p: Patch, k: OperationKind,
+    is-feedback k,
+    has-pr p, ~merged p, ~busy p, ~needs-intervention p,
+    queue p k, highest-priority p k.
+---
+> A session is guaranteed after responding.
+has-session' p.
+
+> The patch is now busy.
+busy' p.
+
+> The chosen queue is drained.
+~queue' p k.
+
+> Other queues are unchanged.
+all j: OperationKind, j != k | queue' p j = queue p j.
+
+> Functional spec preserved except for human messages.
+k != human and satisfies p -> satisfies' p.
+
+> Kind-specific effects.
+k = ci -> changed' p.
+k = merge-conflict -> ~has-conflict' p.
+k = review-comments -> all c: Comment, pending c p |
+    resolved' c and (valid' c -> changed' p)
+    and (~valid' c -> replied' c).
+
+> Resolved comments are not pending.
+all c: Comment, p: Patch | resolved' c -> ~pending' c p.
+
+where
+
+> Glossary for Respond effects; Rebase action.
+
+rebase => OperationKind.
+human => OperationKind.
+merge-conflict => OperationKind.
+ci => OperationKind.
+review-comments => OperationKind.
+priority k: OperationKind => Nat0.
+
+PatchCtx ~> Rebase @ p: Patch,
+    has-pr p, ~merged p, ~busy p,
+    queue p rebase, highest-priority p rebase.
+---
+> Rebase is performed by the orchestrator, not the agent.
+busy' p.
+~queue' p rebase.
+has-session p -> has-session' p.
+base-branch' p = merge-target (base-branch p).
+all j: OperationKind, j != rebase | queue' p j = queue p j.
+
+> highest-priority means no queued operation has strictly higher priority.
+all p: Patch, k: OperationKind | highest-priority p k <->
+    (queue p k and (all j: OperationKind, queue p j | priority k <= priority j)).
+
+> Sessions are never lost.
+all p: Patch | has-session p -> has-session' p.
+
+where
+
+> Start action.
+
+main => Branch.
+merge-target b: Branch => Branch.
+deps-satisfied p: Patch => Bool.
+
+PatchCtx ~> Start @ p: Patch, in-gameplan p, deps-satisfied p, ~has-pr p.
+---
+has-pr' p.
+has-session' p.
+busy' p.
+satisfies' p.
+base-branch' p = initial-base p.
+
+> Start is biconditional with its preconditions.
+all p: Patch | in-gameplan p and deps-satisfied p and ~has-pr p <->
+    has-pr' p and satisfies' p.
+
+where
+
+> Initial base branch; Add action.
+
+initial-base p: Patch => Branch.
+branch-of p: Patch => Branch.
+open-pr-deps p: Patch => [Patch].
+sole-open-dep p: Patch => Patch.
+
+PatchCtx ~> Add @ p: Patch.
+---
+has-pr' p.
+~busy' p.
+~in-gameplan' p.
+
+> Initial base determined by dependency state.
+all p: Patch | #(open-pr-deps p) = 1 ->
+    initial-base p = branch-of (sole-open-dep p).
+all p: Patch | #(open-pr-deps p) = 0 ->
+    initial-base p = main.
+
+> sole-open-dep is the single open-PR dependency.
+all p: Patch, d: Patch | sole-open-dep p = d -> d in open-pr-deps p.
+
+where
+
+> Complete (agent finishes a turn).
+
+PatchCtx ~> Complete @ p: Patch, busy p.
+---
+~busy' p.
+
+> CI failure cap: 3 consecutive failures triggers needs-intervention.
+all p: Patch | ci-failure-count p >= 3 -> needs-intervention' p.
+
+> Session failure triggers needs-intervention.
+all p: Patch | session-failed p -> needs-intervention' p.
+
+> A human message clears needs-intervention.
+all p: Patch | queue p human -> ~needs-intervention' p.
+
+where
+
+> Poll synchronizes system state with the external world.
+
+world-has-comment c: Comment, p: Patch => Bool.
+world-has-conflict p: Patch => Bool.
+world-ci-failed p: Patch => Bool.
+world-merged p: Patch => Bool.
+world-merge-ready p: Patch => Bool.
+
+PatchCtx, WorldCtx ~> Poll.
+---
+> Comments in the world become queued feedback.
+all c: Comment, p: Patch |
+    world-has-comment c p and ~resolved c -> queue' p review-comments.
+
+> Conflicts in the world become queued feedback.
+all p: Patch | world-has-conflict p -> queue' p merge-conflict.
+all p: Patch | world-has-conflict p -> has-conflict' p.
+
+> CI failures in the world become queued feedback.
+all p: Patch | world-ci-failed p -> queue' p ci.
+
+> Merge state is observed.
+all p: Patch | world-merged p -> merged' p.
+
+> Merged is terminal and absorbing.
+all p: Patch | merged p -> merged' p.
+
+> Merge readiness is observed.
+all p: Patch | merge-ready' p = world-merge-ready p.
+
+> Liveness: pending operations on an idle, living patch must be addressed.
+all p: Patch, k: OperationKind |
+    queue p k and has-pr p and ~merged p and ~busy p and ~needs-intervention p ->
+    busy' p.
+
+where
+
+> Derived status and definitions.
+> Status is purely derived from other properties (not mutable state):
+>   merged               -> merged
+>   needs-intervention   -> needs-help
+>   approved?            -> approved
+>   busy, ~is-feedback   -> rebasing
+>   busy, is-feedback    -> running
+>   has-pr, ~busy, ~approved?, ~needs-intervention -> awaiting-review
+>   ~has-pr              -> pending
+
+approved? p: Patch => Bool.
+is-feedback-busy p: Patch => Bool.
+---
+> Definitions (not invariants — these are derivations, not constraints):
+>   approved? p  <->  has-pr p, merge-ready p, ~busy p,
+>                     ~needs-intervention p, base-branch p = main
+
+where
+
+> Operation kinds, priorities, and dependency logic.
+
+Gameplan.
+gameplan => Gameplan + Nothing.
+
+deps p: Patch => [Patch].
+depends-on p: Patch, d: Patch => Bool.
+---
+> Definition: depends-on p d  <->  d in deps p
+
+priority rebase = 0.
+priority human = 1.
+priority merge-conflict = 2.
+priority ci = 3.
+priority review-comments = 4.
+
+is-feedback human.
+is-feedback merge-conflict.
+is-feedback ci.
+is-feedback review-comments.
+~is-feedback rebase.
+
+> Definition (not invariant):
+>   deps-satisfied p  <->  #(open-pr-deps p) <= 1,
+>                          all deps merged or have PR
+
+> Added patches have no deps.
+all p: Patch | ~in-gameplan p -> #(deps p) = 0.
