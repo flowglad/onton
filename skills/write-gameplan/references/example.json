@@ -1,0 +1,243 @@
+{
+  "projectName": "extract-patch-decision",
+
+  "specFile": "spec/onton.pant",
+
+  "workstream": {
+    "name": "onton-completeness",
+    "milestone": "onton-completeness-pt-5",
+    "priorMilestones": ["onton-port", "onton-complete", "onton-completeness", "onton-completeness-pt-4"],
+    "unlocks": "Testable decision logic decoupled from I/O; property tests for all patch lifecycle transitions"
+  },
+
+  "problemStatement": "Decision logic for patch lifecycle (should we deliver an operation? skip it? queue it?) is tangled with I/O in main.ml's 1500-line runner_fiber. This makes it impossible to property-test the decision rules that the formal spec defines. The decision logic should be extracted into a pure module.",
+
+  "solutionSummary": "Extract a pure Patch_decision module with functions like `disposition`, `on_review_comments`, `on_ci_failure`, and `on_merge_conflict`. Each function takes the patch's current state and returns an algebraic type describing the action. Wire main.ml to call these functions instead of inlining the logic. Add QCheck2 property tests derived from the formal spec's preconditions and postconditions.",
+
+  "mergabilityStrategy": {
+    "featureFlagStrategy": "No feature flag needed. This is a refactoring of internal decision logic. External behavior is unchanged — the same decisions are made, just in a different module.",
+    "featureFlags": [],
+    "patchOrderingStrategy": "Patches 1-3 are INFRA (types, test stubs, pure logic). Patch 4 is BEHAVIOR (wires into main.ml)."
+  },
+
+  "currentStateAnalysis": "main.ml contains runner_fiber (lines 941-1171) which mixes Eio I/O with pure decision logic: checking if a patch is merged, busy, has conflicts, CI failures, etc. The same patterns repeat across on_poll_result, on_human_message, and on_ci_status handlers. There is no pure decision module — decisions are inline pattern matches inside effectful code.",
+
+  "requiredChanges": [
+    {
+      "file": "lib/patch_decision.ml",
+      "line": null,
+      "description": "New module: pure decision functions for patch lifecycle",
+      "signature": "val disposition : merged:bool -> busy:bool -> [ `Skip | `Queue | `Deliver ]"
+    },
+    {
+      "file": "lib/patch_decision.mli",
+      "line": null,
+      "description": "Interface for Patch_decision exposing decision types and functions",
+      "signature": null
+    },
+    {
+      "file": "test/test_patch_decision.ml",
+      "line": null,
+      "description": "QCheck2 property tests for all decision functions",
+      "signature": null
+    },
+    {
+      "file": "bin/main.ml",
+      "line": 960,
+      "description": "Replace inline decision logic in runner_fiber with Patch_decision calls",
+      "signature": null
+    }
+  ],
+
+  "acceptanceCriteria": [
+    "Patch_decision module exists with pure functions for all decision points",
+    "All decision functions are covered by QCheck2 property tests",
+    "Properties are derived from the formal spec, not from the current OCaml behavior",
+    "main.ml runner_fiber calls Patch_decision instead of inlining logic",
+    "No change to observable behavior — same decisions, same outcomes",
+    "All existing tests pass",
+    "dune build produces no warnings"
+  ],
+
+  "openQuestions": [],
+
+  "explicitOpinions": [
+    {
+      "opinion": "Return algebraic types, not booleans",
+      "rationale": "[ `Skip | `Queue | `Deliver ] is self-documenting and exhaustive. A bool requires the caller to remember what true means."
+    },
+    {
+      "opinion": "Derive properties from the spec, not the code",
+      "rationale": "The spec is the source of truth. If the code disagrees with the spec, the code is wrong. Testing against current behavior would just lock in bugs."
+    }
+  ],
+
+  "patches": [
+    {
+      "number": 1,
+      "classification": "INFRA",
+      "title": "Add Patch_decision types and module skeleton",
+      "files": [
+        {
+          "path": "lib/patch_decision.ml",
+          "action": "create",
+          "description": "Module with type definitions and placeholder functions that raise Not_implemented"
+        },
+        {
+          "path": "lib/patch_decision.mli",
+          "action": "create",
+          "description": "Public interface exposing decision types and function signatures"
+        },
+        {
+          "path": "lib/dune",
+          "action": "modify",
+          "description": "Add patch_decision to modules list"
+        }
+      ],
+      "changes": [
+        "Define type disposition = Skip | Queue | Deliver with [@@deriving show, eq]",
+        "Define type ci_action = Queue | Deliver | Cap_reached | Reject with [@@deriving show, eq]",
+        "Define type conflict_action = Queue | Deliver | Noop with [@@deriving show, eq]",
+        "Add val disposition : merged:bool -> busy:bool -> disposition (placeholder)",
+        "Add val on_ci_failure : merged:bool -> busy:bool -> ci_failure_count:int -> ci_action (placeholder)",
+        "Add val on_merge_conflict : merged:bool -> busy:bool -> conflict_action (placeholder)"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": null,
+      "spec": "module EXTRACT_DECISION_PATCH_1.\n\n> Patch 1 introduces type declarations only.\n> No behavioral invariants — the contribution is the type structure itself.\n\nDisposition.\nSkip => Disposition.\nQueue => Disposition.\nDeliver => Disposition.\n\nCiAction.\nCap_reached => CiAction.\n\nConflictAction.\nNoop => ConflictAction.\n---\n"
+    },
+    {
+      "number": 2,
+      "classification": "INFRA",
+      "title": "Add QCheck2 test stubs for decision properties",
+      "files": [
+        {
+          "path": "test/test_patch_decision.ml",
+          "action": "create",
+          "description": "Test file with pending QCheck2 properties for each decision function"
+        },
+        {
+          "path": "test/dune",
+          "action": "modify",
+          "description": "Add test_patch_decision to test executables"
+        }
+      ],
+      "changes": [
+        "Add pending test: merged patch is always skipped (spec: merged p -> disposition p = Skip)",
+        "Add pending test: busy patch is never delivered (spec: busy p -> disposition p /= Deliver)",
+        "Add pending test: CI failure count >= 3 yields Cap_reached (spec: ci-failure-count >= 3 -> needs-intervention)",
+        "Add pending test: merged patch conflict is Noop (spec: merged p -> on-conflict p = Noop)"
+      ],
+      "testStubsIntroduced": [
+        "Patch_decision > merged patch is always skipped",
+        "Patch_decision > busy patch is never delivered",
+        "Patch_decision > CI failure cap at 3",
+        "Patch_decision > merged patch conflict is Noop"
+      ],
+      "testStubsImplemented": null,
+      "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only.\n> No new invariants — stubs are pending markers implemented in Patch 3.\n\n---\n"
+    },
+    {
+      "number": 3,
+      "classification": "INFRA",
+      "title": "Implement decision functions and enable tests",
+      "files": [
+        {
+          "path": "lib/patch_decision.ml",
+          "action": "modify",
+          "description": "Replace placeholders with real decision logic"
+        },
+        {
+          "path": "test/test_patch_decision.ml",
+          "action": "modify",
+          "description": "Remove pending markers, implement test bodies"
+        }
+      ],
+      "changes": [
+        "Implement disposition: merged -> Skip, busy -> Queue, else -> Deliver",
+        "Implement on_ci_failure: merged -> Reject, ci_failure_count >= 3 -> Cap_reached, busy -> Queue, else -> Deliver",
+        "Implement on_merge_conflict: merged -> Noop, busy -> Queue, else -> Deliver",
+        "Enable all QCheck2 tests from Patch 2"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": [
+        "Patch_decision > merged patch is always skipped",
+        "Patch_decision > busy patch is never delivered",
+        "Patch_decision > CI failure cap at 3",
+        "Patch_decision > merged patch conflict is Noop"
+      ],
+      "spec": "module EXTRACT_DECISION_PATCH_3.\n\n> Patch 3 implements the pure decision logic.\n> These invariants are derived from the Pantagruel spec.\n\nPatch.\nDisposition.\nSkip => Disposition.\nQueue => Disposition.\nDeliver => Disposition.\n\nmerged? p: Patch => Bool.\nbusy? p: Patch => Bool.\nci-failure-count p: Patch => Nat0.\n\ndisposition p: Patch => Disposition.\n\n> Merged patches are always skipped.\nall p: Patch, merged? p | disposition p = Skip.\n\n> Busy patches are never delivered.\nall p: Patch, busy? p | disposition p /= Deliver.\n\n> CI failure cap triggers intervention.\nall p: Patch, ci-failure-count p >= 3 | needs-intervention? p.\n\nwhere\n\nneeds-intervention? p: Patch => Bool.\n---\n"
+    },
+    {
+      "number": 4,
+      "classification": "BEHAVIOR",
+      "title": "Wire Patch_decision into main.ml runner_fiber",
+      "files": [
+        {
+          "path": "bin/main.ml",
+          "action": "modify",
+          "description": "Replace inline decision logic with Patch_decision function calls"
+        }
+      ],
+      "changes": [
+        "In runner_fiber poll handler (~line 960): replace inline merged/busy checks with Patch_decision.disposition",
+        "In CI failure handler (~line 1050): replace inline ci_failure_count check with Patch_decision.on_ci_failure",
+        "In merge conflict handler (~line 1110): replace inline logic with Patch_decision.on_merge_conflict",
+        "Remove now-dead local helper functions that duplicated decision logic"
+      ],
+      "testStubsIntroduced": null,
+      "testStubsImplemented": null,
+      "spec": "module EXTRACT_DECISION_PATCH_4.\n\n> Patch 4 wires the pure decision module into main.ml.\n> The behavioral invariant: main.ml delegates all lifecycle\n> decisions to Patch_decision — no inline decision logic remains.\n\nPatch.\nRunnerFiber.\n\n> All decision points in runner_fiber use Patch_decision.\nall p: Patch, rf: RunnerFiber |\n  inline-decisions rf p = 0.\n\nwhere\n\ninline-decisions rf: RunnerFiber -> Patch => Nat0.\n---\n"
+    }
+  ],
+
+  "testMap": [
+    {
+      "testName": "Patch_decision > merged patch is always skipped",
+      "file": "test/test_patch_decision.ml",
+      "stubPatch": 2,
+      "implPatch": 3
+    },
+    {
+      "testName": "Patch_decision > busy patch is never delivered",
+      "file": "test/test_patch_decision.ml",
+      "stubPatch": 2,
+      "implPatch": 3
+    },
+    {
+      "testName": "Patch_decision > CI failure cap at 3",
+      "file": "test/test_patch_decision.ml",
+      "stubPatch": 2,
+      "implPatch": 3
+    },
+    {
+      "testName": "Patch_decision > merged patch conflict is Noop",
+      "file": "test/test_patch_decision.ml",
+      "stubPatch": 2,
+      "implPatch": 3
+    }
+  ],
+
+  "dependencyGraph": [
+    { "patch": 1, "classification": "INFRA", "dependsOn": [] },
+    { "patch": 2, "classification": "INFRA", "dependsOn": [1] },
+    { "patch": 3, "classification": "INFRA", "dependsOn": [1, 2] },
+    { "patch": 4, "classification": "BEHAVIOR", "dependsOn": [3] }
+  ],
+
+  "mergabilityChecklist": {
+    "featureFlagStrategyDocumented": true,
+    "earlyPatchesNonFunctional": true,
+    "testStubsInInfraPatches": true,
+    "testImplsColocated": true,
+    "testMapComplete": true,
+    "testMapImplPatchMatchesCode": true,
+    "behaviorPatchesMinimal": true,
+    "dependencyGraphOrdered": true,
+    "behaviorPatchesJustified": true
+  },
+
+  "mergabilityInsight": "3 of 4 patches are INFRA and can ship without changing observable behavior. Only Patch 4 changes behavior (wiring).",
+
+  "finalStateSpec": "module EXTRACT_DECISION.\n\n> ══════════════════════════════════════════\n> THE GUARANTEE\n> ══════════════════════════════════════════\n> After this gameplan, all patch lifecycle decisions are made\n> by the pure Patch_decision module. Decision logic is fully\n> testable via QCheck2 properties derived from the spec.\n\nPatch.\nDisposition.\nSkip => Disposition.\nQueue => Disposition.\nDeliver => Disposition.\n\nmerged? p: Patch => Bool.\nbusy? p: Patch => Bool.\nci-failure-count p: Patch => Nat0.\n\ndisposition p: Patch => Disposition.\n\n> Merged patches are always skipped.\nall p: Patch, merged? p | disposition p = Skip.\n\n> Busy patches are never delivered.\nall p: Patch, busy? p | disposition p /= Deliver.\n\n> CI failure cap triggers intervention.\nall p: Patch, ci-failure-count p >= 3 | needs-intervention? p.\n\nwhere\n\n> ══════════════════════════════════════════\n> SEPARATION OF CONCERNS\n> ══════════════════════════════════════════\n> main.ml delegates all decisions to Patch_decision.\n> No inline decision logic remains in I/O code.\n\nRunnerFiber.\n\nall p: Patch, rf: RunnerFiber |\n  inline-decisions rf p = 0.\n\nneeds-intervention? p: Patch => Bool.\ninline-decisions rf: RunnerFiber -> Patch => Nat0.\n---\n"
+}

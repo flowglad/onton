@@ -2,47 +2,70 @@
 
 ![onton](onton.png)
 
-An OCaml orchestrator for parallel Claude Code agents executing gameplan
-patches. Port of the [Anton](https://github.com/flowglad/orchestrate-gameplan)
-Elixir/OTP system.
+A methodology and orchestrator for breaking complex codebase changes into
+parallel, spec-verified patches executed by AI agents.
 
-Onton parses a structured gameplan (markdown), builds a dependency graph, and
-spawns concurrent Claude Code agents in git worktrees — one per patch. It polls
-GitHub for PR status, detects merges, triggers rebases, and reacts to CI
-failures and review comments. A terminal UI shows live status with full
-markdown-rendered agent transcripts.
+## The gameplan approach
 
-## Status
+Large changes are hard to review, easy to get wrong, and risky to merge. The
+gameplan approach decomposes them into small, ordered patches — each with a
+formal specification (written in
+[Pantagruel](https://github.com/subsetpark/pantagruel)) that states what must
+be true after the patch is applied. A dependency graph identifies which patches
+can run in parallel. An orchestrator spawns AI agents in isolated git worktrees
+and manages the full lifecycle: PR creation, code review, CI, rebasing, and
+merge.
 
-**Production.** Complete orchestration loop with pure decision logic, GitHub
-GraphQL polling, Claude subprocess management (PTY-wrapped `-p` mode with
-`--continue` session resumption), concurrent fiber architecture (TUI, poller,
-runner, persistence), session fallback chain, snapshot persistence/restore with
-transcript preservation, startup reconciliation, orchestrator-executed rebases,
-and rich TUI with markdown rendering via cmarkit.
+The approach has three layers:
 
-Property-based tests (QCheck2) cover spec invariants for graph, patch agent,
-orchestrator, reconciler, persistence, stream parsing, poller, patch decision
-logic, and spawn planning.
+| Layer | What | Where |
+|-------|------|-------|
+| **Scoping** | Break a large project into sequenced gameplans (milestones) | `skills/write-workstream/` |
+| **Planning** | Structure a change into patches with specs, tests, and a dependency graph | `skills/write-gameplan/` |
+| **Execution** | Orchestrate parallel agents, poll GitHub, react to events | `onton` (this binary) |
+
+### Skills
+
+The `skills/` directory contains Claude Code skills for the planning layers:
+
+- **write-workstream** — Define a large project as a sequence of gameplans
+  (milestones), each a safe stopping point. Guided discovery process: vision,
+  challenges, milestones, dependencies.
+
+- **write-gameplan** — Create a structured JSON gameplan with typed
+  sections, patch classifications (INFRA/GATED/BEHAVIOR), formal specs,
+  test maps, and a dependency graph. Designed so it's 5-10x easier to review
+  the gameplan than the code it produces.
+
+## Onton: the orchestrator
+
+Onton parses a structured gameplan, builds a dependency graph, and spawns
+concurrent Claude Code agents in git worktrees — one per patch. It polls GitHub
+for PR status, detects merges, triggers rebases, and reacts to CI failures and
+review comments. A terminal UI shows live status with full markdown-rendered
+agent transcripts.
 
 ## Install
 
-### Homebrew (macOS)
+Pick **one** of the following methods:
+
+### Option A: Homebrew (macOS)
 
 ```sh
 brew tap flowglad/onton https://github.com/flowglad/onton
 brew install onton
 ```
 
-### GitHub Releases
+### Option B: GitHub Releases
 
 Download a prebuilt binary from
 [Releases](https://github.com/flowglad/onton/releases) (macOS ARM64 and
 x86_64).
 
-### From source
+### Option C: From source
 
-Requires OCaml 5.4.0, dune 3.21, and opam:
+Only needed if you want to modify onton or are on a platform without prebuilt
+binaries. Requires OCaml 5.4.0, dune 3.21, and opam:
 
 ```sh
 git clone https://github.com/flowglad/onton.git
@@ -161,7 +184,7 @@ gameplan.md ──> Gameplan_parser ──> Graph + Patches
 
 Claude is invoked via `-p` (prompt mode, not `--print`) which saves sessions,
 enabling `--continue` to resume the most recent session in a worktree. This
-matches the Elixir reference implementation.
+enables session resumption across restarts.
 
 Since `-p` mode requires a TTY for streaming output, each Claude process is
 wrapped in `/usr/bin/script -q /dev/null` to allocate a pseudo-TTY. ANSI
@@ -223,7 +246,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 - **Strict compiler feedback** — all warnings fatal (except 44/70), `.mli`
   files enforce module boundaries
 - **Pantagruel spec alignment** — state machine transitions match the formal
-  spec in `anton.pant`
+  spec
 - **Single source of truth** — priority ordering defined once in `Priority`;
   sorted patch display via shared `sorted_patch_ids` ref; `current_op` tracks
   active operation for both status display and log suppression
@@ -281,7 +304,7 @@ dedup-based entry tracking.
 ## Formal spec
 
 The state machine is specified in
-[Pantagruel](https://github.com/subsetpark/pantagruel) (`anton.pant`). Key
+[Pantagruel](https://github.com/subsetpark/pantagruel). Key
 properties:
 
 - Sessions are never lost (`has_session p -> has_session' p`)
