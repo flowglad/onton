@@ -285,6 +285,9 @@ let respond t k =
   let is_review = equal_k Review_comments in
   let is_merge_conflict = equal_k Merge_conflict in
   let satisfies = if is_human then false else t.satisfies in
+  (* Spec: changed' only when a valid pending comment exists. We set it
+     unconditionally here because comment validity is resolved downstream
+     by the agent session — a conservative simplification. *)
   let changed = if is_ci || is_review then true else t.changed in
   let has_conflict = if is_merge_conflict then false else t.has_conflict in
   let human_messages = if is_human then [] else t.human_messages in
