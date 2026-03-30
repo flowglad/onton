@@ -166,7 +166,12 @@ let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
 
 let clear_needs_intervention t =
-  { t with needs_intervention = false; session_fallback = Fresh_available }
+  { t with
+    needs_intervention = false;
+    session_fallback = Fresh_available;
+    ci_fix_running = false;
+    ci_failure_count = 0;
+  }
 
 let reset_busy t =
   if not t.busy then t
