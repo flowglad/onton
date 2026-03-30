@@ -45,19 +45,6 @@ for PR status, detects merges, triggers rebases, and reacts to CI failures and
 review comments. A terminal UI shows live status with full markdown-rendered
 agent transcripts.
 
-### Status
-
-**Production.** Complete orchestration loop with pure decision logic, GitHub
-GraphQL polling, Claude subprocess management (PTY-wrapped `-p` mode with
-`--continue` session resumption), concurrent fiber architecture (TUI, poller,
-runner, persistence), session fallback chain, snapshot persistence/restore with
-transcript preservation, startup reconciliation, orchestrator-executed rebases,
-and rich TUI with markdown rendering via cmarkit.
-
-Property-based tests (QCheck2) cover spec invariants for graph, patch agent,
-orchestrator, reconciler, persistence, stream parsing, poller, patch decision
-logic, and spawn planning.
-
 ## Install
 
 Pick **one** of the following methods:
