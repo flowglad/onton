@@ -6,6 +6,7 @@
   "required": [
     "projectName",
     "specFile",
+    "workstream",
     "problemStatement",
     "solutionSummary",
     "mergabilityStrategy",
