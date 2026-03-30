@@ -166,7 +166,8 @@ let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
 
 let clear_needs_intervention t =
-  { t with
+  {
+    t with
     needs_intervention = false;
     session_fallback = Fresh_available;
     ci_fix_running = false;
