@@ -59,6 +59,8 @@ val set_has_conflict : t -> Patch_id.t -> t
 val clear_has_conflict : t -> Patch_id.t -> t
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
+val set_ci_fix_running : t -> Patch_id.t -> t
+val clear_ci_fix_running : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_needs_intervention : t -> Patch_id.t -> t

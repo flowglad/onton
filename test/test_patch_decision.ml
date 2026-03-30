@@ -123,6 +123,13 @@ let () =
           let a = with_pr pid br in
           let a = enqueue a Operation_kind.Ci in
           equal_ci_decision (on_ci_failure a) Ci_already_queued);
+      (* ---- on_ci_failure: ci_fix_running -> Ci_fix_in_progress ---- *)
+      Test.make ~name:"on_ci_failure: ci_fix_running -> Ci_fix_in_progress"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          let a = set_ci_fix_running a in
+          equal_ci_decision (on_ci_failure a) Ci_fix_in_progress);
       (* ---- on_human_message: fresh queue -> Enqueue_human ---- *)
       Test.make ~name:"on_human_message: no Human in queue -> Enqueue_human"
         Gen.(pair gen_pid gen_branch)

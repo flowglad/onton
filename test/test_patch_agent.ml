@@ -269,24 +269,24 @@ let () =
           let a = respond a Operation_kind.Review_comments in
           List.length a.human_messages = 1);
       (* -- 2 ci failures does NOT trigger needs_intervention (boundary) -- *)
+      (* respond increments ci_failure_count, so 1 prior + 1 from respond = 2 *)
       Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
           let a = increment_ci_failure_count a in
-          let a = increment_ci_failure_count a in
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
           not a.needs_intervention);
       (* -- 3 ci failures triggers needs_intervention -- *)
+      (* respond increments ci_failure_count, so 2 prior + 1 from respond = 3 *)
       Test.make ~name:"3 ci failures triggers intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in
-          let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
           let a = enqueue a Operation_kind.Ci in
@@ -383,11 +383,11 @@ let () =
               ~pr_number:None ~has_session:false ~busy:false ~merged:false
               ~needs_intervention:false ~queue:[] ~satisfies:false
               ~changed:false ~has_conflict:false ~base_branch:None
-              ~ci_failure_count:0 ~session_fallback:Fresh_available
-              ~human_messages:[] ~ci_checks:a.ci_checks ~mergeable:false
-              ~merge_ready:false ~checks_passing:false
-              ~no_unresolved_comments:false ~worktree_path:None
-              ~head_branch:None ~branch_blocked:false
+              ~ci_failure_count:0 ~ci_fix_running:false
+              ~session_fallback:Fresh_available ~human_messages:[]
+              ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
+              ~checks_passing:false ~no_unresolved_comments:false
+              ~worktree_path:None ~head_branch:None ~branch_blocked:false
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -453,8 +453,9 @@ let () =
               ~has_session:false ~busy:false ~merged:false
               ~needs_intervention:false ~queue:[] ~satisfies:true ~changed:false
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
-              ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
-              ~mergeable:false ~merge_ready:false ~checks_passing:false
+              ~ci_fix_running:false ~session_fallback:Fresh_available
+              ~human_messages:[] ~ci_checks:[] ~mergeable:false
+              ~merge_ready:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
               ~head_branch:None ~branch_blocked:false
           in
@@ -525,13 +526,13 @@ let () =
             not (is_approved a ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when needs_intervention -- *)
+      (* respond increments ci_failure_count, so 2 prior + 1 from respond = 3 *)
       Test.make ~name:"is_approved false when needs_intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           try
             let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
             let a = complete a in
-            let a = increment_ci_failure_count a in
             let a = increment_ci_failure_count a in
             let a = increment_ci_failure_count a in
             let a = enqueue a Operation_kind.Ci in

@@ -26,6 +26,8 @@ val disposition : Patch_agent.t -> disposition
 type ci_decision =
   | Enqueue_ci  (** CI failure count below cap — enqueue Ci feedback. *)
   | Ci_already_queued  (** Ci already in queue — no action needed. *)
+  | Ci_fix_in_progress
+      (** Agent is already fixing CI — suppress until checks pass. *)
   | Cap_reached  (** CI failure count >= 3 — do not enqueue, flag. *)
 [@@deriving show, eq, sexp_of, compare]
 

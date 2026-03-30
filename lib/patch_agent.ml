@@ -19,6 +19,7 @@ type t = {
   has_conflict : bool;
   base_branch : Branch.t option;
   ci_failure_count : int;
+  ci_fix_running : bool;
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Ci_check.t list;
@@ -51,6 +52,7 @@ let create patch_id =
     has_conflict = false;
     base_branch = None;
     ci_failure_count = 0;
+    ci_fix_running = false;
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
@@ -79,6 +81,7 @@ let create_adhoc ~patch_id ~pr_number =
     has_conflict = false;
     base_branch = None;
     ci_failure_count = 0;
+    ci_fix_running = false;
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
@@ -152,13 +155,24 @@ let is_approved t ~main_branch =
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
+let set_ci_fix_running t = { t with ci_fix_running = true }
+
+let clear_ci_fix_running t =
+  { t with ci_fix_running = false; ci_failure_count = 0 }
+
 let set_ci_checks t checks = { t with ci_checks = checks }
 let set_needs_intervention t = { t with needs_intervention = true }
 let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
 
 let clear_needs_intervention t =
-  { t with needs_intervention = false; session_fallback = Fresh_available }
+  {
+    t with
+    needs_intervention = false;
+    session_fallback = Fresh_available;
+    ci_fix_running = false;
+    ci_failure_count = 0;
+  }
 
 let reset_busy t =
   if not t.busy then t
@@ -174,9 +188,9 @@ let reset_busy t =
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
-    ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~mergeable
-    ~merge_ready ~checks_passing ~no_unresolved_comments ~worktree_path
-    ~head_branch ~branch_blocked =
+    ~ci_failure_count ~ci_fix_running ~session_fallback ~human_messages
+    ~ci_checks ~mergeable ~merge_ready ~checks_passing ~no_unresolved_comments
+    ~worktree_path ~head_branch ~branch_blocked =
   {
     patch_id;
     has_pr;
@@ -191,6 +205,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     has_conflict;
     base_branch;
     ci_failure_count;
+    ci_fix_running;
     session_fallback;
     human_messages;
     ci_checks;
@@ -273,6 +288,10 @@ let respond t k =
   let changed = if is_ci || is_review then true else t.changed in
   let has_conflict = if is_merge_conflict then false else t.has_conflict in
   let human_messages = if is_human then [] else t.human_messages in
+  let ci_fix_running = if is_ci then true else t.ci_fix_running in
+  let ci_failure_count =
+    if is_ci then t.ci_failure_count + 1 else t.ci_failure_count
+  in
   {
     t with
     has_session = true;
@@ -283,6 +302,8 @@ let respond t k =
     changed;
     has_conflict;
     human_messages;
+    ci_fix_running;
+    ci_failure_count;
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
