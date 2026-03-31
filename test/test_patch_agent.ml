@@ -46,6 +46,9 @@ let () =
           && Option.is_none t.base_branch
           && t.ci_failure_count = 0
           && equal_session_fallback t.session_fallback Fresh_available
+          && (not t.pr_description_applied)
+          && (not t.implementation_notes_delivered)
+          && t.start_attempts_without_pr = 0
           && List.is_empty t.human_messages
           && List.is_empty t.ci_checks && (not t.mergeable)
           && (not t.merge_ready) && (not t.checks_passing)
@@ -392,6 +395,9 @@ let () =
               ~session_fallback:Fresh_available ~human_messages:[]
               ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
               ~is_draft:false
+              ~pr_description_applied:false
+              ~implementation_notes_delivered:false
+              ~start_attempts_without_pr:0
               ~checks_passing:false ~no_unresolved_comments:false
               ~worktree_path:None ~head_branch:None ~branch_blocked:false
           in
@@ -461,7 +467,10 @@ let () =
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
               ~ci_fix_running:false ~session_fallback:Fresh_available
               ~human_messages:[] ~ci_checks:[] ~mergeable:false
-              ~merge_ready:false ~is_draft:false ~checks_passing:false
+              ~merge_ready:false ~is_draft:false
+              ~pr_description_applied:false
+              ~implementation_notes_delivered:false
+              ~start_attempts_without_pr:0 ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
               ~head_branch:None ~branch_blocked:false
           in
@@ -503,6 +512,7 @@ let () =
           try
             let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
             let a = complete a in
+            let a = set_is_draft a false in
             let a = set_merge_ready a true in
             is_approved a ~main_branch:br0
           with _ -> false);
@@ -568,6 +578,21 @@ let () =
             let a = set_is_draft a true in
             not (is_approved a ~main_branch:br0)
           with _ -> false);
+      Test.make ~name:"set_pr_number resets bootstrap lifecycle facts" ~count:1
+        Gen.(pure pid0) (fun pid ->
+          let a = create pid in
+          let a = increment_start_attempts_without_pr a in
+          let a = set_pr_description_applied a true in
+          let a = set_implementation_notes_delivered a true in
+          let a = set_pr_number a (Pr_number.of_int 7) in
+          a.has_pr && a.is_draft && (not a.pr_description_applied)
+          && (not a.implementation_notes_delivered)
+          && a.start_attempts_without_pr = 0);
+      Test.make ~name:"on_pr_discovery_failure increments durable attempt count"
+        ~count:1 Gen.(pure pid0) (fun pid ->
+          let a = create pid in
+          let a = on_pr_discovery_failure a in
+          a.start_attempts_without_pr = 1);
       (* -- respond invalidates merge_ready -- *)
       Test.make ~name:"respond invalidates merge_ready" ~count:1
         Gen.(pure (pid0, br0))

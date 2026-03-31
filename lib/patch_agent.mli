@@ -30,6 +30,9 @@ type t = private {
   mergeable : bool;
   merge_ready : bool;
   is_draft : bool;
+  pr_description_applied : bool;
+  implementation_notes_delivered : bool;
+  start_attempts_without_pr : int;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
@@ -123,6 +126,15 @@ val set_merge_ready : t -> bool -> t
 val set_is_draft : t -> bool -> t
 (** Set the draft flag from GitHub PR state. *)
 
+val set_pr_description_applied : t -> bool -> t
+(** Record whether the orchestrator has successfully applied the PR body. *)
+
+val set_implementation_notes_delivered : t -> bool -> t
+(** Record whether implementation notes were successfully delivered. *)
+
+val increment_start_attempts_without_pr : t -> t
+(** Record a successful Start run that still failed to discover a PR. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -184,7 +196,7 @@ val highest_priority : t -> Types.Operation_kind.t option
 
 val set_pr_number : t -> Types.Pr_number.t -> t
 (** Store [pr_number] and set [has_pr = true]. Not a plain field setter —
-    establishes the PR-present state. *)
+    establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
 
 val restore :
   patch_id:Types.Patch_id.t ->
@@ -207,6 +219,9 @@ val restore :
   mergeable:bool ->
   merge_ready:bool ->
   is_draft:bool ->
+  pr_description_applied:bool ->
+  implementation_notes_delivered:bool ->
+  start_attempts_without_pr:int ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
   worktree_path:string option ->

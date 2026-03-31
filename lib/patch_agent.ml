@@ -26,6 +26,9 @@ type t = {
   mergeable : bool;
   merge_ready : bool;
   is_draft : bool;
+  pr_description_applied : bool;
+  implementation_notes_delivered : bool;
+  start_attempts_without_pr : int;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Operation_kind.t option;
@@ -60,6 +63,9 @@ let create patch_id =
     mergeable = false;
     merge_ready = false;
     is_draft = false;
+    pr_description_applied = false;
+    implementation_notes_delivered = false;
+    start_attempts_without_pr = 0;
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
@@ -90,6 +96,9 @@ let create_adhoc ~patch_id ~pr_number =
     mergeable = false;
     merge_ready = false;
     is_draft = false;
+    pr_description_applied = true;
+    implementation_notes_delivered = true;
+    start_attempts_without_pr = 0;
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
@@ -136,17 +145,24 @@ let on_session_failure t ~is_fresh =
     let t = set_session_failed t in
     if is_fresh then set_tried_fresh t else t
 
-(** Handle a successful Claude run where PR discovery failed. Escalate fallback
-    so that repeated discovery failures eventually reach [needs_intervention]
-    instead of looping the Start action indefinitely. *)
-let on_pr_discovery_failure t = set_tried_fresh t
-
 let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
 let set_base_branch t branch = { t with base_branch = Some branch }
 let set_mergeable t v = { t with mergeable = v }
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }
+let set_pr_description_applied t v = { t with pr_description_applied = v }
+
+let set_implementation_notes_delivered t v =
+  { t with implementation_notes_delivered = v }
+
+let increment_start_attempts_without_pr t =
+  { t with start_attempts_without_pr = t.start_attempts_without_pr + 1 }
+
+(** Handle a successful Claude run where PR discovery failed by recording a
+    durable attempt. The controller derives intervention from this fact. *)
+let on_pr_discovery_failure t = increment_start_attempts_without_pr t
+
 let set_checks_passing t v = { t with checks_passing = v }
 let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
@@ -178,6 +194,7 @@ let clear_needs_intervention t =
     session_fallback = Fresh_available;
     ci_fix_running = false;
     ci_failure_count = 0;
+    start_attempts_without_pr = 0;
   }
 
 let reset_busy t =
@@ -195,7 +212,8 @@ let reset_busy t =
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~ci_fix_running ~session_fallback ~human_messages
-    ~ci_checks ~mergeable ~merge_ready ~is_draft ~checks_passing
+    ~ci_checks ~mergeable ~merge_ready ~is_draft ~pr_description_applied
+    ~implementation_notes_delivered ~start_attempts_without_pr ~checks_passing
     ~no_unresolved_comments ~worktree_path ~head_branch ~branch_blocked =
   {
     patch_id;
@@ -218,6 +236,9 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     mergeable;
     merge_ready;
     is_draft;
+    pr_description_applied;
+    implementation_notes_delivered;
+    start_attempts_without_pr;
     checks_passing;
     no_unresolved_comments;
     current_op = None;
@@ -227,7 +248,16 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
   }
 
 let set_pr_number t pr_number =
-  { t with pr_number = Some pr_number; has_pr = true }
+  {
+    t with
+    pr_number = Some pr_number;
+    has_pr = true;
+    needs_intervention = false;
+    is_draft = true;
+    pr_description_applied = false;
+    implementation_notes_delivered = false;
+    start_attempts_without_pr = 0;
+  }
 
 let start t ~base_branch =
   if t.has_pr then invalid_arg "Patch_agent.start: patch already has a PR";
@@ -364,14 +394,13 @@ let%test
   let t = complete t in
   not t.needs_intervention
 
-let%test "on_pr_discovery_failure escalates Fresh_available to Tried_fresh" =
+let%test "on_pr_discovery_failure increments attempts from zero" =
   let t = create (Patch_id.of_string "1") in
-  let t = { t with busy = true; session_fallback = Fresh_available } in
   let t = on_pr_discovery_failure t in
-  equal_session_fallback t.session_fallback Tried_fresh
+  t.start_attempts_without_pr = 1
 
-let%test "on_pr_discovery_failure escalates Tried_fresh to Given_up" =
+let%test "on_pr_discovery_failure increments attempts again" =
   let t = create (Patch_id.of_string "1") in
-  let t = { t with busy = true; session_fallback = Tried_fresh } in
   let t = on_pr_discovery_failure t in
-  equal_session_fallback t.session_fallback Given_up
+  let t = on_pr_discovery_failure t in
+  t.start_attempts_without_pr = 2

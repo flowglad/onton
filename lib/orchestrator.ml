@@ -76,6 +76,7 @@ let startable_patches t ~branch_map =
       if
         (not a.Patch_agent.has_pr) && (not a.Patch_agent.busy)
         && (not a.Patch_agent.merged)
+        && (not a.Patch_agent.needs_intervention)
         && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
              ~has_pr:(has_pr t)
       then
@@ -243,6 +244,16 @@ let set_merge_ready t patch_id v =
 
 let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)
+
+let set_pr_description_applied t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_description_applied a v)
+
+let set_implementation_notes_delivered t patch_id v =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_implementation_notes_delivered a v)
+
+let increment_start_attempts_without_pr t patch_id =
+  update_agent t patch_id ~f:Patch_agent.increment_start_attempts_without_pr
 
 let set_needs_intervention t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_needs_intervention

@@ -64,6 +64,9 @@ val clear_ci_fix_running : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
+val set_pr_description_applied : t -> Patch_id.t -> bool -> t
+val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
+val increment_start_attempts_without_pr : t -> Patch_id.t -> t
 val set_needs_intervention : t -> Patch_id.t -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
 val set_branch_blocked : t -> Patch_id.t -> t

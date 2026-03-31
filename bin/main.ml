@@ -166,11 +166,15 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args with
+  try
+    Eio.Process.run ~env process_mgr args;
+    true
+  with
   | Eio.Cancel.Cancelled _ as exn -> raise exn
   | exn ->
       Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str
-        draft (Printexc.to_string exn)
+        draft (Printexc.to_string exn);
+      false
 
 (** Set the PR body to a rendered description. Errors are logged but not fatal —
     the PR already exists; a missing description is cosmetic. *)
@@ -191,19 +195,31 @@ let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args with
+  try
+    Eio.Process.run ~env process_mgr args;
+    true
+  with
   | Eio.Cancel.Cancelled _ as exn -> raise exn
   | exn ->
       Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
-        (Printexc.to_string exn)
+        (Printexc.to_string exn);
+      false
 
-(** Execute a list of [Post_action.github_effect]s. *)
-let execute_github_effects ~process_mgr ~token ~owner ~repo effects =
-  Base.List.iter effects ~f:(function
-    | Post_action.Set_pr_description { pr_number; body } ->
-        set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body
-    | Post_action.Set_pr_draft { pr_number; draft } ->
-        set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft)
+(** Execute declarative GitHub effects and record successful observations back
+    into durable state. *)
+let execute_github_effects ~runtime ~process_mgr ~token ~owner ~repo effects =
+  Base.List.iter effects ~f:(fun github_effect ->
+      let success =
+        match github_effect with
+        | Patch_controller.Set_pr_description
+            { patch_id = _; pr_number; body } ->
+            set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body
+        | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
+            set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft
+      in
+      if success then
+        Runtime.update_orchestrator runtime (fun orch ->
+            Patch_controller.apply_github_effect_success orch github_effect))
 
 (** {1 Activity log helpers} *)
 
@@ -1717,7 +1733,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
             mark_session_failed runtime patch_id)
   in
   let rec loop sw =
-    let actions, gameplan, pre_fire_agents =
+    let gameplan =
+      Runtime.read runtime (fun snap -> snap.Runtime.gameplan)
+    in
+    let lifecycle_effects =
+      Runtime.update_orchestrator_returning runtime (fun orch ->
+          Patch_controller.reconcile_all orch ~project_name ~gameplan)
+    in
+    execute_github_effects ~runtime ~process_mgr ~token:config.github_token
+      ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
+    let actions, pre_fire_agents =
       Runtime.read runtime (fun snap ->
           let orch = snap.Runtime.orchestrator in
           let actions =
@@ -1735,7 +1760,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                     Some (pid, Orchestrator.agent orch pid)
                 | Orchestrator.Start _ -> None)
           in
-          (actions, snap.Runtime.gameplan, agent_map))
+          (actions, agent_map))
     in
     (* Fire all actions to mark agents busy, preventing re-dispatch on the next
        loop iteration. Note: there is a benign TOCTOU gap between reading
@@ -1852,24 +1877,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
-                                    let pr_body =
-                                      Prompt.render_pr_description ~project_name
-                                        patch gameplan
-                                    in
-                                    let effects =
-                                      Runtime.update_orchestrator_returning
-                                        runtime (fun orch ->
-                                          let orch, effs =
-                                            Post_action.on_start_discovered orch
-                                              ~patch_id ~pr_number ~base_branch
-                                              ~main_branch:main ~pr_body
-                                          in
-                                          (orch, effs))
-                                    in
-                                    execute_github_effects ~process_mgr
-                                      ~token:config.github_token
-                                      ~owner:config.github_owner
-                                      ~repo:config.github_repo effects
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.set_pr_number orch patch_id
+                                          pr_number)
                                 | Error _ when remaining > 0 ->
                                     Eio.Time.sleep clock 2.0;
                                     discover (remaining - 1)
@@ -1879,8 +1890,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          msg);
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
-                                        Post_action.on_start_discovery_failed
-                                          orch ~patch_id)
+                                        Orchestrator.on_pr_discovery_failure
+                                          orch patch_id)
                               in
                               discover 2)))
           | Orchestrator.Rebase (patch_id, new_base) ->
@@ -1917,23 +1928,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             (Printf.sprintf "runner: rebase error: %s" msg));
                       Runtime.update_orchestrator runtime (fun orch ->
                           Orchestrator.apply_rebase_result orch patch_id
-                            rebase_result new_base);
-                      (* Update PR draft status after successful rebase *)
-                      match rebase_result with
-                      | Worktree.Ok | Worktree.Noop -> (
-                          let agent =
-                            Runtime.read runtime (fun snap ->
-                                Orchestrator.agent snap.Runtime.orchestrator
-                                  patch_id)
-                          in
-                          match agent.Patch_agent.pr_number with
-                          | Some pr_number when Branch.equal new_base main ->
-                              set_pr_draft ~process_mgr
-                                ~token:config.github_token
-                                ~owner:config.github_owner
-                                ~repo:config.github_repo ~pr_number ~draft:false
-                          | _ -> ())
-                      | Worktree.Conflict | Worktree.Error _ -> ()))
+                            rebase_result new_base)))
           | Orchestrator.Respond (patch_id, kind) ->
               (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)
@@ -2125,19 +2120,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    (Patch_id.to_string patch_id))
                               ~expires_at:(Unix.gettimeofday () +. 10.0)
                               ();
-                          let effects =
-                            Runtime.update_orchestrator_returning runtime
-                              (fun orch ->
-                                let orch, effs =
-                                  Post_action.on_respond_ok orch ~patch_id ~kind
-                                    ~main_branch:main
-                                in
-                                (orch, effs))
-                          in
-                          execute_github_effects ~process_mgr
-                            ~token:config.github_token
-                            ~owner:config.github_owner ~repo:config.github_repo
-                            effects)))
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              let orch =
+                                if
+                                  Operation_kind.equal kind
+                                    Operation_kind.Merge_conflict
+                                then Orchestrator.clear_has_conflict orch patch_id
+                                else orch
+                              in
+                              if
+                                Operation_kind.equal kind
+                                  Operation_kind.Implementation_notes
+                              then
+                                Orchestrator.set_implementation_notes_delivered
+                                  orch patch_id true
+                              else orch))))
     in
     (* Spawn action fibers without waiting for completion. Each fiber is
        guarded by with_busy_guard (ensures complete on exit) and
