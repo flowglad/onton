@@ -166,10 +166,36 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args
-  with exn ->
-    Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str draft
-      (Printexc.to_string exn)
+  try Eio.Process.run ~env process_mgr args with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn ->
+      Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str
+        draft (Printexc.to_string exn)
+
+(** Set the PR body to a rendered description. Errors are logged but not fatal —
+    the PR already exists; a missing description is cosmetic. *)
+let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
+  let pr_str = Int.to_string (Pr_number.to_int pr_number) in
+  let args =
+    [
+      "gh";
+      "pr";
+      "edit";
+      pr_str;
+      "--repo";
+      Printf.sprintf "%s/%s" owner repo;
+      "--body";
+      body;
+    ]
+  in
+  let env =
+    Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
+  in
+  try Eio.Process.run ~env process_mgr args with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn ->
+      Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
+        (Printexc.to_string exn)
 
 (** {1 Activity log helpers} *)
 
@@ -1818,6 +1844,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
+                                    let pr_body =
+                                      Prompt.render_pr_description ~project_name
+                                        patch gameplan
+                                    in
+                                    set_pr_description ~process_mgr
+                                      ~token:config.github_token
+                                      ~owner:config.github_owner
+                                      ~repo:config.github_repo ~pr_number
+                                      ~body:pr_body;
                                     if not (Branch.equal base_branch main) then
                                       set_pr_draft ~process_mgr
                                         ~token:config.github_token
@@ -1829,6 +1864,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         let orch =
                                           Orchestrator.set_pr_number orch
                                             patch_id pr_number
+                                        in
+                                        let orch =
+                                          Orchestrator.enqueue orch patch_id
+                                            Operation_kind.Implementation_notes
                                         in
                                         Orchestrator.complete orch patch_id)
                                 | Error _ when remaining > 0 ->
@@ -1999,7 +2038,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                            source_agent
                                              .Patch_agent.human_messages)
                                   | Operation_kind.Ci | Operation_kind.Rebase
-                                  | Operation_kind.Merge_conflict ->
+                                  | Operation_kind.Merge_conflict
+                                  | Operation_kind.Implementation_notes ->
                                       Printf.sprintf "delivering %s"
                                         (Operation_kind.to_label kind));
                                 let prompt =
@@ -2030,6 +2070,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         (Base.List.rev
                                            source_agent
                                              .Patch_agent.human_messages)
+                                  | Operation_kind.Implementation_notes ->
+                                      let patch =
+                                        Base.List.find_exn
+                                          gameplan.Gameplan.patches
+                                          ~f:(fun (p : Patch.t) ->
+                                            Patch_id.equal p.Patch.id patch_id)
+                                      in
+                                      let pr_body =
+                                        Prompt.render_pr_description
+                                          ~project_name patch gameplan
+                                      in
+                                      Prompt.render_implementation_notes_prompt
+                                        ~project_name
+                                        ~pr_number:
+                                          (Base.Option.value_exn pr_number)
+                                        ~pr_body
                                   | Operation_kind.Rebase ->
                                       (* Invariant: Rebase is never routed
                                        through Respond *)

@@ -34,6 +34,12 @@ val render_patch_prompt :
   base_branch:string ->
   string
 
+val render_pr_description :
+  project_name:string -> Patch.t -> Gameplan.t -> string
+
+val render_implementation_notes_prompt :
+  project_name:string -> pr_number:Pr_number.t -> pr_body:string -> string
+
 val render_review_prompt :
   project_name:string -> ?pr_number:Pr_number.t -> Comment.t list -> string
 

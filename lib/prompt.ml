@@ -148,12 +148,9 @@ After your first commit, run:
 gh pr create --draft --title '[{{project_name}}] Patch {{patch_id}}: {{title}}' --body 'Work in progress' --base {{base_branch}}
 ```
 
-**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches automatically.
+**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches and draft status automatically.
 
-Then continue implementing. When finished:
-1. Run tests to verify they pass
-2. Update the PR description with a proper summary
-3. Mark the PR as ready for review when complete|}
+Then continue implementing until all tests pass.|}
           [
             ("project_name", project_name);
             ("patch_id", patch_id);
@@ -279,6 +276,73 @@ Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed pro
 
 ## Patches in Gameplan
 {{patches_list}}|}
+        vars)
+
+let render_pr_description ~(project_name : string) (patch : Patch.t)
+    (gameplan : Gameplan.t) =
+  let patch_id = Patch_id.to_string patch.Patch.id in
+  let deps =
+    match patch.Patch.dependencies with
+    | [] -> "None"
+    | ids ->
+        List.map ids ~f:(fun id -> Patch_id.to_string id)
+        |> String.concat ~sep:", "
+        |> Printf.sprintf "Patches %s"
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ("patch_id", patch_id);
+      ("title", patch.Patch.title);
+      ("description", patch.Patch.description);
+      ("problem_statement", gameplan.Gameplan.problem_statement);
+      ("solution_summary", gameplan.Gameplan.solution_summary);
+      ("dependencies", deps);
+      ("changes_section", optional_list_section ~header:"Changes" patch.changes);
+      ( "spec_section",
+        if String.is_empty patch.spec then ""
+        else "\n## Specification\n\n```\n" ^ patch.spec ^ "\n```\n" );
+      ( "acceptance_criteria_section",
+        optional_list_section ~header:"Acceptance Criteria"
+          patch.acceptance_criteria );
+      ( "files_section",
+        optional_list_section ~header:"Files to Modify" patch.files );
+    ]
+  in
+  render_with_override ~project_name ~name:"pr_description" ~vars
+    ~default:(fun () ->
+      substitute_variables
+        {|## Patch {{patch_id}}: {{title}}
+
+{{description}}
+{{changes_section}}{{spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
+        vars)
+
+let render_implementation_notes_prompt ~(project_name : string)
+    ~(pr_number : Pr_number.t) ~(pr_body : string) =
+  let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
+  let vars = [ ("pr_number", pr_num_str); ("pr_body", pr_body) ] in
+  render_with_override ~project_name ~name:"implementation_notes" ~vars
+    ~default:(fun () ->
+      substitute_variables
+        {|You have just finished implementing this patch and a PR has been created.
+
+The current PR description is:
+
+---
+{{pr_body}}
+---
+
+Your task: append an **## Implementation Notes** section to the PR body that describes what you actually did. Focus on:
+
+- Key implementation decisions and trade-offs you made
+- Anything surprising or non-obvious about the approach
+- Deviations from the original plan (if any)
+- Important details a reviewer should know
+
+Do NOT repeat information already in the description. Keep it concise — a few bullet points is ideal.
+
+Use `gh pr edit {{pr_number}} --body-file -` to update the PR body. Read the current body first with `gh pr view {{pr_number}} --json body -q .body`, append your Implementation Notes section, then write the full body back. If an Implementation Notes section already exists, update it rather than duplicating it.|}
         vars)
 
 let render_review_prompt ~(project_name : string) ?pr_number

@@ -276,7 +276,8 @@ let prop_plan_new_base_only_for_rebase =
             match kind with
             | Types.Operation_kind.Rebase -> Option.is_some new_base
             | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
-            | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments ->
+            | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
+            | Types.Operation_kind.Implementation_notes ->
                 Option.is_none new_base)
         | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true))
 

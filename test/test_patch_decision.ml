@@ -15,7 +15,10 @@ let gen_branch =
     map Branch.of_string
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
-let feedback_ops = Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
+let feedback_ops =
+  Operation_kind.
+    [ Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
+
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
 (** Start + set PR so the agent is in has_pr=true, busy=false state. *)

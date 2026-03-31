@@ -67,7 +67,7 @@ let apply t patch_id (poll_result : Poller.t) =
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Rebase | Operation_kind.Human
-        | Operation_kind.Merge_conflict ->
+        | Operation_kind.Merge_conflict | Operation_kind.Implementation_notes ->
             if is_new then
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)

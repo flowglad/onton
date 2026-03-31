@@ -3,7 +3,8 @@ open Onton.Types
 open Onton.Patch_agent
 
 let all_ops =
-  Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
+  Operation_kind.
+    [ Rebase; Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
 
 let gen_pid =
   QCheck2.Gen.(
@@ -16,7 +17,11 @@ let gen_branch =
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
 let gen_op = QCheck2.Gen.oneof_list all_ops
-let feedback_ops = Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
+
+let feedback_ops =
+  Operation_kind.
+    [ Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
+
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
 (** Simulate the full start+PR-confirmed flow for tests that need has_pr=true.

@@ -35,7 +35,13 @@ module Branch = struct
 end
 
 module Operation_kind = struct
-  type t = Rebase | Human | Merge_conflict | Ci | Review_comments
+  type t =
+    | Rebase
+    | Human
+    | Merge_conflict
+    | Ci
+    | Review_comments
+    | Implementation_notes
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   let to_label = function
@@ -44,6 +50,7 @@ module Operation_kind = struct
     | Merge_conflict -> "merge-conflict"
     | Ci -> "ci"
     | Review_comments -> "review-comments"
+    | Implementation_notes -> "implementation-notes"
 end
 
 module Comment_id = struct
