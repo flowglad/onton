@@ -59,7 +59,10 @@ type poll_observation = {
 }
 
 let enqueue_notes_if_needed t patch_id (agent : Patch_agent.t) =
-  if (not agent.has_pr) || agent.merged || agent.implementation_notes_delivered
+  if
+    (not agent.has_pr)
+    || Option.is_none agent.pr_number
+    || agent.merged || agent.implementation_notes_delivered
   then t
   else
     let already_queued =

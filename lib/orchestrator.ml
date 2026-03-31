@@ -123,8 +123,8 @@ let remove_agent t patch_id =
 let reconcile_message t msg =
   let existing = Map.find t.outbox msg.message_id in
   match existing with
-  | Some _ -> t
-  | None ->
+  | Some { status = Pending | Acked | Completed; _ } -> t
+  | Some { status = Obsolete; _ } | None ->
       let t =
         Map.fold t.outbox ~init:t ~f:(fun ~key ~data acc ->
             if

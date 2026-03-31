@@ -68,28 +68,25 @@ let has_draft_effect effects =
     | Patch_controller.Set_pr_draft _ -> true
     | Patch_controller.Set_pr_description _ -> false)
 
-let description_effect_exn effects =
+let description_effect effects =
   List.find_map effects ~f:(function
     | Patch_controller.Set_pr_description _ as e -> Some e
     | Patch_controller.Set_pr_draft _ -> None)
-  |> Option.value_exn
 
-let draft_effect_exn effects =
+let draft_effect effects =
   List.find_map effects ~f:(function
     | Patch_controller.Set_pr_draft _ as e -> Some e
     | Patch_controller.Set_pr_description _ -> None)
-  |> Option.value_exn
 
 let apply_all_effect_successes orch effects =
   List.fold effects ~init:orch ~f:Patch_controller.apply_github_effect_success
 
-let implementation_notes_action_exn actions pid =
+let implementation_notes_action actions pid =
   List.find actions ~f:(function
     | Orchestrator.Respond (action_pid, kind) ->
         Patch_id.equal action_pid pid
         && Operation_kind.equal kind Operation_kind.Implementation_notes
     | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
-  |> Option.value_exn
 
 let run_controller_cycle ~gameplan orch =
   let orch, effects, actions =
@@ -237,19 +234,25 @@ let () =
             ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
-        let orch1, effects1 =
-          Patch_controller.reconcile_patch orch ~project_name:"test-project"
-            ~gameplan ~patch
-        in
-        let orch2 =
-          Patch_controller.apply_github_effect_success orch1
-            (description_effect_exn effects1)
-        in
-        let _orch3, effects2 =
-          Patch_controller.reconcile_patch orch2 ~project_name:"test-project"
-            ~gameplan ~patch
-        in
-        has_description_effect effects1 && not (has_description_effect effects2))
+        begin try
+          let orch1, effects1 =
+            Patch_controller.reconcile_patch orch ~project_name:"test-project"
+              ~gameplan ~patch
+          in
+          match description_effect effects1 with
+          | None -> false
+          | Some eff ->
+              let orch2 =
+                Patch_controller.apply_github_effect_success orch1 eff
+              in
+              let _orch3, effects2 =
+                Patch_controller.reconcile_patch orch2
+                  ~project_name:"test-project" ~gameplan ~patch
+              in
+              has_description_effect effects1
+              && not (has_description_effect effects2)
+        with _ -> false
+        end)
   in
 
   let prop_draft_reemits_until_success =
@@ -270,19 +273,24 @@ let () =
             ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
-        let orch1, effects1 =
-          Patch_controller.reconcile_patch orch ~project_name:"test-project"
-            ~gameplan ~patch
-        in
-        let orch2 =
-          Patch_controller.apply_github_effect_success orch1
-            (draft_effect_exn effects1)
-        in
-        let _orch3, effects2 =
-          Patch_controller.reconcile_patch orch2 ~project_name:"test-project"
-            ~gameplan ~patch
-        in
-        has_draft_effect effects1 && not (has_draft_effect effects2))
+        begin try
+          let orch1, effects1 =
+            Patch_controller.reconcile_patch orch ~project_name:"test-project"
+              ~gameplan ~patch
+          in
+          match draft_effect effects1 with
+          | None -> false
+          | Some eff ->
+              let orch2 =
+                Patch_controller.apply_github_effect_success orch1 eff
+              in
+              let _orch3, effects2 =
+                Patch_controller.reconcile_patch orch2
+                  ~project_name:"test-project" ~gameplan ~patch
+              in
+              has_draft_effect effects1 && not (has_draft_effect effects2)
+        with _ -> false
+        end)
   in
 
   let prop_intervention_stable_after_threshold =
@@ -495,6 +503,8 @@ let () =
         in
         let orch, _effects, actions = run_controller_cycle ~gameplan orch in
         let a = Orchestrator.agent orch pid in
+        (* CI is dispatched as the current action (higher priority), while
+           implementation notes remain queued for the next cycle. *)
         has_notes_queued a
         && List.exists actions ~f:(function
           | Orchestrator.Respond (action_pid, kind) ->
@@ -618,30 +628,38 @@ let () =
             ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
-        let orch1, effects1, actions1 = run_controller_cycle ~gameplan orch in
-        let notes_action = implementation_notes_action_exn actions1 pid in
-        let orch1 = Orchestrator.fire orch1 notes_action in
-        let orch1 =
-          let orch1 =
-            Orchestrator.set_implementation_notes_delivered orch1 pid true
-          in
-          Orchestrator.complete orch1 pid
-        in
-        let _orch2, effects2, actions2 = run_controller_cycle ~gameplan orch1 in
-        has_description_effect effects1
-        && List.exists actions1 ~f:(function
-          | Orchestrator.Respond (action_pid, kind) ->
-              Patch_id.equal action_pid pid
-              && Operation_kind.equal kind Operation_kind.Implementation_notes
-          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
-        && has_draft_effect effects2
-        && not
-             (List.exists actions2 ~f:(function
-               | Orchestrator.Respond (action_pid, kind) ->
-                   Patch_id.equal action_pid pid
-                   && Operation_kind.equal kind
-                        Operation_kind.Implementation_notes
-               | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)))
+        begin try
+          let orch1, effects1, actions1 = run_controller_cycle ~gameplan orch in
+          match implementation_notes_action actions1 pid with
+          | None -> false
+          | Some notes_action ->
+              let orch1 = Orchestrator.fire orch1 notes_action in
+              let orch1 =
+                let orch1 =
+                  Orchestrator.set_implementation_notes_delivered orch1 pid true
+                in
+                Orchestrator.complete orch1 pid
+              in
+              let _orch2, effects2, actions2 =
+                run_controller_cycle ~gameplan orch1
+              in
+              has_description_effect effects1
+              && List.exists actions1 ~f:(function
+                | Orchestrator.Respond (action_pid, kind) ->
+                    Patch_id.equal action_pid pid
+                    && Operation_kind.equal kind
+                         Operation_kind.Implementation_notes
+                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+              && has_draft_effect effects2
+              && not
+                   (List.exists actions2 ~f:(function
+                     | Orchestrator.Respond (action_pid, kind) ->
+                         Patch_id.equal action_pid pid
+                         && Operation_kind.equal kind
+                              Operation_kind.Implementation_notes
+                     | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+        with _ -> false
+        end)
   in
 
   let suite =

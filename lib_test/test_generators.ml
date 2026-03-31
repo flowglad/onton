@@ -157,12 +157,13 @@ let gen_check_status =
 let gen_pr_state =
   QCheck2.Gen.(
     let open Onton.Pr_state in
+    let* is_draft = bool in
     map5
       (fun (status, merge_state) merge_ready (check_status, ci_checks_truncated)
            ci_checks (comments, unresolved_comment_count) ->
         {
           status;
-          is_draft = false;
+          is_draft;
           merge_state;
           merge_ready;
           check_status;

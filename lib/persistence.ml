@@ -120,10 +120,15 @@ let patch_agent_of_yojson json =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
+  let has_pr = bool_member "has_pr" json in
+  (* Legacy snapshots written before these fields existed will not contain them.
+     When has_pr is true, default to true so we don't replay PR bootstrap
+     effects (description, draft flip, notes) for an already-set-up PR. *)
+  let legacy_pr_default = has_pr in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-       ~has_pr:(bool_member "has_pr" json)
+       ~has_pr
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
        ~has_session:(bool_member "has_session" json)
@@ -144,13 +149,15 @@ let patch_agent_of_yojson json =
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
          (bool_member_opt "merge_ready" json |> Option.value ~default:false)
-       ~is_draft:(bool_member_opt "is_draft" json |> Option.value ~default:false)
+       ~is_draft:
+         (bool_member_opt "is_draft" json
+         |> Option.value ~default:legacy_pr_default)
        ~pr_description_applied:
          (bool_member_opt "pr_description_applied" json
-         |> Option.value ~default:false)
+         |> Option.value ~default:legacy_pr_default)
        ~implementation_notes_delivered:
          (bool_member_opt "implementation_notes_delivered" json
-         |> Option.value ~default:false)
+         |> Option.value ~default:legacy_pr_default)
        ~start_attempts_without_pr:
          (int_member_opt "start_attempts_without_pr" json
          |> Option.value ~default:0)
@@ -253,22 +260,27 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
     ]
 
 let action_of_yojson json =
+  let ( let* ) r f = Result.bind r ~f in
   match string_member "kind" json with
   | "start" ->
-      Orchestrator.Start
-        ( Patch_id.of_string (string_member "patch_id" json),
-          Branch.of_string (string_member "base_branch" json) )
+      Ok
+        (Orchestrator.Start
+           ( Patch_id.of_string (string_member "patch_id" json),
+             Branch.of_string (string_member "base_branch" json) ))
   | "respond" ->
-      Orchestrator.Respond
-        ( Patch_id.of_string (string_member "patch_id" json),
-          try_of_yojson Operation_kind.t_of_yojson
-            (Yojson.Safe.Util.member "operation_kind" json)
-          |> Result.ok_or_failwith )
+      let* op_kind =
+        try_of_yojson Operation_kind.t_of_yojson
+          (Yojson.Safe.Util.member "operation_kind" json)
+      in
+      Ok
+        (Orchestrator.Respond
+           (Patch_id.of_string (string_member "patch_id" json), op_kind))
   | "rebase" ->
-      Orchestrator.Rebase
-        ( Patch_id.of_string (string_member "patch_id" json),
-          Branch.of_string (string_member "base_branch" json) )
-  | other -> invalid_arg (Printf.sprintf "unknown action kind: %s" other)
+      Ok
+        (Orchestrator.Rebase
+           ( Patch_id.of_string (string_member "patch_id" json),
+             Branch.of_string (string_member "base_branch" json) ))
+  | other -> Error (Printf.sprintf "unknown action kind: %s" other)
 
 let message_status_of_string = function
   | "Pending" -> Ok Orchestrator.Pending
@@ -316,7 +328,7 @@ let orchestrator_of_yojson ~gameplan json =
                  let* status =
                    message_status_of_string (string_member "status" value)
                  in
-                 let action =
+                 let* action =
                    action_of_yojson (Yojson.Safe.Util.member "action" value)
                  in
                  Ok

@@ -304,18 +304,15 @@ let () =
   let prop_prompt_substitute_single_pass_and_unknown_preserved =
     Test.make
       ~name:"prompt: substitute_variables is single-pass and preserves unknowns"
-      ~count:200
-      Gen.(
-        pair
-          (string_size ~gen:printable (int_range 1 12))
-          (string_size ~gen:printable (int_range 1 12)))
-      (fun (_known, replacement) ->
+      ~count:200 Gen.unit (fun () ->
         let template = "{{known}} {{unknown}}" in
         let output =
           Prompt.substitute_variables template
-            [ ("known", replacement); ("replacement", "SHOULD_NOT_EXPAND") ]
+            [
+              ("known", "{{replacement}}"); ("replacement", "SHOULD_NOT_EXPAND");
+            ]
         in
-        String.is_substring output ~substring:replacement
+        String.is_substring output ~substring:"{{replacement}}"
         && String.is_substring output ~substring:"{{unknown}}"
         && not (String.is_substring output ~substring:"SHOULD_NOT_EXPAND"))
   in
