@@ -174,6 +174,23 @@ let parse_json_string input =
           | _ -> ""
         in
         let acceptance_criteria = json_string_list json "acceptanceCriteria" in
+        let open_questions =
+          match json |> member "openQuestions" with
+          | `Null -> []
+          | `List items ->
+              List.mapi items ~f:(fun i item ->
+                  match item with
+                  | `String s -> s
+                  | _ ->
+                      raise
+                        (Type_error
+                           ( Printf.sprintf "openQuestions[%d] must be a string"
+                               i,
+                             json )))
+          | _ ->
+              raise
+                (Type_error ("openQuestions must be an array of strings", json))
+        in
         (* Dependency graph: {patch, classification, dependsOn[]} format *)
         let dep_graph =
           match json |> member "dependencyGraph" with
@@ -268,24 +285,39 @@ let parse_json_string input =
                 test_stubs_implemented;
               })
         in
-        match validate ~patches ~dep_graph with
-        | Error e -> Error e
-        | Ok () ->
-            Ok
-              {
-                gameplan =
+        match open_questions with
+        | _ :: _ ->
+            let bullet_list =
+              List.map open_questions ~f:(fun q -> "  - " ^ q)
+              |> String.concat ~sep:"\n"
+            in
+            Error
+              (Printf.sprintf
+                 "Gameplan has %d open question(s) that must be resolved \
+                  before orchestration:\n\
+                  %s"
+                 (List.length open_questions)
+                 bullet_list)
+        | [] -> (
+            match validate ~patches ~dep_graph with
+            | Error e -> Error e
+            | Ok () ->
+                Ok
                   {
-                    Types.Gameplan.project_name;
-                    problem_statement;
-                    solution_summary;
-                    design_decisions;
-                    patches;
-                    current_state_analysis;
-                    explicit_opinions;
-                    acceptance_criteria;
-                  };
-                dependency_graph = dep_graph;
-              }
+                    gameplan =
+                      {
+                        Types.Gameplan.project_name;
+                        problem_statement;
+                        solution_summary;
+                        design_decisions;
+                        patches;
+                        current_state_analysis;
+                        explicit_opinions;
+                        acceptance_criteria;
+                        open_questions;
+                      };
+                    dependency_graph = dep_graph;
+                  })
       with Type_error (msg, _) ->
         Error (Printf.sprintf "JSON structure error: %s" msg))
 
@@ -518,4 +550,59 @@ let%test_module "Gameplan_parser" =
       match parse_json_string input with
       | Ok _ -> false
       | Error msg -> String.is_substring msg ~substring:"Cycle"
+
+    let%test "parse_json_string: open questions returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "openQuestions": ["Which database?", "Auth strategy?"],
+          "patches": [
+            {"number": 1, "title": "A", "changes": []}
+          ],
+          "dependencyGraph": [
+            {"patch": 1, "dependsOn": []}
+          ]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg ~substring:"open question"
+          && String.is_substring msg ~substring:"Which database?"
+          && String.is_substring msg ~substring:"Auth strategy?"
+
+    let%test "parse_json_string: empty open questions succeeds" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "openQuestions": [],
+          "patches": [
+            {"number": 1, "title": "A", "changes": []}
+          ],
+          "dependencyGraph": [
+            {"patch": 1, "dependsOn": []}
+          ]
+        }|}
+      in
+      match parse_json_string input with Ok _ -> true | Error _ -> false
+
+    let%test "parse_json_string: non-string open question returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "openQuestions": [123],
+          "patches": [
+            {"number": 1, "title": "A", "changes": []}
+          ],
+          "dependencyGraph": [
+            {"patch": 1, "dependsOn": []}
+          ]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg -> String.is_substring msg ~substring:"openQuestions[0]"
   end)

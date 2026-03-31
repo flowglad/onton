@@ -114,6 +114,7 @@ let () =
                 current_state_analysis = "";
                 explicit_opinions = "";
                 acceptance_criteria = [];
+                open_questions = [];
               }
           in
           let orchestrator =
@@ -223,6 +224,7 @@ let () =
                 current_state_analysis = "";
                 explicit_opinions = "";
                 acceptance_criteria = [];
+                open_questions = [];
               }
           in
           let main_branch = Branch.of_string "main" in
