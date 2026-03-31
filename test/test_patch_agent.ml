@@ -256,8 +256,7 @@ let () =
           in
           List.length a.human_messages = List.length msgs);
       (* -- respond Human preserves human_messages until completion -- *)
-      Test.make
-        ~name:"respond Human preserves human_messages until completion"
+      Test.make ~name:"respond Human preserves human_messages until completion"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -406,13 +405,11 @@ let () =
               ~ci_failure_count:0 ~ci_fix_running:false
               ~session_fallback:Fresh_available ~human_messages:[]
               ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
-              ~is_draft:false
-              ~pr_description_applied:false
-              ~implementation_notes_delivered:false
-              ~start_attempts_without_pr:0
+              ~is_draft:false ~pr_description_applied:false
+              ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~checks_passing:false ~no_unresolved_comments:false
-              ~current_message_id:None ~generation:0
-              ~worktree_path:None ~head_branch:None ~branch_blocked:false
+              ~current_message_id:None ~generation:0 ~worktree_path:None
+              ~head_branch:None ~branch_blocked:false
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -480,12 +477,10 @@ let () =
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
               ~ci_fix_running:false ~session_fallback:Fresh_available
               ~human_messages:[] ~ci_checks:[] ~mergeable:false
-              ~merge_ready:false ~is_draft:false
-              ~pr_description_applied:false
-              ~implementation_notes_delivered:false
-              ~start_attempts_without_pr:0 ~checks_passing:false
-              ~no_unresolved_comments:false ~current_message_id:None
-              ~generation:0 ~worktree_path:None
+              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+              ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+              ~checks_passing:false ~no_unresolved_comments:false
+              ~current_message_id:None ~generation:0 ~worktree_path:None
               ~head_branch:None ~branch_blocked:false
           in
           let a = enqueue a Operation_kind.Rebase in
@@ -593,17 +588,21 @@ let () =
             not (is_approved a ~main_branch:br0)
           with _ -> false);
       Test.make ~name:"set_pr_number resets bootstrap lifecycle facts" ~count:1
-        Gen.(pure pid0) (fun pid ->
+        Gen.(pure pid0)
+        (fun pid ->
           let a = create pid in
           let a = increment_start_attempts_without_pr a in
           let a = set_pr_description_applied a true in
           let a = set_implementation_notes_delivered a true in
           let a = set_pr_number a (Pr_number.of_int 7) in
-          a.has_pr && a.is_draft && (not a.pr_description_applied)
+          a.has_pr && a.is_draft
+          && (not a.pr_description_applied)
           && (not a.implementation_notes_delivered)
           && a.start_attempts_without_pr = 0);
       Test.make ~name:"on_pr_discovery_failure increments durable attempt count"
-        ~count:1 Gen.(pure pid0) (fun pid ->
+        ~count:1
+        Gen.(pure pid0)
+        (fun pid ->
           let a = create pid in
           let a = on_pr_discovery_failure a in
           a.start_attempts_without_pr = 1);

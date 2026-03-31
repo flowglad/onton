@@ -31,17 +31,17 @@ let make_stream_entry =
 let state_with_patch patch_id ~busy ~has_session ~ci_failure_count =
   State.empty
   |> State.update_patch_ctx ~f:(fun ctx ->
-         ctx
-         |> State.Patch_ctx.set_busy ~patch_id ~value:busy
-         |> State.Patch_ctx.set_has_session ~patch_id ~value:has_session
-         |> State.Patch_ctx.set_ci_failure_count ~patch_id ~count:ci_failure_count)
+      ctx
+      |> State.Patch_ctx.set_busy ~patch_id ~value:busy
+      |> State.Patch_ctx.set_has_session ~patch_id ~value:has_session
+      |> State.Patch_ctx.set_ci_failure_count ~patch_id ~count:ci_failure_count)
 
 let add_resolved_and_pending state ~comment ~patch_id =
   state
   |> State.update_comments ~f:(fun comments ->
-         comments
-         |> State.Comments.set_resolved ~comment ~value:true
-         |> State.Comments.set_pending ~comment ~patch_id ~value:true)
+      comments
+      |> State.Comments.set_resolved ~comment ~value:true
+      |> State.Comments.set_pending ~comment ~patch_id ~value:true)
 
 let valid_parser_json ~project_name ~patches_json ~dependency_graph_json =
   Printf.sprintf
@@ -61,7 +61,6 @@ let valid_parser_json ~project_name ~patches_json ~dependency_graph_json =
 let () =
   let open QCheck2 in
   let open Onton_test_support.Test_generators in
-
   let prop_activity_log_trim_preserves_prefixes =
     Test.make ~name:"activity_log: trim preserves recent prefixes" ~count:300
       Gen.(
@@ -117,15 +116,17 @@ let () =
         && Bool.equal (State.Patch_ctx.is_merged ctx ~patch_id) value
         && Bool.equal (State.Patch_ctx.is_approved ctx ~patch_id) value
         && Int.equal (State.Patch_ctx.ci_failure_count ctx ~patch_id) 2
-        && Option.equal Branch.equal (State.Patch_ctx.base_branch ctx ~patch_id)
+        && Option.equal Branch.equal
+             (State.Patch_ctx.base_branch ctx ~patch_id)
              (Some branch)
-        && List.mem (State.Patch_ctx.known_patch_ids ctx) patch_id
-             ~equal:Patch_id.equal)
+        && List.mem
+             (State.Patch_ctx.known_patch_ids ctx)
+             patch_id ~equal:Patch_id.equal)
   in
 
   let prop_state_comments_roundtrip =
-    Test.make ~name:"state.comments: resolved and pending round-trip"
-      ~count:300 Gen.(pair gen_comment gen_patch_id)
+    Test.make ~name:"state.comments: resolved and pending round-trip" ~count:300
+      Gen.(pair gen_comment gen_patch_id)
       (fun (comment, patch_id) ->
         let comments =
           State.Comments.empty
@@ -134,8 +135,9 @@ let () =
         in
         State.Comments.is_resolved comments ~comment
         && State.Comments.is_pending comments ~comment ~patch_id
-        && List.mem (State.Comments.all_resolved comments) comment
-             ~equal:Comment.equal
+        && List.mem
+             (State.Comments.all_resolved comments)
+             comment ~equal:Comment.equal
         && List.mem (State.Comments.all_pending comments) (comment, patch_id)
              ~equal:(fun (c1, p1) (c2, p2) ->
                Comment.equal c1 c2 && Patch_id.equal p1 p2))
@@ -151,7 +153,7 @@ let () =
         && List.equal Operation_kind.equal l
              (List.dedup_and_sort ops ~compare:Operation_kind.compare
              |> List.sort ~compare:(fun a b ->
-                    Int.compare (Priority.priority a) (Priority.priority b))))
+                 Int.compare (Priority.priority a) (Priority.priority b))))
   in
 
   let prop_priority_dequeue_returns_peeked_highest =
@@ -161,14 +163,13 @@ let () =
         match (Priority.peek_highest q, Priority.dequeue_highest q) with
         | None, None -> true
         | Some top, Some (deq, rest) ->
-            Operation_kind.equal top deq
-            && not (Priority.mem rest deq)
+            Operation_kind.equal top deq && not (Priority.mem rest deq)
         | _ -> false)
   in
 
   let prop_pr_state_predicates =
-    Test.make ~name:"pr_state: predicates reflect fields" ~count:500 gen_pr_state
-      (fun pr ->
+    Test.make ~name:"pr_state: predicates reflect fields" ~count:500
+      gen_pr_state (fun pr ->
         Bool.equal (Pr_state.merged pr)
           (Pr_state.equal_pr_status pr.status Pr_state.Merged)
         && Bool.equal (Pr_state.closed pr)
@@ -178,11 +179,12 @@ let () =
              (Pr_state.equal_pr_status pr.status Pr_state.Open
              && Pr_state.equal_merge_state pr.merge_state Pr_state.Mergeable)
         && Bool.equal (Pr_state.merge_ready pr)
-             (Pr_state.equal_pr_status pr.status Pr_state.Open
-             && pr.merge_ready)
-        && Bool.equal (Pr_state.checks_passing pr)
+             (Pr_state.equal_pr_status pr.status Pr_state.Open && pr.merge_ready)
+        && Bool.equal
+             (Pr_state.checks_passing pr)
              (Pr_state.equal_check_status pr.check_status Pr_state.Passing)
-        && Bool.equal (Pr_state.no_unresolved_comments pr)
+        && Bool.equal
+             (Pr_state.no_unresolved_comments pr)
              (Int.equal pr.unresolved_comment_count 0)
         && Bool.equal (Pr_state.has_conflict pr)
              (Pr_state.equal_merge_state pr.merge_state Pr_state.Conflicting)
@@ -198,7 +200,10 @@ let () =
   let prop_invariants_negative_ci_detected =
     Test.make ~name:"invariants: negative ci_failure_count detected" ~count:100
       gen_patch_id (fun patch_id ->
-        let state = state_with_patch patch_id ~busy:false ~has_session:false ~ci_failure_count:(-1) in
+        let state =
+          state_with_patch patch_id ~busy:false ~has_session:false
+            ~ci_failure_count:(-1)
+        in
         List.exists (Invariants.check_invariants state) ~f:(fun v ->
             String.equal v.invariant "ci_failure_count_non_negative"))
   in
@@ -206,14 +211,17 @@ let () =
   let prop_invariants_busy_without_session_detected =
     Test.make ~name:"invariants: busy without session detected" ~count:100
       gen_patch_id (fun patch_id ->
-        let state = state_with_patch patch_id ~busy:true ~has_session:false ~ci_failure_count:0 in
+        let state =
+          state_with_patch patch_id ~busy:true ~has_session:false
+            ~ci_failure_count:0
+        in
         List.exists (Invariants.check_invariants state) ~f:(fun v ->
             String.equal v.invariant "busy_implies_has_session"))
   in
 
   let prop_invariants_resolved_pending_overlap_detected =
-    Test.make
-      ~name:"invariants: resolved and pending overlap detected" ~count:100
+    Test.make ~name:"invariants: resolved and pending overlap detected"
+      ~count:100
       Gen.(pair gen_patch_id gen_comment)
       (fun (patch_id, comment) ->
         let state = add_resolved_and_pending State.empty ~comment ~patch_id in
@@ -276,17 +284,15 @@ let () =
   in
 
   let prop_gameplan_parser_rejects_missing_dependency_target =
-    Test.make
-      ~name:"gameplan_parser: rejects dependency on nonexistent patch" ~count:1
-      Gen.unit (fun () ->
+    Test.make ~name:"gameplan_parser: rejects dependency on nonexistent patch"
+      ~count:1 Gen.unit (fun () ->
         let json =
           valid_parser_json ~project_name:"missing-dep"
             ~patches_json:
               {|[
   {"number": 1, "title": "Patch 1", "changes": []}
 ]|}
-            ~dependency_graph_json:
-              {|[
+            ~dependency_graph_json:{|[
   {"patch": 1, "dependsOn": [99]}
 ]|}
         in
@@ -297,11 +303,12 @@ let () =
 
   let prop_prompt_substitute_single_pass_and_unknown_preserved =
     Test.make
-      ~name:
-        "prompt: substitute_variables is single-pass and preserves unknowns"
+      ~name:"prompt: substitute_variables is single-pass and preserves unknowns"
       ~count:200
-      Gen.(pair (string_size ~gen:printable (int_range 1 12))
-             (string_size ~gen:printable (int_range 1 12)))
+      Gen.(
+        pair
+          (string_size ~gen:printable (int_range 1 12))
+          (string_size ~gen:printable (int_range 1 12)))
       (fun (_known, replacement) ->
         let template = "{{known}} {{unknown}}" in
         let output =
@@ -329,8 +336,7 @@ let () =
              ]))
       (fun (count, selected, cmd) ->
         let next = Tui_input.apply_move ~count ~selected cmd in
-        if count <= 0 then Int.equal next (-1)
-        else next >= -1 && next < count)
+        if count <= 0 then Int.equal next (-1) else next >= -1 && next < count)
   in
 
   let prop_markdown_render_collapses_blank_lines =

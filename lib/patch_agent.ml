@@ -176,8 +176,7 @@ let set_head_branch t branch = { t with head_branch = Some branch }
 
 let is_approved t ~main_branch =
   t.has_pr && t.merge_ready && (not t.busy) && (not t.needs_intervention)
-  && (not t.is_draft)
-  && (not t.branch_blocked)
+  && (not t.is_draft) && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
 
 let increment_ci_failure_count t =
@@ -381,8 +380,12 @@ let complete t =
       human_messages =
         (match t.current_op with
         | Some Human -> []
-        | Some Rebase | Some Ci | Some Review_comments
-        | Some Merge_conflict | Some Implementation_notes | None ->
+        | Some Rebase
+        | Some Ci
+        | Some Review_comments
+        | Some Merge_conflict
+        | Some Implementation_notes
+        | None ->
             t.human_messages);
       needs_intervention;
     }

@@ -3,13 +3,16 @@ open Types
 
 let action_identity = function
   | Orchestrator.Start (patch_id, base) ->
-      Printf.sprintf "start:%s:%s" (Patch_id.to_string patch_id)
+      Printf.sprintf "start:%s:%s"
+        (Patch_id.to_string patch_id)
         (Branch.to_string base)
   | Orchestrator.Respond (patch_id, kind) ->
-      Printf.sprintf "respond:%s:%s" (Patch_id.to_string patch_id)
+      Printf.sprintf "respond:%s:%s"
+        (Patch_id.to_string patch_id)
         (Operation_kind.to_label kind)
   | Orchestrator.Rebase (patch_id, base) ->
-      Printf.sprintf "rebase:%s:%s" (Patch_id.to_string patch_id)
+      Printf.sprintf "rebase:%s:%s"
+        (Patch_id.to_string patch_id)
         (Branch.to_string base)
 
 let message_of_action (patch_agent : Patch_agent.t) action =
@@ -138,7 +141,9 @@ let apply_poll_result t patch_id
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
-  let t = Orchestrator.set_checks_passing t patch_id poll_result.checks_passing in
+  let t =
+    Orchestrator.set_checks_passing t patch_id poll_result.checks_passing
+  in
   let t =
     let agent = Orchestrator.agent t patch_id in
     if agent.Patch_agent.ci_fix_running && poll_result.checks_passing then (
@@ -202,7 +207,7 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
   let agent = Orchestrator.agent t patch_id in
   let effects = ref [] in
   (match agent.pr_number with
-  | Some pr_number ->
+  | Some pr_number -> (
       if not agent.pr_description_applied then
         effects :=
           Set_pr_description
@@ -212,7 +217,7 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
               body = Prompt.render_pr_description ~project_name patch gameplan;
             }
           :: !effects;
-      (match agent.base_branch with
+      match agent.base_branch with
       | Some base_branch ->
           let desired_draft =
             if Branch.equal base_branch (Orchestrator.main_branch t) then
@@ -229,9 +234,7 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
 
 let reconcile_all t ~project_name ~gameplan =
   List.fold gameplan.Gameplan.patches ~init:(t, []) ~f:(fun (orch, acc) patch ->
-      let orch, effects =
-        reconcile_patch orch ~project_name ~gameplan ~patch
-      in
+      let orch, effects = reconcile_patch orch ~project_name ~gameplan ~patch in
       (orch, acc @ effects))
 
 let branch_map_of_patches patches =
@@ -251,7 +254,8 @@ let plan_action_for_patch t ~branch_map patch_id =
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
   let has_pr pid = (Orchestrator.agent t pid).Patch_agent.has_pr in
   if
-    (not agent.Patch_agent.has_pr) && (not agent.Patch_agent.busy)
+    (not agent.Patch_agent.has_pr)
+    && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.needs_intervention)
     && Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
@@ -271,7 +275,8 @@ let plan_action_for_patch t ~branch_map patch_id =
     in
     Some (Orchestrator.Start (patch_id, base))
   else if
-    agent.Patch_agent.has_pr && (not agent.Patch_agent.merged)
+    agent.Patch_agent.has_pr
+    && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && List.mem agent.Patch_agent.queue Operation_kind.Rebase
          ~equal:Operation_kind.equal
@@ -282,26 +287,29 @@ let plan_action_for_patch t ~branch_map patch_id =
           match Map.find branch_map dep_pid with
           | Some b -> b
           | None ->
-              Option.value (Orchestrator.agent t dep_pid).Patch_agent.base_branch
+              Option.value
+                (Orchestrator.agent t dep_pid).Patch_agent.base_branch
                 ~default:(Orchestrator.main_branch t)
         in
         let new_base =
           Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged
-            ~branch_of ~main:(Orchestrator.main_branch t)
+            ~branch_of
+            ~main:(Orchestrator.main_branch t)
         in
         Some (Orchestrator.Rebase (patch_id, new_base))
     | _ -> None
   else if
-    agent.Patch_agent.has_pr && (not agent.Patch_agent.merged)
+    agent.Patch_agent.has_pr
+    && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.needs_intervention)
     && not agent.Patch_agent.branch_blocked
   then
     Patch_agent.highest_priority agent
     |> Option.bind ~f:(fun kind ->
-           if Priority.is_feedback kind then
-             Some (Orchestrator.Respond (patch_id, kind))
-           else None)
+        if Priority.is_feedback kind then
+          Some (Orchestrator.Respond (patch_id, kind))
+        else None)
   else None
 
 let reconcile_action_message t action =
@@ -315,9 +323,7 @@ let reconcile_action_message t action =
   let agent = Orchestrator.agent t patch_id in
   let msg = message_of_action agent action in
   let t = Orchestrator.reconcile_message t msg in
-  let msg =
-    Option.value_exn (Orchestrator.find_message t msg.message_id)
-  in
+  let msg = Option.value_exn (Orchestrator.find_message t msg.message_id) in
   (t, msg)
 
 let reconcile_messages t ~patches =
@@ -325,8 +331,8 @@ let reconcile_messages t ~patches =
   let missing =
     Graph.all_patch_ids (Orchestrator.graph t)
     |> List.filter ~f:(fun pid ->
-           (not (Map.mem branch_map pid))
-           && not (Orchestrator.agent t pid).Patch_agent.has_pr)
+        (not (Map.mem branch_map pid))
+        && not (Orchestrator.agent t pid).Patch_agent.has_pr)
   in
   if not (List.is_empty missing) then
     invalid_arg
@@ -343,7 +349,8 @@ let reconcile_messages t ~patches =
               [ msg.message_id ]
           | _ -> []
         in
-        Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id ~keep)
+        Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id
+          ~keep)
   in
   let t, desired_ids =
     List.fold patch_ids ~init:(t, []) ~f:(fun (acc, ids) patch_id ->
@@ -365,7 +372,8 @@ let reconcile_messages t ~patches =
               | Some msg when Patch_id.equal msg.patch_id patch_id -> true
               | _ -> false)
         in
-        Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id ~keep)
+        Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id
+          ~keep)
   in
   (t, Orchestrator.runnable_messages t)
 
@@ -391,7 +399,8 @@ let plan_tick t ~project_name ~gameplan =
 let tick t ~project_name ~gameplan =
   let t, effects, actions = plan_tick t ~project_name ~gameplan in
   let t =
-    List.fold actions ~init:t ~f:(fun acc action -> Orchestrator.fire acc action)
+    List.fold actions ~init:t ~f:(fun acc action ->
+        Orchestrator.fire acc action)
   in
   (t, effects, actions)
 
@@ -430,7 +439,8 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
     let t = Orchestrator.increment_start_attempts_without_pr t pid in
     Orchestrator.increment_start_attempts_without_pr t pid
   in
-  let t, _ = reconcile_patch t ~project_name:"proj"
+  let t, _ =
+    reconcile_patch t ~project_name:"proj"
       ~gameplan:
         Gameplan.
           {

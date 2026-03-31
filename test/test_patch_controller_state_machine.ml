@@ -34,8 +34,7 @@ let make_gameplan patch =
       acceptance_criteria = [];
     }
 
-let messages_equal a b =
-  List.equal Orchestrator.equal_patch_agent_message a b
+let messages_equal a b = List.equal Orchestrator.equal_patch_agent_message a b
 
 let normalized_plan orch ~gameplan =
   let orch1, effects1, messages1 =
@@ -46,7 +45,8 @@ let normalized_plan orch ~gameplan =
     Patch_controller.plan_tick_messages orch1 ~project_name:"test-project"
       ~gameplan
   in
-  Map.equal Patch_agent.equal (Orchestrator.agents_map orch1)
+  Map.equal Patch_agent.equal
+    (Orchestrator.agents_map orch1)
     (Orchestrator.agents_map orch2)
   && List.equal Patch_controller.equal_github_effect effects1 effects2
   && messages_equal messages1 messages2

@@ -211,8 +211,8 @@ let execute_github_effects ~runtime ~process_mgr ~token ~owner ~repo effects =
   Base.List.iter effects ~f:(fun github_effect ->
       let success =
         match github_effect with
-        | Patch_controller.Set_pr_description
-            { patch_id = _; pr_number; body } ->
+        | Patch_controller.Set_pr_description { patch_id = _; pr_number; body }
+          ->
             set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body
         | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
             set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft
@@ -1553,7 +1553,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                     else Hashtbl.remove ci_checks_cache patch_id;
                   Base.List.iter log_entries
                     ~f:(fun (entry : Patch_controller.poll_log_entry) ->
-                      log_event runtime ~patch_id:entry.Patch_controller.patch_id
+                      log_event runtime
+                        ~patch_id:entry.Patch_controller.patch_id
                         entry.Patch_controller.message);
                   (if newly_blocked then
                      match pr_state.Pr_state.head_branch with
@@ -1673,18 +1674,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
             mark_session_failed runtime patch_id)
   in
   let rec loop sw =
-    let gameplan =
-      Runtime.read runtime (fun snap -> snap.Runtime.gameplan)
-    in
+    let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
     let lifecycle_effects, messages, pre_fire_agents =
       Runtime.update_orchestrator_returning runtime (fun orch ->
           let orch, effects, messages =
             Patch_controller.plan_tick_messages orch ~project_name ~gameplan
           in
           let pre_fire_agents =
-            Base.List.filter_map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
-                match (Orchestrator.message_status msg, Orchestrator.message_action msg) with
-                | Orchestrator.Pending, (Orchestrator.Respond (pid, _) | Orchestrator.Rebase (pid, _)) ->
+            Base.List.filter_map messages
+              ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+                match
+                  ( Orchestrator.message_status msg,
+                    Orchestrator.message_action msg )
+                with
+                | ( Orchestrator.Pending,
+                    ( Orchestrator.Respond (pid, _)
+                    | Orchestrator.Rebase (pid, _) ) ) ->
                     Some (pid, Orchestrator.agent orch pid)
                 | Orchestrator.Pending, Orchestrator.Start _
                 | Orchestrator.Acked, _
@@ -1693,25 +1698,34 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                     None)
           in
           let orch, dispatched =
-            Base.List.fold messages ~init:(orch, []) ~f:(fun (acc, dispatched) (msg : Orchestrator.patch_agent_message) ->
+            Base.List.fold messages ~init:(orch, [])
+              ~f:(fun
+                  (acc, dispatched) (msg : Orchestrator.patch_agent_message) ->
                 match Orchestrator.message_status msg with
                 | Orchestrator.Pending ->
                     let acc, action =
-                      Orchestrator.accept_message acc (Orchestrator.message_id msg)
+                      Orchestrator.accept_message acc
+                        (Orchestrator.message_id msg)
                     in
                     let dispatched =
-                      match action with Some _ -> msg :: dispatched | None -> dispatched
+                      match action with
+                      | Some _ -> msg :: dispatched
+                      | None -> dispatched
                     in
                     (acc, dispatched)
                 | Orchestrator.Acked ->
                     let acc, action =
-                      Orchestrator.resume_message acc (Orchestrator.message_id msg)
+                      Orchestrator.resume_message acc
+                        (Orchestrator.message_id msg)
                     in
                     let dispatched =
-                      match action with Some _ -> msg :: dispatched | None -> dispatched
+                      match action with
+                      | Some _ -> msg :: dispatched
+                      | None -> dispatched
                     in
                     (acc, dispatched)
-                | Orchestrator.Completed | Orchestrator.Obsolete -> (acc, dispatched))
+                | Orchestrator.Completed | Orchestrator.Obsolete ->
+                    (acc, dispatched))
           in
           (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
@@ -1719,7 +1733,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
       ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
     (* Spawn all actions concurrently, limited by max_concurrency semaphore *)
     let action_fibers =
-      Base.List.filter_map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+      Base.List.filter_map messages
+        ~f:(fun (msg : Orchestrator.patch_agent_message) ->
           match Orchestrator.message_action msg with
           | Orchestrator.Start (patch_id, base_branch) -> (
               match
@@ -2070,7 +2085,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 if
                                   Operation_kind.equal kind
                                     Operation_kind.Merge_conflict
-                                then Orchestrator.clear_has_conflict orch patch_id
+                                then
+                                  Orchestrator.clear_has_conflict orch patch_id
                                 else orch
                               in
                               if

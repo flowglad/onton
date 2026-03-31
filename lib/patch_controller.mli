@@ -40,8 +40,8 @@ val apply_poll_result :
   Orchestrator.t * poll_log_entry list * bool
 (** Apply a GitHub poll observation to durable state. Returns the updated
     orchestrator, log entries, and whether the patch became newly branch-
-    blocked in this step. This is the controller-owned pure poll ingestion
-    step. *)
+    blocked in this step. This is the controller-owned pure poll ingestion step.
+*)
 
 val apply_replacement_pr :
   Orchestrator.t ->
@@ -50,8 +50,8 @@ val apply_replacement_pr :
   base_branch:Branch.t ->
   merged:bool ->
   Orchestrator.t
-(** Apply replacement-PR discovery after a closed PR is re-mapped to a new
-    open PR for the same patch. *)
+(** Apply replacement-PR discovery after a closed PR is re-mapped to a new open
+    PR for the same patch. *)
 
 val reconcile_all :
   Orchestrator.t ->
@@ -66,7 +66,9 @@ val plan_actions :
     This is the evergreen scheduler used by the main loop. *)
 
 val plan_messages :
-  Orchestrator.t -> patches:Patch.t list -> Orchestrator.patch_agent_message list
+  Orchestrator.t ->
+  patches:Patch.t list ->
+  Orchestrator.patch_agent_message list
 (** Compute durable runnable messages from the current snapshot after
     reconciliation. Accepted but incomplete messages are replayed; new desired
     actions become pending messages in the outbox. *)

@@ -151,11 +151,11 @@ val set_head_branch : t -> Types.Branch.t -> t
 
 val is_approved : t -> main_branch:Types.Branch.t -> bool
 (** Derived predicate:
-    [has_pr && merge_ready && not is_draft && not busy &&
-     not needs_intervention && base_branch = main_branch]. A patch is only
-    approved when its PR targets [main_branch] directly and is no longer a
-    draft. [merge_ready] reflects GitHub's [mergeStateStatus = CLEAN], which
-    encapsulates required reviews, passing checks, and branch protection. *)
+    [has_pr && merge_ready && not is_draft && not busy && not needs_intervention
+     && base_branch = main_branch]. A patch is only approved when its PR targets
+    [main_branch] directly and is no longer a draft. [merge_ready] reflects
+    GitHub's [mergeStateStatus = CLEAN], which encapsulates required reviews,
+    passing checks, and branch protection. *)
 
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)

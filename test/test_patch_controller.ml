@@ -128,15 +128,12 @@ let () =
       let base_branch =
         if has_pr then Some (if use_main_base then main else branch) else None
       in
-      let pr_number =
-        if has_pr then Some (Pr_number.of_int 42) else None
-      in
+      let pr_number = if has_pr then Some (Pr_number.of_int 42) else None in
       let patch = make_patch pid branch in
       let agent =
-        make_agent ~patch_id:pid ~has_pr ~pr_number ~merged
-          ~needs_intervention ~queue ~base_branch ~is_draft
-          ~pr_description_applied ~implementation_notes_delivered
-          ~start_attempts_without_pr
+        make_agent ~patch_id:pid ~has_pr ~pr_number ~merged ~needs_intervention
+          ~queue ~base_branch ~is_draft ~pr_description_applied
+          ~implementation_notes_delivered ~start_attempts_without_pr
       in
       return (patch, make_gameplan patch, make_orch patch agent))
   in
@@ -183,7 +180,8 @@ let () =
               (Orchestrator.Start _ | Orchestrator.Respond _) ) ->
               false
         in
-        Map.equal Patch_agent.equal (Orchestrator.agents_map orch1)
+        Map.equal Patch_agent.equal
+          (Orchestrator.agents_map orch1)
           (Orchestrator.agents_map orch2)
         && List.equal Patch_controller.equal_github_effect effects1 effects2
         && List.equal action_equal actions1 actions2)
@@ -192,15 +190,16 @@ let () =
   let prop_notes_queue_idempotent =
     Test.make
       ~name:"patch_controller: implementation notes queueing is idempotent"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
-            ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
+            ~base_branch:(Some main) ~is_draft:true ~pr_description_applied:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -215,8 +214,8 @@ let () =
         let a1 = Orchestrator.agent orch1 pid in
         let a2 = Orchestrator.agent orch2 pid in
         has_notes_queued a1 && has_notes_queued a2
-        && List.count a2.Patch_agent.queue ~f:(Operation_kind.equal
-             Operation_kind.Implementation_notes)
+        && List.count a2.Patch_agent.queue
+             ~f:(Operation_kind.equal Operation_kind.Implementation_notes)
            = 1
         && List.is_empty effects1 && List.is_empty effects2)
   in
@@ -224,16 +223,18 @@ let () =
   let prop_description_reemits_until_success =
     Test.make
       ~name:"patch_controller: description effect re-emits until acknowledged"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
             ~base_branch:(Some branch) ~is_draft:true
-            ~pr_description_applied:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_description_applied:false ~implementation_notes_delivered:false
+            ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -252,8 +253,7 @@ let () =
   in
 
   let prop_draft_reemits_until_success =
-    Test.make
-      ~name:"patch_controller: draft effect re-emits until acknowledged"
+    Test.make ~name:"patch_controller: draft effect re-emits until acknowledged"
       ~count:200
       Gen.(triple gen_patch_id gen_branch bool)
       (fun (pid, branch, notes_delivered) ->
@@ -262,8 +262,8 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
             ~base_branch:(Some main) ~is_draft:(not desired_draft)
             ~pr_description_applied:true
             ~implementation_notes_delivered:notes_delivered
@@ -287,14 +287,17 @@ let () =
 
   let prop_intervention_stable_after_threshold =
     Test.make
-      ~name:"patch_controller: repeated no-PR attempts stably require intervention"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~name:
+        "patch_controller: repeated no-PR attempts stably require intervention"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:false ~pr_number:None ~merged:false
-            ~needs_intervention:false ~queue:[] ~base_branch:None ~is_draft:false
-            ~pr_description_applied:false
+            ~needs_intervention:false ~queue:[] ~base_branch:None
+            ~is_draft:false ~pr_description_applied:false
             ~implementation_notes_delivered:false ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
@@ -317,15 +320,16 @@ let () =
       ~name:
         "patch_controller: reconcile_all exposes missing implementation notes \
          as next Respond action"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
-            ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
+            ~base_branch:(Some main) ~is_draft:true ~pr_description_applied:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -333,14 +337,15 @@ let () =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
         in
-        let actions = Patch_controller.plan_actions orch ~patches:gameplan.patches in
+        let actions =
+          Patch_controller.plan_actions orch ~patches:gameplan.patches
+        in
         List.is_empty effects
         && List.exists actions ~f:(function
-             | Orchestrator.Respond (action_pid, kind) ->
-                 Patch_id.equal action_pid pid
-                 && Operation_kind.equal kind
-                      Operation_kind.Implementation_notes
-             | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+          | Orchestrator.Respond (action_pid, kind) ->
+              Patch_id.equal action_pid pid
+              && Operation_kind.equal kind Operation_kind.Implementation_notes
+          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
   in
 
   let prop_reconcile_all_blocks_restart_after_intervention =
@@ -348,13 +353,15 @@ let () =
       ~name:
         "patch_controller: reconcile_all prevents further Start after durable \
          intervention"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:false ~pr_number:None ~merged:false
-            ~needs_intervention:false ~queue:[] ~base_branch:None ~is_draft:false
-            ~pr_description_applied:false
+            ~needs_intervention:false ~queue:[] ~base_branch:None
+            ~is_draft:false ~pr_description_applied:false
             ~implementation_notes_delivered:false ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
@@ -362,14 +369,16 @@ let () =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
         in
-        let actions = Patch_controller.plan_actions orch ~patches:gameplan.patches in
+        let actions =
+          Patch_controller.plan_actions orch ~patches:gameplan.patches
+        in
         (Orchestrator.agent orch pid).Patch_agent.needs_intervention
         && List.is_empty effects
         && not
              (List.exists actions ~f:(function
-                  | Orchestrator.Start (action_pid, _) ->
-                      Patch_id.equal action_pid pid
-                  | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
+               | Orchestrator.Start (action_pid, _) ->
+                   Patch_id.equal action_pid pid
+               | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
   in
 
   let prop_reconcile_all_converges_after_acknowledged_effects =
@@ -377,16 +386,18 @@ let () =
       ~name:
         "patch_controller: reconcile_all converges after acknowledging emitted \
          effects"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
             ~base_branch:(Some branch) ~is_draft:true
-            ~pr_description_applied:false
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~pr_description_applied:false ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -399,7 +410,7 @@ let () =
             ~gameplan
         in
         has_description_effect effects1
-        && not (has_description_effect effects2)
+        && (not (has_description_effect effects2))
         && not (has_draft_effect effects2))
   in
 
@@ -408,15 +419,16 @@ let () =
       ~name:
         "patch_controller: poll draft state plus delivered notes yields no \
          further draft effect once acknowledged"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
-            ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
+            ~base_branch:(Some main) ~is_draft:true ~pr_description_applied:true
             ~implementation_notes_delivered:true ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -439,7 +451,9 @@ let () =
             (make_poll_observation poll)
         in
         let orch1, effects1, _actions1 = run_controller_cycle ~gameplan orch in
-        let _orch2, effects2, _actions2 = run_controller_cycle ~gameplan orch1 in
+        let _orch2, effects2, _actions2 =
+          run_controller_cycle ~gameplan orch1
+        in
         has_draft_effect effects1 && not (has_draft_effect effects2))
   in
 
@@ -448,15 +462,16 @@ let () =
       ~name:
         "patch_controller: poll-applicator CI queue does not suppress missing \
          implementation notes action"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
-            ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
+            ~base_branch:(Some main) ~is_draft:true ~pr_description_applied:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -482,10 +497,10 @@ let () =
         let a = Orchestrator.agent orch pid in
         has_notes_queued a
         && List.exists actions ~f:(function
-             | Orchestrator.Respond (action_pid, kind) ->
-                 Patch_id.equal action_pid pid
-                 && Operation_kind.equal kind Operation_kind.Ci
-             | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+          | Orchestrator.Respond (action_pid, kind) ->
+              Patch_id.equal action_pid pid
+              && Operation_kind.equal kind Operation_kind.Ci
+          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
   in
 
   let prop_poll_result_persists_world_flags =
@@ -493,15 +508,15 @@ let () =
       ~name:
         "patch_controller: poll result persists mergeable and checks_passing \
          flags"
-      ~count:200 Gen.(quad gen_patch_id gen_branch bool bool)
+      ~count:200
+      Gen.(quad gen_patch_id gen_branch bool bool)
       (fun (pid, branch, mergeable, checks_passing) ->
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
-            ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
+            ~base_branch:(Some main) ~is_draft:true ~pr_description_applied:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -533,15 +548,17 @@ let () =
       ~name:
         "patch_controller: poll observation updates head branch, base branch, \
          branch_blocked, and worktree"
-      ~count:100 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:100
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let head_branch = Branch.of_string "feature/head" in
         let observed_base = Branch.of_string "stack/base" in
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
-            ~base_branch:None ~is_draft:true ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[] ~base_branch:None
+            ~is_draft:true ~pr_description_applied:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -578,7 +595,8 @@ let () =
              (Some observed_base)
         && Option.equal String.equal a.Patch_agent.worktree_path
              (Some "/tmp/custom-worktree")
-        && not a.Patch_agent.branch_blocked && newly_blocked)
+        && (not a.Patch_agent.branch_blocked)
+        && newly_blocked)
   in
 
   let prop_mixed_cycle_converges_for_bootstrap_patch =
@@ -586,16 +604,18 @@ let () =
       ~name:
         "patch_controller: mixed bootstrap cycle converges after acked effects \
          and delivered notes"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
-            ~needs_intervention:false ~queue:[]
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~needs_intervention:false ~queue:[]
             ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_description_applied:false ~implementation_notes_delivered:false
+            ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let orch1, effects1, actions1 = run_controller_cycle ~gameplan orch in
@@ -610,19 +630,18 @@ let () =
         let _orch2, effects2, actions2 = run_controller_cycle ~gameplan orch1 in
         has_description_effect effects1
         && List.exists actions1 ~f:(function
-             | Orchestrator.Respond (action_pid, kind) ->
-                 Patch_id.equal action_pid pid
-                 && Operation_kind.equal kind
-                      Operation_kind.Implementation_notes
-             | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+          | Orchestrator.Respond (action_pid, kind) ->
+              Patch_id.equal action_pid pid
+              && Operation_kind.equal kind Operation_kind.Implementation_notes
+          | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
         && has_draft_effect effects2
         && not
              (List.exists actions2 ~f:(function
-                  | Orchestrator.Respond (action_pid, kind) ->
-                      Patch_id.equal action_pid pid
-                      && Operation_kind.equal kind
-                           Operation_kind.Implementation_notes
-                  | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)))
+               | Orchestrator.Respond (action_pid, kind) ->
+                   Patch_id.equal action_pid pid
+                   && Operation_kind.equal kind
+                        Operation_kind.Implementation_notes
+               | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)))
   in
 
   let suite =

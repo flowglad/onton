@@ -45,12 +45,15 @@ val resume_message : t -> Message_id.t -> t * action option
     [Some action] only when the message is still the patch's current message. *)
 
 val reconcile_message : t -> patch_agent_message -> t
-(** Insert or refresh a desired pending message. Existing equivalent messages are
-    preserved; other pending messages for the same patch are marked obsolete. *)
+(** Insert or refresh a desired pending message. Existing equivalent messages
+    are preserved; other pending messages for the same patch are marked
+    obsolete. *)
 
 val mark_message_obsolete : t -> Message_id.t -> t
+
 val mark_patch_pending_messages_obsolete_except :
   t -> Patch_id.t -> keep:Message_id.t list -> t
+
 val find_message : t -> Message_id.t -> patch_agent_message option
 val all_messages : t -> patch_agent_message list
 val current_message : t -> Patch_id.t -> patch_agent_message option

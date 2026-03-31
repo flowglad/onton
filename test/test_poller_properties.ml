@@ -19,8 +19,7 @@ let () =
       Test.make ~name:"is_draft passed through" ~count:500
         Onton_test_support.Test_generators.gen_pr_state (fun pr ->
           let result = Onton.Poller.poll ~was_merged:false pr in
-          Bool.equal result.Onton.Poller.is_draft
-            (Onton.Pr_state.is_draft pr));
+          Bool.equal result.Onton.Poller.is_draft (Onton.Pr_state.is_draft pr));
       (* checks_passing is passed through from PR state *)
       Test.make ~name:"checks_passing passed through" ~count:500
         Onton_test_support.Test_generators.gen_pr_state (fun pr ->

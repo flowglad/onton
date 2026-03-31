@@ -67,7 +67,9 @@ let update_agent t patch_id ~f =
   | None -> t
   | Some a ->
       let a' = f a in
-      let a' = if Patch_agent.equal a a' then a' else Patch_agent.bump_generation a' in
+      let a' =
+        if Patch_agent.equal a a' then a' else Patch_agent.bump_generation a'
+      in
       { t with agents = Map.set t.agents ~key:patch_id ~data:a' }
 
 let fire t action =
@@ -114,7 +116,8 @@ let remove_agent t patch_id =
     graph = Graph.remove_patch t.graph patch_id;
     agents = Map.remove t.agents patch_id;
     outbox =
-      Map.filter t.outbox ~f:(fun msg -> not (Patch_id.equal msg.patch_id patch_id));
+      Map.filter t.outbox ~f:(fun msg ->
+          not (Patch_id.equal msg.patch_id patch_id));
   }
 
 let reconcile_message t msg =
@@ -127,7 +130,12 @@ let reconcile_message t msg =
             if
               Patch_id.equal data.patch_id msg.patch_id
               && equal_message_status data.status Pending
-            then { acc with outbox = Map.set acc.outbox ~key ~data:{ data with status = Obsolete } }
+            then
+              {
+                acc with
+                outbox =
+                  Map.set acc.outbox ~key ~data:{ data with status = Obsolete };
+              }
             else acc)
       in
       { t with outbox = Map.set t.outbox ~key:msg.message_id ~data:msg }
@@ -136,7 +144,11 @@ let mark_message_obsolete t message_id =
   match Map.find t.outbox message_id with
   | None -> t
   | Some msg ->
-      { t with outbox = Map.set t.outbox ~key:message_id ~data:{ msg with status = Obsolete } }
+      {
+        t with
+        outbox =
+          Map.set t.outbox ~key:message_id ~data:{ msg with status = Obsolete };
+      }
 
 let mark_patch_pending_messages_obsolete_except t patch_id ~keep =
   let keep = Set.of_list (module Message_id) keep in
@@ -146,7 +158,10 @@ let mark_patch_pending_messages_obsolete_except t patch_id ~keep =
         && equal_message_status data.status Pending
         && not (Set.mem keep key)
       then
-        { acc with outbox = Map.set acc.outbox ~key ~data:{ data with status = Obsolete } }
+        {
+          acc with
+          outbox = Map.set acc.outbox ~key ~data:{ data with status = Obsolete };
+        }
       else acc)
 
 let find_message t message_id = Map.find t.outbox message_id
@@ -169,15 +184,16 @@ let runnable_messages t =
   in
   Map.data t.outbox
   |> List.filter ~f:(fun msg ->
-         match msg.status with
-         | Pending -> true
-         | Acked ->
-             let agent = agent t msg.patch_id in
-             Option.equal Message_id.equal agent.current_message_id (Some msg.message_id)
-             && not agent.busy
-         | Completed | Obsolete -> false)
+      match msg.status with
+      | Pending -> true
+      | Acked ->
+          let agent = agent t msg.patch_id in
+          Option.equal Message_id.equal agent.current_message_id
+            (Some msg.message_id)
+          && not agent.busy
+      | Completed | Obsolete -> false)
   |> List.sort ~compare:(fun a b ->
-         Int.compare (action_rank a.action) (action_rank b.action))
+      Int.compare (action_rank a.action) (action_rank b.action))
 
 let accept_message t message_id =
   match Map.find t.outbox message_id with
@@ -197,7 +213,8 @@ let accept_message t message_id =
                   Patch_agent.set_current_message_id a (Some message_id))
             in
             let msg = { msg with status = Acked } in
-            ({ t with outbox = Map.set t.outbox ~key:message_id ~data:msg }, Some msg.action))
+            ( { t with outbox = Map.set t.outbox ~key:message_id ~data:msg },
+              Some msg.action ))
 
 let resume_message t message_id =
   match Map.find t.outbox message_id with
@@ -208,7 +225,8 @@ let resume_message t message_id =
       | Acked ->
           let agent = agent t msg.patch_id in
           if
-            Option.equal Message_id.equal agent.current_message_id (Some message_id)
+            Option.equal Message_id.equal agent.current_message_id
+              (Some message_id)
             && not agent.busy
           then
             ( update_agent t msg.patch_id ~f:Patch_agent.resume_current_message,
@@ -276,7 +294,8 @@ let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)
 
 let set_pr_description_applied t patch_id v =
-  update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_description_applied a v)
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_pr_description_applied a v)
 
 let set_implementation_notes_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a ->
@@ -309,7 +328,10 @@ let set_head_branch t patch_id branch =
 
 let all_agents t = Map.data t.agents
 let graph t = t.graph
-let restore ~graph ~agents ~outbox ~main_branch = { graph; agents; outbox; main_branch }
+
+let restore ~graph ~agents ~outbox ~main_branch =
+  { graph; agents; outbox; main_branch }
+
 let main_branch t = t.main_branch
 let agents_map t = t.agents
 

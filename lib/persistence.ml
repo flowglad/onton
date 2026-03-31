@@ -69,8 +69,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
       ("pr_description_applied", `Bool a.pr_description_applied);
-      ( "implementation_notes_delivered",
-        `Bool a.implementation_notes_delivered );
+      ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("checks_passing", `Bool a.checks_passing);
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
@@ -145,8 +144,7 @@ let patch_agent_of_yojson json =
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
          (bool_member_opt "merge_ready" json |> Option.value ~default:false)
-       ~is_draft:
-         (bool_member_opt "is_draft" json |> Option.value ~default:false)
+       ~is_draft:(bool_member_opt "is_draft" json |> Option.value ~default:false)
        ~pr_description_applied:
          (bool_member_opt "pr_description_applied" json
          |> Option.value ~default:false)
@@ -214,37 +212,38 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
   let outbox =
     Orchestrator.all_messages o
     |> List.map ~f:(fun (msg : Orchestrator.patch_agent_message) ->
-           ( Message_id.to_string msg.message_id,
-             `Assoc
-               [
-                 ("patch_id", Patch_id.yojson_of_t msg.patch_id);
-                 ("generation", `Int msg.generation);
-                 ( "action",
-                   match msg.action with
-                   | Orchestrator.Start (patch_id, base_branch) ->
-                       `Assoc
-                         [
-                           ("kind", `String "start");
-                           ("patch_id", Patch_id.yojson_of_t patch_id);
-                           ("base_branch", Branch.yojson_of_t base_branch);
-                         ]
-                   | Orchestrator.Respond (patch_id, operation_kind) ->
-                       `Assoc
-                         [
-                           ("kind", `String "respond");
-                           ("patch_id", Patch_id.yojson_of_t patch_id);
-                           ("operation_kind", Operation_kind.yojson_of_t operation_kind);
-                         ]
-                   | Orchestrator.Rebase (patch_id, base_branch) ->
-                       `Assoc
-                         [
-                           ("kind", `String "rebase");
-                           ("patch_id", Patch_id.yojson_of_t patch_id);
-                           ("base_branch", Branch.yojson_of_t base_branch);
-                         ] );
-                 ("payload_hash", `String msg.payload_hash);
-                 ("status", `String (Orchestrator.show_message_status msg.status));
-               ] ))
+        ( Message_id.to_string msg.message_id,
+          `Assoc
+            [
+              ("patch_id", Patch_id.yojson_of_t msg.patch_id);
+              ("generation", `Int msg.generation);
+              ( "action",
+                match msg.action with
+                | Orchestrator.Start (patch_id, base_branch) ->
+                    `Assoc
+                      [
+                        ("kind", `String "start");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ("base_branch", Branch.yojson_of_t base_branch);
+                      ]
+                | Orchestrator.Respond (patch_id, operation_kind) ->
+                    `Assoc
+                      [
+                        ("kind", `String "respond");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ( "operation_kind",
+                          Operation_kind.yojson_of_t operation_kind );
+                      ]
+                | Orchestrator.Rebase (patch_id, base_branch) ->
+                    `Assoc
+                      [
+                        ("kind", `String "rebase");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ("base_branch", Branch.yojson_of_t base_branch);
+                      ] );
+              ("payload_hash", `String msg.payload_hash);
+              ("status", `String (Orchestrator.show_message_status msg.status));
+            ] ))
   in
   `Assoc
     [
@@ -269,8 +268,7 @@ let action_of_yojson json =
       Orchestrator.Rebase
         ( Patch_id.of_string (string_member "patch_id" json),
           Branch.of_string (string_member "base_branch" json) )
-  | other ->
-      invalid_arg (Printf.sprintf "unknown action kind: %s" other)
+  | other -> invalid_arg (Printf.sprintf "unknown action kind: %s" other)
 
 let message_status_of_string = function
   | "Pending" -> Ok Orchestrator.Pending
@@ -307,18 +305,22 @@ let orchestrator_of_yojson ~gameplan json =
         let outbox =
           Yojson.Safe.Util.member "outbox" json
           |> Yojson.Safe.Util.to_assoc
-          |> List.fold ~init:(Ok (Map.empty (module Message_id)))
+          |> List.fold
+               ~init:(Ok (Map.empty (module Message_id)))
                ~f:(fun acc_result (key, value) ->
                  let* acc = acc_result in
-                 let patch_id = Patch_id.of_string (string_member "patch_id" value) in
+                 let patch_id =
+                   Patch_id.of_string (string_member "patch_id" value)
+                 in
                  let generation = int_member "generation" value in
                  let* status =
                    message_status_of_string (string_member "status" value)
                  in
-                 let action = action_of_yojson (Yojson.Safe.Util.member "action" value) in
+                 let action =
+                   action_of_yojson (Yojson.Safe.Util.member "action" value)
+                 in
                  Ok
-                   (Map.set acc
-                      ~key:(Message_id.of_string key)
+                   (Map.set acc ~key:(Message_id.of_string key)
                       ~data:
                         Orchestrator.
                           {
@@ -331,7 +333,9 @@ let orchestrator_of_yojson ~gameplan json =
                           }))
         in
         let* outbox = outbox in
-        let graph_pids = Graph.all_patch_ids graph |> Set.of_list (module Patch_id) in
+        let graph_pids =
+          Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
+        in
         let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
         let missing_from_agents = Set.diff graph_pids agent_pids in
         if not (Set.is_empty missing_from_agents) then
@@ -339,9 +343,12 @@ let orchestrator_of_yojson ~gameplan json =
             "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
         else
           let graph =
-            Set.fold (Set.diff agent_pids graph_pids) ~init:graph ~f:Graph.add_patch
+            Set.fold
+              (Set.diff agent_pids graph_pids)
+              ~init:graph ~f:Graph.add_patch
           in
-          Ok (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
+          Ok
+            (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)
