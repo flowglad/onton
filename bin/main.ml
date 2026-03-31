@@ -171,8 +171,8 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
     Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str draft
       (Printexc.to_string exn)
 
-(** Set the PR body to a rendered description. Errors are logged but not
-    fatal — the PR already exists; a missing description is cosmetic. *)
+(** Set the PR body to a rendered description. Errors are logged but not fatal —
+    the PR already exists; a missing description is cosmetic. *)
 let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
   let pr_str = Int.to_string (Pr_number.to_int pr_number) in
   let args =
