@@ -121,23 +121,23 @@ let remove_agent t patch_id =
   }
 
 let reconcile_message t msg =
-  let existing = Map.find t.outbox msg.message_id in
-  match existing with
+  let t =
+    Map.fold t.outbox ~init:t ~f:(fun ~key ~data acc ->
+        if
+          Patch_id.equal data.patch_id msg.patch_id
+          && equal_message_status data.status Pending
+          && not (Message_id.equal key msg.message_id)
+        then
+          {
+            acc with
+            outbox =
+              Map.set acc.outbox ~key ~data:{ data with status = Obsolete };
+          }
+        else acc)
+  in
+  match Map.find t.outbox msg.message_id with
   | Some { status = Pending | Acked | Completed; _ } -> t
   | Some { status = Obsolete; _ } | None ->
-      let t =
-        Map.fold t.outbox ~init:t ~f:(fun ~key ~data acc ->
-            if
-              Patch_id.equal data.patch_id msg.patch_id
-              && equal_message_status data.status Pending
-            then
-              {
-                acc with
-                outbox =
-                  Map.set acc.outbox ~key ~data:{ data with status = Obsolete };
-              }
-            else acc)
-      in
       { t with outbox = Map.set t.outbox ~key:msg.message_id ~data:msg }
 
 let mark_message_obsolete t message_id =
@@ -337,6 +337,7 @@ let all_agents t = Map.data t.agents
 let graph t = t.graph
 
 let restore ~graph ~agents ~outbox ~main_branch =
+  let outbox = Map.filter outbox ~f:(fun msg -> Map.mem agents msg.patch_id) in
   { graph; agents; outbox; main_branch }
 
 let main_branch t = t.main_branch

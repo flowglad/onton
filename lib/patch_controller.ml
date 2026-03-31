@@ -281,6 +281,8 @@ let plan_action_for_patch t ~branch_map patch_id =
     agent.Patch_agent.has_pr
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
+    && (not agent.Patch_agent.needs_intervention)
+    && (not agent.Patch_agent.branch_blocked)
     && List.mem agent.Patch_agent.queue Operation_kind.Rebase
          ~equal:Operation_kind.equal
   then

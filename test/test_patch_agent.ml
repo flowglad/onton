@@ -260,22 +260,26 @@ let () =
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = add_human_message a "hello" in
-          let a = enqueue a Operation_kind.Human in
-          let a = respond a Operation_kind.Human in
-          not (List.is_empty a.human_messages));
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = add_human_message a "hello" in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            not (List.is_empty a.human_messages)
+          with _ -> false);
       Test.make ~name:"complete Human clears human_messages" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = add_human_message a "hello" in
-          let a = enqueue a Operation_kind.Human in
-          let a = respond a Operation_kind.Human in
-          let a = complete a in
-          List.is_empty a.human_messages);
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = add_human_message a "hello" in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            let a = complete a in
+            List.is_empty a.human_messages
+          with _ -> false);
       (* -- respond Review_comments does not clear human_messages -- *)
       Test.make ~name:"respond Review_comments preserves human_messages"
         ~count:1
