@@ -193,7 +193,9 @@ let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
 let set_current_message_id t current_message_id = { t with current_message_id }
 let bump_generation t = { t with generation = t.generation + 1 }
-let resume_current_message t = { t with busy = true; has_session = true }
+
+let resume_current_message t ~op =
+  { t with busy = true; has_session = true; current_op = op }
 
 let clear_needs_intervention t =
   {
@@ -222,8 +224,8 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~ci_failure_count ~ci_fix_running ~session_fallback ~human_messages
     ~ci_checks ~mergeable ~merge_ready ~is_draft ~pr_description_applied
     ~implementation_notes_delivered ~start_attempts_without_pr ~checks_passing
-    ~no_unresolved_comments ~current_message_id ~generation ~worktree_path
-    ~head_branch ~branch_blocked =
+    ~no_unresolved_comments ~current_op ~current_message_id ~generation
+    ~worktree_path ~head_branch ~branch_blocked =
   {
     patch_id;
     has_pr;
@@ -250,7 +252,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     start_attempts_without_pr;
     checks_passing;
     no_unresolved_comments;
-    current_op = None;
+    current_op;
     current_message_id;
     generation;
     worktree_path;

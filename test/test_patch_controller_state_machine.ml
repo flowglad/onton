@@ -66,15 +66,18 @@ let () =
       ~count:300
       Gen.(pair gen_patch_id gen_branch)
       (fun (pid, branch) ->
-        let patch = make_patch pid branch in
-        let gameplan = make_gameplan patch in
-        let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
-        let orch1, _effects1, messages1 =
-          Patch_controller.plan_tick_messages orch ~project_name:"test-project"
-            ~gameplan
-        in
-        let orch1 = accept_all_messages orch1 messages1 in
-        normalized_plan orch1 ~gameplan)
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          let orch1, _effects1, messages1 =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch1 = accept_all_messages orch1 messages1 in
+          normalized_plan orch1 ~gameplan
+        with _ -> false
+        end)
   in
   let prop_resume_keeps_same_message_id =
     Test.make
@@ -84,28 +87,31 @@ let () =
       ~count:300
       Gen.(pair gen_patch_id gen_branch)
       (fun (pid, branch) ->
-        let patch = make_patch pid branch in
-        let gameplan = make_gameplan patch in
-        let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
-        let orch1, _effects1, messages1 =
-          Patch_controller.plan_tick_messages orch ~project_name:"test-project"
-            ~gameplan
-        in
-        match List.hd messages1 with
-        | None -> true
-        | Some msg ->
-            let orch1, _ =
-              Orchestrator.accept_message orch1 (Orchestrator.message_id msg)
-            in
-            let orch1 = Orchestrator.reset_busy orch1 pid in
-            let _orch2, _effects2, messages2 =
-              Patch_controller.plan_tick_messages orch1
-                ~project_name:"test-project" ~gameplan
-            in
-            List.exists messages2 ~f:(fun msg2 ->
-                Message_id.equal
-                  (Orchestrator.message_id msg)
-                  (Orchestrator.message_id msg2)))
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          let orch1, _effects1, messages1 =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          match List.hd messages1 with
+          | None -> true
+          | Some msg ->
+              let orch1, _ =
+                Orchestrator.accept_message orch1 (Orchestrator.message_id msg)
+              in
+              let orch1 = Orchestrator.reset_busy orch1 pid in
+              let _orch2, _effects2, messages2 =
+                Patch_controller.plan_tick_messages orch1
+                  ~project_name:"test-project" ~gameplan
+              in
+              List.exists messages2 ~f:(fun msg2 ->
+                  Message_id.equal
+                    (Orchestrator.message_id msg)
+                    (Orchestrator.message_id msg2))
+        with _ -> false
+        end)
   in
   QCheck_base_runner.run_tests ~verbose:true
     [ prop_replay_deterministic; prop_resume_keeps_same_message_id ]

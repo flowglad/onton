@@ -195,9 +195,10 @@ val set_current_message_id : t -> Types.Message_id.t option -> t
 val bump_generation : t -> t
 (** Advance the patch generation used for deterministic message IDs. *)
 
-val resume_current_message : t -> t
+val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its
-    queue-consuming state transition. *)
+    queue-consuming state transition. [~op] restores [current_op] from the
+    outbox so that [complete] can clear [human_messages] correctly. *)
 
 (** {2 Queries} *)
 
@@ -236,6 +237,7 @@ val restore :
   start_attempts_without_pr:int ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
+  current_op:Types.Operation_kind.t option ->
   current_message_id:Types.Message_id.t option ->
   generation:int ->
   worktree_path:string option ->

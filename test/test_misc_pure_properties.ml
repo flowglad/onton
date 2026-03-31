@@ -87,7 +87,8 @@ let () =
       Gen.(pair gen_activity_log (int_range 0 5))
       (fun (log, limit) ->
         List.length (Activity_log.recent_transitions log ~limit) <= limit
-        && List.length (Activity_log.recent_events log ~limit) <= limit)
+        && List.length (Activity_log.recent_events log ~limit) <= limit
+        && List.length (Activity_log.recent_stream_entries log ~limit) <= limit)
   in
 
   let prop_state_patch_ctx_roundtrips =
@@ -321,7 +322,7 @@ let () =
     Test.make ~name:"tui_input: apply_move stays within valid selection range"
       ~count:500
       Gen.(
-        triple (int_range 0 20) (int_range (-1) 25)
+        triple (int_range 0 20) (int_range (-5) 25)
           (oneof_list
              [
                Tui_input.Move_up;

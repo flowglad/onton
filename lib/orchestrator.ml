@@ -229,7 +229,14 @@ let resume_message t message_id =
               (Some message_id)
             && not agent.busy
           then
-            ( update_agent t msg.patch_id ~f:Patch_agent.resume_current_message,
+            let op =
+              match msg.action with
+              | Start _ -> None
+              | Respond (_, kind) -> Some kind
+              | Rebase _ -> Some Operation_kind.Rebase
+            in
+            ( update_agent t msg.patch_id
+                ~f:(Patch_agent.resume_current_message ~op),
               Some msg.action )
           else (t, None))
 

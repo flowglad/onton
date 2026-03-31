@@ -73,6 +73,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("checks_passing", `Bool a.checks_passing);
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
+      ( "current_op",
+        match a.current_op with
+        | None -> `Null
+        | Some op -> Operation_kind.yojson_of_t op );
       ( "current_message_id",
         match a.current_message_id with
         | None -> `Null
@@ -166,6 +170,13 @@ let patch_agent_of_yojson json =
        ~no_unresolved_comments:
          (bool_member_opt "no_unresolved_comments" json
          |> Option.value ~default:false)
+       ~current_op:
+         (match Yojson.Safe.Util.member "current_op" json with
+         | `Null -> None
+         | v -> (
+             match try_of_yojson Operation_kind.t_of_yojson v with
+             | Ok op -> Some op
+             | Error _ -> None))
        ~current_message_id:
          (string_member_opt "current_message_id" json
          |> Option.map ~f:Message_id.of_string)
@@ -331,18 +342,23 @@ let orchestrator_of_yojson ~gameplan json =
                  let* action =
                    action_of_yojson (Yojson.Safe.Util.member "action" value)
                  in
-                 Ok
-                   (Map.set acc ~key:(Message_id.of_string key)
-                      ~data:
-                        Orchestrator.
-                          {
-                            message_id = Message_id.of_string key;
-                            patch_id;
-                            generation;
-                            action;
-                            payload_hash = string_member "payload_hash" value;
-                            status;
-                          }))
+                 let msg_id = Message_id.of_string key in
+                 let message =
+                   Orchestrator.
+                     {
+                       message_id = msg_id;
+                       patch_id;
+                       generation;
+                       action;
+                       payload_hash = string_member "payload_hash" value;
+                       status;
+                     }
+                 in
+                 match Map.add acc ~key:msg_id ~data:message with
+                 | `Ok acc -> Ok acc
+                 | `Duplicate ->
+                     Error
+                       (Printf.sprintf "duplicate outbox message_id: %s" key))
         in
         let* outbox = outbox in
         let graph_pids =
