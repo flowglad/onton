@@ -166,10 +166,11 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args
-  with exn ->
-    Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str draft
-      (Printexc.to_string exn)
+  try Eio.Process.run ~env process_mgr args with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn ->
+      Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str
+        draft (Printexc.to_string exn)
 
 (** Set the PR body to a rendered description. Errors are logged but not fatal —
     the PR already exists; a missing description is cosmetic. *)
@@ -190,10 +191,11 @@ let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args
-  with exn ->
-    Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
-      (Printexc.to_string exn)
+  try Eio.Process.run ~env process_mgr args with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | exn ->
+      Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
+        (Printexc.to_string exn)
 
 (** {1 Activity log helpers} *)
 
