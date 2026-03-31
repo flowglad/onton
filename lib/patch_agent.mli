@@ -36,6 +36,8 @@ type t = private {
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
+  current_message_id : Types.Message_id.t option;
+  generation : int;
   worktree_path : string option;
   head_branch : Types.Branch.t option;
   branch_blocked : bool;
@@ -187,6 +189,16 @@ val reset_busy : t -> t
     ([ci_failure_count >= 3 || session_failed], unless [Human] is queued). No-op
     if not busy. *)
 
+val set_current_message_id : t -> Types.Message_id.t option -> t
+(** Track the currently accepted delivery message for this patch. *)
+
+val bump_generation : t -> t
+(** Advance the patch generation used for deterministic message IDs. *)
+
+val resume_current_message : t -> t
+(** Resume execution of an already accepted message without reapplying its
+    queue-consuming state transition. *)
+
 (** {2 Queries} *)
 
 val highest_priority : t -> Types.Operation_kind.t option
@@ -224,6 +236,8 @@ val restore :
   start_attempts_without_pr:int ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
+  current_message_id:Types.Message_id.t option ->
+  generation:int ->
   worktree_path:string option ->
   head_branch:Types.Branch.t option ->
   branch_blocked:bool ->

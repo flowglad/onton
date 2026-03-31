@@ -18,10 +18,47 @@ type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
   | Rebase of Patch_id.t * Branch.t
-[@@deriving sexp_of]
+[@@deriving sexp_of, show, eq]
+
+type message_status = Pending | Acked | Completed | Obsolete
+[@@deriving sexp_of, show, eq]
+
+type patch_agent_message = {
+  message_id : Message_id.t;
+  patch_id : Patch_id.t;
+  generation : int;
+  action : action;
+  payload_hash : string;
+  status : message_status;
+}
+[@@deriving sexp_of, show, eq]
 
 val fire : t -> action -> t
 (** Apply a single action to the orchestrator state. *)
+
+val accept_message : t -> Message_id.t -> t * action option
+(** Durably accept a pending message and fire its action exactly once. Returns
+    [Some action] only on first acceptance. Duplicate acceptance is a no-op. *)
+
+val resume_message : t -> Message_id.t -> t * action option
+(** Resume execution of an already accepted but incomplete message. Returns
+    [Some action] only when the message is still the patch's current message. *)
+
+val reconcile_message : t -> patch_agent_message -> t
+(** Insert or refresh a desired pending message. Existing equivalent messages are
+    preserved; other pending messages for the same patch are marked obsolete. *)
+
+val mark_message_obsolete : t -> Message_id.t -> t
+val mark_patch_pending_messages_obsolete_except :
+  t -> Patch_id.t -> keep:Message_id.t list -> t
+val find_message : t -> Message_id.t -> patch_agent_message option
+val all_messages : t -> patch_agent_message list
+val current_message : t -> Patch_id.t -> patch_agent_message option
+val runnable_messages : t -> patch_agent_message list
+val message_id : patch_agent_message -> Message_id.t
+val message_patch_id : patch_agent_message -> Patch_id.t
+val message_action : patch_agent_message -> action
+val message_status : patch_agent_message -> message_status
 
 (** {2 External event application} *)
 
@@ -106,6 +143,7 @@ val apply_rebase_result :
 val restore :
   graph:Graph.t ->
   agents:Patch_agent.t Map.M(Patch_id).t ->
+  outbox:patch_agent_message Map.M(Message_id).t ->
   main_branch:Branch.t ->
   t
 (** Reconstruct orchestrator from persisted components. *)

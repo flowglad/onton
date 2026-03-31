@@ -1676,37 +1676,51 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     let gameplan =
       Runtime.read runtime (fun snap -> snap.Runtime.gameplan)
     in
-    let lifecycle_effects, actions, pre_fire_agents =
+    let lifecycle_effects, messages, pre_fire_agents =
       Runtime.update_orchestrator_returning runtime (fun orch ->
-          let orch, effects, actions =
-            Patch_controller.plan_tick orch ~project_name ~gameplan
+          let orch, effects, messages =
+            Patch_controller.plan_tick_messages orch ~project_name ~gameplan
           in
           let pre_fire_agents =
-            Base.List.filter_map actions ~f:(fun action ->
-                match action with
-                | Orchestrator.Respond (pid, _) | Orchestrator.Rebase (pid, _)
-                  ->
+            Base.List.filter_map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+                match (Orchestrator.message_status msg, Orchestrator.message_action msg) with
+                | Orchestrator.Pending, (Orchestrator.Respond (pid, _) | Orchestrator.Rebase (pid, _)) ->
                     Some (pid, Orchestrator.agent orch pid)
-                | Orchestrator.Start _ -> None)
+                | Orchestrator.Pending, Orchestrator.Start _
+                | Orchestrator.Acked, _
+                | Orchestrator.Completed, _
+                | Orchestrator.Obsolete, _ ->
+                    None)
           in
-          (orch, (effects, actions, pre_fire_agents)))
+          let orch, dispatched =
+            Base.List.fold messages ~init:(orch, []) ~f:(fun (acc, dispatched) (msg : Orchestrator.patch_agent_message) ->
+                match Orchestrator.message_status msg with
+                | Orchestrator.Pending ->
+                    let acc, action =
+                      Orchestrator.accept_message acc (Orchestrator.message_id msg)
+                    in
+                    let dispatched =
+                      match action with Some _ -> msg :: dispatched | None -> dispatched
+                    in
+                    (acc, dispatched)
+                | Orchestrator.Acked ->
+                    let acc, action =
+                      Orchestrator.resume_message acc (Orchestrator.message_id msg)
+                    in
+                    let dispatched =
+                      match action with Some _ -> msg :: dispatched | None -> dispatched
+                    in
+                    (acc, dispatched)
+                | Orchestrator.Completed | Orchestrator.Obsolete -> (acc, dispatched))
+          in
+          (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
     execute_github_effects ~runtime ~process_mgr ~token:config.github_token
       ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
-    (* Fire all actions to mark agents busy, preventing re-dispatch on the next
-       loop iteration. Note: there is a benign TOCTOU gap between reading
-       pending_actions and firing — if another fiber modifies state between
-       these calls, fire may encounter already-started patches (Start is a
-       no-op on has_pr=true agents) or stale Respond targets (the agent
-       preconditions are re-checked by Patch_agent.respond). *)
-    if not (Base.List.is_empty actions) then
-      Runtime.update_orchestrator runtime (fun orch ->
-          Base.List.fold actions ~init:orch ~f:(fun orch action ->
-              Orchestrator.fire orch action));
     (* Spawn all actions concurrently, limited by max_concurrency semaphore *)
     let action_fibers =
-      Base.List.filter_map actions ~f:(fun action ->
-          match action with
+      Base.List.filter_map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+          match Orchestrator.message_action msg with
           | Orchestrator.Start (patch_id, base_branch) -> (
               match
                 Base.List.find gameplan.Gameplan.patches

@@ -255,8 +255,10 @@ let () =
             List.fold msgs ~init:a ~f:(fun a m -> add_human_message a m)
           in
           List.length a.human_messages = List.length msgs);
-      (* -- respond Human clears human_messages -- *)
-      Test.make ~name:"respond Human clears human_messages" ~count:1
+      (* -- respond Human preserves human_messages until completion -- *)
+      Test.make
+        ~name:"respond Human preserves human_messages until completion"
+        ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
@@ -264,6 +266,16 @@ let () =
           let a = add_human_message a "hello" in
           let a = enqueue a Operation_kind.Human in
           let a = respond a Operation_kind.Human in
+          not (List.is_empty a.human_messages));
+      Test.make ~name:"complete Human clears human_messages" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+          let a = complete a in
+          let a = add_human_message a "hello" in
+          let a = enqueue a Operation_kind.Human in
+          let a = respond a Operation_kind.Human in
+          let a = complete a in
           List.is_empty a.human_messages);
       (* -- respond Review_comments does not clear human_messages -- *)
       Test.make ~name:"respond Review_comments preserves human_messages"
@@ -399,6 +411,7 @@ let () =
               ~implementation_notes_delivered:false
               ~start_attempts_without_pr:0
               ~checks_passing:false ~no_unresolved_comments:false
+              ~current_message_id:None ~generation:0
               ~worktree_path:None ~head_branch:None ~branch_blocked:false
           in
           let a = start a ~base_branch:br in
@@ -471,7 +484,8 @@ let () =
               ~pr_description_applied:false
               ~implementation_notes_delivered:false
               ~start_attempts_without_pr:0 ~checks_passing:false
-              ~no_unresolved_comments:false ~worktree_path:None
+              ~no_unresolved_comments:false ~current_message_id:None
+              ~generation:0 ~worktree_path:None
               ~head_branch:None ~branch_blocked:false
           in
           let a = enqueue a Operation_kind.Rebase in

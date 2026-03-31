@@ -65,6 +65,20 @@ val plan_actions :
 (** Compute runnable actions from the current snapshot after reconciliation.
     This is the evergreen scheduler used by the main loop. *)
 
+val plan_messages :
+  Orchestrator.t -> patches:Patch.t list -> Orchestrator.patch_agent_message list
+(** Compute durable runnable messages from the current snapshot after
+    reconciliation. Accepted but incomplete messages are replayed; new desired
+    actions become pending messages in the outbox. *)
+
+val plan_tick_messages :
+  Orchestrator.t ->
+  project_name:string ->
+  gameplan:Gameplan.t ->
+  Orchestrator.t * github_effect list * Orchestrator.patch_agent_message list
+(** Reconcile durable state, emit missing GitHub effects, and compute durable
+    runnable patch-agent messages for the same snapshot. *)
+
 val plan_tick :
   Orchestrator.t ->
   project_name:string ->

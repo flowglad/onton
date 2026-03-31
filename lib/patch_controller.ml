@@ -1,6 +1,36 @@
 open Base
 open Types
 
+let action_identity = function
+  | Orchestrator.Start (patch_id, base) ->
+      Printf.sprintf "start:%s:%s" (Patch_id.to_string patch_id)
+        (Branch.to_string base)
+  | Orchestrator.Respond (patch_id, kind) ->
+      Printf.sprintf "respond:%s:%s" (Patch_id.to_string patch_id)
+        (Operation_kind.to_label kind)
+  | Orchestrator.Rebase (patch_id, base) ->
+      Printf.sprintf "rebase:%s:%s" (Patch_id.to_string patch_id)
+        (Branch.to_string base)
+
+let message_of_action (patch_agent : Patch_agent.t) action =
+  let identity =
+    Printf.sprintf "%d:%s" patch_agent.generation (action_identity action)
+  in
+  let digest = Stdlib.Digest.to_hex (Stdlib.Digest.string identity) in
+  let msg_id =
+    Message_id.of_string
+      (Printf.sprintf "%s:%s" (Patch_id.to_string patch_agent.patch_id) digest)
+  in
+  Orchestrator.
+    {
+      message_id = msg_id;
+      patch_id = patch_agent.patch_id;
+      generation = patch_agent.generation;
+      action;
+      payload_hash = digest;
+      status = Pending;
+    }
+
 type github_effect =
   | Set_pr_description of {
       patch_id : Patch_id.t;
@@ -274,7 +304,23 @@ let plan_action_for_patch t ~branch_map patch_id =
            else None)
   else None
 
-let plan_actions t ~patches =
+let reconcile_action_message t action =
+  let patch_id =
+    match action with
+    | Orchestrator.Start (patch_id, _)
+    | Orchestrator.Respond (patch_id, _)
+    | Orchestrator.Rebase (patch_id, _) ->
+        patch_id
+  in
+  let agent = Orchestrator.agent t patch_id in
+  let msg = message_of_action agent action in
+  let t = Orchestrator.reconcile_message t msg in
+  let msg =
+    Option.value_exn (Orchestrator.find_message t msg.message_id)
+  in
+  (t, msg)
+
+let reconcile_messages t ~patches =
   let branch_map = branch_map_of_patches patches in
   let missing =
     Graph.all_patch_ids (Orchestrator.graph t)
@@ -285,15 +331,61 @@ let plan_actions t ~patches =
   if not (List.is_empty missing) then
     invalid_arg
       (Printf.sprintf
-         "Patch_controller.plan_actions: tick input missing %d patch id(s) \
+         "Patch_controller.plan_messages: tick input missing %d patch id(s) \
           from graph"
          (List.length missing));
-  Graph.all_patch_ids (Orchestrator.graph t)
-  |> List.filter_map ~f:(plan_action_for_patch t ~branch_map)
+  let patch_ids = Graph.all_patch_ids (Orchestrator.graph t) in
+  let t =
+    List.fold patch_ids ~init:t ~f:(fun acc patch_id ->
+        let keep =
+          match Orchestrator.current_message acc patch_id with
+          | Some msg when Orchestrator.equal_message_status msg.status Acked ->
+              [ msg.message_id ]
+          | _ -> []
+        in
+        Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id ~keep)
+  in
+  let t, desired_ids =
+    List.fold patch_ids ~init:(t, []) ~f:(fun (acc, ids) patch_id ->
+        match Orchestrator.current_message acc patch_id with
+        | Some msg when Orchestrator.equal_message_status msg.status Acked ->
+            (acc, msg.message_id :: ids)
+        | _ -> (
+            match plan_action_for_patch acc ~branch_map patch_id with
+            | None -> (acc, ids)
+            | Some action ->
+                let acc, msg = reconcile_action_message acc action in
+                (acc, msg.message_id :: ids)))
+  in
+  let t =
+    List.fold patch_ids ~init:t ~f:(fun acc patch_id ->
+        let keep =
+          List.filter desired_ids ~f:(fun message_id ->
+              match Orchestrator.find_message acc message_id with
+              | Some msg when Patch_id.equal msg.patch_id patch_id -> true
+              | _ -> false)
+        in
+        Orchestrator.mark_patch_pending_messages_obsolete_except acc patch_id ~keep)
+  in
+  (t, Orchestrator.runnable_messages t)
+
+let plan_messages t ~patches = snd (reconcile_messages t ~patches)
+
+let plan_actions t ~patches =
+  plan_messages t ~patches
+  |> List.map ~f:(fun (msg : Orchestrator.patch_agent_message) -> msg.action)
+
+let plan_tick_messages t ~project_name ~gameplan =
+  let t, effects = reconcile_all t ~project_name ~gameplan in
+  let t, messages = reconcile_messages t ~patches:gameplan.Gameplan.patches in
+  (t, effects, messages)
 
 let plan_tick t ~project_name ~gameplan =
-  let t, effects = reconcile_all t ~project_name ~gameplan in
-  let actions = plan_actions t ~patches:gameplan.Gameplan.patches in
+  let t, effects, messages = plan_tick_messages t ~project_name ~gameplan in
+  let actions =
+    List.map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+        msg.action)
+  in
   (t, effects, actions)
 
 let tick t ~project_name ~gameplan =

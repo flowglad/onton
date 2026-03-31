@@ -37,7 +37,9 @@ let make_gameplan patch =
 let make_orch patch agent =
   let graph = Graph.of_patches [ patch ] in
   let agents = Map.of_alist_exn (module Patch_id) [ (patch.Patch.id, agent) ] in
-  Orchestrator.restore ~graph ~agents ~main_branch:main
+  Orchestrator.restore ~graph ~agents
+    ~outbox:(Map.empty (module Message_id))
+    ~main_branch:main
 
 let make_agent ~patch_id ~has_pr ~pr_number ~merged ~needs_intervention ~queue
     ~base_branch ~is_draft ~pr_description_applied
@@ -49,8 +51,8 @@ let make_agent ~patch_id ~has_pr ~pr_number ~merged ~needs_intervention ~queue
     ~human_messages:[] ~ci_checks:[] ~mergeable:false ~merge_ready:false
     ~is_draft ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~checks_passing:false
-    ~no_unresolved_comments:false ~worktree_path:None ~head_branch:None
-    ~branch_blocked:false
+    ~no_unresolved_comments:false ~current_message_id:None ~generation:0
+    ~worktree_path:None ~head_branch:None ~branch_blocked:false
 
 let has_notes_queued agent =
   List.mem agent.Patch_agent.queue Operation_kind.Implementation_notes
