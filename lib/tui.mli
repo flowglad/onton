@@ -10,6 +10,7 @@ type display_status =
   | Addressing_review
   | Resolving_conflict
   | Responding_to_human
+  | Adding_notes
   | Rebasing
   | Starting
   | Updating

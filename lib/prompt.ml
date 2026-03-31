@@ -318,6 +318,33 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
 {{changes_section}}{{spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
         vars)
 
+let render_implementation_notes_prompt ~(project_name : string)
+    ~(pr_number : Pr_number.t) ~(pr_body : string) =
+  let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
+  let vars = [ ("pr_number", pr_num_str); ("pr_body", pr_body) ] in
+  render_with_override ~project_name ~name:"implementation_notes" ~vars
+    ~default:(fun () ->
+      substitute_variables
+        {|You have just finished implementing this patch and a PR has been created.
+
+The current PR description is:
+
+---
+{{pr_body}}
+---
+
+Your task: append an **## Implementation Notes** section to the PR body that describes what you actually did. Focus on:
+
+- Key implementation decisions and trade-offs you made
+- Anything surprising or non-obvious about the approach
+- Deviations from the original plan (if any)
+- Important details a reviewer should know
+
+Do NOT repeat information already in the description. Keep it concise — a few bullet points is ideal.
+
+Use `gh pr edit {{pr_number}} --body-file -` to update the PR body. Read the current body first with `gh pr view {{pr_number}} --json body -q .body`, append your Implementation Notes section, then write the full body back. If an Implementation Notes section already exists, update it rather than duplicating it.|}
+        vars)
+
 let render_review_prompt ~(project_name : string) ?pr_number
     (comments : Comment.t list) =
   match comments with

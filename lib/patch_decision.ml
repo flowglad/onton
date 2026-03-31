@@ -30,7 +30,8 @@ let disposition (a : Patch_agent.t) : disposition =
         match k with
         | Operation_kind.Rebase -> Ready_rebase
         | Operation_kind.Human | Operation_kind.Merge_conflict
-        | Operation_kind.Ci | Operation_kind.Review_comments ->
+        | Operation_kind.Ci | Operation_kind.Review_comments
+        | Operation_kind.Implementation_notes ->
             Ready_respond k)
 
 type ci_decision =

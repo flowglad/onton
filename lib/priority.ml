@@ -9,10 +9,13 @@ let priority (k : Ok.t) : int =
   | Ok.Merge_conflict -> 2
   | Ok.Ci -> 3
   | Ok.Review_comments -> 4
+  | Ok.Implementation_notes -> 5
 
 let is_feedback (k : Ok.t) : bool =
   match k with
-  | Ok.Human | Ok.Merge_conflict | Ok.Ci | Ok.Review_comments -> true
+  | Ok.Human | Ok.Merge_conflict | Ok.Ci | Ok.Review_comments
+  | Ok.Implementation_notes ->
+      true
   | Ok.Rebase -> false
 
 type t = Ok.t list [@@deriving show, eq, sexp_of]
