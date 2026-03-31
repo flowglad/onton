@@ -1462,15 +1462,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       Pr_registry.register pr_registry ~patch_id
                         ~pr_number:new_pr;
                       Runtime.update_orchestrator runtime (fun orch ->
-                          let orch =
-                            Orchestrator.set_pr_number orch patch_id new_pr
-                          in
-                          let orch =
-                            Orchestrator.set_base_branch orch patch_id
-                              base_branch
-                          in
-                          if merged then Orchestrator.mark_merged orch patch_id
-                          else orch)
+                          Patch_controller.apply_replacement_pr orch patch_id
+                            ~pr_number:new_pr ~base_branch ~merged)
                   | Ok None ->
                       log_event runtime ~patch_id
                         "no open PR found — will create on next session"
@@ -1537,72 +1530,19 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                application (e.g. user pressed '-'). *)
                             (orch, ([], (false, false)))
                         | Some _ ->
-                            let orch, log_entries =
-                              Poll_applicator.apply orch patch_id poll_result
+                            let observation =
+                              Patch_controller.
+                                {
+                                  poll_result;
+                                  head_branch = pr_state.Pr_state.head_branch;
+                                  base_branch = pr_state.Pr_state.base_branch;
+                                  branch_in_root;
+                                  worktree_path = worktree_candidate;
+                                }
                             in
-                            (* head_branch and intervention management *)
-                            let orch, newly_blocked =
-                              match pr_state.Pr_state.head_branch with
-                              | Some b ->
-                                  let orch =
-                                    Orchestrator.set_head_branch orch patch_id b
-                                  in
-                                  if branch_in_root then
-                                    let agent =
-                                      Orchestrator.agent orch patch_id
-                                    in
-                                    if not agent.Patch_agent.branch_blocked then
-                                      ( Orchestrator.set_branch_blocked orch
-                                          patch_id,
-                                        true )
-                                    else
-                                      ( Orchestrator.set_branch_blocked orch
-                                          patch_id,
-                                        false )
-                                  else
-                                    let agent =
-                                      Orchestrator.agent orch patch_id
-                                    in
-                                    (* Branch is no longer checked out in root —
-                                       clear branch_blocked if it was set. *)
-                                    if agent.Patch_agent.branch_blocked then
-                                      ( Orchestrator.clear_branch_blocked orch
-                                          patch_id,
-                                        false )
-                                    else (orch, false)
-                              | None -> (orch, false)
-                            in
-                            let orch =
-                              let agent = Orchestrator.agent orch patch_id in
-                              match
-                                ( agent.Patch_agent.base_branch,
-                                  pr_state.Pr_state.base_branch )
-                              with
-                              | None, Some b ->
-                                  Orchestrator.set_base_branch orch patch_id b
-                              | _ -> orch
-                            in
-                            let orch =
-                              let current_agent =
-                                Orchestrator.agent orch patch_id
-                              in
-                              match worktree_candidate with
-                              | Some path
-                                when Option.is_none
-                                       current_agent.Patch_agent.worktree_path
-                                ->
-                                  let orch =
-                                    Orchestrator.set_worktree_path orch patch_id
-                                      path
-                                  in
-                                  let agent =
-                                    Orchestrator.agent orch patch_id
-                                  in
-                                  if agent.Patch_agent.branch_blocked then
-                                    Orchestrator.clear_branch_blocked orch
-                                      patch_id
-                                  else orch
-                              | _ -> orch
+                            let orch, log_entries, newly_blocked =
+                              Patch_controller.apply_poll_result orch patch_id
+                                observation
                             in
                             (orch, (log_entries, (newly_blocked, true))))
                   in
@@ -1612,9 +1552,9 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       Hashtbl.replace ci_checks_cache patch_id failed_ci
                     else Hashtbl.remove ci_checks_cache patch_id;
                   Base.List.iter log_entries
-                    ~f:(fun (entry : Poll_applicator.log_entry) ->
-                      log_event runtime ~patch_id:entry.Poll_applicator.patch_id
-                        entry.Poll_applicator.message);
+                    ~f:(fun (entry : Patch_controller.poll_log_entry) ->
+                      log_event runtime ~patch_id:entry.Patch_controller.patch_id
+                        entry.Patch_controller.message);
                   (if newly_blocked then
                      match pr_state.Pr_state.head_branch with
                      | Some b ->
@@ -1736,23 +1676,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     let gameplan =
       Runtime.read runtime (fun snap -> snap.Runtime.gameplan)
     in
-    let lifecycle_effects =
+    let lifecycle_effects, actions, pre_fire_agents =
       Runtime.update_orchestrator_returning runtime (fun orch ->
-          Patch_controller.reconcile_all orch ~project_name ~gameplan)
-    in
-    execute_github_effects ~runtime ~process_mgr ~token:config.github_token
-      ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
-    let actions, pre_fire_agents =
-      Runtime.read runtime (fun snap ->
-          let orch = snap.Runtime.orchestrator in
-          let actions =
-            Orchestrator.pending_actions orch
-              ~patches:snap.Runtime.gameplan.Gameplan.patches
+          let orch, effects, actions =
+            Patch_controller.plan_tick orch ~project_name ~gameplan
           in
-          (* Capture agent state BEFORE fire clears human_messages.
-             Respond clears human_messages as a postcondition, but the
-             runner needs them to build the prompt. *)
-          let agent_map =
+          let pre_fire_agents =
             Base.List.filter_map actions ~f:(fun action ->
                 match action with
                 | Orchestrator.Respond (pid, _) | Orchestrator.Rebase (pid, _)
@@ -1760,8 +1689,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                     Some (pid, Orchestrator.agent orch pid)
                 | Orchestrator.Start _ -> None)
           in
-          (actions, agent_map))
+          (orch, (effects, actions, pre_fire_agents)))
     in
+    execute_github_effects ~runtime ~process_mgr ~token:config.github_token
+      ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
     (* Fire all actions to mark agents busy, preventing re-dispatch on the next
        loop iteration. Note: there is a benign TOCTOU gap between reading
        pending_actions and firing — if another fiber modifies state between

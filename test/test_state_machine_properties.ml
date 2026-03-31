@@ -12,6 +12,19 @@ open Onton.Types
 
 let main = Branch.of_string "main"
 
+let make_gameplan patches =
+  Gameplan.
+    {
+      project_name = "test-project";
+      problem_statement = "";
+      solution_summary = "";
+      design_decisions = "";
+      patches;
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+    }
+
 let mk_patches n =
   List.init n ~f:(fun i ->
       let id = Patch_id.of_string (Printf.sprintf "p%d" i) in
@@ -80,7 +93,10 @@ let apply_command orch patches cmd =
   try
     match cmd with
     | Tick ->
-        let orch, _actions = Orchestrator.tick orch ~patches in
+        let orch, _effects, _actions =
+          Patch_controller.tick orch ~project_name:"test-project"
+            ~gameplan:(make_gameplan patches)
+        in
         orch
     | Complete i -> Orchestrator.complete orch (pid_of_idx patches i)
     | Enqueue (i, k) -> Orchestrator.enqueue orch (pid_of_idx patches i) k
@@ -157,11 +173,17 @@ let () =
             let rec stabilize o n =
               if n = 0 then o
               else
-                let o, _ = Orchestrator.tick o ~patches in
+                let o, _effects, _actions =
+                  Patch_controller.tick o ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 stabilize o (n - 1)
             in
             let stable = stabilize orch (List.length patches + 2) in
-            let _, actions1 = Orchestrator.tick stable ~patches in
+            let _, _effects, actions1 =
+              Patch_controller.tick stable ~project_name:"test-project"
+                ~gameplan:(make_gameplan patches)
+            in
             let starts1 =
               List.count actions1 ~f:(function
                 | Orchestrator.Start _ -> true
@@ -192,7 +214,10 @@ let () =
                 let rec tick_all o n =
                   if n = 0 then o
                   else
-                    let o, _ = Orchestrator.tick o ~patches in
+                    let o, _effects, _actions =
+                      Patch_controller.tick o ~project_name:"test-project"
+                        ~gameplan:(make_gameplan patches)
+                    in
                     tick_all o (n - 1)
                 in
                 let orch = tick_all orch (List.length patches + 1) in
@@ -201,7 +226,10 @@ let () =
                 in
                 let orch = Orchestrator.complete orch pid in
                 let orch = Orchestrator.enqueue orch pid kind in
-                let _, actions = Orchestrator.tick orch ~patches in
+                let _, _effects, actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 List.exists actions ~f:(function
                   | Orchestrator.Respond (p, k) ->
                       Patch_id.equal p pid && Operation_kind.equal k kind
@@ -229,7 +257,10 @@ let () =
             | first :: _ ->
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
-                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch, _effects, _actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 let orch =
                   Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
                 in
@@ -239,7 +270,10 @@ let () =
                   List.fold ops ~init:orch ~f:(fun o k ->
                       Orchestrator.enqueue o pid k)
                 in
-                let _, actions = Orchestrator.tick orch ~patches in
+                let _, _effects, actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 not
                   (List.exists actions ~f:(function
                       | Orchestrator.Start (p, _)
@@ -264,7 +298,10 @@ let () =
             | first :: _ ->
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
-                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch, _effects, _actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 let orch =
                   Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
                 in
@@ -275,7 +312,10 @@ let () =
                 if not agent.Patch_agent.needs_intervention then false
                 else
                   let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
-                  let _, actions = Orchestrator.tick orch ~patches in
+                  let _, _effects, actions =
+                    Patch_controller.tick orch ~project_name:"test-project"
+                      ~gameplan:(make_gameplan patches)
+                  in
                   let blocked =
                     not
                       (List.exists actions ~f:(function
@@ -283,7 +323,10 @@ let () =
                         | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
                   in
                   let orch = Orchestrator.clear_needs_intervention orch pid in
-                  let _, actions2 = Orchestrator.tick orch ~patches in
+                  let _, _effects, actions2 =
+                    Patch_controller.tick orch ~project_name:"test-project"
+                      ~gameplan:(make_gameplan patches)
+                  in
                   let unblocked =
                     List.exists actions2 ~f:(function
                       | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
@@ -309,7 +352,10 @@ let () =
             | first :: _ ->
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
-                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch, _effects, _actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 let orch =
                   Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
                 in
@@ -340,7 +386,10 @@ let () =
             | first :: _ -> (
                 let pid = first.Patch.id in
                 let orch = Orchestrator.create ~patches ~main_branch:main in
-                let orch, _ = Orchestrator.tick orch ~patches in
+                let orch, _effects, _actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 let orch =
                   Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
                 in
@@ -351,7 +400,10 @@ let () =
                 in
                 let agent = Orchestrator.agent orch pid in
                 let expected_hp = Patch_agent.highest_priority agent in
-                let _, actions = Orchestrator.tick orch ~patches in
+                let _, _effects, actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 let responded_kind =
                   List.find_map actions ~f:(function
                     | Orchestrator.Respond (p, k) ->
@@ -383,7 +435,10 @@ let () =
                 let rec tick_all o n =
                   if n = 0 then o
                   else
-                    let o, _ = Orchestrator.tick o ~patches in
+                    let o, _effects, _actions =
+                      Patch_controller.tick o ~project_name:"test-project"
+                        ~gameplan:(make_gameplan patches)
+                    in
                     tick_all o (n - 1)
                 in
                 let orch = tick_all orch (List.length patches + 1) in
@@ -394,7 +449,10 @@ let () =
                 let orch =
                   Orchestrator.enqueue orch pid Operation_kind.Rebase
                 in
-                let _, actions = Orchestrator.tick orch ~patches in
+                let _, _effects, actions =
+                  Patch_controller.tick orch ~project_name:"test-project"
+                    ~gameplan:(make_gameplan patches)
+                in
                 List.exists actions ~f:(function
                   | Orchestrator.Rebase (p, _) -> Patch_id.equal p pid
                   | Orchestrator.Respond _ | Orchestrator.Start _ -> false)))

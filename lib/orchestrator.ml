@@ -47,117 +47,11 @@ let update_agent t patch_id ~f =
   | None -> t
   | Some a -> { t with agents = Map.set t.agents ~key:patch_id ~data:(f a) }
 
-let has_merged t pid = (agent t pid).Patch_agent.merged
-let has_pr t pid = (agent t pid).Patch_agent.has_pr
-
-let branch_map_of_patches patches =
-  List.fold patches
-    ~init:(Map.empty (module Patch_id))
-    ~f:(fun acc (p : Patch.t) ->
-      match Map.add acc ~key:p.Patch.id ~data:p.Patch.branch with
-      | `Ok m -> m
-      | `Duplicate ->
-          invalid_arg
-            (Printf.sprintf "Orchestrator: duplicate patch id in tick input %s"
-               (Patch_id.to_string p.Patch.id)))
-
-(** {2 Liveness: fire all actions whose preconditions hold} *)
-
 type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
   | Rebase of Patch_id.t * Branch.t
 [@@deriving sexp_of]
-
-let startable_patches t ~branch_map =
-  Graph.all_patch_ids t.graph
-  |> List.filter_map ~f:(fun pid ->
-      let a = agent t pid in
-      if
-        (not a.Patch_agent.has_pr) && (not a.Patch_agent.busy)
-        && (not a.Patch_agent.merged)
-        && (not a.Patch_agent.needs_intervention)
-        && Graph.deps_satisfied t.graph pid ~has_merged:(has_merged t)
-             ~has_pr:(has_pr t)
-      then
-        let has_merged' = has_merged t in
-        let branch_of pid =
-          match Map.find branch_map pid with
-          | Some b -> b
-          | None ->
-              invalid_arg
-                (Printf.sprintf
-                   "Orchestrator.startable_patches: no branch for patch %s"
-                   (Patch_id.to_string pid))
-        in
-        let base =
-          Graph.initial_base t.graph pid ~has_merged:has_merged' ~branch_of
-            ~main:t.main_branch
-        in
-        Some (Start (pid, base))
-      else None)
-
-let rebaseable_patches t ~branch_map =
-  Graph.all_patch_ids t.graph
-  |> List.filter_map ~f:(fun pid ->
-      let (a : Patch_agent.t) = agent t pid in
-      if
-        a.Patch_agent.has_pr && (not a.Patch_agent.merged)
-        && (not a.Patch_agent.busy)
-        && List.mem a.Patch_agent.queue Operation_kind.Rebase
-             ~equal:Operation_kind.equal
-      then
-        match Patch_agent.highest_priority a with
-        | Some hp when Operation_kind.equal hp Operation_kind.Rebase ->
-            let has_merged' = has_merged t in
-            let branch_of dep_pid =
-              match Map.find branch_map dep_pid with
-              | Some b -> b
-              | None ->
-                  Option.value (agent t dep_pid).Patch_agent.base_branch
-                    ~default:t.main_branch
-            in
-            let new_base =
-              Graph.initial_base t.graph pid ~has_merged:has_merged' ~branch_of
-                ~main:t.main_branch
-            in
-            Some (Rebase (pid, new_base))
-        | _ -> None
-      else None)
-
-let respondable_patches t =
-  Graph.all_patch_ids t.graph
-  |> List.filter_map ~f:(fun pid ->
-      let (a : Patch_agent.t) = agent t pid in
-      if
-        a.Patch_agent.has_pr && (not a.Patch_agent.merged)
-        && (not a.Patch_agent.busy)
-        && (not a.Patch_agent.needs_intervention)
-        && not a.Patch_agent.branch_blocked
-      then
-        Patch_agent.highest_priority a
-        |> Option.bind ~f:(fun k ->
-            if Priority.is_feedback k then Some (Respond (pid, k)) else None)
-      else None)
-
-let pending_actions t ~patches =
-  let branch_map = branch_map_of_patches patches in
-  (* Only validate patches that could be started (no PR yet). Ad-hoc patches
-     already have PRs and are not in the gameplan's patch list. *)
-  let missing =
-    Graph.all_patch_ids t.graph
-    |> List.filter ~f:(fun pid ->
-        (not (Map.mem branch_map pid)) && not (has_pr t pid))
-  in
-  if not (List.is_empty missing) then
-    invalid_arg
-      (Printf.sprintf
-         "Orchestrator.pending_actions: tick input missing %d patch id(s) from \
-          graph"
-         (List.length missing));
-  startable_patches t ~branch_map
-  @ rebaseable_patches t ~branch_map
-  @ respondable_patches t
 
 let fire t action =
   match action with
@@ -169,11 +63,6 @@ let fire t action =
   | Respond (pid, k) -> update_agent t pid ~f:(fun a -> Patch_agent.respond a k)
   | Rebase (pid, base) ->
       update_agent t pid ~f:(fun a -> Patch_agent.rebase a ~base_branch:base)
-
-let tick t ~patches =
-  let actions = pending_actions t ~patches in
-  let t = List.fold actions ~init:t ~f:(fun t a -> fire t a) in
-  (t, actions)
 
 (** {2 External event application} *)
 
@@ -227,6 +116,9 @@ let clear_has_conflict t patch_id =
 let set_base_branch t patch_id branch =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a branch)
 
+let set_mergeable t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_mergeable a v)
+
 let increment_ci_failure_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_ci_failure_count
 
@@ -238,6 +130,9 @@ let clear_ci_fix_running t patch_id =
 
 let set_ci_checks t patch_id checks =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_ci_checks a checks)
+
+let set_checks_passing t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_checks_passing a v)
 
 let set_merge_ready t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_ready a v)

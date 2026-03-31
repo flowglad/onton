@@ -90,12 +90,22 @@ let implementation_notes_action_exn actions pid =
   |> Option.value_exn
 
 let run_controller_cycle ~gameplan orch =
-  let orch, effects =
-    Patch_controller.reconcile_all orch ~project_name:gameplan.Gameplan.project_name
+  let orch, effects, actions =
+    Patch_controller.plan_tick orch ~project_name:gameplan.Gameplan.project_name
       ~gameplan
   in
   let orch = apply_all_effect_successes orch effects in
-  (orch, effects, Orchestrator.pending_actions orch ~patches:gameplan.patches)
+  (orch, effects, actions)
+
+let make_poll_observation poll_result =
+  Patch_controller.
+    {
+      poll_result;
+      head_branch = None;
+      base_branch = None;
+      branch_in_root = false;
+      worktree_path = None;
+    }
 
 let () =
   let open QCheck2 in
@@ -144,6 +154,37 @@ let () =
           (Orchestrator.agent orch1 patch.Patch.id)
           (Orchestrator.agent orch2 patch.Patch.id)
         && List.equal Patch_controller.equal_github_effect effects1 effects2)
+  in
+
+  let prop_plan_tick_deterministic =
+    Test.make ~name:"patch_controller: plan_tick deterministic" ~count:300
+      gen_controller_case (fun (_patch, gameplan, orch) ->
+        let orch1, effects1, actions1 =
+          Patch_controller.plan_tick orch ~project_name:"test-project" ~gameplan
+        in
+        let orch2, effects2, actions2 =
+          Patch_controller.plan_tick orch ~project_name:"test-project" ~gameplan
+        in
+        let action_equal a b =
+          match (a, b) with
+          | Orchestrator.Start (p1, b1), Orchestrator.Start (p2, b2) ->
+              Patch_id.equal p1 p2 && Branch.equal b1 b2
+          | Orchestrator.Respond (p1, k1), Orchestrator.Respond (p2, k2) ->
+              Patch_id.equal p1 p2 && Operation_kind.equal k1 k2
+          | Orchestrator.Rebase (p1, b1), Orchestrator.Rebase (p2, b2) ->
+              Patch_id.equal p1 p2 && Branch.equal b1 b2
+          | ( Orchestrator.Start _,
+              (Orchestrator.Respond _ | Orchestrator.Rebase _) )
+          | ( Orchestrator.Respond _,
+              (Orchestrator.Start _ | Orchestrator.Rebase _) )
+          | ( Orchestrator.Rebase _,
+              (Orchestrator.Start _ | Orchestrator.Respond _) ) ->
+              false
+        in
+        Map.equal Patch_agent.equal (Orchestrator.agents_map orch1)
+          (Orchestrator.agents_map orch2)
+        && List.equal Patch_controller.equal_github_effect effects1 effects2
+        && List.equal action_equal actions1 actions2)
   in
 
   let prop_notes_queue_idempotent =
@@ -290,7 +331,7 @@ let () =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
         in
-        let actions = Orchestrator.pending_actions orch ~patches:gameplan.patches in
+        let actions = Patch_controller.plan_actions orch ~patches:gameplan.patches in
         List.is_empty effects
         && List.exists actions ~f:(function
              | Orchestrator.Respond (action_pid, kind) ->
@@ -319,7 +360,7 @@ let () =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
         in
-        let actions = Orchestrator.pending_actions orch ~patches:gameplan.patches in
+        let actions = Patch_controller.plan_actions orch ~patches:gameplan.patches in
         (Orchestrator.agent orch pid).Patch_agent.needs_intervention
         && List.is_empty effects
         && not
@@ -391,7 +432,10 @@ let () =
               ci_checks = [];
             }
         in
-        let orch, _logs = Poll_applicator.apply orch pid poll in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid
+            (make_poll_observation poll)
+        in
         let orch1, effects1, _actions1 = run_controller_cycle ~gameplan orch in
         let _orch2, effects2, _actions2 = run_controller_cycle ~gameplan orch1 in
         has_draft_effect effects1 && not (has_draft_effect effects2))
@@ -428,7 +472,10 @@ let () =
               ci_checks = [];
             }
         in
-        let orch, _logs = Poll_applicator.apply orch pid poll in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid
+            (make_poll_observation poll)
+        in
         let orch, _effects, actions = run_controller_cycle ~gameplan orch in
         let a = Orchestrator.agent orch pid in
         has_notes_queued a
@@ -437,6 +484,99 @@ let () =
                  Patch_id.equal action_pid pid
                  && Operation_kind.equal kind Operation_kind.Ci
              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+  in
+
+  let prop_poll_result_persists_world_flags =
+    Test.make
+      ~name:
+        "patch_controller: poll result persists mergeable and checks_passing \
+         flags"
+      ~count:200 Gen.(quad gen_patch_id gen_branch bool bool)
+      (fun (pid, branch, mergeable, checks_passing) ->
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~has_pr:true
+            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
+            ~needs_intervention:false ~queue:[]
+            ~base_branch:(Some main) ~is_draft:true
+            ~pr_description_applied:true
+            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+        in
+        let orch = make_orch patch agent in
+        let poll =
+          Poller.
+            {
+              queue = [];
+              merged = false;
+              closed = false;
+              is_draft = true;
+              has_conflict = false;
+              mergeable;
+              merge_ready = false;
+              checks_passing;
+              ci_checks = [];
+            }
+        in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid
+            (make_poll_observation poll)
+        in
+        let a = Orchestrator.agent orch pid in
+        Bool.equal a.Patch_agent.mergeable mergeable
+        && Bool.equal a.Patch_agent.checks_passing checks_passing)
+  in
+
+  let prop_poll_observation_updates_branch_metadata =
+    Test.make
+      ~name:
+        "patch_controller: poll observation updates head branch, base branch, \
+         branch_blocked, and worktree"
+      ~count:100 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+        let head_branch = Branch.of_string "feature/head" in
+        let observed_base = Branch.of_string "stack/base" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~has_pr:true
+            ~pr_number:(Some (Pr_number.of_int 42)) ~merged:false
+            ~needs_intervention:false ~queue:[]
+            ~base_branch:None ~is_draft:true ~pr_description_applied:true
+            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+        in
+        let orch = make_orch patch agent in
+        let poll =
+          Poller.
+            {
+              queue = [];
+              merged = false;
+              closed = false;
+              is_draft = true;
+              has_conflict = false;
+              mergeable = false;
+              merge_ready = false;
+              checks_passing = false;
+              ci_checks = [];
+            }
+        in
+        let observation =
+          Patch_controller.
+            {
+              poll_result = poll;
+              head_branch = Some head_branch;
+              base_branch = Some observed_base;
+              branch_in_root = true;
+              worktree_path = Some "/tmp/custom-worktree";
+            }
+        in
+        let orch, _logs, newly_blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        let a = Orchestrator.agent orch pid in
+        Option.equal Branch.equal a.Patch_agent.head_branch (Some head_branch)
+        && Option.equal Branch.equal a.Patch_agent.base_branch
+             (Some observed_base)
+        && Option.equal String.equal a.Patch_agent.worktree_path
+             (Some "/tmp/custom-worktree")
+        && not a.Patch_agent.branch_blocked && newly_blocked)
   in
 
   let prop_mixed_cycle_converges_for_bootstrap_patch =
@@ -486,6 +626,7 @@ let () =
   let suite =
     [
       prop_deterministic;
+      prop_plan_tick_deterministic;
       prop_notes_queue_idempotent;
       prop_description_reemits_until_success;
       prop_draft_reemits_until_success;
@@ -495,6 +636,8 @@ let () =
       prop_reconcile_all_converges_after_acknowledged_effects;
       prop_poll_to_controller_promotes_ready_after_notes;
       prop_poll_ci_failure_never_erases_notes_followup;
+      prop_poll_result_persists_world_flags;
+      prop_poll_observation_updates_branch_metadata;
       prop_mixed_cycle_converges_for_bootstrap_patch;
     ]
   in

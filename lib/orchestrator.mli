@@ -3,15 +3,9 @@ open Types
 
 (** Top-level orchestrator wiring.
 
-    Manages the dependency graph and per-patch agent state. The [tick] function
-    implements the spec's liveness property: all actions whose preconditions
-    hold are fired in a single step.
-
-    Spec fragment:
-    {v
-    > The orchestrator ensures liveness: all actions that can fire, do fire.
-    > Start is biconditional with its preconditions.
-    v} *)
+    Manages the dependency graph and per-patch agent state. Scheduling and
+    reconciliation are owned by [Patch_controller]; this module provides the
+    durable state and primitive state transitions. *)
 
 type t
 
@@ -20,20 +14,11 @@ type t
 val create : patches:Patch.t list -> main_branch:Branch.t -> t
 (** Build orchestrator state from a list of patches and a main branch. *)
 
-(** {2 Liveness tick} *)
-
 type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
   | Rebase of Patch_id.t * Branch.t
 [@@deriving sexp_of]
-
-val tick : t -> patches:Patch.t list -> t * action list
-(** Fire all actions whose preconditions hold. Returns updated state and the
-    list of actions that were fired. *)
-
-val pending_actions : t -> patches:Patch.t list -> action list
-(** Compute actions that would fire without executing them. *)
 
 val fire : t -> action -> t
 (** Apply a single action to the orchestrator state. *)
@@ -58,10 +43,12 @@ val on_pr_discovery_failure : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val clear_has_conflict : t -> Patch_id.t -> t
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
+val set_mergeable : t -> Patch_id.t -> bool -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_fix_running : t -> Patch_id.t -> t
 val clear_ci_fix_running : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
+val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
 val set_pr_description_applied : t -> Patch_id.t -> bool -> t

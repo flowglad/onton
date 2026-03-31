@@ -53,9 +53,9 @@ let gen_snapshot_with_varied_agents =
             ~main_branch
         in
         (* Tick to start root patches, then complete them *)
-        let orchestrator, _actions =
-          Onton.Orchestrator.tick orchestrator
-            ~patches:gameplan.Gameplan.patches
+        let orchestrator, _effects, _actions =
+          Onton.Patch_controller.tick orchestrator ~project_name:"test-project"
+            ~gameplan
         in
         let orchestrator =
           List.fold gameplan.Gameplan.patches ~init:orchestrator

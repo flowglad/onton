@@ -1,6 +1,23 @@
 open Base
 open Onton
 
+let make_gameplan patches =
+  Types.Gameplan.
+    {
+      project_name = "test-project";
+      problem_statement = "";
+      solution_summary = "";
+      design_decisions = "";
+      patches;
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+    }
+
+let tick orch ~patches =
+  Patch_controller.tick orch ~project_name:"test-project"
+    ~gameplan:(make_gameplan patches)
+
 (* ========== Graph properties ========== *)
 
 let () =
@@ -206,7 +223,7 @@ let () =
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           match patches with
           | [] -> true
           | first :: _ ->
@@ -225,11 +242,11 @@ let () =
           let rec loop o n =
             if n = 0 then o
             else
-              let o, _ = Orchestrator.tick o ~patches in
+              let o, _effects, _actions = tick o ~patches in
               loop o (n - 1)
           in
           let orch_stable = loop orch (List.length patches + 1) in
-          let _orch_final, actions = Orchestrator.tick orch_stable ~patches in
+          let _orch_final, _effects, actions = tick orch_stable ~patches in
           List.is_empty actions
         with _ -> false)
   in
@@ -241,7 +258,7 @@ let () =
           let rec tick_all o n =
             if n = 0 then o
             else
-              let o, _ = Orchestrator.tick o ~patches in
+              let o, _effects, _actions = tick o ~patches in
               tick_all o (n - 1)
           in
           let orch = tick_all orch (List.length patches + 1) in
@@ -259,7 +276,7 @@ let () =
                 in
                 Orchestrator.mark_merged o p.id)
           in
-          let _, actions = Orchestrator.tick orch ~patches in
+          let _, _effects, actions = tick orch ~patches in
           List.is_empty actions
         with _ -> false)
   in
@@ -294,11 +311,11 @@ let () =
     ]
   in
   let orch = Orchestrator.create ~patches ~main_branch:main in
-  let orch, _ = Orchestrator.tick orch ~patches in
+  let orch, _effects, _actions = tick orch ~patches in
   let orch = Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1) in
   let orch = Orchestrator.complete orch pid in
   let orch = Orchestrator.enqueue orch pid Types.Operation_kind.Ci in
-  let _orch, actions = Orchestrator.tick orch ~patches in
+  let _orch, _effects, actions = tick orch ~patches in
   assert (Int.equal (List.length actions) 1);
   assert (
     List.exists actions ~f:(function
@@ -524,7 +541,7 @@ let () =
       ]
     in
     let orch = Orchestrator.create ~patches ~main_branch:main in
-    let orch, _ = Orchestrator.tick orch ~patches in
+    let orch, _effects, _actions = tick orch ~patches in
     (orch, pid)
   in
   (* Property: complete is idempotent (no crash on already-not-busy) *)
@@ -552,7 +569,7 @@ let () =
         in
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch, _effects, _actions = tick orch ~patches in
           (* First complete: busy → not-busy *)
           let orch = Orchestrator.complete orch pid in
           (* Second complete: should be a no-op, not crash *)

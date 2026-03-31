@@ -11,12 +11,28 @@ open Onton.Types
 
 let main = Branch.of_string "main"
 
+let make_gameplan patches =
+  Gameplan.
+    {
+      project_name = "test-project";
+      problem_statement = "";
+      solution_summary = "";
+      design_decisions = "";
+      patches;
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+    }
+
 (* ========== Helper: prepare orchestrator with PRs and queued ops ========== *)
 
 (** Tick once to start eligible patches, then complete them and assign PR
     numbers so they become eligible for Respond/Rebase actions. *)
 let prepare_with_prs orch patches =
-  let orch, _ = Orchestrator.tick orch ~patches in
+  let orch, _effects, _actions =
+    Patch_controller.tick orch ~project_name:"test-project"
+      ~gameplan:(make_gameplan patches)
+  in
   List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
       let a = Orchestrator.agent o p.Patch.id in
       if a.Patch_agent.busy then
@@ -88,7 +104,10 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions =
+                Patch_controller.tick orch ~project_name:"test-project"
+                  ~gameplan:(make_gameplan patches)
+              in
               let orch =
                 Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
               in

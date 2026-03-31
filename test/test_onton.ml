@@ -20,7 +20,22 @@ let () =
   in
   let main_branch = Onton.Types.Branch.of_string "main" in
   let orch = Onton.Orchestrator.create ~patches ~main_branch in
-  let _orch, actions = Onton.Orchestrator.tick orch ~patches in
+  let gameplan =
+    Onton.Types.Gameplan.
+      {
+        project_name = "test-project";
+        problem_statement = "";
+        solution_summary = "";
+        design_decisions = "";
+        patches;
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+      }
+  in
+  let _orch, _effects, actions =
+    Onton.Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+  in
   (match actions with
   | [ Onton.Orchestrator.Start (pid, base) ] ->
       assert (
