@@ -148,12 +148,9 @@ After your first commit, run:
 gh pr create --draft --title '[{{project_name}}] Patch {{patch_id}}: {{title}}' --body 'Work in progress' --base {{base_branch}}
 ```
 
-**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches automatically.
+**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches and draft status automatically.
 
-Then continue implementing. When finished:
-1. Run tests to verify they pass
-2. Update the PR description with a proper summary
-3. Mark the PR as ready for review when complete|}
+Then continue implementing until all tests pass.|}
           [
             ("project_name", project_name);
             ("patch_id", patch_id);
@@ -279,6 +276,46 @@ Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed pro
 
 ## Patches in Gameplan
 {{patches_list}}|}
+        vars)
+
+let render_pr_description ~(project_name : string) (patch : Patch.t)
+    (gameplan : Gameplan.t) =
+  let patch_id = Patch_id.to_string patch.Patch.id in
+  let deps =
+    match patch.Patch.dependencies with
+    | [] -> "None"
+    | ids ->
+        List.map ids ~f:(fun id -> Patch_id.to_string id)
+        |> String.concat ~sep:", "
+        |> Printf.sprintf "Patches %s"
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ("patch_id", patch_id);
+      ("title", patch.Patch.title);
+      ("description", patch.Patch.description);
+      ("problem_statement", gameplan.Gameplan.problem_statement);
+      ("solution_summary", gameplan.Gameplan.solution_summary);
+      ("dependencies", deps);
+      ("changes_section", optional_list_section ~header:"Changes" patch.changes);
+      ( "spec_section",
+        if String.is_empty patch.spec then ""
+        else "\n## Specification\n\n```\n" ^ patch.spec ^ "\n```\n" );
+      ( "acceptance_criteria_section",
+        optional_list_section ~header:"Acceptance Criteria"
+          patch.acceptance_criteria );
+      ( "files_section",
+        optional_list_section ~header:"Files to Modify" patch.files );
+    ]
+  in
+  render_with_override ~project_name ~name:"pr_description" ~vars
+    ~default:(fun () ->
+      substitute_variables
+        {|## Patch {{patch_id}}: {{title}}
+
+{{description}}
+{{changes_section}}{{spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
         vars)
 
 let render_review_prompt ~(project_name : string) ?pr_number

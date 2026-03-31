@@ -171,6 +171,30 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
     Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str draft
       (Printexc.to_string exn)
 
+(** Set the PR body to a rendered description. Errors are logged but not
+    fatal — the PR already exists; a missing description is cosmetic. *)
+let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
+  let pr_str = Int.to_string (Pr_number.to_int pr_number) in
+  let args =
+    [
+      "gh";
+      "pr";
+      "edit";
+      pr_str;
+      "--repo";
+      Printf.sprintf "%s/%s" owner repo;
+      "--body";
+      body;
+    ]
+  in
+  let env =
+    Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
+  in
+  try Eio.Process.run ~env process_mgr args
+  with exn ->
+    Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
+      (Printexc.to_string exn)
+
 (** {1 Activity log helpers} *)
 
 (** Merge events and transitions from an activity log into a single
@@ -1818,6 +1842,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
+                                    let pr_body =
+                                      Prompt.render_pr_description ~project_name
+                                        patch gameplan
+                                    in
+                                    set_pr_description ~process_mgr
+                                      ~token:config.github_token
+                                      ~owner:config.github_owner
+                                      ~repo:config.github_repo ~pr_number
+                                      ~body:pr_body;
                                     if not (Branch.equal base_branch main) then
                                       set_pr_draft ~process_mgr
                                         ~token:config.github_token
