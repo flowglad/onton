@@ -187,6 +187,7 @@ module Gameplan = struct
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]
+    open_questions : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

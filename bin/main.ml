@@ -2224,6 +2224,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
+            open_questions = [];
           }
       in
       Project_store.save_config ~project_name ~github_token:token

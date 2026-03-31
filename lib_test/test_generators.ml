@@ -137,6 +137,7 @@ let gen_gameplan =
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
+            open_questions = [];
           })
       gen_patch_list_unique)
 

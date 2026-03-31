@@ -568,6 +568,7 @@ let%test "patch prompt includes title and deps" =
         current_state_analysis = "";
         explicit_opinions = "";
         acceptance_criteria = [];
+        open_questions = [];
         patches =
           [
             {
