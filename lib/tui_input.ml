@@ -62,6 +62,9 @@ let apply_move ~count ~selected (cmd : command) =
   if count <= 0 then -1
   else
     let clamp n = Int.max 0 (Int.min (count - 1) n) in
+    let selected =
+      if selected < -1 || selected >= count then -1 else selected
+    in
     match cmd with
     | Move_up ->
         let n = selected - 1 in
