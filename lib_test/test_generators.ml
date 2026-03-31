@@ -162,6 +162,7 @@ let gen_pr_state =
            ci_checks (comments, unresolved_comment_count) ->
         {
           status;
+          is_draft = false;
           merge_state;
           merge_ready;
           check_status;
@@ -206,6 +207,7 @@ let gen_poller =
             queue;
             merged;
             closed;
+            is_draft = false;
             has_conflict;
             mergeable;
             merge_ready;

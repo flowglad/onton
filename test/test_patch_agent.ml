@@ -391,6 +391,7 @@ let () =
               ~ci_failure_count:0 ~ci_fix_running:false
               ~session_fallback:Fresh_available ~human_messages:[]
               ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
+              ~is_draft:false
               ~checks_passing:false ~no_unresolved_comments:false
               ~worktree_path:None ~head_branch:None ~branch_blocked:false
           in
@@ -460,7 +461,7 @@ let () =
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
               ~ci_fix_running:false ~session_fallback:Fresh_available
               ~human_messages:[] ~ci_checks:[] ~mergeable:false
-              ~merge_ready:false ~checks_passing:false
+              ~merge_ready:false ~is_draft:false ~checks_passing:false
               ~no_unresolved_comments:false ~worktree_path:None
               ~head_branch:None ~branch_blocked:false
           in
@@ -556,6 +557,16 @@ let () =
             let a = set_merge_ready a true in
             let other = Branch.of_string "feature/dep" in
             not (is_approved a ~main_branch:other)
+          with _ -> false);
+      Test.make ~name:"is_approved false when draft" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_merge_ready a true in
+            let a = set_is_draft a true in
+            not (is_approved a ~main_branch:br0)
           with _ -> false);
       (* -- respond invalidates merge_ready -- *)
       Test.make ~name:"respond invalidates merge_ready" ~count:1

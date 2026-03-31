@@ -16,6 +16,7 @@ let graphql_query =
   repository(owner: $owner, name: $repo) {
     pullRequest(number: $number) {
       state
+      isDraft
       mergeable
       mergeStateStatus
       headRefName
@@ -161,6 +162,10 @@ let parse_response_json json =
               | Some s -> parse_merge_state s
               | None -> Pr_state.Unknown
             in
+            let is_draft =
+              pr |> member "isDraft" |> to_bool_option
+              |> Option.value ~default:false
+            in
             let merge_ready =
               match pr |> member "mergeStateStatus" |> to_string_option with
               | Some "CLEAN" -> true
@@ -219,6 +224,7 @@ let parse_response_json json =
             Ok
               {
                 Pr_state.status;
+                is_draft;
                 merge_state;
                 merge_ready;
                 check_status;

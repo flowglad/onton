@@ -25,6 +25,7 @@ type t = {
   ci_checks : Ci_check.t list;
   mergeable : bool;
   merge_ready : bool;
+  is_draft : bool;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Operation_kind.t option;
@@ -58,6 +59,7 @@ let create patch_id =
     ci_checks = [];
     mergeable = false;
     merge_ready = false;
+    is_draft = false;
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
@@ -87,6 +89,7 @@ let create_adhoc ~patch_id ~pr_number =
     ci_checks = [];
     mergeable = false;
     merge_ready = false;
+    is_draft = false;
     checks_passing = false;
     no_unresolved_comments = false;
     current_op = None;
@@ -133,15 +136,17 @@ let on_session_failure t ~is_fresh =
     let t = set_session_failed t in
     if is_fresh then set_tried_fresh t else t
 
-(** Handle a successful Claude run where PR discovery failed. Reset fallback so
-    the patch retries from scratch. *)
-let on_pr_discovery_failure t = { t with session_fallback = Fresh_available }
+(** Handle a successful Claude run where PR discovery failed. Escalate fallback
+    so that repeated discovery failures eventually reach [needs_intervention]
+    instead of looping the Start action indefinitely. *)
+let on_pr_discovery_failure t = set_tried_fresh t
 
 let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
 let set_base_branch t branch = { t with base_branch = Some branch }
 let set_mergeable t v = { t with mergeable = v }
 let set_merge_ready t v = { t with merge_ready = v }
+let set_is_draft t v = { t with is_draft = v }
 let set_checks_passing t v = { t with checks_passing = v }
 let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
@@ -149,6 +154,7 @@ let set_head_branch t branch = { t with head_branch = Some branch }
 
 let is_approved t ~main_branch =
   t.has_pr && t.merge_ready && (not t.busy) && (not t.needs_intervention)
+  && (not t.is_draft)
   && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
 
@@ -189,8 +195,8 @@ let reset_busy t =
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
     ~ci_failure_count ~ci_fix_running ~session_fallback ~human_messages
-    ~ci_checks ~mergeable ~merge_ready ~checks_passing ~no_unresolved_comments
-    ~worktree_path ~head_branch ~branch_blocked =
+    ~ci_checks ~mergeable ~merge_ready ~is_draft ~checks_passing
+    ~no_unresolved_comments ~worktree_path ~head_branch ~branch_blocked =
   {
     patch_id;
     has_pr;
@@ -211,6 +217,7 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ci_checks;
     mergeable;
     merge_ready;
+    is_draft;
     checks_passing;
     no_unresolved_comments;
     current_op = None;
@@ -232,7 +239,6 @@ let start t ~base_branch =
     current_op = None;
     satisfies = true;
     base_branch = Some base_branch;
-    session_fallback = Fresh_available;
     ci_checks = [];
   }
 
@@ -358,8 +364,14 @@ let%test
   let t = complete t in
   not t.needs_intervention
 
-let%test "on_pr_discovery_failure resets fallback and clears session" =
+let%test "on_pr_discovery_failure escalates Fresh_available to Tried_fresh" =
+  let t = create (Patch_id.of_string "1") in
+  let t = { t with busy = true; session_fallback = Fresh_available } in
+  let t = on_pr_discovery_failure t in
+  equal_session_fallback t.session_fallback Tried_fresh
+
+let%test "on_pr_discovery_failure escalates Tried_fresh to Given_up" =
   let t = create (Patch_id.of_string "1") in
   let t = { t with busy = true; session_fallback = Tried_fresh } in
   let t = on_pr_discovery_failure t in
-  equal_session_fallback t.session_fallback Fresh_available
+  equal_session_fallback t.session_fallback Given_up

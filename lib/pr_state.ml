@@ -6,6 +6,7 @@ type pr_status = Open | Merged | Closed [@@deriving show, eq]
 
 type t = {
   status : pr_status;
+  is_draft : bool;
   merge_state : merge_state;
   merge_ready : bool;
   check_status : check_status;
@@ -20,6 +21,7 @@ type t = {
 
 let merged (st : t) = equal_pr_status st.status Merged
 let closed (st : t) = equal_pr_status st.status Closed
+let is_draft (st : t) = st.is_draft
 
 let mergeable (st : t) =
   equal_pr_status st.status Open && equal_merge_state st.merge_state Mergeable

@@ -5,6 +5,7 @@ type t = {
   queue : Operation_kind.t list;
   merged : bool;
   closed : bool;
+  is_draft : bool;
   has_conflict : bool;
   mergeable : bool;
   merge_ready : bool;
@@ -34,6 +35,7 @@ let poll ~was_merged (pr : Pr_state.t) =
     queue;
     merged = was_merged || Pr_state.merged pr;
     closed = Pr_state.closed pr;
+    is_draft = Pr_state.is_draft pr;
     has_conflict = Pr_state.has_conflict pr;
     mergeable = Pr_state.mergeable pr;
     merge_ready = Pr_state.merge_ready pr;

@@ -29,6 +29,7 @@ type t = private {
   ci_checks : Types.Ci_check.t list;
   mergeable : bool;
   merge_ready : bool;
+  is_draft : bool;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
@@ -119,6 +120,9 @@ val set_mergeable : t -> bool -> t
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
+val set_is_draft : t -> bool -> t
+(** Set the draft flag from GitHub PR state. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -133,9 +137,10 @@ val set_head_branch : t -> Types.Branch.t -> t
 
 val is_approved : t -> main_branch:Types.Branch.t -> bool
 (** Derived predicate:
-    [has_pr && merge_ready && not busy && not needs_intervention && base_branch
-     = main_branch]. A patch is only approved when its PR targets [main_branch]
-    directly. [merge_ready] reflects GitHub's [mergeStateStatus = CLEAN], which
+    [has_pr && merge_ready && not is_draft && not busy &&
+     not needs_intervention && base_branch = main_branch]. A patch is only
+    approved when its PR targets [main_branch] directly and is no longer a
+    draft. [merge_ready] reflects GitHub's [mergeStateStatus = CLEAN], which
     encapsulates required reviews, passing checks, and branch protection. *)
 
 val increment_ci_failure_count : t -> t
@@ -201,6 +206,7 @@ val restore :
   ci_checks:Types.Ci_check.t list ->
   mergeable:bool ->
   merge_ready:bool ->
+  is_draft:bool ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
   worktree_path:string option ->

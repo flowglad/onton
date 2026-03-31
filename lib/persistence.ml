@@ -74,6 +74,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("mergeable", `Bool a.mergeable);
       ("merge_ready", `Bool a.merge_ready);
+      ("is_draft", `Bool a.is_draft);
       ("checks_passing", `Bool a.checks_passing);
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
       ( "worktree_path",
@@ -154,6 +155,8 @@ let patch_agent_of_yojson json =
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
          (bool_member_opt "merge_ready" json |> Option.value ~default:false)
+       ~is_draft:
+         (bool_member_opt "is_draft" json |> Option.value ~default:false)
        ~checks_passing:
          (bool_member_opt "checks_passing" json |> Option.value ~default:false)
        ~no_unresolved_comments:

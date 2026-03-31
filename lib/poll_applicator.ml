@@ -73,6 +73,7 @@ let apply t patch_id (poll_result : Poller.t) =
             Orchestrator.enqueue acc patch_id kind)
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
+  let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
   (* Clear ci_fix_running when CI passes after a fix attempt.
      Matches Elixir reference: clear_ci_fix_running when failed == [] and
