@@ -404,6 +404,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Addressing_review;
       Resolving_conflict;
       Responding_to_human;
+      Adding_notes;
       Rebasing;
       Starting;
       Ci_queued;
