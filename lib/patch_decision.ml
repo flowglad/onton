@@ -44,7 +44,11 @@ type ci_decision =
 
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
   if a.ci_failure_count >= 3 then Cap_reached
-  else if a.ci_fix_running then Ci_fix_in_progress
+  else if
+    a.ci_fix_running
+    && Option.equal Operation_kind.equal a.current_op (Some Operation_kind.Ci)
+  then
+    Ci_fix_in_progress
   else if List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal then
     Ci_already_queued
   else Enqueue_ci

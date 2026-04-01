@@ -514,6 +514,51 @@ let () =
           | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
   in
 
+  let prop_stale_ci_latch_recovers_on_failing_poll =
+    Test.make
+      ~name:
+        "patch_controller: stale idle ci_fix_running does not suppress Ci \
+         re-enqueue"
+      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~has_pr:true
+            ~pr_number:(Some (Pr_number.of_int 42)) ~has_session:false
+            ~busy:false ~merged:false ~needs_intervention:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some main) ~ci_failure_count:0 ~ci_fix_running:true
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft:false
+            ~pr_description_applied:true
+            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~checks_passing:false ~no_unresolved_comments:false
+            ~current_op:None ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~head_branch:None ~branch_blocked:false
+        in
+        let orch = make_orch patch agent in
+        let poll =
+          Poller.
+            {
+              queue = [ Operation_kind.Ci ];
+              merged = false;
+              closed = false;
+              is_draft = false;
+              has_conflict = false;
+              mergeable = false;
+              merge_ready = false;
+              checks_passing = false;
+              ci_checks = [];
+            }
+        in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid
+            (make_poll_observation poll)
+        in
+        let agent = Orchestrator.agent orch pid in
+        List.mem agent.Patch_agent.queue Operation_kind.Ci
+          ~equal:Operation_kind.equal)
+  in
+
   let prop_poll_result_persists_world_flags =
     Test.make
       ~name:
@@ -676,6 +721,7 @@ let () =
       prop_reconcile_all_converges_after_acknowledged_effects;
       prop_poll_to_controller_promotes_ready_after_notes;
       prop_poll_ci_failure_never_erases_notes_followup;
+      prop_stale_ci_latch_recovers_on_failing_poll;
       prop_poll_result_persists_world_flags;
       prop_poll_observation_updates_branch_metadata;
       prop_mixed_cycle_converges_for_bootstrap_patch;

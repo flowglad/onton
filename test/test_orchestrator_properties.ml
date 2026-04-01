@@ -765,9 +765,9 @@ let () =
         with _ -> false)
   in
 
-  (* ci_fix_running suppresses CI re-enqueue *)
-  let prop_poll_ci_fix_running_suppresses =
-    Test.make ~name:"apply_poll_result: ci_fix_running suppresses CI enqueue"
+  (* Active CI work suppresses duplicate CI re-enqueue. *)
+  let prop_poll_active_ci_suppresses =
+    Test.make ~name:"apply_poll_result: active Ci suppresses duplicate enqueue"
       gen_patch_list_unique (fun patches ->
         try
           match patches with
@@ -776,9 +776,13 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
               let orch = Orchestrator.complete orch pid in
-              (* Simulate: agent responded to CI, ci_fix_running is now true *)
-              let orch = Orchestrator.set_ci_fix_running orch pid in
+              let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+              let orch =
+                Orchestrator.fire orch
+                  (Orchestrator.Respond (pid, Operation_kind.Ci))
+              in
               let poll =
                 Poller.
                   {
@@ -809,6 +813,56 @@ let () =
               not
                 (List.mem a.Patch_agent.queue Operation_kind.Ci
                    ~equal:Operation_kind.equal)
+        with _ -> false)
+  in
+
+  let prop_poll_completed_ci_reenqueues =
+    Test.make
+      ~name:"apply_poll_result: completed failed Ci re-enqueues on next poll"
+      gen_patch_list_unique (fun patches ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+              let orch = Orchestrator.complete orch pid in
+              let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+              let orch =
+                Orchestrator.fire orch
+                  (Orchestrator.Respond (pid, Operation_kind.Ci))
+              in
+              let orch = Orchestrator.complete orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [ Operation_kind.Ci ];
+                    merged = false;
+                    closed = false;
+                    is_draft = false;
+                    has_conflict = false;
+                    mergeable = false;
+                    merge_ready = false;
+                    checks_passing = false;
+                    ci_checks = [];
+                  }
+              in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
+              let a = Orchestrator.agent orch' pid in
+              List.mem a.Patch_agent.queue Operation_kind.Ci
+                ~equal:Operation_kind.equal
         with _ -> false)
   in
 
@@ -886,7 +940,8 @@ let () =
       prop_poll_conflict_not_cleared_with_local_merge_conflict;
       prop_poll_new_comments;
       prop_send_human_message;
-      prop_poll_ci_fix_running_suppresses;
+      prop_poll_active_ci_suppresses;
+      prop_poll_completed_ci_reenqueues;
       prop_poll_ci_pass_clears_fix_running;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

@@ -23,8 +23,9 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
       (Onton.Orchestrator.main_branch a.orchestrator)
       (Onton.Orchestrator.main_branch b.orchestrator)
   in
+  let gameplan_eq = Gameplan.equal a.gameplan b.gameplan in
   let log_eq = Onton.Activity_log.equal a.activity_log b.activity_log in
-  agents_eq && main_eq && log_eq
+  agents_eq && main_eq && gameplan_eq && log_eq
 
 (* ---------- Snapshot generators ---------- *)
 
@@ -52,9 +53,7 @@ let () =
       gen_snapshot (fun snap ->
         try
           let json = Onton.Persistence.snapshot_to_yojson snap in
-          match
-            Onton.Persistence.snapshot_of_yojson ~gameplan:snap.gameplan json
-          with
+          match Onton.Persistence.snapshot_of_yojson json with
           | Ok snap' -> snapshots_equal snap snap'
           | Error _msg -> false
         with _ -> false)
@@ -90,7 +89,7 @@ let () =
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
-          match Onton.Persistence.snapshot_of_yojson ~gameplan json with
+          match Onton.Persistence.snapshot_of_yojson json with
           | Ok snap' -> Onton.Activity_log.equal log snap'.activity_log
           | Error _msg -> false
         with _ -> false)
@@ -118,9 +117,7 @@ let () =
               match Onton.Persistence.save ~path snap with
               | Error _msg -> false
               | Ok () -> (
-                  match
-                    Onton.Persistence.load ~path ~gameplan:snap.gameplan
-                  with
+                  match Onton.Persistence.load ~path with
                   | Ok snap' -> snapshots_equal snap snap'
                   | Error _msg -> false))
         with _ -> false)
@@ -206,7 +203,7 @@ let () =
             }
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
-          match Onton.Persistence.snapshot_of_yojson ~gameplan json with
+          match Onton.Persistence.snapshot_of_yojson json with
           | Ok snap' -> snapshots_equal snap snap'
           | Error _msg -> false
         with _ -> false)
