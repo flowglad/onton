@@ -229,20 +229,24 @@ let () =
       Test.make ~name:"respond Ci marks ci_fix_running in flight" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          a.ci_fix_running);
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            a.ci_fix_running
+          with _ -> false);
       Test.make ~name:"complete Ci clears ci_fix_running latch" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
-          not a.ci_fix_running);
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            let a = complete a in
+            not a.ci_fix_running
+          with _ -> false);
       (* -- respond Merge_conflict clears has_conflict -- *)
       Test.make ~name:"respond Merge_conflict clears has_conflict" ~count:1
         Gen.(pure (pid0, br0))
@@ -665,13 +669,15 @@ let () =
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
-          let a = complete a in
-          let a = set_ci_fix_running a in
-          let a = enqueue a Operation_kind.Human in
-          let a = respond a Operation_kind.Human in
-          let a = complete a in
-          a.ci_fix_running);
+          try
+            let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
+            let a = complete a in
+            let a = set_ci_fix_running a in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            let a = complete a in
+            a.ci_fix_running
+          with _ -> false);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

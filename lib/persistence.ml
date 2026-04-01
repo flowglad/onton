@@ -365,12 +365,17 @@ let orchestrator_of_yojson ~gameplan json =
           Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
         in
         let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
-        let graph =
-          Set.fold
-            (Set.diff agent_pids graph_pids)
-            ~init:graph ~f:Graph.add_patch
-        in
-        Ok (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
+        let missing_agent_pids = Set.diff graph_pids agent_pids in
+        if not (Set.is_empty missing_agent_pids) then
+          Error "snapshot missing agent state for one or more gameplan patches"
+        else
+          let graph =
+            Set.fold
+              (Set.diff agent_pids graph_pids)
+              ~init:graph ~f:Graph.add_patch
+          in
+          Ok
+            (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)

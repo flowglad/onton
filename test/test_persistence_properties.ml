@@ -23,9 +23,22 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
       (Onton.Orchestrator.main_branch a.orchestrator)
       (Onton.Orchestrator.main_branch b.orchestrator)
   in
+  let graph_pids_eq =
+    let pids_a =
+      Onton.Orchestrator.graph a.orchestrator
+      |> Onton.Graph.all_patch_ids
+      |> List.sort ~compare:Patch_id.compare
+    in
+    let pids_b =
+      Onton.Orchestrator.graph b.orchestrator
+      |> Onton.Graph.all_patch_ids
+      |> List.sort ~compare:Patch_id.compare
+    in
+    List.equal Patch_id.equal pids_a pids_b
+  in
   let gameplan_eq = Gameplan.equal a.gameplan b.gameplan in
   let log_eq = Onton.Activity_log.equal a.activity_log b.activity_log in
-  agents_eq && main_eq && gameplan_eq && log_eq
+  agents_eq && main_eq && graph_pids_eq && gameplan_eq && log_eq
 
 (* ---------- Snapshot generators ---------- *)
 
