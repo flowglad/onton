@@ -2136,13 +2136,13 @@ let persistence_fiber ~runtime ~clock ~project_name ~transcripts =
 (** {1 Main entry point} *)
 
 (** Try to load a persisted snapshot for a project. *)
-let load_snapshot ~project_name ~gameplan =
+let load_snapshot ~project_name =
   let path = Project_store.snapshot_path project_name in
   if Stdlib.Sys.file_exists path then
-    match Persistence.load ~path ~gameplan with
-    | Ok snap -> Some snap
-    | Error _ -> None
-  else None
+    match Persistence.load ~path with
+    | Ok snap -> Ok (Some snap)
+    | Error msg -> Error msg
+  else Ok None
 
 (** Resolve owner/repo/token with CLI flags, falling back to git remote and
     [gh auth token] when flags are empty. *)
@@ -2166,7 +2166,7 @@ let resolve_github_credentials ~github_token ~repo_root =
 let resolve_config ~project ~gameplan_path ~github_token ~main_branch
     ~poll_interval ~repo_root ~max_concurrency ~headless =
   match (project, gameplan_path) with
-  | None, None ->
+  | None, None -> (
       let token, owner, repo =
         resolve_github_credentials ~github_token ~repo_root
       in
@@ -2192,26 +2192,32 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
         ~github_owner:owner ~github_repo:repo
         ~main_branch:(Branch.to_string main_branch)
         ~poll_interval ~repo_root ~max_concurrency;
-      let existing_snapshot = load_snapshot ~project_name ~gameplan in
-      Ok
-        ( {
-            project = Some project_name;
-            github_token = token;
-            github_owner = owner;
-            github_repo = repo;
-            main_branch;
-            poll_interval;
-            repo_root;
-            max_concurrency;
-            headless;
-            user_config = User_config.load ~github_owner:owner ~github_repo:repo;
-          },
-          gameplan,
-          existing_snapshot )
+      let config =
+        {
+          project = Some project_name;
+          github_token = token;
+          github_owner = owner;
+          github_repo = repo;
+          main_branch;
+          poll_interval;
+          repo_root;
+          max_concurrency;
+          headless;
+          user_config = User_config.load ~github_owner:owner ~github_repo:repo;
+        }
+      in
+      match load_snapshot ~project_name with
+      | Ok existing_snapshot -> Ok (config, gameplan, existing_snapshot)
+      | Error msg ->
+          Error
+            [
+              Printf.sprintf "Error loading snapshot for project %S: %s"
+                project_name msg;
+            ])
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
-      | Ok parsed ->
+      | Ok parsed -> (
           let gameplan = parsed.Gameplan_parser.gameplan in
           let project_name =
             match project with
@@ -2226,23 +2232,29 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
             ~main_branch:(Branch.to_string main_branch)
             ~poll_interval ~repo_root ~max_concurrency;
           Project_store.save_gameplan_source ~project_name ~source_path:gp_path;
-          let existing_snapshot = load_snapshot ~project_name ~gameplan in
-          Ok
-            ( {
-                project = Some project_name;
-                github_token = token;
-                github_owner = owner;
-                github_repo = repo;
-                main_branch;
-                poll_interval;
-                repo_root;
-                max_concurrency;
-                headless;
-                user_config =
-                  User_config.load ~github_owner:owner ~github_repo:repo;
-              },
-              gameplan,
-              existing_snapshot ))
+          let config =
+            {
+              project = Some project_name;
+              github_token = token;
+              github_owner = owner;
+              github_repo = repo;
+              main_branch;
+              poll_interval;
+              repo_root;
+              max_concurrency;
+              headless;
+              user_config =
+                User_config.load ~github_owner:owner ~github_repo:repo;
+            }
+          in
+          match load_snapshot ~project_name with
+          | Ok existing_snapshot -> Ok (config, gameplan, existing_snapshot)
+          | Error msg ->
+              Error
+                [
+                  Printf.sprintf "Error loading snapshot for project %S: %s"
+                    project_name msg;
+                ]))
   | Some proj, None -> (
       if not (Project_store.project_exists proj) then
         Error
@@ -2265,7 +2277,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
               match Project_store.load_config ~project_name:proj with
               | Error msg ->
                   Error [ Printf.sprintf "Error loading config: %s" msg ]
-              | Ok stored ->
+              | Ok stored -> (
                   (* CLI flags override stored config; stored config overrides
                      git-remote inference *)
                   let merge_cli_stored cli stored_val =
@@ -2285,25 +2297,30 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                     then Branch.of_string stored.Project_store.main_branch
                     else main_branch
                   in
-                  let existing_snapshot =
-                    load_snapshot ~project_name:proj ~gameplan
+                  let config =
+                    {
+                      project = Some proj;
+                      github_token = token;
+                      github_owner = owner;
+                      github_repo = repo;
+                      main_branch = branch;
+                      poll_interval = stored.Project_store.poll_interval;
+                      repo_root = stored.Project_store.repo_root;
+                      max_concurrency = stored.Project_store.max_concurrency;
+                      headless;
+                      user_config =
+                        User_config.load ~github_owner:owner ~github_repo:repo;
+                    }
                   in
-                  Ok
-                    ( {
-                        project = Some proj;
-                        github_token = token;
-                        github_owner = owner;
-                        github_repo = repo;
-                        main_branch = branch;
-                        poll_interval = stored.Project_store.poll_interval;
-                        repo_root = stored.Project_store.repo_root;
-                        max_concurrency = stored.Project_store.max_concurrency;
-                        headless;
-                        user_config =
-                          User_config.load ~github_owner:owner ~github_repo:repo;
-                      },
-                      gameplan,
-                      existing_snapshot )))
+                  match load_snapshot ~project_name:proj with
+                  | Ok existing_snapshot ->
+                      Ok (config, gameplan, existing_snapshot)
+                  | Error msg ->
+                      Error
+                        [
+                          Printf.sprintf
+                            "Error loading snapshot for project %S: %s" proj msg;
+                        ])))
 
 let run_with_config (config : config) gameplan existing_snapshot =
   let project_name =

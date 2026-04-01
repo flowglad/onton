@@ -8,22 +8,17 @@ val save : path:string -> Runtime.snapshot -> (unit, string) result
 (** Write the snapshot to [path] as JSON. Uses atomic rename for crash safety.
     Returns [Error msg] on I/O failure. *)
 
-val load :
-  path:string -> gameplan:Types.Gameplan.t -> (Runtime.snapshot, string) result
-(** Read a snapshot from [path]. The [gameplan] is needed to reconstruct the
-    dependency graph (which is derived, not stored). The gameplan stored in the
-    JSON is ignored — the caller-provided [gameplan] is used as the canonical
-    source. Returns [Error msg] if the file is missing, malformed, incompatible,
-    or if the persisted agent IDs don't match the gameplan's patch IDs. *)
+val load : path:string -> (Runtime.snapshot, string) result
+(** Read a snapshot from [path]. Restores the persisted gameplan and
+    orchestrator graph directly from the saved JSON. Returns [Error msg] if the
+    file is missing, malformed, or incompatible. *)
 
 val snapshot_to_yojson : Runtime.snapshot -> Yojson.Safe.t
 (** Convert a snapshot to its JSON representation. *)
 
-val snapshot_of_yojson :
-  gameplan:Types.Gameplan.t ->
-  Yojson.Safe.t ->
-  (Runtime.snapshot, string) result
-(** Parse a snapshot from JSON. *)
+val snapshot_of_yojson : Yojson.Safe.t -> (Runtime.snapshot, string) result
+(** Parse a snapshot from JSON, restoring the persisted gameplan and
+    orchestrator graph. *)
 
 val patch_agent_to_yojson : Patch_agent.t -> Yojson.Safe.t
 (** Convert a patch agent to JSON. Exposed for testing. *)

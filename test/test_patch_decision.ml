@@ -126,13 +126,30 @@ let () =
           let a = with_pr pid br in
           let a = enqueue a Operation_kind.Ci in
           equal_ci_decision (on_ci_failure a) Ci_already_queued);
-      (* ---- on_ci_failure: ci_fix_running -> Ci_fix_in_progress ---- *)
-      Test.make ~name:"on_ci_failure: ci_fix_running -> Ci_fix_in_progress"
+      (* ---- on_ci_failure: active Ci fix -> Ci_fix_in_progress ---- *)
+      Test.make ~name:"on_ci_failure: active Ci fix -> Ci_fix_in_progress"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          equal_ci_decision (on_ci_failure a) Ci_fix_in_progress);
+      Test.make ~name:"on_ci_failure: stale ci_fix_running does not suppress"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = with_pr pid br in
           let a = set_ci_fix_running a in
-          equal_ci_decision (on_ci_failure a) Ci_fix_in_progress);
+          equal_ci_decision (on_ci_failure a) Enqueue_ci);
+      Test.make
+        ~name:
+          "on_ci_failure: completed failed CI attempt re-enqueues on next poll"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          let a = enqueue a Operation_kind.Ci in
+          let a = respond a Operation_kind.Ci in
+          let a = complete a in
+          equal_ci_decision (on_ci_failure a) Enqueue_ci);
       (* ---- on_human_message: fresh queue -> Enqueue_human ---- *)
       Test.make ~name:"on_human_message: no Human in queue -> Enqueue_human"
         Gen.(pair gen_pid gen_branch)

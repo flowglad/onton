@@ -365,10 +365,9 @@ let orchestrator_of_yojson ~gameplan json =
           Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
         in
         let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
-        let missing_from_agents = Set.diff graph_pids agent_pids in
-        if not (Set.is_empty missing_from_agents) then
-          Error
-            "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
+        let missing_agent_pids = Set.diff graph_pids agent_pids in
+        if not (Set.is_empty missing_agent_pids) then
+          Error "snapshot missing agent state for one or more gameplan patches"
         else
           let graph =
             Set.fold
@@ -411,26 +410,30 @@ let snapshot_to_yojson (snap : Runtime.snapshot) =
       ("transcripts", transcripts_to_yojson snap.transcripts);
     ]
 
-let snapshot_of_yojson ~gameplan json =
+let snapshot_of_yojson json =
   try
     let version = int_member "version" json in
     if version <> 1 then
       Error (Printf.sprintf "unsupported version: %d" version)
     else
       Result.bind
-        (orchestrator_of_yojson ~gameplan
-           (Yojson.Safe.Util.member "orchestrator" json))
-        ~f:(fun orchestrator ->
-          Result.map
-            (activity_log_of_yojson
-               (Yojson.Safe.Util.member "activity_log" json))
-            ~f:(fun activity_log ->
-              let transcripts =
-                match Yojson.Safe.Util.member "transcripts" json with
-                | `Null -> Hashtbl.create (module Patch_id)
-                | j -> transcripts_of_yojson j
-              in
-              { Runtime.orchestrator; activity_log; gameplan; transcripts }))
+        (try_of_yojson Gameplan.t_of_yojson
+           (Yojson.Safe.Util.member "gameplan" json))
+        ~f:(fun gameplan ->
+          Result.bind
+            (orchestrator_of_yojson ~gameplan
+               (Yojson.Safe.Util.member "orchestrator" json))
+            ~f:(fun orchestrator ->
+              Result.map
+                (activity_log_of_yojson
+                   (Yojson.Safe.Util.member "activity_log" json))
+                ~f:(fun activity_log ->
+                  let transcripts =
+                    match Yojson.Safe.Util.member "transcripts" json with
+                    | `Null -> Hashtbl.create (module Patch_id)
+                    | j -> transcripts_of_yojson j
+                  in
+                  { Runtime.orchestrator; activity_log; gameplan; transcripts })))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed snapshot: %s" msg)
@@ -457,7 +460,7 @@ let save ~path (snap : Runtime.snapshot) =
     (try Stdlib.Sys.remove tmp_path with _ -> ());
     Error (Stdlib.Printexc.to_string exn)
 
-let load ~path ~gameplan =
+let load ~path =
   try
     let ic = Stdlib.open_in path in
     let content =
@@ -466,6 +469,6 @@ let load ~path ~gameplan =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    let result = snapshot_of_yojson ~gameplan json in
+    let result = snapshot_of_yojson json in
     result
   with exn -> Error (Stdlib.Printexc.to_string exn)
