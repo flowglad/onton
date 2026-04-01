@@ -519,20 +519,22 @@ let () =
       ~name:
         "patch_controller: stale idle ci_fix_running does not suppress Ci \
          re-enqueue"
-      ~count:200 Gen.(pair gen_patch_id gen_branch) (fun (pid, branch) ->
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let agent =
           Patch_agent.restore ~patch_id:pid ~has_pr:true
-            ~pr_number:(Some (Pr_number.of_int 42)) ~has_session:false
-            ~busy:false ~merged:false ~needs_intervention:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:(Some main) ~ci_failure_count:0 ~ci_fix_running:true
-            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft:false
-            ~pr_description_applied:true
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:false ~busy:false ~merged:false
+            ~needs_intervention:false ~queue:[] ~satisfies:false ~changed:false
+            ~has_conflict:false ~base_branch:(Some main) ~ci_failure_count:0
+            ~ci_fix_running:true ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~ci_checks:[] ~mergeable:false ~merge_ready:false
+            ~is_draft:false ~pr_description_applied:true
             ~implementation_notes_delivered:true ~start_attempts_without_pr:0
-            ~checks_passing:false ~no_unresolved_comments:false
-            ~current_op:None ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~checks_passing:false ~no_unresolved_comments:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
             ~head_branch:None ~branch_blocked:false
         in
         let orch = make_orch patch agent in

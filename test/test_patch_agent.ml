@@ -662,7 +662,8 @@ let () =
           let a = clear_has_conflict a in
           before && not a.has_conflict);
       Test.make ~name:"complete Human does not clear unrelated ci_fix_running"
-        ~count:1 Gen.(pure (pid0, br0))
+        ~count:1
+        Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
           let a = complete a in

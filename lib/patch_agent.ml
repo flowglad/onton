@@ -223,9 +223,13 @@ let reset_busy t =
       ci_fix_running =
         (match (t.current_op, t.current_message_id) with
         | Some Ci, Some _ -> true
-        | Some Ci, None | Some Rebase, _ | Some Human, _
-        | Some Merge_conflict, _ | Some Review_comments, _
-        | Some Implementation_notes, _ | None, _ ->
+        | Some Ci, None
+        | Some Rebase, _
+        | Some Human, _
+        | Some Merge_conflict, _
+        | Some Review_comments, _
+        | Some Implementation_notes, _
+        | None, _ ->
             false);
       needs_intervention;
     }
@@ -391,8 +395,8 @@ let complete t =
       current_op = None;
       current_message_id = None;
       ci_fix_running =
-        if Option.equal Operation_kind.equal t.current_op (Some Ci) then false
-        else t.ci_fix_running;
+        (if Option.equal Operation_kind.equal t.current_op (Some Ci) then false
+         else t.ci_fix_running);
       human_messages =
         (match t.current_op with
         | Some Human -> []

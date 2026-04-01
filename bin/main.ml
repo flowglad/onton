@@ -2166,7 +2166,7 @@ let resolve_github_credentials ~github_token ~repo_root =
 let resolve_config ~project ~gameplan_path ~github_token ~main_branch
     ~poll_interval ~repo_root ~max_concurrency ~headless =
   match (project, gameplan_path) with
-  | None, None ->
+  | None, None -> (
       let token, owner, repo =
         resolve_github_credentials ~github_token ~repo_root
       in
@@ -2206,7 +2206,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
           user_config = User_config.load ~github_owner:owner ~github_repo:repo;
         }
       in
-      (match load_snapshot ~project_name with
+      match load_snapshot ~project_name with
       | Ok existing_snapshot -> Ok (config, gameplan, existing_snapshot)
       | Error msg ->
           Error
@@ -2217,7 +2217,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
-      | Ok parsed ->
+      | Ok parsed -> (
           let gameplan = parsed.Gameplan_parser.gameplan in
           let project_name =
             match project with
@@ -2247,7 +2247,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                 User_config.load ~github_owner:owner ~github_repo:repo;
             }
           in
-          (match load_snapshot ~project_name with
+          match load_snapshot ~project_name with
           | Ok existing_snapshot -> Ok (config, gameplan, existing_snapshot)
           | Error msg ->
               Error
@@ -2277,7 +2277,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
               match Project_store.load_config ~project_name:proj with
               | Error msg ->
                   Error [ Printf.sprintf "Error loading config: %s" msg ]
-              | Ok stored ->
+              | Ok stored -> (
                   (* CLI flags override stored config; stored config overrides
                      git-remote inference *)
                   let merge_cli_stored cli stored_val =
@@ -2312,14 +2312,14 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                         User_config.load ~github_owner:owner ~github_repo:repo;
                     }
                   in
-                  (match load_snapshot ~project_name:proj with
-                  | Ok existing_snapshot -> Ok (config, gameplan, existing_snapshot)
+                  match load_snapshot ~project_name:proj with
+                  | Ok existing_snapshot ->
+                      Ok (config, gameplan, existing_snapshot)
                   | Error msg ->
                       Error
                         [
                           Printf.sprintf
-                            "Error loading snapshot for project %S: %s" proj
-                            msg;
+                            "Error loading snapshot for project %S: %s" proj msg;
                         ])))
 
 let run_with_config (config : config) gameplan existing_snapshot =

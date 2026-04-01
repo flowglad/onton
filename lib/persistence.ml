@@ -366,8 +366,9 @@ let orchestrator_of_yojson ~gameplan json =
         in
         let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
         let graph =
-          Set.fold (Set.diff agent_pids graph_pids) ~init:graph
-            ~f:Graph.add_patch
+          Set.fold
+            (Set.diff agent_pids graph_pids)
+            ~init:graph ~f:Graph.add_patch
         in
         Ok (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
   with

@@ -776,7 +776,9 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+              let orch =
+                Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
+              in
               let orch = Orchestrator.complete orch pid in
               let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
               let orch =
@@ -827,7 +829,9 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+              let orch =
+                Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
+              in
               let orch = Orchestrator.complete orch pid in
               let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
               let orch =
