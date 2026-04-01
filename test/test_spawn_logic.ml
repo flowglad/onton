@@ -22,6 +22,7 @@ let make_gameplan patches =
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
+      open_questions = [];
     }
 
 (* ========== Helper: prepare orchestrator with PRs and queued ops ========== *)

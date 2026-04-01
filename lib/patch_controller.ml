@@ -457,6 +457,7 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
+            open_questions = [];
           }
       ~patch
   in
@@ -480,6 +481,7 @@ let%test "reconcile_patch enqueues implementation notes while missing" =
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
+            open_questions = [];
           }
       ~patch
   in
@@ -504,6 +506,7 @@ let%test "reconcile_patch emits description effect while unapplied" =
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
+            open_questions = [];
           }
       ~patch
   in
@@ -530,6 +533,7 @@ let%test "reconcile_patch requests ready-for-review after notes on main" =
             current_state_analysis = "";
             explicit_opinions = "";
             acceptance_criteria = [];
+            open_questions = [];
           }
       ~patch
   in

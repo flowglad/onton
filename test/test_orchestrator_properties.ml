@@ -21,6 +21,7 @@ let make_gameplan patches =
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
+      open_questions = [];
     }
 
 let tick orch ~patches =

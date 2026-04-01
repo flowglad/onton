@@ -31,6 +31,7 @@ let () =
         current_state_analysis = "";
         explicit_opinions = "";
         acceptance_criteria = [];
+        open_questions = [];
       }
   in
   let _orch, _effects, actions =

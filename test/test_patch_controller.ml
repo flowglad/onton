@@ -32,6 +32,7 @@ let make_gameplan patch =
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
+      open_questions = [];
     }
 
 let make_orch patch agent =

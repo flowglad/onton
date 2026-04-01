@@ -32,6 +32,7 @@ let make_gameplan patch =
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
+      open_questions = [];
     }
 
 let messages_equal a b = List.equal Orchestrator.equal_patch_agent_message a b
