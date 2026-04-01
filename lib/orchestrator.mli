@@ -3,15 +3,9 @@ open Types
 
 (** Top-level orchestrator wiring.
 
-    Manages the dependency graph and per-patch agent state. The [tick] function
-    implements the spec's liveness property: all actions whose preconditions
-    hold are fired in a single step.
-
-    Spec fragment:
-    {v
-    > The orchestrator ensures liveness: all actions that can fire, do fire.
-    > Start is biconditional with its preconditions.
-    v} *)
+    Manages the dependency graph and per-patch agent state. Scheduling and
+    reconciliation are owned by [Patch_controller]; this module provides the
+    durable state and primitive state transitions. *)
 
 type t
 
@@ -20,23 +14,54 @@ type t
 val create : patches:Patch.t list -> main_branch:Branch.t -> t
 (** Build orchestrator state from a list of patches and a main branch. *)
 
-(** {2 Liveness tick} *)
-
 type action =
   | Start of Patch_id.t * Branch.t
   | Respond of Patch_id.t * Operation_kind.t
   | Rebase of Patch_id.t * Branch.t
-[@@deriving sexp_of]
+[@@deriving sexp_of, show, eq]
 
-val tick : t -> patches:Patch.t list -> t * action list
-(** Fire all actions whose preconditions hold. Returns updated state and the
-    list of actions that were fired. *)
+type message_status = Pending | Acked | Completed | Obsolete
+[@@deriving sexp_of, show, eq]
 
-val pending_actions : t -> patches:Patch.t list -> action list
-(** Compute actions that would fire without executing them. *)
+type patch_agent_message = {
+  message_id : Message_id.t;
+  patch_id : Patch_id.t;
+  generation : int;
+  action : action;
+  payload_hash : string;
+  status : message_status;
+}
+[@@deriving sexp_of, show, eq]
 
 val fire : t -> action -> t
 (** Apply a single action to the orchestrator state. *)
+
+val accept_message : t -> Message_id.t -> t * action option
+(** Durably accept a pending message and fire its action exactly once. Returns
+    [Some action] only on first acceptance. Duplicate acceptance is a no-op. *)
+
+val resume_message : t -> Message_id.t -> t * action option
+(** Resume execution of an already accepted but incomplete message. Returns
+    [Some action] only when the message is still the patch's current message. *)
+
+val reconcile_message : t -> patch_agent_message -> t
+(** Insert or refresh a desired pending message. Existing equivalent messages
+    are preserved; other pending messages for the same patch are marked
+    obsolete. *)
+
+val mark_message_obsolete : t -> Message_id.t -> t
+
+val mark_patch_pending_messages_obsolete_except :
+  t -> Patch_id.t -> keep:Message_id.t list -> t
+
+val find_message : t -> Message_id.t -> patch_agent_message option
+val all_messages : t -> patch_agent_message list
+val current_message : t -> Patch_id.t -> patch_agent_message option
+val runnable_messages : t -> patch_agent_message list
+val message_id : patch_agent_message -> Message_id.t
+val message_patch_id : patch_agent_message -> Patch_id.t
+val message_action : patch_agent_message -> action
+val message_status : patch_agent_message -> message_status
 
 (** {2 External event application} *)
 
@@ -58,11 +83,17 @@ val on_pr_discovery_failure : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val clear_has_conflict : t -> Patch_id.t -> t
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
+val set_mergeable : t -> Patch_id.t -> bool -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_fix_running : t -> Patch_id.t -> t
 val clear_ci_fix_running : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
+val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
+val set_is_draft : t -> Patch_id.t -> bool -> t
+val set_pr_description_applied : t -> Patch_id.t -> bool -> t
+val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
+val increment_start_attempts_without_pr : t -> Patch_id.t -> t
 val set_needs_intervention : t -> Patch_id.t -> t
 val clear_needs_intervention : t -> Patch_id.t -> t
 val set_branch_blocked : t -> Patch_id.t -> t
@@ -115,6 +146,7 @@ val apply_rebase_result :
 val restore :
   graph:Graph.t ->
   agents:Patch_agent.t Map.M(Patch_id).t ->
+  outbox:patch_agent_message Map.M(Message_id).t ->
   main_branch:Branch.t ->
   t
 (** Reconstruct orchestrator from persisted components. *)

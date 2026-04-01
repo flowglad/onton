@@ -29,9 +29,15 @@ type t = private {
   ci_checks : Types.Ci_check.t list;
   mergeable : bool;
   merge_ready : bool;
+  is_draft : bool;
+  pr_description_applied : bool;
+  implementation_notes_delivered : bool;
+  start_attempts_without_pr : int;
   checks_passing : bool;
   no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
+  current_message_id : Types.Message_id.t option;
+  generation : int;
   worktree_path : string option;
   head_branch : Types.Branch.t option;
   branch_blocked : bool;
@@ -119,6 +125,18 @@ val set_mergeable : t -> bool -> t
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
+val set_is_draft : t -> bool -> t
+(** Set the draft flag from GitHub PR state. *)
+
+val set_pr_description_applied : t -> bool -> t
+(** Record whether the orchestrator has successfully applied the PR body. *)
+
+val set_implementation_notes_delivered : t -> bool -> t
+(** Record whether implementation notes were successfully delivered. *)
+
+val increment_start_attempts_without_pr : t -> t
+(** Record a successful Start run that still failed to discover a PR. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -133,10 +151,11 @@ val set_head_branch : t -> Types.Branch.t -> t
 
 val is_approved : t -> main_branch:Types.Branch.t -> bool
 (** Derived predicate:
-    [has_pr && merge_ready && not busy && not needs_intervention && base_branch
-     = main_branch]. A patch is only approved when its PR targets [main_branch]
-    directly. [merge_ready] reflects GitHub's [mergeStateStatus = CLEAN], which
-    encapsulates required reviews, passing checks, and branch protection. *)
+    [has_pr && merge_ready && not is_draft && not busy && not needs_intervention
+     && base_branch = main_branch]. A patch is only approved when its PR targets
+    [main_branch] directly and is no longer a draft. [merge_ready] reflects
+    GitHub's [mergeStateStatus = CLEAN], which encapsulates required reviews,
+    passing checks, and branch protection. *)
 
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
@@ -170,6 +189,17 @@ val reset_busy : t -> t
     ([ci_failure_count >= 3 || session_failed], unless [Human] is queued). No-op
     if not busy. *)
 
+val set_current_message_id : t -> Types.Message_id.t option -> t
+(** Track the currently accepted delivery message for this patch. *)
+
+val bump_generation : t -> t
+(** Advance the patch generation used for deterministic message IDs. *)
+
+val resume_current_message : t -> op:Types.Operation_kind.t option -> t
+(** Resume execution of an already accepted message without reapplying its
+    queue-consuming state transition. [~op] restores [current_op] from the
+    outbox so that [complete] can clear [human_messages] correctly. *)
+
 (** {2 Queries} *)
 
 val highest_priority : t -> Types.Operation_kind.t option
@@ -179,7 +209,7 @@ val highest_priority : t -> Types.Operation_kind.t option
 
 val set_pr_number : t -> Types.Pr_number.t -> t
 (** Store [pr_number] and set [has_pr = true]. Not a plain field setter —
-    establishes the PR-present state. *)
+    establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
 
 val restore :
   patch_id:Types.Patch_id.t ->
@@ -201,8 +231,15 @@ val restore :
   ci_checks:Types.Ci_check.t list ->
   mergeable:bool ->
   merge_ready:bool ->
+  is_draft:bool ->
+  pr_description_applied:bool ->
+  implementation_notes_delivered:bool ->
+  start_attempts_without_pr:int ->
   checks_passing:bool ->
   no_unresolved_comments:bool ->
+  current_op:Types.Operation_kind.t option ->
+  current_message_id:Types.Message_id.t option ->
+  generation:int ->
   worktree_path:string option ->
   head_branch:Types.Branch.t option ->
   branch_blocked:bool ->

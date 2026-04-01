@@ -26,6 +26,16 @@ module Session_id : sig
   val to_string : t -> string
 end
 
+module Message_id : sig
+  type t = private string
+  [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
+
+  include Comparator.S with type t := t
+
+  val of_string : string -> t
+  val to_string : t -> string
+end
+
 module Branch : sig
   type t = private string
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]

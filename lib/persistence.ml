@@ -37,13 +37,6 @@ let try_of_yojson f json =
 
 (* ---------- Patch_agent ---------- *)
 
-let session_fallback_of_legacy ~session_failed ~tried_fresh =
-  match (session_failed, tried_fresh) with
-  | true, false -> Patch_agent.Tried_fresh
-  | true, true -> Patch_agent.Given_up
-  | false, true -> Patch_agent.Tried_fresh
-  | false, false -> Patch_agent.Fresh_available
-
 let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
@@ -74,8 +67,21 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("mergeable", `Bool a.mergeable);
       ("merge_ready", `Bool a.merge_ready);
+      ("is_draft", `Bool a.is_draft);
+      ("pr_description_applied", `Bool a.pr_description_applied);
+      ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
+      ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("checks_passing", `Bool a.checks_passing);
       ("no_unresolved_comments", `Bool a.no_unresolved_comments);
+      ( "current_op",
+        match a.current_op with
+        | None -> `Null
+        | Some op -> Operation_kind.yojson_of_t op );
+      ( "current_message_id",
+        match a.current_message_id with
+        | None -> `Null
+        | Some id -> Message_id.yojson_of_t id );
+      ("generation", `Int a.generation);
       ( "worktree_path",
         match a.worktree_path with None -> `Null | Some p -> `String p );
       ( "head_branch",
@@ -108,21 +114,9 @@ let patch_agent_of_yojson json =
     | _ -> []
   in
   let* session_fallback =
-    match json with
-    | `Assoc fields -> (
-        match List.Assoc.find fields ~equal:String.equal "session_fallback" with
-        | None ->
-            (* backward compat: derive from legacy bools *)
-            let session_failed =
-              bool_member_opt "session_failed" json
-              |> Option.value ~default:false
-            in
-            let tried_fresh =
-              bool_member_opt "tried_fresh" json |> Option.value ~default:false
-            in
-            Ok (session_fallback_of_legacy ~session_failed ~tried_fresh)
-        | Some v -> try_of_yojson Patch_agent.session_fallback_of_yojson v)
-    | _ -> Error "patch_agent: expected JSON object"
+    match Yojson.Safe.Util.member "session_fallback" json with
+    | `Null -> Error "patch_agent: missing session_fallback"
+    | v -> try_of_yojson Patch_agent.session_fallback_of_yojson v
   in
   let* ci_checks_raw = list_member_opt "ci_checks" json in
   let ci_checks_raw = Option.value ci_checks_raw ~default:[] in
@@ -130,10 +124,15 @@ let patch_agent_of_yojson json =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
+  let has_pr = bool_member "has_pr" json in
+  (* Legacy snapshots written before these fields existed will not contain them.
+     When has_pr is true, default to true so we don't replay PR bootstrap
+     effects (description, draft flip, notes) for an already-set-up PR. *)
+  let legacy_pr_default = has_pr in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-       ~has_pr:(bool_member "has_pr" json)
+       ~has_pr
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
        ~has_session:(bool_member "has_session" json)
@@ -154,11 +153,34 @@ let patch_agent_of_yojson json =
          (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
          (bool_member_opt "merge_ready" json |> Option.value ~default:false)
+       ~is_draft:
+         (bool_member_opt "is_draft" json
+         |> Option.value ~default:legacy_pr_default)
+       ~pr_description_applied:
+         (bool_member_opt "pr_description_applied" json
+         |> Option.value ~default:legacy_pr_default)
+       ~implementation_notes_delivered:
+         (bool_member_opt "implementation_notes_delivered" json
+         |> Option.value ~default:legacy_pr_default)
+       ~start_attempts_without_pr:
+         (int_member_opt "start_attempts_without_pr" json
+         |> Option.value ~default:0)
        ~checks_passing:
          (bool_member_opt "checks_passing" json |> Option.value ~default:false)
        ~no_unresolved_comments:
          (bool_member_opt "no_unresolved_comments" json
          |> Option.value ~default:false)
+       ~current_op:
+         (match Yojson.Safe.Util.member "current_op" json with
+         | `Null -> None
+         | v -> (
+             match try_of_yojson Operation_kind.t_of_yojson v with
+             | Ok op -> Some op
+             | Error _ -> None))
+       ~current_message_id:
+         (string_member_opt "current_message_id" json
+         |> Option.map ~f:Message_id.of_string)
+       ~generation:(int_member_opt "generation" json |> Option.value ~default:0)
        ~worktree_path:(string_member_opt "worktree_path" json)
        ~head_branch:
          (string_member_opt "head_branch" json |> Option.map ~f:Branch.of_string)
@@ -205,14 +227,82 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
     |> List.map ~f:(fun (pid, agent) ->
         (Patch_id.to_string pid, patch_agent_to_yojson agent))
   in
+  let outbox =
+    Orchestrator.all_messages o
+    |> List.map ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+        ( Message_id.to_string msg.message_id,
+          `Assoc
+            [
+              ("patch_id", Patch_id.yojson_of_t msg.patch_id);
+              ("generation", `Int msg.generation);
+              ( "action",
+                match msg.action with
+                | Orchestrator.Start (patch_id, base_branch) ->
+                    `Assoc
+                      [
+                        ("kind", `String "start");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ("base_branch", Branch.yojson_of_t base_branch);
+                      ]
+                | Orchestrator.Respond (patch_id, operation_kind) ->
+                    `Assoc
+                      [
+                        ("kind", `String "respond");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ( "operation_kind",
+                          Operation_kind.yojson_of_t operation_kind );
+                      ]
+                | Orchestrator.Rebase (patch_id, base_branch) ->
+                    `Assoc
+                      [
+                        ("kind", `String "rebase");
+                        ("patch_id", Patch_id.yojson_of_t patch_id);
+                        ("base_branch", Branch.yojson_of_t base_branch);
+                      ] );
+              ("payload_hash", `String msg.payload_hash);
+              ("status", `String (Orchestrator.show_message_status msg.status));
+            ] ))
+  in
   `Assoc
     [
       ("main_branch", Branch.yojson_of_t (Orchestrator.main_branch o));
       ("agents", `Assoc agents);
+      ("outbox", `Assoc outbox);
     ]
+
+let action_of_yojson json =
+  let ( let* ) r f = Result.bind r ~f in
+  match string_member "kind" json with
+  | "start" ->
+      Ok
+        (Orchestrator.Start
+           ( Patch_id.of_string (string_member "patch_id" json),
+             Branch.of_string (string_member "base_branch" json) ))
+  | "respond" ->
+      let* op_kind =
+        try_of_yojson Operation_kind.t_of_yojson
+          (Yojson.Safe.Util.member "operation_kind" json)
+      in
+      Ok
+        (Orchestrator.Respond
+           (Patch_id.of_string (string_member "patch_id" json), op_kind))
+  | "rebase" ->
+      Ok
+        (Orchestrator.Rebase
+           ( Patch_id.of_string (string_member "patch_id" json),
+             Branch.of_string (string_member "base_branch" json) ))
+  | other -> Error (Printf.sprintf "unknown action kind: %s" other)
+
+let message_status_of_string = function
+  | "Pending" -> Ok Orchestrator.Pending
+  | "Acked" -> Ok Orchestrator.Acked
+  | "Completed" -> Ok Orchestrator.Completed
+  | "Obsolete" -> Ok Orchestrator.Obsolete
+  | other -> Error (Printf.sprintf "unknown message status: %s" other)
 
 let orchestrator_of_yojson ~gameplan json =
   try
+    let ( let* ) r f = Result.bind r ~f in
     let graph = Graph.of_patches gameplan.Gameplan.patches in
     let main_branch = Branch.of_string (string_member "main_branch" json) in
     Result.bind
@@ -230,45 +320,63 @@ let orchestrator_of_yojson ~gameplan json =
                         "agent key/payload mismatch: key=%s payload=%s" key
                         payload_id)))))
       ~f:(fun agents ->
-        (* Filter out agents that were marked removed in old snapshots.
-           The removed field no longer exists — ad-hoc patches are now
-           truly deleted. We detect legacy removed agents by checking the
-           raw JSON. *)
-        let legacy_removed =
-          Yojson.Safe.Util.member "agents" json
-          |> Yojson.Safe.Util.to_assoc
-          |> List.filter_map ~f:(fun (key, value) ->
-              if bool_member_opt "removed" value |> Option.value ~default:false
-              then Some (Patch_id.of_string key)
-              else None)
-          |> Set.of_list (module Patch_id)
-        in
-        let agents =
-          List.filter agents ~f:(fun (k, _) -> not (Set.mem legacy_removed k))
-        in
         let agents_map =
           List.fold agents
             ~init:(Map.empty (module Patch_id))
             ~f:(fun acc (k, v) -> Map.set acc ~key:k ~data:v)
         in
+        let outbox =
+          Yojson.Safe.Util.member "outbox" json
+          |> Yojson.Safe.Util.to_assoc
+          |> List.fold
+               ~init:(Ok (Map.empty (module Message_id)))
+               ~f:(fun acc_result (key, value) ->
+                 let* acc = acc_result in
+                 let patch_id =
+                   Patch_id.of_string (string_member "patch_id" value)
+                 in
+                 let generation = int_member "generation" value in
+                 let* status =
+                   message_status_of_string (string_member "status" value)
+                 in
+                 let* action =
+                   action_of_yojson (Yojson.Safe.Util.member "action" value)
+                 in
+                 let msg_id = Message_id.of_string key in
+                 let message =
+                   Orchestrator.
+                     {
+                       message_id = msg_id;
+                       patch_id;
+                       generation;
+                       action;
+                       payload_hash = string_member "payload_hash" value;
+                       status;
+                     }
+                 in
+                 match Map.add acc ~key:msg_id ~data:message with
+                 | `Ok acc -> Ok acc
+                 | `Duplicate ->
+                     Error
+                       (Printf.sprintf "duplicate outbox message_id: %s" key))
+        in
+        let* outbox = outbox in
         let graph_pids =
           Graph.all_patch_ids graph |> Set.of_list (module Patch_id)
         in
         let agent_pids = Map.keys agents_map |> Set.of_list (module Patch_id) in
-        (* Gameplan patches must all be present in the snapshot. *)
         let missing_from_agents = Set.diff graph_pids agent_pids in
         if not (Set.is_empty missing_from_agents) then
           Error
             "agent/gameplan mismatch: persisted patch IDs differ from gameplan"
         else
-          (* Ad-hoc agents (not in the gameplan) are added to the graph with no
-             dependencies, mirroring Orchestrator.add_agent. *)
           let graph =
             Set.fold
               (Set.diff agent_pids graph_pids)
               ~init:graph ~f:Graph.add_patch
           in
-          Ok (Orchestrator.restore ~graph ~agents:agents_map ~main_branch))
+          Ok
+            (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)

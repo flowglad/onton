@@ -12,6 +12,7 @@ type pr_status = Open | Merged | Closed [@@deriving show, eq]
 
 type t = {
   status : pr_status;
+  is_draft : bool;
   merge_state : merge_state;
   merge_ready : bool;
   check_status : check_status;
@@ -28,6 +29,7 @@ type t = {
 
 val merged : t -> bool
 val closed : t -> bool
+val is_draft : t -> bool
 val mergeable : t -> bool
 val merge_ready : t -> bool
 val checks_passing : t -> bool

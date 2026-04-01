@@ -24,6 +24,7 @@ type t = {
   closed : bool;
       (** [true] if the PR was closed without merging. The poller should
           re-discover the current open PR for this branch. *)
+  is_draft : bool;  (** [true] if the PR is still a draft. *)
   has_conflict : bool;  (** [true] if the PR has a merge conflict. *)
   mergeable : bool;  (** [true] if the PR is currently mergeable. *)
   merge_ready : bool;

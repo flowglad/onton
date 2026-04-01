@@ -10,6 +10,31 @@ open Onton.Types
 
 let main = Branch.of_string "main"
 
+let make_gameplan patches =
+  Gameplan.
+    {
+      project_name = "test-project";
+      problem_statement = "";
+      solution_summary = "";
+      design_decisions = "";
+      patches;
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+
+let tick orch ~patches =
+  Patch_controller.tick orch ~project_name:"test-project"
+    ~gameplan:(make_gameplan patches)
+
+let pending_actions orch ~patches =
+  let _orch, _effects, actions =
+    Patch_controller.plan_tick orch ~project_name:"test-project"
+      ~gameplan:(make_gameplan patches)
+  in
+  actions
+
 (* ========== Tick action precondition properties ========== *)
 
 let () =
@@ -21,7 +46,7 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           List.for_all actions ~f:(function
             | Orchestrator.Start (pid, _) ->
                 not (Orchestrator.agent orch pid).Patch_agent.has_pr
@@ -37,7 +62,7 @@ let () =
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
           (* Tick once to start patches, then complete + enqueue to get responds *)
-          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch, _effects, _actions = tick orch ~patches in
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
                 let a = Orchestrator.agent o p.Patch.id in
@@ -49,7 +74,7 @@ let () =
                   Orchestrator.enqueue o p.Patch.id Operation_kind.Ci
                 else o)
           in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           List.for_all actions ~f:(function
             | Orchestrator.Respond (pid, _) ->
                 let a = Orchestrator.agent orch pid in
@@ -66,7 +91,7 @@ let () =
       (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch, _effects, _actions = tick orch ~patches in
           (* Enqueue multiple operations *)
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
@@ -80,7 +105,7 @@ let () =
                   Orchestrator.enqueue o p.Patch.id Operation_kind.Human
                 else o)
           in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           List.for_all actions ~f:(function
             | Orchestrator.Respond (pid, k) -> (
                 let a = Orchestrator.agent orch pid in
@@ -100,8 +125,8 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let orch, _ = Orchestrator.tick orch ~patches in
-          let _orch, actions2 = Orchestrator.tick orch ~patches in
+          let orch, _effects, _actions = tick orch ~patches in
+          let _orch, _effects, actions2 = tick orch ~patches in
           List.for_all actions2 ~f:(function
             | Orchestrator.Start (pid, _) ->
                 not (Orchestrator.agent orch pid).Patch_agent.has_pr
@@ -115,8 +140,8 @@ let () =
       (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let pending = Orchestrator.pending_actions orch ~patches in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let pending = pending_actions orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           let action_equal a b =
             match (a, b) with
             | Orchestrator.Start (p1, b1), Orchestrator.Start (p2, b2) ->
@@ -146,7 +171,7 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           let started_ids =
             List.filter_map actions ~f:(function
               | Orchestrator.Start (pid, _) -> Some pid
@@ -169,7 +194,7 @@ let () =
       (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           let pids =
             List.map actions ~f:(function
               | Orchestrator.Start (pid, _) -> pid
@@ -188,7 +213,7 @@ let () =
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
           let count_before = List.length (Orchestrator.all_agents orch) in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           let orch_after =
             List.fold actions ~init:orch ~f:(fun o a -> Orchestrator.fire o a)
           in
@@ -205,7 +230,7 @@ let () =
           (* Tick, complete, and merge everything *)
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
-                let o, _ = Orchestrator.tick o ~patches in
+                let o, _effects, _actions = tick o ~patches in
                 let a = Orchestrator.agent o p.Patch.id in
                 if a.Patch_agent.busy then
                   let o =
@@ -215,7 +240,7 @@ let () =
                   Orchestrator.mark_merged o p.Patch.id
                 else o)
           in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           let merged_ids =
             List.filter_map patches ~f:(fun (p : Patch.t) ->
                 if (Orchestrator.agent orch p.Patch.id).Patch_agent.merged then
@@ -241,7 +266,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch =
                 Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
               in
@@ -254,7 +279,7 @@ let () =
               assert a.Patch_agent.needs_intervention;
               (* Enqueue work — should be blocked by needs_intervention *)
               let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
-              let _orch, actions = Orchestrator.tick orch ~patches in
+              let _orch, _effects, actions = tick orch ~patches in
               not
                 (List.exists actions ~f:(function
                   | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
@@ -273,14 +298,14 @@ let () =
           | [] -> true
           | first :: _ ->
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch =
                 Orchestrator.set_pr_number orch first.Patch.id
                   (Pr_number.of_int 1)
               in
               let orch = Orchestrator.complete orch first.Patch.id in
               let orch = Orchestrator.enqueue orch first.Patch.id kind in
-              let _orch, actions = Orchestrator.tick orch ~patches in
+              let _orch, _effects, actions = tick orch ~patches in
               List.exists actions ~f:(function
                 | Orchestrator.Respond (pid, k) ->
                     Patch_id.equal pid first.Patch.id
@@ -298,7 +323,7 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let orch_after, actions = Orchestrator.tick orch ~patches in
+          let orch_after, _effects, actions = tick orch ~patches in
           let started_ids =
             List.filter_map actions ~f:(function
               | Orchestrator.Start (pid, _) -> Some pid
@@ -331,7 +356,7 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch, _effects, _actions = tick orch ~patches in
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
                 let a = Orchestrator.agent o p.Patch.id in
@@ -343,7 +368,7 @@ let () =
                   Orchestrator.enqueue o p.Patch.id Operation_kind.Rebase
                 else o)
           in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           List.for_all actions ~f:(function
             | Orchestrator.Rebase (pid, _) ->
                 let a = Orchestrator.agent orch pid in
@@ -359,7 +384,7 @@ let () =
       (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
-          let orch, _ = Orchestrator.tick orch ~patches in
+          let orch, _effects, _actions = tick orch ~patches in
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
                 let a = Orchestrator.agent o p.Patch.id in
@@ -371,7 +396,7 @@ let () =
                   Orchestrator.enqueue o p.Patch.id Operation_kind.Rebase
                 else o)
           in
-          let _orch, actions = Orchestrator.tick orch ~patches in
+          let _orch, _effects, actions = tick orch ~patches in
           not
             (List.exists actions ~f:(function
               | Orchestrator.Respond (_, k) ->
@@ -393,7 +418,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch =
                 Orchestrator.set_pr_number orch pid (Pr_number.of_int 1)
               in
@@ -425,7 +450,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
               List.for_all results ~f:(fun r ->
                   let orch' =
@@ -447,7 +472,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let check r =
                 let orch' =
                   Orchestrator.apply_rebase_result orch pid r new_base
@@ -468,7 +493,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch' =
                 Orchestrator.apply_rebase_result orch pid Worktree.Conflict
                   new_base
@@ -490,7 +515,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
               let check outcome =
                 let orch' =
@@ -512,7 +537,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch' =
                 Orchestrator.apply_rebase_result orch pid
                   (Worktree.Error "test error") new_base
@@ -536,7 +561,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
               let poll =
                 Poller.
@@ -544,6 +569,7 @@ let () =
                     queue = [];
                     merged = true;
                     closed = false;
+                    is_draft = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -551,7 +577,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               (Orchestrator.agent orch' pid).Patch_agent.merged
         with _ -> false)
   in
@@ -566,7 +602,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
               let poll =
                 Poller.
@@ -574,6 +610,7 @@ let () =
                     queue = [];
                     merged = false;
                     closed = false;
+                    is_draft = false;
                     has_conflict = true;
                     mergeable = false;
                     merge_ready = false;
@@ -581,7 +618,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               (Orchestrator.agent orch' pid).Patch_agent.has_conflict
         with _ -> false)
   in
@@ -596,7 +643,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
               let orch = Orchestrator.complete orch pid in
               let poll =
@@ -605,6 +652,7 @@ let () =
                     queue = [];
                     merged = false;
                     closed = false;
+                    is_draft = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -612,7 +660,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
         with _ -> false)
   in
@@ -628,7 +686,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
               let orch = Orchestrator.complete orch pid in
               let orch =
@@ -640,6 +698,7 @@ let () =
                     queue = [];
                     merged = false;
                     closed = false;
+                    is_draft = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -647,7 +706,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               (Orchestrator.agent orch' pid).Patch_agent.has_conflict
         with _ -> false)
   in
@@ -663,7 +732,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
               let poll =
                 Poller.
@@ -671,6 +740,7 @@ let () =
                     queue = [ Operation_kind.Review_comments ];
                     merged = false;
                     closed = false;
+                    is_draft = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -678,7 +748,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               let a = Orchestrator.agent orch' pid in
               List.mem a.Patch_agent.queue Operation_kind.Review_comments
                 ~equal:Operation_kind.equal
@@ -695,7 +775,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
               (* Simulate: agent responded to CI, ci_fix_running is now true *)
               let orch = Orchestrator.set_ci_fix_running orch pid in
@@ -705,6 +785,7 @@ let () =
                     queue = [ Operation_kind.Ci ];
                     merged = false;
                     closed = false;
+                    is_draft = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -712,7 +793,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               let a = Orchestrator.agent orch' pid in
               (* CI should NOT be enqueued *)
               not
@@ -731,7 +822,7 @@ let () =
           | first :: _ ->
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
-              let orch, _ = Orchestrator.tick orch ~patches in
+              let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
               let orch = Orchestrator.set_ci_fix_running orch pid in
               let orch = Orchestrator.increment_ci_failure_count orch pid in
@@ -741,6 +832,7 @@ let () =
                     queue = [];
                     merged = false;
                     closed = false;
+                    is_draft = false;
                     has_conflict = false;
                     mergeable = false;
                     merge_ready = false;
@@ -748,7 +840,17 @@ let () =
                     ci_checks = [];
                   }
               in
-              let orch', _logs = Poll_applicator.apply orch pid poll in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      head_branch = None;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
               let a = Orchestrator.agent orch' pid in
               (* ci_fix_running should be cleared and ci_failure_count reset *)
               (not a.Patch_agent.ci_fix_running)

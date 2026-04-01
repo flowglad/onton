@@ -166,11 +166,15 @@ let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args with
+  try
+    Eio.Process.run ~env process_mgr args;
+    true
+  with
   | Eio.Cancel.Cancelled _ as exn -> raise exn
   | exn ->
       Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str
-        draft (Printexc.to_string exn)
+        draft (Printexc.to_string exn);
+      false
 
 (** Set the PR body to a rendered description. Errors are logged but not fatal —
     the PR already exists; a missing description is cosmetic. *)
@@ -191,11 +195,31 @@ let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
   let env =
     Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
   in
-  try Eio.Process.run ~env process_mgr args with
+  try
+    Eio.Process.run ~env process_mgr args;
+    true
+  with
   | Eio.Cancel.Cancelled _ as exn -> raise exn
   | exn ->
       Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
-        (Printexc.to_string exn)
+        (Printexc.to_string exn);
+      false
+
+(** Execute declarative GitHub effects and record successful observations back
+    into durable state. *)
+let execute_github_effects ~runtime ~process_mgr ~token ~owner ~repo effects =
+  Base.List.iter effects ~f:(fun github_effect ->
+      let success =
+        match github_effect with
+        | Patch_controller.Set_pr_description { patch_id = _; pr_number; body }
+          ->
+            set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body
+        | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
+            set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft
+      in
+      if success then
+        Runtime.update_orchestrator runtime (fun orch ->
+            Patch_controller.apply_github_effect_success orch github_effect))
 
 (** {1 Activity log helpers} *)
 
@@ -1438,15 +1462,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       Pr_registry.register pr_registry ~patch_id
                         ~pr_number:new_pr;
                       Runtime.update_orchestrator runtime (fun orch ->
-                          let orch =
-                            Orchestrator.set_pr_number orch patch_id new_pr
-                          in
-                          let orch =
-                            Orchestrator.set_base_branch orch patch_id
-                              base_branch
-                          in
-                          if merged then Orchestrator.mark_merged orch patch_id
-                          else orch)
+                          Patch_controller.apply_replacement_pr orch patch_id
+                            ~pr_number:new_pr ~base_branch ~merged)
                   | Ok None ->
                       log_event runtime ~patch_id
                         "no open PR found — will create on next session"
@@ -1513,72 +1530,19 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                application (e.g. user pressed '-'). *)
                             (orch, ([], (false, false)))
                         | Some _ ->
-                            let orch, log_entries =
-                              Poll_applicator.apply orch patch_id poll_result
+                            let observation =
+                              Patch_controller.
+                                {
+                                  poll_result;
+                                  head_branch = pr_state.Pr_state.head_branch;
+                                  base_branch = pr_state.Pr_state.base_branch;
+                                  branch_in_root;
+                                  worktree_path = worktree_candidate;
+                                }
                             in
-                            (* head_branch and intervention management *)
-                            let orch, newly_blocked =
-                              match pr_state.Pr_state.head_branch with
-                              | Some b ->
-                                  let orch =
-                                    Orchestrator.set_head_branch orch patch_id b
-                                  in
-                                  if branch_in_root then
-                                    let agent =
-                                      Orchestrator.agent orch patch_id
-                                    in
-                                    if not agent.Patch_agent.branch_blocked then
-                                      ( Orchestrator.set_branch_blocked orch
-                                          patch_id,
-                                        true )
-                                    else
-                                      ( Orchestrator.set_branch_blocked orch
-                                          patch_id,
-                                        false )
-                                  else
-                                    let agent =
-                                      Orchestrator.agent orch patch_id
-                                    in
-                                    (* Branch is no longer checked out in root —
-                                       clear branch_blocked if it was set. *)
-                                    if agent.Patch_agent.branch_blocked then
-                                      ( Orchestrator.clear_branch_blocked orch
-                                          patch_id,
-                                        false )
-                                    else (orch, false)
-                              | None -> (orch, false)
-                            in
-                            let orch =
-                              let agent = Orchestrator.agent orch patch_id in
-                              match
-                                ( agent.Patch_agent.base_branch,
-                                  pr_state.Pr_state.base_branch )
-                              with
-                              | None, Some b ->
-                                  Orchestrator.set_base_branch orch patch_id b
-                              | _ -> orch
-                            in
-                            let orch =
-                              let current_agent =
-                                Orchestrator.agent orch patch_id
-                              in
-                              match worktree_candidate with
-                              | Some path
-                                when Option.is_none
-                                       current_agent.Patch_agent.worktree_path
-                                ->
-                                  let orch =
-                                    Orchestrator.set_worktree_path orch patch_id
-                                      path
-                                  in
-                                  let agent =
-                                    Orchestrator.agent orch patch_id
-                                  in
-                                  if agent.Patch_agent.branch_blocked then
-                                    Orchestrator.clear_branch_blocked orch
-                                      patch_id
-                                  else orch
-                              | _ -> orch
+                            let orch, log_entries, newly_blocked =
+                              Patch_controller.apply_poll_result orch patch_id
+                                observation
                             in
                             (orch, (log_entries, (newly_blocked, true))))
                   in
@@ -1588,9 +1552,10 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       Hashtbl.replace ci_checks_cache patch_id failed_ci
                     else Hashtbl.remove ci_checks_cache patch_id;
                   Base.List.iter log_entries
-                    ~f:(fun (entry : Poll_applicator.log_entry) ->
-                      log_event runtime ~patch_id:entry.Poll_applicator.patch_id
-                        entry.Poll_applicator.message);
+                    ~f:(fun (entry : Patch_controller.poll_log_entry) ->
+                      log_event runtime
+                        ~patch_id:entry.Patch_controller.patch_id
+                        entry.Patch_controller.message);
                   (if newly_blocked then
                      match pr_state.Pr_state.head_branch with
                      | Some b ->
@@ -1709,40 +1674,68 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
             mark_session_failed runtime patch_id)
   in
   let rec loop sw =
-    let actions, gameplan, pre_fire_agents =
-      Runtime.read runtime (fun snap ->
-          let orch = snap.Runtime.orchestrator in
-          let actions =
-            Orchestrator.pending_actions orch
-              ~patches:snap.Runtime.gameplan.Gameplan.patches
+    let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
+    let lifecycle_effects, messages, pre_fire_agents =
+      Runtime.update_orchestrator_returning runtime (fun orch ->
+          let orch, effects, messages =
+            Patch_controller.plan_tick_messages orch ~project_name ~gameplan
           in
-          (* Capture agent state BEFORE fire clears human_messages.
-             Respond clears human_messages as a postcondition, but the
-             runner needs them to build the prompt. *)
-          let agent_map =
-            Base.List.filter_map actions ~f:(fun action ->
-                match action with
-                | Orchestrator.Respond (pid, _) | Orchestrator.Rebase (pid, _)
-                  ->
+          let pre_fire_agents =
+            Base.List.filter_map messages
+              ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+                match
+                  ( Orchestrator.message_status msg,
+                    Orchestrator.message_action msg )
+                with
+                | ( Orchestrator.Pending,
+                    ( Orchestrator.Respond (pid, _)
+                    | Orchestrator.Rebase (pid, _) ) ) ->
                     Some (pid, Orchestrator.agent orch pid)
-                | Orchestrator.Start _ -> None)
+                | Orchestrator.Pending, Orchestrator.Start _
+                | Orchestrator.Acked, _
+                | Orchestrator.Completed, _
+                | Orchestrator.Obsolete, _ ->
+                    None)
           in
-          (actions, snap.Runtime.gameplan, agent_map))
+          let orch, dispatched =
+            Base.List.fold messages ~init:(orch, [])
+              ~f:(fun
+                  (acc, dispatched) (msg : Orchestrator.patch_agent_message) ->
+                match Orchestrator.message_status msg with
+                | Orchestrator.Pending ->
+                    let acc, action =
+                      Orchestrator.accept_message acc
+                        (Orchestrator.message_id msg)
+                    in
+                    let dispatched =
+                      match action with
+                      | Some _ -> msg :: dispatched
+                      | None -> dispatched
+                    in
+                    (acc, dispatched)
+                | Orchestrator.Acked ->
+                    let acc, action =
+                      Orchestrator.resume_message acc
+                        (Orchestrator.message_id msg)
+                    in
+                    let dispatched =
+                      match action with
+                      | Some _ -> msg :: dispatched
+                      | None -> dispatched
+                    in
+                    (acc, dispatched)
+                | Orchestrator.Completed | Orchestrator.Obsolete ->
+                    (acc, dispatched))
+          in
+          (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
-    (* Fire all actions to mark agents busy, preventing re-dispatch on the next
-       loop iteration. Note: there is a benign TOCTOU gap between reading
-       pending_actions and firing — if another fiber modifies state between
-       these calls, fire may encounter already-started patches (Start is a
-       no-op on has_pr=true agents) or stale Respond targets (the agent
-       preconditions are re-checked by Patch_agent.respond). *)
-    if not (Base.List.is_empty actions) then
-      Runtime.update_orchestrator runtime (fun orch ->
-          Base.List.fold actions ~init:orch ~f:(fun orch action ->
-              Orchestrator.fire orch action));
+    execute_github_effects ~runtime ~process_mgr ~token:config.github_token
+      ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
     (* Spawn all actions concurrently, limited by max_concurrency semaphore *)
     let action_fibers =
-      Base.List.filter_map actions ~f:(fun action ->
-          match action with
+      Base.List.filter_map messages
+        ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+          match Orchestrator.message_action msg with
           | Orchestrator.Start (patch_id, base_branch) -> (
               match
                 Base.List.find gameplan.Gameplan.patches
@@ -1844,32 +1837,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
-                                    let pr_body =
-                                      Prompt.render_pr_description ~project_name
-                                        patch gameplan
-                                    in
-                                    set_pr_description ~process_mgr
-                                      ~token:config.github_token
-                                      ~owner:config.github_owner
-                                      ~repo:config.github_repo ~pr_number
-                                      ~body:pr_body;
-                                    if not (Branch.equal base_branch main) then
-                                      set_pr_draft ~process_mgr
-                                        ~token:config.github_token
-                                        ~owner:config.github_owner
-                                        ~repo:config.github_repo ~pr_number
-                                        ~draft:true;
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
-                                        let orch =
-                                          Orchestrator.set_pr_number orch
-                                            patch_id pr_number
-                                        in
-                                        let orch =
-                                          Orchestrator.enqueue orch patch_id
-                                            Operation_kind.Implementation_notes
-                                        in
-                                        Orchestrator.complete orch patch_id)
+                                        Orchestrator.set_pr_number orch patch_id
+                                          pr_number)
                                 | Error _ when remaining > 0 ->
                                     Eio.Time.sleep clock 2.0;
                                     discover (remaining - 1)
@@ -1879,11 +1850,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          msg);
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
-                                        let orch =
-                                          Orchestrator.on_pr_discovery_failure
-                                            orch patch_id
-                                        in
-                                        Orchestrator.complete orch patch_id)
+                                        Orchestrator.on_pr_discovery_failure
+                                          orch patch_id)
                               in
                               discover 2)))
           | Orchestrator.Rebase (patch_id, new_base) ->
@@ -1920,23 +1888,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             (Printf.sprintf "runner: rebase error: %s" msg));
                       Runtime.update_orchestrator runtime (fun orch ->
                           Orchestrator.apply_rebase_result orch patch_id
-                            rebase_result new_base);
-                      (* Update PR draft status after successful rebase *)
-                      match rebase_result with
-                      | Worktree.Ok | Worktree.Noop -> (
-                          let agent =
-                            Runtime.read runtime (fun snap ->
-                                Orchestrator.agent snap.Runtime.orchestrator
-                                  patch_id)
-                          in
-                          match agent.Patch_agent.pr_number with
-                          | Some pr_number when Branch.equal new_base main ->
-                              set_pr_draft ~process_mgr
-                                ~token:config.github_token
-                                ~owner:config.github_owner
-                                ~repo:config.github_repo ~pr_number ~draft:false
-                          | _ -> ())
-                      | Worktree.Conflict | Worktree.Error _ -> ()))
+                            rebase_result new_base)))
           | Orchestrator.Respond (patch_id, kind) ->
               (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)
@@ -2117,24 +2069,33 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    (Patch_id.to_string patch_id))
                               ()
                       | `Ok ->
+                          if
+                            Operation_kind.equal kind
+                              Operation_kind.Merge_conflict
+                          then
+                            set_status ~level:Tui.Info
+                              ~text:
+                                (Printf.sprintf
+                                   "Patch %s: conflict resolved, rebasing…"
+                                   (Patch_id.to_string patch_id))
+                              ~expires_at:(Unix.gettimeofday () +. 10.0)
+                              ();
                           Runtime.update_orchestrator runtime (fun orch ->
                               let orch =
                                 if
                                   Operation_kind.equal kind
                                     Operation_kind.Merge_conflict
-                                then (
-                                  set_status ~level:Tui.Info
-                                    ~text:
-                                      (Printf.sprintf
-                                         "Patch %s: conflict resolved, \
-                                          rebasing…"
-                                         (Patch_id.to_string patch_id))
-                                    ~expires_at:(Unix.gettimeofday () +. 10.0)
-                                    ();
-                                  Orchestrator.clear_has_conflict orch patch_id)
+                                then
+                                  Orchestrator.clear_has_conflict orch patch_id
                                 else orch
                               in
-                              Orchestrator.complete orch patch_id))))
+                              if
+                                Operation_kind.equal kind
+                                  Operation_kind.Implementation_notes
+                              then
+                                Orchestrator.set_implementation_notes_delivered
+                                  orch patch_id true
+                              else orch))))
     in
     (* Spawn action fibers without waiting for completion. Each fiber is
        guarded by with_busy_guard (ensures complete on exit) and

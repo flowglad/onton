@@ -45,6 +45,13 @@ for PR status, detects merges, triggers rebases, and reacts to CI failures and
 review comments. A terminal UI shows live status with full markdown-rendered
 agent transcripts.
 
+Its control path is replay-safe: a pure controller derives the same follow-up
+effects and the same patch-agent messages from the same durable snapshot on any
+tick. Patch-agent delivery is effectively-once: messages have stable logical
+IDs, are persisted in an outbox, are acknowledged durably before work begins,
+and can be resumed after crashes without reapplying the queue-consuming state
+transition that originally accepted them.
+
 ## Install
 
 Pick **one** of the following methods:
@@ -102,7 +109,8 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 
 Project config and state are persisted to `~/.local/share/onton/<project>/`.
 Resuming a project reloads the saved snapshot (including agent transcripts) and
-reconciles against GitHub.
+reconciles against GitHub. The snapshot includes the durable patch-agent
+message ledger, so accepted but incomplete work can resume after restart.
 
 ### User configuration
 
@@ -161,10 +169,15 @@ dune fmt            # auto-format via ocamlformat
 ```
 gameplan.md ──> Gameplan_parser ──> Graph + Patches
                                          │
+                  Patch_controller ──────┤
+                    ├── poll ingestion + reconciliation
+                    ├── GitHub lifecycle effects
+                    ├── durable patch-agent message planning
+                    └── runnable work derivation
+                                         │
                     Orchestrator ────────┤
                     ├── Patch_agent (per-patch state machine)
                     ├── Patch_decision (pure decision logic)
-                    ├── Spawn_logic (action planning)
                     ├── Poller (GitHub PR status via GraphQL)
                     ├── Reconciler (merge detection, stale base detection)
                     └── TUI (terminal display + markdown transcript)
@@ -197,6 +210,21 @@ produces no events, it's treated as a resume failure and falls back to fresh.
 Additional flags: `--dangerously-skip-permissions`, `--max-turns 200`,
 `--output-format stream-json`, `--verbose`.
 
+### Patch-agent message delivery
+
+Runnable patch work is materialized as durable messages, not just ephemeral
+runner actions. The controller writes those messages to an outbox with stable
+logical IDs. The runner then:
+
+1. accepts a pending message exactly once, which durably acknowledges it and
+   fires the corresponding patch transition
+2. executes the Claude or rebase work for that accepted message
+3. marks the message completed when the patch finishes the operation
+
+If onton crashes after acceptance but before completion, the same acknowledged
+message is resumed on the next tick instead of creating a new one or replaying
+the original queue-consuming transition.
+
 ### Runner concurrency
 
 Action fibers are spawned independently (`fork_daemon`) rather than batched —
@@ -212,12 +240,12 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `priority` | Operation priority queue — single source of truth for ordering |
 | `graph` | Dependency graph: unblocked detection, base branch resolution |
 | `gameplan_parser` | Markdown gameplan to structured `Gameplan.t` |
-| `patch_agent` | Per-patch state machine: start, respond, complete, rebase transitions (private type). Tracks `current_op` for active operation |
+| `patch_agent` | Per-patch state machine: start, respond, complete, rebase transitions (private type). Tracks `current_op`, current accepted message, and generation |
+| `patch_controller` | Pure evergreen controller: poll ingestion, lifecycle reconciliation, GitHub effects, and durable patch-agent message planning |
 | `patch_decision` | Pure decision logic: disposition, CI cap, review comment filtering, merge conflict handling. Extracted from main.ml for testability |
-| `spawn_logic` | Pure action planning: which patches need Start/Respond/Rebase |
 | `claude_process` | Claude CLI session state machine (No_session -> Has_session) |
 | `claude_runner` | Claude subprocess spawning with PTY wrapping, NDJSON streaming, ANSI stripping, `got_events` resume-failure detection |
-| `orchestrator` | Top-level tick loop: fires all actions whose preconditions hold |
+| `orchestrator` | Durable patch state plus primitive transitions, including the patch-agent outbox |
 | `reconciler` | Pure merge detection, rebase cascading, stale base detection, liveness enforcement |
 | `startup_reconciler` | PR discovery, worktree recovery, stale busy reset at startup |
 | `poller` | GitHub polling: comments, CI, merge conflicts, merge/approval state |
@@ -225,7 +253,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `runtime` | Mutex-protected shared snapshot across fibers (orchestrator + activity log + gameplan + transcripts) |
 | `activity_log` | Per-patch event, transition, and stream entry feed |
 | `invariants` | Runtime spec invariant checker (gated via `ONTON_CHECK_INVARIANTS`) |
-| `persistence` | JSON snapshot save/load with backward-compatible migration, transcript persistence |
+| `persistence` | JSON snapshot save/load for the current durable schema, including transcripts and the message ledger |
 | `project_store` | Project config and gameplan storage at `~/.local/share/onton/` |
 | `user_config` | Per-repo user configuration and hook execution from `~/.config/onton/<owner>/<repo>/` |
 | `prompt` | Agent prompt rendering with per-project template override support |
@@ -242,17 +270,20 @@ waiting for running sessions to finish. Backpressure is provided by a
   persistence), with independently-spawned Claude action fibers bounded by a
   semaphore
 - **Pure logic core** — parser, graph, priority, state machine, decision logic,
-  spawn planning are pure functions with no I/O
+  controller reconciliation, and message planning are pure functions with no
+  I/O
 - **Strict compiler feedback** — all warnings fatal (except 44/70), `.mli`
   files enforce module boundaries
 - **Pantagruel spec alignment** — state machine transitions match the formal
   spec
 - **Single source of truth** — priority ordering defined once in `Priority`;
-  sorted patch display via shared `sorted_patch_ids` ref; `current_op` tracks
-  active operation for both status display and log suppression
+  sorted patch display via shared `sorted_patch_ids` ref; `patch_controller`
+  owns deterministic follow-up decisions; `current_op` plus the durable outbox
+  track active and resumable work
 - **Property-based testing** — QCheck2 tests for graph, patch agent,
-  orchestrator liveness, reconciler, state machine, persistence roundtrip,
-  stream parsing, TUI input, poller, patch decision, and spawn logic
+  controller, orchestrator liveness, reconciler, delivery-aware state-machine
+  behavior, persistence roundtrip, stream parsing, TUI input, poller, and
+  patch decision
 
 ## CI
 

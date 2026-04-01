@@ -27,6 +27,18 @@ module Session_id = struct
   let to_string t = t
 end
 
+module Message_id = struct
+  module T = struct
+    type t = string [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
+  end
+
+  include T
+  include Comparator.Make (T)
+
+  let of_string s = s
+  let to_string t = t
+end
+
 module Branch = struct
   type t = string [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
