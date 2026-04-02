@@ -21,6 +21,10 @@ val is_checked_out_in_repo_root :
     (resolved via the git common dir, not necessarily [repo_root] itself). A
     worktree cannot be created for a branch that is checked out there. *)
 
+val remote_branch_exists :
+  process_mgr:_ Eio.Process.mgr -> repo_root:string -> string -> bool
+(** Returns [true] if [origin/<branch>] exists as a remote tracking ref. *)
+
 val create :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
