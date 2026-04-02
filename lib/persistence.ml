@@ -70,7 +70,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("checks_passing", `Bool a.checks_passing);
-      ("no_unresolved_comments", `Bool a.no_unresolved_comments);
       ( "current_op",
         match a.current_op with
         | None -> `Null
@@ -162,9 +161,6 @@ let patch_agent_of_yojson json =
          |> Option.value ~default:0)
        ~checks_passing:
          (bool_member_opt "checks_passing" json |> Option.value ~default:false)
-       ~no_unresolved_comments:
-         (bool_member_opt "no_unresolved_comments" json
-         |> Option.value ~default:false)
        ~current_op:
          (match Yojson.Safe.Util.member "current_op" json with
          | `Null -> None

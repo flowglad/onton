@@ -51,9 +51,9 @@ let make_agent ~patch_id ~has_pr ~pr_number ~merged ~queue ~base_branch
     ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
     ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft
     ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~checks_passing:false
-    ~no_unresolved_comments:false ~current_op:None ~current_message_id:None
-    ~generation:0 ~worktree_path:None ~head_branch:None ~branch_blocked:false
+    ~start_attempts_without_pr ~checks_passing:false ~current_op:None
+    ~current_message_id:None ~generation:0 ~worktree_path:None ~head_branch:None
+    ~branch_blocked:false
 
 let has_notes_queued agent =
   List.mem agent.Patch_agent.queue Operation_kind.Implementation_notes
@@ -529,8 +529,7 @@ let () =
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft:false
             ~pr_description_applied:true ~implementation_notes_delivered:true
-            ~start_attempts_without_pr:0 ~checks_passing:false
-            ~no_unresolved_comments:false ~current_op:None
+            ~start_attempts_without_pr:0 ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~head_branch:None ~branch_blocked:false
         in

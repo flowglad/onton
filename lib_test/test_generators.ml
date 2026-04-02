@@ -273,7 +273,6 @@ let gen_patch_agent_fully_populated =
     let* mergeable = bool in
     let* merge_ready = bool in
     let* checks_passing = bool in
-    let* no_unresolved_comments = bool in
     let a = Onton.Patch_agent.create pid in
     let a = Onton.Patch_agent.start a ~base_branch:branch in
     let a =
@@ -297,9 +296,6 @@ let gen_patch_agent_fully_populated =
     let a = Onton.Patch_agent.set_mergeable a mergeable in
     let a = Onton.Patch_agent.set_merge_ready a merge_ready in
     let a = Onton.Patch_agent.set_checks_passing a checks_passing in
-    let a =
-      Onton.Patch_agent.set_no_unresolved_comments a no_unresolved_comments
-    in
     return a)
 
 (* -- Reconciler -- *)

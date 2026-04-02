@@ -28,7 +28,6 @@ type t = {
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   checks_passing : bool;
-  no_unresolved_comments : bool;
   current_op : Operation_kind.t option;
   current_message_id : Message_id.t option;
   generation : int;
@@ -71,7 +70,6 @@ let create patch_id =
     implementation_notes_delivered = false;
     start_attempts_without_pr = 0;
     checks_passing = false;
-    no_unresolved_comments = false;
     current_op = None;
     current_message_id = None;
     generation = 0;
@@ -104,7 +102,6 @@ let create_adhoc ~patch_id ~pr_number =
     implementation_notes_delivered = true;
     start_attempts_without_pr = 0;
     checks_passing = false;
-    no_unresolved_comments = false;
     current_op = None;
     current_message_id = None;
     generation = 0;
@@ -170,7 +167,6 @@ let increment_start_attempts_without_pr t =
 let on_pr_discovery_failure t = increment_start_attempts_without_pr t
 
 let set_checks_passing t v = { t with checks_passing = v }
-let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 let set_head_branch t branch = { t with head_branch = Some branch }
 
@@ -207,9 +203,8 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
     ~session_fallback ~human_messages ~ci_checks ~mergeable ~merge_ready
     ~is_draft ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~checks_passing ~no_unresolved_comments
-    ~current_op ~current_message_id ~generation ~worktree_path ~head_branch
-    ~branch_blocked =
+    ~start_attempts_without_pr ~checks_passing ~current_op ~current_message_id
+    ~generation ~worktree_path ~head_branch ~branch_blocked =
   {
     patch_id;
     has_pr;
@@ -233,7 +228,6 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged ~queue
     implementation_notes_delivered;
     start_attempts_without_pr;
     checks_passing;
-    no_unresolved_comments;
     current_op;
     current_message_id;
     generation;
@@ -291,7 +285,6 @@ let rebase t ~base_branch =
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
-    no_unresolved_comments = false;
   }
 
 let respond t k =
@@ -340,7 +333,6 @@ let respond t k =
     mergeable = false;
     merge_ready = false;
     checks_passing = false;
-    no_unresolved_comments = false;
   }
 
 let complete t =

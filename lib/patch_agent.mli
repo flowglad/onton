@@ -32,7 +32,6 @@ type t = private {
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   checks_passing : bool;
-  no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
   current_message_id : Types.Message_id.t option;
   generation : int;
@@ -146,9 +145,6 @@ val increment_start_attempts_without_pr : t -> t
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
-val set_no_unresolved_comments : t -> bool -> t
-(** Set the no_unresolved_comments flag from GitHub review state. *)
-
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
 
@@ -233,7 +229,6 @@ val restore :
   implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->
   checks_passing:bool ->
-  no_unresolved_comments:bool ->
   current_op:Types.Operation_kind.t option ->
   current_message_id:Types.Message_id.t option ->
   generation:int ->

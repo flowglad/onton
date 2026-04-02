@@ -52,8 +52,7 @@ let () =
           && t.start_attempts_without_pr = 0
           && List.is_empty t.human_messages
           && List.is_empty t.ci_checks && (not t.mergeable)
-          && (not t.merge_ready) && (not t.checks_passing)
-          && not t.no_unresolved_comments);
+          && (not t.merge_ready) && not t.checks_passing);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)
@@ -349,9 +348,8 @@ let () =
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
+          (* session_fallback = Given_up and Human not in queue →
+             needs_intervention *)
           needs_intervention a);
       (* -- Human queued suppresses intervention from session_failed -- *)
       Test.make ~name:"Human queued suppresses intervention (session_failed)"
@@ -390,9 +388,7 @@ let () =
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
+          (* session_fallback = Given_up → needs_intervention *)
           let triggered = needs_intervention a in
           let a = reset_intervention_state a in
           triggered && not (needs_intervention a));
@@ -435,9 +431,9 @@ let () =
               ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
               ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~checks_passing:false ~no_unresolved_comments:false
-              ~current_op:None ~current_message_id:None ~generation:0
-              ~worktree_path:None ~head_branch:None ~branch_blocked:false
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~head_branch:None
+              ~branch_blocked:false
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -507,9 +503,9 @@ let () =
               ~mergeable:false ~merge_ready:false ~is_draft:false
               ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~checks_passing:false ~no_unresolved_comments:false
-              ~current_op:None ~current_message_id:None ~generation:0
-              ~worktree_path:None ~head_branch:None ~branch_blocked:false
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~head_branch:None
+              ~branch_blocked:false
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
