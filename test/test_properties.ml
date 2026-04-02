@@ -627,7 +627,7 @@ let () =
             Orchestrator.Session_give_up
         in
         let a = Orchestrator.agent orch pid in
-        a.Patch_agent.needs_intervention)
+        Patch_agent.needs_intervention a)
   in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)

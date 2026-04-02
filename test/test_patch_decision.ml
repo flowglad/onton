@@ -134,12 +134,6 @@ let () =
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           equal_ci_decision (on_ci_failure a) Ci_fix_in_progress);
-      Test.make ~name:"on_ci_failure: stale ci_fix_running does not suppress"
-        Gen.(pair gen_pid gen_branch)
-        (fun (pid, br) ->
-          let a = with_pr pid br in
-          let a = set_ci_fix_running a in
-          equal_ci_decision (on_ci_failure a) Enqueue_ci);
       Test.make
         ~name:
           "on_ci_failure: completed failed CI attempt re-enqueues on next poll"
@@ -174,6 +168,63 @@ let () =
         (fun (pid, br) ->
           let a = with_pr pid br |> set_has_conflict in
           equal_conflict_decision (on_merge_conflict a) Already_conflicting);
+      (* ---- on_checks_passing: failures + passing -> Reset ---- *)
+      Test.make
+        ~name:"on_checks_passing: ci_failure_count > 0 + passing -> Reset"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br |> increment_ci_failure_count in
+          equal_checks_passing_decision
+            (on_checks_passing a ~checks_passing:true)
+            Reset_ci_failure_count);
+      (* ---- on_checks_passing: no failures + passing -> No_ci_reset ---- *)
+      Test.make
+        ~name:"on_checks_passing: ci_failure_count = 0 + passing -> No_ci_reset"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          equal_checks_passing_decision
+            (on_checks_passing a ~checks_passing:true)
+            No_ci_reset);
+      (* ---- on_checks_passing: failures + not passing -> No_ci_reset ---- *)
+      Test.make
+        ~name:
+          "on_checks_passing: ci_failure_count > 0 + not passing -> No_ci_reset"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br |> increment_ci_failure_count in
+          equal_checks_passing_decision
+            (on_checks_passing a ~checks_passing:false)
+            No_ci_reset);
+      (* ---- should_clear_conflict: no active conflict op -> true ---- *)
+      Test.make ~name:"should_clear_conflict: idle agent -> true"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          should_clear_conflict a);
+      (* ---- should_clear_conflict: Merge_conflict queued -> false ---- *)
+      Test.make ~name:"should_clear_conflict: Merge_conflict queued -> false"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br |> set_has_conflict in
+          let a = enqueue a Operation_kind.Merge_conflict in
+          not (should_clear_conflict a));
+      (* ---- should_clear_conflict: Merge_conflict in-flight -> false ---- *)
+      Test.make ~name:"should_clear_conflict: Merge_conflict in-flight -> false"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br |> set_has_conflict in
+          let a = enqueue a Operation_kind.Merge_conflict in
+          let a = respond a Operation_kind.Merge_conflict in
+          not (should_clear_conflict a));
+      (* ---- should_clear_conflict: other op in-flight -> true ---- *)
+      Test.make ~name:"should_clear_conflict: non-conflict op in-flight -> true"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          let a = enqueue a Operation_kind.Human in
+          let a = respond a Operation_kind.Human in
+          should_clear_conflict a);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t)

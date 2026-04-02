@@ -247,7 +247,8 @@ let () =
               | Some (Orchestrator.Start _ | Orchestrator.Rebase _) -> false
               | None ->
                   (* No respond is ok whenever Respond preconditions fail *)
-                  (not a.Patch_agent.has_pr) || a.Patch_agent.needs_intervention
+                  (not a.Patch_agent.has_pr)
+                  || Patch_agent.needs_intervention a
                   || a.Patch_agent.busy || a.Patch_agent.merged)
         with _ -> false)
   in

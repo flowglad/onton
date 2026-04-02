@@ -529,7 +529,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     ( State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
     |> State.Patch_ctx.set_needs_intervention ~patch_id
-         ~value:agent.needs_intervention
+         ~value:(Patch_agent.needs_intervention agent)
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
     |> State.Patch_ctx.set_has_pr ~patch_id ~value:agent.has_pr
     |> State.Patch_ctx.set_approved ~patch_id
@@ -556,7 +556,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
                 |> State.Patch_ctx.set_merged ~patch_id:dep_id
                      ~value:dep_agent.merged
                 |> State.Patch_ctx.set_needs_intervention ~patch_id:dep_id
-                     ~value:dep_agent.needs_intervention
+                     ~value:(Patch_agent.needs_intervention dep_agent)
                 |> State.Patch_ctx.set_busy ~patch_id:dep_id
                      ~value:dep_agent.busy
                 |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
@@ -593,7 +593,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     dep_ids;
     has_pr = agent.has_pr;
     has_conflict = agent.has_conflict;
-    needs_intervention = agent.needs_intervention;
+    needs_intervention = Patch_agent.needs_intervention agent;
     human_messages = List.length agent.human_messages;
     ci_checks = agent.ci_checks;
     recent_stream = [];

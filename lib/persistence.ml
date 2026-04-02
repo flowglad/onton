@@ -49,7 +49,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("has_session", `Bool a.has_session);
       ("busy", `Bool a.busy);
       ("merged", `Bool a.merged);
-      ("needs_intervention", `Bool a.needs_intervention);
       ("queue", `List (List.map a.queue ~f:Operation_kind.yojson_of_t));
       ("satisfies", `Bool a.satisfies);
       ("changed", `Bool a.changed);
@@ -59,7 +58,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | None -> `Null
         | Some b -> Branch.yojson_of_t b );
       ("ci_failure_count", `Int a.ci_failure_count);
-      ("ci_fix_running", `Bool a.ci_fix_running);
       ( "session_fallback",
         Patch_agent.yojson_of_session_fallback a.session_fallback );
       ( "human_messages",
@@ -138,7 +136,6 @@ let patch_agent_of_yojson json =
        ~has_session:(bool_member "has_session" json)
        ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
-       ~needs_intervention:(bool_member "needs_intervention" json)
        ~queue
        ~satisfies:(bool_member "satisfies" json)
        ~changed:(bool_member "changed" json)
@@ -146,8 +143,6 @@ let patch_agent_of_yojson json =
        ~base_branch:
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
-       ~ci_fix_running:
-         (bool_member_opt "ci_fix_running" json |> Option.value ~default:false)
        ~session_fallback ~human_messages ~ci_checks
        ~mergeable:
          (bool_member_opt "mergeable" json |> Option.value ~default:false)

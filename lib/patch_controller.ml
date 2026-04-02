@@ -93,14 +93,9 @@ let apply_poll_result t patch_id
       Orchestrator.set_has_conflict t patch_id)
     else
       let agent = Orchestrator.agent t patch_id in
-      let local_merge_conflict_active =
-        List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
-          ~equal:Operation_kind.equal
-        || Option.equal Operation_kind.equal agent.Patch_agent.current_op
-             (Some Operation_kind.Merge_conflict)
-      in
-      if local_merge_conflict_active then t
-      else Orchestrator.clear_has_conflict t patch_id
+      if Patch_decision.should_clear_conflict agent then
+        Orchestrator.clear_has_conflict t patch_id
+      else t
   in
   let agent_before = Orchestrator.agent t patch_id in
   let t =
@@ -149,10 +144,14 @@ let apply_poll_result t patch_id
   in
   let t =
     let agent = Orchestrator.agent t patch_id in
-    if agent.Patch_agent.ci_fix_running && poll_result.checks_passing then (
-      log "CI checks passed, clearing ci_fix_running";
-      Orchestrator.clear_ci_fix_running t patch_id)
-    else t
+    match
+      Patch_decision.on_checks_passing agent
+        ~checks_passing:poll_result.checks_passing
+    with
+    | Patch_decision.Reset_ci_failure_count ->
+        log "CI checks passed, resetting ci_failure_count";
+        Orchestrator.reset_ci_failure_count t patch_id
+    | Patch_decision.No_ci_reset -> t
   in
   let t, newly_blocked =
     match head_branch with
@@ -196,15 +195,6 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
 
 let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
   let patch_id = patch.id in
-  let agent = Orchestrator.agent t patch_id in
-  let t =
-    if
-      (not agent.has_pr)
-      && agent.start_attempts_without_pr >= 2
-      && not agent.needs_intervention
-    then Orchestrator.set_needs_intervention t patch_id
-    else t
-  in
   let agent = Orchestrator.agent t patch_id in
   let t = enqueue_notes_if_needed t patch_id agent in
   let agent = Orchestrator.agent t patch_id in
@@ -260,7 +250,7 @@ let plan_action_for_patch t ~branch_map patch_id =
     (not agent.Patch_agent.has_pr)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
-    && (not agent.Patch_agent.needs_intervention)
+    && (not (Patch_agent.needs_intervention agent))
     && Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
   then
     let branch_of pid =
@@ -281,7 +271,7 @@ let plan_action_for_patch t ~branch_map patch_id =
     agent.Patch_agent.has_pr
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
-    && (not agent.Patch_agent.needs_intervention)
+    && (not (Patch_agent.needs_intervention agent))
     && (not agent.Patch_agent.branch_blocked)
     && List.mem agent.Patch_agent.queue Operation_kind.Rebase
          ~equal:Operation_kind.equal
@@ -307,7 +297,7 @@ let plan_action_for_patch t ~branch_map patch_id =
     agent.Patch_agent.has_pr
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
-    && (not agent.Patch_agent.needs_intervention)
+    && (not (Patch_agent.needs_intervention agent))
     && not agent.Patch_agent.branch_blocked
   then
     Patch_agent.highest_priority agent
@@ -461,7 +451,7 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
           }
       ~patch
   in
-  (Orchestrator.agent t pid).Patch_agent.needs_intervention
+  Patch_agent.needs_intervention (Orchestrator.agent t pid)
 
 let%test "reconcile_patch enqueues implementation notes while missing" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

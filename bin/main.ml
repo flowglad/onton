@@ -694,7 +694,7 @@ let intervention_reasons_of_log (log : Activity_log.t)
   let agents = Orchestrator.all_agents orchestrator in
   let needs =
     Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-        if a.Patch_agent.needs_intervention || a.Patch_agent.branch_blocked then
+        if Patch_agent.needs_intervention a || a.Patch_agent.branch_blocked then
           Some a.Patch_agent.patch_id
         else None)
     |> Base.Hash_set.of_list (module Patch_id)
@@ -1022,7 +1022,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                             Unix.symlink canonical_real expected);
                           Runtime.update_orchestrator runtime (fun orch ->
                               let orch =
-                                Orchestrator.clear_needs_intervention orch
+                                Orchestrator.reset_intervention_state orch
                                   patch_id
                               in
                               Orchestrator.set_worktree_path orch patch_id
@@ -1588,7 +1588,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                   has_pr = a.Patch_agent.has_pr;
                   merged = a.Patch_agent.merged;
                   busy = a.Patch_agent.busy;
-                  needs_intervention = a.Patch_agent.needs_intervention;
+                  needs_intervention = Patch_agent.needs_intervention a;
                   branch_blocked = a.Patch_agent.branch_blocked;
                   queue = a.Patch_agent.queue;
                   base_branch =
@@ -1759,7 +1759,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 in
                                 if
                                   agent.Patch_agent.merged
-                                  || agent.Patch_agent.needs_intervention
+                                  || Patch_agent.needs_intervention agent
                                   || agent.Patch_agent.branch_blocked
                                   || not agent.Patch_agent.busy
                                 then (
@@ -1813,7 +1813,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     Orchestrator.agent snap.Runtime.orchestrator
                                       patch_id)
                               in
-                              if agent.Patch_agent.needs_intervention then
+                              if Patch_agent.needs_intervention agent then
                                 set_status ~level:Tui.Error
                                   ~text:
                                     (Printf.sprintf
@@ -1934,7 +1934,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             in
                             if
                               agent.Patch_agent.merged
-                              || agent.Patch_agent.needs_intervention
+                              || Patch_agent.needs_intervention agent
                               || agent.Patch_agent.branch_blocked
                               || not agent.Patch_agent.busy
                             then (
@@ -2060,7 +2060,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 Orchestrator.agent snap.Runtime.orchestrator
                                   patch_id)
                           in
-                          if agent.Patch_agent.needs_intervention then
+                          if Patch_agent.needs_intervention agent then
                             set_status ~level:Tui.Error
                               ~text:
                                 (Printf.sprintf

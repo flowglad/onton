@@ -16,14 +16,12 @@ type t = private {
   has_session : bool;
   busy : bool;
   merged : bool;
-  needs_intervention : bool;
   queue : Types.Operation_kind.t list;
   satisfies : bool;
   changed : bool;
   has_conflict : bool;
   base_branch : Types.Branch.t option;
   ci_failure_count : int;
-  ci_fix_running : bool;
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Types.Ci_check.t list;
@@ -53,6 +51,13 @@ val create_adhoc : patch_id:Types.Patch_id.t -> pr_number:Types.Pr_number.t -> t
     {v PatchCtx ~> Add | p: Patch. --- has-pr' p. ~busy' p. ~in-gameplan' p. v}
 *)
 
+(** {2 Derived predicates} *)
+
+val needs_intervention : t -> bool
+(** Derived predicate: true when [Human] is not in [queue] and any of:
+    [ci_failure_count >= 3], [session_fallback = Given_up], or
+    [(not has_pr) && start_attempts_without_pr >= 2]. *)
+
 (** {2 Spec actions} *)
 
 val start : t -> base_branch:Types.Branch.t -> t
@@ -76,8 +81,9 @@ val respond : t -> Types.Operation_kind.t -> t
 
 val complete : t -> t
 (** [PatchCtx ~> Complete] — session finished. Preconditions (checked): [busy].
-    Postconditions: [~busy]; recalculates [needs_intervention] from
-    [ci_failure_count], [session_fallback], and [Human] in queue. *)
+    Postconditions: [~busy]. [needs_intervention] is derived automatically from
+    [ci_failure_count], [session_fallback], [start_attempts_without_pr], and
+    [Human] in queue. *)
 
 (** {2 State mutation helpers} *)
 
@@ -160,19 +166,14 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
 
-val set_ci_fix_running : t -> t
-(** Mark CI fix as in progress. Suppresses CI re-enqueue until cleared. *)
+val reset_ci_failure_count : t -> t
+(** Reset [ci_failure_count] to 0. Called by the poller when CI checks pass
+    after failures. [needs_intervention] is re-derived automatically. *)
 
-val clear_ci_fix_running : t -> t
-(** Clear the CI fix-running flag and reset [ci_failure_count] to 0. Called by
-    the poller when CI checks pass after a fix. *)
-
-val set_needs_intervention : t -> t
-(** Set the needs-intervention flag (e.g., session failure escalation). *)
-
-val clear_needs_intervention : t -> t
-(** Clear the needs-intervention flag (e.g., after manual resolution). Also
-    resets [session_fallback] to [Fresh_available]. *)
+val reset_intervention_state : t -> t
+(** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0, and
+    [start_attempts_without_pr] to 0. Used after manual resolution (e.g.,
+    sending a human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)
@@ -184,10 +185,8 @@ val set_ci_checks : t -> Types.Ci_check.t list -> t
 (** Replace the stored CI check details. *)
 
 val reset_busy : t -> t
-(** Reset a stale [busy] flag from a crashed session. If [busy], clears it and
-    re-evaluates [needs_intervention] using the same logic as [complete]
-    ([ci_failure_count >= 3 || session_failed], unless [Human] is queued). No-op
-    if not busy. *)
+(** Reset a stale [busy] flag from a crashed session. If [busy], clears it.
+    [needs_intervention] is derived automatically. No-op if not busy. *)
 
 val set_current_message_id : t -> Types.Message_id.t option -> t
 (** Track the currently accepted delivery message for this patch. *)
@@ -218,14 +217,12 @@ val restore :
   has_session:bool ->
   busy:bool ->
   merged:bool ->
-  needs_intervention:bool ->
   queue:Types.Operation_kind.t list ->
   satisfies:bool ->
   changed:bool ->
   has_conflict:bool ->
   base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
-  ci_fix_running:bool ->
   session_fallback:session_fallback ->
   human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->

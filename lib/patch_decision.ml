@@ -20,7 +20,7 @@ type disposition =
 
 let disposition (a : Patch_agent.t) : disposition =
   if a.merged then Skip
-  else if a.needs_intervention then Blocked
+  else if Patch_agent.needs_intervention a then Blocked
   else if a.busy then Busy
   else if not a.has_pr then Ready_start
   else
@@ -45,7 +45,7 @@ type ci_decision =
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
   if a.ci_failure_count >= 3 then Cap_reached
   else if
-    a.ci_fix_running
+    a.busy
     && Option.equal Operation_kind.equal a.current_op (Some Operation_kind.Ci)
   then Ci_fix_in_progress
   else if List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal then
@@ -69,3 +69,21 @@ type conflict_decision =
 
 let on_merge_conflict (a : Patch_agent.t) : conflict_decision =
   if a.has_conflict then Already_conflicting else Enqueue_conflict
+
+type checks_passing_decision =
+  | Reset_ci_failure_count
+      (** CI checks now pass after prior failures — reset the counter. *)
+  | No_ci_reset
+      (** No reset needed (no prior failures, or checks not passing). *)
+[@@deriving show, eq, sexp_of, compare]
+
+let on_checks_passing (a : Patch_agent.t) ~(checks_passing : bool) :
+    checks_passing_decision =
+  if a.ci_failure_count > 0 && checks_passing then Reset_ci_failure_count
+  else No_ci_reset
+
+let should_clear_conflict (a : Patch_agent.t) : bool =
+  not
+    (List.mem a.queue Operation_kind.Merge_conflict ~equal:Operation_kind.equal
+    || Option.equal Operation_kind.equal a.current_op
+         (Some Operation_kind.Merge_conflict))

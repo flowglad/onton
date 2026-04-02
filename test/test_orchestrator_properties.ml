@@ -80,7 +80,7 @@ let () =
                 let a = Orchestrator.agent orch pid in
                 a.Patch_agent.has_pr && (not a.Patch_agent.merged)
                 && (not a.Patch_agent.busy)
-                && not a.Patch_agent.needs_intervention
+                && not (Patch_agent.needs_intervention a)
             | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
@@ -276,7 +276,7 @@ let () =
               let orch = Orchestrator.set_tried_fresh orch pid in
               let orch = Orchestrator.complete orch pid in
               let a = Orchestrator.agent orch pid in
-              assert a.Patch_agent.needs_intervention;
+              assert (Patch_agent.needs_intervention a);
               (* Enqueue work — should be blocked by needs_intervention *)
               let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
               let _orch, _effects, actions = tick orch ~patches in
@@ -427,11 +427,11 @@ let () =
               let orch = Orchestrator.set_tried_fresh orch pid in
               let orch = Orchestrator.complete orch pid in
               let a = Orchestrator.agent orch pid in
-              let was_intervening = a.Patch_agent.needs_intervention in
+              let was_intervening = Patch_agent.needs_intervention a in
               let orch = Orchestrator.send_human_message orch pid "fix this" in
               let a = Orchestrator.agent orch pid in
               was_intervening
-              && (not a.Patch_agent.needs_intervention)
+              && (not (Patch_agent.needs_intervention a))
               && List.length a.Patch_agent.human_messages = 1
               && List.mem a.Patch_agent.queue Operation_kind.Human
                    ~equal:Operation_kind.equal
@@ -870,9 +870,9 @@ let () =
         with _ -> false)
   in
 
-  (* CI passing clears ci_fix_running *)
-  let prop_poll_ci_pass_clears_fix_running =
-    Test.make ~name:"apply_poll_result: checks_passing clears ci_fix_running"
+  (* CI passing resets ci_failure_count *)
+  let prop_poll_ci_pass_resets_failure_count =
+    Test.make ~name:"apply_poll_result: checks_passing resets ci_failure_count"
       gen_patch_list_unique (fun patches ->
         try
           match patches with
@@ -882,7 +882,6 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
-              let orch = Orchestrator.set_ci_fix_running orch pid in
               let orch = Orchestrator.increment_ci_failure_count orch pid in
               let poll =
                 Poller.
@@ -910,9 +909,7 @@ let () =
                     }
               in
               let a = Orchestrator.agent orch' pid in
-              (* ci_fix_running should be cleared and ci_failure_count reset *)
-              (not a.Patch_agent.ci_fix_running)
-              && a.Patch_agent.ci_failure_count = 0
+              a.Patch_agent.ci_failure_count = 0
         with _ -> false)
   in
 
@@ -946,6 +943,6 @@ let () =
       prop_send_human_message;
       prop_poll_active_ci_suppresses;
       prop_poll_completed_ci_reenqueues;
-      prop_poll_ci_pass_clears_fix_running;
+      prop_poll_ci_pass_resets_failure_count;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

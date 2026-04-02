@@ -49,3 +49,21 @@ type conflict_decision =
 
 val on_merge_conflict : Patch_agent.t -> conflict_decision
 (** Decide whether to enqueue merge conflict resolution. *)
+
+type checks_passing_decision =
+  | Reset_ci_failure_count
+      (** CI checks now pass after prior failures — reset the counter. *)
+  | No_ci_reset
+      (** No reset needed (no prior failures, or checks not passing). *)
+[@@deriving show, eq, sexp_of, compare]
+
+val on_checks_passing :
+  Patch_agent.t -> checks_passing:bool -> checks_passing_decision
+(** Decide whether to reset [ci_failure_count] based on current check status.
+    Returns [Reset_ci_failure_count] when failures existed and checks now pass.
+*)
+
+val should_clear_conflict : Patch_agent.t -> bool
+(** Whether it is safe to clear [has_conflict]. Returns [false] when a
+    Merge_conflict operation is queued or in-flight, since clearing would race
+    with the active resolution. *)
