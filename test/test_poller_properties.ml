@@ -5,11 +5,6 @@ let () =
   let open QCheck2 in
   let tests =
     [
-      (* mergeable is passed through from PR state *)
-      Test.make ~name:"mergeable passed through" ~count:500
-        Onton_test_support.Test_generators.gen_pr_state (fun pr ->
-          let result = Onton.Poller.poll ~was_merged:false pr in
-          Bool.equal result.Onton.Poller.mergeable (Onton.Pr_state.mergeable pr));
       (* merge_ready is passed through from PR state *)
       Test.make ~name:"merge_ready passed through" ~count:500
         Onton_test_support.Test_generators.gen_pr_state (fun pr ->

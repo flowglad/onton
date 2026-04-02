@@ -42,17 +42,16 @@ let make_orch patch agent =
     ~outbox:(Map.empty (module Message_id))
     ~main_branch:main
 
-let make_agent ~patch_id ~has_pr ~pr_number ~merged ~queue ~base_branch
-    ~is_draft ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr =
-  Patch_agent.restore ~patch_id ~has_pr ~pr_number ~has_session:false
-    ~busy:false ~merged ~queue ~satisfies:false ~changed:false
-    ~has_conflict:false ~base_branch ~ci_failure_count:0
-    ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-    ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft
+let make_agent ~patch_id ~pr_number ~merged ~queue ~base_branch ~is_draft
     ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~checks_passing:false
-    ~no_unresolved_comments:false ~current_op:None ~current_message_id:None
+    ~start_attempts_without_pr =
+  Patch_agent.restore ~patch_id ~pr_number ~has_session:false ~busy:false
+    ~merged ~queue ~satisfies:false ~changed:false ~has_conflict:false
+    ~base_branch ~ci_failure_count:0
+    ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+    ~ci_checks:[] ~merge_ready:false ~is_draft ~pr_description_applied
+    ~implementation_notes_delivered ~start_attempts_without_pr
+    ~checks_passing:false ~current_op:None ~current_message_id:None
     ~generation:0 ~worktree_path:None ~head_branch:None ~branch_blocked:false
 
 let has_notes_queued agent =
@@ -128,7 +127,7 @@ let () =
       let pr_number = if has_pr then Some (Pr_number.of_int 42) else None in
       let patch = make_patch pid branch in
       let agent =
-        make_agent ~patch_id:pid ~has_pr ~pr_number ~merged ~queue ~base_branch
+        make_agent ~patch_id:pid ~pr_number ~merged ~queue ~base_branch
           ~is_draft ~pr_description_applied ~implementation_notes_delivered
           ~start_attempts_without_pr
       in
@@ -193,7 +192,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_description_applied:true ~implementation_notes_delivered:false
@@ -226,7 +225,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
             ~pr_description_applied:false ~implementation_notes_delivered:false
@@ -263,7 +262,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main)
             ~is_draft:(not desired_draft) ~pr_description_applied:true
@@ -301,10 +300,9 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:false ~pr_number:None ~merged:false
-            ~queue:[] ~base_branch:None ~is_draft:false
-            ~pr_description_applied:false ~implementation_notes_delivered:false
-            ~start_attempts_without_pr:2
+          make_agent ~patch_id:pid ~pr_number:None ~merged:false ~queue:[]
+            ~base_branch:None ~is_draft:false ~pr_description_applied:false
+            ~implementation_notes_delivered:false ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -333,7 +331,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_description_applied:true ~implementation_notes_delivered:false
@@ -366,10 +364,9 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:false ~pr_number:None ~merged:false
-            ~queue:[] ~base_branch:None ~is_draft:false
-            ~pr_description_applied:false ~implementation_notes_delivered:false
-            ~start_attempts_without_pr:2
+          make_agent ~patch_id:pid ~pr_number:None ~merged:false ~queue:[]
+            ~base_branch:None ~is_draft:false ~pr_description_applied:false
+            ~implementation_notes_delivered:false ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
         let orch, effects =
@@ -399,7 +396,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
             ~pr_description_applied:false ~implementation_notes_delivered:true
@@ -431,7 +428,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_description_applied:true ~implementation_notes_delivered:true
@@ -446,7 +443,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -474,7 +470,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_description_applied:true ~implementation_notes_delivered:false
@@ -489,7 +485,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -521,16 +516,15 @@ let () =
       (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let agent =
-          Patch_agent.restore ~patch_id:pid ~has_pr:true
+          Patch_agent.restore ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~ci_failure_count:1
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft:false
+            ~ci_checks:[] ~merge_ready:false ~is_draft:false
             ~pr_description_applied:true ~implementation_notes_delivered:true
-            ~start_attempts_without_pr:0 ~checks_passing:false
-            ~no_unresolved_comments:false ~current_op:None
+            ~start_attempts_without_pr:0 ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~head_branch:None ~branch_blocked:false
         in
@@ -543,7 +537,6 @@ let () =
               closed = false;
               is_draft = false;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -559,16 +552,13 @@ let () =
   in
 
   let prop_poll_result_persists_world_flags =
-    Test.make
-      ~name:
-        "patch_controller: poll result persists mergeable and checks_passing \
-         flags"
+    Test.make ~name:"patch_controller: poll result persists checks_passing flag"
       ~count:200
       Gen.(quad gen_patch_id gen_branch bool bool)
-      (fun (pid, branch, mergeable, checks_passing) ->
+      (fun (pid, branch, checks_passing, merge_ready) ->
         let patch = make_patch pid branch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_description_applied:true ~implementation_notes_delivered:false
@@ -583,8 +573,7 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable;
-              merge_ready = false;
+              merge_ready;
               checks_passing;
               ci_checks = [];
             }
@@ -594,8 +583,8 @@ let () =
             (make_poll_observation poll)
         in
         let a = Orchestrator.agent orch pid in
-        Bool.equal a.Patch_agent.mergeable mergeable
-        && Bool.equal a.Patch_agent.checks_passing checks_passing)
+        Bool.equal a.Patch_agent.checks_passing checks_passing
+        && Bool.equal a.Patch_agent.merge_ready merge_ready)
   in
 
   let prop_poll_observation_updates_branch_metadata =
@@ -610,7 +599,7 @@ let () =
         let observed_base = Branch.of_string "stack/base" in
         let patch = make_patch pid branch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:None ~is_draft:true
             ~pr_description_applied:true ~implementation_notes_delivered:false
@@ -625,7 +614,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -665,7 +653,7 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~has_pr:true
+          make_agent ~patch_id:pid
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_description_applied:false ~implementation_notes_delivered:false

@@ -524,14 +524,14 @@ let patch_view_of_agent (agent : Patch_agent.t)
     | Some p -> p.Patch.branch
     | None -> Branch.of_string (Patch_id.to_string patch_id)
   in
-  let current_op = Patch_agent.highest_priority agent in
+  let current_op = agent.Patch_agent.current_op in
   let ctx =
     ( State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
     |> State.Patch_ctx.set_needs_intervention ~patch_id
          ~value:(Patch_agent.needs_intervention agent)
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
-    |> State.Patch_ctx.set_has_pr ~patch_id ~value:agent.has_pr
+    |> State.Patch_ctx.set_has_pr ~patch_id ~value:(Patch_agent.has_pr agent)
     |> State.Patch_ctx.set_approved ~patch_id
          ~value:(Patch_agent.is_approved agent ~main_branch)
     |> State.Patch_ctx.set_ci_failure_count ~patch_id
@@ -550,7 +550,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
         let dep_status =
           match Map.find agents_by_id dep_id with
           | Some dep_agent ->
-              let dep_op = Patch_agent.highest_priority dep_agent in
+              let dep_op = dep_agent.Patch_agent.current_op in
               let dep_ctx =
                 ( State.Patch_ctx.empty
                 |> State.Patch_ctx.set_merged ~patch_id:dep_id
@@ -560,7 +560,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
                 |> State.Patch_ctx.set_busy ~patch_id:dep_id
                      ~value:dep_agent.busy
                 |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
-                     ~value:dep_agent.has_pr
+                     ~value:(Patch_agent.has_pr dep_agent)
                 |> State.Patch_ctx.set_approved ~patch_id:dep_id
                      ~value:(Patch_agent.is_approved dep_agent ~main_branch)
                 |> State.Patch_ctx.set_ci_failure_count ~patch_id:dep_id
@@ -591,7 +591,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     current_op;
     ci_failures = agent.ci_failure_count;
     dep_ids;
-    has_pr = agent.has_pr;
+    has_pr = Patch_agent.has_pr agent;
     has_conflict = agent.has_conflict;
     needs_intervention = Patch_agent.needs_intervention agent;
     human_messages = List.length agent.human_messages;

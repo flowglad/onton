@@ -11,7 +11,6 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 
 type t = private {
   patch_id : Types.Patch_id.t;
-  has_pr : bool;
   pr_number : Types.Pr_number.t option;
   has_session : bool;
   busy : bool;
@@ -25,14 +24,12 @@ type t = private {
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Types.Ci_check.t list;
-  mergeable : bool;
   merge_ready : bool;
   is_draft : bool;
   pr_description_applied : bool;
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   checks_passing : bool;
-  no_unresolved_comments : bool;
   current_op : Types.Operation_kind.t option;
   current_message_id : Types.Message_id.t option;
   generation : int;
@@ -52,6 +49,9 @@ val create_adhoc : patch_id:Types.Patch_id.t -> pr_number:Types.Pr_number.t -> t
 *)
 
 (** {2 Derived predicates} *)
+
+val has_pr : t -> bool
+(** [true] when [pr_number] is [Some _]. *)
 
 val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
@@ -125,9 +125,6 @@ val clear_has_conflict : t -> t
 val set_base_branch : t -> Types.Branch.t -> t
 (** Update the base branch. *)
 
-val set_mergeable : t -> bool -> t
-(** Set the mergeable flag from GitHub merge state. *)
-
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
@@ -145,9 +142,6 @@ val increment_start_attempts_without_pr : t -> t
 
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
-
-val set_no_unresolved_comments : t -> bool -> t
-(** Set the no_unresolved_comments flag from GitHub review state. *)
 
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
@@ -207,12 +201,11 @@ val highest_priority : t -> Types.Operation_kind.t option
 (** {2 Persistence support} *)
 
 val set_pr_number : t -> Types.Pr_number.t -> t
-(** Store [pr_number] and set [has_pr = true]. Not a plain field setter —
+(** Store [pr_number] (making [has_pr] true). Not a plain field setter —
     establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
 
 val restore :
   patch_id:Types.Patch_id.t ->
-  has_pr:bool ->
   pr_number:Types.Pr_number.t option ->
   has_session:bool ->
   busy:bool ->
@@ -226,14 +219,12 @@ val restore :
   session_fallback:session_fallback ->
   human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
-  mergeable:bool ->
   merge_ready:bool ->
   is_draft:bool ->
   pr_description_applied:bool ->
   implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->
   checks_passing:bool ->
-  no_unresolved_comments:bool ->
   current_op:Types.Operation_kind.t option ->
   current_message_id:Types.Message_id.t option ->
   generation:int ->

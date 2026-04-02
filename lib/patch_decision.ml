@@ -22,7 +22,7 @@ let disposition (a : Patch_agent.t) : disposition =
   if a.merged then Skip
   else if Patch_agent.needs_intervention a then Blocked
   else if a.busy then Busy
-  else if not a.has_pr then Ready_start
+  else if not (Patch_agent.has_pr a) then Ready_start
   else
     match Patch_agent.highest_priority a with
     | None -> Idle

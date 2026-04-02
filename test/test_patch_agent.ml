@@ -39,8 +39,8 @@ let () =
       (* -- create -- *)
       Test.make ~name:"create yields clean initial state" gen_pid (fun pid ->
           let t = create pid in
-          (not t.has_pr) && (not t.has_session) && (not t.busy)
-          && (not t.merged)
+          (not (has_pr t))
+          && (not t.has_session) && (not t.busy) && (not t.merged)
           && (not (needs_intervention t))
           && List.is_empty t.queue && (not t.satisfies) && (not t.changed)
           && (not t.has_conflict)
@@ -51,9 +51,8 @@ let () =
           && (not t.implementation_notes_delivered)
           && t.start_attempts_without_pr = 0
           && List.is_empty t.human_messages
-          && List.is_empty t.ci_checks && (not t.mergeable)
-          && (not t.merge_ready) && (not t.checks_passing)
-          && not t.no_unresolved_comments);
+          && List.is_empty t.ci_checks && (not t.merge_ready)
+          && not t.checks_passing);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)
@@ -76,7 +75,8 @@ let () =
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let a = create pid |> fun a -> start a ~base_branch:br in
-          (not a.has_pr) && a.has_session && a.busy && a.satisfies
+          (not (has_pr a))
+          && a.has_session && a.busy && a.satisfies
           && Option.equal Branch.equal a.base_branch (Some br));
       (* -- start twice raises -- *)
       Test.make ~name:"start on already-started raises (busy)"
@@ -349,9 +349,8 @@ let () =
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
+          (* session_fallback = Given_up and Human not in queue →
+             needs_intervention *)
           needs_intervention a);
       (* -- Human queued suppresses intervention from session_failed -- *)
       Test.make ~name:"Human queued suppresses intervention (session_failed)"
@@ -390,9 +389,7 @@ let () =
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
+          (* session_fallback = Given_up → needs_intervention *)
           let triggered = needs_intervention a in
           let a = reset_intervention_state a in
           triggered && not (needs_intervention a));
@@ -427,17 +424,17 @@ let () =
           let a = complete a in
           let a = mark_merged a in
           let a =
-            Onton.Patch_agent.restore ~patch_id:a.patch_id ~has_pr:false
-              ~pr_number:None ~has_session:false ~busy:false ~merged:false
-              ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
+            Onton.Patch_agent.restore ~patch_id:a.patch_id ~pr_number:None
+              ~has_session:false ~busy:false ~merged:false ~queue:[]
+              ~satisfies:false ~changed:false ~has_conflict:false
               ~base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
-              ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
-              ~is_draft:false ~pr_description_applied:false
+              ~ci_checks:a.ci_checks ~merge_ready:false ~is_draft:false
+              ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~checks_passing:false ~no_unresolved_comments:false
-              ~current_op:None ~current_message_id:None ~generation:0
-              ~worktree_path:None ~head_branch:None ~branch_blocked:false
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~head_branch:None
+              ~branch_blocked:false
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -499,17 +496,17 @@ let () =
           (* Construct agent with has_pr=true but has_session=false via
              restore *)
           let a =
-            restore ~patch_id:pid ~has_pr:true ~pr_number:None
+            restore ~patch_id:pid
+              ~pr_number:(Some (Pr_number.of_int 1))
               ~has_session:false ~busy:false ~merged:false ~queue:[]
               ~satisfies:true ~changed:false ~has_conflict:false
               ~base_branch:(Some br) ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
-              ~mergeable:false ~merge_ready:false ~is_draft:false
-              ~pr_description_applied:false
+              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~checks_passing:false ~no_unresolved_comments:false
-              ~current_op:None ~current_message_id:None ~generation:0
-              ~worktree_path:None ~head_branch:None ~branch_blocked:false
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~head_branch:None
+              ~branch_blocked:false
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
@@ -623,7 +620,7 @@ let () =
           let a = set_pr_description_applied a true in
           let a = set_implementation_notes_delivered a true in
           let a = set_pr_number a (Pr_number.of_int 7) in
-          a.has_pr && a.is_draft
+          has_pr a && a.is_draft
           && (not a.pr_description_applied)
           && (not a.implementation_notes_delivered)
           && a.start_attempts_without_pr = 0);

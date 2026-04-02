@@ -26,7 +26,6 @@ type t = {
           re-discover the current open PR for this branch. *)
   is_draft : bool;  (** [true] if the PR is still a draft. *)
   has_conflict : bool;  (** [true] if the PR has a merge conflict. *)
-  mergeable : bool;  (** [true] if the PR is currently mergeable. *)
   merge_ready : bool;
       (** [true] if GitHub's [mergeStateStatus] is [CLEAN] — all branch
           protection rules (required reviews, checks, etc.) are satisfied. *)

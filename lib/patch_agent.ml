@@ -7,7 +7,6 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 
 type t = {
   patch_id : Patch_id.t;
-  has_pr : bool;
   pr_number : Pr_number.t option;
   has_session : bool;
   busy : bool;
@@ -21,14 +20,12 @@ type t = {
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Ci_check.t list;
-  mergeable : bool;
   merge_ready : bool;
   is_draft : bool;
   pr_description_applied : bool;
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   checks_passing : bool;
-  no_unresolved_comments : bool;
   current_op : Operation_kind.t option;
   current_message_id : Message_id.t option;
   generation : int;
@@ -40,17 +37,17 @@ type t = {
 
 let pp fmt t = Sexp.pp_hum fmt (sexp_of_t t)
 let show t = Sexp.to_string_hum (sexp_of_t t)
+let has_pr t = Option.is_some t.pr_number
 
 let needs_intervention t =
   (not (List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal))
   && (t.ci_failure_count >= 3
      || equal_session_fallback t.session_fallback Given_up
-     || ((not t.has_pr) && t.start_attempts_without_pr >= 2))
+     || ((not (has_pr t)) && t.start_attempts_without_pr >= 2))
 
 let create patch_id =
   {
     patch_id;
-    has_pr = false;
     pr_number = None;
     has_session = false;
     busy = false;
@@ -64,14 +61,12 @@ let create patch_id =
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
-    mergeable = false;
     merge_ready = false;
     is_draft = false;
     pr_description_applied = false;
     implementation_notes_delivered = false;
     start_attempts_without_pr = 0;
     checks_passing = false;
-    no_unresolved_comments = false;
     current_op = None;
     current_message_id = None;
     generation = 0;
@@ -83,7 +78,6 @@ let create patch_id =
 let create_adhoc ~patch_id ~pr_number =
   {
     patch_id;
-    has_pr = true;
     pr_number = Some pr_number;
     has_session = false;
     busy = false;
@@ -97,14 +91,12 @@ let create_adhoc ~patch_id ~pr_number =
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
-    mergeable = false;
     merge_ready = false;
     is_draft = false;
     pr_description_applied = true;
     implementation_notes_delivered = true;
     start_attempts_without_pr = 0;
     checks_passing = false;
-    no_unresolved_comments = false;
     current_op = None;
     current_message_id = None;
     generation = 0;
@@ -144,7 +136,7 @@ let clear_session_fallback t = { t with session_fallback = Fresh_available }
     - Resume failure: escalate to Tried_fresh (will try fresh next)
     - Respond path fresh failure: escalate to Given_up → needs_intervention *)
 let on_session_failure t ~is_fresh =
-  if (not t.has_pr) && is_fresh then
+  if (not (has_pr t)) && is_fresh then
     (* Start path fresh failure: full reset for clean retry *)
     { t with session_fallback = Fresh_available }
   else
@@ -154,7 +146,6 @@ let on_session_failure t ~is_fresh =
 let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
 let set_base_branch t branch = { t with base_branch = Some branch }
-let set_mergeable t v = { t with mergeable = v }
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }
 let set_pr_description_applied t v = { t with pr_description_applied = v }
@@ -170,12 +161,11 @@ let increment_start_attempts_without_pr t =
 let on_pr_discovery_failure t = increment_start_attempts_without_pr t
 
 let set_checks_passing t v = { t with checks_passing = v }
-let set_no_unresolved_comments t v = { t with no_unresolved_comments = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 let set_head_branch t branch = { t with head_branch = Some branch }
 
 let is_approved t ~main_branch =
-  t.has_pr && t.merge_ready && (not t.busy)
+  has_pr t && t.merge_ready && (not t.busy)
   && (not (needs_intervention t))
   && (not t.is_draft) && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
@@ -203,16 +193,14 @@ let reset_intervention_state t =
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
-let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged ~queue
-    ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
-    ~session_fallback ~human_messages ~ci_checks ~mergeable ~merge_ready
-    ~is_draft ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~checks_passing ~no_unresolved_comments
+let restore ~patch_id ~pr_number ~has_session ~busy ~merged ~queue ~satisfies
+    ~changed ~has_conflict ~base_branch ~ci_failure_count ~session_fallback
+    ~human_messages ~ci_checks ~merge_ready ~is_draft ~pr_description_applied
+    ~implementation_notes_delivered ~start_attempts_without_pr ~checks_passing
     ~current_op ~current_message_id ~generation ~worktree_path ~head_branch
     ~branch_blocked =
   {
     patch_id;
-    has_pr;
     pr_number;
     has_session;
     busy;
@@ -226,14 +214,12 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged ~queue
     session_fallback;
     human_messages;
     ci_checks;
-    mergeable;
     merge_ready;
     is_draft;
     pr_description_applied;
     implementation_notes_delivered;
     start_attempts_without_pr;
     checks_passing;
-    no_unresolved_comments;
     current_op;
     current_message_id;
     generation;
@@ -246,7 +232,6 @@ let set_pr_number t pr_number =
   {
     t with
     pr_number = Some pr_number;
-    has_pr = true;
     is_draft = true;
     pr_description_applied = false;
     implementation_notes_delivered = false;
@@ -254,7 +239,7 @@ let set_pr_number t pr_number =
   }
 
 let start t ~base_branch =
-  if t.has_pr then invalid_arg "Patch_agent.start: patch already has a PR";
+  if has_pr t then invalid_arg "Patch_agent.start: patch already has a PR";
   if t.busy then invalid_arg "Patch_agent.start: patch is already busy";
   {
     t with
@@ -268,7 +253,7 @@ let start t ~base_branch =
   }
 
 let rebase t ~base_branch =
-  if not t.has_pr then invalid_arg "Patch_agent.rebase: patch has no PR";
+  if not (has_pr t) then invalid_arg "Patch_agent.rebase: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
 
   if t.busy then invalid_arg "Patch_agent.rebase: patch is busy";
@@ -288,14 +273,12 @@ let rebase t ~base_branch =
     current_message_id = None;
     queue;
     base_branch = Some base_branch;
-    mergeable = false;
     merge_ready = false;
     checks_passing = false;
-    no_unresolved_comments = false;
   }
 
 let respond t k =
-  if not t.has_pr then invalid_arg "Patch_agent.respond: patch has no PR";
+  if not (has_pr t) then invalid_arg "Patch_agent.respond: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
 
   if t.busy then invalid_arg "Patch_agent.respond: patch is busy";
@@ -337,10 +320,8 @@ let respond t k =
     has_conflict;
     human_messages = t.human_messages;
     ci_failure_count;
-    mergeable = false;
     merge_ready = false;
     checks_passing = false;
-    no_unresolved_comments = false;
   }
 
 let complete t =
@@ -381,9 +362,8 @@ let%test "on_session_failure: resume failure escalates to Tried_fresh" =
 
 let%test "on_session_failure: respond path fresh escalates to Given_up" =
   let t = create (Patch_id.of_string "1") in
-  let t =
-    { t with busy = true; has_pr = true; session_fallback = Tried_fresh }
-  in
+  let t = set_pr_number t (Pr_number.of_int 1) in
+  let t = { t with busy = true; session_fallback = Tried_fresh } in
   let t = on_session_failure t ~is_fresh:true in
   equal_session_fallback t.session_fallback Given_up
 

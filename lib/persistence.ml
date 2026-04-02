@@ -10,12 +10,6 @@ let string_member_opt key json =
 
 let int_member key json = Yojson.Safe.Util.(member key json |> to_int)
 let bool_member key json = Yojson.Safe.Util.(member key json |> to_bool)
-
-let bool_member_opt key json =
-  match Yojson.Safe.Util.member key json with
-  | `Null -> None
-  | v -> Some (Yojson.Safe.Util.to_bool v)
-
 let list_member key json = Yojson.Safe.Util.(member key json |> to_list)
 
 let int_member_opt key json =
@@ -41,7 +35,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
       ("patch_id", Patch_id.yojson_of_t a.patch_id);
-      ("has_pr", `Bool a.has_pr);
       ( "pr_number",
         match a.pr_number with
         | None -> `Null
@@ -63,14 +56,12 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ( "human_messages",
         `List (List.map a.human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
-      ("mergeable", `Bool a.mergeable);
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
       ("pr_description_applied", `Bool a.pr_description_applied);
       ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("checks_passing", `Bool a.checks_passing);
-      ("no_unresolved_comments", `Bool a.no_unresolved_comments);
       ( "current_op",
         match a.current_op with
         | None -> `Null
@@ -88,15 +79,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | Some b -> Branch.yojson_of_t b );
       ("branch_blocked", `Bool a.branch_blocked);
     ]
-
-let list_member_opt key json =
-  match Yojson.Safe.Util.member key json with
-  | `Null -> Ok None
-  | `List _ as v -> Ok (Some (Yojson.Safe.Util.to_list v))
-  | other ->
-      Error
-        (Printf.sprintf "%s: expected list, got %s" key
-           (Yojson.Safe.to_string other))
 
 let patch_agent_of_yojson json =
   let ( let* ) r f = Result.bind r ~f in
@@ -116,21 +98,14 @@ let patch_agent_of_yojson json =
     | `Null -> Error "patch_agent: missing session_fallback"
     | v -> try_of_yojson Patch_agent.session_fallback_of_yojson v
   in
-  let* ci_checks_raw = list_member_opt "ci_checks" json in
-  let ci_checks_raw = Option.value ci_checks_raw ~default:[] in
+  let ci_checks_raw = list_member "ci_checks" json in
   let* ci_checks =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
-  let has_pr = bool_member "has_pr" json in
-  (* Legacy snapshots written before these fields existed will not contain them.
-     When has_pr is true, default to true so we don't replay PR bootstrap
-     effects (description, draft flip, notes) for an already-set-up PR. *)
-  let legacy_pr_default = has_pr in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-       ~has_pr
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
        ~has_session:(bool_member "has_session" json)
@@ -144,27 +119,13 @@ let patch_agent_of_yojson json =
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~ci_checks
-       ~mergeable:
-         (bool_member_opt "mergeable" json |> Option.value ~default:false)
-       ~merge_ready:
-         (bool_member_opt "merge_ready" json |> Option.value ~default:false)
-       ~is_draft:
-         (bool_member_opt "is_draft" json
-         |> Option.value ~default:legacy_pr_default)
-       ~pr_description_applied:
-         (bool_member_opt "pr_description_applied" json
-         |> Option.value ~default:legacy_pr_default)
+       ~merge_ready:(bool_member "merge_ready" json)
+       ~is_draft:(bool_member "is_draft" json)
+       ~pr_description_applied:(bool_member "pr_description_applied" json)
        ~implementation_notes_delivered:
-         (bool_member_opt "implementation_notes_delivered" json
-         |> Option.value ~default:legacy_pr_default)
-       ~start_attempts_without_pr:
-         (int_member_opt "start_attempts_without_pr" json
-         |> Option.value ~default:0)
-       ~checks_passing:
-         (bool_member_opt "checks_passing" json |> Option.value ~default:false)
-       ~no_unresolved_comments:
-         (bool_member_opt "no_unresolved_comments" json
-         |> Option.value ~default:false)
+         (bool_member "implementation_notes_delivered" json)
+       ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
+       ~checks_passing:(bool_member "checks_passing" json)
        ~current_op:
          (match Yojson.Safe.Util.member "current_op" json with
          | `Null -> None
@@ -175,12 +136,11 @@ let patch_agent_of_yojson json =
        ~current_message_id:
          (string_member_opt "current_message_id" json
          |> Option.map ~f:Message_id.of_string)
-       ~generation:(int_member_opt "generation" json |> Option.value ~default:0)
+       ~generation:(int_member "generation" json)
        ~worktree_path:(string_member_opt "worktree_path" json)
        ~head_branch:
          (string_member_opt "head_branch" json |> Option.map ~f:Branch.of_string)
-       ~branch_blocked:
-         (bool_member_opt "branch_blocked" json |> Option.value ~default:false))
+       ~branch_blocked:(bool_member "branch_blocked" json))
 
 (* ---------- Activity_log ---------- *)
 

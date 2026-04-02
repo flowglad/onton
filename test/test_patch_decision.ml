@@ -41,17 +41,19 @@ let () =
       Test.make ~name:"disposition: needs_intervention -> Blocked"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          (* Drive ci_failure_count to 3 then complete to trigger
-             needs_intervention *)
-          let a = with_pr pid br in
-          let a =
-            increment_ci_failure_count a
-            |> increment_ci_failure_count |> increment_ci_failure_count
-          in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
-          try equal_disposition (disposition a) Blocked with _ -> false);
+          try
+            (* Drive ci_failure_count to 3 via respond (which increments on
+               Ci) to trigger needs_intervention after complete *)
+            let a = with_pr pid br in
+            let a =
+              increment_ci_failure_count a |> increment_ci_failure_count
+            in
+            let a = enqueue a Operation_kind.Ci in
+            (* respond Ci increments ci_failure_count to 3 *)
+            let a = respond a Operation_kind.Ci in
+            let a = complete a in
+            equal_disposition (disposition a) Blocked
+          with _ -> false);
       (* ---- disposition: busy -> Busy ---- *)
       Test.make ~name:"disposition: busy -> Busy"
         Gen.(pair gen_pid gen_branch)
