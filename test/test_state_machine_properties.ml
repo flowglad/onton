@@ -310,7 +310,7 @@ let () =
                 let orch = Orchestrator.set_tried_fresh orch pid in
                 let orch = Orchestrator.complete orch pid in
                 let agent = Orchestrator.agent orch pid in
-                if not Patch_agent.needs_intervention agent then false
+                if not (Patch_agent.needs_intervention agent) then false
                 else
                   let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
                   let _, _effects, actions =
