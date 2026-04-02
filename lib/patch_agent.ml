@@ -19,7 +19,6 @@ type t = {
   has_conflict : bool;
   base_branch : Branch.t option;
   ci_failure_count : int;
-  ci_fix_running : bool;
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Ci_check.t list;
@@ -58,7 +57,6 @@ let create patch_id =
     has_conflict = false;
     base_branch = None;
     ci_failure_count = 0;
-    ci_fix_running = false;
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
@@ -93,7 +91,6 @@ let create_adhoc ~patch_id ~pr_number =
     has_conflict = false;
     base_branch = None;
     ci_failure_count = 0;
-    ci_fix_running = false;
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
@@ -182,10 +179,7 @@ let is_approved t ~main_branch =
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
-let set_ci_fix_running t = { t with ci_fix_running = true }
-
-let clear_ci_fix_running t =
-  { t with ci_fix_running = false; ci_failure_count = 0 }
+let reset_ci_failure_count t = { t with ci_failure_count = 0 }
 
 let set_ci_checks t checks = { t with ci_checks = checks }
 let set_needs_intervention t = { t with needs_intervention = true }
@@ -202,7 +196,6 @@ let clear_needs_intervention t =
     t with
     needs_intervention = false;
     session_fallback = Fresh_available;
-    ci_fix_running = false;
     ci_failure_count = 0;
     start_attempts_without_pr = 0;
   }
@@ -217,23 +210,11 @@ let reset_busy t =
         t.ci_failure_count >= 3
         || equal_session_fallback t.session_fallback Given_up
     in
-    {
-      t with
-      busy = false;
-      ci_fix_running =
-        (match t.current_op with
-        | Some Ci -> Option.is_some t.current_message_id
-        | Some
-            ( Rebase | Human | Merge_conflict | Review_comments
-            | Implementation_notes )
-        | None ->
-            false);
-      needs_intervention;
-    }
+    { t with busy = false; needs_intervention }
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
-    ~ci_failure_count ~ci_fix_running ~session_fallback ~human_messages
+    ~ci_failure_count ~session_fallback ~human_messages
     ~ci_checks ~mergeable ~merge_ready ~is_draft ~pr_description_applied
     ~implementation_notes_delivered ~start_attempts_without_pr ~checks_passing
     ~no_unresolved_comments ~current_op ~current_message_id ~generation
@@ -252,7 +233,6 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     has_conflict;
     base_branch;
     ci_failure_count;
-    ci_fix_running;
     session_fallback;
     human_messages;
     ci_checks;
@@ -353,7 +333,6 @@ let respond t k =
      by the agent session — a conservative simplification. *)
   let changed = if is_ci || is_review then true else t.changed in
   let has_conflict = if is_merge_conflict then false else t.has_conflict in
-  let ci_fix_running = if is_ci then true else t.ci_fix_running in
   let ci_failure_count =
     if is_ci then t.ci_failure_count + 1 else t.ci_failure_count
   in
@@ -368,7 +347,6 @@ let respond t k =
     changed;
     has_conflict;
     human_messages = t.human_messages;
-    ci_fix_running;
     ci_failure_count;
     mergeable = false;
     merge_ready = false;
@@ -391,9 +369,6 @@ let complete t =
       busy = false;
       current_op = None;
       current_message_id = None;
-      ci_fix_running =
-        (if Option.equal Operation_kind.equal t.current_op (Some Ci) then false
-         else t.ci_fix_running);
       human_messages =
         (match t.current_op with
         | Some Human -> []

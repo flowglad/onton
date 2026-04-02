@@ -870,9 +870,10 @@ let () =
         with _ -> false)
   in
 
-  (* CI passing clears ci_fix_running *)
-  let prop_poll_ci_pass_clears_fix_running =
-    Test.make ~name:"apply_poll_result: checks_passing clears ci_fix_running"
+  (* CI passing resets ci_failure_count *)
+  let prop_poll_ci_pass_resets_failure_count =
+    Test.make
+      ~name:"apply_poll_result: checks_passing resets ci_failure_count"
       gen_patch_list_unique (fun patches ->
         try
           match patches with
@@ -882,7 +883,6 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.complete orch pid in
-              let orch = Orchestrator.set_ci_fix_running orch pid in
               let orch = Orchestrator.increment_ci_failure_count orch pid in
               let poll =
                 Poller.
@@ -910,9 +910,7 @@ let () =
                     }
               in
               let a = Orchestrator.agent orch' pid in
-              (* ci_fix_running should be cleared and ci_failure_count reset *)
-              (not a.Patch_agent.ci_fix_running)
-              && a.Patch_agent.ci_failure_count = 0
+              a.Patch_agent.ci_failure_count = 0
         with _ -> false)
   in
 
@@ -946,6 +944,6 @@ let () =
       prop_send_human_message;
       prop_poll_active_ci_suppresses;
       prop_poll_completed_ci_reenqueues;
-      prop_poll_ci_pass_clears_fix_running;
+      prop_poll_ci_pass_resets_failure_count;
     ];
   Stdlib.print_endline "orchestrator tick/spawn: all properties passed"

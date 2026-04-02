@@ -48,7 +48,7 @@ let make_agent ~patch_id ~has_pr ~pr_number ~merged ~needs_intervention ~queue
   Patch_agent.restore ~patch_id ~has_pr ~pr_number ~has_session:false
     ~busy:false ~merged ~needs_intervention ~queue ~satisfies:false
     ~changed:false ~has_conflict:false ~base_branch ~ci_failure_count:0
-    ~ci_fix_running:false ~session_fallback:Patch_agent.Fresh_available
+    ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~ci_checks:[] ~mergeable:false ~merge_ready:false
     ~is_draft ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~checks_passing:false
@@ -514,10 +514,10 @@ let () =
           | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
   in
 
-  let prop_stale_ci_latch_recovers_on_failing_poll =
+  let prop_idle_ci_failure_count_allows_reenqueue =
     Test.make
       ~name:
-        "patch_controller: stale idle ci_fix_running does not suppress Ci \
+        "patch_controller: idle agent with ci_failure_count > 0 allows Ci \
          re-enqueue"
       ~count:200
       Gen.(pair gen_patch_id gen_branch)
@@ -528,8 +528,8 @@ let () =
             ~pr_number:(Some (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false
             ~needs_intervention:false ~queue:[] ~satisfies:false ~changed:false
-            ~has_conflict:false ~base_branch:(Some main) ~ci_failure_count:0
-            ~ci_fix_running:true ~session_fallback:Patch_agent.Fresh_available
+            ~has_conflict:false ~base_branch:(Some main) ~ci_failure_count:1
+            ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~ci_checks:[] ~mergeable:false ~merge_ready:false
             ~is_draft:false ~pr_description_applied:true
             ~implementation_notes_delivered:true ~start_attempts_without_pr:0
@@ -723,7 +723,7 @@ let () =
       prop_reconcile_all_converges_after_acknowledged_effects;
       prop_poll_to_controller_promotes_ready_after_notes;
       prop_poll_ci_failure_never_erases_notes_followup;
-      prop_stale_ci_latch_recovers_on_failing_poll;
+      prop_idle_ci_failure_count_allows_reenqueue;
       prop_poll_result_persists_world_flags;
       prop_poll_observation_updates_branch_metadata;
       prop_mixed_cycle_converges_for_bootstrap_patch;

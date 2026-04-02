@@ -23,7 +23,6 @@ type t = private {
   has_conflict : bool;
   base_branch : Types.Branch.t option;
   ci_failure_count : int;
-  ci_fix_running : bool;
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Types.Ci_check.t list;
@@ -160,12 +159,9 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
 
-val set_ci_fix_running : t -> t
-(** Mark CI fix as in progress. Suppresses CI re-enqueue until cleared. *)
-
-val clear_ci_fix_running : t -> t
-(** Clear the CI fix-running flag and reset [ci_failure_count] to 0. Called by
-    the poller when CI checks pass after a fix. *)
+val reset_ci_failure_count : t -> t
+(** Reset [ci_failure_count] to 0. Called by the poller when CI checks pass
+    after failures. *)
 
 val set_needs_intervention : t -> t
 (** Set the needs-intervention flag (e.g., session failure escalation). *)
@@ -225,7 +221,6 @@ val restore :
   has_conflict:bool ->
   base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
-  ci_fix_running:bool ->
   session_fallback:session_fallback ->
   human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
