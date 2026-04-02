@@ -221,15 +221,12 @@ let reset_busy t =
       t with
       busy = false;
       ci_fix_running =
-        (match (t.current_op, t.current_message_id) with
-        | Some Ci, Some _ -> true
-        | Some Ci, None
-        | Some Rebase, _
-        | Some Human, _
-        | Some Merge_conflict, _
-        | Some Review_comments, _
-        | Some Implementation_notes, _
-        | None, _ ->
+        (match t.current_op with
+        | Some Ci -> Option.is_some t.current_message_id
+        | Some
+            ( Rebase | Human | Merge_conflict | Review_comments
+            | Implementation_notes )
+        | None ->
             false);
       needs_intervention;
     }
