@@ -554,8 +554,8 @@ let () =
   let prop_poll_result_persists_world_flags =
     Test.make ~name:"patch_controller: poll result persists checks_passing flag"
       ~count:200
-      Gen.(triple gen_patch_id gen_branch bool)
-      (fun (pid, branch, checks_passing) ->
+      Gen.(quad gen_patch_id gen_branch bool bool)
+      (fun (pid, branch, checks_passing, merge_ready) ->
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid
@@ -573,7 +573,7 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              merge_ready = false;
+              merge_ready;
               checks_passing;
               ci_checks = [];
             }
@@ -583,7 +583,8 @@ let () =
             (make_poll_observation poll)
         in
         let a = Orchestrator.agent orch pid in
-        Bool.equal a.Patch_agent.checks_passing checks_passing)
+        Bool.equal a.Patch_agent.checks_passing checks_passing
+        && Bool.equal a.Patch_agent.merge_ready merge_ready)
   in
 
   let prop_poll_observation_updates_branch_metadata =

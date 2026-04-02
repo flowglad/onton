@@ -524,7 +524,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     | Some p -> p.Patch.branch
     | None -> Branch.of_string (Patch_id.to_string patch_id)
   in
-  let current_op = Patch_agent.highest_priority agent in
+  let current_op = agent.Patch_agent.current_op in
   let ctx =
     ( State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
@@ -550,7 +550,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
         let dep_status =
           match Map.find agents_by_id dep_id with
           | Some dep_agent ->
-              let dep_op = Patch_agent.highest_priority dep_agent in
+              let dep_op = dep_agent.Patch_agent.current_op in
               let dep_ctx =
                 ( State.Patch_ctx.empty
                 |> State.Patch_ctx.set_merged ~patch_id:dep_id
