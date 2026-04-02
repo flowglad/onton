@@ -40,7 +40,8 @@ let () =
       Test.make ~name:"create yields clean initial state" gen_pid (fun pid ->
           let t = create pid in
           (not t.has_pr) && (not t.has_session) && (not t.busy)
-          && (not t.merged) && (not (needs_intervention t))
+          && (not t.merged)
+          && (not (needs_intervention t))
           && List.is_empty t.queue && (not t.satisfies) && (not t.changed)
           && (not t.has_conflict)
           && Option.is_none t.base_branch
