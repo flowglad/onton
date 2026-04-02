@@ -46,24 +46,23 @@ let clean_git_env () =
       && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
   |> Array.of_list
 
-let branch_exists ~process_mgr ~repo_root branch_str =
+let ref_exists ~process_mgr ~repo_root ref_path =
   let buf = Buffer.create 16 in
   match
     Eio.Process.run process_mgr ~env:(clean_git_env ())
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
-      [
-        "git";
-        "-C";
-        repo_root;
-        "rev-parse";
-        "--verify";
-        "refs/heads/" ^ branch_str;
-      ]
+      [ "git"; "-C"; repo_root; "rev-parse"; "--verify"; ref_path ]
   with
   | () -> true
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
+
+let branch_exists ~process_mgr ~repo_root branch_str =
+  ref_exists ~process_mgr ~repo_root ("refs/heads/" ^ branch_str)
+
+let remote_branch_exists ~process_mgr ~repo_root branch_str =
+  ref_exists ~process_mgr ~repo_root ("refs/remotes/origin/" ^ branch_str)
 
 let resolve_main_root ~process_mgr ~repo_root =
   let buf = Buffer.create 128 in
@@ -112,6 +111,21 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
   else if branch_exists ~process_mgr ~repo_root branch_str then (
     Eio.Process.run process_mgr ~env:(clean_git_env ())
       [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ];
+    { patch_id; branch; path })
+  else if remote_branch_exists ~process_mgr ~repo_root branch_str then (
+    (* Branch exists on remote but not locally — create local branch from remote *)
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
+      [
+        "git";
+        "-C";
+        repo_root;
+        "worktree";
+        "add";
+        "-b";
+        branch_str;
+        path;
+        "origin/" ^ branch_str;
+      ];
     { patch_id; branch; path })
   else (
     Eio.Process.run process_mgr ~env:(clean_git_env ())
