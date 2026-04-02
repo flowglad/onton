@@ -180,7 +180,6 @@ let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
 let reset_ci_failure_count t = { t with ci_failure_count = 0 }
-
 let set_ci_checks t checks = { t with ci_checks = checks }
 let set_needs_intervention t = { t with needs_intervention = true }
 let set_branch_blocked t = { t with branch_blocked = true }
@@ -214,8 +213,8 @@ let reset_busy t =
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged
     ~needs_intervention ~queue ~satisfies ~changed ~has_conflict ~base_branch
-    ~ci_failure_count ~session_fallback ~human_messages
-    ~ci_checks ~mergeable ~merge_ready ~is_draft ~pr_description_applied
+    ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~mergeable
+    ~merge_ready ~is_draft ~pr_description_applied
     ~implementation_notes_delivered ~start_attempts_without_pr ~checks_passing
     ~no_unresolved_comments ~current_op ~current_message_id ~generation
     ~worktree_path ~head_branch ~branch_blocked =

@@ -429,10 +429,9 @@ let () =
               ~pr_number:None ~has_session:false ~busy:false ~merged:false
               ~needs_intervention:false ~queue:[] ~satisfies:false
               ~changed:false ~has_conflict:false ~base_branch:None
-              ~ci_failure_count:0
-              ~session_fallback:Fresh_available ~human_messages:[]
-              ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
-              ~is_draft:false ~pr_description_applied:false
+              ~ci_failure_count:0 ~session_fallback:Fresh_available
+              ~human_messages:[] ~ci_checks:a.ci_checks ~mergeable:false
+              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~checks_passing:false ~no_unresolved_comments:false
               ~current_op:None ~current_message_id:None ~generation:0
@@ -502,9 +501,9 @@ let () =
               ~has_session:false ~busy:false ~merged:false
               ~needs_intervention:false ~queue:[] ~satisfies:true ~changed:false
               ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
-              ~session_fallback:Fresh_available
-              ~human_messages:[] ~ci_checks:[] ~mergeable:false
-              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+              ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
+              ~mergeable:false ~merge_ready:false ~is_draft:false
+              ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~checks_passing:false ~no_unresolved_comments:false
               ~current_op:None ~current_message_id:None ~generation:0

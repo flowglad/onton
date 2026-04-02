@@ -872,8 +872,7 @@ let () =
 
   (* CI passing resets ci_failure_count *)
   let prop_poll_ci_pass_resets_failure_count =
-    Test.make
-      ~name:"apply_poll_result: checks_passing resets ci_failure_count"
+    Test.make ~name:"apply_poll_result: checks_passing resets ci_failure_count"
       gen_patch_list_unique (fun patches ->
         try
           match patches with
