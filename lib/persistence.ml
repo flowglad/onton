@@ -122,7 +122,9 @@ let patch_agent_of_yojson json =
   (* Legacy snapshots written before these fields existed will not contain them.
      When a pr_number is present, default to true so we don't replay PR bootstrap
      effects (description, draft flip, notes) for an already-set-up PR. *)
-  let legacy_pr_default = Option.is_some (int_member_opt "pr_number" json) in
+  let legacy_pr_bootstrapped =
+    Option.is_some (int_member_opt "pr_number" json)
+  in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
@@ -141,15 +143,13 @@ let patch_agent_of_yojson json =
        ~session_fallback ~human_messages ~ci_checks
        ~merge_ready:
          (bool_member_opt "merge_ready" json |> Option.value ~default:false)
-       ~is_draft:
-         (bool_member_opt "is_draft" json
-         |> Option.value ~default:legacy_pr_default)
+       ~is_draft:(bool_member_opt "is_draft" json |> Option.value ~default:false)
        ~pr_description_applied:
          (bool_member_opt "pr_description_applied" json
-         |> Option.value ~default:legacy_pr_default)
+         |> Option.value ~default:legacy_pr_bootstrapped)
        ~implementation_notes_delivered:
          (bool_member_opt "implementation_notes_delivered" json
-         |> Option.value ~default:legacy_pr_default)
+         |> Option.value ~default:legacy_pr_bootstrapped)
        ~start_attempts_without_pr:
          (int_member_opt "start_attempts_without_pr" json
          |> Option.value ~default:0)
