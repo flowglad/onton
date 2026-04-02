@@ -41,7 +41,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
       ("patch_id", Patch_id.yojson_of_t a.patch_id);
-      ("has_pr", `Bool a.has_pr);
       ( "pr_number",
         match a.pr_number with
         | None -> `Null
@@ -120,15 +119,13 @@ let patch_agent_of_yojson json =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
-  let has_pr = bool_member "has_pr" json in
   (* Legacy snapshots written before these fields existed will not contain them.
-     When has_pr is true, default to true so we don't replay PR bootstrap
+     When a pr_number is present, default to true so we don't replay PR bootstrap
      effects (description, draft flip, notes) for an already-set-up PR. *)
-  let legacy_pr_default = has_pr in
+  let legacy_pr_default = Option.is_some (int_member_opt "pr_number" json) in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-       ~has_pr
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
        ~has_session:(bool_member "has_session" json)

@@ -60,7 +60,7 @@ type poll_observation = {
 
 let enqueue_notes_if_needed t patch_id (agent : Patch_agent.t) =
   if
-    (not agent.has_pr)
+    (not (Patch_agent.has_pr agent))
     || Option.is_none agent.pr_number
     || agent.merged || agent.implementation_notes_delivered
   then t
@@ -244,9 +244,9 @@ let branch_map_of_patches patches =
 let plan_action_for_patch t ~branch_map patch_id =
   let agent = Orchestrator.agent t patch_id in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  let has_pr pid = (Orchestrator.agent t pid).Patch_agent.has_pr in
+  let has_pr pid = Patch_agent.has_pr (Orchestrator.agent t pid) in
   if
-    (not agent.Patch_agent.has_pr)
+    (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
@@ -267,7 +267,7 @@ let plan_action_for_patch t ~branch_map patch_id =
     in
     Some (Orchestrator.Start (patch_id, base))
   else if
-    agent.Patch_agent.has_pr
+    Patch_agent.has_pr agent
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention agent))
@@ -293,7 +293,7 @@ let plan_action_for_patch t ~branch_map patch_id =
         Some (Orchestrator.Rebase (patch_id, new_base))
     | _ -> None
   else if
-    agent.Patch_agent.has_pr
+    Patch_agent.has_pr agent
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention agent))
@@ -326,7 +326,7 @@ let reconcile_messages t ~patches =
     Graph.all_patch_ids (Orchestrator.graph t)
     |> List.filter ~f:(fun pid ->
         (not (Map.mem branch_map pid))
-        && not (Orchestrator.agent t pid).Patch_agent.has_pr)
+        && not (Patch_agent.has_pr (Orchestrator.agent t pid)))
   in
   if not (List.is_empty missing) then
     invalid_arg

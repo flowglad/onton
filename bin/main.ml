@@ -325,7 +325,7 @@ let session_mode (agent : Patch_agent.t) : [ `Continue | `Fresh | `Give_up ] =
   | Patch_agent.Given_up -> `Give_up
   | Patch_agent.Tried_fresh -> `Fresh
   | Patch_agent.Fresh_available ->
-      if agent.Patch_agent.has_pr then `Continue else `Fresh
+      if Patch_agent.has_pr agent then `Continue else `Fresh
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
@@ -1414,7 +1414,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
       Runtime.read runtime (fun snap ->
           let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
           Base.List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
-              if agent.Patch_agent.has_pr && not agent.Patch_agent.merged then
+              if Patch_agent.has_pr agent && not agent.Patch_agent.merged then
                 match
                   Pr_registry.find pr_registry
                     ~patch_id:agent.Patch_agent.patch_id
@@ -1585,7 +1585,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
               Reconciler.
                 {
                   id = a.Patch_agent.patch_id;
-                  has_pr = a.Patch_agent.has_pr;
+                  has_pr = Patch_agent.has_pr a;
                   merged = a.Patch_agent.merged;
                   busy = a.Patch_agent.busy;
                   needs_intervention = Patch_agent.needs_intervention a;
@@ -2399,7 +2399,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
               { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
             Runtime.update_orchestrator runtime (fun orch ->
                 match Orchestrator.find_agent orch pid with
-                | Some agent when agent.Patch_agent.has_pr ->
+                | Some agent when Patch_agent.has_pr agent ->
                     Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
                     if merged then Orchestrator.mark_merged orch pid else orch
                 | Some _ ->

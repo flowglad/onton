@@ -49,7 +49,7 @@ let () =
           let _orch, _effects, actions = tick orch ~patches in
           List.for_all actions ~f:(function
             | Orchestrator.Start (pid, _) ->
-                not (Orchestrator.agent orch pid).Patch_agent.has_pr
+                not (Patch_agent.has_pr (Orchestrator.agent orch pid))
             | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
@@ -78,7 +78,7 @@ let () =
           List.for_all actions ~f:(function
             | Orchestrator.Respond (pid, _) ->
                 let a = Orchestrator.agent orch pid in
-                a.Patch_agent.has_pr && (not a.Patch_agent.merged)
+                Patch_agent.has_pr a && (not a.Patch_agent.merged)
                 && (not a.Patch_agent.busy)
                 && not (Patch_agent.needs_intervention a)
             | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
@@ -129,7 +129,7 @@ let () =
           let _orch, _effects, actions2 = tick orch ~patches in
           List.for_all actions2 ~f:(function
             | Orchestrator.Start (pid, _) ->
-                not (Orchestrator.agent orch pid).Patch_agent.has_pr
+                not (Patch_agent.has_pr (Orchestrator.agent orch pid))
             | Orchestrator.Respond (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
@@ -183,7 +183,7 @@ let () =
               (* Each dep must either be merged or have a PR or also be started *)
               List.for_all deps ~f:(fun dep ->
                   let a = Orchestrator.agent orch dep in
-                  a.Patch_agent.has_pr || a.Patch_agent.merged
+                  Patch_agent.has_pr a || a.Patch_agent.merged
                   || List.mem started_ids dep ~equal:Patch_id.equal))
         with _ -> false)
   in
@@ -336,12 +336,12 @@ let () =
               let a_before = Orchestrator.agent orch pid in
               let a_after = Orchestrator.agent orch_after pid in
               if
-                (not a_before.Patch_agent.has_pr)
+                (not (Patch_agent.has_pr a_before))
                 && Graph.deps_satisfied graph pid
                      ~has_merged:(fun p ->
                        (Orchestrator.agent orch p).Patch_agent.merged)
                      ~has_pr:(fun p ->
-                       (Orchestrator.agent orch p).Patch_agent.has_pr)
+                       Patch_agent.has_pr (Orchestrator.agent orch p))
               then
                 a_after.Patch_agent.busy
                 && List.mem started_ids pid ~equal:Patch_id.equal

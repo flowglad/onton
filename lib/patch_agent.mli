@@ -11,7 +11,6 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 
 type t = private {
   patch_id : Types.Patch_id.t;
-  has_pr : bool;
   pr_number : Types.Pr_number.t option;
   has_session : bool;
   busy : bool;
@@ -50,6 +49,9 @@ val create_adhoc : patch_id:Types.Patch_id.t -> pr_number:Types.Pr_number.t -> t
 *)
 
 (** {2 Derived predicates} *)
+
+val has_pr : t -> bool
+(** [true] when [pr_number] is [Some _]. *)
 
 val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
@@ -199,12 +201,11 @@ val highest_priority : t -> Types.Operation_kind.t option
 (** {2 Persistence support} *)
 
 val set_pr_number : t -> Types.Pr_number.t -> t
-(** Store [pr_number] and set [has_pr = true]. Not a plain field setter —
+(** Store [pr_number] (making [has_pr] true). Not a plain field setter —
     establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
 
 val restore :
   patch_id:Types.Patch_id.t ->
-  has_pr:bool ->
   pr_number:Types.Pr_number.t option ->
   has_session:bool ->
   busy:bool ->

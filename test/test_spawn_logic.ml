@@ -140,7 +140,7 @@ let () =
           List.for_all spawns ~f:(fun s ->
               match Onton.Spawn_logic.classify s with
               | `Start pid ->
-                  not (Orchestrator.agent orch pid).Patch_agent.has_pr
+                  not (Patch_agent.has_pr (Orchestrator.agent orch pid))
               | `Respond _ | `Rebase _ -> true)
         with _ -> false)
   in
@@ -160,7 +160,7 @@ let () =
                     ~has_merged:(fun p ->
                       (Orchestrator.agent orch p).Patch_agent.merged)
                     ~has_pr:(fun p ->
-                      (Orchestrator.agent orch p).Patch_agent.has_pr)
+                      Patch_agent.has_pr (Orchestrator.agent orch p))
               | `Respond _ | `Rebase _ -> true)
         with _ -> false)
   in
@@ -182,13 +182,13 @@ let () =
           List.for_all (Graph.all_patch_ids graph) ~f:(fun pid ->
               let a = Orchestrator.agent orch pid in
               if
-                (not a.Patch_agent.has_pr) && (not a.Patch_agent.busy)
-                && (not a.Patch_agent.merged)
+                (not (Patch_agent.has_pr a))
+                && (not a.Patch_agent.busy) && (not a.Patch_agent.merged)
                 && Graph.deps_satisfied graph pid
                      ~has_merged:(fun p ->
                        (Orchestrator.agent orch p).Patch_agent.merged)
                      ~has_pr:(fun p ->
-                       (Orchestrator.agent orch p).Patch_agent.has_pr)
+                       Patch_agent.has_pr (Orchestrator.agent orch p))
               then List.mem started_ids pid ~equal:Patch_id.equal
               else true)
         with _ -> false)
@@ -210,7 +210,7 @@ let () =
           let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
           List.for_all spawns ~f:(fun s ->
               match Onton.Spawn_logic.classify s with
-              | `Respond pid -> (Orchestrator.agent orch pid).Patch_agent.has_pr
+              | `Respond pid -> Patch_agent.has_pr (Orchestrator.agent orch pid)
               | `Start _ | `Rebase _ -> true)
         with _ -> false)
   in
@@ -247,7 +247,7 @@ let () =
               | Some (Orchestrator.Start _ | Orchestrator.Rebase _) -> false
               | None ->
                   (* No respond is ok whenever Respond preconditions fail *)
-                  (not a.Patch_agent.has_pr)
+                  (not (Patch_agent.has_pr a))
                   || Patch_agent.needs_intervention a
                   || a.Patch_agent.busy || a.Patch_agent.merged)
         with _ -> false)
