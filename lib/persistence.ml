@@ -63,7 +63,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ( "human_messages",
         `List (List.map a.human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
-      ("mergeable", `Bool a.mergeable);
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
       ("pr_description_applied", `Bool a.pr_description_applied);
@@ -143,8 +142,6 @@ let patch_agent_of_yojson json =
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~ci_checks
-       ~mergeable:
-         (bool_member_opt "mergeable" json |> Option.value ~default:false)
        ~merge_ready:
          (bool_member_opt "merge_ready" json |> Option.value ~default:false)
        ~is_draft:

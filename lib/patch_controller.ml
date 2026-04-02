@@ -135,7 +135,6 @@ let apply_poll_result t patch_id
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)
   in
-  let t = Orchestrator.set_mergeable t patch_id poll_result.mergeable in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in

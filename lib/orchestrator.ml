@@ -276,9 +276,6 @@ let clear_has_conflict t patch_id =
 let set_base_branch t patch_id branch =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a branch)
 
-let set_mergeable t patch_id v =
-  update_agent t patch_id ~f:(fun a -> Patch_agent.set_mergeable a v)
-
 let increment_ci_failure_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_ci_failure_count
 

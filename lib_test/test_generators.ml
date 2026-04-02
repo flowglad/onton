@@ -201,8 +201,8 @@ let gen_github_error =
 let gen_poller =
   QCheck2.Gen.(
     map5
-      (fun queue (merged, closed, has_conflict) (mergeable, merge_ready)
-           checks_passing ci_checks ->
+      (fun queue (merged, closed, has_conflict) merge_ready checks_passing
+           ci_checks ->
         Onton.Poller.
           {
             queue;
@@ -210,12 +210,11 @@ let gen_poller =
             closed;
             is_draft = false;
             has_conflict;
-            mergeable;
             merge_ready;
             checks_passing;
             ci_checks;
           })
-      gen_operation_kind_queue (triple bool bool bool) (pair bool bool) bool
+      gen_operation_kind_queue (triple bool bool bool) bool bool
       (list_small gen_ci_check))
 
 (* -- Patch_agent -- *)
@@ -270,7 +269,6 @@ let gen_patch_agent_fully_populated =
     let* ci_checks = list_small gen_ci_check in
     let* fallback = gen_session_fallback in
     let* pr_number = option gen_pr_number in
-    let* mergeable = bool in
     let* merge_ready = bool in
     let* checks_passing = bool in
     let a = Onton.Patch_agent.create pid in
@@ -293,7 +291,6 @@ let gen_patch_agent_fully_populated =
       | Some n -> Onton.Patch_agent.set_pr_number a n
       | None -> a
     in
-    let a = Onton.Patch_agent.set_mergeable a mergeable in
     let a = Onton.Patch_agent.set_merge_ready a merge_ready in
     let a = Onton.Patch_agent.set_checks_passing a checks_passing in
     return a)

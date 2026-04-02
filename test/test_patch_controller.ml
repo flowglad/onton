@@ -49,11 +49,10 @@ let make_agent ~patch_id ~has_pr ~pr_number ~merged ~queue ~base_branch
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict:false ~base_branch ~ci_failure_count:0
     ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-    ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft
-    ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~checks_passing:false ~current_op:None
-    ~current_message_id:None ~generation:0 ~worktree_path:None ~head_branch:None
-    ~branch_blocked:false
+    ~ci_checks:[] ~merge_ready:false ~is_draft ~pr_description_applied
+    ~implementation_notes_delivered ~start_attempts_without_pr
+    ~checks_passing:false ~current_op:None ~current_message_id:None
+    ~generation:0 ~worktree_path:None ~head_branch:None ~branch_blocked:false
 
 let has_notes_queued agent =
   List.mem agent.Patch_agent.queue Operation_kind.Implementation_notes
@@ -446,7 +445,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -489,7 +487,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -527,7 +524,7 @@ let () =
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~ci_failure_count:1
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~ci_checks:[] ~mergeable:false ~merge_ready:false ~is_draft:false
+            ~ci_checks:[] ~merge_ready:false ~is_draft:false
             ~pr_description_applied:true ~implementation_notes_delivered:true
             ~start_attempts_without_pr:0 ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -542,7 +539,6 @@ let () =
               closed = false;
               is_draft = false;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
@@ -558,13 +554,10 @@ let () =
   in
 
   let prop_poll_result_persists_world_flags =
-    Test.make
-      ~name:
-        "patch_controller: poll result persists mergeable and checks_passing \
-         flags"
+    Test.make ~name:"patch_controller: poll result persists checks_passing flag"
       ~count:200
-      Gen.(quad gen_patch_id gen_branch bool bool)
-      (fun (pid, branch, mergeable, checks_passing) ->
+      Gen.(triple gen_patch_id gen_branch bool)
+      (fun (pid, branch, checks_passing) ->
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid ~has_pr:true
@@ -582,7 +575,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable;
               merge_ready = false;
               checks_passing;
               ci_checks = [];
@@ -593,8 +585,7 @@ let () =
             (make_poll_observation poll)
         in
         let a = Orchestrator.agent orch pid in
-        Bool.equal a.Patch_agent.mergeable mergeable
-        && Bool.equal a.Patch_agent.checks_passing checks_passing)
+        Bool.equal a.Patch_agent.checks_passing checks_passing)
   in
 
   let prop_poll_observation_updates_branch_metadata =
@@ -624,7 +615,6 @@ let () =
               closed = false;
               is_draft = true;
               has_conflict = false;
-              mergeable = false;
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];

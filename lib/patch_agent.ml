@@ -21,7 +21,6 @@ type t = {
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Ci_check.t list;
-  mergeable : bool;
   merge_ready : bool;
   is_draft : bool;
   pr_description_applied : bool;
@@ -63,7 +62,6 @@ let create patch_id =
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
-    mergeable = false;
     merge_ready = false;
     is_draft = false;
     pr_description_applied = false;
@@ -95,7 +93,6 @@ let create_adhoc ~patch_id ~pr_number =
     session_fallback = Fresh_available;
     human_messages = [];
     ci_checks = [];
-    mergeable = false;
     merge_ready = false;
     is_draft = false;
     pr_description_applied = true;
@@ -151,7 +148,6 @@ let on_session_failure t ~is_fresh =
 let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
 let set_base_branch t branch = { t with base_branch = Some branch }
-let set_mergeable t v = { t with mergeable = v }
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }
 let set_pr_description_applied t v = { t with pr_description_applied = v }
@@ -201,8 +197,8 @@ let reset_busy t = if not t.busy then t else { t with busy = false }
 
 let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
-    ~session_fallback ~human_messages ~ci_checks ~mergeable ~merge_ready
-    ~is_draft ~pr_description_applied ~implementation_notes_delivered
+    ~session_fallback ~human_messages ~ci_checks ~merge_ready ~is_draft
+    ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~checks_passing ~current_op ~current_message_id
     ~generation ~worktree_path ~head_branch ~branch_blocked =
   {
@@ -221,7 +217,6 @@ let restore ~patch_id ~has_pr ~pr_number ~has_session ~busy ~merged ~queue
     session_fallback;
     human_messages;
     ci_checks;
-    mergeable;
     merge_ready;
     is_draft;
     pr_description_applied;
@@ -282,7 +277,6 @@ let rebase t ~base_branch =
     current_message_id = None;
     queue;
     base_branch = Some base_branch;
-    mergeable = false;
     merge_ready = false;
     checks_passing = false;
   }
@@ -330,7 +324,6 @@ let respond t k =
     has_conflict;
     human_messages = t.human_messages;
     ci_failure_count;
-    mergeable = false;
     merge_ready = false;
     checks_passing = false;
   }

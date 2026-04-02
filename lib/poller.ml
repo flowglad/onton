@@ -7,7 +7,6 @@ type t = {
   closed : bool;
   is_draft : bool;
   has_conflict : bool;
-  mergeable : bool;
   merge_ready : bool;
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
@@ -37,7 +36,6 @@ let poll ~was_merged (pr : Pr_state.t) =
     closed = Pr_state.closed pr;
     is_draft = Pr_state.is_draft pr;
     has_conflict = Pr_state.has_conflict pr;
-    mergeable = Pr_state.mergeable pr;
     merge_ready = Pr_state.merge_ready pr;
     checks_passing = Pr_state.checks_passing pr;
     ci_checks = pr.Pr_state.ci_checks;

@@ -25,7 +25,6 @@ type t = private {
   session_fallback : session_fallback;
   human_messages : string list;
   ci_checks : Types.Ci_check.t list;
-  mergeable : bool;
   merge_ready : bool;
   is_draft : bool;
   pr_description_applied : bool;
@@ -124,9 +123,6 @@ val clear_has_conflict : t -> t
 val set_base_branch : t -> Types.Branch.t -> t
 (** Update the base branch. *)
 
-val set_mergeable : t -> bool -> t
-(** Set the mergeable flag from GitHub merge state. *)
-
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
@@ -222,7 +218,6 @@ val restore :
   session_fallback:session_fallback ->
   human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
-  mergeable:bool ->
   merge_ready:bool ->
   is_draft:bool ->
   pr_description_applied:bool ->

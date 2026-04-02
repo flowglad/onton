@@ -51,8 +51,8 @@ let () =
           && (not t.implementation_notes_delivered)
           && t.start_attempts_without_pr = 0
           && List.is_empty t.human_messages
-          && List.is_empty t.ci_checks && (not t.mergeable)
-          && (not t.merge_ready) && not t.checks_passing);
+          && List.is_empty t.ci_checks && (not t.merge_ready)
+          && not t.checks_passing);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)
@@ -428,8 +428,8 @@ let () =
               ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
               ~base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
-              ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
-              ~is_draft:false ~pr_description_applied:false
+              ~ci_checks:a.ci_checks ~merge_ready:false ~is_draft:false
+              ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~checks_passing:false ~current_op:None ~current_message_id:None
               ~generation:0 ~worktree_path:None ~head_branch:None
@@ -500,8 +500,7 @@ let () =
               ~satisfies:true ~changed:false ~has_conflict:false
               ~base_branch:(Some br) ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
-              ~mergeable:false ~merge_ready:false ~is_draft:false
-              ~pr_description_applied:false
+              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~checks_passing:false ~current_op:None ~current_message_id:None
               ~generation:0 ~worktree_path:None ~head_branch:None
