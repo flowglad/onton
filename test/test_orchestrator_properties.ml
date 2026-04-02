@@ -80,7 +80,7 @@ let () =
                 let a = Orchestrator.agent orch pid in
                 a.Patch_agent.has_pr && (not a.Patch_agent.merged)
                 && (not a.Patch_agent.busy)
-                && not a.Patch_agent.needs_intervention
+                && not (Patch_agent.needs_intervention a)
             | Orchestrator.Start (_, _) | Orchestrator.Rebase (_, _) -> true)
         with _ -> false)
   in
@@ -276,7 +276,7 @@ let () =
               let orch = Orchestrator.set_tried_fresh orch pid in
               let orch = Orchestrator.complete orch pid in
               let a = Orchestrator.agent orch pid in
-              assert a.Patch_agent.needs_intervention;
+              assert (Patch_agent.needs_intervention a);
               (* Enqueue work — should be blocked by needs_intervention *)
               let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
               let _orch, _effects, actions = tick orch ~patches in
@@ -427,11 +427,11 @@ let () =
               let orch = Orchestrator.set_tried_fresh orch pid in
               let orch = Orchestrator.complete orch pid in
               let a = Orchestrator.agent orch pid in
-              let was_intervening = a.Patch_agent.needs_intervention in
+              let was_intervening = Patch_agent.needs_intervention a in
               let orch = Orchestrator.send_human_message orch pid "fix this" in
               let a = Orchestrator.agent orch pid in
               was_intervening
-              && (not a.Patch_agent.needs_intervention)
+              && (not (Patch_agent.needs_intervention a))
               && List.length a.Patch_agent.human_messages = 1
               && List.mem a.Patch_agent.queue Operation_kind.Human
                    ~equal:Operation_kind.equal

@@ -49,7 +49,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("has_session", `Bool a.has_session);
       ("busy", `Bool a.busy);
       ("merged", `Bool a.merged);
-      ("needs_intervention", `Bool a.needs_intervention);
       ("queue", `List (List.map a.queue ~f:Operation_kind.yojson_of_t));
       ("satisfies", `Bool a.satisfies);
       ("changed", `Bool a.changed);
@@ -137,7 +136,6 @@ let patch_agent_of_yojson json =
        ~has_session:(bool_member "has_session" json)
        ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
-       ~needs_intervention:(bool_member "needs_intervention" json)
        ~queue
        ~satisfies:(bool_member "satisfies" json)
        ~changed:(bool_member "changed" json)

@@ -59,7 +59,7 @@ type command =
   | Mark_merged of int
   | Set_session_failed of int
   | Increment_ci_failure of int
-  | Clear_needs_intervention of int
+  | Reset_intervention_state of int
 [@@deriving show]
 
 let gen_command ~n =
@@ -76,7 +76,7 @@ let gen_command ~n =
         map (fun i -> Mark_merged i) gen_idx;
         map (fun i -> Set_session_failed i) gen_idx;
         map (fun i -> Increment_ci_failure i) gen_idx;
-        map (fun i -> Clear_needs_intervention i) gen_idx;
+        map (fun i -> Reset_intervention_state i) gen_idx;
       ])
 
 let gen_command_seq ~n ~len =
@@ -106,8 +106,8 @@ let apply_command orch patches cmd =
         Orchestrator.set_session_failed orch (pid_of_idx patches i)
     | Increment_ci_failure i ->
         Orchestrator.increment_ci_failure_count orch (pid_of_idx patches i)
-    | Clear_needs_intervention i ->
-        Orchestrator.clear_needs_intervention orch (pid_of_idx patches i)
+    | Reset_intervention_state i ->
+        Orchestrator.reset_intervention_state orch (pid_of_idx patches i)
   with Invalid_argument _ -> orch
 
 (** Check per-agent invariants mirroring [Invariants.all_checks].
@@ -310,7 +310,7 @@ let () =
                 let orch = Orchestrator.set_tried_fresh orch pid in
                 let orch = Orchestrator.complete orch pid in
                 let agent = Orchestrator.agent orch pid in
-                if not agent.Patch_agent.needs_intervention then false
+                if not Patch_agent.needs_intervention agent then false
                 else
                   let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
                   let _, _effects, actions =
@@ -323,7 +323,7 @@ let () =
                         | Orchestrator.Respond (p, _) -> Patch_id.equal p pid
                         | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
                   in
-                  let orch = Orchestrator.clear_needs_intervention orch pid in
+                  let orch = Orchestrator.reset_intervention_state orch pid in
                   let _, _effects, actions2 =
                     Patch_controller.tick orch ~project_name:"test-project"
                       ~gameplan:(make_gameplan patches)

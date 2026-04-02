@@ -241,7 +241,7 @@ let resume_message t message_id =
           else (t, None))
 
 let send_human_message t patch_id message =
-  let t = update_agent t patch_id ~f:Patch_agent.clear_needs_intervention in
+  let t = update_agent t patch_id ~f:Patch_agent.reset_intervention_state in
   let t =
     update_agent t patch_id ~f:(fun a ->
         Patch_agent.add_human_message a message)
@@ -308,11 +308,8 @@ let set_implementation_notes_delivered t patch_id v =
 let increment_start_attempts_without_pr t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_start_attempts_without_pr
 
-let set_needs_intervention t patch_id =
-  update_agent t patch_id ~f:Patch_agent.set_needs_intervention
-
-let clear_needs_intervention t patch_id =
-  update_agent t patch_id ~f:Patch_agent.clear_needs_intervention
+let reset_intervention_state t patch_id =
+  update_agent t patch_id ~f:Patch_agent.reset_intervention_state
 
 let set_branch_blocked t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_branch_blocked

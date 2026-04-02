@@ -20,7 +20,7 @@ type disposition =
 
 let disposition (a : Patch_agent.t) : disposition =
   if a.merged then Skip
-  else if a.needs_intervention then Blocked
+  else if Patch_agent.needs_intervention a then Blocked
   else if a.busy then Busy
   else if not a.has_pr then Ready_start
   else

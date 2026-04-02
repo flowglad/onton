@@ -40,7 +40,7 @@ let () =
       Test.make ~name:"create yields clean initial state" gen_pid (fun pid ->
           let t = create pid in
           (not t.has_pr) && (not t.has_session) && (not t.busy)
-          && (not t.merged) && (not t.needs_intervention)
+          && (not t.merged) && (not needs_intervention t)
           && List.is_empty t.queue && (not t.satisfies) && (not t.changed)
           && (not t.has_conflict)
           && Option.is_none t.base_branch
@@ -207,7 +207,8 @@ let () =
           let busy_after_rebase = a.busy in
           let a = complete a in
           busy_after_start && idle_after_complete && busy_after_rebase
-          && (not a.busy) && not a.needs_intervention);
+          && (not a.busy)
+          && not (needs_intervention a));
       (* -- respond Human clears satisfies -- *)
       Test.make ~name:"respond Human clears satisfies" ~count:1
         Gen.(pure (pid0, br0))
@@ -325,7 +326,7 @@ let () =
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
-          not a.needs_intervention);
+          not (needs_intervention a));
       (* -- 3 ci failures triggers needs_intervention -- *)
       (* respond increments ci_failure_count, so 2 prior + 1 from respond = 3 *)
       Test.make ~name:"3 ci failures triggers intervention" ~count:1
@@ -338,7 +339,7 @@ let () =
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
-          a.needs_intervention);
+          needs_intervention a);
       (* -- session_failed triggers needs_intervention -- *)
       Test.make ~name:"session_failed triggers intervention" ~count:1
         Gen.(pure (pid0, br0))
@@ -350,7 +351,7 @@ let () =
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
-          a.needs_intervention);
+          needs_intervention a);
       (* -- Human queued suppresses intervention from session_failed -- *)
       Test.make ~name:"Human queued suppresses intervention (session_failed)"
         ~count:1
@@ -364,7 +365,7 @@ let () =
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
-          not a.needs_intervention);
+          not (needs_intervention a));
       (* -- Human queued suppresses intervention from 3 ci failures -- *)
       Test.make ~name:"Human queued suppresses intervention (3 ci failures)"
         ~count:1
@@ -379,9 +380,9 @@ let () =
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
-          not a.needs_intervention);
-      (* -- clear_needs_intervention resets flag -- *)
-      Test.make ~name:"clear_needs_intervention resets flag" ~count:1
+          not (needs_intervention a));
+      (* -- reset_intervention_state clears derived intervention -- *)
+      Test.make ~name:"reset_intervention_state clears intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a = create pid |> fun a -> start_with_pr a ~base_branch:br in
@@ -391,9 +392,9 @@ let () =
           let a = enqueue a Operation_kind.Ci in
           let a = respond a Operation_kind.Ci in
           let a = complete a in
-          let triggered = a.needs_intervention in
-          let a = clear_needs_intervention a in
-          triggered && not a.needs_intervention);
+          let triggered = needs_intervention a in
+          let a = reset_intervention_state a in
+          triggered && not (needs_intervention a));
       (* -- create has no pr_number -- *)
       Test.make ~name:"create has no pr_number" gen_pid (fun pid ->
           let a = create pid in
@@ -427,11 +428,11 @@ let () =
           let a =
             Onton.Patch_agent.restore ~patch_id:a.patch_id ~has_pr:false
               ~pr_number:None ~has_session:false ~busy:false ~merged:false
-              ~needs_intervention:false ~queue:[] ~satisfies:false
-              ~changed:false ~has_conflict:false ~base_branch:None
-              ~ci_failure_count:0 ~session_fallback:Fresh_available
-              ~human_messages:[] ~ci_checks:a.ci_checks ~mergeable:false
-              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+              ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
+              ~base_branch:None ~ci_failure_count:0
+              ~session_fallback:Fresh_available ~human_messages:[]
+              ~ci_checks:a.ci_checks ~mergeable:false ~merge_ready:false
+              ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~checks_passing:false ~no_unresolved_comments:false
               ~current_op:None ~current_message_id:None ~generation:0
@@ -498,9 +499,9 @@ let () =
              restore *)
           let a =
             restore ~patch_id:pid ~has_pr:true ~pr_number:None
-              ~has_session:false ~busy:false ~merged:false
-              ~needs_intervention:false ~queue:[] ~satisfies:true ~changed:false
-              ~has_conflict:false ~base_branch:(Some br) ~ci_failure_count:0
+              ~has_session:false ~busy:false ~merged:false ~queue:[]
+              ~satisfies:true ~changed:false ~has_conflict:false
+              ~base_branch:(Some br) ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
               ~mergeable:false ~merge_ready:false ~is_draft:false
               ~pr_description_applied:false

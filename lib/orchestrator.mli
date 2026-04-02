@@ -71,8 +71,8 @@ val mark_merged : t -> Patch_id.t -> t
 val remove_agent : t -> Patch_id.t -> t
 
 val send_human_message : t -> Patch_id.t -> string -> t
-(** Append a human message to the agent's [human_messages] queue, clear
-    [needs_intervention], and enqueue [Operation_kind.Human]. *)
+(** Append a human message to the agent's [human_messages] queue, reset
+    intervention state, and enqueue [Operation_kind.Human]. *)
 
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val set_session_failed : t -> Patch_id.t -> t
@@ -93,8 +93,7 @@ val set_is_draft : t -> Patch_id.t -> bool -> t
 val set_pr_description_applied : t -> Patch_id.t -> bool -> t
 val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
 val increment_start_attempts_without_pr : t -> Patch_id.t -> t
-val set_needs_intervention : t -> Patch_id.t -> t
-val clear_needs_intervention : t -> Patch_id.t -> t
+val reset_intervention_state : t -> Patch_id.t -> t
 val set_branch_blocked : t -> Patch_id.t -> t
 val clear_branch_blocked : t -> Patch_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
