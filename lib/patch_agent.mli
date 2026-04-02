@@ -160,8 +160,10 @@ val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. *)
 
 val reset_ci_failure_count : t -> t
-(** Reset [ci_failure_count] to 0. Called by the poller when CI checks pass
-    after failures. *)
+(** Reset [ci_failure_count] to 0 and re-derive [needs_intervention]. Called by
+    the poller when CI checks pass after failures. Clears the CI-driven
+    intervention flag so the patch is unblocked, while preserving intervention
+    caused by other reasons (e.g. [session_fallback = Given_up]). *)
 
 val set_needs_intervention : t -> t
 (** Set the needs-intervention flag (e.g., session failure escalation). *)
