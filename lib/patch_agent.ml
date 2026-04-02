@@ -186,6 +186,7 @@ let reset_ci_failure_count t =
     && equal_session_fallback t.session_fallback Given_up
   in
   { t with ci_failure_count = 0; needs_intervention }
+
 let set_ci_checks t checks = { t with ci_checks = checks }
 let set_needs_intervention t = { t with needs_intervention = true }
 let set_branch_blocked t = { t with branch_blocked = true }
