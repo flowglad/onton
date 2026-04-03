@@ -686,7 +686,7 @@ let () =
                 Orchestrator.Conflict_failed
               && (not a.Patch_agent.busy)
               && Patch_agent.equal_session_fallback
-                   a.Patch_agent.session_fallback Patch_agent.Given_up
+                   a.Patch_agent.session_fallback Patch_agent.Tried_fresh
         with _ -> false)
   in
 

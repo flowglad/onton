@@ -415,7 +415,6 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       (t, Deliver_to_agent)
   | Worktree.Error _ ->
       let t = set_session_failed t patch_id in
-      let t = set_tried_fresh t patch_id in
       let t = complete t patch_id in
       (t, Conflict_failed)
 
