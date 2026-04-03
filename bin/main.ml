@@ -1434,191 +1434,219 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                          })
               else None))
     in
-    Base.List.iter intents ~f:(fun intent ->
-        match intent with
-        | Skip_no_pr patch_id ->
-            if not (Hashtbl.mem skip_logged patch_id) then (
-              Hashtbl.replace skip_logged patch_id true;
-              log_event runtime ~patch_id
-                "skipping poll: no PR number registered")
-        | Poll { patch_id; pr_number; was_merged } -> (
-            match Github.pr_state ~net github pr_number with
-            | Error err ->
+    (* Phase 1: I/O — collect poll observations outside the lock *)
+    let observations =
+      Base.List.filter_map intents ~f:(fun intent ->
+          match intent with
+          | Skip_no_pr patch_id ->
+              if not (Hashtbl.mem skip_logged patch_id) then (
+                Hashtbl.replace skip_logged patch_id true;
                 log_event runtime ~patch_id
-                  (Printf.sprintf "poll error: %s" (Github.show_error err))
-            | Ok pr_state ->
-                let poll_result = Poller.poll ~was_merged pr_state in
-                (* PR was closed — re-discover the current open PR *)
-                if poll_result.Poller.closed then (
+                  "skipping poll: no PR number registered");
+              None
+          | Poll { patch_id; pr_number; was_merged } -> (
+              match Github.pr_state ~net github pr_number with
+              | Error err ->
                   log_event runtime ~patch_id
-                    (Printf.sprintf "PR #%d closed, looking for replacement"
-                       (Pr_number.to_int pr_number));
-                  let branch = branch_of patch_id in
-                  match
-                    Startup_reconciler.discover_pr ~process_mgr
-                      ~token:config.github_token ~owner:config.github_owner
-                      ~repo:config.github_repo ~branch
-                  with
-                  | Ok (Some (new_pr, base_branch, merged)) ->
-                      log_event runtime ~patch_id
-                        (Printf.sprintf "switched to PR #%d"
-                           (Pr_number.to_int new_pr));
-                      Pr_registry.register pr_registry ~patch_id
-                        ~pr_number:new_pr;
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Patch_controller.apply_replacement_pr orch patch_id
-                            ~pr_number:new_pr ~base_branch ~merged)
-                  | Ok None ->
-                      log_event runtime ~patch_id
-                        "no open PR found — will create on next session"
-                  | Error msg ->
-                      log_event runtime ~patch_id
-                        (Printf.sprintf "PR re-discovery failed: %s" msg))
-                else
-                  let branch_in_root =
-                    match pr_state.Pr_state.head_branch with
-                    | Some b ->
-                        Worktree.is_checked_out_in_repo_root ~process_mgr
-                          ~repo_root:config.repo_root b
-                    | None -> false
-                  in
-                  (* CI failed-checks computation is pure — compute before
-                     entering the orchestrator callback so Hashtbl mutation
-                     stays outside the lock. *)
-                  let failed_ci =
-                    let failure_conclusions =
-                      [
-                        "failure";
-                        "error";
-                        "action_required";
-                        "timed_out";
-                        "startup_failure";
-                      ]
-                    in
-                    Base.List.filter poll_result.Poller.ci_checks
-                      ~f:(fun (c : Ci_check.t) ->
-                        Base.List.mem failure_conclusions c.Ci_check.conclusion
-                          ~equal:Base.String.equal)
-                  in
-                  (* Precompute worktree candidate path outside the lock so
-                     resolve_worktree_path (which shells out to git) does not
-                     run while holding the orchestrator mutex. *)
-                  let worktree_candidate =
-                    let agent =
-                      Runtime.read runtime (fun snap ->
-                          Orchestrator.find_agent snap.Runtime.orchestrator
-                            patch_id)
-                    in
-                    match agent with
-                    | None -> None
-                    | Some agent ->
-                        if Option.is_some agent.Patch_agent.worktree_path then
-                          None
-                        else
-                          let path =
-                            resolve_worktree_path ~process_mgr
-                              ~repo_root:config.repo_root ~project_name
-                              ~patch_id ~agent ()
-                          in
-                          let default =
-                            Worktree.worktree_dir ~project_name ~patch_id
-                          in
-                          if not (String.equal path default) then Some path
-                          else None
-                  in
-                  let log_entries, (newly_blocked, agent_present) =
-                    Runtime.update_orchestrator_returning runtime (fun orch ->
-                        match Orchestrator.find_agent orch patch_id with
-                        | None ->
-                            (* Agent was removed between intent collection and
-                               application (e.g. user pressed '-'). *)
-                            (orch, ([], (false, false)))
-                        | Some _ ->
-                            let observation =
-                              Patch_controller.
-                                {
-                                  poll_result;
-                                  head_branch = pr_state.Pr_state.head_branch;
-                                  base_branch = pr_state.Pr_state.base_branch;
-                                  branch_in_root;
-                                  worktree_path = worktree_candidate;
-                                }
-                            in
-                            let orch, log_entries, newly_blocked =
-                              Patch_controller.apply_poll_result orch patch_id
-                                observation
-                            in
-                            (orch, (log_entries, (newly_blocked, true))))
-                  in
-                  (* Side-effects applied after the callback returns *)
-                  if agent_present then
-                    if not (Base.List.is_empty failed_ci) then
-                      Hashtbl.replace ci_checks_cache patch_id failed_ci
-                    else Hashtbl.remove ci_checks_cache patch_id;
-                  Base.List.iter log_entries
-                    ~f:(fun (entry : Patch_controller.poll_log_entry) ->
-                      log_event runtime
-                        ~patch_id:entry.Patch_controller.patch_id
-                        entry.Patch_controller.message);
-                  (if newly_blocked then
-                     match pr_state.Pr_state.head_branch with
-                     | Some b ->
-                         let main_root =
-                           Worktree.resolve_main_root ~process_mgr
-                             ~repo_root:config.repo_root
-                         in
-                         log_event runtime ~patch_id
-                           (Printf.sprintf
-                              "branch %s is checked out in the main working \
-                               tree (%s) — release it (e.g. `git -C %s \
-                               checkout <default-branch>`) before onton can \
-                               work on this patch"
-                              (Branch.to_string b) main_root main_root)
-                     | None -> ());
-                  if pr_state.Pr_state.ci_checks_truncated then
+                    (Printf.sprintf "poll error: %s" (Github.show_error err));
+                  None
+              | Ok pr_state ->
+                  let poll_result = Poller.poll ~was_merged pr_state in
+                  (* PR was closed — re-discover the current open PR.
+                     This path does its own I/O and separate atomic update;
+                     it doesn't participate in the batched update below. *)
+                  if poll_result.Poller.closed then (
                     log_event runtime ~patch_id
-                      "warning: CI check list was truncated (>100 checks); \
-                       some failures may not appear in the prompt"));
-    (* Reconcile *)
-    let reconcile_logs = ref [] in
-    Runtime.update runtime (fun snap ->
-        let orch = snap.Runtime.orchestrator in
-        let agents = Orchestrator.all_agents orch in
-        let patch_views =
-          Base.List.map agents ~f:(fun (a : Patch_agent.t) ->
-              Reconciler.
-                {
-                  id = a.Patch_agent.patch_id;
-                  has_pr = Patch_agent.has_pr a;
-                  merged = a.Patch_agent.merged;
-                  busy = a.Patch_agent.busy;
-                  needs_intervention = Patch_agent.needs_intervention a;
-                  branch_blocked = a.Patch_agent.branch_blocked;
-                  queue = a.Patch_agent.queue;
-                  base_branch =
-                    Base.Option.value a.Patch_agent.base_branch ~default:main;
-                })
-        in
-        let merged_patches =
-          Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-              if a.Patch_agent.merged then Some a.Patch_agent.patch_id else None)
-        in
-        let actions =
-          Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
-            ~merged_pr_patches:merged_patches ~branch_of patch_views
-        in
-        let orch =
-          Base.List.fold actions ~init:orch ~f:(fun orch action ->
-              match action with
-              | Reconciler.Mark_merged pid -> Orchestrator.mark_merged orch pid
-              | Reconciler.Enqueue_rebase pid ->
-                  reconcile_logs :=
-                    ("rebase enqueued by reconciler", pid) :: !reconcile_logs;
-                  Orchestrator.enqueue orch pid Operation_kind.Rebase
-              | Reconciler.Start_operation _ -> orch)
-        in
-        { snap with Runtime.orchestrator = orch });
-    Base.List.iter (Base.List.rev !reconcile_logs) ~f:(fun (msg, pid) ->
+                      (Printf.sprintf "PR #%d closed, looking for replacement"
+                         (Pr_number.to_int pr_number));
+                    let branch = branch_of patch_id in
+                    (match
+                       Startup_reconciler.discover_pr ~process_mgr
+                         ~token:config.github_token ~owner:config.github_owner
+                         ~repo:config.github_repo ~branch
+                     with
+                    | Ok (Some (new_pr, base_branch, merged)) ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "switched to PR #%d"
+                             (Pr_number.to_int new_pr));
+                        Pr_registry.register pr_registry ~patch_id
+                          ~pr_number:new_pr;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Patch_controller.apply_replacement_pr orch patch_id
+                              ~pr_number:new_pr ~base_branch ~merged)
+                    | Ok None ->
+                        log_event runtime ~patch_id
+                          "no open PR found — will create on next session"
+                    | Error msg ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "PR re-discovery failed: %s" msg));
+                    None)
+                  else
+                    let branch_in_root =
+                      match pr_state.Pr_state.head_branch with
+                      | Some b ->
+                          Worktree.is_checked_out_in_repo_root ~process_mgr
+                            ~repo_root:config.repo_root b
+                      | None -> false
+                    in
+                    let failed_ci =
+                      let failure_conclusions =
+                        [
+                          "failure";
+                          "error";
+                          "action_required";
+                          "timed_out";
+                          "startup_failure";
+                        ]
+                      in
+                      Base.List.filter poll_result.Poller.ci_checks
+                        ~f:(fun (c : Ci_check.t) ->
+                          Base.List.mem failure_conclusions
+                            c.Ci_check.conclusion ~equal:Base.String.equal)
+                    in
+                    let worktree_candidate =
+                      let agent =
+                        Runtime.read runtime (fun snap ->
+                            Orchestrator.find_agent snap.Runtime.orchestrator
+                              patch_id)
+                      in
+                      match agent with
+                      | None -> None
+                      | Some agent ->
+                          if Option.is_some agent.Patch_agent.worktree_path then
+                            None
+                          else
+                            let path =
+                              resolve_worktree_path ~process_mgr
+                                ~repo_root:config.repo_root ~project_name
+                                ~patch_id ~agent ()
+                            in
+                            let default =
+                              Worktree.worktree_dir ~project_name ~patch_id
+                            in
+                            if not (String.equal path default) then Some path
+                            else None
+                    in
+                    let observation =
+                      Patch_controller.
+                        {
+                          poll_result;
+                          head_branch = pr_state.Pr_state.head_branch;
+                          base_branch = pr_state.Pr_state.base_branch;
+                          branch_in_root;
+                          worktree_path = worktree_candidate;
+                        }
+                    in
+                    Some
+                      ( patch_id,
+                        observation,
+                        failed_ci,
+                        pr_state.Pr_state.head_branch,
+                        pr_state.Pr_state.ci_checks_truncated )))
+    in
+    (* Phase 2: Single atomic update — apply all poll results + reconcile.
+       This prevents the runner from seeing an intermediate state where
+       poll results are applied but the reconciler hasn't run yet. *)
+    let per_patch_sides, reconcile_logs =
+      Runtime.update_orchestrator_returning runtime (fun orch ->
+          (* Apply all poll results *)
+          let orch, sides =
+            Base.List.fold observations ~init:(orch, [])
+              ~f:(fun
+                  (orch, sides)
+                  (patch_id, obs, failed_ci, head_branch, ci_truncated)
+                ->
+                match Orchestrator.find_agent orch patch_id with
+                | None -> (orch, sides)
+                | Some _ ->
+                    let orch, log_entries, newly_blocked =
+                      Patch_controller.apply_poll_result orch patch_id obs
+                    in
+                    ( orch,
+                      ( patch_id,
+                        log_entries,
+                        newly_blocked,
+                        failed_ci,
+                        head_branch,
+                        ci_truncated )
+                      :: sides ))
+          in
+          (* Reconcile — detect merges and enqueue rebases *)
+          let agents = Orchestrator.all_agents orch in
+          let patch_views =
+            Base.List.map agents ~f:(fun (a : Patch_agent.t) ->
+                Reconciler.
+                  {
+                    id = a.Patch_agent.patch_id;
+                    has_pr = Patch_agent.has_pr a;
+                    merged = a.Patch_agent.merged;
+                    busy = a.Patch_agent.busy;
+                    needs_intervention = Patch_agent.needs_intervention a;
+                    branch_blocked = a.Patch_agent.branch_blocked;
+                    queue = a.Patch_agent.queue;
+                    base_branch =
+                      Base.Option.value a.Patch_agent.base_branch ~default:main;
+                  })
+          in
+          let merged_patches =
+            Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
+                if a.Patch_agent.merged then Some a.Patch_agent.patch_id
+                else None)
+          in
+          let actions =
+            Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+              ~merged_pr_patches:merged_patches ~branch_of patch_views
+          in
+          let rec_logs = ref [] in
+          let orch =
+            Base.List.fold actions ~init:orch ~f:(fun orch action ->
+                match action with
+                | Reconciler.Mark_merged pid ->
+                    Orchestrator.mark_merged orch pid
+                | Reconciler.Enqueue_rebase pid ->
+                    rec_logs :=
+                      ("rebase enqueued by reconciler", pid) :: !rec_logs;
+                    Orchestrator.enqueue orch pid Operation_kind.Rebase
+                | Reconciler.Start_operation _ -> orch)
+          in
+          (orch, (Base.List.rev sides, Base.List.rev !rec_logs)))
+    in
+    (* Phase 3: Side effects — outside the lock *)
+    Base.List.iter per_patch_sides
+      ~f:(fun
+          ( patch_id,
+            log_entries,
+            newly_blocked,
+            failed_ci,
+            head_branch,
+            ci_truncated )
+        ->
+        if not (Base.List.is_empty failed_ci) then
+          Hashtbl.replace ci_checks_cache patch_id failed_ci
+        else Hashtbl.remove ci_checks_cache patch_id;
+        Base.List.iter log_entries
+          ~f:(fun (entry : Patch_controller.poll_log_entry) ->
+            log_event runtime ~patch_id:entry.Patch_controller.patch_id
+              entry.Patch_controller.message);
+        (if newly_blocked then
+           match head_branch with
+           | Some b ->
+               let main_root =
+                 Worktree.resolve_main_root ~process_mgr
+                   ~repo_root:config.repo_root
+               in
+               log_event runtime ~patch_id
+                 (Printf.sprintf
+                    "branch %s is checked out in the main working tree (%s) — \
+                     release it (e.g. `git -C %s checkout <default-branch>`) \
+                     before onton can work on this patch"
+                    (Branch.to_string b) main_root main_root)
+           | None -> ());
+        if ci_truncated then
+          log_event runtime ~patch_id
+            "warning: CI check list was truncated (>100 checks); some failures \
+             may not appear in the prompt");
+    Base.List.iter reconcile_logs ~f:(fun (msg, pid) ->
         log_event runtime ~patch_id:pid msg);
     Eio.Time.sleep clock config.poll_interval;
     loop ()
