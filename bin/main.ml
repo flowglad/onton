@@ -2148,7 +2148,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                             patch_id
                                           |> fun o ->
                                           Orchestrator.complete o patch_id);
-                                      `Ok
+                                      `Conflict_persist
                                   | Worktree.Conflict ->
                                       let pr_number =
                                         agent.Patch_agent.pr_number
@@ -2269,6 +2269,14 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     needed"
                                    (Patch_id.to_string patch_id))
                               ()
+                      | `Conflict_persist ->
+                          set_status ~level:Tui.Warning
+                            ~text:
+                              (Printf.sprintf
+                                 "Patch %s: conflict persists, will retry"
+                                 (Patch_id.to_string patch_id))
+                            ~expires_at:(Unix.gettimeofday () +. 10.0)
+                            ()
                       | `Ok ->
                           if
                             Operation_kind.equal kind
