@@ -2477,9 +2477,21 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                     merge_cli_stored github_token
                       stored.Project_store.github_token
                   in
-                  let token, owner, repo =
+                  let token, inferred_owner, inferred_repo =
                     resolve_github_credentials ~github_token:token_from_stored
                       ~repo_root:stored.Project_store.repo_root
+                  in
+                  let owner =
+                    let s =
+                      Base.String.strip stored.Project_store.github_owner
+                    in
+                    if Base.String.is_empty s then inferred_owner else s
+                  in
+                  let repo =
+                    let s =
+                      Base.String.strip stored.Project_store.github_repo
+                    in
+                    if Base.String.is_empty s then inferred_repo else s
                   in
                   let branch =
                     if Base.String.equal (Branch.to_string main_branch) "main"
