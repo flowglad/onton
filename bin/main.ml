@@ -943,8 +943,12 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                           (Printf.sprintf "Ad-hoc PR #%d already registered" n)
                       else (
                         Pr_registry.register pr_registry ~patch_id ~pr_number;
+                        let branch =
+                          Branch.of_string ("adhoc-" ^ Int.to_string n)
+                        in
                         Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.add_agent orch ~patch_id ~pr_number);
+                            Orchestrator.add_agent orch ~patch_id ~branch
+                              ~pr_number);
                         log_event runtime ~patch_id
                           (Printf.sprintf "Ad-hoc PR #%d added" n))
                   | _ ->

@@ -35,6 +35,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
   `Assoc
     [
       ("patch_id", Patch_id.yojson_of_t a.patch_id);
+      ("branch", Branch.yojson_of_t a.branch);
       ( "pr_number",
         match a.pr_number with
         | None -> `Null
@@ -106,6 +107,7 @@ let patch_agent_of_yojson json =
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
+       ~branch:(Branch.of_string (string_member "branch" json))
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
        ~has_session:(bool_member "has_session" json)

@@ -7,6 +7,7 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 
 type t = {
   patch_id : Patch_id.t;
+  branch : Branch.t;
   pr_number : Pr_number.t option;
   has_session : bool;
   busy : bool;
@@ -45,9 +46,10 @@ let needs_intervention t =
      || equal_session_fallback t.session_fallback Given_up
      || ((not (has_pr t)) && t.start_attempts_without_pr >= 2))
 
-let create patch_id =
+let create ~branch patch_id =
   {
     patch_id;
+    branch;
     pr_number = None;
     has_session = false;
     busy = false;
@@ -75,9 +77,10 @@ let create patch_id =
     branch_blocked = false;
   }
 
-let create_adhoc ~patch_id ~pr_number =
+let create_adhoc ~patch_id ~branch ~pr_number =
   {
     patch_id;
+    branch;
     pr_number = Some pr_number;
     has_session = false;
     busy = false;
@@ -193,14 +196,15 @@ let reset_intervention_state t =
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
-let restore ~patch_id ~pr_number ~has_session ~busy ~merged ~queue ~satisfies
-    ~changed ~has_conflict ~base_branch ~ci_failure_count ~session_fallback
-    ~human_messages ~ci_checks ~merge_ready ~is_draft ~pr_description_applied
-    ~implementation_notes_delivered ~start_attempts_without_pr ~checks_passing
-    ~current_op ~current_message_id ~generation ~worktree_path ~head_branch
-    ~branch_blocked =
+let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
+    ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
+    ~session_fallback ~human_messages ~ci_checks ~merge_ready ~is_draft
+    ~pr_description_applied ~implementation_notes_delivered
+    ~start_attempts_without_pr ~checks_passing ~current_op ~current_message_id
+    ~generation ~worktree_path ~head_branch ~branch_blocked =
   {
     patch_id;
+    branch;
     pr_number;
     has_session;
     busy;
@@ -349,19 +353,19 @@ let complete t =
 let%test
     "on_session_failure: start path fresh resets to Fresh_available and clears \
      session" =
-  let t = create (Patch_id.of_string "1") in
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = { t with busy = true; session_fallback = Tried_fresh } in
   let t = on_session_failure t ~is_fresh:true in
   equal_session_fallback t.session_fallback Fresh_available
 
 let%test "on_session_failure: resume failure escalates to Tried_fresh" =
-  let t = create (Patch_id.of_string "1") in
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = { t with busy = true; session_fallback = Fresh_available } in
   let t = on_session_failure t ~is_fresh:false in
   equal_session_fallback t.session_fallback Tried_fresh
 
 let%test "on_session_failure: respond path fresh escalates to Given_up" =
-  let t = create (Patch_id.of_string "1") in
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = set_pr_number t (Pr_number.of_int 1) in
   let t = { t with busy = true; session_fallback = Tried_fresh } in
   let t = on_session_failure t ~is_fresh:true in
@@ -370,19 +374,19 @@ let%test "on_session_failure: respond path fresh escalates to Given_up" =
 let%test
     "on_session_failure: start fresh failure + complete does not set \
      needs_intervention" =
-  let t = create (Patch_id.of_string "1") in
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = { t with busy = true; session_fallback = Tried_fresh } in
   let t = on_session_failure t ~is_fresh:true in
   let t = complete t in
   not (needs_intervention t)
 
 let%test "on_pr_discovery_failure increments attempts from zero" =
-  let t = create (Patch_id.of_string "1") in
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = on_pr_discovery_failure t in
   t.start_attempts_without_pr = 1
 
 let%test "on_pr_discovery_failure increments attempts again" =
-  let t = create (Patch_id.of_string "1") in
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = on_pr_discovery_failure t in
   let t = on_pr_discovery_failure t in
   t.start_attempts_without_pr = 2

@@ -220,13 +220,16 @@ let gen_poller =
 (* -- Patch_agent -- *)
 
 let gen_patch_agent_fresh =
-  QCheck2.Gen.(map Onton.Patch_agent.create gen_patch_id)
+  QCheck2.Gen.(
+    map2
+      (fun pid branch -> Onton.Patch_agent.create ~branch pid)
+      gen_patch_id gen_branch)
 
 let gen_patch_agent_started =
   QCheck2.Gen.(
     map2
       (fun pid branch ->
-        let a = Onton.Patch_agent.create pid in
+        let a = Onton.Patch_agent.create ~branch pid in
         Onton.Patch_agent.start a ~base_branch:branch)
       gen_patch_id gen_branch)
 
@@ -234,7 +237,7 @@ let gen_patch_agent_with_queue =
   QCheck2.Gen.(
     map3
       (fun pid branch ops ->
-        let a = Onton.Patch_agent.create pid in
+        let a = Onton.Patch_agent.create ~branch pid in
         let a = Onton.Patch_agent.start a ~base_branch:branch in
         let a = Onton.Patch_agent.complete a in
         List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
@@ -244,7 +247,7 @@ let gen_patch_agent_with_messages =
   QCheck2.Gen.(
     map4
       (fun pid branch messages ops ->
-        let a = Onton.Patch_agent.create pid in
+        let a = Onton.Patch_agent.create ~branch pid in
         let a = Onton.Patch_agent.start a ~base_branch:branch in
         let a =
           List.fold messages ~init:a ~f:(fun a msg ->
@@ -271,7 +274,7 @@ let gen_patch_agent_fully_populated =
     let* pr_number = option gen_pr_number in
     let* merge_ready = bool in
     let* checks_passing = bool in
-    let a = Onton.Patch_agent.create pid in
+    let a = Onton.Patch_agent.create ~branch pid in
     let a = Onton.Patch_agent.start a ~base_branch:branch in
     let a =
       List.fold messages ~init:a ~f:(fun a msg ->

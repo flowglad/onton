@@ -23,7 +23,7 @@ let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
 (** Start + set PR so the agent is in has_pr=true, busy=false state. *)
 let with_pr pid br =
-  let a = create pid |> fun a -> start a ~base_branch:br in
+  let a = create ~branch:br pid |> fun a -> start a ~base_branch:br in
   let a = set_pr_number a (Pr_number.of_int 1) in
   complete a
 
@@ -65,7 +65,7 @@ let () =
           equal_disposition (disposition a) Busy);
       (* ---- disposition: no PR -> Ready_start ---- *)
       Test.make ~name:"disposition: no PR -> Ready_start" gen_pid (fun pid ->
-          let a = create pid in
+          let a = create ~branch:(Branch.of_string "b") pid in
           equal_disposition (disposition a) Ready_start);
       (* ---- disposition: idle (has_pr, empty queue) -> Idle ---- *)
       Test.make ~name:"disposition: has_pr, empty queue -> Idle"

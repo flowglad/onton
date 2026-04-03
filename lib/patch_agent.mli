@@ -11,6 +11,7 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 
 type t = private {
   patch_id : Types.Patch_id.t;
+  branch : Types.Branch.t;
   pr_number : Types.Pr_number.t option;
   has_session : bool;
   busy : bool;
@@ -39,10 +40,14 @@ type t = private {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-val create : Types.Patch_id.t -> t
+val create : branch:Types.Branch.t -> Types.Patch_id.t -> t
 (** Initial state for a patch: no PR, not busy, empty queue. *)
 
-val create_adhoc : patch_id:Types.Patch_id.t -> pr_number:Types.Pr_number.t -> t
+val create_adhoc :
+  patch_id:Types.Patch_id.t ->
+  branch:Types.Branch.t ->
+  pr_number:Types.Pr_number.t ->
+  t
 (** Initial state for an ad-hoc patch: has PR, not busy, empty queue.
     Corresponds to the spec's Add action:
     {v PatchCtx ~> Add | p: Patch. --- has-pr' p. ~busy' p. ~in-gameplan' p. v}
@@ -206,6 +211,7 @@ val set_pr_number : t -> Types.Pr_number.t -> t
 
 val restore :
   patch_id:Types.Patch_id.t ->
+  branch:Types.Branch.t ->
   pr_number:Types.Pr_number.t option ->
   has_session:bool ->
   busy:bool ->

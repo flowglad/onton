@@ -42,7 +42,8 @@ let create ~patches ~main_branch =
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc (p : Patch.t) ->
         match
-          Map.add acc ~key:p.Patch.id ~data:(Patch_agent.create p.Patch.id)
+          Map.add acc ~key:p.Patch.id
+            ~data:(Patch_agent.create ~branch:p.Patch.branch p.Patch.id)
         with
         | `Ok m -> m
         | `Duplicate ->
@@ -85,7 +86,30 @@ let fire t action =
 
 (** {2 External event application} *)
 
+let refresh_base_branch t patch_id =
+  match find_agent t patch_id with
+  | None -> t
+  | Some _ ->
+      let has_merged pid =
+        match find_agent t pid with
+        | Some a -> a.Patch_agent.merged
+        | None -> false
+      in
+      let branch_of pid =
+        match find_agent t pid with
+        | Some a -> a.Patch_agent.branch
+        | None -> t.main_branch
+      in
+      let fresh =
+        Graph.initial_base t.graph patch_id ~has_merged ~branch_of
+          ~main:t.main_branch
+      in
+      update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a fresh)
+
 let complete t patch_id =
+  (* Refresh base_branch before transitioning to idle — a dependency may
+     have merged while this patch was busy, leaving base_branch stale. *)
+  let t = refresh_base_branch t patch_id in
   let current_message_id =
     match find_agent t patch_id with
     | None -> None
@@ -108,7 +132,15 @@ let complete t patch_id =
 let enqueue t patch_id kind =
   update_agent t patch_id ~f:(fun a -> Patch_agent.enqueue a kind)
 
-let mark_merged t patch_id = update_agent t patch_id ~f:Patch_agent.mark_merged
+let mark_merged t patch_id =
+  let t = update_agent t patch_id ~f:Patch_agent.mark_merged in
+  (* Eagerly update base_branch for direct dependents so it is never
+     stale when Merge_conflict fires. *)
+  let dependents = Graph.dependents t.graph patch_id in
+  List.fold dependents ~init:t ~f:(fun t dep_id ->
+      match find_agent t dep_id with
+      | None -> t
+      | Some _ -> refresh_base_branch t dep_id)
 
 let remove_agent t patch_id =
   {
@@ -242,6 +274,7 @@ let resume_message t message_id =
 
 let send_human_message t patch_id message =
   let t = update_agent t patch_id ~f:Patch_agent.reset_intervention_state in
+  let t = refresh_base_branch t patch_id in
   let t =
     update_agent t patch_id ~f:(fun a ->
         Patch_agent.add_human_message a message)
@@ -306,7 +339,8 @@ let increment_start_attempts_without_pr t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_start_attempts_without_pr
 
 let reset_intervention_state t patch_id =
-  update_agent t patch_id ~f:Patch_agent.reset_intervention_state
+  let t = update_agent t patch_id ~f:Patch_agent.reset_intervention_state in
+  refresh_base_branch t patch_id
 
 let set_branch_blocked t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_branch_blocked
@@ -334,10 +368,10 @@ let restore ~graph ~agents ~outbox ~main_branch =
 let main_branch t = t.main_branch
 let agents_map t = t.agents
 
-let add_agent t ~patch_id ~pr_number =
+let add_agent t ~patch_id ~branch ~pr_number =
   if Map.mem t.agents patch_id then t
   else
-    let agent = Patch_agent.create_adhoc ~patch_id ~pr_number in
+    let agent = Patch_agent.create_adhoc ~patch_id ~branch ~pr_number in
     let graph = Graph.add_patch t.graph patch_id in
     { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
 
