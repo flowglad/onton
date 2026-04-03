@@ -396,6 +396,29 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_tried_fresh t patch_id in
       complete t patch_id
 
+type conflict_rebase_decision =
+  | Conflict_resolved
+  | Deliver_to_agent
+  | Conflict_failed
+[@@deriving show, eq, sexp_of]
+
+let apply_conflict_rebase_result t patch_id rebase_result new_base =
+  match rebase_result with
+  | Worktree.Ok ->
+      let t = set_base_branch t patch_id new_base in
+      let t = clear_has_conflict t patch_id in
+      let t = complete t patch_id in
+      (t, Conflict_resolved)
+  | Worktree.Noop | Worktree.Conflict ->
+      let t = set_base_branch t patch_id new_base in
+      let t = set_has_conflict t patch_id in
+      (t, Deliver_to_agent)
+  | Worktree.Error _ ->
+      let t = set_session_failed t patch_id in
+      let t = set_tried_fresh t patch_id in
+      let t = complete t patch_id in
+      (t, Conflict_failed)
+
 type session_result =
   | Session_ok
   | Session_process_error of { is_fresh : bool }

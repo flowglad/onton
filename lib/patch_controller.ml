@@ -597,12 +597,20 @@ let%test "no merge-conflict re-enqueue after noop" =
   assert (
     List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
       ~equal:Operation_kind.equal);
-  (* Fire the Merge_conflict, then simulate Noop: restore has_conflict, complete *)
+  (* Fire the Merge_conflict, then simulate Noop via apply_conflict_rebase_result *)
   let t =
     Orchestrator.fire t
       (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
   in
-  let t = Orchestrator.set_has_conflict t pid in
+  let t, decision =
+    Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
+  in
+  (* Noop -> Deliver_to_agent, agent still busy *)
+  assert (
+    Orchestrator.equal_conflict_rebase_decision decision
+      Orchestrator.Deliver_to_agent);
+  (* Simulate agent session completing *)
+  let t = Orchestrator.apply_session_result t pid Orchestrator.Session_ok in
   let t = Orchestrator.complete t pid in
   let agent = Orchestrator.agent t pid in
   assert agent.Patch_agent.has_conflict;

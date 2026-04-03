@@ -567,6 +567,152 @@ let () =
         with _ -> false)
   in
 
+  (* ========== apply_conflict_rebase_result properties ========== *)
+
+  (* Ok -> Conflict_resolved, not busy, conflict cleared *)
+  let prop_conflict_rebase_ok =
+    Test.make ~name:"apply_conflict_rebase_result: Ok -> Conflict_resolved"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.set_has_conflict orch pid in
+              let orch', decision =
+                Orchestrator.apply_conflict_rebase_result orch pid Worktree.Ok
+                  new_base
+              in
+              let a = Orchestrator.agent orch' pid in
+              Orchestrator.equal_conflict_rebase_decision decision
+                Orchestrator.Conflict_resolved
+              && (not a.Patch_agent.busy)
+              && not a.Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* Noop -> Deliver_to_agent, still busy, has_conflict set *)
+  let prop_conflict_rebase_noop =
+    Test.make
+      ~name:"apply_conflict_rebase_result: Noop -> Deliver_to_agent, busy"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch', decision =
+                Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop
+                  new_base
+              in
+              let a = Orchestrator.agent orch' pid in
+              Orchestrator.equal_conflict_rebase_decision decision
+                Orchestrator.Deliver_to_agent
+              && a.Patch_agent.busy && a.Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* Conflict -> Deliver_to_agent, still busy, has_conflict set *)
+  let prop_conflict_rebase_conflict =
+    Test.make
+      ~name:"apply_conflict_rebase_result: Conflict -> Deliver_to_agent, busy"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch', decision =
+                Orchestrator.apply_conflict_rebase_result orch pid
+                  Worktree.Conflict new_base
+              in
+              let a = Orchestrator.agent orch' pid in
+              Orchestrator.equal_conflict_rebase_decision decision
+                Orchestrator.Deliver_to_agent
+              && a.Patch_agent.busy && a.Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* Noop/Conflict -> no Merge_conflict self-enqueue *)
+  let prop_conflict_rebase_no_self_enqueue =
+    Test.make
+      ~name:
+        "apply_conflict_rebase_result: Noop/Conflict -> no Merge_conflict \
+         enqueue" (Gen.pair gen_patch_list_unique gen_branch)
+      (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let check r =
+                let orch', _ =
+                  Orchestrator.apply_conflict_rebase_result orch pid r new_base
+                in
+                let a = Orchestrator.agent orch' pid in
+                not
+                  (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                     ~equal:Operation_kind.equal)
+              in
+              check Worktree.Noop && check Worktree.Conflict
+        with _ -> false)
+  in
+
+  (* Error -> Conflict_failed, not busy, session failed *)
+  let prop_conflict_rebase_error =
+    Test.make ~name:"apply_conflict_rebase_result: Error -> Conflict_failed"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch', decision =
+                Orchestrator.apply_conflict_rebase_result orch pid
+                  (Worktree.Error "test error") new_base
+              in
+              let a = Orchestrator.agent orch' pid in
+              Orchestrator.equal_conflict_rebase_decision decision
+                Orchestrator.Conflict_failed
+              && (not a.Patch_agent.busy)
+              && Patch_agent.equal_session_fallback
+                   a.Patch_agent.session_fallback Patch_agent.Given_up
+        with _ -> false)
+  in
+
+  (* All non-error branches set base_branch *)
+  let prop_conflict_rebase_sets_base =
+    Test.make
+      ~name:"apply_conflict_rebase_result: Ok/Noop/Conflict set base_branch"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
+              List.for_all results ~f:(fun r ->
+                  let orch', _ =
+                    Orchestrator.apply_conflict_rebase_result orch pid r
+                      new_base
+                  in
+                  let a = Orchestrator.agent orch' pid in
+                  Option.is_some a.Patch_agent.base_branch)
+        with _ -> false)
+  in
+
   (* ========== apply_poll_result (Poll_applicator) properties ========== *)
 
   (* Merged poll result -> agent marked merged *)
@@ -946,6 +1092,12 @@ let () =
       prop_rebase_ok_clears_conflict;
       prop_rebase_noop_preserves_conflict;
       prop_rebase_error_fails;
+      prop_conflict_rebase_ok;
+      prop_conflict_rebase_noop;
+      prop_conflict_rebase_conflict;
+      prop_conflict_rebase_no_self_enqueue;
+      prop_conflict_rebase_error;
+      prop_conflict_rebase_sets_base;
       prop_poll_merged;
       prop_poll_conflict_set;
       prop_poll_conflict_cleared;
