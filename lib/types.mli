@@ -157,7 +157,7 @@ module Gameplan : sig
     project_name : string;
     problem_statement : string;
     solution_summary : string;
-    final_state_spec : string;
+    final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
