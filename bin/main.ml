@@ -1456,10 +1456,25 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                      This path does its own I/O and separate atomic update;
                      it doesn't participate in the batched update below. *)
                   if poll_result.Poller.closed then (
+                    Hashtbl.remove ci_checks_cache patch_id;
                     log_event runtime ~patch_id
                       (Printf.sprintf "PR #%d closed, looking for replacement"
                          (Pr_number.to_int pr_number));
-                    let branch = branch_of patch_id in
+                    let branch =
+                      match pr_state.Pr_state.head_branch with
+                      | Some b -> b
+                      | None ->
+                          Runtime.read runtime (fun snap ->
+                              match
+                                Orchestrator.find_agent
+                                  snap.Runtime.orchestrator patch_id
+                              with
+                              | Some agent -> (
+                                  match agent.Patch_agent.head_branch with
+                                  | Some b -> b
+                                  | None -> agent.Patch_agent.branch)
+                              | None -> branch_of patch_id)
+                    in
                     (match
                        Startup_reconciler.discover_pr ~process_mgr
                          ~token:config.github_token ~owner:config.github_owner
