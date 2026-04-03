@@ -85,6 +85,9 @@ let apply_poll_result t patch_id
       Orchestrator.mark_merged t patch_id)
     else t
   in
+  let had_conflict_before =
+    (Orchestrator.agent t patch_id).Patch_agent.has_conflict
+  in
   let t =
     if poll_result.has_conflict then (
       let agent = Orchestrator.agent t patch_id in
@@ -128,8 +131,13 @@ let apply_poll_result t patch_id
             if is_new then
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
+        | Operation_kind.Merge_conflict ->
+            if is_new && not had_conflict_before then (
+              log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
+              Orchestrator.enqueue acc patch_id kind)
+            else acc
         | Operation_kind.Rebase | Operation_kind.Human
-        | Operation_kind.Merge_conflict | Operation_kind.Implementation_notes ->
+        | Operation_kind.Implementation_notes ->
             if is_new then
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)
@@ -194,34 +202,36 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
 let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
   let patch_id = patch.id in
   let agent = Orchestrator.agent t patch_id in
-  let t = enqueue_notes_if_needed t patch_id agent in
-  let agent = Orchestrator.agent t patch_id in
-  let effects = ref [] in
-  (match agent.pr_number with
-  | Some pr_number -> (
-      if not agent.pr_description_applied then
-        effects :=
-          Set_pr_description
-            {
-              patch_id;
-              pr_number;
-              body = Prompt.render_pr_description ~project_name patch gameplan;
-            }
-          :: !effects;
-      match agent.base_branch with
-      | Some base_branch ->
-          let desired_draft =
-            if Branch.equal base_branch (Orchestrator.main_branch t) then
-              not agent.implementation_notes_delivered
-            else true
-          in
-          if Bool.(agent.is_draft <> desired_draft) then
-            effects :=
-              Set_pr_draft { patch_id; pr_number; draft = desired_draft }
-              :: !effects
-      | None -> ())
-  | None -> ());
-  (t, List.rev !effects)
+  if agent.Patch_agent.merged then (t, [])
+  else
+    let t = enqueue_notes_if_needed t patch_id agent in
+    let agent = Orchestrator.agent t patch_id in
+    let effects = ref [] in
+    (match agent.pr_number with
+    | Some pr_number -> (
+        if not agent.pr_description_applied then
+          effects :=
+            Set_pr_description
+              {
+                patch_id;
+                pr_number;
+                body = Prompt.render_pr_description ~project_name patch gameplan;
+              }
+            :: !effects;
+        match agent.base_branch with
+        | Some base_branch ->
+            let desired_draft =
+              if Branch.equal base_branch (Orchestrator.main_branch t) then
+                not agent.implementation_notes_delivered
+              else true
+            in
+            if Bool.(agent.is_draft <> desired_draft) then
+              effects :=
+                Set_pr_draft { patch_id; pr_number; draft = desired_draft }
+                :: !effects
+        | None -> ())
+    | None -> ());
+    (t, List.rev !effects)
 
 let reconcile_all t ~project_name ~gameplan =
   List.fold gameplan.Gameplan.patches ~init:(t, []) ~f:(fun (orch, acc) patch ->
@@ -528,3 +538,78 @@ let%test "reconcile_patch requests ready-for-review after notes on main" =
   List.exists effects ~f:(function
     | Set_pr_draft { patch_id; draft = false; _ } -> Patch_id.equal patch_id pid
     | Set_pr_description _ | Set_pr_draft _ -> false)
+
+let%test "reconcile_patch emits no effects for merged agent" =
+  let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.complete t pid in
+  let t = Orchestrator.mark_merged t pid in
+  let _, effects =
+    reconcile_patch t ~project_name:"proj"
+      ~gameplan:
+        Gameplan.
+          {
+            project_name = "proj";
+            problem_statement = "";
+            solution_summary = "";
+            final_state_spec = "";
+            patches = [ patch ];
+            current_state_analysis = "";
+            explicit_opinions = "";
+            acceptance_criteria = [];
+            open_questions = [];
+          }
+      ~patch
+  in
+  List.is_empty effects
+
+let%test "no merge-conflict re-enqueue after noop" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.complete t pid in
+  (* First poll: conflict detected, enqueues Merge_conflict *)
+  let poll_conflict =
+    Poller.
+      {
+        queue = [ Operation_kind.Merge_conflict ];
+        merged = false;
+        closed = false;
+        is_draft = false;
+        has_conflict = true;
+        merge_ready = false;
+        checks_passing = false;
+        ci_checks = [];
+      }
+  in
+  let obs =
+    {
+      poll_result = poll_conflict;
+      head_branch = Some (Branch.of_string "test-branch");
+      base_branch = Some main;
+      branch_in_root = false;
+      worktree_path = None;
+    }
+  in
+  let t, _, _ = apply_poll_result t pid obs in
+  let agent = Orchestrator.agent t pid in
+  assert (
+    List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
+      ~equal:Operation_kind.equal);
+  (* Fire the Merge_conflict, then simulate Noop: restore has_conflict, complete *)
+  let t =
+    Orchestrator.fire t
+      (Orchestrator.Respond (pid, Operation_kind.Merge_conflict))
+  in
+  let t = Orchestrator.set_has_conflict t pid in
+  let t = Orchestrator.complete t pid in
+  let agent = Orchestrator.agent t pid in
+  assert agent.Patch_agent.has_conflict;
+  assert (List.is_empty agent.Patch_agent.queue);
+  (* Second poll: GitHub still reports conflict *)
+  let t, _, _ = apply_poll_result t pid obs in
+  let agent = Orchestrator.agent t pid in
+  not
+    (List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
+       ~equal:Operation_kind.equal)

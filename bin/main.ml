@@ -2121,7 +2121,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   | Worktree.Noop ->
                                       log_event runtime ~patch_id
                                         "merge-conflict: rebase is a noop, \
-                                         clearing conflict"
+                                         conflict persists (will retry after \
+                                         base changes)"
                                   | Worktree.Conflict ->
                                       log_event runtime ~patch_id
                                         "merge-conflict: rebase hit conflicts, \
@@ -2132,10 +2133,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                            "merge-conflict: rebase error: %s"
                                            msg));
                                   match rebase_result with
-                                  | Worktree.Ok | Worktree.Noop ->
+                                  | Worktree.Ok ->
                                       Runtime.update_orchestrator runtime
                                         (fun orch ->
                                           Orchestrator.clear_has_conflict orch
+                                            patch_id
+                                          |> fun o ->
+                                          Orchestrator.complete o patch_id);
+                                      `Ok
+                                  | Worktree.Noop ->
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.set_has_conflict orch
                                             patch_id
                                           |> fun o ->
                                           Orchestrator.complete o patch_id);

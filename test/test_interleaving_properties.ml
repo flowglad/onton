@@ -265,7 +265,14 @@ let rec apply_command orch patches cmd =
         in
         orch
       with Invalid_argument _ -> orch)
-  | Reconcile -> apply_reconcile orch patches
+  | Reconcile ->
+      let orch = apply_reconcile orch patches in
+      let gameplan = make_gameplan patches in
+      let orch, _effects =
+        Patch_controller.reconcile_all orch ~project_name:"test-project"
+          ~gameplan
+      in
+      orch
   | Runner_tick -> (
       try
         let orch, _effects, _actions =
@@ -447,6 +454,29 @@ let check_busy_mutual_exclusion orch action =
       (Printf.sprintf "I-10 busy_mutual_exclusion violated for %s"
          (Patch_id.to_string pid))
 
+(** I-11: merged agents produce zero GitHub effects from reconcile_patch. *)
+let check_merged_no_github_effects orch patches =
+  let gameplan = make_gameplan patches in
+  List.iter (Orchestrator.all_agents orch) ~f:(fun (a : Patch_agent.t) ->
+      if a.merged then
+        let patch =
+          List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+              Patch_id.equal p.id a.patch_id)
+        in
+        match patch with
+        | None -> ()
+        | Some patch ->
+            let _, effects =
+              Patch_controller.reconcile_patch orch ~project_name:"test-project"
+                ~gameplan ~patch
+            in
+            if not (List.is_empty effects) then
+              failwith
+                (Printf.sprintf
+                   "I-11 merged_no_github_effects violated for %s: %d effects"
+                   (Patch_id.to_string a.patch_id)
+                   (List.length effects)))
+
 (* ========== Combined check ========== *)
 
 let merged_set_of orch =
@@ -473,7 +503,9 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged =
       check_priority_ordering orch action;
       check_needs_intervention_blocks_respond orch action;
       check_busy_mutual_exclusion orch action;
-      check_base_branch_freshness orch patches action)
+      check_base_branch_freshness orch patches action);
+  (* Reconciliation invariants *)
+  check_merged_no_github_effects orch patches
 
 let run_sequence ?(debug = false) orch patches cmds =
   let _final, _final_merged =

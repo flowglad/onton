@@ -507,9 +507,9 @@ let () =
         with _ -> false)
   in
 
-  (* Ok/Noop -> conflict cleared *)
-  let prop_rebase_ok_noop_clears_conflict =
-    Test.make ~name:"apply_rebase_result: Ok/Noop -> clears has_conflict"
+  (* Ok -> conflict cleared *)
+  let prop_rebase_ok_clears_conflict =
+    Test.make ~name:"apply_rebase_result: Ok -> clears has_conflict"
       (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
         try
           match patches with
@@ -519,13 +519,29 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
-              let check outcome =
-                let orch' =
-                  Orchestrator.apply_rebase_result orch pid outcome new_base
-                in
-                not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+              let orch' =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
               in
-              check Worktree.Ok && check Worktree.Noop
+              not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* Noop -> conflict preserved *)
+  let prop_rebase_noop_preserves_conflict =
+    Test.make ~name:"apply_rebase_result: Noop -> preserves has_conflict"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.set_has_conflict orch pid in
+              let orch' =
+                Orchestrator.apply_rebase_result orch pid Worktree.Noop new_base
+              in
+              (Orchestrator.agent orch' pid).Patch_agent.has_conflict
         with _ -> false)
   in
 
@@ -927,7 +943,8 @@ let () =
       prop_rebase_sets_base;
       prop_rebase_ok_noop_complete;
       prop_rebase_conflict_enqueues;
-      prop_rebase_ok_noop_clears_conflict;
+      prop_rebase_ok_clears_conflict;
+      prop_rebase_noop_preserves_conflict;
       prop_rebase_error_fails;
       prop_poll_merged;
       prop_poll_conflict_set;
