@@ -74,6 +74,10 @@ type command =
   | Send_human_message of int
   | Reset_intervention of int
   | Atomic_poll_reconcile of { patch_idx : int; poll_kind : poll_kind }
+  | Apply_conflict_rebase_result of {
+      patch_idx : int;
+      result : rebase_result_kind;
+    }
 
 let show_poll_kind = function
   | Poll_normal -> "Normal"
@@ -112,6 +116,9 @@ let show_command = function
   | Atomic_poll_reconcile { patch_idx; poll_kind } ->
       Printf.sprintf "Atomic_poll_reconcile(%d, %s)" patch_idx
         (show_poll_kind poll_kind)
+  | Apply_conflict_rebase_result { patch_idx; result } ->
+      Printf.sprintf "Apply_conflict_rebase_result(%d, %s)" patch_idx
+        (show_rebase_result_kind result)
 
 (* -- Generators -- *)
 
@@ -152,6 +159,10 @@ let gen_command ~n =
         map2
           (fun i r -> Apply_rebase_result { patch_idx = i; result = r })
           gen_idx gen_rebase_result_kind;
+        map2
+          (fun i r ->
+            Apply_conflict_rebase_result { patch_idx = i; result = r })
+          gen_idx gen_rebase_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
       ])
@@ -176,6 +187,10 @@ let gen_atomic_command ~n =
           gen_idx gen_session_result_kind;
         map2
           (fun i r -> Apply_rebase_result { patch_idx = i; result = r })
+          gen_idx gen_rebase_result_kind;
+        map2
+          (fun i r ->
+            Apply_conflict_rebase_result { patch_idx = i; result = r })
           gen_idx gen_rebase_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
@@ -314,6 +329,34 @@ let rec apply_command orch patches cmd =
         apply_command orch patches (Apply_poll { patch_idx; poll_kind })
       in
       apply_command orch patches Reconcile
+  | Apply_conflict_rebase_result { patch_idx; result } -> (
+      let pid = pid_of_idx patches patch_idx in
+      let branch_of = branch_of_patches patches in
+      try
+        let has_merged dep_pid =
+          (Orchestrator.agent orch dep_pid).Patch_agent.merged
+        in
+        let new_base =
+          Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
+            ~branch_of ~main
+        in
+        let orch', decision =
+          Orchestrator.apply_conflict_rebase_result orch pid
+            (to_worktree_result result)
+            new_base
+        in
+        match decision with
+        | Orchestrator.Deliver_to_agent ->
+            (* Agent stays busy; simulate successful session + complete.
+               Mirror the runner: clear_has_conflict before complete. *)
+            let orch' =
+              Orchestrator.apply_session_result orch' pid
+                Orchestrator.Session_ok
+            in
+            let orch' = Orchestrator.clear_has_conflict orch' pid in
+            Orchestrator.complete orch' pid
+        | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
+      with Invalid_argument _ -> orch)
 
 (* ========== Invariant checks ========== *)
 

@@ -142,6 +142,25 @@ val apply_rebase_result :
     set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
     set_session_failed + set_tried_fresh \+ complete. *)
 
+type conflict_rebase_decision =
+  | Conflict_resolved
+  | Deliver_to_agent
+  | Conflict_failed
+[@@deriving show, eq, sexp_of]
+
+val apply_conflict_rebase_result :
+  t ->
+  Patch_id.t ->
+  Worktree.rebase_result ->
+  Branch.t ->
+  t * conflict_rebase_decision
+(** Apply a rebase outcome during merge-conflict resolution. Pure function.
+    Unlike [apply_rebase_result], [Noop] and [Conflict] both produce
+    [Deliver_to_agent] without calling [complete] — the agent stays busy for the
+    Claude session. [Ok] -> clear_has_conflict + complete + [Conflict_resolved].
+    [Noop|Conflict] -> set_has_conflict + [Deliver_to_agent]. [Error _] ->
+    set_session_failed + complete + [Conflict_failed]. *)
+
 val restore :
   graph:Graph.t ->
   agents:Patch_agent.t Map.M(Patch_id).t ->

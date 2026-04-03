@@ -2121,8 +2121,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   | Worktree.Noop ->
                                       log_event runtime ~patch_id
                                         "merge-conflict: rebase is a noop, \
-                                         conflict persists (will retry after \
-                                         base changes)"
+                                         delivering to agent (content \
+                                         conflict)"
                                   | Worktree.Conflict ->
                                       log_event runtime ~patch_id
                                         "merge-conflict: rebase hit conflicts, \
@@ -2132,24 +2132,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         (Printf.sprintf
                                            "merge-conflict: rebase error: %s"
                                            msg));
-                                  match rebase_result with
-                                  | Worktree.Ok ->
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.clear_has_conflict orch
-                                            patch_id
-                                          |> fun o ->
-                                          Orchestrator.complete o patch_id);
-                                      `Ok
-                                  | Worktree.Noop ->
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.set_has_conflict orch
-                                            patch_id
-                                          |> fun o ->
-                                          Orchestrator.complete o patch_id);
-                                      `Conflict_persist
-                                  | Worktree.Conflict ->
+                                  let decision =
+                                    Runtime.update_orchestrator_returning
+                                      runtime (fun orch ->
+                                        Orchestrator
+                                        .apply_conflict_rebase_result orch
+                                          patch_id rebase_result
+                                          (Types.Branch.of_string base))
+                                  in
+                                  match decision with
+                                  | Orchestrator.Conflict_resolved -> `Ok
+                                  | Orchestrator.Deliver_to_agent ->
                                       let pr_number =
                                         agent.Patch_agent.pr_number
                                       in
@@ -2166,14 +2159,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
                                         ~user_config:config.user_config ~backend
-                                  | Worktree.Error _ ->
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.set_session_failed orch
-                                            patch_id
-                                          |> fun o ->
-                                          Orchestrator.complete o patch_id);
-                                      `Failed)
+                                  | Orchestrator.Conflict_failed -> `Failed)
                               else
                                 let pr_number = agent.Patch_agent.pr_number in
                                 log_event runtime ~patch_id
@@ -2269,14 +2255,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     needed"
                                    (Patch_id.to_string patch_id))
                               ()
-                      | `Conflict_persist ->
-                          set_status ~level:Tui.Warning
-                            ~text:
-                              (Printf.sprintf
-                                 "Patch %s: conflict persists, will retry"
-                                 (Patch_id.to_string patch_id))
-                            ~expires_at:(Unix.gettimeofday () +. 10.0)
-                            ()
                       | `Ok ->
                           if
                             Operation_kind.equal kind
