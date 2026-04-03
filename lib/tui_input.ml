@@ -29,6 +29,7 @@ type input_mode =
   | Prompt_worktree
   | Prompt_message
   | Prompt_broadcast
+  | Manage_patch
 [@@deriving show, eq]
 
 let prompt_prefix = function
@@ -37,6 +38,7 @@ let prompt_prefix = function
   | Prompt_worktree -> "Worktree: "
   | Prompt_message -> "> "
   | Prompt_broadcast -> "broadcast> "
+  | Manage_patch -> ""
 
 let of_key (key : Term.Key.t) : command =
   match key with

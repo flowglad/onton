@@ -28,6 +28,7 @@ type input_mode =
   | Prompt_worktree  (** Buffer holds path string *)
   | Prompt_message  (** Buffer holds message text, detail view only *)
   | Prompt_broadcast  (** Buffer holds message to send to all active patches *)
+  | Manage_patch  (** Menu of break-glass patch actions, detail view only *)
 [@@deriving show, eq]
 
 val prompt_prefix : input_mode -> string
