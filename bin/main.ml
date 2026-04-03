@@ -1269,8 +1269,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                         | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
                         | Tui_input.Noop | Tui_input.Send_message _
                         | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-                        | Tui_input.Remove_patch | Tui_input.Force_mark_merged
-                          ->
+                        | Tui_input.Remove_patch ->
                             0
                       in
                       if delta <> 0 then detail_follow := false;
@@ -1365,8 +1364,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   | Tui.Detail_view _ | Tui.Timeline_view -> ());
                   loop ()
               | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
-              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-              | Tui_input.Force_mark_merged ->
+              | Tui_input.Add_pr _ | Tui_input.Add_worktree _ ->
                   loop ()))
   in
   loop ()
