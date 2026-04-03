@@ -1476,7 +1476,11 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                               ~pr_number:new_pr ~base_branch ~merged)
                     | Ok None ->
                         log_event runtime ~patch_id
-                          "no open PR found — will create on next session"
+                          "no open PR found — clearing stale PR state, will \
+                           create on next session";
+                        Pr_registry.unregister pr_registry ~patch_id;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.clear_pr orch patch_id)
                     | Error msg ->
                         log_event runtime ~patch_id
                           (Printf.sprintf "PR re-discovery failed: %s" msg));

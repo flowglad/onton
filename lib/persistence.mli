@@ -23,5 +23,7 @@ val snapshot_of_yojson : Yojson.Safe.t -> (Runtime.snapshot, string) result
 val patch_agent_to_yojson : Patch_agent.t -> Yojson.Safe.t
 (** Convert a patch agent to JSON. Exposed for testing. *)
 
-val patch_agent_of_yojson : Yojson.Safe.t -> (Patch_agent.t, string) result
-(** Parse a patch agent from the current JSON schema. Exposed for testing. *)
+val patch_agent_of_yojson :
+  gameplan:Types.Gameplan.t -> Yojson.Safe.t -> (Patch_agent.t, string) result
+(** Parse a patch agent from the current JSON schema. [~gameplan] is used to
+    derive the branch for old snapshots that lack a ["branch"] key. *)

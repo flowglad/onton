@@ -209,6 +209,10 @@ val set_pr_number : t -> Types.Pr_number.t -> t
 (** Store [pr_number] (making [has_pr] true). Not a plain field setter —
     establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
 
+val clear_pr : t -> t
+(** Remove the PR number and reset all PR-related state, returning the agent to
+    the no-PR bootstrap path. *)
+
 val restore :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
