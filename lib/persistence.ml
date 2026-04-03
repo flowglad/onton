@@ -217,7 +217,13 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
                         ("base_branch", Branch.yojson_of_t base_branch);
                       ] );
               ("payload_hash", `String msg.payload_hash);
-              ("status", `String (Orchestrator.show_message_status msg.status));
+              ( "status",
+                `String
+                  (match msg.status with
+                  | Orchestrator.Pending -> "Pending"
+                  | Orchestrator.Acked -> "Acked"
+                  | Orchestrator.Completed -> "Completed"
+                  | Orchestrator.Obsolete -> "Obsolete") );
             ] ))
   in
   `Assoc
