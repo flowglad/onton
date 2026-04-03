@@ -131,6 +131,7 @@ val views_of_orchestrator :
   patch_view list
 
 val render_help_overlay : width:int -> height:int -> string list
+val render_manage_overlay : width:int -> height:int -> string list
 
 val render_frame :
   width:int ->
@@ -141,6 +142,7 @@ val render_frame :
   activity:activity_entry list ->
   project_name:string ->
   show_help:bool ->
+  show_manage:bool ->
   ?transcript:string ->
   ?status_msg:status_msg ->
   ?prompt_line:string ->

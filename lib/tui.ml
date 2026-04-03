@@ -1052,7 +1052,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
                w:worktree  -:remove  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  esc/backspace:back  enter:message  t:timeline  h:help"
+              " q:quit  esc:back  enter:message  m:manage  t:timeline  h:help"
         | Timeline_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
@@ -1094,6 +1094,7 @@ let render_help_overlay ~width ~height =
           "PgUp      Page up (10 lines)";
           "PgDn      Page down (10 lines)";
           "Enter     Send message";
+          "m         Manage patch";
           "Esc/Bksp  Back to list";
           "t         Toggle timeline";
         ] );
@@ -1124,6 +1125,24 @@ let render_help_overlay ~width ~height =
             Term.styled [ Term.Sgr.dim ] row))
   in
   let content = title :: body in
+  let overlay_h = Int.max 0 (Int.min (List.length content) (height - 1)) in
+  let visible = List.sub content ~pos:0 ~len:overlay_h in
+  let pad_line line = if width <= 0 then "" else Term.fit_width width line in
+  List.map visible ~f:pad_line
+
+let render_manage_overlay ~width ~height =
+  let dismiss = Term.styled [ Term.Sgr.dim ] "(esc to cancel)" in
+  let title =
+    Term.styled
+      [ Term.Sgr.bold; Term.Sgr.fg_yellow ]
+      (Printf.sprintf " Manage Patch  %s" dismiss)
+  in
+  let items =
+    [
+      Term.styled [ Term.Sgr.dim ] "    m   Force mark as merged (break glass)";
+    ]
+  in
+  let content = title :: "" :: items in
   let overlay_h = Int.max 0 (Int.min (List.length content) (height - 1)) in
   let visible = List.sub content ~pos:0 ~len:overlay_h in
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
@@ -1190,7 +1209,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
-    ~(activity : activity_entry list) ~project_name ~show_help
+    ~(activity : activity_entry list) ~project_name ~show_help ~show_manage
     ?(transcript = "") ?status_msg ?prompt_line (views : patch_view list) =
   let no_patches =
     {
@@ -1205,6 +1224,9 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
   in
   if show_help then
     let overlay = render_help_overlay ~width ~height in
+    { no_patches with lines = overlay }
+  else if show_manage then
+    let overlay = render_manage_overlay ~width ~height in
     { no_patches with lines = overlay }
   else
     let header = render_header ~project_name ~width in

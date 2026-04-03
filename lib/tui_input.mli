@@ -19,6 +19,7 @@ type command =
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string
   | Remove_patch
+  | Force_mark_merged
 [@@deriving show, eq]
 
 (** Input mode for the TUI prompt. *)
@@ -28,6 +29,7 @@ type input_mode =
   | Prompt_worktree  (** Buffer holds path string *)
   | Prompt_message  (** Buffer holds message text, detail view only *)
   | Prompt_broadcast  (** Buffer holds message to send to all active patches *)
+  | Manage_patch  (** Menu of break-glass patch actions, detail view only *)
 [@@deriving show, eq]
 
 val prompt_prefix : input_mode -> string

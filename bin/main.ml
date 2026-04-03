@@ -716,7 +716,7 @@ let intervention_reasons_of_log (log : Activity_log.t)
     shared mutable refs updated by the input fiber. *)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
-    ~transcripts ~sorted_patch_ids ~prompt_line ~patches_start_row
+    ~transcripts ~sorted_patch_ids ~input_mode ~prompt_line ~patches_start_row
     ~patches_scroll_offset ~patches_visible_count =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
@@ -772,8 +772,10 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     let frame =
       Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
         ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
-        ~show_help:!show_help ~transcript ?status_msg:!status_msg
-        ?prompt_line:!prompt_line views
+        ~show_help:!show_help
+        ~show_manage:
+          (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
+        ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line views
     in
     (* Write back the clamped scroll offset so delta-based input in
        input_fiber works from a real value, not a sentinel like max_value.
@@ -823,7 +825,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
   in
   let sync_input () =
     match !input_mode with
-    | Tui_input.Normal -> prompt_line := None
+    | Tui_input.Normal | Tui_input.Manage_patch -> prompt_line := None
     | Tui_input.Prompt_pr | Tui_input.Prompt_worktree | Tui_input.Prompt_message
     | Tui_input.Prompt_broadcast ->
         let prefix = Tui_input.prompt_prefix !input_mode in
@@ -851,6 +853,26 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
         eof_count := 0;
         if !show_help then (
           show_help := false;
+          loop ())
+        else if Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch
+        then (
+          (match key with
+          | Term.Key.Escape | Term.Key.Backspace ->
+              input_mode := Tui_input.Normal
+          | Term.Key.Char 'm' -> (
+              input_mode := Tui_input.Normal;
+              match !view_mode with
+              | Tui.Detail_view patch_id ->
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.mark_merged orch patch_id);
+                  log_event runtime ~patch_id "Force-marked as merged"
+              | Tui.List_view | Tui.Timeline_view -> ())
+          | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
+          | Term.Key.Up | Term.Key.Down | Term.Key.Left | Term.Key.Right
+          | Term.Key.Home | Term.Key.End | Term.Key.Page_up | Term.Key.Page_down
+          | Term.Key.Delete | Term.Key.F _ | Term.Key.Ctrl _ | Term.Key.Mouse _
+          | Term.Key.Unknown _ ->
+              ());
           loop ())
         else if not (Tui_input.equal_input_mode !input_mode Tui_input.Normal)
         then
@@ -1067,7 +1089,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                             log_event runtime ~patch_id
                               (Printf.sprintf "Failed to add worktree: %s" msg))
                   )
-              | Tui_input.Normal -> ());
+              | Tui_input.Normal | Tui_input.Manage_patch -> ());
               loop ()
           | Term.Key.Backspace | Term.Key.Delete ->
               let len = Buffer.length buf in
@@ -1195,6 +1217,12 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               Buffer.clear buf;
               input_mode := Tui_input.Prompt_worktree;
               loop ()
+          | Term.Key.Char 'm'
+            when match !view_mode with
+                 | Tui.Detail_view _ -> true
+                 | Tui.List_view | Tui.Timeline_view -> false ->
+              input_mode := Tui_input.Manage_patch;
+              loop ()
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace
           | Term.Key.Escape | Term.Key.Up | Term.Key.Down | Term.Key.Left
           | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
@@ -1241,7 +1269,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                         | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
                         | Tui_input.Noop | Tui_input.Send_message _
                         | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-                        | Tui_input.Remove_patch ->
+                        | Tui_input.Remove_patch | Tui_input.Force_mark_merged
+                          ->
                             0
                       in
                       if delta <> 0 then detail_follow := false;
@@ -1336,7 +1365,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   | Tui.Detail_view _ | Tui.Timeline_view -> ());
                   loop ()
               | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
-              | Tui_input.Add_pr _ | Tui_input.Add_worktree _ ->
+              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+              | Tui_input.Force_mark_merged ->
                   loop ()))
   in
   loop ()
@@ -2586,8 +2616,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                    tui_fiber ~runtime ~clock ~stdout ~list_selected
                      ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
-                     ~prompt_line ~patches_start_row ~patches_scroll_offset
-                     ~patches_visible_count)
+                     ~input_mode ~prompt_line ~patches_start_row
+                     ~patches_scroll_offset ~patches_visible_count)
                 :: (fun () ->
                   input_fiber ~runtime ~list_selected ~detail_scroll
                     ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode

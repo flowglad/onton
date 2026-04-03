@@ -21,6 +21,7 @@ type command =
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string
   | Remove_patch
+  | Force_mark_merged
 [@@deriving show, eq]
 
 type input_mode =
@@ -29,6 +30,7 @@ type input_mode =
   | Prompt_worktree
   | Prompt_message
   | Prompt_broadcast
+  | Manage_patch
 [@@deriving show, eq]
 
 let prompt_prefix = function
@@ -37,6 +39,7 @@ let prompt_prefix = function
   | Prompt_worktree -> "Worktree: "
   | Prompt_message -> "> "
   | Prompt_broadcast -> "broadcast> "
+  | Manage_patch -> ""
 
 let of_key (key : Term.Key.t) : command =
   match key with
@@ -75,7 +78,7 @@ let apply_move ~count ~selected (cmd : command) =
     | Page_up -> if selected = -1 then -1 else clamp (selected - 5)
     | Page_down -> if selected = -1 then 0 else clamp (selected + 5)
     | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
-    | Add_pr _ | Add_worktree _ | Remove_patch ->
+    | Add_pr _ | Add_worktree _ | Remove_patch | Force_mark_merged ->
         if selected >= count then -1 else selected
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
