@@ -1052,7 +1052,8 @@ let render_footer ~width ~view_mode ?prompt_line () =
                w:worktree  -:remove  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  esc:back  enter:message  m:manage  t:timeline  h:help"
+              " q:quit  esc/backspace:back  enter:message  m:manage  \
+               t:timeline  h:help"
         | Timeline_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
