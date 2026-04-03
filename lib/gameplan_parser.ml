@@ -143,7 +143,7 @@ let parse_json_string input =
         let solution_summary =
           match json |> member "solutionSummary" with `String s -> s | _ -> ""
         in
-        let design_decisions =
+        let final_state_spec =
           match json |> member "finalStateSpec" with `String s -> s | _ -> ""
         in
         let current_state_analysis =
@@ -309,7 +309,7 @@ let parse_json_string input =
                         Types.Gameplan.project_name;
                         problem_statement;
                         solution_summary;
-                        design_decisions;
+                        final_state_spec;
                         patches;
                         current_state_analysis;
                         explicit_opinions;
@@ -462,7 +462,7 @@ let%test_module "Gameplan_parser" =
           && String.equal result.gameplan.problem_statement
                "Something is broken."
           && String.equal result.gameplan.solution_summary "Do things fast."
-          && String.equal result.gameplan.design_decisions "must be correct"
+          && String.equal result.gameplan.final_state_spec "must be correct"
           && String.equal result.gameplan.current_state_analysis
                "current state is bad"
           && String.is_substring result.gameplan.explicit_opinions

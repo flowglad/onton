@@ -347,6 +347,22 @@ let rebase_onto ~process_mgr ~path ~target =
           (* Leave rebase in progress for agent to resolve *)
           Conflict
 
+let rebase_in_progress ~process_mgr ~path =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "rev-parse"; "--git-dir" ]
+  in
+  if code <> 0 then false
+  else
+    let git_dir = String.strip stdout in
+    let git_dir =
+      if Stdlib.Filename.is_relative git_dir then
+        Stdlib.Filename.concat path git_dir
+      else git_dir
+    in
+    Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-merge")
+    || Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-apply")
+
 let find_for_branch ~process_mgr ~repo_root branch =
   let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in
   List.find_map pairs ~f:(fun (path, b) ->

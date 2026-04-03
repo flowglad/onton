@@ -194,7 +194,7 @@ module Gameplan = struct
     project_name : string;
     problem_statement : string;
     solution_summary : string;
-    design_decisions : string;
+    final_state_spec : string;
     patches : Patch.t list;
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]

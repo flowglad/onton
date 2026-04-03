@@ -63,6 +63,10 @@ val rebase_onto :
   target:Types.Branch.t ->
   rebase_result
 
+val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
+(** Returns [true] if there is a rebase currently in progress in the worktree at
+    [path] (checks for [rebase-merge] or [rebase-apply] in the gitdir). *)
+
 val find_for_branch :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
