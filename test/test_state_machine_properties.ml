@@ -11,44 +11,8 @@ open Onton.Types
 (* -- Helpers -- *)
 
 let main = Branch.of_string "main"
-
-let make_gameplan patches =
-  Gameplan.
-    {
-      project_name = "test-project";
-      problem_statement = "";
-      solution_summary = "";
-      final_state_spec = "";
-      patches;
-      current_state_analysis = "";
-      explicit_opinions = "";
-      acceptance_criteria = [];
-      open_questions = [];
-    }
-
-let mk_patches n =
-  List.init n ~f:(fun i ->
-      let id = Patch_id.of_string (Printf.sprintf "p%d" i) in
-      let branch = Branch.of_string (Printf.sprintf "b%d" i) in
-      let dependencies =
-        if i = 0 then []
-        else [ Patch_id.of_string (Printf.sprintf "p%d" (i - 1)) ]
-      in
-      Patch.
-        {
-          id;
-          title = Printf.sprintf "Patch %d" i;
-          description = "";
-          branch;
-          dependencies;
-          spec = "";
-          acceptance_criteria = [];
-          files = [];
-          classification = "";
-          changes = [];
-          test_stubs_introduced = [];
-          test_stubs_implemented = [];
-        })
+let make_gameplan = Onton_test_support.Test_generators.make_test_gameplan
+let mk_patches = Onton_test_support.Test_generators.mk_linear_patches
 
 (** Generate a random command to apply to the orchestrator. Commands model the
     external events that the runner can produce. *)
@@ -83,9 +47,7 @@ let gen_command_seq ~n ~len =
   if len < 1 then invalid_arg "gen_command_seq: len must be at least 1";
   QCheck2.Gen.(list_size (int_range 1 len) (gen_command ~n))
 
-let pid_of_idx patches i =
-  let (p : Patch.t) = List.nth_exn patches i in
-  p.id
+let pid_of_idx = Onton_test_support.Test_generators.pid_of_idx
 
 (** Apply a command to the orchestrator, swallowing precondition failures
     (Invalid_argument) since random sequences will hit impossible transitions.

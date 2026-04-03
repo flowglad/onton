@@ -505,6 +505,86 @@ let gen_session_result =
 let print_session_result = Onton.Orchestrator.show_session_result
 let print_patch_id = Patch_id.to_string
 let print_branch = Branch.to_string
+
+(* -- Shared test helpers -- *)
+
+let mk_linear_patches n =
+  List.init n ~f:(fun i ->
+      let id = Patch_id.of_string (Printf.sprintf "p%d" i) in
+      let branch = Branch.of_string (Printf.sprintf "b%d" i) in
+      let dependencies =
+        if i = 0 then []
+        else [ Patch_id.of_string (Printf.sprintf "p%d" (i - 1)) ]
+      in
+      Patch.
+        {
+          id;
+          title = Printf.sprintf "Patch %d" i;
+          description = "";
+          branch;
+          dependencies;
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+        })
+
+let make_test_gameplan patches =
+  Gameplan.
+    {
+      project_name = "test-project";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "";
+      patches;
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+
+let pid_of_idx patches i =
+  let (p : Patch.t) = List.nth_exn patches i in
+  p.Patch.id
+
+let apply_reconcile_actions orch ~main ~branch_of =
+  let agents = Onton.Orchestrator.all_agents orch in
+  let patch_views =
+    List.map agents ~f:(fun (a : Onton.Patch_agent.t) ->
+        Onton.Reconciler.
+          {
+            id = a.Onton.Patch_agent.patch_id;
+            has_pr = Onton.Patch_agent.has_pr a;
+            merged = a.Onton.Patch_agent.merged;
+            busy = a.Onton.Patch_agent.busy;
+            needs_intervention = Onton.Patch_agent.needs_intervention a;
+            branch_blocked = a.Onton.Patch_agent.branch_blocked;
+            queue = a.Onton.Patch_agent.queue;
+            base_branch =
+              Option.value a.Onton.Patch_agent.base_branch ~default:main;
+          })
+  in
+  let merged_patches =
+    List.filter_map agents ~f:(fun (a : Onton.Patch_agent.t) ->
+        if a.Onton.Patch_agent.merged then Some a.Onton.Patch_agent.patch_id
+        else None)
+  in
+  let actions =
+    Onton.Reconciler.reconcile
+      ~graph:(Onton.Orchestrator.graph orch)
+      ~main ~merged_pr_patches:merged_patches ~branch_of patch_views
+  in
+  List.fold actions ~init:orch ~f:(fun orch action ->
+      match action with
+      | Onton.Reconciler.Mark_merged pid ->
+          Onton.Orchestrator.mark_merged orch pid
+      | Onton.Reconciler.Enqueue_rebase pid ->
+          Onton.Orchestrator.enqueue orch pid Operation_kind.Rebase
+      | Onton.Reconciler.Start_operation _ -> orch)
+
 let print_operation_kind = Operation_kind.show
 let print_comment = Comment.show
 let print_patch = Patch.show
