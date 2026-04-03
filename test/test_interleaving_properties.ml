@@ -232,53 +232,59 @@ let to_worktree_result = function
 
 let rec apply_command orch patches cmd =
   let gameplan = make_gameplan patches in
-  try
-    match cmd with
-    | Apply_poll { patch_idx; poll_kind } ->
-        let pid = pid_of_idx patches patch_idx in
-        let has_conflict, merged, ci_failed, checks_passing, review_comments =
-          match poll_kind with
-          | Poll_normal -> (false, false, false, true, false)
-          | Poll_conflict -> (true, false, false, false, false)
-          | Poll_merged -> (false, true, false, false, false)
-          | Poll_ci_failed -> (false, false, true, false, false)
-          | Poll_checks_passing -> (false, false, false, true, false)
-          | Poll_review_comments -> (false, false, false, true, true)
-        in
-        let poll_result =
-          make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
-            ~review_comments
-        in
-        let branch_of = branch_of_patches patches in
-        let observation =
-          Patch_controller.
-            {
-              poll_result;
-              head_branch = Some (branch_of pid);
-              base_branch = None;
-              branch_in_root = false;
-              worktree_path = None;
-            }
-        in
+  match cmd with
+  | Apply_poll { patch_idx; poll_kind } -> (
+      let pid = pid_of_idx patches patch_idx in
+      let has_conflict, merged, ci_failed, checks_passing, review_comments =
+        match poll_kind with
+        | Poll_normal -> (false, false, false, true, false)
+        | Poll_conflict -> (true, false, false, false, false)
+        | Poll_merged -> (false, true, false, false, false)
+        | Poll_ci_failed -> (false, false, true, false, false)
+        | Poll_checks_passing -> (false, false, false, true, false)
+        | Poll_review_comments -> (false, false, false, true, true)
+      in
+      let poll_result =
+        make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
+          ~review_comments
+      in
+      let branch_of = branch_of_patches patches in
+      let observation =
+        Patch_controller.
+          {
+            poll_result;
+            head_branch = Some (branch_of pid);
+            base_branch = None;
+            branch_in_root = false;
+            worktree_path = None;
+          }
+      in
+      try
         let orch, _logs, _blocked =
           Patch_controller.apply_poll_result orch pid observation
         in
         orch
-    | Reconcile -> apply_reconcile orch patches
-    | Runner_tick ->
+      with Invalid_argument _ -> orch)
+  | Reconcile -> apply_reconcile orch patches
+  | Runner_tick -> (
+      try
         let orch, _effects, _actions =
           Patch_controller.tick orch ~project_name:"test-project" ~gameplan
         in
         orch
-    | Complete patch_idx ->
-        let pid = pid_of_idx patches patch_idx in
-        Orchestrator.complete orch pid
-    | Apply_session_result { patch_idx; result } ->
-        let pid = pid_of_idx patches patch_idx in
-        Orchestrator.apply_session_result orch pid (to_session_result result)
-    | Apply_rebase_result { patch_idx; result } ->
-        let pid = pid_of_idx patches patch_idx in
-        let branch_of = branch_of_patches patches in
+      with Invalid_argument _ -> orch)
+  | Complete patch_idx -> (
+      let pid = pid_of_idx patches patch_idx in
+      match Orchestrator.find_agent orch pid with
+      | Some agent when agent.Patch_agent.busy -> Orchestrator.complete orch pid
+      | _ -> orch)
+  | Apply_session_result { patch_idx; result } ->
+      let pid = pid_of_idx patches patch_idx in
+      Orchestrator.apply_session_result orch pid (to_session_result result)
+  | Apply_rebase_result { patch_idx; result } -> (
+      let pid = pid_of_idx patches patch_idx in
+      let branch_of = branch_of_patches patches in
+      try
         let has_merged dep_pid =
           (Orchestrator.agent orch dep_pid).Patch_agent.merged
         in
@@ -289,18 +295,18 @@ let rec apply_command orch patches cmd =
         Orchestrator.apply_rebase_result orch pid
           (to_worktree_result result)
           new_base
-    | Send_human_message patch_idx ->
-        let pid = pid_of_idx patches patch_idx in
-        Orchestrator.send_human_message orch pid "test message"
-    | Reset_intervention patch_idx ->
-        let pid = pid_of_idx patches patch_idx in
-        Orchestrator.reset_intervention_state orch pid
-    | Atomic_poll_reconcile { patch_idx; poll_kind } ->
-        let orch =
-          apply_command orch patches (Apply_poll { patch_idx; poll_kind })
-        in
-        apply_command orch patches Reconcile
-  with Invalid_argument _ -> orch
+      with Invalid_argument _ -> orch)
+  | Send_human_message patch_idx ->
+      let pid = pid_of_idx patches patch_idx in
+      Orchestrator.send_human_message orch pid "test message"
+  | Reset_intervention patch_idx ->
+      let pid = pid_of_idx patches patch_idx in
+      Orchestrator.reset_intervention_state orch pid
+  | Atomic_poll_reconcile { patch_idx; poll_kind } ->
+      let orch =
+        apply_command orch patches (Apply_poll { patch_idx; poll_kind })
+      in
+      apply_command orch patches Reconcile
 
 (* ========== Invariant checks ========== *)
 
@@ -387,6 +393,13 @@ let check_priority_ordering orch action =
              (Patch_id.to_string pid)
              (Operation_kind.to_label hp)
              (Operation_kind.to_label ak))
+  | None, Some ak ->
+      failwith
+        (Printf.sprintf
+           "I-6 priority_ordering violated for %s: unexpected %s with empty \
+            queue"
+           (Patch_id.to_string pid)
+           (Operation_kind.to_label ak))
   | _ -> ()
 
 (** I-7: no duplicate operations in any agent's queue. *)

@@ -242,6 +242,19 @@ let set_pr_number t pr_number =
     start_attempts_without_pr = 0;
   }
 
+let clear_pr t =
+  {
+    t with
+    pr_number = None;
+    is_draft = false;
+    pr_description_applied = false;
+    merge_ready = false;
+    checks_passing = false;
+    ci_checks = [];
+    ci_failure_count = 0;
+    base_branch = None;
+  }
+
 let start t ~base_branch =
   if has_pr t then invalid_arg "Patch_agent.start: patch already has a PR";
   if t.busy then invalid_arg "Patch_agent.start: patch is already busy";

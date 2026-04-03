@@ -284,6 +284,8 @@ let send_human_message t patch_id message =
 let set_pr_number t patch_id pr_number =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_number a pr_number)
 
+let clear_pr t patch_id = update_agent t patch_id ~f:Patch_agent.clear_pr
+
 let set_session_failed t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_session_failed
 

@@ -7,6 +7,39 @@ open Onton_test_support.Test_generators
     These tests verify that serialize → deserialize is the identity for all
     persisted types, using the generators from [Test_generators]. *)
 
+(** Build a minimal gameplan containing a single patch with the given agent's
+    [patch_id] and [branch], so [patch_agent_of_yojson] can derive the branch
+    for legacy snapshots that lack a ["branch"] key. *)
+let gameplan_for_agent (agent : Onton.Patch_agent.t) =
+  Gameplan.
+    {
+      project_name = "t";
+      problem_statement = "t";
+      solution_summary = "t";
+      final_state_spec = "";
+      patches =
+        [
+          {
+            Patch.id = agent.patch_id;
+            branch = agent.branch;
+            title = "";
+            description = "";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+          };
+        ];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+
 (** Compare two snapshots field by field. Orchestrator.t is opaque without [eq],
     so we compare agents_map entries and main_branch. *)
 let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
@@ -140,8 +173,9 @@ let () =
       ~name:"patch_agent round-trip (ci_checks, addressed IDs, fallback)"
       ~count:200 gen_patch_agent_fully_populated (fun agent ->
         try
+          let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson json with
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
           | Ok agent' -> Onton.Patch_agent.equal agent agent'
           | Error _msg -> false
         with _ -> false)
@@ -150,8 +184,9 @@ let () =
     QCheck2.Test.make ~name:"pr_number survives round-trip" ~count:200
       gen_patch_agent_fully_populated (fun agent ->
         try
+          let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          match Onton.Persistence.patch_agent_of_yojson json with
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
           | Ok agent' ->
               Option.equal Pr_number.equal agent.pr_number agent'.pr_number
           | Error _ -> false
@@ -161,6 +196,7 @@ let () =
     QCheck2.Test.make ~name:"missing pr_number defaults to None" ~count:200
       gen_patch_agent_fully_populated (fun agent ->
         try
+          let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
           (* Remove pr_number from JSON to simulate legacy snapshot *)
           let json =
@@ -171,8 +207,29 @@ let () =
                        not (String.equal k "pr_number")))
             | other -> other
           in
-          match Onton.Persistence.patch_agent_of_yojson json with
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
           | Ok agent' -> Option.is_none agent'.pr_number
+          | Error _ -> false
+        with _ -> false)
+  in
+  let missing_branch_falls_back_to_gameplan =
+    QCheck2.Test.make
+      ~name:"missing branch key falls back to gameplan patch branch" ~count:200
+      gen_patch_agent_fully_populated (fun agent ->
+        try
+          let gameplan = gameplan_for_agent agent in
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          (* Remove branch from JSON to simulate v1 snapshot *)
+          let json =
+            match json with
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter fields ~f:(fun (k, _) ->
+                       not (String.equal k "branch")))
+            | other -> other
+          in
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          | Ok agent' -> Branch.equal agent.branch agent'.branch
           | Error _ -> false
         with _ -> false)
   in
@@ -232,6 +289,7 @@ let () =
         patch_agent_roundtrip_fully_populated;
         pr_number_roundtrip;
         missing_pr_number_defaults_none;
+        missing_branch_falls_back_to_gameplan;
         adhoc_snapshot_roundtrip;
       ]
   in

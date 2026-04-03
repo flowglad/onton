@@ -81,7 +81,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("branch_blocked", `Bool a.branch_blocked);
     ]
 
-let patch_agent_of_yojson json =
+let patch_agent_of_yojson ~gameplan json =
   let ( let* ) r f = Result.bind r ~f in
   let* queue =
     result_all
@@ -107,7 +107,18 @@ let patch_agent_of_yojson json =
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
-       ~branch:(Branch.of_string (string_member "branch" json))
+       ~branch:
+         (let pid = string_member "patch_id" json in
+          Branch.of_string
+            (Option.value
+               (string_member_opt "branch" json)
+               ~default:
+                 (match
+                    List.find gameplan.Gameplan.patches ~f:(fun p ->
+                        String.equal (Patch_id.to_string p.Patch.id) pid)
+                  with
+                 | Some p -> Branch.to_string p.Patch.branch
+                 | None -> pid)))
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
        ~has_session:(bool_member "has_session" json)
@@ -217,7 +228,13 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
                         ("base_branch", Branch.yojson_of_t base_branch);
                       ] );
               ("payload_hash", `String msg.payload_hash);
-              ("status", `String (Orchestrator.show_message_status msg.status));
+              ( "status",
+                `String
+                  (match msg.status with
+                  | Orchestrator.Pending -> "Pending"
+                  | Orchestrator.Acked -> "Acked"
+                  | Orchestrator.Completed -> "Completed"
+                  | Orchestrator.Obsolete -> "Obsolete") );
             ] ))
   in
   `Assoc
@@ -267,7 +284,8 @@ let orchestrator_of_yojson ~gameplan json =
          (Yojson.Safe.Util.member "agents" json
          |> Yojson.Safe.Util.to_assoc
          |> List.map ~f:(fun (key, value) ->
-             Result.bind (patch_agent_of_yojson value) ~f:(fun agent ->
+             Result.bind (patch_agent_of_yojson ~gameplan value)
+               ~f:(fun agent ->
                  let payload_id = Patch_id.to_string agent.patch_id in
                  if String.equal key payload_id then
                    Ok (Patch_id.of_string key, agent)
