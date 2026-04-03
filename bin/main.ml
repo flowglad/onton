@@ -863,9 +863,23 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               input_mode := Tui_input.Normal;
               match !view_mode with
               | Tui.Detail_view patch_id ->
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      Orchestrator.mark_merged orch patch_id);
-                  log_event runtime ~patch_id "Force-marked as merged"
+                  let busy, has_pr =
+                    Runtime.read runtime (fun snap ->
+                        let agent =
+                          Orchestrator.agent snap.Runtime.orchestrator patch_id
+                        in
+                        (agent.Patch_agent.busy, Patch_agent.has_pr agent))
+                  in
+                  if busy then
+                    log_event runtime ~patch_id
+                      "Cannot force-mark as merged: patch is currently busy"
+                  else if not has_pr then
+                    log_event runtime ~patch_id
+                      "Cannot force-mark as merged: patch has no PR"
+                  else (
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        Orchestrator.mark_merged orch patch_id);
+                    log_event runtime ~patch_id "Force-marked as merged")
               | Tui.List_view | Tui.Timeline_view -> ())
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
           | Term.Key.Up | Term.Key.Down | Term.Key.Left | Term.Key.Right
