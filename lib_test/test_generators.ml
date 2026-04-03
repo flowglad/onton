@@ -132,7 +132,7 @@ let gen_gameplan =
             project_name = "test-project";
             problem_statement = "test problem";
             solution_summary = "test solution";
-            design_decisions = "";
+            final_state_spec = "";
             patches;
             current_state_analysis = "";
             explicit_opinions = "";

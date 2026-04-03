@@ -179,9 +179,9 @@ Then continue implementing until all tests pass.|}
       ("spec", patch.Patch.spec);
       ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
       ("files", format_list patch.Patch.files);
-      ( "design_decisions_section",
-        optional_section ~header:"Design Decisions (Non-negotiable)"
-          gameplan.Gameplan.design_decisions );
+      ( "final_state_spec_section",
+        optional_section ~header:"Final State Specification (Non-negotiable)"
+          gameplan.Gameplan.final_state_spec );
       ( "explicit_opinions_section",
         optional_section ~header:"Explicit Opinions (Non-negotiable)"
           gameplan.Gameplan.explicit_opinions );
@@ -254,7 +254,7 @@ Then continue implementing until all tests pass.|}
 
 ## Solution Summary
 {{solution_summary}}
-{{design_decisions_section}}{{explicit_opinions_section}}{{current_state_section}}
+{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
 ## Dependencies
 {{dependencies}}
 
@@ -299,9 +299,13 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
       ("solution_summary", gameplan.Gameplan.solution_summary);
       ("dependencies", deps);
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
-      ( "spec_section",
+      ( "gameplan_spec_section",
+        let ds = gameplan.Gameplan.final_state_spec in
+        if String.is_empty ds then ""
+        else "\n## Gameplan Specification\n\n```\n" ^ ds ^ "\n```\n" );
+      ( "patch_spec_section",
         if String.is_empty patch.spec then ""
-        else "\n## Specification\n\n```\n" ^ patch.spec ^ "\n```\n" );
+        else "\n## Patch Specification\n\n```\n" ^ patch.spec ^ "\n```\n" );
       ( "acceptance_criteria_section",
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
@@ -315,7 +319,7 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
         {|## Patch {{patch_id}}: {{title}}
 
 {{description}}
-{{changes_section}}{{spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
+{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
         vars)
 
 let render_implementation_notes_prompt ~(project_name : string)
@@ -564,7 +568,7 @@ let%test "patch prompt includes title and deps" =
         project_name = "onton-port";
         problem_statement = "Port Anton to OCaml.";
         solution_summary = "Use Eio for concurrency.";
-        design_decisions = "";
+        final_state_spec = "";
         current_state_analysis = "";
         explicit_opinions = "";
         acceptance_criteria = [];

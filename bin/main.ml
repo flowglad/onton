@@ -1973,6 +1973,106 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 Runtime.update_orchestrator runtime (fun orch ->
                                     Orchestrator.complete orch patch_id);
                                 `Ok)
+                              else if
+                                Operation_kind.equal kind
+                                  Operation_kind.Merge_conflict
+                              then (
+                                (* Before delivering a merge-conflict prompt,
+                                   ensure a rebase is actually in progress.
+                                   The poller path enqueues Merge_conflict
+                                   when GitHub reports conflicts, but never
+                                   starts a rebase — so the agent would find
+                                   no rebase state. Attempt the rebase here;
+                                   if it succeeds the conflict is resolved
+                                   without bothering the agent. *)
+                                let wt_path =
+                                  match agent.Patch_agent.worktree_path with
+                                  | Some p -> p
+                                  | None ->
+                                      Worktree.worktree_dir ~project_name
+                                        ~patch_id
+                                in
+                                if
+                                  Worktree.rebase_in_progress ~process_mgr
+                                    ~path:wt_path
+                                then (
+                                  log_event runtime ~patch_id
+                                    "delivering merge-conflict (rebase already \
+                                     in progress)";
+                                  let pr_number = agent.Patch_agent.pr_number in
+                                  let prompt =
+                                    Prompt.render_merge_conflict_prompt
+                                      ~project_name ?pr_number ~base_branch:base
+                                      ()
+                                  in
+                                  let on_pr_detected _pr_number = () in
+                                  run_claude_and_handle ~runtime ~process_mgr
+                                    ~fs ~project_name ~patch_id
+                                    ~repo_root:config.repo_root ~prompt ~agent
+                                    ~owner:config.github_owner
+                                    ~repo:config.github_repo ~on_pr_detected
+                                    ~transcripts ~user_config:config.user_config
+                                    ~backend)
+                                else
+                                  let target = Types.Branch.of_string base in
+                                  let rebase_result =
+                                    Worktree.rebase_onto ~process_mgr
+                                      ~path:wt_path ~target
+                                  in
+                                  (match rebase_result with
+                                  | Worktree.Ok ->
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "merge-conflict: rebase onto %s \
+                                            succeeded, conflict resolved"
+                                           base)
+                                  | Worktree.Noop ->
+                                      log_event runtime ~patch_id
+                                        "merge-conflict: rebase is a noop, \
+                                         clearing conflict"
+                                  | Worktree.Conflict ->
+                                      log_event runtime ~patch_id
+                                        "merge-conflict: rebase hit conflicts, \
+                                         delivering to agent"
+                                  | Worktree.Error msg ->
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "merge-conflict: rebase error: %s"
+                                           msg));
+                                  match rebase_result with
+                                  | Worktree.Ok | Worktree.Noop ->
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.clear_has_conflict orch
+                                            patch_id
+                                          |> fun o ->
+                                          Orchestrator.complete o patch_id);
+                                      `Ok
+                                  | Worktree.Conflict ->
+                                      let pr_number =
+                                        agent.Patch_agent.pr_number
+                                      in
+                                      let prompt =
+                                        Prompt.render_merge_conflict_prompt
+                                          ~project_name ?pr_number
+                                          ~base_branch:base ()
+                                      in
+                                      let on_pr_detected _pr_number = () in
+                                      run_claude_and_handle ~runtime
+                                        ~process_mgr ~fs ~project_name ~patch_id
+                                        ~repo_root:config.repo_root ~prompt
+                                        ~agent ~owner:config.github_owner
+                                        ~repo:config.github_repo ~on_pr_detected
+                                        ~transcripts
+                                        ~user_config:config.user_config ~backend
+                                  | Worktree.Error _ ->
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.set_session_failed orch
+                                            patch_id
+                                          |> fun o ->
+                                          Orchestrator.complete o patch_id);
+                                      `Failed)
                               else
                                 let pr_number = agent.Patch_agent.pr_number in
                                 log_event runtime ~patch_id
@@ -2013,9 +2113,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       Prompt.render_review_prompt ~project_name
                                         ?pr_number prefetched_comments
                                   | Operation_kind.Merge_conflict ->
-                                      Prompt.render_merge_conflict_prompt
-                                        ~project_name ?pr_number
-                                        ~base_branch:base ()
+                                      (* Invariant: Merge_conflict is handled
+                                         in the pre-rebase block above *)
+                                      assert false
                                   | Operation_kind.Human ->
                                       Prompt.render_human_message_prompt
                                         ~project_name
@@ -2191,7 +2291,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
             project_name;
             problem_statement = "";
             solution_summary = "";
-            design_decisions = "";
+            final_state_spec = "";
             patches = [];
             current_state_analysis = "";
             explicit_opinions = "";

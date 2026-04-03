@@ -7,7 +7,7 @@ let make_gameplan patches =
       project_name = "test-project";
       problem_statement = "";
       solution_summary = "";
-      design_decisions = "";
+      final_state_spec = "";
       patches;
       current_state_analysis = "";
       explicit_opinions = "";
