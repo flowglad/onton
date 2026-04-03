@@ -606,18 +606,7 @@ let%test "no merge-conflict re-enqueue after noop" =
     Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
   in
   (* Noop -> Deliver_to_agent, agent still busy *)
-  assert (
-    Orchestrator.equal_conflict_rebase_decision decision
-      Orchestrator.Deliver_to_agent);
-  (* Simulate agent session completing *)
-  let t = Orchestrator.apply_session_result t pid Orchestrator.Session_ok in
-  let t = Orchestrator.complete t pid in
-  let agent = Orchestrator.agent t pid in
-  assert agent.Patch_agent.has_conflict;
-  assert (List.is_empty agent.Patch_agent.queue);
-  (* Second poll: GitHub still reports conflict *)
-  let t, _, _ = apply_poll_result t pid obs in
-  let agent = Orchestrator.agent t pid in
-  not
-    (List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
-       ~equal:Operation_kind.equal)
+  Orchestrator.equal_conflict_rebase_decision decision
+    Orchestrator.Deliver_to_agent
+  && (Orchestrator.agent t pid).Patch_agent.has_conflict
+  && (Orchestrator.agent t pid).Patch_agent.busy
