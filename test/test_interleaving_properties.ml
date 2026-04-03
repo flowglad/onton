@@ -347,11 +347,13 @@ let rec apply_command orch patches cmd =
         in
         match decision with
         | Orchestrator.Deliver_to_agent ->
-            (* Agent stays busy; simulate successful session + complete *)
+            (* Agent stays busy; simulate successful session + complete.
+               Mirror the runner: clear_has_conflict before complete. *)
             let orch' =
               Orchestrator.apply_session_result orch' pid
                 Orchestrator.Session_ok
             in
+            let orch' = Orchestrator.clear_has_conflict orch' pid in
             Orchestrator.complete orch' pid
         | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
       with Invalid_argument _ -> orch)
