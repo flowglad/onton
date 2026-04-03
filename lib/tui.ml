@@ -1052,8 +1052,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
                w:worktree  -:remove  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  esc/backspace:back  enter:message  m:manage  \
-               t:timeline  h:help"
+              " q:quit  esc:back  enter:message  m:manage  t:timeline  h:help"
         | Timeline_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
@@ -1132,7 +1131,7 @@ let render_help_overlay ~width ~height =
   List.map visible ~f:pad_line
 
 let render_manage_overlay ~width ~height =
-  let dismiss = Term.styled [ Term.Sgr.dim ] "(esc/backspace to cancel)" in
+  let dismiss = Term.styled [ Term.Sgr.dim ] "(esc to cancel)" in
   let title =
     Term.styled
       [ Term.Sgr.bold; Term.Sgr.fg_yellow ]

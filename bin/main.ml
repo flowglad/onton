@@ -857,8 +857,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
         else if Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch
         then (
           (match key with
-          | Term.Key.Escape | Term.Key.Backspace ->
-              input_mode := Tui_input.Normal
+          | Term.Key.Escape -> input_mode := Tui_input.Normal
           | Term.Key.Char 'm' -> (
               input_mode := Tui_input.Normal;
               match !view_mode with
@@ -882,10 +881,10 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                     log_event runtime ~patch_id "Force-marked as merged")
               | Tui.List_view | Tui.Timeline_view -> ())
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
-          | Term.Key.Up | Term.Key.Down | Term.Key.Left | Term.Key.Right
-          | Term.Key.Home | Term.Key.End | Term.Key.Page_up | Term.Key.Page_down
-          | Term.Key.Delete | Term.Key.F _ | Term.Key.Ctrl _ | Term.Key.Mouse _
-          | Term.Key.Unknown _ ->
+          | Term.Key.Backspace | Term.Key.Up | Term.Key.Down | Term.Key.Left
+          | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
+          | Term.Key.Page_down | Term.Key.Delete | Term.Key.F _
+          | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
               ());
           loop ())
         else if not (Tui_input.equal_input_mode !input_mode Tui_input.Normal)
