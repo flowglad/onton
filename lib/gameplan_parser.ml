@@ -117,6 +117,11 @@ let validate ~patches ~dep_graph =
                     | Some msg -> Error msg
                     | None -> Ok ()))))
 
+let patch_id_of_json = function
+  | `Int n -> Some (Types.Patch_id.of_string (Int.to_string n))
+  | `String s when is_valid_patch_id s -> Some (Types.Patch_id.of_string s)
+  | _ -> None
+
 let json_string_list json key =
   let open Yojson.Safe.Util in
   match json |> member key with
@@ -198,19 +203,19 @@ let parse_json_string input =
               List.fold items
                 ~init:(Map.empty (module Types.Patch_id))
                 ~f:(fun acc entry ->
-                  let patch_num = entry |> member "patch" |> to_int in
                   let patch_id =
-                    Types.Patch_id.of_string (Int.to_string patch_num)
+                    match patch_id_of_json (entry |> member "patch") with
+                    | Some id -> id
+                    | None ->
+                        raise
+                          (Type_error
+                             ( "dependencyGraph[].patch must be an integer or \
+                                alphanumeric string",
+                               entry ))
                   in
                   let depends_on =
                     match entry |> member "dependsOn" with
-                    | `List deps ->
-                        List.filter_map deps ~f:(fun d ->
-                            match d with
-                            | `Int n ->
-                                Some
-                                  (Types.Patch_id.of_string (Int.to_string n))
-                            | _ -> None)
+                    | `List deps -> List.filter_map deps ~f:patch_id_of_json
                     | _ -> []
                   in
                   Map.set acc ~key:patch_id ~data:depends_on)
@@ -220,9 +225,16 @@ let parse_json_string input =
         let patches =
           json |> member "patches" |> to_list
           |> List.map ~f:(fun p ->
-              let id_num = p |> member "number" |> to_int in
-              let id_str = Int.to_string id_num in
-              let id = Types.Patch_id.of_string id_str in
+              let id, id_str =
+                match patch_id_of_json (p |> member "number") with
+                | Some id -> (id, Types.Patch_id.to_string id)
+                | None ->
+                    raise
+                      (Type_error
+                         ( "patches[].number must be an integer or \
+                            alphanumeric string",
+                           p ))
+              in
               let title = p |> member "title" |> to_string in
               let changes = json_string_list p "changes" in
               let description =
@@ -526,6 +538,36 @@ let%test_module "Gameplan_parser" =
           List.equal Types.Patch_id.equal p2.Types.Patch.dependencies
             [ Types.Patch_id.of_string "1" ]
       | Error _ -> false
+
+    let%test "parse_json_string: string patch IDs" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [
+            {"number": "auth", "title": "Auth module", "changes": []},
+            {"number": "db", "title": "DB layer", "changes": []}
+          ],
+          "dependencyGraph": [
+            {"patch": "auth", "dependsOn": []},
+            {"patch": "db", "dependsOn": ["auth"]}
+          ]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok result ->
+          let p1 = List.hd_exn result.gameplan.patches in
+          let p2 = List.nth_exn result.gameplan.patches 1 in
+          String.equal (Types.Patch_id.to_string p1.Types.Patch.id) "auth"
+          && String.equal (Types.Patch_id.to_string p2.Types.Patch.id) "db"
+          && String.equal
+               (Types.Branch.to_string p1.Types.Patch.branch)
+               "p/patch-auth"
+          && List.equal Types.Patch_id.equal p2.Types.Patch.dependencies
+               [ Types.Patch_id.of_string "auth" ]
+      | Error msg ->
+          Stdlib.Printf.eprintf "parse error: %s\n" msg;
+          false
 
     let%test "parse_json_string: invalid JSON returns Error" =
       match parse_json_string "{not valid json}" with
