@@ -72,6 +72,52 @@ let () =
   if errcode <> 0 then Stdlib.exit errcode
 
 (* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.parse_push_porcelain]
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let prop_forced_update =
+    Test.make ~name:"parse_push_porcelain: forced update -> Some '+'" ~count:1
+      Gen.unit (fun () ->
+        let output =
+          "To github.com:owner/repo.git\n\
+           +\trefs/heads/branch:refs/heads/branch\t...forced update\n\
+           Done\n"
+        in
+        Option.equal Char.equal
+          (Worktree.parse_push_porcelain output)
+          (Some '+'))
+  in
+  let prop_rejected =
+    Test.make ~name:"parse_push_porcelain: rejected -> Some '!'" ~count:1
+      Gen.unit (fun () ->
+        let output =
+          "To github.com:owner/repo.git\n\
+           !\trefs/heads/branch:refs/heads/branch\t[rejected] (stale info)\n\
+           Done\n"
+        in
+        Option.equal Char.equal
+          (Worktree.parse_push_porcelain output)
+          (Some '!'))
+  in
+  let prop_empty =
+    Test.make ~name:"parse_push_porcelain: empty -> None" ~count:1 Gen.unit
+      (fun () -> Option.is_none (Worktree.parse_push_porcelain ""))
+  in
+  let prop_to_line_only =
+    Test.make ~name:"parse_push_porcelain: only To line -> None" ~count:1
+      Gen.unit (fun () ->
+        Option.is_none
+          (Worktree.parse_push_porcelain "To github.com:owner/repo.git\n"))
+  in
+  let suite =
+    [ prop_forced_update; prop_rejected; prop_empty; prop_to_line_only ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
    Integration tests for [Worktree.rebase_onto]
 
    Each test creates a temporary git repo with a realistic branch topology,

@@ -134,13 +134,22 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     set_session_failed + set_tried_fresh + complete. [Session_worktree_missing]
     -> complete. *)
 
+(** Side effects emitted by rebase result application. The runner is responsible
+    for executing these (e.g. force-pushing the branch to the remote). Modeled
+    as data so property tests can assert on effect presence. *)
+type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
+
 val apply_rebase_result :
-  t -> Patch_id.t -> Worktree.rebase_result -> Branch.t -> t
+  t ->
+  Patch_id.t ->
+  Worktree.rebase_result ->
+  Branch.t ->
+  t * rebase_effect list
 (** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->
-    set_base_branch + clear_has_conflict + complete. [Noop] -> set_base_branch +
-    clear_has_conflict + complete. [Conflict] -> set_base_branch +
+    set_base_branch + clear_has_conflict + complete + [[Push_branch]]. [Noop] ->
+    set_base_branch + complete + [[]]. [Conflict] -> set_base_branch +
     set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
-    set_session_failed + set_tried_fresh \+ complete. *)
+    set_session_failed + set_tried_fresh + complete. *)
 
 type conflict_rebase_decision =
   | Conflict_resolved
@@ -153,13 +162,17 @@ val apply_conflict_rebase_result :
   Patch_id.t ->
   Worktree.rebase_result ->
   Branch.t ->
-  t * conflict_rebase_decision
-(** Apply a rebase outcome during merge-conflict resolution. Pure function.
-    Unlike [apply_rebase_result], [Noop] and [Conflict] both produce
-    [Deliver_to_agent] without calling [complete] — the agent stays busy for the
-    Claude session. [Ok] -> clear_has_conflict + complete + [Conflict_resolved].
-    [Noop|Conflict] -> set_has_conflict + [Deliver_to_agent]. [Error _] ->
-    set_session_failed + complete + [Conflict_failed]. *)
+  t * conflict_rebase_decision * rebase_effect list
+(** Apply a rebase outcome during merge-conflict resolution. Pure function. [Ok]
+    -> clear_has_conflict + complete + [Conflict_resolved] + [[Push_branch]].
+    [Noop] -> set_has_conflict + [Deliver_to_agent] + [[Push_branch]] (local is
+    correct, push needed). [Conflict] -> set_has_conflict + [Deliver_to_agent] +
+    [[]]. [Error _] -> set_session_failed + complete + [Conflict_failed]. *)
+
+val resolve_conflict_after_push : t -> Patch_id.t -> t
+(** Called by the runner when a [Push_branch] effect succeeds during
+    merge-conflict resolution with [Deliver_to_agent]. Clears [has_conflict] and
+    calls [complete], resolving the conflict without agent involvement. *)
 
 val restore :
   graph:Graph.t ->

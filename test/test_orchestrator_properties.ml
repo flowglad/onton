@@ -456,7 +456,7 @@ let () =
               let orch, _effects, _actions = tick orch ~patches in
               let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
               List.for_all results ~f:(fun r ->
-                  let orch' =
+                  let orch', _effects =
                     Orchestrator.apply_rebase_result orch pid r new_base
                   in
                   let a = Orchestrator.agent orch' pid in
@@ -476,7 +476,7 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let check r =
-                let orch' =
+                let orch', _effects =
                   Orchestrator.apply_rebase_result orch pid r new_base
                 in
                 not (Orchestrator.agent orch' pid).Patch_agent.busy
@@ -496,7 +496,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch' =
+              let orch', effects =
                 Orchestrator.apply_rebase_result orch pid Worktree.Conflict
                   new_base
               in
@@ -504,6 +504,7 @@ let () =
               a.Patch_agent.has_conflict
               && List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
                    ~equal:Operation_kind.equal
+              && List.is_empty effects
         with _ -> false)
   in
 
@@ -519,10 +520,12 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
-              let orch' =
+              let orch', effects =
                 Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
               in
-              not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+              (not (Orchestrator.agent orch' pid).Patch_agent.has_conflict)
+              && List.equal Orchestrator.equal_rebase_effect effects
+                   [ Orchestrator.Push_branch ]
         with _ -> false)
   in
 
@@ -538,10 +541,11 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
-              let orch' =
+              let orch', effects =
                 Orchestrator.apply_rebase_result orch pid Worktree.Noop new_base
               in
               (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+              && List.is_empty effects
         with _ -> false)
   in
 
@@ -556,7 +560,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch' =
+              let orch', effects =
                 Orchestrator.apply_rebase_result orch pid
                   (Worktree.Error "test error") new_base
               in
@@ -564,6 +568,7 @@ let () =
               (not a.Patch_agent.busy)
               && Patch_agent.equal_session_fallback
                    a.Patch_agent.session_fallback Patch_agent.Given_up
+              && List.is_empty effects
         with _ -> false)
   in
 
@@ -581,7 +586,7 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch = Orchestrator.set_has_conflict orch pid in
-              let orch', decision =
+              let orch', decision, effects =
                 Orchestrator.apply_conflict_rebase_result orch pid Worktree.Ok
                   new_base
               in
@@ -589,7 +594,9 @@ let () =
               Orchestrator.equal_conflict_rebase_decision decision
                 Orchestrator.Conflict_resolved
               && (not a.Patch_agent.busy)
-              && not a.Patch_agent.has_conflict
+              && (not a.Patch_agent.has_conflict)
+              && List.equal Orchestrator.equal_rebase_effect effects
+                   [ Orchestrator.Push_branch ]
         with _ -> false)
   in
 
@@ -605,7 +612,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch', decision =
+              let orch', decision, effects =
                 Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop
                   new_base
               in
@@ -613,6 +620,8 @@ let () =
               Orchestrator.equal_conflict_rebase_decision decision
                 Orchestrator.Deliver_to_agent
               && a.Patch_agent.busy && a.Patch_agent.has_conflict
+              && List.equal Orchestrator.equal_rebase_effect effects
+                   [ Orchestrator.Push_branch ]
         with _ -> false)
   in
 
@@ -628,7 +637,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch', decision =
+              let orch', decision, effects =
                 Orchestrator.apply_conflict_rebase_result orch pid
                   Worktree.Conflict new_base
               in
@@ -636,6 +645,7 @@ let () =
               Orchestrator.equal_conflict_rebase_decision decision
                 Orchestrator.Deliver_to_agent
               && a.Patch_agent.busy && a.Patch_agent.has_conflict
+              && List.is_empty effects
         with _ -> false)
   in
 
@@ -654,7 +664,7 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let check r =
-                let orch', _ =
+                let orch', _, _ =
                   Orchestrator.apply_conflict_rebase_result orch pid r new_base
                 in
                 let a = Orchestrator.agent orch' pid in
@@ -677,7 +687,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch', decision =
+              let orch', decision, effects =
                 Orchestrator.apply_conflict_rebase_result orch pid
                   (Worktree.Error "test error") new_base
               in
@@ -687,6 +697,7 @@ let () =
               && (not a.Patch_agent.busy)
               && Patch_agent.equal_session_fallback
                    a.Patch_agent.session_fallback Patch_agent.Tried_fresh
+              && List.is_empty effects
         with _ -> false)
   in
 
@@ -704,7 +715,7 @@ let () =
               let orch, _effects, _actions = tick orch ~patches in
               let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
               List.for_all results ~f:(fun r ->
-                  let orch', _ =
+                  let orch', _, _ =
                     Orchestrator.apply_conflict_rebase_result orch pid r
                       new_base
                   in
