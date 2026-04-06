@@ -350,20 +350,46 @@ let rebase_onto ~process_mgr ~path ~target =
 type push_result = Push_ok | Push_rejected | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
+(** Parse a single porcelain status line from [git push --porcelain]. Format:
+    [<flag>\t<from>:<to>\t<summary>]. Returns the flag character. *)
+let parse_push_porcelain stdout =
+  let lines =
+    String.split_lines (String.strip stdout)
+    |> List.filter ~f:(fun l ->
+        let s = String.strip l in
+        (not (String.is_empty s))
+        && (not (String.is_prefix s ~prefix:"To "))
+        && not (String.equal s "Done"))
+  in
+  match lines with
+  | [] -> None
+  | line :: _ -> (
+      match String.lstrip line with
+      | s when String.length s > 0 -> Some s.[0]
+      | _ -> None)
+
 let force_push_with_lease ~process_mgr ~path ~branch =
   let branch_str = Types.Branch.to_string branch in
-  let code, _stdout, stderr =
+  let code, stdout, stderr =
     run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "push"; "--force-with-lease"; "origin"; branch_str ]
+      [
+        "git";
+        "-C";
+        path;
+        "push";
+        "--porcelain";
+        "--force-with-lease";
+        "origin";
+        branch_str;
+      ]
   in
   if code = 0 then Push_ok
   else
-    let msg = String.strip stderr in
-    if
-      String.is_substring msg ~substring:"stale info"
-      || String.is_substring msg ~substring:"rejected"
-    then Push_rejected
-    else Push_error (Printf.sprintf "push failed (exit %d): %s" code msg)
+    match parse_push_porcelain stdout with
+    | Some '!' -> Push_rejected
+    | _ ->
+        Push_error
+          (Printf.sprintf "push failed (exit %d): %s" code (String.strip stderr))
 
 let rebase_in_progress ~process_mgr ~path =
   let code, stdout, _ =

@@ -63,6 +63,11 @@ val rebase_onto :
   target:Types.Branch.t ->
   rebase_result
 
+val parse_push_porcelain : string -> char option
+(** Pure: extract the status flag character from [git push --porcelain] stdout.
+    Returns [Some '!'] for rejected, [Some '+'] for forced update, etc. Returns
+    [None] if no status line is found. *)
+
 type push_result = Push_ok | Push_rejected | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
