@@ -2262,6 +2262,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                             false)
                                   in
                                   match decision with
+                                  | Orchestrator.Conflict_resolved
+                                    when not push_ok ->
+                                      (* Rebase succeeded locally but push
+                                         failed — re-enqueue so the next
+                                         cycle retries the push. *)
+                                      log_event runtime ~patch_id
+                                        "merge-conflict: re-enqueuing after \
+                                         push failure";
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          let orch =
+                                            Orchestrator.set_has_conflict orch
+                                              patch_id
+                                          in
+                                          Orchestrator.enqueue orch patch_id
+                                            Operation_kind.Merge_conflict);
+                                      `Ok
                                   | Orchestrator.Conflict_resolved -> `Ok
                                   | Orchestrator.Deliver_to_agent when push_ok
                                     ->

@@ -361,7 +361,6 @@ let force_push_with_lease ~process_mgr ~path ~branch =
     let msg = String.strip stderr in
     if
       String.is_substring msg ~substring:"stale info"
-      || String.is_substring msg ~substring:"failed to push"
       || String.is_substring msg ~substring:"rejected"
     then Push_rejected
     else Push_error (Printf.sprintf "push failed (exit %d): %s" code msg)
