@@ -293,6 +293,17 @@ GitHub Actions runs on every push and PR:
 - **Property tests** — QCheck2 with 10,000 iterations
 - **Format check** — `ocamlformat` via `ocaml/setup-ocaml/lint-fmt`
 
+## CLI
+
+Backend selection uses `--backend`:
+
+- `onton --backend claude`
+- `onton --backend codex`
+
+If omitted for a new project, `claude` is the default. The selected backend is
+persisted in project config and reused on resume unless you pass `--backend`
+again to override it.
+
 Pushing a `v*` tag builds macOS binaries (ARM64 + x86_64), creates a GitHub
 release, and updates the Homebrew formula.
 

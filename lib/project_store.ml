@@ -51,6 +51,7 @@ type stored_config = {
   github_token : string;
   github_owner : string;
   github_repo : string;
+  backend : string;
   main_branch : string;
   poll_interval : float;
   repo_root : string;
@@ -58,7 +59,7 @@ type stored_config = {
 }
 [@@deriving yojson]
 
-let save_config ~project_name ~github_token ~github_owner ~github_repo
+let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
     ~main_branch ~poll_interval ~repo_root ~max_concurrency =
   let dir = project_dir project_name in
   ensure_dir dir;
@@ -68,6 +69,7 @@ let save_config ~project_name ~github_token ~github_owner ~github_repo
       github_token;
       github_owner;
       github_repo;
+      backend;
       main_branch;
       poll_interval;
       repo_root;
@@ -92,7 +94,14 @@ let load_config ~project_name =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    Ok (stored_config_of_yojson json)
+    match json with
+    | `Assoc fields ->
+        let fields =
+          if List.Assoc.mem fields "backend" ~equal:String.equal then fields
+          else ("backend", `String "claude") :: fields
+        in
+        Ok (stored_config_of_yojson (`Assoc fields))
+    | _ -> Ok (stored_config_of_yojson json)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let save_gameplan_source ~project_name ~source_path =

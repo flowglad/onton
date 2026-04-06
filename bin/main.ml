@@ -5,6 +5,7 @@ open Onton.Types
 
 type config = {
   project : string option;
+  backend : string;
   github_token : string;
   github_owner : string;
   github_repo : string;
@@ -66,11 +67,14 @@ let infer_github_token () =
         if Base.String.is_empty t then "" else t
       with _ -> "")
 
-let validate_resolved_config ~github_token ~github_owner ~github_repo
+let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
   let errors =
     Base.List.filter_map
       [
+        ( not (Base.List.mem [ "claude"; "codex" ] backend ~equal:String.equal),
+          Printf.sprintf "--backend must be one of: claude, codex (got %S)"
+            backend );
         ( Base.String.is_empty (Base.String.strip github_token),
           "--token / GITHUB_TOKEN is required" );
         ( Base.String.is_empty (Base.String.strip github_owner),
@@ -1721,14 +1725,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
   let backend =
-    match Stdlib.Sys.getenv_opt "ONTON_BACKEND" with
-    | None | Some "claude" -> Claude_backend.create ~process_mgr
-    | Some "codex" -> Codex_backend.create ~process_mgr
-    | Some other ->
+    match config.backend with
+    | "claude" -> Claude_backend.create ~process_mgr
+    | "codex" -> Codex_backend.create ~process_mgr
+    | other ->
         invalid_arg
           (Printf.sprintf
-             "Unsupported ONTON_BACKEND=%S (expected \"claude\" or \"codex\")"
-             other)
+             "Unsupported --backend=%S (expected \"claude\" or \"codex\")" other)
   in
   let clock = Eio.Stdenv.clock env in
   let set_status ~level ~text ?expires_at () =
@@ -2361,7 +2364,7 @@ let with_snapshot_load ~project_name config gameplan =
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
-let resolve_config ~project ~gameplan_path ~github_token ~main_branch
+let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
     ~poll_interval ~repo_root ~max_concurrency ~headless =
   match (project, gameplan_path) with
   | None, None ->
@@ -2386,13 +2389,17 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
             open_questions = [];
           }
       in
+      let backend =
+        if Base.String.is_empty backend then "claude" else backend
+      in
       Project_store.save_config ~project_name ~github_token:token
-        ~github_owner:owner ~github_repo:repo
+        ~github_owner:owner ~github_repo:repo ~backend
         ~main_branch:(Branch.to_string main_branch)
         ~poll_interval ~repo_root ~max_concurrency;
       let config =
         {
           project = Some project_name;
+          backend;
           github_token = token;
           github_owner = owner;
           github_repo = repo;
@@ -2418,14 +2425,18 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
           let token, owner, repo =
             resolve_github_credentials ~github_token ~repo_root
           in
+          let backend =
+            if Base.String.is_empty backend then "claude" else backend
+          in
           Project_store.save_config ~project_name ~github_token:token
-            ~github_owner:owner ~github_repo:repo
+            ~github_owner:owner ~github_repo:repo ~backend
             ~main_branch:(Branch.to_string main_branch)
             ~poll_interval ~repo_root ~max_concurrency;
           Project_store.save_gameplan_source ~project_name ~source_path:gp_path;
           let config =
             {
               project = Some project_name;
+              backend;
               github_token = token;
               github_owner = owner;
               github_repo = repo;
@@ -2468,6 +2479,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                     let c = Base.String.strip cli in
                     if Base.String.is_empty c then stored_val else c
                   in
+                  let backend =
+                    merge_cli_stored backend stored.Project_store.backend
+                  in
                   let token_from_stored =
                     merge_cli_stored github_token
                       stored.Project_store.github_token
@@ -2496,6 +2510,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~main_branch
                   let config =
                     {
                       project = Some proj;
+                      backend;
                       github_token = token;
                       github_owner = owner;
                       github_repo = repo;
@@ -2515,9 +2530,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
     match config.project with Some p -> p | None -> assert false
   in
   match
-    validate_resolved_config ~github_token:config.github_token
-      ~github_owner:config.github_owner ~github_repo:config.github_repo
-      ~main_branch:config.main_branch ~poll_interval:config.poll_interval
+    validate_resolved_config ~backend:config.backend
+      ~github_token:config.github_token ~github_owner:config.github_owner
+      ~github_repo:config.github_repo ~main_branch:config.main_branch
+      ~poll_interval:config.poll_interval
       ~max_concurrency:config.max_concurrency
   with
   | Error errs ->
@@ -2696,10 +2712,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 :: common_fibers)
             with Quit_tui -> ())
 
-let run ~project ~gameplan_path ~github_token ~main_branch ~poll_interval
-    ~repo_root ~max_concurrency ~headless =
+let run ~project ~gameplan_path ~github_token ~backend ~main_branch
+    ~poll_interval ~repo_root ~max_concurrency ~headless =
   match
-    resolve_config ~project ~gameplan_path ~github_token ~main_branch
+    resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
       ~poll_interval ~repo_root ~max_concurrency ~headless
   with
   | Error errs ->
@@ -2733,6 +2749,13 @@ let github_token_arg =
     value & opt string ""
     & info [ "token" ] ~docv:"TOKEN" ~doc:"GitHub API token."
         ~env:(Cmd.Env.info "GITHUB_TOKEN"))
+
+let backend_arg =
+  let open Cmdliner in
+  Arg.(
+    value & opt string ""
+    & info [ "backend" ] ~docv:"BACKEND"
+        ~doc:"LLM backend to use: claude or codex.")
 
 let repo_arg =
   let open Cmdliner in
@@ -2771,17 +2794,18 @@ let headless_arg =
 
 let main_cmd =
   let open Cmdliner in
-  let run_cmd project gameplan_path github_token main_branch poll_interval
-      repo_root max_concurrency headless =
+  let run_cmd project gameplan_path github_token backend main_branch
+      poll_interval repo_root max_concurrency headless =
     run ~project ~gameplan_path ~github_token
+      ~backend:(Base.String.strip backend)
       ~main_branch:(Branch.of_string (Base.String.strip main_branch))
       ~poll_interval ~repo_root ~max_concurrency ~headless
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
-      $ main_branch_arg $ poll_interval_arg $ repo_arg $ max_concurrency_arg
-      $ headless_arg)
+      $ backend_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
+      $ max_concurrency_arg $ headless_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
