@@ -158,6 +158,8 @@ let gen_pr_state =
   QCheck2.Gen.(
     let open Onton.Pr_state in
     let* is_draft = bool in
+    let* head_branch = option gen_branch in
+    let* base_branch = option gen_branch in
     map5
       (fun (status, merge_state) merge_ready (check_status, ci_checks_truncated)
            ci_checks (comments, unresolved_comment_count) ->
@@ -171,8 +173,8 @@ let gen_pr_state =
           ci_checks_truncated;
           comments;
           unresolved_comment_count;
-          head_branch = None;
-          base_branch = None;
+          head_branch;
+          base_branch;
         })
       (pair gen_pr_status gen_merge_state)
       bool
@@ -200,6 +202,7 @@ let gen_github_error =
 
 let gen_poller =
   QCheck2.Gen.(
+    let* is_draft = bool in
     map5
       (fun queue (merged, closed, has_conflict) merge_ready checks_passing
            ci_checks ->
@@ -208,7 +211,7 @@ let gen_poller =
             queue;
             merged;
             closed;
-            is_draft = false;
+            is_draft;
             has_conflict;
             merge_ready;
             checks_passing;
