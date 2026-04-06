@@ -532,11 +532,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
             let tm = Unix.localtime now in
             Buffer.add_string buf
               (Printf.sprintf
-                 "\n---\n**[%02d:%02d:%02d] Delivered to Claude%s:**\n\n"
+                 "\n---\n**[%02d:%02d:%02d] Delivered to %s%s:**\n\n"
                  tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+                 backend.Llm_backend.name
                  (if continue then " (--continue)" else ""));
             Buffer.add_string buf prompt;
-            Buffer.add_string buf "\n\n---\n**Claude response:**\n\n";
+            Buffer.add_string buf
+              (Printf.sprintf "\n\n---\n**%s response:**\n\n"
+                 backend.Llm_backend.name);
             Hashtbl.replace transcripts patch_id (Buffer.contents buf);
             buf
           in
