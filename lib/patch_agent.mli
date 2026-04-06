@@ -101,6 +101,11 @@ val mark_merged : t -> t
 val add_human_message : t -> string -> t
 (** Add a human message to the pending list. *)
 
+val restore_human_messages : t -> string list -> t
+(** Replace [human_messages] wholesale. Used to preserve messages across a
+    failed Human session — [complete] clears them assuming delivery succeeded,
+    but on failure they must be restored for the retry. *)
+
 val set_session_failed : t -> t
 (** Mark session fallback as [Given_up]. *)
 
