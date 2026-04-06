@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      group: claude-review-${{ github.event.pull_request.number }}
+      group: claude-review-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     if: >-
       !github.event.pull_request.draft &&
@@ -22,10 +22,44 @@ jobs:
       id-token: write
 
     steps:
+      # ── Debounce ──
+      # Wait 2 minutes before starting the review. If another push arrives
+      # during this window, cancel-in-progress kills this run, so only the
+      # last push in a burst actually reaches the Claude API call.
+      - name: Debounce (120s)
+        run: sleep 120
+
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+
+      # ── Fetch Claude's own prior comments ──
+      # Pre-fetch so they can be injected into the prompt. This avoids
+      # Claude needing to call gh api itself (saves tokens + tool calls)
+      # and ensures it never reads other bots' comments.
+      - name: Fetch prior Claude comments
+        id: prior
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comments = await github.paginate(
+              github.rest.pulls.listReviewComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: ${{ github.event.pull_request.number }},
+                per_page: 100,
+              }
+            )
+            const mine = comments
+              .filter(c => c.user?.login === 'claude[bot]')
+              .map(c => `- **${c.path}** (line ${c.line ?? c.original_line ?? '?'}): ${c.body.slice(0, 300)}`)
+            if (mine.length === 0) {
+              core.setOutput('comments', 'No prior Claude comments on this PR.')
+            } else {
+              core.setOutput('comments', mine.join('\n'))
+            }
 
       - name: Claude Code Review
         uses: anthropics/claude-code-action@cd77b50d2b0808657f8e6774085c8bf54484351c # v1
@@ -73,11 +107,13 @@ jobs:
               would cause a downstream tool to break
             - Anything you're less than ~80% sure is actually wrong
 
-            **Incremental review:** Before commenting, read the existing review comments on
-            this PR (use `gh pr view` and `gh api` to list review comments). Do NOT re-raise
-            issues that have already been commented on — whether by you or another reviewer.
-            If a previous comment was addressed by a subsequent commit, don't comment on it
-            again. Focus your review on new or unaddressed issues only.
+            **Incremental review:** Your prior comments on this PR are listed below. Do NOT
+            re-raise issues you have already commented on. If a previous comment was addressed
+            by a subsequent commit, don't comment on it again. Focus on new or unaddressed
+            issues only.
+
+            YOUR PRIOR COMMENTS:
+            ${{ steps.prior.outputs.comments }}
 
             When you do comment:
             - Be concrete — suggest the fix, not just the problem
