@@ -491,7 +491,7 @@ let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
     ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
-    ~transcripts ~user_config ~backend =
+    ~transcripts ~user_config ~backend ~event_log =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -678,7 +678,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
           Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.apply_session_result orch patch_id session_result);
+              let agent_before = Orchestrator.agent orch patch_id in
+              let orch =
+                Orchestrator.apply_session_result orch patch_id session_result
+              in
+              let agent_after = Orchestrator.agent orch patch_id in
+              Event_log.log_complete event_log ~patch_id ~result:session_result
+                ~agent_before ~agent_after;
+              orch);
           user_result)
 
 (** {1 Fibers} *)
@@ -1451,7 +1458,7 @@ type poll_intent =
 (** Poller fiber — periodically polls GitHub for PR state changes and
     reconciles. *)
 let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
-    ~pr_registry ~branch_of ~ci_checks_cache =
+    ~pr_registry ~branch_of ~ci_checks_cache ~event_log =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
@@ -1618,10 +1625,18 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                 ->
                 match Orchestrator.find_agent orch patch_id with
                 | None -> (orch, sides)
-                | Some _ ->
+                | Some agent_before ->
                     let orch, log_entries, newly_blocked =
                       Patch_controller.apply_poll_result orch patch_id obs
                     in
+                    let agent_after = Orchestrator.agent orch patch_id in
+                    Event_log.log_poll event_log ~patch_id
+                      ~poll_result:obs.Patch_controller.poll_result
+                      ~agent_before ~agent_after
+                      ~logs:
+                        (Base.List.map log_entries
+                           ~f:(fun (e : Patch_controller.poll_log_entry) ->
+                             e.Patch_controller.message));
                     ( orch,
                       ( patch_id,
                         log_entries,
@@ -1716,7 +1731,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-    ~ci_checks_cache ~transcripts ~github ~net ?status_msg () =
+    ~ci_checks_cache ~transcripts ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let fs = Eio.Stdenv.fs env in
@@ -1823,6 +1838,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     in
     execute_github_effects ~runtime ~process_mgr ~token:config.github_token
       ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
+    (* Log dispatched actions to event log *)
+    Base.List.iter messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+        let action = Orchestrator.message_action msg in
+        let agent_before =
+          match
+            Base.List.Assoc.find pre_fire_agents ~equal:Patch_id.equal
+              (Orchestrator.message_patch_id msg)
+          with
+          | Some a -> a
+          | None ->
+              Runtime.read runtime (fun snap ->
+                  Orchestrator.agent snap.Runtime.orchestrator
+                    (Orchestrator.message_patch_id msg))
+        in
+        Event_log.log_action event_log ~action ~agent_before);
     (* Spawn all actions concurrently, limited by max_concurrency semaphore *)
     let action_fibers =
       Base.List.filter_map messages
@@ -1895,7 +1925,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~agent ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
-                                        ~user_config:config.user_config ~backend)
+                                        ~user_config:config.user_config ~backend
+                                        ~event_log)
                           in
                           match result with
                           | `Stale -> ()
@@ -1979,8 +2010,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                           log_event runtime ~patch_id
                             (Printf.sprintf "runner: rebase error: %s" msg));
                       Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.apply_rebase_result orch patch_id
-                            rebase_result new_base)))
+                          let agent_before = Orchestrator.agent orch patch_id in
+                          let orch =
+                            Orchestrator.apply_rebase_result orch patch_id
+                              rebase_result new_base
+                          in
+                          let agent_after = Orchestrator.agent orch patch_id in
+                          Event_log.log_rebase event_log ~patch_id
+                            ~result:rebase_result ~agent_before ~agent_after;
+                          orch)))
           | Orchestrator.Respond (patch_id, kind) ->
               (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)
@@ -2104,7 +2142,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~owner:config.github_owner
                                     ~repo:config.github_repo ~on_pr_detected
                                     ~transcripts ~user_config:config.user_config
-                                    ~backend)
+                                    ~backend ~event_log)
                                 else
                                   let target = Types.Branch.of_string base in
                                   let rebase_result =
@@ -2135,10 +2173,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   let decision =
                                     Runtime.update_orchestrator_returning
                                       runtime (fun orch ->
-                                        Orchestrator
-                                        .apply_conflict_rebase_result orch
-                                          patch_id rebase_result
-                                          (Types.Branch.of_string base))
+                                        let agent_before =
+                                          Orchestrator.agent orch patch_id
+                                        in
+                                        let orch, decision =
+                                          Orchestrator
+                                          .apply_conflict_rebase_result orch
+                                            patch_id rebase_result
+                                            (Types.Branch.of_string base)
+                                        in
+                                        let agent_after =
+                                          Orchestrator.agent orch patch_id
+                                        in
+                                        Event_log.log_conflict_rebase event_log
+                                          ~patch_id ~decision ~agent_before
+                                          ~agent_after;
+                                        (orch, decision))
                                   in
                                   match decision with
                                   | Orchestrator.Conflict_resolved -> `Ok
@@ -2159,6 +2209,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
                                         ~user_config:config.user_config ~backend
+                                        ~event_log
                                   | Orchestrator.Conflict_failed -> `Failed)
                               else
                                 let pr_number = agent.Patch_agent.pr_number in
@@ -2237,7 +2288,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~owner:config.github_owner
                                   ~repo:config.github_repo ~on_pr_detected
                                   ~transcripts ~user_config:config.user_config
-                                  ~backend)
+                                  ~backend ~event_log)
                       in
                       match result with
                       | `Stale -> ()
@@ -2628,12 +2679,15 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 Hashtbl.replace t key data));
         t
       in
+      let event_log =
+        Event_log.create ~path:(Project_store.event_log_path project_name)
+      in
       let common_fibers =
         [
           reconciliation_fiber;
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
-              ~project_name ~pr_registry ~branch_of ~ci_checks_cache);
+              ~project_name ~pr_registry ~branch_of ~ci_checks_cache ~event_log);
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
@@ -2643,7 +2697,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~ci_checks_cache ~transcripts ~github ~net ())
+              ~ci_checks_cache ~transcripts ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -2692,7 +2746,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                     ~patches_visible_count)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-                    ~ci_checks_cache ~transcripts ~github ~net ~status_msg ())
+                    ~ci_checks_cache ~transcripts ~github ~net ~event_log
+                    ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

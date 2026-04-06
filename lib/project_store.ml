@@ -25,6 +25,9 @@ let project_dir project_name =
 let snapshot_path project_name =
   Stdlib.Filename.concat (project_dir project_name) "snapshot.json"
 
+let event_log_path project_name =
+  Stdlib.Filename.concat (project_dir project_name) "events.jsonl"
+
 let config_path project_name =
   Stdlib.Filename.concat (project_dir project_name) "config.json"
 

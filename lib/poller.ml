@@ -1,4 +1,5 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 open Types
 
 type t = {
@@ -11,7 +12,7 @@ type t = {
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
 }
-[@@deriving show, eq]
+[@@deriving show, eq, yojson]
 
 let poll ~was_merged (pr : Pr_state.t) =
   let unresolved = not (List.is_empty pr.comments) in

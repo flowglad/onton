@@ -13,6 +13,9 @@ val project_dir : string -> string
 val snapshot_path : string -> string
 (** Path to the project's persisted snapshot JSON. *)
 
+val event_log_path : string -> string
+(** Path to the project's append-only event log (JSONL). *)
+
 val ensure_dir : string -> unit
 (** Create a directory and parents if needed. *)
 

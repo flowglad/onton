@@ -33,7 +33,7 @@ type t = {
   ci_checks : Ci_check.t list;
       (** Individual CI check results from the most recent poll. *)
 }
-[@@deriving show, eq]
+[@@deriving show, eq, yojson]
 (** The result of polling a single patch's PR state. *)
 
 val poll : was_merged:bool -> Pr_state.t -> t
