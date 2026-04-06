@@ -95,9 +95,12 @@ let apply_poll_result t patch_id
       Orchestrator.set_has_conflict t patch_id)
     else
       let agent = Orchestrator.agent t patch_id in
-      if Patch_decision.should_clear_conflict agent then
-        Orchestrator.clear_has_conflict t patch_id
-      else t
+      if Patch_decision.should_clear_conflict agent then (
+        log "conflict cleared (no longer detected)";
+        Orchestrator.clear_has_conflict t patch_id)
+      else (
+        log "conflict flag retained (resolution in flight)";
+        t)
   in
   let agent_before = Orchestrator.agent t patch_id in
   let t =
@@ -122,8 +125,12 @@ let apply_poll_result t patch_id
                     (Printf.sprintf "enqueued %s"
                        (Operation_kind.to_label kind));
                 Orchestrator.enqueue acc patch_id kind
-            | Patch_decision.Ci_already_queued -> acc
-            | Patch_decision.Ci_fix_in_progress -> acc
+            | Patch_decision.Ci_already_queued ->
+                log "CI already queued, skipping";
+                acc
+            | Patch_decision.Ci_fix_in_progress ->
+                log "CI fix in progress, skipping";
+                acc
             | Patch_decision.Cap_reached ->
                 log "CI failure cap reached (>=3), skipping CI enqueue";
                 acc)
@@ -135,7 +142,13 @@ let apply_poll_result t patch_id
             if is_new && not had_conflict_before then (
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
               Orchestrator.enqueue acc patch_id kind)
-            else acc
+            else (
+              log
+                (Printf.sprintf
+                   "suppressed %s (is_new=%b, had_conflict_before=%b)"
+                   (Operation_kind.to_label kind)
+                   is_new had_conflict_before);
+              acc)
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Implementation_notes ->
             if is_new then
