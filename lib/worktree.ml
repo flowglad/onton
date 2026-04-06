@@ -347,6 +347,25 @@ let rebase_onto ~process_mgr ~path ~target =
           (* Leave rebase in progress for agent to resolve *)
           Conflict
 
+type push_result = Push_ok | Push_rejected | Push_error of string
+[@@deriving show, eq, sexp_of, compare]
+
+let force_push_with_lease ~process_mgr ~path ~branch =
+  let branch_str = Types.Branch.to_string branch in
+  let code, _stdout, stderr =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "push"; "--force-with-lease"; "origin"; branch_str ]
+  in
+  if code = 0 then Push_ok
+  else
+    let msg = String.strip stderr in
+    if
+      String.is_substring msg ~substring:"stale info"
+      || String.is_substring msg ~substring:"failed to push"
+      || String.is_substring msg ~substring:"rejected"
+    then Push_rejected
+    else Push_error (Printf.sprintf "push failed (exit %d): %s" code msg)
+
 let rebase_in_progress ~process_mgr ~path =
   let code, stdout, _ =
     run_git_exit_code ~process_mgr

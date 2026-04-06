@@ -63,6 +63,18 @@ val rebase_onto :
   target:Types.Branch.t ->
   rebase_result
 
+type push_result = Push_ok | Push_rejected | Push_error of string
+[@@deriving show, eq, sexp_of, compare]
+
+val force_push_with_lease :
+  process_mgr:_ Eio.Process.mgr ->
+  path:string ->
+  branch:Types.Branch.t ->
+  push_result
+(** Force-push with lease the given branch from the worktree at [path]. Returns
+    [Push_ok] on success, [Push_rejected] if the lease check fails (remote was
+    updated by someone else), or [Push_error] on other failures. *)
+
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at
     [path] (checks for [rebase-merge] or [rebase-apply] in the gitdir). *)

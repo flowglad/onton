@@ -377,24 +377,26 @@ let add_agent t ~patch_id ~branch ~pr_number =
     let graph = Graph.add_patch t.graph patch_id in
     { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
 
+type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
+
 let apply_rebase_result t patch_id rebase_result new_base =
   match rebase_result with
   | Worktree.Ok ->
       let t = set_base_branch t patch_id new_base in
       let t = clear_has_conflict t patch_id in
-      complete t patch_id
+      (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
-      complete t patch_id
+      (complete t patch_id, [])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
-      complete t patch_id
+      (complete t patch_id, [])
   | Worktree.Error _ ->
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
-      complete t patch_id
+      (complete t patch_id, [])
 
 type conflict_rebase_decision =
   | Conflict_resolved
@@ -408,15 +410,23 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       let t = set_base_branch t patch_id new_base in
       let t = clear_has_conflict t patch_id in
       let t = complete t patch_id in
-      (t, Conflict_resolved)
-  | Worktree.Noop | Worktree.Conflict ->
+      (t, Conflict_resolved, [ Push_branch ])
+  | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
-      (t, Deliver_to_agent)
+      (t, Deliver_to_agent, [ Push_branch ])
+  | Worktree.Conflict ->
+      let t = set_base_branch t patch_id new_base in
+      let t = set_has_conflict t patch_id in
+      (t, Deliver_to_agent, [])
   | Worktree.Error _ ->
       let t = set_session_failed t patch_id in
       let t = complete t patch_id in
-      (t, Conflict_failed)
+      (t, Conflict_failed, [])
+
+let resolve_conflict_after_push t patch_id =
+  let t = clear_has_conflict t patch_id in
+  complete t patch_id
 
 type session_result =
   | Session_ok

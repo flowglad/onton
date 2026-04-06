@@ -314,9 +314,12 @@ let rec apply_command orch patches cmd =
           Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
             ~branch_of ~main
         in
-        Orchestrator.apply_rebase_result orch pid
-          (to_worktree_result result)
-          new_base
+        let orch, _effects =
+          Orchestrator.apply_rebase_result orch pid
+            (to_worktree_result result)
+            new_base
+        in
+        orch
       with Invalid_argument _ -> orch)
   | Send_human_message patch_idx ->
       let pid = pid_of_idx patches patch_idx in
@@ -340,7 +343,7 @@ let rec apply_command orch patches cmd =
           Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
             ~branch_of ~main
         in
-        let orch', decision =
+        let orch', decision, _effects =
           Orchestrator.apply_conflict_rebase_result orch pid
             (to_worktree_result result)
             new_base
