@@ -677,15 +677,17 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                      backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
-          Runtime.update_orchestrator runtime (fun orch ->
-              let agent_before = Orchestrator.agent orch patch_id in
-              let orch =
-                Orchestrator.apply_session_result orch patch_id session_result
-              in
-              let agent_after = Orchestrator.agent orch patch_id in
-              Event_log.log_complete event_log ~patch_id ~result:session_result
-                ~agent_before ~agent_after;
-              orch);
+          let agent_before, agent_after =
+            Runtime.update_orchestrator_returning runtime (fun orch ->
+                let agent_before = Orchestrator.agent orch patch_id in
+                let orch =
+                  Orchestrator.apply_session_result orch patch_id session_result
+                in
+                let agent_after = Orchestrator.agent orch patch_id in
+                (orch, (agent_before, agent_after)))
+          in
+          Event_log.log_complete event_log ~patch_id ~result:session_result
+            ~agent_before ~agent_after;
           user_result)
 
 (** {1 Fibers} *)
@@ -1848,6 +1850,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
           with
           | Some a -> a
           | None ->
+              (* Start actions create the agent during fire, so there is no
+                 pre-fire snapshot in [pre_fire_agents]. In that case we log
+                 the post-create/default agent state as [agent_before]. *)
               Runtime.read runtime (fun snap ->
                   Orchestrator.agent snap.Runtime.orchestrator
                     (Orchestrator.message_patch_id msg))
@@ -2009,16 +2014,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       | Worktree.Error msg ->
                           log_event runtime ~patch_id
                             (Printf.sprintf "runner: rebase error: %s" msg));
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          let agent_before = Orchestrator.agent orch patch_id in
-                          let orch =
-                            Orchestrator.apply_rebase_result orch patch_id
-                              rebase_result new_base
-                          in
-                          let agent_after = Orchestrator.agent orch patch_id in
-                          Event_log.log_rebase event_log ~patch_id
-                            ~result:rebase_result ~agent_before ~agent_after;
-                          orch)))
+                      let agent_before, agent_after =
+                        Runtime.update_orchestrator_returning runtime
+                          (fun orch ->
+                            let agent_before =
+                              Orchestrator.agent orch patch_id
+                            in
+                            let orch =
+                              Orchestrator.apply_rebase_result orch patch_id
+                                rebase_result new_base
+                            in
+                            let agent_after =
+                              Orchestrator.agent orch patch_id
+                            in
+                            (orch, (agent_before, agent_after)))
+                      in
+                      Event_log.log_rebase event_log ~patch_id
+                        ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->
               (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)
@@ -2170,7 +2182,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         (Printf.sprintf
                                            "merge-conflict: rebase error: %s"
                                            msg));
-                                  let decision =
+                                  let decision, agent_before, agent_after =
                                     Runtime.update_orchestrator_returning
                                       runtime (fun orch ->
                                         let agent_before =
@@ -2185,11 +2197,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         let agent_after =
                                           Orchestrator.agent orch patch_id
                                         in
-                                        Event_log.log_conflict_rebase event_log
-                                          ~patch_id ~decision ~agent_before
-                                          ~agent_after;
-                                        (orch, decision))
+                                        ( orch,
+                                          (decision, agent_before, agent_after)
+                                        ))
                                   in
+                                  Event_log.log_conflict_rebase event_log
+                                    ~patch_id ~decision ~agent_before
+                                    ~agent_after;
                                   match decision with
                                   | Orchestrator.Conflict_resolved -> `Ok
                                   | Orchestrator.Deliver_to_agent ->

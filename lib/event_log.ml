@@ -8,8 +8,9 @@ let max_file_size = 50 * 1024 * 1024 (* 50 MB *)
 let create ~path =
   (try
      let stats = Unix.stat path in
-     if stats.Unix.st_size > max_file_size then
-       Stdlib.Sys.rename path (path ^ ".1")
+     if stats.Unix.st_size > max_file_size then (
+       (try Stdlib.Sys.remove (path ^ ".1") with Sys_error _ -> ());
+       Stdlib.Sys.rename path (path ^ ".1"))
    with Unix.Unix_error _ | Sys_error _ -> ());
   { path }
 
