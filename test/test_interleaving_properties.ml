@@ -245,19 +245,21 @@ let to_worktree_result = function
   | Rebase_conflict -> Worktree.Conflict
   | Rebase_error -> Worktree.Error "simulated error"
 
+let poll_params_of_kind = function
+  | Poll_normal -> (false, false, false, true, false)
+  | Poll_conflict -> (true, false, false, false, false)
+  | Poll_merged -> (false, true, false, false, false)
+  | Poll_ci_failed -> (false, false, true, false, false)
+  | Poll_checks_passing -> (false, false, false, true, false)
+  | Poll_review_comments -> (false, false, false, true, true)
+
 let rec apply_command orch patches cmd =
   let gameplan = make_gameplan patches in
   match cmd with
   | Apply_poll { patch_idx; poll_kind } -> (
       let pid = pid_of_idx patches patch_idx in
       let has_conflict, merged, ci_failed, checks_passing, review_comments =
-        match poll_kind with
-        | Poll_normal -> (false, false, false, true, false)
-        | Poll_conflict -> (true, false, false, false, false)
-        | Poll_merged -> (false, true, false, false, false)
-        | Poll_ci_failed -> (false, false, true, false, false)
-        | Poll_checks_passing -> (false, false, false, true, false)
-        | Poll_review_comments -> (false, false, false, true, true)
+        poll_params_of_kind poll_kind
       in
       let poll_result =
         make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
@@ -360,6 +362,109 @@ let rec apply_command orch patches cmd =
             Orchestrator.complete orch' pid
         | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
       with Invalid_argument _ -> orch)
+
+type poll_log_info = {
+  agent_before : Patch_agent.t;
+  poll_kind : poll_kind;
+  patch_id : Patch_id.t;
+  logs : Patch_controller.poll_log_entry list;
+}
+(** Apply a command and return (orchestrator, poll_log_info option).
+    poll_log_info is Some when the command was an Apply_poll, carrying the agent
+    state before the poll, the poll_kind, and the resulting logs. *)
+
+let rec apply_command_with_logs orch patches cmd =
+  match cmd with
+  | Apply_poll { patch_idx; poll_kind } -> (
+      let pid = pid_of_idx patches patch_idx in
+      let agent_before = Orchestrator.agent orch pid in
+      let has_conflict, merged, ci_failed, checks_passing, review_comments =
+        poll_params_of_kind poll_kind
+      in
+      let poll_result =
+        make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
+          ~review_comments
+      in
+      let branch_of = branch_of_patches patches in
+      let observation =
+        Patch_controller.
+          {
+            poll_result;
+            head_branch = Some (branch_of pid);
+            base_branch = None;
+            branch_in_root = false;
+            worktree_path = None;
+          }
+      in
+      try
+        let orch, logs, _blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        let info = Some { agent_before; poll_kind; patch_id = pid; logs } in
+        (orch, info)
+      with Invalid_argument _ -> (orch, None))
+  | Atomic_poll_reconcile { patch_idx; poll_kind } ->
+      let orch, info =
+        apply_command_with_logs orch patches
+          (Apply_poll { patch_idx; poll_kind })
+      in
+      let orch = apply_command orch patches Reconcile in
+      (orch, info)
+  | Reconcile | Runner_tick | Complete _ | Apply_session_result _
+  | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
+  | Apply_conflict_rebase_result _ ->
+      (apply_command orch patches cmd, None)
+
+(* ========== Log invariant checks ========== *)
+
+let has_log_matching needle logs =
+  List.exists logs ~f:(fun (entry : Patch_controller.poll_log_entry) ->
+      String.is_substring entry.message ~substring:needle)
+
+(** L-I-1: No phantom conflict cleared — if agent had no conflict before and
+    poll reports no conflict, no conflict-related logs should appear. *)
+let check_no_phantom_conflict_cleared (info : poll_log_info) =
+  let poll_has_conflict =
+    match info.poll_kind with
+    | Poll_conflict -> true
+    | Poll_normal | Poll_merged | Poll_ci_failed | Poll_checks_passing
+    | Poll_review_comments ->
+        false
+  in
+  if (not info.agent_before.Patch_agent.has_conflict) && not poll_has_conflict
+  then
+    if
+      has_log_matching "conflict cleared" info.logs
+      || has_log_matching "conflict flag retained" info.logs
+    then
+      failwith
+        (Printf.sprintf "L-I-1 no_phantom_conflict_cleared violated for %s"
+           (Patch_id.to_string info.patch_id))
+
+(** L-I-2: Merged at most once per patch across the full sequence. *)
+let check_merged_logged_at_most_once (info : poll_log_info) ~merged_logged =
+  if has_log_matching "merged" info.logs then
+    if Set.mem merged_logged info.patch_id then
+      failwith
+        (Printf.sprintf "L-I-2 merged_logged_at_most_once violated for %s"
+           (Patch_id.to_string info.patch_id))
+    else Set.add merged_logged info.patch_id
+  else merged_logged
+
+(** L-I-3: Conflict detected requires transition — if agent already had
+    conflict, no "merge conflict detected" log. *)
+let check_conflict_detected_requires_transition (info : poll_log_info) =
+  if info.agent_before.Patch_agent.has_conflict then
+    if has_log_matching "merge conflict detected" info.logs then
+      failwith
+        (Printf.sprintf
+           "L-I-3 conflict_detected_requires_transition violated for %s"
+           (Patch_id.to_string info.patch_id))
+
+let check_log_invariants info ~merged_logged =
+  check_no_phantom_conflict_cleared info;
+  check_conflict_detected_requires_transition info;
+  check_merged_logged_at_most_once info ~merged_logged
 
 (* ========== Invariant checks ========== *)
 
@@ -554,12 +659,12 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged =
   check_merged_no_github_effects orch patches
 
 let run_sequence ?(debug = false) orch patches cmds =
-  let _final, _final_merged =
+  let _final, _final_merged, _final_merged_logged =
     List.fold cmds
-      ~init:(orch, merged_set_of orch)
-      ~f:(fun (o, prev_merged) cmd ->
+      ~init:(orch, merged_set_of orch, Set.empty (module Patch_id))
+      ~f:(fun (o, prev_merged, merged_logged) cmd ->
         if debug then Stdlib.Printf.eprintf "  CMD: %s\n%!" (show_command cmd);
-        let o = apply_command o patches cmd in
+        let o, log_info = apply_command_with_logs o patches cmd in
         let curr_merged = merged_set_of o in
         if debug then
           List.iter (Orchestrator.all_agents o) ~f:(fun (a : Patch_agent.t) ->
@@ -573,7 +678,12 @@ let run_sequence ?(debug = false) orch patches cmds =
                    (List.map a.queue ~f:Operation_kind.to_label))
                 (Patch_agent.needs_intervention a));
         check_all_invariants o patches ~prev_merged ~curr_merged;
-        (o, curr_merged))
+        let merged_logged =
+          match log_info with
+          | Some info -> check_log_invariants info ~merged_logged
+          | None -> merged_logged
+        in
+        (o, curr_merged, merged_logged))
   in
   ()
 
