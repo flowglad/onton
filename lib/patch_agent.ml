@@ -121,6 +121,8 @@ let mark_merged t = { t with merged = true }
 let add_human_message t msg =
   { t with human_messages = msg :: t.human_messages }
 
+let restore_human_messages t msgs = { t with human_messages = msgs }
+
 let set_session_failed t =
   match t.session_fallback with
   | Fresh_available -> { t with session_fallback = Tried_fresh }

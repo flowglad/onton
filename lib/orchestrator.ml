@@ -437,20 +437,40 @@ type session_result =
   | Session_worktree_missing
 [@@deriving show, eq, sexp_of]
 
+(** Complete a failed session, preserving human messages. When
+    [current_op = Human], [complete] clears [human_messages] because it assumes
+    the messages were delivered. On failure they were NOT delivered, so we save
+    them before [complete] and restore + re-enqueue afterwards. *)
+let complete_failed t patch_id =
+  let agent = agent t patch_id in
+  let was_human =
+    Option.equal Operation_kind.equal agent.Patch_agent.current_op
+      (Some Operation_kind.Human)
+  in
+  let saved_messages = agent.Patch_agent.human_messages in
+  let t = complete t patch_id in
+  if was_human && not (List.is_empty saved_messages) then
+    let t =
+      update_agent t patch_id ~f:(fun a ->
+          Patch_agent.restore_human_messages a saved_messages)
+    in
+    enqueue t patch_id Operation_kind.Human
+  else t
+
 let apply_session_result t patch_id result =
   match result with
   | Session_ok -> clear_session_fallback t patch_id
   | Session_process_error { is_fresh } ->
       let t = on_session_failure t patch_id ~is_fresh in
-      complete t patch_id
+      complete_failed t patch_id
   | Session_no_resume ->
       let t = on_session_failure t patch_id ~is_fresh:false in
-      complete t patch_id
+      complete_failed t patch_id
   | Session_failed { is_fresh } ->
       let t = on_session_failure t patch_id ~is_fresh in
-      complete t patch_id
+      complete_failed t patch_id
   | Session_give_up ->
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
-      complete t patch_id
-  | Session_worktree_missing -> complete t patch_id
+      complete_failed t patch_id
+  | Session_worktree_missing -> complete_failed t patch_id
