@@ -183,9 +183,16 @@ let apply_poll_result t patch_id
         let t = Orchestrator.set_head_branch t patch_id branch in
         if branch_in_root then
           let agent = Orchestrator.agent t patch_id in
-          if not agent.Patch_agent.branch_blocked then (
+          if
+            (not agent.Patch_agent.branch_blocked)
+            && Option.is_none agent.Patch_agent.worktree_path
+          then (
             log "branch checked out in repo root, blocking worktree operations";
             (Orchestrator.set_branch_blocked t patch_id, true))
+          else if
+            (not agent.Patch_agent.branch_blocked)
+            && Option.is_some agent.Patch_agent.worktree_path
+          then (t, false)
           else (Orchestrator.set_branch_blocked t patch_id, false)
         else
           let agent = Orchestrator.agent t patch_id in
@@ -207,8 +214,9 @@ let apply_poll_result t patch_id
     | Some path when Option.is_none agent.Patch_agent.worktree_path ->
         let t = Orchestrator.set_worktree_path t patch_id path in
         let agent = Orchestrator.agent t patch_id in
-        if agent.Patch_agent.branch_blocked then
-          Orchestrator.clear_branch_blocked t patch_id
+        if agent.Patch_agent.branch_blocked then (
+          log "worktree path discovered, unblocking branch operations";
+          Orchestrator.clear_branch_blocked t patch_id)
         else t
     | _ -> t
   in

@@ -38,36 +38,37 @@ let make_orch patch agent =
     ~main_branch:main
 
 let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
-    ~checks_passing ~queue ~merged =
+    ~checks_passing ~queue ~merged ~is_draft ~head_branch ~branch_blocked
+    ~worktree_path =
   let busy = Option.is_some current_op in
   Patch_agent.restore ~patch_id ~branch
     ~pr_number:(Some (Pr_number.of_int 42))
     ~has_session:busy ~busy ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict ~base_branch:(Some main) ~ci_failure_count
     ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-    ~ci_checks:[] ~merge_ready:false ~is_draft:false
-    ~pr_description_applied:true ~implementation_notes_delivered:true
-    ~start_attempts_without_pr:0 ~checks_passing ~current_op
-    ~current_message_id:None ~generation:0 ~worktree_path:None ~head_branch:None
-    ~branch_blocked:false
+    ~ci_checks:[] ~merge_ready:false ~is_draft ~pr_description_applied:true
+    ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+    ~checks_passing ~current_op ~current_message_id:None ~generation:0
+    ~worktree_path ~head_branch ~branch_blocked
 
-let make_poll_observation poll_result =
+let make_poll_observation ~head_branch ~branch_in_root ~worktree_path
+    poll_result =
   Patch_controller.
     {
       poll_result;
-      head_branch = None;
+      head_branch;
       base_branch = None;
-      branch_in_root = false;
-      worktree_path = None;
+      branch_in_root;
+      worktree_path;
     }
 
-let make_poll ~has_conflict ~merged ~checks_passing ~queue =
+let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
   Poller.
     {
       queue;
       merged;
       closed = false;
-      is_draft = false;
+      is_draft;
       has_conflict;
       merge_ready = false;
       checks_passing;
@@ -103,43 +104,81 @@ let gen_poll_log_case =
     let* current_op =
       if has_current_op then map Option.some gen_operation_kind else pure None
     in
+    let* agent_is_draft = bool in
+    let* agent_branch_blocked = bool in
+    (* Agent head_branch / worktree_path: generate optionally *)
+    let* has_agent_head_branch = bool in
+    let* agent_head_branch =
+      if has_agent_head_branch then map Option.some gen_branch else pure None
+    in
+    let* has_agent_worktree_path = bool in
+    let* agent_worktree_path =
+      if has_agent_worktree_path then
+        map Option.some (string_size ~gen:(char_range 'a' 'z') (int_range 5 20))
+      else pure None
+    in
     (* Poll dimensions *)
     let* poll_has_conflict = bool in
     let* poll_merged = bool in
     let* poll_checks_passing = bool in
+    let* poll_is_draft = bool in
     let* poll_queue =
       map
         (List.dedup_and_sort ~compare:Operation_kind.compare)
         (list_small gen_feedback_kind)
     in
+    (* Observation dimensions *)
+    let* has_obs_head_branch = bool in
+    let* obs_head_branch =
+      if has_obs_head_branch then map Option.some gen_branch else pure None
+    in
+    let* obs_branch_in_root = bool in
+    let* has_obs_worktree_path = bool in
+    let* obs_worktree_path =
+      if has_obs_worktree_path then
+        map Option.some (string_size ~gen:(char_range 'a' 'z') (int_range 5 20))
+      else pure None
+    in
     let patch = make_patch pid branch in
     let agent =
       make_agent ~patch_id:pid ~branch ~has_conflict:agent_has_conflict
         ~ci_failure_count ~current_op ~checks_passing:agent_checks_passing
-        ~queue:agent_queue ~merged:agent_merged
+        ~queue:agent_queue ~merged:agent_merged ~is_draft:agent_is_draft
+        ~head_branch:agent_head_branch ~branch_blocked:agent_branch_blocked
+        ~worktree_path:agent_worktree_path
     in
     let orch = make_orch patch agent in
     let poll =
       make_poll ~has_conflict:poll_has_conflict ~merged:poll_merged
-        ~checks_passing:poll_checks_passing ~queue:poll_queue
+        ~checks_passing:poll_checks_passing ~is_draft:poll_is_draft
+        ~queue:poll_queue
     in
-    let observation = make_poll_observation poll in
+    let observation =
+      make_poll_observation ~head_branch:obs_head_branch
+        ~branch_in_root:obs_branch_in_root ~worktree_path:obs_worktree_path poll
+    in
     return (patch, pid, orch, agent, observation, poll))
 
 let print_case =
- fun (patch, pid, _orch, agent, _obs, poll) ->
+ fun (patch, pid, _orch, agent, obs, poll) ->
   Printf.sprintf
     "patch=%s pid=%s agent={merged=%b has_conflict=%b ci_failure_count=%d \
-     checks_passing=%b queue=[%s] current_op=%s} poll={merged=%b \
-     has_conflict=%b checks_passing=%b queue=[%s]}"
+     checks_passing=%b is_draft=%b branch_blocked=%b queue=[%s] current_op=%s} \
+     poll={merged=%b has_conflict=%b checks_passing=%b is_draft=%b queue=[%s]} \
+     obs={head_branch=%s branch_in_root=%b worktree_path=%s}"
     (Patch_id.to_string patch.Patch.id)
     (Patch_id.to_string pid) agent.Patch_agent.merged agent.has_conflict
-    agent.ci_failure_count agent.checks_passing
+    agent.ci_failure_count agent.checks_passing agent.is_draft
+    agent.branch_blocked
     (String.concat ~sep:"," (List.map agent.queue ~f:Operation_kind.to_label))
     (Option.value_map agent.current_op ~default:"none"
        ~f:Operation_kind.to_label)
-    poll.Poller.merged poll.has_conflict poll.checks_passing
+    poll.Poller.merged poll.has_conflict poll.checks_passing poll.is_draft
     (String.concat ~sep:"," (List.map poll.queue ~f:Operation_kind.to_label))
+    (Option.value_map obs.Patch_controller.head_branch ~default:"none"
+       ~f:Branch.to_string)
+    obs.branch_in_root
+    (Option.value obs.worktree_path ~default:"none")
 
 (* -- Properties -- *)
 
@@ -237,7 +276,11 @@ let () =
           in
           (not (has_log_matching "merged" logs2))
           && (not (has_log_matching "merge conflict detected" logs2))
-          && not (has_log_matching "conflict cleared" logs2)
+          && (not (has_log_matching "conflict cleared" logs2))
+          && (not (has_log_matching "marked as" logs2))
+          && (not (has_log_matching "blocking worktree" logs2))
+          && (not (has_log_matching "unblocked" logs2))
+          && not (has_log_matching "worktree path discovered" logs2)
         with _ -> false)
   in
 
