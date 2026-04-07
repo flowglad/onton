@@ -150,27 +150,29 @@ let find_ci_ref_collision ~existing_branches branch_str =
 
 let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 512 in
-  (match
-     Eio.Process.run process_mgr ~env:(clean_git_env ())
-       ~stdout:(Eio.Flow.buffer_sink buf)
-       ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
-       [
-         "git";
-         "-C";
-         repo_root;
-         "for-each-ref";
-         "--format=%(refname:short)";
-         "refs/heads/";
-       ]
-   with
-  | () -> ()
-  | exception e when has_cancellation e -> raise e
-  | exception _ ->
-      Eio.traceln
-        "warning: git for-each-ref failed; case-insensitive ref collision \
-         check skipped for %s"
-        branch_str);
-  let existing_branches = String.split_lines (Buffer.contents buf) in
+  let existing_branches =
+    match
+      Eio.Process.run process_mgr ~env:(clean_git_env ())
+        ~stdout:(Eio.Flow.buffer_sink buf)
+        ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
+        [
+          "git";
+          "-C";
+          repo_root;
+          "for-each-ref";
+          "--format=%(refname:short)";
+          "refs/heads/";
+        ]
+    with
+    | () -> String.split_lines (Buffer.contents buf)
+    | exception e when has_cancellation e -> raise e
+    | exception _ ->
+        Eio.traceln
+          "warning: git for-each-ref failed; case-insensitive ref collision \
+           check skipped for %s"
+          branch_str;
+        []
+  in
   match find_ci_ref_collision ~existing_branches branch_str with
   | Some colliding ->
       failwith
@@ -210,6 +212,7 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
          ]
      with
     | () -> ()
+    | exception e when has_cancellation e -> raise e
     | exception _ when branch_exists ~process_mgr ~repo_root branch_str ->
         (* Branch was created (e.g. by a concurrent attempt) but worktree
            setup failed — retry without -b *)
