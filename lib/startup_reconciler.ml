@@ -126,7 +126,7 @@ let find_stale_busy ~agents =
       if agent.busy then Some agent.patch_id else None)
 
 let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
-    ?(agents = []) () =
+    ?(agents = []) ?pre_recovered_worktrees () =
   let results =
     Eio.Fiber.List.map ~max_fibers:8
       (fun (patch : Patch.t) ->
@@ -148,7 +148,9 @@ let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
         | Error err -> (discovered, (patch.Patch.id, err) :: errors))
   in
   let recovered_worktrees, worktree_error =
-    recover_worktrees ~process_mgr ~repo_root ~patches
+    match pre_recovered_worktrees with
+    | Some wts -> (wts, None)
+    | None -> recover_worktrees ~process_mgr ~repo_root ~patches
   in
   let reset_pending = find_stale_busy ~agents in
   {
