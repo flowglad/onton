@@ -108,6 +108,7 @@ let run_git ~process_mgr args =
   let stderr_buf = Buffer.create 128 in
   match
     Eio.Process.run process_mgr ~env:(clean_git_env ())
+      ~stdout:(Eio.Flow.buffer_sink (Buffer.create 64))
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
       args
   with
@@ -164,7 +165,11 @@ let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
    with
   | () -> ()
   | exception e when has_cancellation e -> raise e
-  | exception _ -> ());
+  | exception _ ->
+      Eio.traceln
+        "warning: git for-each-ref failed; case-insensitive ref collision \
+         check skipped for %s"
+        branch_str);
   let existing_branches = String.split_lines (Buffer.contents buf) in
   match find_ci_ref_collision ~existing_branches branch_str with
   | Some colliding ->
