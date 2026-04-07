@@ -103,7 +103,7 @@ let infer_default_branch ~repo_root =
           | Some _ -> "master"
           | None -> "main"))
 
-let known_backends = [ "claude"; "codex"; "opencode"; "pi" ]
+let known_backends = [ "claude"; "codex"; "gemini"; "opencode"; "pi" ]
 
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
@@ -1745,6 +1745,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
         Claude_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | "codex" ->
         Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
+    | "gemini" ->
+        Gemini_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | "opencode" ->
         Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | "pi" -> Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
