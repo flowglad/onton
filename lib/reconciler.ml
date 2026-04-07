@@ -103,7 +103,11 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
               | Operation_kind.Implementation_notes ->
                   None
             in
-            Some (Start_operation { patch_id = v.id; kind; new_base })
+            if
+              Operation_kind.equal kind Operation_kind.Rebase
+              && Option.is_none new_base
+            then None
+            else Some (Start_operation { patch_id = v.id; kind; new_base })
         | None -> None
       else None)
 
