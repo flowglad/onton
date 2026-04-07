@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Execution | Onton Workflow</title>
+    <meta
+      name="description"
+      content="How the onton supervisor executes a gameplan."
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/SF-Pro-subset.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/ABCArizonaFlare-Regular.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/Berkeley Mono Variable.otf"
+      as="font"
+      type="font/otf"
+      crossorigin
+    />
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body data-page="execution">
+    <nav class="navbar">
+      <div class="navbar-inner">
+        <a href="index.html" class="navbar-brand">onton</a>
+        <div class="navbar-links">
+          <a href="workstream.html">Workstream</a>
+          <a href="gameplan.html">Gameplan</a>
+          <a href="execution.html">Execution</a>
+        </div>
+      </div>
+    </nav>
+    <main class="page-shell">
+      <div class="index-layout">
+        <div class="index-main">
+          <section class="hero index-section">
+            <div class="hero-copy">
+              <h1>Execution</h1>
+              <p class="lede">
+                <code>onton</code> is our open-source gameplan agent
+                supervisor. Given a gameplan file, it will deterministically
+                manage a team of coding agents through the gameplan's
+                dependency graph, prompting them and then monitoring each pull
+                request until it's ready to merge.
+              </p>
+            </div>
+          </section>
+
+          <section class="index-section main-column-section">
+            <div class="source-list section-block">
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton"
+              >
+                <strong style="color: var(--brand)">Get <code>onton</code></strong>
+                <span>View the source, installation instructions, and usage on GitHub.</span>
+              </a>
+            </div>
+          </section>
+
+
+          <section class="index-section index-flow-section">
+            <div class="flow-layout">
+              <div>
+                <div class="section-stack">
+                  <h2>The lifecycle of a patch agent</h2>
+                </div>
+                <div class="workflow section-block">
+                  <div class="workflow-step">
+                    <span class="workflow-kicker">A</span>
+                    <h3>A patch is unblocked</h3>
+                    <p>Whenever a patch is ready for development,
+                    <code>onton</code> spins up a new git worktree and prompts its
+                    coding agent backend with a patch prompt built from the
+                    gameplan.</p>
+                    <p>The agent will implement the patch and open a PR.</p>
+                  </div>
+                  <div class="workflow-arrow" aria-hidden="true">→</div>
+                  <div class="workflow-step">
+                    <span class="workflow-kicker">B</span>
+                    <h3>Patch monitoring</h3>
+                    <p>
+                      <code>onton</code> will continuously handle PR feedback, in the form of CI
+                      checks, merge conflicts, and review comments&mdash;passing
+                      them back to the coding agent.
+                    </p>
+                  </div>
+                  <div class="workflow-arrow" aria-hidden="true">→</div>
+                  <div class="workflow-step">
+                    <span class="workflow-kicker">C</span>
+                    <h3>The patch is approved</h3>
+                    <p>
+                      When all feedback has been incorporated, the patch is ready
+                      for the engineer to perform any final review, and finally to
+                      merge it.
+                    </p>
+                    <p>
+                      The loop is repeated for any newly-unblocked patches.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <aside class="flow-side" aria-label="Flow sidenote" style="grid-row: 1; align-self: end">
+                <section class="sidenote-card">
+                  <p class="section-label">sidenote</p>
+                  <p class="sidenote-intro">
+                    The engineer remains the "hypervisor" for the overall
+                    system. The application will never merge code by itself.
+                  </p>
+                </section>
+              </aside>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Patch dependency rules</h2>
+              <p>
+                The concept of "unblocked" for a patch is well-defined and
+                intuitive:
+              </p>
+              <p>
+                A patch is unblocked if all of its dependencies are merged,
+                <em>or</em> if all but one of its dependencies are merged, and
+                the remaining dependency has an open PR.
+              </p>
+              <p>
+                A patch with no open dependencies will have a branch created
+                from <code>main</code>; a patch with one open dependency will
+                be branched off of its one open dependency.
+              </p>
+              <p>
+                Since <code>onton</code> and its coding backends are adept at
+                rebasing and resolving merge conflicts, this allows the system
+                to traverse a whole gameplan eagerly, but in an orderly,
+                controlled manner.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h3>Read more</h3>
+            </div>
+            <div class="source-list section-block">
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/README.md"
+              >
+                <strong>README</strong>
+                <span><code>onton</code> installation and usage.</span>
+              </a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
