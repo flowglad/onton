@@ -68,7 +68,11 @@ val parse_push_porcelain : string -> char option
     Returns [Some '!'] for rejected, [Some '+'] for forced update, etc. Returns
     [None] if no status line is found. *)
 
-type push_result = Push_ok | Push_rejected | Push_error of string
+type push_result =
+  | Push_ok
+  | Push_up_to_date
+  | Push_rejected
+  | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
 val force_push_with_lease :
@@ -77,7 +81,8 @@ val force_push_with_lease :
   branch:Types.Branch.t ->
   push_result
 (** Force-push with lease the given branch from the worktree at [path]. Returns
-    [Push_ok] on success, [Push_rejected] if the lease check fails (remote was
+    [Push_ok] on success, [Push_up_to_date] when the remote already has the same
+    SHA (nothing changed), [Push_rejected] if the lease check fails (remote was
     updated by someone else), or [Push_error] on other failures. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool

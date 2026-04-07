@@ -347,7 +347,11 @@ let rebase_onto ~process_mgr ~path ~target =
           (* Leave rebase in progress for agent to resolve *)
           Conflict
 
-type push_result = Push_ok | Push_rejected | Push_error of string
+type push_result =
+  | Push_ok
+  | Push_up_to_date
+  | Push_rejected
+  | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
 (** Parse a single porcelain status line from [git push --porcelain]. Format:
@@ -383,7 +387,10 @@ let force_push_with_lease ~process_mgr ~path ~branch =
         branch_str;
       ]
   in
-  if code = 0 then Push_ok
+  if code = 0 then
+    match parse_push_porcelain stdout with
+    | Some '=' -> Push_up_to_date
+    | _ -> Push_ok
   else
     match parse_push_porcelain stdout with
     | Some '!' -> Push_rejected

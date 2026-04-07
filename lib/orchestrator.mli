@@ -174,6 +174,32 @@ val resolve_conflict_after_push : t -> Patch_id.t -> t
     merge-conflict resolution with [Deliver_to_agent]. Clears [has_conflict] and
     calls [complete], resolving the conflict without agent involvement. *)
 
+type conflict_resolution =
+  | Conflict_done
+  | Conflict_retry_push
+  | Conflict_needs_agent
+  | Conflict_give_up
+[@@deriving show, eq, sexp_of]
+
+val apply_conflict_push_result :
+  t ->
+  Patch_id.t ->
+  conflict_rebase_decision ->
+  Worktree.push_result option ->
+  t * conflict_resolution
+(** Pure second stage of merge-conflict resolution. Takes the rebase decision
+    from [apply_conflict_rebase_result] and the outcome of executing the
+    [Push_branch] effect ([None] when no push was requested). Returns the final
+    resolution and updated state.
+
+    - [Conflict_done]: conflict fully resolved (push succeeded or was
+      redundant).
+    - [Conflict_retry_push]: rebase succeeded locally but push failed;
+      re-enqueues [Merge_conflict] so the next cycle retries.
+    - [Conflict_needs_agent]: the coding agent must resolve the conflict
+      manually (rebase was noop/conflict, or push was up-to-date).
+    - [Conflict_give_up]: unrecoverable rebase error. *)
+
 val restore :
   graph:Graph.t ->
   agents:Patch_agent.t Map.M(Patch_id).t ->
