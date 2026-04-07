@@ -72,9 +72,13 @@ let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
   let errors =
     Base.List.filter_map
       [
-        ( not (Base.List.mem [ "claude"; "codex" ] backend ~equal:String.equal),
-          Printf.sprintf "--backend must be one of: claude, codex (got %S)"
-            backend );
+        ( not
+            (Base.List.mem
+               [ "claude"; "codex"; "gemini" ]
+               backend ~equal:String.equal),
+          Printf.sprintf
+            "--backend must be one of: claude, codex, gemini (got %S)" backend
+        );
         ( Base.String.is_empty (Base.String.strip github_token),
           "--token / GITHUB_TOKEN is required" );
         ( Base.String.is_empty (Base.String.strip github_owner),
@@ -1757,10 +1761,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     match config.backend with
     | "claude" -> Claude_backend.create ~process_mgr
     | "codex" -> Codex_backend.create ~process_mgr
+    | "gemini" -> Gemini_backend.create ~process_mgr
     | other ->
         invalid_arg
           (Printf.sprintf
-             "Unsupported --backend=%S (expected \"claude\" or \"codex\")" other)
+             "Unsupported --backend=%S (expected \"claude\", \"codex\", or \
+              \"gemini\")"
+             other)
   in
   let clock = Eio.Stdenv.clock env in
   let set_status ~level ~text ?expires_at () =
