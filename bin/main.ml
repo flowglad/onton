@@ -2041,9 +2041,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             Worktree.force_push_with_lease ~process_mgr
                               ~path:wt_path ~branch
                           with
-                          | Worktree.Push_ok | Worktree.Push_up_to_date ->
+                          | Worktree.Push_ok ->
                               log_event runtime ~patch_id
                                 "runner: force-pushed after rebase"
+                          | Worktree.Push_up_to_date ->
+                              log_event runtime ~patch_id
+                                "runner: push up-to-date after rebase (noop)"
                           | Worktree.Push_rejected ->
                               log_event runtime ~patch_id
                                 "runner: force-push rejected (lease), will \

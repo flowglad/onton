@@ -169,11 +169,6 @@ val apply_conflict_rebase_result :
     correct, push needed). [Conflict] -> set_has_conflict + [Deliver_to_agent] +
     [[]]. [Error _] -> set_session_failed + complete + [Conflict_failed]. *)
 
-val resolve_conflict_after_push : t -> Patch_id.t -> t
-(** Called by the runner when a [Push_branch] effect succeeds during
-    merge-conflict resolution with [Deliver_to_agent]. Clears [has_conflict] and
-    calls [complete], resolving the conflict without agent involvement. *)
-
 type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push

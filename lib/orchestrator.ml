@@ -430,10 +430,6 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       let t = complete t patch_id in
       (t, Conflict_failed, [])
 
-let resolve_conflict_after_push t patch_id =
-  let t = clear_has_conflict t patch_id in
-  complete t patch_id
-
 type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push
