@@ -3,7 +3,7 @@ class DocCallout extends HTMLElement {
     const tone = this.getAttribute("tone") || "";
     const title = this.getAttribute("title") || "";
     this.className = `callout callout-${tone}`;
-    this.innerHTML = `<h3>${title}</h3><p>${this.innerHTML}</p>`;
+    this.innerHTML = `<h3>${escapeHtml(title)}</h3><p>${this.innerHTML}</p>`;
   }
 }
 
@@ -12,7 +12,7 @@ class SchemaCard extends HTMLElement {
     const title = this.getAttribute("title") || "";
     const subtitle = this.getAttribute("subtitle") || "";
     this.className = "schema-card";
-    this.innerHTML = `<h3>${title}</h3><p>${subtitle}</p>`;
+    this.innerHTML = `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(subtitle)}</p>`;
   }
 }
 
@@ -24,12 +24,19 @@ class CodeSample extends HTMLElement {
     this.className = "code-block";
     this.innerHTML = `
       <div class="code-head">
-        <strong>${language}</strong>
+        <strong>${escapeHtml(language)}</strong>
         <button class="copy-button" type="button" data-copy-text="${escapeAttribute(copyText)}">Copy</button>
       </div>
       <pre><code>${code}</code></pre>
     `;
   }
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function escapeAttribute(value) {
