@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>write-gameplan</title>
+    <meta
+      name="description"
+      content="A guide to the gameplan model: workstreams, gameplans, and supervised execution."
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/SF-Pro-subset.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/ABCArizonaFlare-Regular.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/Berkeley Mono Variable.otf"
+      as="font"
+      type="font/otf"
+      crossorigin
+    />
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body data-page="overview">
+    <nav class="navbar">
+      <div class="navbar-inner">
+        <a href="index.html" class="navbar-brand">write-gameplan</a>
+        <div class="navbar-links">
+          <a href="workstream.html">Workstream</a>
+          <a href="gameplan.html">Gameplan</a>
+          <a href="execution.html">Execution</a>
+        </div>
+      </div>
+    </nav>
+    <main class="page-shell">
+      <div class="index-layout">
+        <div class="index-main">
+          <section class="hero index-section">
+            <div class="hero-copy">
+              <h1><code>/write-gameplan</code></h1>
+              <p class="lede">
+                This is how <a href="https://flowglad.com">Flowglad</a> does
+                vibe-coding.
+              </p>
+              <p class="lede">
+                It's the composition of a couple coding agent skills with a
+                deterministic agent supervisor, <code>onton</code>, all of which
+                participate in a single shared abstraction:
+                <em>the gameplan</em>.
+              </p>
+            </div>
+          </section>
+
+          <section class="index-section index-flow-section">
+            <p class="section-label">flow</p>
+            <div class="flow-layout section-block">
+              <div class="panel workflow-step flow-workstream">
+                <span class="workflow-kicker">1</span>
+                <h3>write a workstream <code>w</code></h3>
+                <p>
+                  Define the vision, current state, key challenges, and
+                  milestones. The output is a workstream whose milestones
+                  become the unit of iteration.
+                </p>
+                <a href="workstream.html">Read the workstream guide</a>
+              </div>
+
+              <div class="flow-connector flow-connector-block flow-connector-step-1" aria-hidden="true">↓</div>
+
+              <div class="panel workflow-step flow-optional">
+                <div class="flow-optional-header">
+                  <span class="workflow-kicker">2</span>
+                </div>
+                <h3>write a spec</h3>
+                <p>
+                  Optionally: formally specify invariants that should hold
+                  when the feature is complete.
+                </p>
+                <a href="https://pantagruel-language.com/"
+                  >Read about the Pantagruel specification language</a
+                >
+              </div>
+
+              <aside class="flow-side" aria-label="Flow sidenote">
+                <section class="sidenote-card">
+                  <p class="section-label">sidenote</p>
+                  <h2>Theory is the artifact</h2>
+                  <p class="sidenote-intro">
+                    Formal specifications do at least two important kinds of
+                    work in this process:
+                  </p>
+                  <ol class="sidenote-list">
+                    <li>
+                      They give the coding agent an unambiguous change to
+                      implement, with some ambiguity and contradiction removed
+                      from the natural language description.
+                    </li>
+                    <li>
+                      They force the engineer to order the domain conceptually,
+                      making the system’s entities, rules, and consequences
+                      concrete before the implementation phase starts.
+                    </li>
+                  </ol>
+                </section>
+              </aside>
+
+              <div class="flow-connector flow-connector-block flow-connector-step-2" aria-hidden="true">↓</div>
+
+              <div class="flow-loop">
+                <div class="flow-loop-header">
+                  <span class="workflow-kicker">3</span>
+                  <div>
+                    <h3>for <code>m</code> in <code>w.milestones</code>:</h3>
+                    <p>
+                      Turn one milestone into a gameplan, then execute that
+                      milestone with onton.
+                    </p>
+                  </div>
+                </div>
+                <div class="flow-loop-steps">
+                  <div class="workflow-step">
+                    <h3><code>/write-gameplan m</code></h3>
+                    <p>
+                      Convert milestone <code>m</code> into typed patches,
+                      classifications, tests, specs, and a dependency DAG.
+                    </p>
+                    <a href="gameplan.html">Read the gameplan guide</a>
+                  </div>
+                  <div
+                    class="flow-connector flow-connector-inline"
+                    aria-hidden="true"
+                  >
+                    →
+                  </div>
+                  <div class="workflow-step">
+                    <h3><code>onton --gameplan m</code></h3>
+                    <p>
+                      Parse <code>gameplan(m)</code>, derive runnable patch
+                      work, and supervise execution in isolated worktrees.
+                    </p>
+                    <a href="execution.html">Read the execution guide</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Push human intervention to the left</h2>
+            </div>
+            <div class="key-points key-points-wide">
+              <div class="key-point">
+                <p>
+                  We're all tech leads, now: the gameplan phase is the moment
+                  that the engineer sets the technical direction of the feature.
+                </p>
+                <p>
+                  The engineer works with the model to thrash out any open
+                  questions and to make explicit all the architectural decisions
+                  in the feature.
+                </p>
+              </div>
+              <div class="key-point">
+                <p>
+                  The gameplan patch dependency model prioritizes
+                  <em>parallelism</em> and <em>mergeability</em>.
+                </p>
+                <p>
+                  The less human code review a patch needs, the more mergeable
+                  it is. So gameplans front load tests and refactors and ensure
+                  that user-observable changes are behind a feature flag.
+                </p>
+              </div>
+              <div class="key-point">
+                <p>
+                  Use aggressive automated code review, opinionated linting, and
+                  exhaustive testing to give the model the maximum mechanical
+                  feedback.
+                </p>
+                <p>
+                  The <code>onton</code> supervisor will babysit patches, ensuring
+                  that review is addressed, CI failures fixed, and merge
+                  conflicts are resolved.
+                </p>
+                <p>
+                  After everything is done mechanically that can be, the
+                  engineer merges the patch, automatically kicking off any
+                  downstream patches.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h3>Read more</h3>
+            </div>
+            <div class="source-list section-block">
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/skills/write-workstream/SKILL.md"
+              >
+                <strong>write-workstream</strong>
+                <span>How milestone planning is structured.</span>
+              </a>
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/skills/write-gameplan/SKILL.md"
+              >
+                <strong>write-gameplan</strong>
+                <span>How patches, specs, tests, and DAGs are defined.</span>
+              </a>
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/README.md"
+              >
+                <strong>onton README</strong>
+                <span
+                  >Installation and usage of the onton (rhymes with
+                  "wonton") supervisor.</span
+                >
+              </a>
+            </div>
+          </section>
+        </div>
+
+      </div>
+    </main>
+    <footer class="site-footer">
+      <p>&copy; 2026 Flowglad, Inc. &middot; <a href="https://github.com/flowglad/onton">GitHub</a> &middot; BSD-3 License &middot; <a href="mailto:hello@flowglad.com">hello@flowglad.com</a></p>
+    </footer>
+    <script src="assets/components.js" defer></script>
+    <script src="assets/app.js" defer></script>
+  </body>
+</html>

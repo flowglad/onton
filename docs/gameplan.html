@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gameplans | Onton Workflow</title>
+    <meta
+      name="description"
+      content="How gameplans are structured in the onton workflow."
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/SF-Pro-subset.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/ABCArizonaFlare-Regular.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/Berkeley Mono Variable.otf"
+      as="font"
+      type="font/otf"
+      crossorigin
+    />
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body data-page="gameplan">
+    <nav class="navbar">
+      <div class="navbar-inner">
+        <a href="index.html" class="navbar-brand">write-gameplan</a>
+        <div class="navbar-links">
+          <a href="workstream.html">Workstream</a>
+          <a href="gameplan.html">Gameplan</a>
+          <a href="execution.html">Execution</a>
+        </div>
+      </div>
+    </nav>
+    <main class="page-shell">
+      <div class="index-layout">
+        <div class="index-main">
+          <section class="hero index-section">
+            <div class="hero-copy">
+              <h1>Gameplan</h1>
+              <p class="lede">
+                A gameplan is a structured JSON document, comprising concrete
+                plans for the execution of one milestone.
+              </p>
+              <p class="lede">
+                It combines:
+                <ul>
+                  <li>
+                    Human-readable descriptions of the work to be done, the
+                    technical decisions made, and the open questions that
+                    remain;
+                  </li>
+                  <li>
+                    Natural-language prompts for coding agents to implement
+                    well-defined separate patches;
+                  </li>
+                  <li>
+                    Structured, machine-readable data describing a dependency
+                    graph among patches;
+                  </li>
+                  <li>
+                    Formal specifications describing invariants of the
+                    resulting work.
+                  </li>
+                </ul>
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Theory is the artifact</h2>
+            </div>
+            <div class="section-stack">
+              <p>
+                Writing a gameplan is a process of collaboration with an
+                LLM; not a prompt to be one-shotted.
+              </p>
+              <p>
+                Using the <code>/write-gameplan</code> prompt, the engineer
+                works with the model to hammer out a concrete shared
+                understanding of the work to be done and how to do it.
+              </p>
+              <p>
+                This is the opportunity to eliminate open questions and
+                ambiguity. The engineer walks away with a solid
+                understanding of the solution, at an appropriate
+                (architectural) level of abstraction. And the gameplan
+                contains enough detail for a fleet of agents to execute it
+                independently.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Structure for parallelism</h2>
+            </div>
+            <div class="section-stack">
+              <p>
+                Armed with a concrete understanding of the work to be done,
+                the LLM can break it up into a set of well-defined patches,
+                each with its own changes, each making a single
+                well-formed commit.
+              </p>
+              <p>
+                The LLM will analyze the patches for dependency, and
+                include a dependency graph within the gameplan. This will
+                describe the set of patches that can be executed
+                independently at any point in time.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Structure for mergeability</h2>
+            </div>
+            <div class="key-points key-points-wide">
+              <div class="key-point">
+                Let us define <b>mergeability</b> as the ability of a
+                patch to be merged <em>without human review.</em>
+              </div>
+              <div class="key-point">
+                Organize patches to front-load and separate out the most
+                <b>mergeable</b> code.
+              </div>
+              <div class="key-point">
+                Ensure that patches requiring human review
+                contain minimal noise and maximal context.
+              </div>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Structure for correctness</h2>
+            </div>
+            <div class="section-stack">
+              <p>
+                In addition to the <a href="workstream.html">workstream
+                specification</a>, the LLM will construct type-checked,
+                model-checked <a href="https://pantagruel-language.com">Pantagruel</a>
+                specifications for the gameplan and for each patch.
+              </p>
+              <p>
+                Coding agents and reviewers alike can use these as unambiguous
+                specifications of implementation correctness.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h3>Read more</h3>
+            </div>
+            <div class="source-list section-block">
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/skills/write-gameplan/SKILL.md"
+              >
+                <strong>write-gameplan skill</strong>
+                <span>Workflow, patch classification rules, and verification steps.</span>
+              </a>
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/skills/write-gameplan/references/gameplan-schema.json"
+              >
+                <strong>gameplan schema</strong>
+                <span>Formal JSON schema used as the output contract.</span>
+              </a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <footer class="site-footer">
+      <p>&copy; 2026 Flowglad, Inc. &middot; <a href="https://github.com/flowglad/onton">GitHub</a> &middot; BSD-3 License &middot; <a href="mailto:hello@flowglad.com">hello@flowglad.com</a></p>
+    </footer>
+    <script src="assets/components.js" defer></script>
+    <script src="assets/app.js" defer></script>
+  </body>
+</html>

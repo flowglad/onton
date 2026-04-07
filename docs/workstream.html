@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Workstreams | Onton Workflow</title>
+    <meta
+      name="description"
+      content="How to define a workstream in the onton workflow."
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/SF-Pro-subset.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/ABCArizonaFlare-Regular.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/Berkeley Mono Variable.otf"
+      as="font"
+      type="font/otf"
+      crossorigin
+    />
+    <link rel="stylesheet" href="assets/styles.css" />
+  </head>
+  <body data-page="workstream">
+    <nav class="navbar">
+      <div class="navbar-inner">
+        <a href="index.html" class="navbar-brand">write-gameplan</a>
+        <div class="navbar-links">
+          <a href="workstream.html">Workstream</a>
+          <a href="gameplan.html">Gameplan</a>
+          <a href="execution.html">Execution</a>
+        </div>
+      </div>
+    </nav>
+    <main class="page-shell">
+      <div class="index-layout">
+        <div class="index-main">
+          <section class="hero index-section">
+            <div class="hero-copy">
+              <h1>Workstream</h1>
+              <p class="lede">
+                A workstream is a simple way to tie multiple gameplans
+                together. When writing a workstream, the engineer plays more of
+                a product management role; they describe a high-level sequence
+                of changes which should add up to a fully-formed feature.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>How to work with unknowns</h2>
+            </div>
+            <div class="section-stack">
+              <p>
+                When it comes to concrete implementation plans, there can be no
+                open questions. But known unknowns can and should be part of
+                the process of planning multiple gameplans ahead.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h2>Waterfall for agents</h2>
+            </div>
+            <div class="section-stack">
+              <p>
+                All the patches in a gameplan make up, together, a single
+                coherent change, and represent a single atomic addition to the
+                system.
+              </p>
+              <p>
+                But we need the ability to plan into the future and to build
+                changes on top of each other.
+              </p>
+              <p>
+                Just as importantly, we need to designate safe stopping points,
+                where the system is in a coherent state. Workstreams are
+                divided into <b>milestones</b>, by definition a point where
+                some degree of value has been delivered and the team can stop
+                and evaluate what's most important to do next.
+              </p>
+            </div>
+          </section>
+
+
+          <section class="panel index-section main-column-section flow-optional">
+            <div class="section-stack">
+              <h2>[optional] Write a spec</h2>
+            </div>
+            <div class="section-stack">
+              <p>
+                <a href="https://pantagruel-language.com/">Pantagruel</a>'s
+                built-in <code>write-spec</code> skill guides the user through
+                the creation of a formal specification for the feature
+                described in the workstream.
+              </p>
+              <p>
+                The result is a type-checked, model-checked spec of the
+                behaviour of the feature. It is guaranteed to be free of
+                (certain types of) ambiguities and contradictions, making it a
+                more reliable basis of correctness to use when creating
+                gameplans and executing them.
+              </p>
+              <p>
+                Gameplans and their execution are all about technical
+                implementation; write the spec at the workstream level to deal
+                primarily with <em>domain</em> concepts. The spec will describe
+                what should be true about the <em>feature</em>, not about the
+                internal state of the application.
+              </p>
+              <p>
+                Just as importantly, this is also the time for the engineer to
+                become an expert in the feature at the domain level. The
+                engineer will emerge with a clearer understanding of the core
+                concepts and actions that make the feature up.
+              </p>
+            </div>
+          </section>
+
+          <section class="panel index-section main-column-section">
+            <div class="section-stack">
+              <h3>Read more</h3>
+            </div>
+            <div class="source-list section-block">
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/skills/write-workstream/SKILL.md"
+              >
+                <strong>write-workstream skill</strong>
+                <span>Discovery process and milestone rules.</span>
+              </a>
+              <a
+                class="source-card"
+                href="https://github.com/subsetpark/pantagruel/blob/master/.claude/skills/write-spec/SKILL.md"
+              >
+                <strong>write-spec skill</strong>
+                <span>Articulating the core invariants of a workstream.</span>
+              </a>
+              <a
+                class="source-card"
+                href="https://github.com/flowglad/onton/blob/main/skills/write-workstream/references/workstream-format.md"
+              >
+                <strong>workstream format reference</strong>
+                <span>Template and full example.</span>
+              </a>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+    <footer class="site-footer">
+      <p>&copy; 2026 Flowglad, Inc. &middot; <a href="https://github.com/flowglad/onton">GitHub</a> &middot; BSD-3 License &middot; <a href="mailto:hello@flowglad.com">hello@flowglad.com</a></p>
+    </footer>
+    <script src="assets/components.js" defer></script>
+    <script src="assets/app.js" defer></script>
+  </body>
+</html>

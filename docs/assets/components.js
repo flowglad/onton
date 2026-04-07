@@ -1,0 +1,59 @@
+class DocCallout extends HTMLElement {
+  connectedCallback() {
+    if (this.dataset.rendered === "true") return;
+    this.dataset.rendered = "true";
+    const tone = this.getAttribute("tone") || "";
+    const title = this.getAttribute("title") || "";
+    const body = this.innerHTML;
+    this.className = `callout callout-${tone}`;
+    this.innerHTML = `<h3>${escapeHtml(title)}</h3><p>${body}</p>`;
+  }
+}
+
+class SchemaCard extends HTMLElement {
+  connectedCallback() {
+    if (this.dataset.rendered === "true") return;
+    this.dataset.rendered = "true";
+    const title = this.getAttribute("title") || "";
+    const subtitle = this.getAttribute("subtitle") || "";
+    this.className = "schema-card";
+    this.innerHTML = `<h3>${escapeHtml(title)}</h3><p>${escapeHtml(subtitle)}</p>`;
+  }
+}
+
+class CodeSample extends HTMLElement {
+  connectedCallback() {
+    if (this.dataset.rendered === "true") return;
+    this.dataset.rendered = "true";
+    const language = this.getAttribute("language") || "text";
+    const copyText = this.dataset.copy || this.textContent || "";
+    const code = this.textContent.trim().replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    this.className = "code-block";
+    this.innerHTML = `
+      <div class="code-head">
+        <strong>${escapeHtml(language)}</strong>
+        <button class="copy-button" type="button" data-copy-text="${escapeAttribute(copyText)}">Copy</button>
+      </div>
+      <pre><code>${code}</code></pre>
+    `;
+  }
+}
+
+function escapeHtml(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeAttribute(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+customElements.define("doc-callout", DocCallout);
+customElements.define("schema-card", SchemaCard);
+customElements.define("code-sample", CodeSample);
