@@ -1,14 +1,19 @@
 class DocCallout extends HTMLElement {
   connectedCallback() {
+    if (this.dataset.rendered === "true") return;
+    this.dataset.rendered = "true";
     const tone = this.getAttribute("tone") || "";
     const title = this.getAttribute("title") || "";
+    const body = this.innerHTML;
     this.className = `callout callout-${tone}`;
-    this.innerHTML = `<h3>${escapeHtml(title)}</h3><p>${this.innerHTML}</p>`;
+    this.innerHTML = `<h3>${escapeHtml(title)}</h3><p>${body}</p>`;
   }
 }
 
 class SchemaCard extends HTMLElement {
   connectedCallback() {
+    if (this.dataset.rendered === "true") return;
+    this.dataset.rendered = "true";
     const title = this.getAttribute("title") || "";
     const subtitle = this.getAttribute("subtitle") || "";
     this.className = "schema-card";
@@ -18,6 +23,8 @@ class SchemaCard extends HTMLElement {
 
 class CodeSample extends HTMLElement {
   connectedCallback() {
+    if (this.dataset.rendered === "true") return;
+    this.dataset.rendered = "true";
     const language = this.getAttribute("language") || "text";
     const copyText = this.dataset.copy || this.textContent || "";
     const code = this.textContent.trim().replace(/</g, "&lt;").replace(/>/g, "&gt;");
