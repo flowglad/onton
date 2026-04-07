@@ -168,8 +168,20 @@ let () =
         Option.is_none r)
   in
 
+  (* find_ci_ref_collision: reverse direction — existing "Foo/bar" vs new "foo" *)
+  let prop_collision_reverse =
+    Test.make ~name:"find_ci_ref_collision: reverse prefix collision detected"
+      ~count:1 Gen.unit (fun () ->
+        let r =
+          Worktree.find_ci_ref_collision
+            ~existing_branches:[ "main"; "Foo/bar" ] "foo"
+        in
+        Option.equal String.equal r (Some "Foo/bar"))
+  in
+
   (* find_ci_ref_collision: property — if a collision is found, it must
-     case-insensitively equal a prefix of the branch *)
+     case-insensitively equal a prefix of the branch OR the branch must be
+     a case-insensitive prefix of the colliding branch *)
   let prop_collision_valid =
     Test.make
       ~name:"find_ci_ref_collision: collision is always a ci-equal prefix"
@@ -182,13 +194,17 @@ let () =
              (string_size ~gen:(char_range 'a' 'z') (int_range 1 8))))
       (fun (existing_branches, segments) ->
         let branch = String.concat ~sep:"/" segments in
+        let branch_lc = String.lowercase branch in
         let prefixes = Worktree.branch_prefixes branch in
         match Worktree.find_ci_ref_collision ~existing_branches branch with
         | None -> true
         | Some colliding ->
             let lower_colliding = String.lowercase colliding in
+            (* Forward: existing branch equals a prefix of new branch *)
             List.exists prefixes ~f:(fun pfx ->
-                String.equal (String.lowercase pfx) lower_colliding))
+                String.equal (String.lowercase pfx) lower_colliding)
+            (* Reverse: existing branch has new branch as a prefix *)
+            || String.is_prefix lower_colliding ~prefix:(branch_lc ^ "/"))
   in
 
   let suite =
@@ -205,6 +221,7 @@ let () =
       prop_collision_exact;
       prop_collision_ci;
       prop_collision_none;
+      prop_collision_reverse;
       prop_collision_valid;
     ]
   in

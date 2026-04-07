@@ -139,14 +139,24 @@ let branch_prefixes branch_str =
   in
   build [] "" parts
 
-(** Pure: find the first existing branch that case-insensitively matches a path
-    prefix of [branch_str]. Returns [Some colliding_branch] or [None]. *)
+(** Pure: find the first existing branch that case-insensitively collides with
+    [branch_str] via the file-vs-directory ref storage on macOS. Checks both
+    directions: existing branch equals a prefix of the new name (e.g. [Foo] vs
+    [foo/bar]) and existing branch has the new name as a prefix (e.g. [Foo/bar]
+    vs [foo]). Returns [Some colliding_branch] or [None]. *)
 let find_ci_ref_collision ~existing_branches branch_str =
+  let branch_lc = String.lowercase branch_str in
   let prefixes = branch_prefixes branch_str in
-  List.find_map prefixes ~f:(fun pfx ->
-      let lower_pfx = String.lowercase pfx in
+  match
+    List.find_map prefixes ~f:(fun pfx ->
+        let lower_pfx = String.lowercase pfx in
+        List.find existing_branches ~f:(fun b ->
+            String.equal (String.lowercase b) lower_pfx))
+  with
+  | Some _ as collision -> collision
+  | None ->
       List.find existing_branches ~f:(fun b ->
-          String.equal (String.lowercase b) lower_pfx))
+          String.is_prefix (String.lowercase b) ~prefix:(branch_lc ^ "/"))
 
 let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 512 in
