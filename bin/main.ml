@@ -2281,7 +2281,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       log_event runtime ~patch_id
                                         "merge-conflict: re-enqueuing after \
                                          push failure";
-                                      `Ok
+                                      `Retry_push
                                   | Orchestrator.Conflict_needs_agent ->
                                       let pr_number =
                                         agent.Patch_agent.pr_number
@@ -2396,6 +2396,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     needed"
                                    (Patch_id.to_string patch_id))
                               ()
+                      | `Retry_push -> ()
                       | `Ok ->
                           if
                             Operation_kind.equal kind
