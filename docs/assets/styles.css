@@ -615,6 +615,24 @@ code {
   font-family: var(--font-mono);
 }
 
+.site-footer {
+  width: min(var(--layout-content-max-width), calc(100vw - 2rem));
+  margin: 0 auto;
+  padding: 2rem 0;
+  border-top: 1px solid var(--border);
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  color: var(--muted-foreground);
+}
+
+.site-footer p {
+  margin: 0;
+}
+
+.site-footer a {
+  color: var(--muted-foreground);
+}
+
 @keyframes rise {
   from {
     opacity: 0;

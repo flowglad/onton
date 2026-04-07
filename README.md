@@ -359,6 +359,21 @@ properties:
   GitHub's `mergeStateStatus = CLEAN`). Patches targeting a dependency branch
   show `blocked-by-dep` instead
 
+## Docs site
+
+The project documentation is hosted at [write-gameplan.dev](https://write-gameplan.dev)
+and deployed to Vercel under the Flowglad org.
+
+The site is static HTML in the `docs/` directory. To update it:
+
+1. Edit files in `docs/` (HTML pages, `assets/styles.css`, etc.)
+2. Deploy with the Vercel CLI:
+   ```sh
+   vercel --scope flowglad --prod
+   ```
+
+A `.vercelignore` ensures only `docs/` and `vercel.json` are uploaded.
+
 ## License
 
 BSD-3
