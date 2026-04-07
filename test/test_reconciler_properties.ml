@@ -272,9 +272,16 @@ let prop_plan_new_base_only_for_rebase =
         Reconciler.plan_operations views ~has_merged ~branch_of ~graph ~main
       in
       List.for_all actions ~f:(function
-        | Reconciler.Start_operation { kind; new_base; _ } -> (
+        | Reconciler.Start_operation { patch_id; kind; new_base } -> (
             match kind with
-            | Types.Operation_kind.Rebase -> Option.is_some new_base
+            | Types.Operation_kind.Rebase ->
+                (* new_base is None when the patch has >1 open dep and we
+                   cannot yet determine a unique base branch. *)
+                let open_deps =
+                  List.length (Graph.open_pr_deps graph patch_id ~has_merged)
+                in
+                if open_deps > 1 then Option.is_none new_base
+                else Option.is_some new_base
             | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
             | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
             | Types.Operation_kind.Implementation_notes ->

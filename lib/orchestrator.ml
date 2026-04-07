@@ -95,16 +95,22 @@ let refresh_base_branch t patch_id =
         | Some a -> a.Patch_agent.merged
         | None -> false
       in
-      let branch_of pid =
-        match find_agent t pid with
-        | Some a -> a.Patch_agent.branch
-        | None -> t.main_branch
-      in
-      let fresh =
-        Graph.initial_base t.graph patch_id ~has_merged ~branch_of
-          ~main:t.main_branch
-      in
-      update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a fresh)
+      let open_deps = Graph.open_pr_deps t.graph patch_id ~has_merged in
+      (* When more than 1 dep is still open, we cannot determine a unique
+         base branch yet — skip the refresh until enough deps merge. *)
+      if List.length open_deps > 1 then t
+      else
+        let branch_of pid =
+          match find_agent t pid with
+          | Some a -> a.Patch_agent.branch
+          | None -> t.main_branch
+        in
+        let fresh =
+          Graph.initial_base t.graph patch_id ~has_merged ~branch_of
+            ~main:t.main_branch
+        in
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_base_branch a fresh)
 
 let complete t patch_id =
   (* Refresh base_branch before transitioning to idle — a dependency may

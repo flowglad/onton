@@ -70,8 +70,10 @@ let detect_stale_bases graph views ~has_merged ~branch_of ~main =
   List.filter_map views ~f:(fun v ->
       if
         v.has_pr && (not v.merged)
-        && not
-             (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
+        && (not
+              (List.mem v.queue Operation_kind.Rebase
+                 ~equal:Operation_kind.equal))
+        && List.length (Graph.open_pr_deps graph v.id ~has_merged) <= 1
       then
         let correct_base =
           Graph.initial_base graph v.id ~has_merged ~branch_of ~main
@@ -92,7 +94,10 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
             let new_base =
               match kind with
               | Operation_kind.Rebase ->
-                  Some (merge_target graph v.id ~has_merged ~branch_of ~main)
+                  if List.length (Graph.open_pr_deps graph v.id ~has_merged) > 1
+                  then None
+                  else
+                    Some (merge_target graph v.id ~has_merged ~branch_of ~main)
               | Operation_kind.Human | Operation_kind.Merge_conflict
               | Operation_kind.Ci | Operation_kind.Review_comments
               | Operation_kind.Implementation_notes ->
