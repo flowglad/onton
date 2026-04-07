@@ -363,6 +363,8 @@ h3 {
   align-items: center;
 }
 
+/* ── Legacy flow selectors (used by execution.html, workstream.html) ── */
+
 .flow-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(16rem, var(--layout-rail-width));
@@ -375,44 +377,9 @@ h3 {
   grid-row: 3;
 }
 
-.flow-workstream {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-.flow-connector-block {
-  grid-column: 1;
-  justify-self: center;
-}
-
-.flow-connector-step-1 {
-  grid-row: 2;
-}
-
-.flow-connector-step-2 {
-  grid-row: 4;
-}
-
 .flow-optional {
   grid-column: 1;
   grid-row: 3;
-}
-
-.flow-loop {
-  grid-column: 1;
-  grid-row: 5;
-}
-
-.flow-loop {
-  display: grid;
-  gap: 1rem;
-  padding: 1rem;
-  background: color-mix(in oklab, var(--card-muted) 72%, var(--secondary));
-  border: 1px dashed color-mix(in oklab, var(--brand) 38%, var(--border));
-  border-radius: var(--radius-xl);
-}
-
-.flow-optional {
   background:
     linear-gradient(135deg, color-mix(in oklab, var(--secondary) 70%, white), color-mix(in oklab, var(--card) 92%, white));
   border-style: dashed;
@@ -426,34 +393,47 @@ h3 {
   margin-bottom: 0.65rem;
 }
 
-.flow-loop-header {
+/* ── Flow diagram ── */
+
+.flow-grid {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.85rem;
+  grid-template-columns: 1fr;
+  gap: 2rem;
   align-items: start;
 }
 
-.flow-loop-header h3 {
-  margin-bottom: 0.15rem;
+.flow-diagram svg {
+  display: block;
+  width: 100%;
+  max-width: 780px;
+  height: auto;
+  margin: 0 auto;
 }
 
-.flow-loop-header p {
-  margin: 0;
-}
-
-.flow-loop-steps {
+.flow-annotations {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  gap: 1rem;
-  align-items: center;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+  align-content: start;
 }
 
-.workflow-step {
-  background: var(--card-muted);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 1rem;
-  min-height: 100%;
+.flow-annotation {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.flow-annotation .workflow-kicker {
+  margin-bottom: 0;
+}
+
+.flow-annotation h3 {
+  margin-bottom: 0.2rem;
+}
+
+.flow-annotation p {
+  margin: 0 0 0.3rem;
 }
 
 .workflow-kicker {
@@ -466,24 +446,22 @@ h3 {
   background: var(--secondary);
   color: var(--secondary-foreground);
   font-weight: 700;
+  font-family: var(--font-sans);
   margin-bottom: 0.9rem;
+}
+
+.workflow-step {
+  background: var(--card-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 1rem;
+  min-height: 100%;
 }
 
 .workflow-arrow {
   font-size: 2rem;
   text-align: center;
   color: var(--brand);
-}
-
-.flow-connector {
-  justify-self: center;
-  font-size: 2rem;
-  line-height: 1;
-  color: var(--brand);
-}
-
-.flow-connector-inline {
-  align-self: center;
 }
 
 .key-points,
@@ -651,8 +629,17 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .flow-annotations {
+    grid-template-columns: 1fr;
+  }
+
   .flow-layout {
     grid-template-columns: 1fr;
+  }
+
+  .flow-side {
+    grid-column: 1;
+    grid-row: 4;
   }
 
   .hero-copy,
@@ -661,25 +648,6 @@ code {
   }
 
   .workflow-arrow {
-    transform: rotate(90deg);
-  }
-
-  .flow-loop-header {
-    grid-template-columns: 1fr;
-  }
-
-  .flow-side {
-    grid-column: 1;
-    grid-row: 4;
-  }
-}
-
-@media (max-width: 720px) {
-  .flow-loop-steps {
-    grid-template-columns: 1fr;
-  }
-
-  .flow-connector-inline {
     transform: rotate(90deg);
   }
 }

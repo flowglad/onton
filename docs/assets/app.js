@@ -1,4 +1,5 @@
 document.addEventListener("DOMContentLoaded", () => {
+  /* ── Copy buttons ── */
   document.querySelectorAll(".copy-button").forEach((button) => {
     const defaultLabel = button.textContent || "Copy";
     let resetTimer = null;
