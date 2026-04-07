@@ -363,6 +363,36 @@ h3 {
   align-items: center;
 }
 
+/* ── Legacy flow selectors (used by execution.html, workstream.html) ── */
+
+.flow-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, var(--layout-rail-width));
+  gap: var(--layout-column-gap);
+  align-items: start;
+}
+
+.flow-side {
+  grid-column: 2;
+  grid-row: 3;
+}
+
+.flow-optional {
+  grid-column: 1;
+  grid-row: 3;
+  background:
+    linear-gradient(135deg, color-mix(in oklab, var(--secondary) 70%, white), color-mix(in oklab, var(--card) 92%, white));
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--brand) 26%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--brand) 10%, transparent);
+}
+
+.flow-optional-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.65rem;
+}
+
 /* ── Flow diagram ── */
 
 .flow-grid {
@@ -601,6 +631,15 @@ code {
 
   .flow-annotations {
     grid-template-columns: 1fr;
+  }
+
+  .flow-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-side {
+    grid-column: 1;
+    grid-row: 4;
   }
 
   .hero-copy,
