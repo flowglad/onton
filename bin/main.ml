@@ -402,8 +402,8 @@ let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
     path. Returns [Some path] on success or [None] if the branch is unknown and
     no worktree can be created yet. *)
 let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
-    ~(agent : Patch_agent.t) ~(user_config : User_config.t) ?branch ?base_ref ()
-    =
+    ~(agent : Patch_agent.t) ~(user_config : User_config.t) ~worktree_mutex
+    ?branch ?base_ref () =
   let path =
     resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id ~agent
       ?branch ()
@@ -458,9 +458,18 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
               in
               log_event runtime ~patch_id
                 (Printf.sprintf "creating worktree at %s" path);
-              ignore
-                (Worktree.create ~process_mgr ~repo_root ~project_name ~patch_id
-                   ~branch:br ~base_ref:base);
+              (match
+                 Eio.Mutex.use_rw ~protect:true worktree_mutex (fun () ->
+                     ignore
+                       (Worktree.create ~process_mgr ~repo_root ~project_name
+                          ~patch_id ~branch:br ~base_ref:base))
+               with
+              | () -> ()
+              | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
+              | exception exn ->
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "worktree creation failed: %s"
+                       (Printexc.to_string exn)));
               if Stdlib.Sys.file_exists path then (
                 Runtime.update_orchestrator runtime (fun orch ->
                     Orchestrator.set_worktree_path orch patch_id path);
@@ -495,7 +504,7 @@ let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
     ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
-    ~transcripts ~user_config ~backend ~event_log =
+    ~transcripts ~user_config ~worktree_mutex ~backend ~event_log =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -511,7 +520,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
       in
       match
         ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name
-          ~patch_id ~agent ~user_config ()
+          ~patch_id ~agent ~user_config ~worktree_mutex ()
       with
       | None ->
           Runtime.update_orchestrator runtime (fun orch ->
@@ -1764,6 +1773,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     Eio.Semaphore.acquire semaphore;
     Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
   in
+  let worktree_mutex = Eio.Mutex.create () in
   let with_busy_guard ~patch_id f =
     Fun.protect
       ~finally:(fun () ->
@@ -1906,7 +1916,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       ~repo_root:config.repo_root ~project_name
                                       ~patch_id ~agent
                                       ~user_config:config.user_config
-                                      ~branch:patch.Patch.branch
+                                      ~worktree_mutex ~branch:patch.Patch.branch
                                       ~base_ref:(Branch.to_string base_branch)
                                       ()
                                   with
@@ -1936,8 +1946,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~agent ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
-                                        ~user_config:config.user_config ~backend
-                                        ~event_log)
+                                        ~user_config:config.user_config
+                                        ~worktree_mutex ~backend ~event_log)
                           in
                           match result with
                           | `Stale -> ()
@@ -2180,7 +2190,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~owner:config.github_owner
                                     ~repo:config.github_repo ~on_pr_detected
                                     ~transcripts ~user_config:config.user_config
-                                    ~backend ~event_log)
+                                    ~worktree_mutex ~backend ~event_log)
                                 else
                                   let target = Types.Branch.of_string base in
                                   let rebase_result =
@@ -2298,8 +2308,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~agent ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
-                                        ~user_config:config.user_config ~backend
-                                        ~event_log
+                                        ~user_config:config.user_config
+                                        ~worktree_mutex ~backend ~event_log
                                   | Orchestrator.Conflict_give_up -> `Failed)
                               else
                                 let pr_number = agent.Patch_agent.pr_number in
@@ -2378,7 +2388,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~owner:config.github_owner
                                   ~repo:config.github_repo ~on_pr_detected
                                   ~transcripts ~user_config:config.user_config
-                                  ~backend ~event_log)
+                                  ~worktree_mutex ~backend ~event_log)
                       in
                       match result with
                       | `Stale -> ()

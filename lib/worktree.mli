@@ -100,6 +100,16 @@ val find_for_branch :
 val normalize_path : string -> string
 (** Resolve a relative path to absolute using the current working directory. *)
 
+val branch_prefixes : string -> string list
+(** Pure: collect all path prefixes of a branch name. For ["a/b/c"] returns
+    [["a"; "a/b"]]. *)
+
+val find_ci_ref_collision :
+  existing_branches:string list -> string -> string option
+(** Pure: find the first existing branch that case-insensitively matches a path
+    prefix of the given branch name. Returns [Some colliding_branch] or [None].
+    Used to detect macOS case-insensitive filesystem ref collisions. *)
+
 val exists : t -> bool
 val path : t -> string
 val patch_id : t -> Types.Patch_id.t

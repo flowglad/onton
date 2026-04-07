@@ -104,43 +104,113 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
   | exception e when has_cancellation e -> raise e
   | exception _ -> false
 
+let run_git ~process_mgr args =
+  let stderr_buf = Buffer.create 128 in
+  match
+    Eio.Process.run process_mgr ~env:(clean_git_env ())
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      args
+  with
+  | () -> ()
+  | exception e when has_cancellation e -> raise e
+  | exception _ ->
+      let stderr = String.strip (Buffer.contents stderr_buf) in
+      let cmd = String.concat ~sep:" " args in
+      failwith (Printf.sprintf "git command failed: %s\nstderr: %s" cmd stderr)
+
+let add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str =
+  run_git ~process_mgr
+    [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ]
+
+(** Collect all path prefixes of a branch name. For ["a/b/c"] returns
+    [["a"; "a/b"]]. Used to detect case-insensitive ref collisions on macOS: a
+    branch [Foo] stored as [refs/heads/Foo] blocks creation of [foo/bar] (which
+    needs [refs/heads/foo/] as a directory). *)
+let branch_prefixes branch_str =
+  let parts = String.split branch_str ~on:'/' in
+  let rec build acc prefix = function
+    | [] | [ _ ] -> List.rev acc
+    | seg :: rest ->
+        let prefix =
+          if String.is_empty prefix then seg else prefix ^ "/" ^ seg
+        in
+        build (prefix :: acc) prefix rest
+  in
+  build [] "" parts
+
+(** Pure: find the first existing branch that case-insensitively matches a path
+    prefix of [branch_str]. Returns [Some colliding_branch] or [None]. *)
+let find_ci_ref_collision ~existing_branches branch_str =
+  let prefixes = branch_prefixes branch_str in
+  List.find_map prefixes ~f:(fun pfx ->
+      let lower_pfx = String.lowercase pfx in
+      List.find existing_branches ~f:(fun b ->
+          String.equal (String.lowercase b) lower_pfx))
+
+let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
+  let buf = Buffer.create 512 in
+  (match
+     Eio.Process.run process_mgr ~env:(clean_git_env ())
+       ~stdout:(Eio.Flow.buffer_sink buf)
+       ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
+       [
+         "git";
+         "-C";
+         repo_root;
+         "for-each-ref";
+         "--format=%(refname:short)";
+         "refs/heads/";
+       ]
+   with
+  | () -> ()
+  | exception e when has_cancellation e -> raise e
+  | exception _ -> ());
+  let existing_branches = String.split_lines (Buffer.contents buf) in
+  match find_ci_ref_collision ~existing_branches branch_str with
+  | Some colliding ->
+      failwith
+        (Printf.sprintf
+           "Cannot create branch %s: existing branch %s conflicts on \
+            case-insensitive filesystem (macOS). Delete or rename the \
+            conflicting branch with: git branch -D %s"
+           branch_str colliding colliding)
+  | None -> ()
+
 let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
   if Stdlib.Sys.file_exists path then { patch_id; branch; path }
   else if branch_exists ~process_mgr ~repo_root branch_str then (
-    Eio.Process.run process_mgr ~env:(clean_git_env ())
-      [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ];
+    add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str;
     { patch_id; branch; path })
-  else if remote_branch_exists ~process_mgr ~repo_root branch_str then (
-    (* Branch exists on remote but not locally — create local branch from remote *)
-    Eio.Process.run process_mgr ~env:(clean_git_env ())
-      [
-        "git";
-        "-C";
-        repo_root;
-        "worktree";
-        "add";
-        "-b";
-        branch_str;
-        path;
-        "origin/" ^ branch_str;
-      ];
-    { patch_id; branch; path })
-  else (
-    Eio.Process.run process_mgr ~env:(clean_git_env ())
-      [
-        "git";
-        "-C";
-        repo_root;
-        "worktree";
-        "add";
-        "-b";
-        branch_str;
-        path;
-        base_ref;
-      ];
-    { patch_id; branch; path })
+  else
+    let start_point =
+      if remote_branch_exists ~process_mgr ~repo_root branch_str then
+        "origin/" ^ branch_str
+      else base_ref
+    in
+    check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str;
+    (match
+       run_git ~process_mgr
+         [
+           "git";
+           "-C";
+           repo_root;
+           "worktree";
+           "add";
+           "-b";
+           branch_str;
+           path;
+           start_point;
+         ]
+     with
+    | () -> ()
+    | exception _ when branch_exists ~process_mgr ~repo_root branch_str ->
+        (* Branch was created (e.g. by a concurrent attempt) but worktree
+           setup failed — retry without -b *)
+        add_worktree_for_existing_branch ~process_mgr ~repo_root ~path
+          ~branch_str);
+    { patch_id; branch; path }
 
 let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr ~env:(clean_git_env ())
