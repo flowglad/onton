@@ -131,8 +131,9 @@ let () =
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
         safe (fun () ->
             let orch = Orchestrator.create ~patches ~main_branch:main in
-            (* gen_patch_list_unique produces linear chains where each tick
-               starts at most one patch, so |patches|+2 ticks suffices. *)
+            (* |patches|+2 ticks suffices for convergence: in a linear chain
+               each tick starts one patch; in a DAG, multiple patches with
+               satisfied deps start per tick, converging even faster. *)
             let rec stabilize o n =
               if n = 0 then o
               else

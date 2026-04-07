@@ -2727,16 +2727,23 @@ let run_with_config (config : config) gameplan existing_snapshot =
       let ci_checks_cache : (Patch_id.t, Ci_check.t list) Hashtbl.t =
         Hashtbl.create 16
       in
+      (* Capture agent state and worktree list BEFORE launching concurrent
+         fibers, so the reconciler sees the pre-session state rather than racing
+         with the runner which creates worktrees and sets agents busy. *)
+      let pre_agents =
+        Runtime.read runtime (fun snap ->
+            Orchestrator.all_agents snap.Runtime.orchestrator)
+      in
+      let pre_worktrees, pre_wt_error =
+        Startup_reconciler.recover_worktrees ~process_mgr
+          ~repo_root:config.repo_root ~patches:gameplan.Gameplan.patches
+      in
       let reconciliation_fiber () =
-        let all_agents =
-          Runtime.read runtime (fun snap ->
-              Orchestrator.all_agents snap.Runtime.orchestrator)
-        in
         let startup =
           Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
             ~owner:config.github_owner ~repo:config.github_repo
             ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
-            ~agents:all_agents ()
+            ~agents:pre_agents ~pre_recovered_worktrees:pre_worktrees ()
         in
         let errored_ids =
           Base.List.map startup.Startup_reconciler.errors
@@ -2780,7 +2787,9 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
             log_event runtime ~patch_id:wr.worktree_patch_id
               (Printf.sprintf "recovered worktree at %s" wr.worktree_path));
-        Base.List.iter startup.worktree_errors ~f:(fun err ->
+        Base.List.iter
+          (startup.worktree_errors @ Base.Option.to_list pre_wt_error)
+          ~f:(fun err ->
             log_event runtime (Printf.sprintf "startup worktree error: %s" err))
       in
       let transcripts =

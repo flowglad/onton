@@ -95,7 +95,7 @@ let gen_ci_check =
           { name; conclusion; details_url; description; started_at = None })
       gen_name gen_conclusion gen_url gen_desc)
 
-let gen_patch_list_unique =
+let gen_patch_list_linear =
   QCheck2.Gen.(
     map
       (fun n ->
@@ -122,6 +122,77 @@ let gen_patch_list_unique =
                 test_stubs_implemented = [];
               }))
       (int_range 1 8))
+
+(** Generate a DAG-shaped patch list where patches can depend on multiple
+    earlier patches (fan-in). Each patch picks a random subset of earlier
+    patches as deps, producing diamonds, wide fans, and mixed shapes. *)
+let gen_patch_dag =
+  QCheck2.Gen.(
+    int_range 2 8 >>= fun n ->
+    (* For each patch i>0, generate a random subset of [0..i-1] as deps.
+       We do this by generating a bitmask of length i for each patch. *)
+    let rec gen_patches i acc =
+      if i >= n then return (List.rev acc)
+      else
+        (* Each earlier patch is independently included as a dep with ~40%
+           probability, but ensure at least 1 dep for i>0 when there are
+           enough predecessors to form a diamond. *)
+        let* dep_bits = list_size (return i) bool in
+        let raw_deps =
+          List.filter_mapi dep_bits ~f:(fun j included ->
+              if included then
+                Some (Patch_id.of_string (Printf.sprintf "patch-%d" j))
+              else None)
+        in
+        (* Ensure at least one dep for non-root patches *)
+        let* deps =
+          if List.is_empty raw_deps && i > 0 then
+            map
+              (fun j -> [ Patch_id.of_string (Printf.sprintf "patch-%d" j) ])
+              (int_range 0 (i - 1))
+          else return raw_deps
+        in
+        let patch =
+          Patch.
+            {
+              id = Patch_id.of_string (Printf.sprintf "patch-%d" i);
+              title = Printf.sprintf "Patch %d" i;
+              description = "";
+              branch = Branch.of_string (Printf.sprintf "branch-%d" i);
+              dependencies = deps;
+              spec = "";
+              acceptance_criteria = [];
+              files = [];
+              classification = "";
+              changes = [];
+              test_stubs_introduced = [];
+              test_stubs_implemented = [];
+            }
+        in
+        gen_patches (i + 1) (patch :: acc)
+    in
+    let root =
+      Patch.
+        {
+          id = Patch_id.of_string "patch-0";
+          title = "Patch 0";
+          description = "";
+          branch = Branch.of_string "branch-0";
+          dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+        }
+    in
+    gen_patches 1 [ root ])
+
+(** Generate patch lists that are a mix of linear chains and DAGs. *)
+let gen_patch_list_unique =
+  QCheck2.Gen.(oneof [ gen_patch_list_linear; gen_patch_dag ])
 
 let gen_gameplan =
   QCheck2.Gen.(

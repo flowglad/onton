@@ -281,6 +281,25 @@ let prop_plan_new_base_only_for_rebase =
                 Option.is_none new_base)
         | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true))
 
+let prop_plan_suppresses_rebase_multi_dep =
+  QCheck2.Test.make
+    ~name:"plan_operations: suppresses Rebase when open_deps > 1" ~count:500
+    gen_plan_scenario (fun (graph, main, has_merged, branch_of, views) ->
+      let actions =
+        Reconciler.plan_operations views ~has_merged ~branch_of ~graph ~main
+      in
+      (* No Rebase should be emitted for a patch with multiple open deps. *)
+      List.for_all actions ~f:(function
+        | Reconciler.Start_operation { patch_id; kind; _ } -> (
+            match kind with
+            | Types.Operation_kind.Rebase ->
+                List.length (Graph.open_pr_deps graph patch_id ~has_merged) <= 1
+            | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
+            | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
+            | Types.Operation_kind.Implementation_notes ->
+                true)
+        | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true))
+
 let prop_plan_only_start_operation =
   QCheck2.Test.make ~name:"plan_operations: only produces Start_operation"
     ~count:500 gen_plan_scenario
@@ -398,6 +417,7 @@ let () =
       prop_plan_skips_no_pr;
       prop_plan_picks_highest_priority;
       prop_plan_new_base_only_for_rebase;
+      prop_plan_suppresses_rebase_multi_dep;
       prop_plan_only_start_operation;
       prop_plan_empty_queue_no_action;
       prop_reconcile_merges_subset;
