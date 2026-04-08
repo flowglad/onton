@@ -107,6 +107,7 @@ val find_agent : t -> Patch_id.t -> Patch_agent.t option
 val all_agents : t -> Patch_agent.t list
 val graph : t -> Graph.t
 val main_branch : t -> Branch.t
+val set_main_branch : t -> Branch.t -> t
 val agents_map : t -> Patch_agent.t Map.M(Patch_id).t
 
 val add_agent :
@@ -128,11 +129,12 @@ type session_result =
 
 val apply_session_result : t -> Patch_id.t -> session_result -> t
 (** Apply a Claude session outcome to the orchestrator. Pure function.
-    [Session_ok] -> clear_session_fallback. [Session_process_error] /
-    [Session_failed] -> on_session_failure + complete. [Session_no_resume] ->
-    on_session_failure (not fresh) + complete. [Session_give_up] ->
-    set_session_failed + set_tried_fresh + complete. [Session_worktree_missing]
-    -> complete. *)
+    [Session_ok] -> clear_session_fallback. [Session_process_error] ->
+    on_session_failure + on_pre_session_failure + complete. [Session_failed] ->
+    on_session_failure + complete. [Session_no_resume] -> on_session_failure
+    (not fresh) + complete. [Session_give_up] -> set_session_failed +
+    set_tried_fresh + complete. [Session_worktree_missing] ->
+    on_pre_session_failure + complete. *)
 
 (** Side effects emitted by rebase result application. The runner is responsible
     for executing these (e.g. force-pushing the branch to the remote). Modeled

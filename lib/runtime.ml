@@ -12,7 +12,11 @@ type t = { mutex : Eio.Mutex.t; mutable snap : snapshot }
 let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
   let snap =
     match snapshot with
-    | Some s -> s
+    | Some s ->
+        let orchestrator =
+          Orchestrator.set_main_branch s.orchestrator main_branch
+        in
+        { s with orchestrator }
     | None ->
         let orchestrator =
           Orchestrator.create ~patches:gameplan.Gameplan.patches ~main_branch

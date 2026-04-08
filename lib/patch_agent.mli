@@ -126,6 +126,12 @@ val on_pr_discovery_failure : t -> t
 (** Handle a successful Claude run where PR discovery failed. Resets fallback so
     the patch retries from scratch. *)
 
+val on_pre_session_failure : t -> t
+(** Handle a failure that occurs before a Claude session starts (worktree
+    creation, process spawn error). Increments [start_attempts_without_pr] for
+    no-PR agents so they hit [needs_intervention] after 2 failures instead of
+    retrying indefinitely. No-op for agents that already have a PR. *)
+
 val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
 

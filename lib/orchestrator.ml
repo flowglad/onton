@@ -374,6 +374,7 @@ let restore ~graph ~agents ~outbox ~main_branch =
   { graph; agents; outbox; main_branch }
 
 let main_branch t = t.main_branch
+let set_main_branch t branch = { t with main_branch = branch }
 let agents_map t = t.agents
 
 let add_agent t ~patch_id ~branch ~pr_number =
@@ -493,6 +494,7 @@ let apply_session_result t patch_id result =
   | Session_ok -> clear_session_fallback t patch_id
   | Session_process_error { is_fresh } ->
       let t = on_session_failure t patch_id ~is_fresh in
+      let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
       complete_failed t patch_id
   | Session_no_resume ->
       let t = on_session_failure t patch_id ~is_fresh:false in
@@ -504,4 +506,6 @@ let apply_session_result t patch_id result =
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
       complete_failed t patch_id
-  | Session_worktree_missing -> complete_failed t patch_id
+  | Session_worktree_missing ->
+      let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
+      complete_failed t patch_id
