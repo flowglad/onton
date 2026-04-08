@@ -52,13 +52,11 @@ val discover_pr_from_json :
     Returns the first non-CLOSED PR entry or [None]. Pure function. *)
 
 val discover_pr :
-  process_mgr:_ Eio.Process.mgr ->
-  token:string ->
-  owner:string ->
-  repo:string ->
+  net:_ Eio.Net.t ->
+  github:Github.t ->
   branch:Branch.t ->
   ((Pr_number.t * Branch.t * bool) option, string) Result.t
-(** Query [gh pr list] for a branch, returning the first non-CLOSED PR as
+(** Query the GitHub REST API for a branch, returning the first non-CLOSED PR as
     [(pr_number, base_branch, merged)] or [None]. *)
 
 val recover_worktrees :
@@ -71,19 +69,19 @@ val recover_worktrees :
     Can be called before [reconcile] to capture worktree state early. *)
 
 val reconcile :
-  process_mgr:_ Eio.Process.mgr ->
-  token:string ->
-  owner:string ->
-  repo:string ->
+  net:_ Eio.Net.t ->
+  github:Github.t ->
   patches:Patch.t list ->
   ?repo_root:string ->
+  ?process_mgr:_ Eio.Process.mgr ->
   ?agents:Patch_agent.t list ->
   ?pre_recovered_worktrees:worktree_recovery list ->
   unit ->
   t
-(** [reconcile ~process_mgr ~token ~owner ~repo ~patches ?repo_root ?agents
-     ?pre_recovered_worktrees ()] queries GitHub for each patch's branch to find
-    existing PRs and identifies stale busy agents from [agents] (default [[]]).
-    When [pre_recovered_worktrees] is provided, uses it directly instead of
-    scanning the filesystem (avoids racing with concurrent worktree creation).
-    Otherwise discovers worktrees under [repo_root] (default ["."]). *)
+(** [reconcile ~net ~github ~patches ?repo_root ?process_mgr ?agents
+     ?pre_recovered_worktrees ()] queries GitHub REST API for each patch's
+    branch to find existing PRs and identifies stale busy agents from [agents]
+    (default [[]]). When [pre_recovered_worktrees] is provided, uses it directly
+    instead of scanning the filesystem (avoids racing with concurrent worktree
+    creation). Otherwise discovers worktrees under [repo_root] (default ["."])
+    using [process_mgr]. *)

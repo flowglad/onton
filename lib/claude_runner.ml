@@ -23,14 +23,21 @@ let ansi_re =
 (** Strip ANSI escape sequences injected by the PTY wrapper. *)
 let strip_ansi s = Re.replace_string ansi_re ~by:"" s
 
+(** Detect Linux (vs macOS) by the presence of [/proc/version]. *)
+let is_linux = Stdlib.Sys.file_exists "/proc/version"
+
 (** Wrap a command in a pseudo-TTY via [script].
 
     Claude CLI requires a TTY to produce stream-json output when not in
-    [--print] mode. We use [script -q /dev/null] on macOS to allocate a PTY
-    without writing a transcript file. *)
+    [--print] mode. On macOS we use [script -q /dev/null <cmd> <args...>]. On
+    Linux the syntax is [script -qc "<cmd>" /dev/null]. *)
 let pty_wrap args =
-  (* macOS: script -q /dev/null <cmd> <args...> *)
-  "/usr/bin/script" :: "-q" :: "/dev/null" :: args
+  if is_linux then
+    let cmd =
+      List.map args ~f:Stdlib.Filename.quote |> String.concat ~sep:" "
+    in
+    [ "/usr/bin/script"; "-qc"; cmd; "/dev/null" ]
+  else "/usr/bin/script" :: "-q" :: "/dev/null" :: args
 
 let build_args ~prompt ~continue =
   let base = [ "claude"; "-p"; prompt; "--output-format"; "text" ] in
@@ -190,16 +197,19 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
     stdout = strip_ansi stdout_content;
     stderr = stderr_content;
     got_events = true;
+    timed_out = false;
   }
 
-let run_streaming ~process_mgr ~cwd ~patch_id ~prompt ~continue ~on_event =
+let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt ~continue
+    ~on_event =
   ignore (patch_id : Types.Patch_id.t);
   let args = pty_wrap (build_stream_args ~prompt ~continue) in
   let process_line line =
     let trimmed = strip_ansi (String.strip line) in
     if String.is_empty trimmed then [] else parse_stream_events trimmed
   in
-  Llm_backend.spawn_and_stream ~process_mgr ~cwd ~args ~process_line ~on_event
+  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
+    ~process_line ~on_event
 
 let%test "build_args without continue" =
   let args = build_args ~prompt:"do stuff" ~continue:false in
@@ -269,8 +279,12 @@ let%test "strip_ansi passes clean text through" =
 
 let%test "pty_wrap prepends script command" =
   let args = pty_wrap [ "claude"; "-p"; "hello" ] in
-  List.equal String.equal args
-    [ "/usr/bin/script"; "-q"; "/dev/null"; "claude"; "-p"; "hello" ]
+  if is_linux then
+    List.equal String.equal args
+      [ "/usr/bin/script"; "-qc"; "'claude' '-p' 'hello'"; "/dev/null" ]
+  else
+    List.equal String.equal args
+      [ "/usr/bin/script"; "-q"; "/dev/null"; "claude"; "-p"; "hello" ]
 
 let%test "parse_stream_event text_delta" =
   let line =

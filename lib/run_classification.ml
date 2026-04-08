@@ -10,12 +10,14 @@ type run_outcome = {
   got_events : bool;
   stderr : string;
   stream_errors : string;
+  timed_out : bool;
 }
 [@@deriving show, eq]
 
 type classification =
   | Process_error of string
   | No_session_to_resume
+  | Timed_out
   | Success of { stream_errors : string }
   | Session_failed of { exit_code : int; detail : string }
 [@@deriving show, eq]
@@ -25,6 +27,7 @@ let truncate s n = if String.length s <= n then s else String.prefix s n ^ "..."
 let classify ~continue result =
   match result with
   | Error msg -> Process_error msg
+  | Ok r when r.timed_out -> Timed_out
   | Ok r when (not r.got_events) && continue -> No_session_to_resume
   | Ok r when r.exit_code = 0 -> Success { stream_errors = r.stream_errors }
   | Ok r ->

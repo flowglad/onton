@@ -264,7 +264,9 @@ let https_fun tls_config uri flow =
 
 let max_response_size = 1_000_000
 
-let pr_state ~net t pr =
+(** Internal: execute an HTTP request against api.github.com. Returns the raw
+    response body on 2xx, [Http_error] otherwise. *)
+let request ~net t ~meth ~path ?(query = []) ?body () =
   try
     Mirage_crypto_rng_unix.use_default ();
     Result.bind
@@ -273,29 +275,216 @@ let pr_state ~net t pr =
         let client =
           Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
         in
-        let request_body = build_request_body t pr in
-        let uri = Uri.of_string "https://api.github.com/graphql" in
+        let uri =
+          Uri.of_string ("https://api.github.com" ^ path) |> fun u ->
+          Uri.add_query_params u query
+        in
         let headers =
           Http.Header.of_list
             [
               ("Authorization", "Bearer " ^ t.token);
               ("Content-Type", "application/json");
+              ("Accept", "application/vnd.github+json");
               ("User-Agent", "onton/0.1.0");
+              ("X-GitHub-Api-Version", "2022-11-28");
             ]
         in
-        let body = Cohttp_eio.Body.of_string request_body in
         Eio.Switch.run @@ fun sw ->
         let resp, resp_body =
-          Cohttp_eio.Client.post client ~sw ~headers ~body uri
+          match meth with
+          | `GET -> Cohttp_eio.Client.get client ~sw ~headers uri
+          | `POST ->
+              let body =
+                Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
+              in
+              Cohttp_eio.Client.post client ~sw ~headers ~body uri
+          | `PATCH ->
+              let body =
+                Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
+              in
+              Cohttp_eio.Client.patch client ~sw ~headers ~body uri
         in
         let status = Http.Response.status resp |> Http.Status.to_int in
         let resp_str =
           Eio.Buf_read.(
             of_flow ~max_size:max_response_size resp_body |> take_all)
         in
-        if status >= 200 && status < 300 then parse_response resp_str
+        if status >= 200 && status < 300 then Ok resp_str
         else Error (Http_error (status, resp_str)))
   with exn -> Error (Transport_error (Exn.to_string exn))
+
+let pr_state ~net t pr =
+  let body = build_request_body t pr in
+  match request ~net t ~meth:`POST ~path:"/graphql" ~body () with
+  | Ok resp_str -> parse_response resp_str
+  | Error _ as e -> e
+
+(** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
+    of [(pr_number, base_branch, merged)] for non-CLOSED PRs, newest first. Pure
+    function — no I/O. *)
+let parse_rest_pr_list body =
+  try
+    match Yojson.Safe.from_string body with
+    | `List entries ->
+        let prs =
+          List.filter_map entries ~f:(fun entry ->
+              let open Yojson.Safe.Util in
+              let number = entry |> member "number" |> to_int in
+              let state =
+                entry |> member "state" |> to_string |> String.lowercase
+              in
+              let merged_at = entry |> member "merged_at" in
+              let base_ref =
+                entry |> member "base" |> member "ref" |> to_string
+              in
+              match (state, merged_at) with
+              | "closed", `Null -> None (* truly closed, not merged *)
+              | _ ->
+                  let merged =
+                    match merged_at with `Null -> false | _ -> true
+                  in
+                  Some
+                    ( Types.Pr_number.of_int number,
+                      Types.Branch.of_string base_ref,
+                      merged ))
+        in
+        Ok prs
+    | _ -> Error (Json_parse_error "expected JSON array from REST PR list")
+  with
+  | Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
+
+(** List PRs for a branch via REST API. Returns non-CLOSED PRs. *)
+let list_prs ~net t ~branch ?(base = None) ~state () =
+  let state_str = match state with `Open -> "open" | `All -> "all" in
+  let query =
+    [
+      ("head", [ t.owner ^ ":" ^ Types.Branch.to_string branch ]);
+      ("state", [ state_str ]);
+      ("per_page", [ "100" ]);
+    ]
+    @
+    match base with
+    | Some b -> [ ("base", [ Types.Branch.to_string b ]) ]
+    | None -> []
+  in
+  let path = Printf.sprintf "/repos/%s/%s/pulls" t.owner t.repo in
+  match request ~net t ~meth:`GET ~path ~query () with
+  | Ok body -> parse_rest_pr_list body
+  | Error _ as e -> e
+
+(** Update the body (description) of a PR via REST API. *)
+let update_pr_body ~net t ~pr_number ~body =
+  let path =
+    Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
+      (Types.Pr_number.to_int pr_number)
+  in
+  let req_body = `Assoc [ ("body", `String body) ] |> Yojson.Safe.to_string in
+  match request ~net t ~meth:`PATCH ~path ~body:req_body () with
+  | Ok _ -> Ok ()
+  | Error _ as e -> e
+
+(** Fetch the GraphQL node ID for a PR via REST API. *)
+let pr_node_id ~net t ~pr_number =
+  let path =
+    Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
+      (Types.Pr_number.to_int pr_number)
+  in
+  match request ~net t ~meth:`GET ~path () with
+  | Error _ as e -> e
+  | Ok body -> (
+      try
+        let json = Yojson.Safe.from_string body in
+        let node_id =
+          Yojson.Safe.Util.(json |> member "node_id" |> to_string)
+        in
+        Ok node_id
+      with
+      | Yojson.Json_error msg -> Error (Json_parse_error msg)
+      | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg))
+
+(** Set or unset draft status on a PR via GraphQL mutation. REST API does not
+    support changing the draft field. *)
+let set_draft ~net t ~pr_number ~draft =
+  Result.bind (pr_node_id ~net t ~pr_number) ~f:(fun node_id ->
+      let mutation =
+        if draft then "convertPullRequestToDraft"
+        else "markPullRequestReadyForReview"
+      in
+      let query =
+        Printf.sprintf
+          {|mutation($id: ID!) { %s(input: {pullRequestId: $id}) { pullRequest { isDraft } } }|}
+          mutation
+      in
+      let req_body =
+        `Assoc
+          [
+            ("query", `String query);
+            ("variables", `Assoc [ ("id", `String node_id) ]);
+          ]
+        |> Yojson.Safe.to_string
+      in
+      match request ~net t ~meth:`POST ~path:"/graphql" ~body:req_body () with
+      | Ok resp -> (
+          try
+            let json = Yojson.Safe.from_string resp in
+            let open Yojson.Safe.Util in
+            match json |> member "errors" with
+            | `Null | `List [] -> Ok ()
+            | errors ->
+                let msgs =
+                  errors |> to_list
+                  |> List.map ~f:(fun e -> e |> member "message" |> to_string)
+                in
+                Error (Graphql_error msgs)
+          with
+          | Yojson.Json_error msg -> Error (Json_parse_error msg)
+          | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
+          )
+      | Error _ as e -> e)
+
+let owner t = t.owner
+
+(* ── Inline tests ── *)
+
+let%test "parse_rest_pr_list open PR" =
+  let body =
+    {|[{"number":42,"state":"open","merged_at":null,"base":{"ref":"main"},"node_id":"PR_1"}]|}
+  in
+  match parse_rest_pr_list body with
+  | Ok [ (n, b, merged) ] ->
+      Types.Pr_number.to_int n = 42
+      && String.equal (Types.Branch.to_string b) "main"
+      && not merged
+  | Ok _ | Error _ -> false
+
+let%test "parse_rest_pr_list merged PR" =
+  let body =
+    {|[{"number":10,"state":"closed","merged_at":"2024-01-01T00:00:00Z","base":{"ref":"develop"},"node_id":"PR_2"}]|}
+  in
+  match parse_rest_pr_list body with
+  | Ok [ (n, b, merged) ] ->
+      Types.Pr_number.to_int n = 10
+      && String.equal (Types.Branch.to_string b) "develop"
+      && merged
+  | Ok _ | Error _ -> false
+
+let%test "parse_rest_pr_list filters truly closed" =
+  let body =
+    {|[{"number":1,"state":"closed","merged_at":null,"base":{"ref":"main"},"node_id":"PR_3"}]|}
+  in
+  match parse_rest_pr_list body with Ok [] -> true | Ok _ | Error _ -> false
+
+let%test "parse_rest_pr_list mixed" =
+  let body =
+    {|[{"number":5,"state":"open","merged_at":null,"base":{"ref":"main"},"node_id":"PR_4"},{"number":3,"state":"closed","merged_at":null,"base":{"ref":"main"},"node_id":"PR_5"},{"number":2,"state":"closed","merged_at":"2024-01-01T00:00:00Z","base":{"ref":"main"},"node_id":"PR_6"}]|}
+  in
+  match parse_rest_pr_list body with
+  | Ok prs -> List.length prs = 2 (* open + merged, not the truly closed *)
+  | Error _ -> false
+
+let%test "parse_rest_pr_list invalid json" =
+  match parse_rest_pr_list "not json" with Error _ -> true | Ok _ -> false
 
 (* Static assertion: Github satisfies Forge.S *)
 let (_ : (module Forge.S)) =

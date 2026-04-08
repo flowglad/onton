@@ -65,32 +65,14 @@ let discover_pr_from_json output =
   | Yojson.Basic.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "unexpected JSON structure from gh: %s" msg)
 
-(** Query [gh pr list] for a branch, returning discovery info for the first
-    non-CLOSED PR. Iterates through all matching PRs to handle cases where the
-    most recent PR is CLOSED but an older one is still OPEN or MERGED. *)
-let discover_pr ~process_mgr ~token ~owner ~repo ~branch =
-  let args =
-    [
-      "gh";
-      "pr";
-      "list";
-      "--repo";
-      Printf.sprintf "%s/%s" owner repo;
-      "--head";
-      Branch.to_string branch;
-      "--state";
-      "all";
-      "--json";
-      "number,state,baseRefName";
-    ]
-  in
-  let base_env = Unix.environment () in
-  let env = Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] base_env in
-  try
-    let buf = Buffer.create 256 in
-    Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) ~env process_mgr args;
-    discover_pr_from_json (Buffer.contents buf)
-  with Eio.Exn.Io _ as exn -> Error (Stdlib.Printexc.to_string exn)
+(** Query GitHub REST API for a branch, returning discovery info for the first
+    non-CLOSED PR. *)
+let discover_pr ~net ~github ~branch =
+  match Github.list_prs ~net github ~branch ~state:`All () with
+  | Ok [] -> Ok None
+  | Ok ((pr_number, base_branch, merged) :: _) ->
+      Ok (Some (pr_number, base_branch, merged))
+  | Error err -> Error (Github.show_error err)
 
 (** Discover existing worktrees and match them to patches by branch name.
     Returns matched worktrees and an optional error string if listing failed. *)
@@ -125,14 +107,12 @@ let find_stale_busy ~agents =
   List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
       if agent.busy then Some agent.patch_id else None)
 
-let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
+let reconcile ~net ~github ~patches ?(repo_root = ".") ?process_mgr
     ?(agents = []) ?pre_recovered_worktrees () =
   let results =
     Eio.Fiber.List.map ~max_fibers:8
       (fun (patch : Patch.t) ->
-        let r =
-          discover_pr ~process_mgr ~token ~owner ~repo ~branch:patch.branch
-        in
+        let r = discover_pr ~net ~github ~branch:patch.branch in
         (patch, r))
       patches
   in
@@ -148,9 +128,11 @@ let reconcile ~process_mgr ~token ~owner ~repo ~patches ?(repo_root = ".")
         | Error err -> (discovered, (patch.Patch.id, err) :: errors))
   in
   let recovered_worktrees, worktree_error =
-    match pre_recovered_worktrees with
-    | Some wts -> (wts, None)
-    | None -> recover_worktrees ~process_mgr ~repo_root ~patches
+    match (pre_recovered_worktrees, process_mgr) with
+    | Some wts, _ -> (wts, None)
+    | None, Some pm -> recover_worktrees ~process_mgr:pm ~repo_root ~patches
+    | None, None ->
+        ([], Some "worktree recovery skipped: no process_mgr provided")
   in
   let reset_pending = find_stale_busy ~agents in
   {

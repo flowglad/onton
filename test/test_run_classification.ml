@@ -14,62 +14,86 @@ let () =
       (fun msg ->
         match classify ~continue:false (Error msg) with
         | Process_error m -> String.equal m msg
-        | No_session_to_resume | Success _ | Session_failed _ -> false)
+        | No_session_to_resume | Timed_out | Success _ | Session_failed _ ->
+            false)
+  in
+
+  (* Ok with timed_out -> Timed_out *)
+  let prop_timed_out =
+    Test.make ~name:"classify: timed_out -> Timed_out" ~count:500
+      gen_run_outcome (fun r ->
+        let r = { r with timed_out = true } in
+        match classify ~continue:false (Ok r) with
+        | Timed_out -> true
+        | Process_error _ | No_session_to_resume | Success _ | Session_failed _
+          ->
+            false)
   in
 
   (* Ok with no events + continue -> No_session_to_resume *)
   let prop_no_events_continue =
     Test.make ~name:"classify: no events + continue -> No_session_to_resume"
       ~count:500 gen_run_outcome (fun r ->
-        let r = { r with got_events = false } in
+        let r = { r with got_events = false; timed_out = false } in
         match classify ~continue:true (Ok r) with
         | No_session_to_resume -> true
-        | Process_error _ | Success _ | Session_failed _ -> false)
+        | Process_error _ | Timed_out | Success _ | Session_failed _ -> false)
   in
 
   (* Ok with exit_code=0 -> Success *)
   let prop_exit_zero_success =
     Test.make ~name:"classify: exit_code=0 -> Success" ~count:500
       gen_run_outcome (fun r ->
-        let r = { r with exit_code = 0; got_events = true } in
+        let r =
+          { r with exit_code = 0; got_events = true; timed_out = false }
+        in
         match classify ~continue:false (Ok r) with
         | Success _ -> true
-        | Process_error _ | No_session_to_resume | Session_failed _ -> false)
+        | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
+          ->
+            false)
   in
 
   (* Non-zero exit code -> Session_failed *)
   let prop_nonzero_session_failed =
     Test.make ~name:"classify: non-zero exit -> Session_failed" ~count:500
       gen_run_outcome (fun r ->
-        let r = { r with exit_code = 1; got_events = true } in
+        let r =
+          { r with exit_code = 1; got_events = true; timed_out = false }
+        in
         match classify ~continue:false (Ok r) with
         | Session_failed _ -> true
-        | Process_error _ | No_session_to_resume | Success _ -> false)
+        | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
+            false)
   in
 
   (* Detail string always <= 503 chars (500 + "...") *)
   let prop_detail_bounded =
     Test.make ~name:"classify: detail string bounded" ~count:500 gen_run_outcome
       (fun r ->
-        let r = { r with exit_code = 1; got_events = true } in
+        let r =
+          { r with exit_code = 1; got_events = true; timed_out = false }
+        in
         match classify ~continue:false (Ok r) with
         | Session_failed { detail; _ } -> String.length detail <= 503
-        | Process_error _ | No_session_to_resume | Success _ -> false)
+        | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
+            false)
   in
 
   (* continue=false with no events still classifies by exit code *)
   let prop_no_continue_uses_exit_code =
     Test.make ~name:"classify: continue=false, no events -> uses exit code"
       ~count:500 gen_run_outcome (fun r ->
-        let r = { r with got_events = false } in
+        let r = { r with got_events = false; timed_out = false } in
         match classify ~continue:false (Ok r) with
         | No_session_to_resume -> false (* should not happen without continue *)
-        | Process_error _ | Success _ | Session_failed _ -> true)
+        | Process_error _ | Timed_out | Success _ | Session_failed _ -> true)
   in
 
   let suite =
     [
       prop_error_is_process_error;
+      prop_timed_out;
       prop_no_events_continue;
       prop_exit_zero_success;
       prop_nonzero_session_failed;

@@ -30,6 +30,8 @@ val run :
 
 val run_streaming :
   process_mgr:_ Eio.Process.mgr ->
+  clock:_ Eio.Time.clock ->
+  timeout:float ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
   patch_id:Types.Patch_id.t ->
   prompt:string ->
