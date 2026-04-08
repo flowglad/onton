@@ -2247,12 +2247,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       ~user_config:config.user_config
                                       ~worktree_mutex ~backend ~event_log
                                   in
-                                  if not (String.equal base_changed_prefix "")
-                                  then
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.set_notified_base_branch
-                                          orch patch_id (Branch.of_string base));
+                                  (match result with
+                                  | `Ok
+                                    when not
+                                           (String.equal base_changed_prefix "")
+                                    ->
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.set_notified_base_branch
+                                            orch patch_id
+                                            (Branch.of_string base))
+                                  | _ -> ());
                                   result
                                 in
                                 if
@@ -2472,12 +2477,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~transcripts ~user_config:config.user_config
                                     ~worktree_mutex ~backend ~event_log
                                 in
-                                if not (String.equal base_changed_prefix "")
-                                then
-                                  Runtime.update_orchestrator runtime
-                                    (fun orch ->
-                                      Orchestrator.set_notified_base_branch orch
-                                        patch_id (Branch.of_string base));
+                                (match result with
+                                | `Ok
+                                  when not
+                                         (String.equal base_changed_prefix "")
+                                  ->
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.set_notified_base_branch
+                                          orch patch_id (Branch.of_string base))
+                                | _ -> ());
                                 result)
                       in
                       match result with
