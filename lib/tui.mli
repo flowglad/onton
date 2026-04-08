@@ -133,6 +133,8 @@ val views_of_orchestrator :
 val render_help_overlay : width:int -> height:int -> string list
 val render_manage_overlay : width:int -> height:int -> string list
 
+type prompt_info = { prompt_text : string; cursor_col : int }
+
 val render_frame :
   width:int ->
   height:int ->
@@ -145,7 +147,7 @@ val render_frame :
   show_manage:bool ->
   ?transcript:string ->
   ?status_msg:status_msg ->
-  ?prompt_line:string ->
+  ?prompt_line:prompt_info ->
   patch_view list ->
   frame
 

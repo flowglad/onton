@@ -79,3 +79,28 @@ module History : sig
   val is_browsing : t -> bool
   (** [true] when the browse cursor is not at the bottom. *)
 end
+
+(** Cursor-aware single-line editing buffer.
+
+    Tracks a cursor position within the text and supports insert, delete, and
+    movement operations at the cursor. *)
+module Edit_buffer : sig
+  type t
+
+  val create : unit -> t
+  val contents : t -> string
+  val cursor : t -> int
+  val length : t -> int
+  val clear : t -> unit
+  val set : t -> string -> unit
+  val insert_char : t -> char -> unit
+  val insert_string : t -> string -> unit
+  val delete_before : t -> unit
+  val delete_at : t -> unit
+  val move_left : t -> unit
+  val move_right : t -> unit
+  val move_home : t -> unit
+  val move_end : t -> unit
+  val kill_to_end : t -> string
+  val kill_to_start : t -> string
+end
