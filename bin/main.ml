@@ -103,13 +103,16 @@ let infer_default_branch ~repo_root =
           | Some _ -> "master"
           | None -> "main"))
 
+let known_backends = [ "claude"; "codex"; "pi" ]
+
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
   let errors =
     Base.List.filter_map
       [
-        ( not (Base.List.mem [ "claude"; "codex" ] backend ~equal:String.equal),
-          Printf.sprintf "--backend must be one of: claude, codex (got %S)"
+        ( not (Base.List.mem known_backends backend ~equal:String.equal),
+          Printf.sprintf "--backend must be one of: %s (got %S)"
+            (String.concat ", " known_backends)
             backend );
         ( Base.String.is_empty (Base.String.strip github_token),
           "--token / GITHUB_TOKEN is required" );
@@ -1742,10 +1745,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
         Claude_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | "codex" ->
         Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
+    | "pi" ->
+        Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | other ->
         invalid_arg
-          (Printf.sprintf
-             "Unsupported --backend=%S (expected \"claude\" or \"codex\")" other)
+          (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
+             (String.concat ", " known_backends))
   in
   let set_status ~level ~text ?expires_at () =
     match status_msg with
