@@ -54,6 +54,11 @@ val oldest_unique_commit : string -> (string, string) Result.t
     [git rev-list --cherry-pick --right-only] output (newest-first). Returns
     [Error] when the output is empty (all commits already in target). *)
 
+val fetch_origin :
+  process_mgr:_ Eio.Process.mgr -> path:string -> (unit, string) Result.t
+(** Run [git fetch origin] in the worktree at [path] to update remote tracking
+    refs. Returns [Ok ()] on success, [Error msg] on failure. *)
+
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]
 

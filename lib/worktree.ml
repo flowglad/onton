@@ -401,6 +401,16 @@ let find_old_base ~process_mgr ~path ~target =
                (String.strip stderr))
         else Result.Ok (String.strip stdout)
 
+let fetch_origin ~process_mgr ~path =
+  let code, _stdout, stderr =
+    run_git_exit_code ~process_mgr [ "git"; "-C"; path; "fetch"; "origin" ]
+  in
+  if code <> 0 then
+    Result.Error
+      (Printf.sprintf "git fetch origin failed (exit %d): %s" code
+         (String.strip stderr))
+  else Result.Ok ()
+
 let rebase_onto ~process_mgr ~path ~target =
   let target = Types.Branch.to_string target in
   let ancestor_code, _, ancestor_stderr =

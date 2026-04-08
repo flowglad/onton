@@ -1992,9 +1992,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                         | Some p -> p
                         | None -> Worktree.worktree_dir ~project_name ~patch_id
                       in
+                      (* Fetch fresh remote refs before rebasing. *)
+                      (match
+                         Worktree.fetch_origin ~process_mgr ~path:wt_path
+                       with
+                      | Result.Ok () -> ()
+                      | Result.Error msg ->
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "runner: fetch warning: %s" msg));
+                      let remote_target =
+                        Types.Branch.of_string
+                          (Printf.sprintf "origin/%s"
+                             (Branch.to_string new_base))
+                      in
                       let rebase_result =
                         Worktree.rebase_onto ~process_mgr ~path:wt_path
-                          ~target:new_base
+                          ~target:remote_target
                       in
                       (match rebase_result with
                       | Worktree.Ok ->
@@ -2134,7 +2147,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                               else if
                                 Operation_kind.equal kind
                                   Operation_kind.Merge_conflict
-                              then (
+                              then
                                 (* Before delivering a merge-conflict prompt,
                                    ensure a rebase is actually in progress.
                                    The poller path enqueues Merge_conflict
@@ -2171,8 +2184,24 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~repo:config.github_repo ~on_pr_detected
                                     ~transcripts ~user_config:config.user_config
                                     ~worktree_mutex ~backend ~event_log)
-                                else
-                                  let target = Types.Branch.of_string base in
+                                else (
+                                  (* Fetch fresh remote refs so rebase_onto
+                                     sees the latest origin/<base>, not a
+                                     stale local tracking ref. *)
+                                  (match
+                                     Worktree.fetch_origin ~process_mgr
+                                       ~path:wt_path
+                                   with
+                                  | Result.Ok () -> ()
+                                  | Result.Error msg ->
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "merge-conflict: fetch warning: %s"
+                                           msg));
+                                  let target =
+                                    Types.Branch.of_string
+                                      (Printf.sprintf "origin/%s" base)
+                                  in
                                   let rebase_result =
                                     Worktree.rebase_onto ~process_mgr
                                       ~path:wt_path ~target
