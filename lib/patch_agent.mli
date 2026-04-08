@@ -30,6 +30,7 @@ type t = private {
   pr_description_applied : bool;
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
+  conflict_noop_count : int;
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
   current_message_id : Types.Message_id.t option;
@@ -60,8 +61,9 @@ val has_pr : t -> bool
 
 val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
-    [ci_failure_count >= 3], [session_fallback = Given_up], or
-    [(not has_pr) && start_attempts_without_pr >= 2]. *)
+    [ci_failure_count >= 3], [session_fallback = Given_up],
+    [(not has_pr) && start_attempts_without_pr >= 2], or
+    [conflict_noop_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -156,6 +158,10 @@ val set_implementation_notes_delivered : t -> bool -> t
 val increment_start_attempts_without_pr : t -> t
 (** Record a successful Start run that still failed to discover a PR. *)
 
+val increment_conflict_noop_count : t -> t
+(** Record a conflict resolution attempt where rebase returned Noop (stale refs
+    or no real diff). After 2 noop attempts, [needs_intervention] triggers. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -245,6 +251,7 @@ val restore :
   pr_description_applied:bool ->
   implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->
+  conflict_noop_count:int ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
   current_message_id:Types.Message_id.t option ->

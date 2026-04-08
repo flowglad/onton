@@ -343,6 +343,9 @@ let set_implementation_notes_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_implementation_notes_delivered a v)
 
+let increment_conflict_noop_count t patch_id =
+  update_agent t patch_id ~f:Patch_agent.increment_conflict_noop_count
+
 let increment_start_attempts_without_pr t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_start_attempts_without_pr
 
@@ -394,7 +397,9 @@ let apply_rebase_result t patch_id rebase_result new_base =
       (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
-      (complete t patch_id, [])
+      (* Push even on Noop: the local branch may already be rebased from a
+         prior attempt whose push failed, leaving the remote stale. *)
+      (complete t patch_id, [ Push_branch ])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
@@ -404,6 +409,25 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
       (complete t patch_id, [])
+
+type rebase_push_resolution =
+  | Rebase_push_ok
+  | Rebase_push_failed
+  | Rebase_push_error
+[@@deriving show, eq, sexp_of]
+
+let apply_rebase_push_result t patch_id
+    (push_outcome : Worktree.push_result option) =
+  match push_outcome with
+  | None -> (t, Rebase_push_ok) (* no push effect emitted; already handled *)
+  | Some Worktree.Push_ok | Some Worktree.Push_up_to_date -> (t, Rebase_push_ok)
+  | Some Worktree.Push_rejected ->
+      let t = set_has_conflict t patch_id in
+      let t = enqueue t patch_id Operation_kind.Merge_conflict in
+      (t, Rebase_push_failed)
+  | Some (Worktree.Push_error _) ->
+      let t = enqueue t patch_id Operation_kind.Rebase in
+      (t, Rebase_push_error)
 
 type conflict_rebase_decision =
   | Conflict_resolved
@@ -421,6 +445,7 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
+      let t = increment_conflict_noop_count t patch_id in
       (t, Deliver_to_agent, [ Push_branch ])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in
@@ -445,6 +470,7 @@ let apply_conflict_push_result t patch_id decision
   | Conflict_resolved, Some Worktree.Push_up_to_date -> (t, Conflict_done)
   | ( Conflict_resolved,
       (None | Some (Worktree.Push_rejected | Worktree.Push_error _)) ) ->
+      let t = clear_has_conflict t patch_id in
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Conflict_retry_push)

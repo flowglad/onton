@@ -483,11 +483,31 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
         pr_ctx)
 
 let render_merge_conflict_prompt ~(project_name : string) ?pr_number
-    ~(base_branch : string) () =
+    ~(base_branch : string) ?(git_status = "") ?(git_diff = "") () =
   let pr_ctx =
     match pr_number with
     | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
     | None -> ""
+  in
+  let status_section =
+    if String.is_empty git_status then ""
+    else Printf.sprintf {|
+
+## Current rebase state
+
+```
+%s
+```|} git_status
+  in
+  let diff_section =
+    if String.is_empty git_diff then ""
+    else Printf.sprintf {|
+
+## Conflict markers
+
+```diff
+%s
+```|} git_diff
   in
   let vars =
     [
@@ -497,6 +517,8 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number
         match pr_number with
         | Some n -> Int.to_string (Pr_number.to_int n)
         | None -> "" );
+      ("git_status", git_status);
+      ("git_diff", git_diff);
     ]
   in
   render_with_override ~project_name ~name:"merge_conflict" ~vars
@@ -517,8 +539,8 @@ If the rebase continues and hits further conflicts, repeat the process.
 
 Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
-commits that have already been stripped.|}
-        pr_ctx base_branch base_branch)
+commits that have already been stripped.%s%s|}
+        pr_ctx base_branch base_branch status_section diff_section)
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =

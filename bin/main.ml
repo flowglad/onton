@@ -1998,9 +1998,27 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                         | Some p -> p
                         | None -> Worktree.worktree_dir ~project_name ~patch_id
                       in
+                      (* Fetch fresh remote refs before rebasing.
+                         Fail closed: if fetch fails, don't rebase against
+                         stale refs. *)
                       let rebase_result =
-                        Worktree.rebase_onto ~process_mgr ~path:wt_path
-                          ~target:new_base
+                        match
+                          Worktree.fetch_origin ~process_mgr ~path:wt_path
+                        with
+                        | Result.Ok () ->
+                            let remote_target =
+                              Types.Branch.of_string
+                                (Printf.sprintf "origin/%s"
+                                   (Branch.to_string new_base))
+                            in
+                            Worktree.rebase_onto ~process_mgr ~path:wt_path
+                              ~target:remote_target
+                        | Result.Error msg ->
+                            log_event runtime ~patch_id
+                              (Printf.sprintf "runner: fetch error: %s" msg);
+                            Worktree.Error
+                              (Printf.sprintf "fetch before rebase failed: %s"
+                                 msg)
                       in
                       (match rebase_result with
                       | Worktree.Ok ->
@@ -2031,26 +2049,48 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             in
                             (orch, (agent_before, (agent_after, effects))))
                       in
-                      Base.List.iter effects ~f:(fun Orchestrator.Push_branch ->
-                          let branch = agent.Patch_agent.branch in
-                          match
-                            Worktree.force_push_with_lease ~process_mgr
-                              ~path:wt_path ~branch
-                          with
-                          | Worktree.Push_ok ->
-                              log_event runtime ~patch_id
-                                "runner: force-pushed after rebase"
-                          | Worktree.Push_up_to_date ->
-                              log_event runtime ~patch_id
-                                "runner: push up-to-date after rebase (noop)"
-                          | Worktree.Push_rejected ->
-                              log_event runtime ~patch_id
-                                "runner: force-push rejected (lease), will \
-                                 retry via merge-conflict"
-                          | Worktree.Push_error msg ->
-                              log_event runtime ~patch_id
-                                (Printf.sprintf "runner: force-push error: %s"
-                                   msg));
+                      let push_outcome =
+                        Base.List.find_map effects
+                          ~f:(fun Orchestrator.Push_branch ->
+                            let branch = agent.Patch_agent.branch in
+                            let result =
+                              Worktree.force_push_with_lease ~process_mgr
+                                ~path:wt_path ~branch
+                            in
+                            (match result with
+                            | Worktree.Push_ok ->
+                                log_event runtime ~patch_id
+                                  "runner: force-pushed after rebase"
+                            | Worktree.Push_up_to_date ->
+                                log_event runtime ~patch_id
+                                  "runner: push up-to-date after rebase (noop)"
+                            | Worktree.Push_rejected ->
+                                log_event runtime ~patch_id
+                                  "runner: force-push rejected (lease)"
+                            | Worktree.Push_error msg ->
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf "runner: force-push error: %s"
+                                     msg));
+                            Some result)
+                      in
+                      let resolution =
+                        Runtime.update_orchestrator_returning runtime
+                          (fun orch ->
+                            let orch, resolution =
+                              Orchestrator.apply_rebase_push_result orch
+                                patch_id push_outcome
+                            in
+                            (orch, resolution))
+                      in
+                      (match resolution with
+                      | Orchestrator.Rebase_push_ok -> ()
+                      | Orchestrator.Rebase_push_failed ->
+                          log_event runtime ~patch_id
+                            "runner: enqueuing merge-conflict after rebase \
+                             push rejection"
+                      | Orchestrator.Rebase_push_error ->
+                          log_event runtime ~patch_id
+                            "runner: enqueuing rebase retry after push error");
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->
@@ -2141,14 +2181,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 Operation_kind.equal kind
                                   Operation_kind.Merge_conflict
                               then (
-                                (* Before delivering a merge-conflict prompt,
-                                   ensure a rebase is actually in progress.
-                                   The poller path enqueues Merge_conflict
-                                   when GitHub reports conflicts, but never
-                                   starts a rebase — so the agent would find
-                                   no rebase state. Attempt the rebase here;
-                                   if it succeeds the conflict is resolved
-                                   without bothering the agent. *)
                                 let wt_path =
                                   match agent.Patch_agent.worktree_path with
                                   | Some p -> p
@@ -2156,18 +2188,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       Worktree.worktree_dir ~project_name
                                         ~patch_id
                                 in
-                                if
-                                  Worktree.rebase_in_progress ~process_mgr
-                                    ~path:wt_path
-                                then (
-                                  log_event runtime ~patch_id
-                                    "delivering merge-conflict (rebase already \
-                                     in progress)";
+                                (* Helper: capture git context and deliver
+                                   an enriched prompt to the agent. *)
+                                let deliver_to_agent () =
                                   let pr_number = agent.Patch_agent.pr_number in
+                                  let git_status =
+                                    Worktree.git_status ~process_mgr
+                                      ~path:wt_path
+                                  in
+                                  let git_diff =
+                                    Worktree.conflict_diff ~process_mgr
+                                      ~path:wt_path
+                                  in
                                   let prompt =
                                     Prompt.render_merge_conflict_prompt
                                       ~project_name ?pr_number ~base_branch:base
-                                      ()
+                                      ~git_status ~git_diff ()
                                   in
                                   let on_pr_detected _pr_number = () in
                                   run_claude_and_handle ~runtime ~process_mgr
@@ -2176,12 +2212,43 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     ~owner:config.github_owner
                                     ~repo:config.github_repo ~on_pr_detected
                                     ~transcripts ~user_config:config.user_config
-                                    ~worktree_mutex ~backend ~event_log)
+                                    ~worktree_mutex ~backend ~event_log
+                                in
+                                if
+                                  Worktree.rebase_in_progress ~process_mgr
+                                    ~path:wt_path
+                                then (
+                                  log_event runtime ~patch_id
+                                    "delivering merge-conflict (rebase already \
+                                     in progress)";
+                                  deliver_to_agent ())
                                 else
-                                  let target = Types.Branch.of_string base in
+                                  (* Fetch fresh remote refs so rebase_onto
+                                     sees the latest origin/<base>, not a
+                                     stale local tracking ref. Fail closed:
+                                     if fetch fails, don't rebase against
+                                     stale refs. *)
                                   let rebase_result =
-                                    Worktree.rebase_onto ~process_mgr
-                                      ~path:wt_path ~target
+                                    match
+                                      Worktree.fetch_origin ~process_mgr
+                                        ~path:wt_path
+                                    with
+                                    | Result.Ok () ->
+                                        let target =
+                                          Types.Branch.of_string
+                                            (Printf.sprintf "origin/%s" base)
+                                        in
+                                        Worktree.rebase_onto ~process_mgr
+                                          ~path:wt_path ~target
+                                    | Result.Error msg ->
+                                        log_event runtime ~patch_id
+                                          (Printf.sprintf
+                                             "merge-conflict: fetch error: %s"
+                                             msg);
+                                        Worktree.Error
+                                          (Printf.sprintf
+                                             "fetch before rebase failed: %s"
+                                             msg)
                                   in
                                   (match rebase_result with
                                   | Worktree.Ok ->
@@ -2230,8 +2297,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   Event_log.log_conflict_rebase event_log
                                     ~patch_id ~decision ~agent_before
                                     ~agent_after;
-                                  (* Execute push effects and capture
-                                     the push outcome. *)
                                   let push_outcome =
                                     Base.List.find_map effects
                                       ~f:(fun Orchestrator.Push_branch ->
@@ -2279,23 +2344,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                          push failure";
                                       `Retry_push
                                   | Orchestrator.Conflict_needs_agent ->
-                                      let pr_number =
-                                        agent.Patch_agent.pr_number
-                                      in
-                                      let prompt =
-                                        Prompt.render_merge_conflict_prompt
-                                          ~project_name ?pr_number
-                                          ~base_branch:base ()
-                                      in
-                                      let on_pr_detected _pr_number = () in
-                                      run_claude_and_handle ~runtime
-                                        ~process_mgr ~fs ~project_name ~patch_id
-                                        ~repo_root:config.repo_root ~prompt
-                                        ~agent ~owner:config.github_owner
-                                        ~repo:config.github_repo ~on_pr_detected
-                                        ~transcripts
-                                        ~user_config:config.user_config
-                                        ~worktree_mutex ~backend ~event_log
+                                      deliver_to_agent ()
                                   | Orchestrator.Conflict_give_up -> `Failed)
                               else
                                 let pr_number = agent.Patch_agent.pr_number in
