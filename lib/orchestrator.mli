@@ -84,6 +84,7 @@ val on_pr_discovery_failure : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val clear_has_conflict : t -> Patch_id.t -> t
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
+val set_notified_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val reset_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t

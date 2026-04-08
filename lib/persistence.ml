@@ -51,6 +51,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         match a.base_branch with
         | None -> `Null
         | Some b -> Branch.yojson_of_t b );
+      ( "notified_base_branch",
+        match a.notified_base_branch with
+        | None -> `Null
+        | Some b -> Branch.yojson_of_t b );
       ("ci_failure_count", `Int a.ci_failure_count);
       ( "session_fallback",
         Patch_agent.yojson_of_session_fallback a.session_fallback );
@@ -131,6 +135,13 @@ let patch_agent_of_yojson ~gameplan json =
        ~has_conflict:(bool_member "has_conflict" json)
        ~base_branch:
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
+       ~notified_base_branch:
+         (match string_member_opt "notified_base_branch" json with
+         | Some s -> Some (Branch.of_string s)
+         | None ->
+             (* Backward compat: assume already-running agents were notified *)
+             string_member_opt "base_branch" json
+             |> Option.map ~f:Branch.of_string)
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)

@@ -59,3 +59,6 @@ val render_merge_conflict_prompt :
   string
 
 val render_human_message_prompt : project_name:string -> string list -> string
+
+val render_base_branch_changed : old_base:string -> new_base:string -> string
+(** One-time notification that the agent's base branch has changed. *)

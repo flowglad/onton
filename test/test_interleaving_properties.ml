@@ -688,6 +688,29 @@ let check_merged_no_github_effects orch patches =
                    (Patch_id.to_string a.patch_id)
                    (List.length effects)))
 
+(** I-12: notified_base_branch coherence — when has_session is true and the
+    agent has not been rebased (notified_base_branch is Some), then
+    notified_base_branch must have been set at start time. The field should only
+    be None before the first Start. After Start, it should be Some. *)
+let check_notified_base_branch_coherence (a : Patch_agent.t) =
+  (* If the agent has started (has_session), notified_base_branch should be
+     Some. If it hasn't started, both base_branch and notified_base_branch
+     should be None. *)
+  if a.has_session then (
+    if Option.is_some a.base_branch && Option.is_none a.notified_base_branch
+    then
+      failwith
+        (Printf.sprintf
+           "I-12 notified_base_branch_coherence violated for %s: base_branch \
+            is Some but notified_base_branch is None after session started"
+           (Patch_id.to_string a.patch_id)))
+  else if Option.is_some a.notified_base_branch then
+    failwith
+      (Printf.sprintf
+         "I-12 notified_base_branch_coherence violated for %s: \
+          notified_base_branch is Some but has_session is false"
+         (Patch_id.to_string a.patch_id))
+
 (* ========== Combined check ========== *)
 
 let merged_set_of orch =
@@ -705,7 +728,8 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged =
       check_busy_implies_has_session a;
       check_ci_failure_count_non_negative a;
       check_queue_no_duplicates a;
-      check_conflict_not_cleared_while_in_flight a);
+      check_conflict_not_cleared_while_in_flight a;
+      check_notified_base_branch_coherence a);
   (* Monotonicity *)
   check_merged_monotonicity ~prev_merged ~curr_merged;
   (* Per-action invariants *)

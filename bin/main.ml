@@ -2161,6 +2161,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                   ~default:(Branch.to_string main)
                                   ~f:Branch.to_string
                               in
+                              let base_changed_prefix =
+                                if Patch_agent.base_branch_changed agent then (
+                                  let old_base =
+                                    Base.Option.value_map
+                                      agent.Patch_agent.notified_base_branch
+                                      ~default:(Branch.to_string main)
+                                      ~f:Branch.to_string
+                                  in
+                                  log_event runtime ~patch_id
+                                    (Printf.sprintf
+                                       "runner: base branch changed from %s to \
+                                        %s, will notify agent"
+                                       old_base base);
+                                  Prompt.render_base_branch_changed ~old_base
+                                    ~new_base:base)
+                                else ""
+                              in
                               let source_agent =
                                 Base.Option.value pre_fire_agent ~default:agent
                               in
@@ -2209,18 +2226,34 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                       ~path:wt_path
                                   in
                                   let prompt =
-                                    Prompt.render_merge_conflict_prompt
-                                      ~project_name ?pr_number ~base_branch:base
-                                      ~git_status ~git_diff ()
+                                    let raw =
+                                      Prompt.render_merge_conflict_prompt
+                                        ~project_name ?pr_number
+                                        ~base_branch:base ~git_status ~git_diff
+                                        ()
+                                    in
+                                    if String.equal base_changed_prefix "" then
+                                      raw
+                                    else base_changed_prefix ^ "\n" ^ raw
                                   in
                                   let on_pr_detected _pr_number = () in
-                                  run_claude_and_handle ~runtime ~process_mgr
-                                    ~fs ~project_name ~patch_id
-                                    ~repo_root:config.repo_root ~prompt ~agent
-                                    ~owner:config.github_owner
-                                    ~repo:config.github_repo ~on_pr_detected
-                                    ~transcripts ~user_config:config.user_config
-                                    ~worktree_mutex ~backend ~event_log
+                                  let result =
+                                    run_claude_and_handle ~runtime ~process_mgr
+                                      ~fs ~project_name ~patch_id
+                                      ~repo_root:config.repo_root ~prompt ~agent
+                                      ~owner:config.github_owner
+                                      ~repo:config.github_repo ~on_pr_detected
+                                      ~transcripts
+                                      ~user_config:config.user_config
+                                      ~worktree_mutex ~backend ~event_log
+                                  in
+                                  if not (String.equal base_changed_prefix "")
+                                  then
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.set_notified_base_branch
+                                          orch patch_id (Branch.of_string base));
+                                  result
                                 in
                                 if
                                   Worktree.rebase_in_progress ~process_mgr
@@ -2424,14 +2457,28 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                        through Respond *)
                                       assert false
                                 in
+                                let prompt =
+                                  if String.equal base_changed_prefix "" then
+                                    prompt
+                                  else base_changed_prefix ^ "\n" ^ prompt
+                                in
                                 let on_pr_detected _pr_number = () in
-                                run_claude_and_handle ~runtime ~process_mgr ~fs
-                                  ~project_name ~patch_id
-                                  ~repo_root:config.repo_root ~prompt ~agent
-                                  ~owner:config.github_owner
-                                  ~repo:config.github_repo ~on_pr_detected
-                                  ~transcripts ~user_config:config.user_config
-                                  ~worktree_mutex ~backend ~event_log)
+                                let result =
+                                  run_claude_and_handle ~runtime ~process_mgr
+                                    ~fs ~project_name ~patch_id
+                                    ~repo_root:config.repo_root ~prompt ~agent
+                                    ~owner:config.github_owner
+                                    ~repo:config.github_repo ~on_pr_detected
+                                    ~transcripts ~user_config:config.user_config
+                                    ~worktree_mutex ~backend ~event_log
+                                in
+                                if not (String.equal base_changed_prefix "")
+                                then
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.set_notified_base_branch orch
+                                        patch_id (Branch.of_string base));
+                                result)
                       in
                       match result with
                       | `Stale -> ()

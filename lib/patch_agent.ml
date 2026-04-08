@@ -17,6 +17,7 @@ type t = {
   changed : bool;
   has_conflict : bool;
   base_branch : Branch.t option;
+  notified_base_branch : Branch.t option;
   ci_failure_count : int;
   session_fallback : session_fallback;
   human_messages : string list;
@@ -61,6 +62,7 @@ let create ~branch patch_id =
     changed = false;
     has_conflict = false;
     base_branch = None;
+    notified_base_branch = None;
     ci_failure_count = 0;
     session_fallback = Fresh_available;
     human_messages = [];
@@ -93,6 +95,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     changed = false;
     has_conflict = false;
     base_branch = None;
+    notified_base_branch = None;
     ci_failure_count = 0;
     session_fallback = Fresh_available;
     human_messages = [];
@@ -161,6 +164,13 @@ let increment_conflict_noop_count t =
   { t with conflict_noop_count = t.conflict_noop_count + 1 }
 
 let set_base_branch t branch = { t with base_branch = Some branch }
+
+let set_notified_base_branch t branch =
+  { t with notified_base_branch = Some branch }
+
+let base_branch_changed t =
+  not (Option.equal Branch.equal t.base_branch t.notified_base_branch)
+
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }
 let set_pr_description_applied t v = { t with pr_description_applied = v }
@@ -213,9 +223,9 @@ let reset_intervention_state t =
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
 let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
-    ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
-    ~session_fallback ~human_messages ~ci_checks ~merge_ready ~is_draft
-    ~pr_description_applied ~implementation_notes_delivered
+    ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
+    ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~merge_ready
+    ~is_draft ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~conflict_noop_count ~checks_passing ~current_op
     ~current_message_id ~generation ~worktree_path ~head_branch ~branch_blocked
     =
@@ -231,6 +241,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     changed;
     has_conflict;
     base_branch;
+    notified_base_branch;
     ci_failure_count;
     session_fallback;
     human_messages;
@@ -271,6 +282,7 @@ let clear_pr t =
     ci_checks = [];
     ci_failure_count = 0;
     base_branch = None;
+    notified_base_branch = None;
   }
 
 let start t ~base_branch =
@@ -284,6 +296,7 @@ let start t ~base_branch =
     current_message_id = None;
     satisfies = true;
     base_branch = Some base_branch;
+    notified_base_branch = Some base_branch;
     ci_checks = [];
   }
 
