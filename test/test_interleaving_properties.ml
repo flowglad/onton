@@ -821,16 +821,16 @@ let () =
         "PI-5: repeated process error (fresh) on no-PR converges to \
          needs_intervention" (QCheck2.Gen.return ()) (fun () ->
         let orch, pid = mk_started_no_pr () in
-        let apply_and_restart orch =
-          let orch =
-            Orchestrator.apply_session_result orch pid
-              (Orchestrator.Session_process_error { is_fresh = true })
-          in
-          Orchestrator.fire orch (Orchestrator.Start (pid, main))
+        (* First process error *)
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            (Orchestrator.Session_process_error { is_fresh = true })
         in
-        (* Apply 3 process errors — should be enough to converge *)
-        let orch = apply_and_restart orch in
-        let orch = apply_and_restart orch in
+        let a = Orchestrator.agent orch pid in
+        if Patch_agent.needs_intervention a then
+          failwith "needs_intervention too early after 1 failure";
+        (* Re-start and fail again *)
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
         let orch =
           Orchestrator.apply_session_result orch pid
             (Orchestrator.Session_process_error { is_fresh = true })
