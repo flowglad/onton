@@ -397,7 +397,9 @@ let apply_rebase_result t patch_id rebase_result new_base =
       (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
-      (complete t patch_id, [])
+      (* Push even on Noop: the local branch may already be rebased from a
+         prior attempt whose push failed, leaving the remote stale. *)
+      (complete t patch_id, [ Push_branch ])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in

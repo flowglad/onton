@@ -2052,12 +2052,26 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 "runner: push up-to-date after rebase (noop)"
                           | Worktree.Push_rejected ->
                               log_event runtime ~patch_id
-                                "runner: force-push rejected (lease), will \
-                                 retry via merge-conflict"
+                                "runner: force-push rejected (lease), \
+                                 enqueuing merge-conflict for retry";
+                              Runtime.update_orchestrator runtime (fun orch ->
+                                  let orch =
+                                    Orchestrator.set_has_conflict orch patch_id
+                                  in
+                                  Orchestrator.enqueue orch patch_id
+                                    Operation_kind.Merge_conflict)
                           | Worktree.Push_error msg ->
                               log_event runtime ~patch_id
-                                (Printf.sprintf "runner: force-push error: %s"
-                                   msg));
+                                (Printf.sprintf
+                                   "runner: force-push error: %s, enqueuing \
+                                    merge-conflict for retry"
+                                   msg);
+                              Runtime.update_orchestrator runtime (fun orch ->
+                                  let orch =
+                                    Orchestrator.set_has_conflict orch patch_id
+                                  in
+                                  Orchestrator.enqueue orch patch_id
+                                    Operation_kind.Merge_conflict));
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->

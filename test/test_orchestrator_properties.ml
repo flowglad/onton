@@ -545,7 +545,7 @@ let () =
                 Orchestrator.apply_rebase_result orch pid Worktree.Noop new_base
               in
               (Orchestrator.agent orch' pid).Patch_agent.has_conflict
-              && List.is_empty effects
+              && List.length effects = 1
         with _ -> false)
   in
 
