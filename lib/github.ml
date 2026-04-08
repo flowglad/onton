@@ -21,6 +21,7 @@ let graphql_query =
       mergeStateStatus
       headRefName
       baseRefName
+      headRepositoryOwner { login }
       commits(last: 1) {
         nodes {
           commit {
@@ -139,7 +140,7 @@ let parse_comment_node ~thread_id node =
   let line = node |> member "line" |> to_int_option in
   Types.Comment.{ id; thread_id; body; path; line }
 
-let parse_response_json json =
+let parse_response_json ~owner json =
   let open Yojson.Safe.Util in
   try
     let errors = json |> member "errors" in
@@ -221,6 +222,15 @@ let parse_response_json json =
               pr |> member "baseRefName" |> to_string_option
               |> Option.map ~f:Types.Branch.of_string
             in
+            let is_fork =
+              match
+                pr
+                |> member "headRepositoryOwner"
+                |> member "login" |> to_string_option
+              with
+              | Some head_owner -> not (String.equal head_owner owner)
+              | None -> false
+            in
             Ok
               {
                 Pr_state.status;
@@ -234,6 +244,7 @@ let parse_response_json json =
                 unresolved_comment_count;
                 head_branch;
                 base_branch;
+                is_fork;
               })
     | errors ->
         let msgs =
@@ -243,8 +254,8 @@ let parse_response_json json =
         Error (Graphql_error msgs)
   with Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
 
-let parse_response body =
-  try parse_response_json (Yojson.Safe.from_string body)
+let parse_response ~owner body =
+  try parse_response_json ~owner (Yojson.Safe.from_string body)
   with Yojson.Json_error msg -> Error (Json_parse_error msg)
 
 let https_config () =
@@ -316,7 +327,7 @@ let request ~net t ~meth ~path ?(query = []) ?body () =
 let pr_state ~net t pr =
   let body = build_request_body t pr in
   match request ~net t ~meth:`POST ~path:"/graphql" ~body () with
-  | Ok resp_str -> parse_response resp_str
+  | Ok resp_str -> parse_response ~owner:t.owner resp_str
   | Error _ as e -> e
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list

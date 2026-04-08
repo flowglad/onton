@@ -16,6 +16,7 @@ type t = {
   unresolved_comment_count : int;
   head_branch : Types.Branch.t option;
   base_branch : Types.Branch.t option;
+  is_fork : bool;
 }
 [@@deriving show, eq]
 
@@ -31,3 +32,4 @@ let checks_passing (st : t) = equal_check_status st.check_status Passing
 let no_unresolved_comments (st : t) = st.unresolved_comment_count = 0
 let has_conflict (st : t) = equal_merge_state st.merge_state Conflicting
 let ci_failed (st : t) = equal_check_status st.check_status Failing
+let is_fork (st : t) = st.is_fork
