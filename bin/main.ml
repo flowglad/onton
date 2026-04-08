@@ -2550,12 +2550,14 @@ let with_snapshot_load ~project_name config gameplan =
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
+let normalize_repo_root rr =
+  if Filename.is_relative rr then Filename.concat (Stdlib.Sys.getcwd ()) rr
+  else rr
+
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
-    ~poll_interval ~repo_root ~max_concurrency ~headless =
-  let repo_root =
-    if Filename.is_relative repo_root then
-      Filename.concat (Stdlib.Sys.getcwd ()) repo_root
-    else repo_root
+    ~poll_interval ~(repo_root : string option) ~max_concurrency ~headless =
+  let repo_root_for_fresh =
+    normalize_repo_root (Base.Option.value repo_root ~default:".")
   in
   let resolve_branch ~repo_root mb_opt =
     match mb_opt with
@@ -2564,6 +2566,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
   in
   match (project, gameplan_path) with
   | None, None ->
+      let repo_root = repo_root_for_fresh in
       let token, owner, repo =
         resolve_github_credentials ~github_token ~repo_root
       in
@@ -2619,6 +2622,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
             | Some p -> p
             | None -> gameplan.Gameplan.project_name
           in
+          let repo_root = repo_root_for_fresh in
           let token, owner, repo =
             resolve_github_credentials ~github_token ~repo_root
           in
@@ -2684,9 +2688,14 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                     merge_cli_stored github_token
                       stored.Project_store.github_token
                   in
+                  let repo_root =
+                    match repo_root with
+                    | Some rr -> normalize_repo_root rr
+                    | None -> stored.Project_store.repo_root
+                  in
                   let token, inferred_owner, inferred_repo =
                     resolve_github_credentials ~github_token:token_from_stored
-                      ~repo_root:stored.Project_store.repo_root
+                      ~repo_root
                   in
                   let owner =
                     let s =
@@ -2710,8 +2719,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                   Project_store.save_config ~project_name:proj
                     ~github_token:token ~github_owner:owner ~github_repo:repo
                     ~backend ~main_branch:(Branch.to_string branch)
-                    ~poll_interval:stored.Project_store.poll_interval
-                    ~repo_root:stored.Project_store.repo_root
+                    ~poll_interval:stored.Project_store.poll_interval ~repo_root
                     ~max_concurrency:stored.Project_store.max_concurrency;
                   let config =
                     {
@@ -2722,7 +2730,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                       github_repo = repo;
                       main_branch = branch;
                       poll_interval = stored.Project_store.poll_interval;
-                      repo_root = stored.Project_store.repo_root;
+                      repo_root;
                       max_concurrency = stored.Project_store.max_concurrency;
                       headless;
                       user_config =
@@ -2932,8 +2940,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
             with Quit_tui -> ())
 
 let run ~project ~gameplan_path ~github_token ~backend
-    ~(main_branch : Branch.t option) ~poll_interval ~repo_root ~max_concurrency
-    ~headless =
+    ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
+    ~max_concurrency ~headless =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
       ~poll_interval ~repo_root ~max_concurrency ~headless
@@ -2980,7 +2988,8 @@ let backend_arg =
 let repo_arg =
   let open Cmdliner in
   Arg.(
-    value & opt string "."
+    value
+    & opt (some string) None
     & info [ "repo" ] ~docv:"PATH"
         ~doc:"Path to the git repository (default: current directory).")
 
