@@ -22,6 +22,7 @@ type t = {
   unresolved_comment_count : int;
   head_branch : Branch.t option;
   base_branch : Branch.t option;
+  is_fork : bool;
 }
 [@@deriving show, eq]
 
@@ -36,3 +37,4 @@ val checks_passing : t -> bool
 val no_unresolved_comments : t -> bool
 val has_conflict : t -> bool
 val ci_failed : t -> bool
+val is_fork : t -> bool

@@ -229,6 +229,7 @@ let gen_pr_state =
   QCheck2.Gen.(
     let open Onton.Pr_state in
     let* is_draft = bool in
+    let* is_fork = bool in
     let* head_branch = option gen_branch in
     let* base_branch = option gen_branch in
     map5
@@ -246,6 +247,7 @@ let gen_pr_state =
           unresolved_comment_count;
           head_branch;
           base_branch;
+          is_fork;
         })
       (pair gen_pr_status gen_merge_state)
       bool

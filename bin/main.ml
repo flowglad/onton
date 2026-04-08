@@ -1499,6 +1499,14 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                   log_event runtime ~patch_id
                     (Printf.sprintf "poll error: %s" (Github.show_error err));
                   None
+              | Ok pr_state when Pr_state.is_fork pr_state ->
+                  if not (Hashtbl.mem skip_logged patch_id) then (
+                    Hashtbl.replace skip_logged patch_id true;
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "skipping PR #%d: fork PRs are not supported"
+                         (Pr_number.to_int pr_number)));
+                  None
               | Ok pr_state ->
                   let poll_result = Poller.poll ~was_merged pr_state in
                   (* PR was closed — re-discover the current open PR.

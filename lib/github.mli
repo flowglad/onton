@@ -14,11 +14,13 @@ type t
 val create : token:string -> owner:string -> repo:string -> t
 (** [create ~token ~owner ~repo] creates a GitHub API client. *)
 
-val parse_response_json : Yojson.Safe.t -> (Pr_state.t, error) Result.t
+val parse_response_json :
+  owner:string -> Yojson.Safe.t -> (Pr_state.t, error) Result.t
 (** Parse a GitHub GraphQL response JSON value into a [Pr_state.t]. Pure
-    function — no I/O or string parsing. *)
+    function — no I/O or string parsing. [~owner] is the configured repository
+    owner, used to detect fork PRs. *)
 
-val parse_response : string -> (Pr_state.t, error) Result.t
+val parse_response : owner:string -> string -> (Pr_state.t, error) Result.t
 (** Parse a GitHub GraphQL response body string into a [Pr_state.t]. *)
 
 val pr_state :
