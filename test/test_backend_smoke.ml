@@ -20,18 +20,23 @@ let smoke ~process_mgr ~clock ~cwd ~ndjson ~process_line =
   in
   (result, List.rev !events)
 
+let failures = ref 0
+
 let assert_smoke ~name ~result ~got ~expected =
   let open Llm_backend in
-  if result.exit_code <> 0 then
-    Stdio.printf "FAIL: %s exit_code=%d\n" name result.exit_code
-  else if not result.got_events then
-    Stdio.printf "FAIL: %s got_events=false\n" name
+  if result.exit_code <> 0 then (
+    Stdio.printf "FAIL: %s exit_code=%d\n" name result.exit_code;
+    Int.incr failures)
+  else if not result.got_events then (
+    Stdio.printf "FAIL: %s got_events=false\n" name;
+    Int.incr failures)
   else if not (List.equal Types.Stream_event.equal got expected) then (
     Stdio.printf "FAIL: %s event mismatch\n" name;
     Stdio.printf "  expected: %s\n"
       (List.map expected ~f:Types.Stream_event.show |> String.concat ~sep:"; ");
     Stdio.printf "  got:      %s\n"
-      (List.map got ~f:Types.Stream_event.show |> String.concat ~sep:"; "))
+      (List.map got ~f:Types.Stream_event.show |> String.concat ~sep:"; ");
+    Int.incr failures)
   else Stdio.printf "%s: passed\n" name
 
 let process_line_strip parse line =
@@ -119,4 +124,7 @@ let () =
         Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn };
       ];
-  Stdio.printf "all backend smoke tests passed\n"
+  if !failures > 0 then (
+    Stdio.printf "%d backend smoke test(s) failed\n" !failures;
+    Stdlib.exit 1)
+  else Stdio.printf "all backend smoke tests passed\n"
