@@ -157,8 +157,10 @@ let execute_github_effects ~runtime ~net ~github effects =
                 Patch_controller.apply_github_effect_success orch github_effect)
         | Error err ->
             Printf.eprintf "%s failed: %s\n%!" label (Github.show_error err)
-      with exn ->
-        Printf.eprintf "%s crashed: %s\n%!" label (Printexc.to_string exn))
+      with
+      | Eio.Cancel.Cancelled _ as exn -> raise exn
+      | exn ->
+          Printf.eprintf "%s crashed: %s\n%!" label (Printexc.to_string exn))
 
 (** {1 Activity log helpers} *)
 
