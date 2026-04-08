@@ -115,3 +115,7 @@
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_backend_smoke)
+ (libraries onton eio eio_main))
