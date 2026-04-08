@@ -654,9 +654,9 @@ let () =
         with _ -> false)
   in
 
-  (* Push_error -> Rebase_push_failed *)
+  (* Push_error -> Rebase_push_error, enqueues Rebase (not Merge_conflict) *)
   let prop_rebase_push_error =
-    Test.make ~name:"apply_rebase_push_result: Push_error -> Rebase_push_failed"
+    Test.make ~name:"apply_rebase_push_result: Push_error -> Rebase_push_error"
       (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
         try
           match patches with
@@ -668,12 +668,19 @@ let () =
               let orch, _effects =
                 Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
               in
-              let _orch, resolution =
+              let orch, resolution =
                 Orchestrator.apply_rebase_push_result orch pid
                   (Some (Worktree.Push_error "test"))
               in
+              let a = Orchestrator.agent orch pid in
               Orchestrator.equal_rebase_push_resolution resolution
-                Orchestrator.Rebase_push_failed
+                Orchestrator.Rebase_push_error
+              && (not a.Patch_agent.has_conflict)
+              && List.mem a.Patch_agent.queue Operation_kind.Rebase
+                   ~equal:Operation_kind.equal
+              && not
+                   (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                      ~equal:Operation_kind.equal)
         with _ -> false)
   in
 

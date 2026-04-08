@@ -153,7 +153,10 @@ val apply_rebase_result :
     set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
     set_session_failed + set_tried_fresh + complete. *)
 
-type rebase_push_resolution = Rebase_push_ok | Rebase_push_failed
+type rebase_push_resolution =
+  | Rebase_push_ok
+  | Rebase_push_failed
+  | Rebase_push_error
 [@@deriving show, eq, sexp_of]
 
 val apply_rebase_push_result :
@@ -163,8 +166,10 @@ val apply_rebase_push_result :
     updated state and resolution.
 
     - [Rebase_push_ok]: push succeeded or was up-to-date; no further action.
-    - [Rebase_push_failed]: push was rejected or errored; sets [has_conflict]
-      and enqueues [Merge_conflict] so the next poll cycle retries. *)
+    - [Rebase_push_failed]: push was rejected (lease failure); resets conflict
+      state and enqueues [Merge_conflict] so the next poll cycle retries.
+    - [Rebase_push_error]: infrastructure error; enqueues [Rebase] to retry
+      without entering the conflict path. *)
 
 type conflict_rebase_decision =
   | Conflict_resolved
