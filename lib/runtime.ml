@@ -16,7 +16,7 @@ let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
         let orchestrator =
           Orchestrator.set_main_branch s.orchestrator main_branch
         in
-        { s with orchestrator }
+        { s with orchestrator; gameplan }
     | None ->
         let orchestrator =
           Orchestrator.create ~patches:gameplan.Gameplan.patches ~main_branch

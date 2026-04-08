@@ -2705,6 +2705,14 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                     | Some b -> b
                     | None -> Branch.of_string stored.Project_store.main_branch
                   in
+                  (* Persist the resolved config so the next launch without
+                     CLI overrides picks up the current values. *)
+                  Project_store.save_config ~project_name:proj
+                    ~github_token:token ~github_owner:owner ~github_repo:repo
+                    ~backend ~main_branch:(Branch.to_string branch)
+                    ~poll_interval:stored.Project_store.poll_interval
+                    ~repo_root:stored.Project_store.repo_root
+                    ~max_concurrency:stored.Project_store.max_concurrency;
                   let config =
                     {
                       project = Some proj;
