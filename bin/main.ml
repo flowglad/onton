@@ -1237,16 +1237,17 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               input_mode := Tui_input.Prompt_worktree;
               loop ()
           | Term.Key.Char 'o'
-            when (match !view_mode with
-                  | Tui.Detail_view _ -> true
-                  | Tui.List_view | Tui.Timeline_view -> false) -> (
-              match !view_mode with
+            when match !view_mode with
+                 | Tui.Detail_view _ -> true
+                 | Tui.List_view | Tui.Timeline_view -> false ->
+              (match !view_mode with
               | Tui.Detail_view patch_id -> (
                   match Pr_registry.find pr_registry ~patch_id with
                   | Some pr_number ->
                       let url =
                         Printf.sprintf "https://github.com/%s/%s/pull/%d" owner
-                          repo (Pr_number.to_int pr_number)
+                          repo
+                          (Pr_number.to_int pr_number)
                       in
                       let open_cmd =
                         if Sys.file_exists "/usr/bin/open" then "open"
@@ -1278,9 +1279,9 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               | Tui.List_view | Tui.Timeline_view -> ());
               loop ()
           | Term.Key.Char 'm'
-            when (match !view_mode with
-                  | Tui.Detail_view _ -> true
-                  | Tui.List_view | Tui.Timeline_view -> false) ->
+            when match !view_mode with
+                 | Tui.Detail_view _ -> true
+                 | Tui.List_view | Tui.Timeline_view -> false ->
               input_mode := Tui_input.Manage_patch;
               loop ()
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace
