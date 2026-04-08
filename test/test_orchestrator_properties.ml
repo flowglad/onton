@@ -684,9 +684,9 @@ let () =
         with _ -> false)
   in
 
-  (* None -> Rebase_push_failed (defensive) *)
+  (* None -> Rebase_push_ok (no push was requested; already handled) *)
   let prop_rebase_push_none =
-    Test.make ~name:"apply_rebase_push_result: None -> Rebase_push_failed"
+    Test.make ~name:"apply_rebase_push_result: None -> Rebase_push_ok"
       (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
         try
           match patches with
@@ -698,12 +698,11 @@ let () =
               let orch, _effects =
                 Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
               in
-              let orch, resolution =
+              let _orch, resolution =
                 Orchestrator.apply_rebase_push_result orch pid None
               in
               Orchestrator.equal_rebase_push_resolution resolution
-                Orchestrator.Rebase_push_failed
-              && (Orchestrator.agent orch pid).Patch_agent.has_conflict
+                Orchestrator.Rebase_push_ok
         with _ -> false)
   in
 

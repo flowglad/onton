@@ -419,9 +419,9 @@ type rebase_push_resolution =
 let apply_rebase_push_result t patch_id
     (push_outcome : Worktree.push_result option) =
   match push_outcome with
+  | None -> (t, Rebase_push_ok) (* no push effect emitted; already handled *)
   | Some Worktree.Push_ok | Some Worktree.Push_up_to_date -> (t, Rebase_push_ok)
-  | None | Some Worktree.Push_rejected ->
-      let t = clear_has_conflict t patch_id in
+  | Some Worktree.Push_rejected ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Rebase_push_failed)

@@ -413,13 +413,15 @@ let rec apply_command orch patches cmd =
             orch'
         | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
       with Invalid_argument _ -> orch)
-  | Apply_rebase_push_result { patch_idx; result } ->
-      let pid = pid_of_idx patches patch_idx in
-      let orch, _resolution =
-        Orchestrator.apply_rebase_push_result orch pid
-          (Some (to_push_result result))
-      in
-      orch
+  | Apply_rebase_push_result { patch_idx; result } -> (
+      try
+        let pid = pid_of_idx patches patch_idx in
+        let orch, _resolution =
+          Orchestrator.apply_rebase_push_result orch pid
+            (Some (to_push_result result))
+        in
+        orch
+      with Invalid_argument _ -> orch)
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
