@@ -18,14 +18,13 @@ type config = {
 }
 
 (** Infer GitHub owner/repo from [git remote get-url origin] in [repo_root].
-    Parses both HTTPS and SSH remote URLs. *)
+    Parses both HTTPS and SSH remote URLs. Uses argv (no shell). *)
 let infer_owner_repo ~repo_root =
   let buf = Buffer.create 128 in
   try
     let ic =
-      Unix.open_process_in
-        (Printf.sprintf "git -C %s remote get-url origin 2>/dev/null"
-           (Filename.quote repo_root))
+      Unix.open_process_args_in "git"
+        [| "git"; "-C"; repo_root; "remote"; "get-url"; "origin" |]
     in
     (try
        while true do
@@ -46,7 +45,7 @@ let infer_owner_repo ~repo_root =
   with _ -> None
 
 (** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].
-*)
+    Uses argv (no shell). *)
 let infer_github_token () =
   match Stdlib.Sys.getenv_opt "GITHUB_TOKEN" with
   | Some t when not (Base.String.is_empty (Base.String.strip t)) ->
@@ -54,7 +53,7 @@ let infer_github_token () =
   | _ -> (
       let buf = Buffer.create 128 in
       try
-        let ic = Unix.open_process_in "gh auth token 2>/dev/null" in
+        let ic = Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |] in
         (try
            while true do
              Buffer.add_char buf (input_char ic)
@@ -119,111 +118,44 @@ module Pr_registry = struct
         Hashtbl.remove t.table patch_id)
 end
 
-(** Discover PR number for a branch by calling [gh pr list]. Returns [Ok] with
-    the PR number or [Error] with a diagnostic message. *)
-let discover_pr_number ~process_mgr ~token ~owner ~repo ~branch ~base_branch =
-  let args =
-    [
-      "gh";
-      "pr";
-      "list";
-      "--repo";
-      Printf.sprintf "%s/%s" owner repo;
-      "--head";
-      Branch.to_string branch;
-      "--base";
-      Branch.to_string base_branch;
-      "--json";
-      "number";
-      "--limit";
-      "1";
-    ]
-  in
-  let base_env = Unix.environment () in
-  let env = Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] base_env in
-  try
-    let buf = Buffer.create 256 in
-    Eio.Process.run ~stdout:(Eio.Flow.buffer_sink buf) ~env process_mgr args;
-    let output = Buffer.contents buf in
-    match Yojson.Basic.from_string output with
-    | `List (`Assoc fields :: _) -> (
-        match Base.List.Assoc.find fields ~equal:String.equal "number" with
-        | Some (`Int n) -> Ok (Pr_number.of_int n)
-        | _ -> Error (Printf.sprintf "unexpected JSON shape: %s" output))
-    | `List [] -> Error "no PRs found for branch"
-    | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
+(** Discover PR number for a branch via GitHub REST API. Returns [Ok] with the
+    PR number or [Error] with a diagnostic message. *)
+let discover_pr_number ~net ~github ~branch ~base_branch =
+  match
+    Github.list_prs ~net github ~branch ~base:(Some base_branch) ~state:`Open ()
   with
-  | Eio.Exn.Io _ as e ->
-      Error (Printf.sprintf "gh command failed: %s" (Printexc.to_string e))
-  | Yojson.Json_error msg -> Error (Printf.sprintf "JSON parse error: %s" msg)
-  | exn ->
-      Error (Printf.sprintf "unexpected error: %s" (Printexc.to_string exn))
-
-(** Set or unset draft status on a PR. [draft:true] converts to draft,
-    [draft:false] marks ready for review. Errors are logged but not fatal. *)
-let set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft =
-  let pr_str = Int.to_string (Pr_number.to_int pr_number) in
-  let args =
-    [ "gh"; "pr"; "ready"; pr_str; "--repo"; Printf.sprintf "%s/%s" owner repo ]
-    @ if draft then [ "--undo" ] else []
-  in
-  let env =
-    Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
-  in
-  try
-    Eio.Process.run ~env process_mgr args;
-    true
-  with
-  | Eio.Cancel.Cancelled _ as exn -> raise exn
-  | exn ->
-      Printf.eprintf "set_pr_draft failed (PR #%s, draft=%b): %s\n%!" pr_str
-        draft (Printexc.to_string exn);
-      false
-
-(** Set the PR body to a rendered description. Errors are logged but not fatal —
-    the PR already exists; a missing description is cosmetic. *)
-let set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body =
-  let pr_str = Int.to_string (Pr_number.to_int pr_number) in
-  let args =
-    [
-      "gh";
-      "pr";
-      "edit";
-      pr_str;
-      "--repo";
-      Printf.sprintf "%s/%s" owner repo;
-      "--body";
-      body;
-    ]
-  in
-  let env =
-    Array.append [| Printf.sprintf "GH_TOKEN=%s" token |] (Unix.environment ())
-  in
-  try
-    Eio.Process.run ~env process_mgr args;
-    true
-  with
-  | Eio.Cancel.Cancelled _ as exn -> raise exn
-  | exn ->
-      Printf.eprintf "set_pr_description failed (PR #%s): %s\n%!" pr_str
-        (Printexc.to_string exn);
-      false
+  | Ok ((pr_number, _, _) :: _) -> Ok pr_number
+  | Ok [] -> Error "no PRs found for branch"
+  | Error e -> Error (Github.show_error e)
 
 (** Execute declarative GitHub effects and record successful observations back
     into durable state. *)
-let execute_github_effects ~runtime ~process_mgr ~token ~owner ~repo effects =
+let execute_github_effects ~runtime ~net ~github effects =
   Base.List.iter effects ~f:(fun github_effect ->
-      let success =
+      let result =
         match github_effect with
         | Patch_controller.Set_pr_description { patch_id = _; pr_number; body }
           ->
-            set_pr_description ~process_mgr ~token ~owner ~repo ~pr_number ~body
+            Github.update_pr_body ~net github ~pr_number ~body
         | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
-            set_pr_draft ~process_mgr ~token ~owner ~repo ~pr_number ~draft
+            Github.set_draft ~net github ~pr_number ~draft
       in
-      if success then
-        Runtime.update_orchestrator runtime (fun orch ->
-            Patch_controller.apply_github_effect_success orch github_effect))
+      match result with
+      | Ok () ->
+          Runtime.update_orchestrator runtime (fun orch ->
+              Patch_controller.apply_github_effect_success orch github_effect)
+      | Error err ->
+          let label =
+            match github_effect with
+            | Patch_controller.Set_pr_description { pr_number; _ } ->
+                Printf.sprintf "set_pr_description (PR #%d)"
+                  (Pr_number.to_int pr_number)
+            | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
+                Printf.sprintf "set_pr_draft (PR #%d, draft=%b)"
+                  (Pr_number.to_int pr_number)
+                  draft
+          in
+          Printf.eprintf "%s failed: %s\n%!" label (Github.show_error err))
 
 (** {1 Activity log helpers} *)
 
@@ -656,6 +588,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                   got_events = r.Llm_backend.got_events;
                   stderr = r.Llm_backend.stderr;
                   stream_errors = String.trim (Buffer.contents error_buf);
+                  timed_out = r.Llm_backend.timed_out;
                 })
               result
           in
@@ -671,6 +604,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                   "--continue produced no events (no session to resume), will \
                    retry fresh";
                 (Orchestrator.Session_no_resume, `Failed)
+            | Timed_out ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "%s session timed out, marking failed"
+                     backend.Llm_backend.name);
+                (Orchestrator.Session_failed { is_fresh }, `Failed)
             | Success { stream_errors } ->
                 if String.length stream_errors > 0 then
                   log_event runtime ~patch_id
@@ -1542,9 +1480,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                               | None -> branch_of patch_id)
                     in
                     (match
-                       Startup_reconciler.discover_pr ~process_mgr
-                         ~token:config.github_token ~owner:config.github_owner
-                         ~repo:config.github_repo ~branch
+                       Startup_reconciler.discover_pr ~net ~github ~branch
                      with
                     | Ok (Some (new_pr, base_branch, merged)) ->
                         log_event runtime ~patch_id
@@ -1752,17 +1688,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
     ~ci_checks_cache ~transcripts ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
   let fs = Eio.Stdenv.fs env in
+  let session_timeout =
+    1800.0
+    (* 30 minutes *)
+  in
   let backend =
     match config.backend with
-    | "claude" -> Claude_backend.create ~process_mgr
-    | "codex" -> Codex_backend.create ~process_mgr
+    | "claude" ->
+        Claude_backend.create ~process_mgr ~clock ~timeout:session_timeout
+    | "codex" ->
+        Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | other ->
         invalid_arg
           (Printf.sprintf
              "Unsupported --backend=%S (expected \"claude\" or \"codex\")" other)
   in
-  let clock = Eio.Stdenv.clock env in
   let set_status ~level ~text ?expires_at () =
     match status_msg with
     | Some r -> r := Some { Tui.level; text; expires_at }
@@ -1854,8 +1796,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
           in
           (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
-    execute_github_effects ~runtime ~process_mgr ~token:config.github_token
-      ~owner:config.github_owner ~repo:config.github_repo lifecycle_effects;
+    execute_github_effects ~runtime ~net ~github lifecycle_effects;
     (* Log dispatched actions to event log *)
     Base.List.iter messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         let action = Orchestrator.message_action msg in
@@ -1966,13 +1907,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                        (Patch_id.to_string patch_id))
                                   ()
                           | `Ok ->
-                              (* Always confirm via gh pr list *)
+                              (* Always confirm via REST API *)
                               let rec discover remaining =
                                 match
-                                  discover_pr_number ~process_mgr
-                                    ~token:config.github_token
-                                    ~owner:config.github_owner
-                                    ~repo:config.github_repo
+                                  discover_pr_number ~net ~github
                                     ~branch:patch.Patch.branch ~base_branch
                                 with
                                 | Ok pr_number ->
@@ -2743,10 +2681,10 @@ let run_with_config (config : config) gameplan existing_snapshot =
       in
       let reconciliation_fiber () =
         let startup =
-          Startup_reconciler.reconcile ~process_mgr ~token:config.github_token
-            ~owner:config.github_owner ~repo:config.github_repo
+          Startup_reconciler.reconcile ~net ~github
             ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
-            ~agents:pre_agents ~pre_recovered_worktrees:pre_worktrees ()
+            ~process_mgr ~agents:pre_agents
+            ~pre_recovered_worktrees:pre_worktrees ()
         in
         let errored_ids =
           Base.List.map startup.Startup_reconciler.errors

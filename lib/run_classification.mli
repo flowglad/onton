@@ -10,12 +10,14 @@ type run_outcome = {
   got_events : bool;
   stderr : string;
   stream_errors : string;
+  timed_out : bool;
 }
 [@@deriving show, eq]
 
 type classification =
   | Process_error of string
   | No_session_to_resume
+  | Timed_out
   | Success of { stream_errors : string }
   | Session_failed of { exit_code : int; detail : string }
 [@@deriving show, eq]
