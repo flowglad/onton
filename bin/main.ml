@@ -132,30 +132,33 @@ let discover_pr_number ~net ~github ~branch ~base_branch =
     into durable state. *)
 let execute_github_effects ~runtime ~net ~github effects =
   Base.List.iter effects ~f:(fun github_effect ->
-      let result =
+      let label =
         match github_effect with
-        | Patch_controller.Set_pr_description { patch_id = _; pr_number; body }
-          ->
-            Github.update_pr_body ~net github ~pr_number ~body
-        | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
-            Github.set_draft ~net github ~pr_number ~draft
+        | Patch_controller.Set_pr_description { pr_number; _ } ->
+            Printf.sprintf "set_pr_description (PR #%d)"
+              (Pr_number.to_int pr_number)
+        | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
+            Printf.sprintf "set_pr_draft (PR #%d, draft=%b)"
+              (Pr_number.to_int pr_number)
+              draft
       in
-      match result with
-      | Ok () ->
-          Runtime.update_orchestrator runtime (fun orch ->
-              Patch_controller.apply_github_effect_success orch github_effect)
-      | Error err ->
-          let label =
-            match github_effect with
-            | Patch_controller.Set_pr_description { pr_number; _ } ->
-                Printf.sprintf "set_pr_description (PR #%d)"
-                  (Pr_number.to_int pr_number)
-            | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
-                Printf.sprintf "set_pr_draft (PR #%d, draft=%b)"
-                  (Pr_number.to_int pr_number)
-                  draft
-          in
-          Printf.eprintf "%s failed: %s\n%!" label (Github.show_error err))
+      try
+        let result =
+          match github_effect with
+          | Patch_controller.Set_pr_description
+              { patch_id = _; pr_number; body } ->
+              Github.update_pr_body ~net github ~pr_number ~body
+          | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
+              Github.set_draft ~net github ~pr_number ~draft
+        in
+        match result with
+        | Ok () ->
+            Runtime.update_orchestrator runtime (fun orch ->
+                Patch_controller.apply_github_effect_success orch github_effect)
+        | Error err ->
+            Printf.eprintf "%s failed: %s\n%!" label (Github.show_error err)
+      with exn ->
+        Printf.eprintf "%s crashed: %s\n%!" label (Printexc.to_string exn))
 
 (** {1 Activity log helpers} *)
 

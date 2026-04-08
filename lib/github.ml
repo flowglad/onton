@@ -361,7 +361,7 @@ let list_prs ~net t ~branch ?(base = None) ~state () =
     [
       ("head", [ t.owner ^ ":" ^ Types.Branch.to_string branch ]);
       ("state", [ state_str ]);
-      ("per_page", [ "10" ]);
+      ("per_page", [ "100" ]);
     ]
     @
     match base with

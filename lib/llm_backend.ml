@@ -45,8 +45,15 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
           read_lines ())
         (fun () ->
           try err_ref := Eio.Buf_read.take_all stderr_buf
-          with Eio.Buf_read.Buffer_limit_exceeded ->
-            err_ref := "<stderr exceeded 1MB limit, truncated>");
+          with Eio.Buf_read.Buffer_limit_exceeded -> (
+            err_ref := "<stderr exceeded 1MB limit, truncated>";
+            let drain_buf = Bytes.create 4096 in
+            try
+              while true do
+                ignore
+                  (Eio.Flow.single_read stderr_r (Cstruct.of_bytes drain_buf))
+              done
+            with End_of_file -> ()));
       let status = Eio.Process.await child in
       let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
       (!err_ref, code, !got_events_ref)
