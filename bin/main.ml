@@ -815,11 +815,11 @@ let normalize_paste text =
   let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
   Base.String.tr text ~target:'\r' ~replacement:' '
 
-let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
-    ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
-    ~show_help ~status_msg ~sorted_patch_ids ~input_mode ~prompt_line
-    ~patches_start_row ~patches_scroll_offset ~patches_visible_count ~owner
-    ~repo =
+let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
+    ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
+    ~project_name ~show_help ~status_msg ~sorted_patch_ids ~input_mode
+    ~prompt_line ~patches_start_row ~patches_scroll_offset
+    ~patches_visible_count ~owner ~repo =
   let buf = Buffer.create 64 in
   let selected_pid () =
     let pids = !sorted_patch_ids in
@@ -1243,7 +1243,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               (match !view_mode with
               | Tui.Detail_view patch_id -> (
                   match Pr_registry.find pr_registry ~patch_id with
-                  | Some pr_number ->
+                  | Some pr_number -> (
                       let url =
                         Printf.sprintf "https://github.com/%s/%s/pull/%d" owner
                           repo
@@ -1253,22 +1253,26 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                         if Sys.file_exists "/usr/bin/open" then "open"
                         else "xdg-open"
                       in
-                      let status =
-                        try
-                          Sys.command
-                            (Printf.sprintf "%s %s" open_cmd
-                               (Filename.quote url))
-                        with _ -> 1
-                      in
-                      if status <> 0 then
-                        status_msg :=
-                          Some
-                            {
-                              Tui.level = Tui.Error;
-                              text = "Could not open browser";
-                              expires_at = None;
-                            }
-                      else status_msg := None
+                      match Eio.Process.run process_mgr [ open_cmd; url ] with
+                      | () -> (
+                          match !status_msg with
+                          | Some
+                              {
+                                Tui.text =
+                                  "No PR to open" | "Could not open browser";
+                                _;
+                              } ->
+                              status_msg := None
+                          | Some _ | None -> ())
+                      | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
+                      | exception _ ->
+                          status_msg :=
+                            Some
+                              {
+                                Tui.level = Tui.Error;
+                                text = "Could not open browser";
+                                expires_at = None;
+                              })
                   | None ->
                       status_msg :=
                         Some
@@ -2914,11 +2918,11 @@ let run_with_config (config : config) gameplan existing_snapshot =
                      ~input_mode ~prompt_line ~patches_start_row
                      ~patches_scroll_offset ~patches_visible_count)
                 :: (fun () ->
-                  input_fiber ~runtime ~list_selected ~detail_scroll
-                    ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode
-                    ~pr_registry ~project_name ~show_help ~status_msg
-                    ~sorted_patch_ids ~input_mode ~prompt_line
-                    ~patches_start_row ~patches_scroll_offset
+                  input_fiber ~runtime ~process_mgr ~list_selected
+                    ~detail_scroll ~detail_follow ~timeline_scroll
+                    ~detail_scrolls ~view_mode ~pr_registry ~project_name
+                    ~show_help ~status_msg ~sorted_patch_ids ~input_mode
+                    ~prompt_line ~patches_start_row ~patches_scroll_offset
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo)
                 :: (fun () ->
