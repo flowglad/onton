@@ -566,6 +566,14 @@ let render_human_message_prompt ~(project_name : string)
             Printf.sprintf "# Message from Human\n\n%s" formatted_flat
           else Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
 
+let render_base_branch_changed ~old_base ~new_base =
+  Printf.sprintf
+    "**NOTICE: Your base branch has changed from `%s` to `%s`.** Your PR now \
+     targets `%s`. The orchestrator has already rebased your branch and \
+     updated the PR target. Do NOT change the PR base branch. Your diff should \
+     show only your patch's changes relative to `%s`.\n"
+    old_base new_base new_base new_base
+
 let%test "patch prompt includes title and deps" =
   let patch : Patch.t =
     Patch.

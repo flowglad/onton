@@ -472,7 +472,7 @@ let () =
             Onton.Patch_agent.restore ~patch_id:a.patch_id ~branch:br
               ~pr_number:None ~has_session:false ~busy:false ~merged:false
               ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
-              ~base_branch:None ~ci_failure_count:0
+              ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
               ~ci_checks:a.ci_checks ~merge_ready:false ~is_draft:false
               ~pr_description_applied:false
@@ -547,9 +547,10 @@ let () =
               ~pr_number:(Some (Pr_number.of_int 1))
               ~has_session:false ~busy:false ~merged:false ~queue:[]
               ~satisfies:true ~changed:false ~has_conflict:false
-              ~base_branch:(Some br) ~ci_failure_count:0
-              ~session_fallback:Fresh_available ~human_messages:[] ~ci_checks:[]
-              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+              ~base_branch:(Some br) ~notified_base_branch:(Some br)
+              ~ci_failure_count:0 ~session_fallback:Fresh_available
+              ~human_messages:[] ~ci_checks:[] ~merge_ready:false
+              ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -732,6 +733,57 @@ let () =
           let before = a.has_conflict in
           let a = clear_has_conflict a in
           before && not a.has_conflict);
+      (* -- base_branch_changed false after start -- *)
+      Test.make ~name:"base_branch_changed false after start"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = create ~branch:br pid |> fun a -> start a ~base_branch:br in
+            not (base_branch_changed a)
+          with _ -> false);
+      (* -- base_branch_changed true after rebase to different base -- *)
+      Test.make ~name:"base_branch_changed true after rebase to different base"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let new_base = Branch.of_string "rebased-target" in
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = enqueue a Operation_kind.Rebase in
+            let a = rebase a ~base_branch:new_base in
+            base_branch_changed a
+          with _ -> false);
+      (* -- set_notified_base_branch clears base_branch_changed -- *)
+      Test.make ~name:"set_notified_base_branch clears base_branch_changed"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let new_base = Branch.of_string "rebased-target" in
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = enqueue a Operation_kind.Rebase in
+            let a = rebase a ~base_branch:new_base in
+            let changed_before = base_branch_changed a in
+            let a = set_notified_base_branch a new_base in
+            changed_before && not (base_branch_changed a)
+          with _ -> false);
+      (* -- rebase to same base does not trigger base_branch_changed -- *)
+      Test.make ~name:"rebase to same base: base_branch_changed false"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = enqueue a Operation_kind.Rebase in
+            let a = rebase a ~base_branch:br in
+            not (base_branch_changed a)
+          with _ -> false);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

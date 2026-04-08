@@ -89,6 +89,23 @@ let check_agent_invariants (a : Patch_agent.t) =
   if a.ci_failure_count < 0 then
     failwith
       (Printf.sprintf "ci_failure_count_non_negative violated for %s"
+         (Patch_id.to_string a.patch_id));
+  (* notified_base_branch coherence: after session starts, if base_branch is
+     Some then notified_base_branch must also be Some. Before any session,
+     notified_base_branch must be None. *)
+  if a.has_session then (
+    if Option.is_some a.base_branch && Option.is_none a.notified_base_branch
+    then
+      failwith
+        (Printf.sprintf
+           "notified_base_branch_coherence violated for %s: base_branch is \
+            Some but notified_base_branch is None"
+           (Patch_id.to_string a.patch_id)))
+  else if Option.is_some a.notified_base_branch then
+    failwith
+      (Printf.sprintf
+         "notified_base_branch_coherence violated for %s: notified_base_branch \
+          is Some but has_session is false"
          (Patch_id.to_string a.patch_id))
 
 (** Run a command sequence and check invariants after every step. Returns the

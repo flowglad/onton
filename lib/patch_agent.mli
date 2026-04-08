@@ -21,6 +21,7 @@ type t = private {
   changed : bool;
   has_conflict : bool;
   base_branch : Types.Branch.t option;
+  notified_base_branch : Types.Branch.t option;
   ci_failure_count : int;
   session_fallback : session_fallback;
   human_messages : string list;
@@ -143,6 +144,13 @@ val clear_has_conflict : t -> t
 val set_base_branch : t -> Types.Branch.t -> t
 (** Update the base branch. *)
 
+val set_notified_base_branch : t -> Types.Branch.t -> t
+(** Record that the agent session has been informed of this base branch. *)
+
+val base_branch_changed : t -> bool
+(** [true] when [base_branch] differs from [notified_base_branch], meaning the
+    agent session has not yet been told about the current base branch. *)
+
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
@@ -242,6 +250,7 @@ val restore :
   changed:bool ->
   has_conflict:bool ->
   base_branch:Types.Branch.t option ->
+  notified_base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
   session_fallback:session_fallback ->
   human_messages:string list ->

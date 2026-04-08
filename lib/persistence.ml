@@ -51,6 +51,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         match a.base_branch with
         | None -> `Null
         | Some b -> Branch.yojson_of_t b );
+      ( "notified_base_branch",
+        match a.notified_base_branch with
+        | None -> `Null
+        | Some b -> Branch.yojson_of_t b );
       ("ci_failure_count", `Int a.ci_failure_count);
       ( "session_fallback",
         Patch_agent.yojson_of_session_fallback a.session_fallback );
@@ -105,6 +109,7 @@ let patch_agent_of_yojson ~gameplan json =
     result_all
       (List.map ci_checks_raw ~f:(fun j -> try_of_yojson Ci_check.t_of_yojson j))
   in
+  let has_session = bool_member "has_session" json in
   Ok
     (Patch_agent.restore
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
@@ -122,8 +127,7 @@ let patch_agent_of_yojson ~gameplan json =
                  | None -> pid)))
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
-       ~has_session:(bool_member "has_session" json)
-       ~busy:(bool_member "busy" json)
+       ~has_session ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
        ~queue
        ~satisfies:(bool_member "satisfies" json)
@@ -131,6 +135,16 @@ let patch_agent_of_yojson ~gameplan json =
        ~has_conflict:(bool_member "has_conflict" json)
        ~base_branch:
          (string_member_opt "base_branch" json |> Option.map ~f:Branch.of_string)
+       ~notified_base_branch:
+         (match string_member_opt "notified_base_branch" json with
+         | Some s -> Some (Branch.of_string s)
+         | None ->
+             (* Backward compat: only infer "already notified" for agents with
+                an active/established session. *)
+             if has_session then
+               string_member_opt "base_branch" json
+               |> Option.map ~f:Branch.of_string
+             else None)
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
