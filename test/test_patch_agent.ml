@@ -738,9 +738,7 @@ let () =
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           try
-            let a =
-              create ~branch:br pid |> fun a -> start a ~base_branch:br
-            in
+            let a = create ~branch:br pid |> fun a -> start a ~base_branch:br in
             not (base_branch_changed a)
           with _ -> false);
       (* -- base_branch_changed true after rebase to different base -- *)

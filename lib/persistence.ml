@@ -127,8 +127,7 @@ let patch_agent_of_yojson ~gameplan json =
                  | None -> pid)))
        ~pr_number:
          (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
-       ~has_session
-       ~busy:(bool_member "busy" json)
+       ~has_session ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
        ~queue
        ~satisfies:(bool_member "satisfies" json)

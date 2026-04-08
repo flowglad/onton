@@ -2479,8 +2479,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 in
                                 (match result with
                                 | `Ok
-                                  when not
-                                         (String.equal base_changed_prefix "")
+                                  when not (String.equal base_changed_prefix "")
                                   ->
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
