@@ -227,6 +227,28 @@ let%test "fit_width truncates multibyte string" =
   let s = styled [ Sgr.fg_red ] "⚠ hello" in
   visible_length (fit_width 3 s) = 3
 
+(** Byte offset in a plain (no ANSI) string of the [col]-th visible character.
+    Returns [String.length s] when [col >= visible_length s]. *)
+let byte_offset_of_visible_col s col =
+  let len = String.length s in
+  let rec loop i n =
+    if n >= col || i >= len then i
+    else
+      let w = utf8_seq_width s i len in
+      loop (i + w) (n + 1)
+  in
+  loop 0 0
+
+let%test "byte_offset_of_visible_col ascii" =
+  byte_offset_of_visible_col "hello" 3 = 3
+
+let%test "byte_offset_of_visible_col multibyte" =
+  (* "⚠x" — ⚠ is 3 bytes, x is 1 byte *)
+  byte_offset_of_visible_col "⚠x" 1 = 3
+
+let%test "byte_offset_of_visible_col past end" =
+  byte_offset_of_visible_col "ab" 5 = 2
+
 (** Break a plain string into lines of at most [width] visible characters. Does
     not attempt to split on word boundaries — just hard-wraps at the column
     limit. Each resulting line is padded to [width] with spaces. Returns at

@@ -1047,13 +1047,18 @@ let render_footer ~width ~view_mode ?prompt_line () =
       let cursor_within = cursor_col % usable in
       let with_cursor =
         List.mapi wrapped ~f:(fun i line ->
-            if i <> cursor_line then line
+            if i <> cursor_line || cursor_within >= Term.visible_length line
+            then line
             else
-              let before = String.sub line ~pos:0 ~len:cursor_within in
-              let ch = String.sub line ~pos:cursor_within ~len:1 in
+              let bp = Term.byte_offset_of_visible_col line cursor_within in
+              let bp_next =
+                Term.byte_offset_of_visible_col line (cursor_within + 1)
+              in
+              let before = String.sub line ~pos:0 ~len:bp in
+              let ch = String.sub line ~pos:bp ~len:(bp_next - bp) in
               let after =
-                String.sub line ~pos:(cursor_within + 1)
-                  ~len:(String.length line - cursor_within - 1)
+                String.sub line ~pos:bp_next
+                  ~len:(String.length line - bp_next)
               in
               before ^ Term.Sgr.reverse ^ ch ^ Term.Sgr.reset ^ after)
       in
