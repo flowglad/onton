@@ -1268,6 +1268,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                               text = "Could not open browser";
                               expires_at = None;
                             }
+                      else status_msg := None
                   | None ->
                       status_msg :=
                         Some
