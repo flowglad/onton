@@ -19,6 +19,7 @@ type command =
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string
   | Remove_patch
+  | Open_in_browser
 [@@deriving show, eq]
 
 (** Input mode for the TUI prompt. *)

@@ -818,7 +818,8 @@ let normalize_paste text =
 let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
     ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry ~project_name
     ~show_help ~status_msg ~sorted_patch_ids ~input_mode ~prompt_line
-    ~patches_start_row ~patches_scroll_offset ~patches_visible_count =
+    ~patches_start_row ~patches_scroll_offset ~patches_visible_count ~owner
+    ~repo =
   let buf = Buffer.create 64 in
   let selected_pid () =
     let pids = !sorted_patch_ids in
@@ -1235,10 +1236,51 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
               Buffer.clear buf;
               input_mode := Tui_input.Prompt_worktree;
               loop ()
+          | Term.Key.Char 'o'
+            when (match !view_mode with
+                  | Tui.Detail_view _ -> true
+                  | Tui.List_view | Tui.Timeline_view -> false) -> (
+              match !view_mode with
+              | Tui.Detail_view patch_id -> (
+                  match Pr_registry.find pr_registry ~patch_id with
+                  | Some pr_number ->
+                      let url =
+                        Printf.sprintf "https://github.com/%s/%s/pull/%d" owner
+                          repo (Pr_number.to_int pr_number)
+                      in
+                      let open_cmd =
+                        if Sys.file_exists "/usr/bin/open" then "open"
+                        else "xdg-open"
+                      in
+                      let status =
+                        try
+                          Sys.command
+                            (Printf.sprintf "%s %s" open_cmd
+                               (Filename.quote url))
+                        with _ -> 1
+                      in
+                      if status <> 0 then
+                        status_msg :=
+                          Some
+                            {
+                              Tui.level = Tui.Error;
+                              text = "Could not open browser";
+                              expires_at = None;
+                            }
+                  | None ->
+                      status_msg :=
+                        Some
+                          {
+                            Tui.level = Tui.Info;
+                            text = "No PR to open";
+                            expires_at = None;
+                          })
+              | Tui.List_view | Tui.Timeline_view -> ());
+              loop ()
           | Term.Key.Char 'm'
-            when match !view_mode with
-                 | Tui.Detail_view _ -> true
-                 | Tui.List_view | Tui.Timeline_view -> false ->
+            when (match !view_mode with
+                  | Tui.Detail_view _ -> true
+                  | Tui.List_view | Tui.Timeline_view -> false) ->
               input_mode := Tui_input.Manage_patch;
               loop ()
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace
@@ -1287,7 +1329,7 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                         | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
                         | Tui_input.Noop | Tui_input.Send_message _
                         | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-                        | Tui_input.Remove_patch ->
+                        | Tui_input.Remove_patch | Tui_input.Open_in_browser ->
                             0
                       in
                       if delta <> 0 then detail_follow := false;
@@ -1382,7 +1424,8 @@ let input_fiber ~runtime ~list_selected ~detail_scroll ~detail_follow
                   | Tui.Detail_view _ | Tui.Timeline_view -> ());
                   loop ()
               | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
-              | Tui_input.Add_pr _ | Tui_input.Add_worktree _ ->
+              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+              | Tui_input.Open_in_browser ->
                   loop ()))
   in
   loop ()
@@ -2874,7 +2917,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                     ~pr_registry ~project_name ~show_help ~status_msg
                     ~sorted_patch_ids ~input_mode ~prompt_line
                     ~patches_start_row ~patches_scroll_offset
-                    ~patches_visible_count)
+                    ~patches_visible_count ~owner:config.github_owner
+                    ~repo:config.github_repo)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                     ~ci_checks_cache ~transcripts ~github ~net ~event_log

@@ -1096,6 +1096,7 @@ let render_help_overlay ~width ~height =
           "PgDn      Page down (10 lines)";
           "Enter     Send message";
           "m         Manage patch";
+          "o         Open PR in browser";
           "Esc/Bksp  Back to list";
           "t         Toggle timeline";
         ] );
