@@ -21,6 +21,7 @@ type command =
   | Add_pr of Types.Pr_number.t
   | Add_worktree of string
   | Remove_patch
+  | Open_in_browser
 [@@deriving show, eq]
 
 type input_mode =
@@ -53,6 +54,7 @@ let of_key (key : Term.Key.t) : command =
   | Enter -> Select
   | Escape | Backspace -> Back
   | Char '-' | Char 'x' -> Remove_patch
+  | Char 'o' -> Open_in_browser
   | Char _ | Tab | Delete | Home | End | Left | Right | F _ | Ctrl _ | Paste _
   | Mouse _ | Unknown _ ->
       Noop
@@ -77,7 +79,7 @@ let apply_move ~count ~selected (cmd : command) =
     | Page_up -> if selected = -1 then -1 else clamp (selected - 5)
     | Page_down -> if selected = -1 then 0 else clamp (selected + 5)
     | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
-    | Add_pr _ | Add_worktree _ | Remove_patch ->
+    | Add_pr _ | Add_worktree _ | Remove_patch | Open_in_browser ->
         if selected >= count then -1 else selected
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
@@ -103,6 +105,9 @@ let%test "- maps to Remove_patch" =
 
 let%test "x maps to Remove_patch" =
   equal_command (of_key (Char 'x')) Remove_patch
+
+let%test "o maps to Open_in_browser" =
+  equal_command (of_key (Char 'o')) Open_in_browser
 
 let%test "unknown key maps to Noop" = equal_command (of_key (Char 'z')) Noop
 let%test "tab maps to Noop" = equal_command (of_key Tab) Noop
