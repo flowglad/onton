@@ -410,6 +410,18 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_tried_fresh t patch_id in
       (complete t patch_id, [])
 
+type rebase_push_resolution = Rebase_push_ok | Rebase_push_failed
+[@@deriving show, eq, sexp_of]
+
+let apply_rebase_push_result t patch_id
+    (push_outcome : Worktree.push_result option) =
+  match push_outcome with
+  | Some Worktree.Push_ok | Some Worktree.Push_up_to_date -> (t, Rebase_push_ok)
+  | None | Some (Worktree.Push_rejected | Worktree.Push_error _) ->
+      let t = set_has_conflict t patch_id in
+      let t = enqueue t patch_id Operation_kind.Merge_conflict in
+      (t, Rebase_push_failed)
+
 type conflict_rebase_decision =
   | Conflict_resolved
   | Deliver_to_agent

@@ -153,6 +153,19 @@ val apply_rebase_result :
     set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
     set_session_failed + set_tried_fresh + complete. *)
 
+type rebase_push_resolution = Rebase_push_ok | Rebase_push_failed
+[@@deriving show, eq, sexp_of]
+
+val apply_rebase_push_result :
+  t -> Patch_id.t -> Worktree.push_result option -> t * rebase_push_resolution
+(** Pure second stage of rebase handling. Takes the push outcome from executing
+    the [Push_branch] effect ([None] when no push was requested). Returns the
+    updated state and resolution.
+
+    - [Rebase_push_ok]: push succeeded or was up-to-date; no further action.
+    - [Rebase_push_failed]: push was rejected or errored; sets [has_conflict]
+      and enqueues [Merge_conflict] so the next poll cycle retries. *)
+
 type conflict_rebase_decision =
   | Conflict_resolved
   | Deliver_to_agent

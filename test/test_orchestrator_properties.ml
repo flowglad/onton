@@ -572,6 +572,134 @@ let () =
         with _ -> false)
   in
 
+  (* ========== apply_rebase_push_result properties ========== *)
+
+  (* Push_ok -> Rebase_push_ok, no conflict *)
+  let prop_rebase_push_ok =
+    Test.make ~name:"apply_rebase_push_result: Push_ok -> Rebase_push_ok"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _effects =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let orch, resolution =
+                Orchestrator.apply_rebase_push_result orch pid
+                  (Some Worktree.Push_ok)
+              in
+              let a = Orchestrator.agent orch pid in
+              Orchestrator.equal_rebase_push_resolution resolution
+                Orchestrator.Rebase_push_ok
+              && (not a.Patch_agent.has_conflict)
+              && not
+                   (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                      ~equal:Operation_kind.equal)
+        with _ -> false)
+  in
+
+  (* Push_up_to_date -> Rebase_push_ok *)
+  let prop_rebase_push_up_to_date =
+    Test.make
+      ~name:"apply_rebase_push_result: Push_up_to_date -> Rebase_push_ok"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _effects =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let _orch, resolution =
+                Orchestrator.apply_rebase_push_result orch pid
+                  (Some Worktree.Push_up_to_date)
+              in
+              Orchestrator.equal_rebase_push_resolution resolution
+                Orchestrator.Rebase_push_ok
+        with _ -> false)
+  in
+
+  (* Push_rejected -> Rebase_push_failed, has_conflict, Merge_conflict queued *)
+  let prop_rebase_push_rejected =
+    Test.make
+      ~name:"apply_rebase_push_result: Push_rejected -> Rebase_push_failed"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _effects =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let orch, resolution =
+                Orchestrator.apply_rebase_push_result orch pid
+                  (Some Worktree.Push_rejected)
+              in
+              let a = Orchestrator.agent orch pid in
+              Orchestrator.equal_rebase_push_resolution resolution
+                Orchestrator.Rebase_push_failed
+              && a.Patch_agent.has_conflict
+              && List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                   ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
+  (* Push_error -> Rebase_push_failed *)
+  let prop_rebase_push_error =
+    Test.make ~name:"apply_rebase_push_result: Push_error -> Rebase_push_failed"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _effects =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let _orch, resolution =
+                Orchestrator.apply_rebase_push_result orch pid
+                  (Some (Worktree.Push_error "test"))
+              in
+              Orchestrator.equal_rebase_push_resolution resolution
+                Orchestrator.Rebase_push_failed
+        with _ -> false)
+  in
+
+  (* None -> Rebase_push_failed (defensive) *)
+  let prop_rebase_push_none =
+    Test.make ~name:"apply_rebase_push_result: None -> Rebase_push_failed"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _effects =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let orch, resolution =
+                Orchestrator.apply_rebase_push_result orch pid None
+              in
+              Orchestrator.equal_rebase_push_resolution resolution
+                Orchestrator.Rebase_push_failed
+              && (Orchestrator.agent orch pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
   (* ========== apply_conflict_rebase_result properties ========== *)
 
   (* Ok -> Conflict_resolved, not busy, conflict cleared *)
@@ -1273,6 +1401,11 @@ let () =
       prop_rebase_ok_clears_conflict;
       prop_rebase_noop_preserves_conflict;
       prop_rebase_error_fails;
+      prop_rebase_push_ok;
+      prop_rebase_push_up_to_date;
+      prop_rebase_push_rejected;
+      prop_rebase_push_error;
+      prop_rebase_push_none;
       prop_conflict_rebase_ok;
       prop_conflict_rebase_noop;
       prop_conflict_rebase_conflict;

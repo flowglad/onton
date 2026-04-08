@@ -2038,40 +2038,45 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                             in
                             (orch, (agent_before, (agent_after, effects))))
                       in
-                      Base.List.iter effects ~f:(fun Orchestrator.Push_branch ->
-                          let branch = agent.Patch_agent.branch in
-                          match
-                            Worktree.force_push_with_lease ~process_mgr
-                              ~path:wt_path ~branch
-                          with
-                          | Worktree.Push_ok ->
-                              log_event runtime ~patch_id
-                                "runner: force-pushed after rebase"
-                          | Worktree.Push_up_to_date ->
-                              log_event runtime ~patch_id
-                                "runner: push up-to-date after rebase (noop)"
-                          | Worktree.Push_rejected ->
-                              log_event runtime ~patch_id
-                                "runner: force-push rejected (lease), \
-                                 enqueuing merge-conflict for retry";
-                              Runtime.update_orchestrator runtime (fun orch ->
-                                  let orch =
-                                    Orchestrator.set_has_conflict orch patch_id
-                                  in
-                                  Orchestrator.enqueue orch patch_id
-                                    Operation_kind.Merge_conflict)
-                          | Worktree.Push_error msg ->
-                              log_event runtime ~patch_id
-                                (Printf.sprintf
-                                   "runner: force-push error: %s, enqueuing \
-                                    merge-conflict for retry"
-                                   msg);
-                              Runtime.update_orchestrator runtime (fun orch ->
-                                  let orch =
-                                    Orchestrator.set_has_conflict orch patch_id
-                                  in
-                                  Orchestrator.enqueue orch patch_id
-                                    Operation_kind.Merge_conflict));
+                      let push_outcome =
+                        Base.List.find_map effects
+                          ~f:(fun Orchestrator.Push_branch ->
+                            let branch = agent.Patch_agent.branch in
+                            let result =
+                              Worktree.force_push_with_lease ~process_mgr
+                                ~path:wt_path ~branch
+                            in
+                            (match result with
+                            | Worktree.Push_ok ->
+                                log_event runtime ~patch_id
+                                  "runner: force-pushed after rebase"
+                            | Worktree.Push_up_to_date ->
+                                log_event runtime ~patch_id
+                                  "runner: push up-to-date after rebase (noop)"
+                            | Worktree.Push_rejected ->
+                                log_event runtime ~patch_id
+                                  "runner: force-push rejected (lease)"
+                            | Worktree.Push_error msg ->
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf "runner: force-push error: %s"
+                                     msg));
+                            Some result)
+                      in
+                      let resolution =
+                        Runtime.update_orchestrator_returning runtime
+                          (fun orch ->
+                            let orch, resolution =
+                              Orchestrator.apply_rebase_push_result orch
+                                patch_id push_outcome
+                            in
+                            (orch, resolution))
+                      in
+                      (match resolution with
+                      | Orchestrator.Rebase_push_ok -> ()
+                      | Orchestrator.Rebase_push_failed ->
+                          log_event runtime ~patch_id
+                            "runner: enqueuing merge-conflict after rebase \
+                             push failure");
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->

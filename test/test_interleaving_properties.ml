@@ -68,6 +68,12 @@ type rebase_result_kind =
   | Rebase_conflict
   | Rebase_error
 
+type push_result_kind =
+  | Push_ok_k
+  | Push_up_to_date_k
+  | Push_rejected_k
+  | Push_error_k
+
 type command =
   | Apply_poll of { patch_idx : int; poll_kind : poll_kind }
   | Reconcile
@@ -82,6 +88,7 @@ type command =
       patch_idx : int;
       result : rebase_result_kind;
     }
+  | Apply_rebase_push_result of { patch_idx : int; result : push_result_kind }
 
 let show_poll_kind = function
   | Poll_normal -> "Normal"
@@ -107,6 +114,12 @@ let show_rebase_result_kind = function
   | Rebase_conflict -> "Conflict"
   | Rebase_error -> "Error"
 
+let show_push_result_kind = function
+  | Push_ok_k -> "Push_ok"
+  | Push_up_to_date_k -> "Push_up_to_date"
+  | Push_rejected_k -> "Push_rejected"
+  | Push_error_k -> "Push_error"
+
 let show_command = function
   | Apply_poll { patch_idx; poll_kind } ->
       Printf.sprintf "Apply_poll(%d, %s)" patch_idx (show_poll_kind poll_kind)
@@ -127,6 +140,9 @@ let show_command = function
   | Apply_conflict_rebase_result { patch_idx; result } ->
       Printf.sprintf "Apply_conflict_rebase_result(%d, %s)" patch_idx
         (show_rebase_result_kind result)
+  | Apply_rebase_push_result { patch_idx; result } ->
+      Printf.sprintf "Apply_rebase_push_result(%d, %s)" patch_idx
+        (show_push_result_kind result)
 
 (* -- Generators -- *)
 
@@ -158,6 +174,10 @@ let gen_rebase_result_kind =
   QCheck2.Gen.oneof_list
     [ Rebase_ok; Rebase_noop; Rebase_conflict; Rebase_error ]
 
+let gen_push_result_kind =
+  QCheck2.Gen.oneof_list
+    [ Push_ok_k; Push_up_to_date_k; Push_rejected_k; Push_error_k ]
+
 let gen_command ~n =
   if n <= 0 then invalid_arg "gen_command: n must be positive";
   QCheck2.Gen.(
@@ -180,6 +200,9 @@ let gen_command ~n =
           (fun i r ->
             Apply_conflict_rebase_result { patch_idx = i; result = r })
           gen_idx gen_rebase_result_kind;
+        map2
+          (fun i r -> Apply_rebase_push_result { patch_idx = i; result = r })
+          gen_idx gen_push_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
       ])
@@ -209,6 +232,9 @@ let gen_atomic_command ~n =
           (fun i r ->
             Apply_conflict_rebase_result { patch_idx = i; result = r })
           gen_idx gen_rebase_result_kind;
+        map2
+          (fun i r -> Apply_rebase_push_result { patch_idx = i; result = r })
+          gen_idx gen_push_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
       ])
@@ -267,6 +293,12 @@ let to_worktree_result = function
   | Rebase_noop -> Worktree.Noop
   | Rebase_conflict -> Worktree.Conflict
   | Rebase_error -> Worktree.Error "simulated error"
+
+let to_push_result = function
+  | Push_ok_k -> Worktree.Push_ok
+  | Push_up_to_date_k -> Worktree.Push_up_to_date
+  | Push_rejected_k -> Worktree.Push_rejected
+  | Push_error_k -> Worktree.Push_error "simulated error"
 
 let poll_params_of_kind = function
   | Poll_normal -> (false, false, false, true, false)
@@ -381,6 +413,13 @@ let rec apply_command orch patches cmd =
             orch'
         | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
       with Invalid_argument _ -> orch)
+  | Apply_rebase_push_result { patch_idx; result } ->
+      let pid = pid_of_idx patches patch_idx in
+      let orch, _resolution =
+        Orchestrator.apply_rebase_push_result orch pid
+          (Some (to_push_result result))
+      in
+      orch
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
@@ -431,7 +470,7 @@ let rec apply_command_with_logs orch patches cmd =
       (orch, info)
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
-  | Apply_conflict_rebase_result _ ->
+  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ ->
       (apply_command orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
@@ -913,3 +952,83 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi6;
   Stdlib.print_endline "PI-6 passed"
+
+(** PI-7: Rebase push failure converges to Merge_conflict retry. After a
+    successful rebase whose push is rejected, the system must enqueue
+    Merge_conflict and fire it on the next tick. *)
+let () =
+  let prop_pi7 =
+    QCheck2.Test.make
+      ~name:"PI-7: rebase push failure converges to merge-conflict retry"
+      (QCheck2.Gen.return ()) (fun () ->
+        let orch, pid, patches = mk_bootstrapped () in
+        let branch_of = branch_of_patches patches in
+        let gameplan = make_gameplan patches in
+        (* 1. Poll with conflict so Merge_conflict gets enqueued *)
+        let poll_result =
+          make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
+            ~checks_passing:false ~review_comments:false
+        in
+        let observation =
+          Patch_controller.
+            {
+              poll_result;
+              head_branch = Some (branch_of pid);
+              base_branch = None;
+              branch_in_root = false;
+              worktree_path = None;
+            }
+        in
+        let orch, _logs, _blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        (* 2. Tick to fire the Merge_conflict → agent becomes busy *)
+        let orch, _effects, _actions =
+          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+        in
+        (* 3. Rebase succeeds *)
+        let has_merged dep_pid =
+          (Orchestrator.agent orch dep_pid).Patch_agent.merged
+        in
+        let new_base =
+          Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
+            ~branch_of ~main
+        in
+        let orch, effects =
+          Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+        in
+        (* Verify Push_branch effect was emitted *)
+        if
+          not
+            (List.equal Orchestrator.equal_rebase_effect effects
+               [ Orchestrator.Push_branch ])
+        then failwith "expected [Push_branch] effect";
+        (* 4. Push fails *)
+        let orch, resolution =
+          Orchestrator.apply_rebase_push_result orch pid
+            (Some Worktree.Push_rejected)
+        in
+        if
+          not
+            (Orchestrator.equal_rebase_push_resolution resolution
+               Orchestrator.Rebase_push_failed)
+        then failwith "expected Rebase_push_failed";
+        let a = Orchestrator.agent orch pid in
+        (* Verify: has_conflict set, Merge_conflict enqueued, agent idle *)
+        if not a.Patch_agent.has_conflict then failwith "expected has_conflict";
+        if
+          not
+            (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+               ~equal:Operation_kind.equal)
+        then failwith "expected Merge_conflict in queue";
+        if a.Patch_agent.busy then failwith "expected agent idle";
+        (* 5. Next tick fires Merge_conflict for retry *)
+        let orch, _effects, _actions =
+          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+        in
+        let a = Orchestrator.agent orch pid in
+        (* Agent is now busy handling Merge_conflict *)
+        a.Patch_agent.busy)
+  in
+  QCheck2.Test.check_exn prop_pi7;
+  Stdlib.print_endline "PI-7 passed"
