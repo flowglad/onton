@@ -26,6 +26,7 @@ type t = {
   pr_description_applied : bool;
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
+  conflict_noop_count : int;
   checks_passing : bool;
   current_op : Operation_kind.t option;
   current_message_id : Message_id.t option;
@@ -44,7 +45,8 @@ let needs_intervention t =
   (not (List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal))
   && (t.ci_failure_count >= 3
      || equal_session_fallback t.session_fallback Given_up
-     || ((not (has_pr t)) && t.start_attempts_without_pr >= 2))
+     || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
+     || t.conflict_noop_count >= 2)
 
 let create ~branch patch_id =
   {
@@ -68,6 +70,7 @@ let create ~branch patch_id =
     pr_description_applied = false;
     implementation_notes_delivered = false;
     start_attempts_without_pr = 0;
+    conflict_noop_count = 0;
     checks_passing = false;
     current_op = None;
     current_message_id = None;
@@ -99,6 +102,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     pr_description_applied = true;
     implementation_notes_delivered = true;
     start_attempts_without_pr = 0;
+    conflict_noop_count = 0;
     checks_passing = false;
     current_op = None;
     current_message_id = None;
@@ -149,7 +153,13 @@ let on_session_failure t ~is_fresh =
     if is_fresh then set_tried_fresh t else t
 
 let set_has_conflict t = { t with has_conflict = true }
-let clear_has_conflict t = { t with has_conflict = false }
+
+let clear_has_conflict t =
+  { t with has_conflict = false; conflict_noop_count = 0 }
+
+let increment_conflict_noop_count t =
+  { t with conflict_noop_count = t.conflict_noop_count + 1 }
+
 let set_base_branch t branch = { t with base_branch = Some branch }
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }
@@ -197,6 +207,7 @@ let reset_intervention_state t =
     session_fallback = Fresh_available;
     ci_failure_count = 0;
     start_attempts_without_pr = 0;
+    conflict_noop_count = 0;
   }
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
@@ -205,8 +216,9 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~ci_failure_count
     ~session_fallback ~human_messages ~ci_checks ~merge_ready ~is_draft
     ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~checks_passing ~current_op ~current_message_id
-    ~generation ~worktree_path ~head_branch ~branch_blocked =
+    ~start_attempts_without_pr ~conflict_noop_count ~checks_passing ~current_op
+    ~current_message_id ~generation ~worktree_path ~head_branch ~branch_blocked
+    =
   {
     patch_id;
     branch;
@@ -228,6 +240,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     pr_description_applied;
     implementation_notes_delivered;
     start_attempts_without_pr;
+    conflict_noop_count;
     checks_passing;
     current_op;
     current_message_id;

@@ -411,6 +411,23 @@ let fetch_origin ~process_mgr ~path =
          (String.strip stderr))
   else Result.Ok ()
 
+let git_status ~process_mgr ~path =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr [ "git"; "-C"; path; "status" ]
+  in
+  if code <> 0 then "" else String.strip stdout
+
+let conflict_diff ~process_mgr ~path =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "diff"; "--diff-filter=U" ]
+  in
+  if code <> 0 then ""
+  else
+    let s = String.strip stdout in
+    (* Truncate to avoid blowing up the prompt *)
+    if String.length s > 4000 then String.prefix s 4000 ^ "\n[truncated]" else s
+
 let rebase_onto ~process_mgr ~path ~target =
   let target = Types.Branch.to_string target in
   let ancestor_code, _, ancestor_stderr =

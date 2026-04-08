@@ -343,6 +343,9 @@ let set_implementation_notes_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_implementation_notes_delivered a v)
 
+let increment_conflict_noop_count t patch_id =
+  update_agent t patch_id ~f:Patch_agent.increment_conflict_noop_count
+
 let increment_start_attempts_without_pr t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_start_attempts_without_pr
 
@@ -421,6 +424,7 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
+      let t = increment_conflict_noop_count t patch_id in
       (t, Deliver_to_agent, [ Push_branch ])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in

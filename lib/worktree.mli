@@ -54,6 +54,15 @@ val oldest_unique_commit : string -> (string, string) Result.t
     [git rev-list --cherry-pick --right-only] output (newest-first). Returns
     [Error] when the output is empty (all commits already in target). *)
 
+val git_status : process_mgr:_ Eio.Process.mgr -> path:string -> string
+(** Run [git status] in the worktree and return its output. Returns empty string
+    on failure. *)
+
+val conflict_diff : process_mgr:_ Eio.Process.mgr -> path:string -> string
+(** Run [git diff --diff-filter=U] to show conflict markers for unmerged files.
+    Returns empty string if no conflicts or on failure. Truncates at 4000 chars.
+*)
+
 val fetch_origin :
   process_mgr:_ Eio.Process.mgr -> path:string -> (unit, string) Result.t
 (** Run [git fetch origin] in the worktree at [path] to update remote tracking

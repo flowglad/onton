@@ -53,6 +53,8 @@ val render_merge_conflict_prompt :
   project_name:string ->
   ?pr_number:Pr_number.t ->
   base_branch:string ->
+  ?git_status:string ->
+  ?git_diff:string ->
   unit ->
   string
 
