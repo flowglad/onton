@@ -102,7 +102,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--gameplan` | — | Path to the gameplan markdown file |
 | `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
 | `--token` | `$GITHUB_TOKEN` or `gh auth token` | GitHub API token |
-| `--main-branch` | `main` | Main branch name |
+| `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | GitHub polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 | `--headless` | off | Run without TUI (plain log output to stdout) |
@@ -193,7 +193,7 @@ gameplan.md ──> Gameplan_parser ──> Graph + Patches
           └─────────────────────────────────────────────┘
 ```
 
-### Claude session management
+### Claude backend session management
 
 Claude is invoked via `-p` (prompt mode, not `--print`) which saves sessions,
 enabling `--continue` to resume the most recent session in a worktree. This
@@ -243,8 +243,14 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `patch_agent` | Per-patch state machine: start, respond, complete, rebase transitions (private type). Tracks `current_op`, current accepted message, and generation |
 | `patch_controller` | Pure evergreen controller: poll ingestion, lifecycle reconciliation, GitHub effects, and durable patch-agent message planning |
 | `patch_decision` | Pure decision logic: disposition, CI cap, review comment filtering, merge conflict handling. Extracted from main.ml for testability |
+| `llm_backend` | Backend interface: process spawning, stream event parsing, session management |
+| `claude_backend` | Claude Code backend implementation |
+| `codex_backend` | OpenAI Codex backend implementation |
+| `opencode_backend` | OpenCode backend implementation |
+| `pi_backend` | Pi coding agent backend implementation |
 | `claude_process` | Claude CLI session state machine (No_session -> Has_session) |
 | `claude_runner` | Claude subprocess spawning with PTY wrapping, NDJSON streaming, ANSI stripping, `got_events` resume-failure detection |
+| `spawn_logic` | Pure spawn/scheduling logic: which patches to run next |
 | `orchestrator` | Durable patch state plus primitive transitions, including the patch-agent outbox |
 | `reconciler` | Pure merge detection, rebase cascading, stale base detection, liveness enforcement |
 | `startup_reconciler` | PR discovery, worktree recovery, stale busy reset at startup |
@@ -252,6 +258,10 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `state` | Spec context maps (PatchCtx, Comments) for invariant checking |
 | `runtime` | Mutex-protected shared snapshot across fibers (orchestrator + activity log + gameplan + transcripts) |
 | `activity_log` | Per-patch event, transition, and stream entry feed |
+| `event_log` | Structured event log for persistence and replay |
+| `pr_state` | Pull request state tracking and derived status |
+| `run_classification` | Classify agent run outcomes (success, failure, needs intervention) |
+| `forge` | Git forge (GitHub) abstraction |
 | `invariants` | Runtime spec invariant checker (gated via `ONTON_CHECK_INVARIANTS`) |
 | `persistence` | JSON snapshot save/load for the current durable schema, including transcripts and the message ledger |
 | `project_store` | Project config and gameplan storage at `~/.local/share/onton/` |
@@ -299,13 +309,15 @@ Backend selection uses `--backend`:
 
 - `onton --backend claude`
 - `onton --backend codex`
+- `onton --backend opencode`
+- `onton --backend pi`
 
 If omitted for a new project, `claude` is the default. The selected backend is
 persisted in project config and reused on resume unless you pass `--backend`
 again to override it.
 
-Pushing a `v*` tag builds macOS binaries (ARM64 + x86_64), creates a GitHub
-release, and updates the Homebrew formula.
+Pushing a `v*` tag builds a macOS ARM64 binary, creates a GitHub release, and
+updates the Homebrew formula.
 
 ## TUI
 
