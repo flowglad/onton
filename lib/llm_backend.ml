@@ -21,6 +21,8 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
         Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
           ~stderr:stderr_w args
       in
+      Eio.Switch.on_release sw (fun () ->
+          try Eio.Process.signal child Stdlib.Sys.sigterm with _ -> ());
       Eio.Flow.close stdin_r;
       Eio.Flow.close stdin_w;
       Eio.Flow.close stdout_w;
@@ -62,7 +64,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
   | Ok result -> result
   | Error `Timeout ->
       {
-        exit_code = 128 + 15 (* SIGTERM *);
+        exit_code = 128 + 15 (* SIGTERM — sent via on_release hook *);
         stdout = "";
         stderr = "process timed out";
         got_events = false;
