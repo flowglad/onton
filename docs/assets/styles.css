@@ -405,14 +405,19 @@ h3 {
 .flow-diagram svg {
   display: block;
   width: 100%;
-  max-width: 780px;
   height: auto;
-  margin: 0 auto;
+  max-width: calc(100% - var(--layout-rail-width) - var(--layout-column-gap));
+}
+
+.flow-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(16rem, var(--layout-rail-width));
+  gap: var(--layout-column-gap);
+  align-items: start;
 }
 
 .flow-annotations {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
   gap: 1.25rem;
   align-content: start;
 }
@@ -629,7 +634,7 @@ code {
     grid-template-columns: 1fr;
   }
 
-  .flow-annotations {
+  .flow-details {
     grid-template-columns: 1fr;
   }
 

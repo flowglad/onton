@@ -130,73 +130,74 @@
                 </svg>
               </div>
 
-              <div class="flow-annotations">
-                <div class="flow-annotation">
-                  <span class="workflow-kicker">1</span>
-                  <div>
-                    <h3>write a workstream</h3>
-                    <p>
-                      Define the vision, current state, key challenges, and
-                      milestones. The output is a workstream whose milestones
-                      become the unit of iteration.
-                    </p>
-                    <a href="workstream.html">Read the workstream guide</a>
+              <div class="flow-details">
+                <div class="flow-annotations">
+                  <div class="flow-annotation">
+                    <span class="workflow-kicker">1</span>
+                    <div>
+                      <h3>write a workstream</h3>
+                      <p>
+                        Define the vision, current state, key challenges, and
+                        milestones. The output is a workstream whose milestones
+                        become the unit of iteration.
+                      </p>
+                      <a href="workstream.html">Read the workstream guide</a>
+                    </div>
                   </div>
-                </div>
-                <div class="flow-annotation">
-                  <span class="workflow-kicker">2</span>
-                  <div>
-                    <h3>write a spec</h3>
-                    <p>
-                      Optionally: formally specify invariants that should hold
-                      when the feature is complete.
-                    </p>
-                    <a href="https://pantagruel-language.com/"
-                      >Read about the Pantagruel specification language</a
-                    >
+                  <div class="flow-annotation">
+                    <span class="workflow-kicker">2</span>
+                    <div>
+                      <h3>write a spec</h3>
+                      <p>
+                        Optionally: formally specify invariants that should hold
+                        when the feature is complete.
+                      </p>
+                      <a href="https://pantagruel-language.com/"
+                        >Read about the Pantagruel specification language</a
+                      >
+                    </div>
                   </div>
-                </div>
-                <div class="flow-annotation">
-                  <span class="workflow-kicker">3</span>
-                  <div>
-                    <h3>write and execute gameplans</h3>
-                    <ol>
-                      <li>Turn a milestone into a concrete gameplan.</li>
-                      <li>Execute the gameplan with the
-                        <code>onton</code> supervisor.</li>
-                    </ol>
-                    <p>Repeat for the next milestone in the workstream.</p>
-                    <a href="gameplan.html">Gameplan guide</a> &middot;
-                    <a href="execution.html">Execution guide</a>
+                  <div class="flow-annotation">
+                    <span class="workflow-kicker">3</span>
+                    <div>
+                      <h3>write and execute gameplans</h3>
+                      <ol>
+                        <li>Turn a milestone into a concrete gameplan.</li>
+                        <li>Execute the gameplan with the
+                          <code>onton</code> supervisor.</li>
+                      </ol>
+                      <p>Repeat for the next milestone in the workstream.</p>
+                      <a href="gameplan.html">Gameplan guide</a> &middot;
+                      <a href="execution.html">Execution guide</a>
+                    </div>
                   </div>
                 </div>
 
+                <aside aria-label="Flow sidenote">
+                  <section class="sidenote-card">
+                    <p class="section-label">sidenote</p>
+                    <h2>Theory is the artifact</h2>
+                    <p class="sidenote-intro">
+                      Formal specifications do at least two important kinds of
+                      work in this process:
+                    </p>
+                    <ol class="sidenote-list">
+                      <li>
+                        They give the coding agent an unambiguous change to
+                        implement, with some ambiguity and contradiction removed
+                        from the natural language description.
+                      </li>
+                      <li>
+                        They force the engineer to order the domain conceptually,
+                        making the system’s entities, rules, and consequences
+                        concrete before the implementation phase starts.
+                      </li>
+                    </ol>
+                  </section>
+                </aside>
               </div>
             </div>
           </section>
-
-          <aside class="index-section" aria-label="Flow sidenote">
-            <section class="sidenote-card">
-              <p class="section-label">sidenote</p>
-              <h2>Theory is the artifact</h2>
-              <p class="sidenote-intro">
-                Formal specifications do at least two important kinds of
-                work in this process:
-              </p>
-              <ol class="sidenote-list">
-                <li>
-                  They give the coding agent an unambiguous change to
-                  implement, with some ambiguity and contradiction removed
-                  from the natural language description.
-                </li>
-                <li>
-                  They force the engineer to order the domain conceptually,
-                  making the system’s entities, rules, and consequences
-                  concrete before the implementation phase starts.
-                </li>
-              </ol>
-            </section>
-          </aside>
 
           <section class="panel index-section main-column-section">
             <div class="section-stack">
