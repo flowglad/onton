@@ -1747,8 +1747,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
         Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | "opencode" ->
         Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
-    | "pi" ->
-        Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
+    | "pi" -> Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | other ->
         invalid_arg
           (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
