@@ -57,6 +57,10 @@ type session_result_kind =
   | Sess_failed_fresh
   | Sess_failed_resume
   | Sess_give_up
+  | Sess_worktree_missing
+  | Sess_process_error_fresh
+  | Sess_process_error_resume
+  | Sess_no_resume
 
 type rebase_result_kind =
   | Rebase_ok
@@ -92,6 +96,10 @@ let show_session_result_kind = function
   | Sess_failed_fresh -> "Failed_fresh"
   | Sess_failed_resume -> "Failed_resume"
   | Sess_give_up -> "Give_up"
+  | Sess_worktree_missing -> "Worktree_missing"
+  | Sess_process_error_fresh -> "Process_error_fresh"
+  | Sess_process_error_resume -> "Process_error_resume"
+  | Sess_no_resume -> "No_resume"
 
 let show_rebase_result_kind = function
   | Rebase_ok -> "Ok"
@@ -135,7 +143,16 @@ let gen_poll_kind =
 
 let gen_session_result_kind =
   QCheck2.Gen.oneof_list
-    [ Sess_ok; Sess_failed_fresh; Sess_failed_resume; Sess_give_up ]
+    [
+      Sess_ok;
+      Sess_failed_fresh;
+      Sess_failed_resume;
+      Sess_give_up;
+      Sess_worktree_missing;
+      Sess_process_error_fresh;
+      Sess_process_error_resume;
+      Sess_no_resume;
+    ]
 
 let gen_rebase_result_kind =
   QCheck2.Gen.oneof_list
@@ -238,6 +255,12 @@ let to_session_result = function
   | Sess_failed_fresh -> Orchestrator.Session_failed { is_fresh = true }
   | Sess_failed_resume -> Orchestrator.Session_failed { is_fresh = false }
   | Sess_give_up -> Orchestrator.Session_give_up
+  | Sess_worktree_missing -> Orchestrator.Session_worktree_missing
+  | Sess_process_error_fresh ->
+      Orchestrator.Session_process_error { is_fresh = true }
+  | Sess_process_error_resume ->
+      Orchestrator.Session_process_error { is_fresh = false }
+  | Sess_no_resume -> Orchestrator.Session_no_resume
 
 let to_worktree_result = function
   | Rebase_ok -> Worktree.Ok
@@ -729,3 +752,91 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi2;
   Stdlib.print_endline "PI-2 passed"
+
+(** PI-3: Fresh-start interleavings — agents begin without PRs, exercising the
+    Start path and its failure modes. Safety invariants must hold throughout. *)
+let () =
+  let n = 3 in
+  let patches = mk_patches n in
+  let prop_pi3 =
+    QCheck2.Test.make
+      ~name:"PI-3: fresh-start interleavings preserve scheduling invariants"
+      ~count:1000 (gen_command_seq ~n ~len:50) (fun cmds ->
+        (safe_verbose cmds patches) (fun () ->
+            let orch = Orchestrator.create ~patches ~main_branch:main in
+            run_sequence orch patches cmds;
+            true))
+  in
+  QCheck2.Test.check_exn prop_pi3;
+  Stdlib.print_endline "PI-3 passed"
+
+(* ========== Liveness / convergence properties ========== *)
+
+(** Helper: create a single-patch orchestrator with no PR, start the agent, and
+    return (orch, patch_id). The agent is busy after this call. *)
+let mk_started_no_pr () =
+  let patches = mk_patches 1 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+  (orch, pid)
+
+(** PI-4: Repeated worktree failure on a no-PR agent converges to
+    needs_intervention. After 2 worktree failures (each producing
+    complete_failed + on_worktree_failure), the agent must require intervention.
+*)
+let () =
+  let prop_pi4 =
+    QCheck2.Test.make
+      ~name:"PI-4: repeated worktree failure converges to needs_intervention"
+      (QCheck2.Gen.return ()) (fun () ->
+        let orch, pid = mk_started_no_pr () in
+        (* First worktree failure *)
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_worktree_missing
+        in
+        let a = Orchestrator.agent orch pid in
+        if Patch_agent.needs_intervention a then
+          failwith "needs_intervention too early after 1 failure";
+        (* Re-start and fail again *)
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_worktree_missing
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.needs_intervention a)
+  in
+  QCheck2.Test.check_exn prop_pi4;
+  Stdlib.print_endline "PI-4 passed"
+
+(** PI-5: Repeated Session_process_error { is_fresh = true } on a no-PR agent
+    converges to needs_intervention. This tests the same liveness guarantee as
+    PI-4 but for the process-error path. *)
+let () =
+  let prop_pi5 =
+    QCheck2.Test.make
+      ~name:
+        "PI-5: repeated process error (fresh) on no-PR converges to \
+         needs_intervention" (QCheck2.Gen.return ()) (fun () ->
+        let orch, pid = mk_started_no_pr () in
+        (* First process error *)
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            (Orchestrator.Session_process_error { is_fresh = true })
+        in
+        let a = Orchestrator.agent orch pid in
+        if Patch_agent.needs_intervention a then
+          failwith "needs_intervention too early after 1 failure";
+        (* Re-start and fail again *)
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            (Orchestrator.Session_process_error { is_fresh = true })
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.needs_intervention a)
+  in
+  QCheck2.Test.check_exn prop_pi5;
+  Stdlib.print_endline "PI-5 passed"

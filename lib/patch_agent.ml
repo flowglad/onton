@@ -165,6 +165,9 @@ let increment_start_attempts_without_pr t =
     durable attempt. The controller derives intervention from this fact. *)
 let on_pr_discovery_failure t = increment_start_attempts_without_pr t
 
+let on_pre_session_failure t =
+  if has_pr t then t else increment_start_attempts_without_pr t
+
 let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 let set_head_branch t branch = { t with head_branch = Some branch }

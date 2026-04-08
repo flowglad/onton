@@ -67,6 +67,43 @@ let infer_github_token () =
         if Base.String.is_empty t then "" else t
       with _ -> "")
 
+(** Detect the default branch of a git repository. Tries: 1.
+    [git symbolic-ref refs/remotes/origin/HEAD] (fast, local) 2.
+    [git rev-parse --verify refs/heads/main] → "main" 3.
+    [git rev-parse --verify refs/heads/master] → "master" 4. Fallback: "main" *)
+let infer_default_branch ~repo_root =
+  let run_git cmd =
+    let buf = Buffer.create 128 in
+    try
+      let ic =
+        Unix.open_process_in
+          (Printf.sprintf "git -C %s %s 2>/dev/null" (Filename.quote repo_root)
+             cmd)
+      in
+      (try
+         while true do
+           Buffer.add_char buf (input_char ic)
+         done
+       with End_of_file -> ());
+      match Unix.close_process_in ic with
+      | Unix.WEXITED 0 -> Some (Base.String.strip (Buffer.contents buf))
+      | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> None
+    with _ -> None
+  in
+  match run_git "symbolic-ref refs/remotes/origin/HEAD" with
+  | Some ref_path ->
+      let prefix = "refs/remotes/origin/" in
+      if Base.String.is_prefix ref_path ~prefix then
+        Base.String.chop_prefix_exn ref_path ~prefix
+      else ref_path
+  | None -> (
+      match run_git "rev-parse --verify refs/heads/main" with
+      | Some _ -> "main"
+      | None -> (
+          match run_git "rev-parse --verify refs/heads/master" with
+          | Some _ -> "master"
+          | None -> "main"))
+
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
   let errors =
@@ -2513,10 +2550,23 @@ let with_snapshot_load ~project_name config gameplan =
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
+let normalize_repo_root rr =
+  if Filename.is_relative rr then Filename.concat (Stdlib.Sys.getcwd ()) rr
+  else rr
+
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
-    ~poll_interval ~repo_root ~max_concurrency ~headless =
+    ~poll_interval ~(repo_root : string option) ~max_concurrency ~headless =
+  let repo_root_for_fresh =
+    normalize_repo_root (Base.Option.value repo_root ~default:".")
+  in
+  let resolve_branch ~repo_root mb_opt =
+    match mb_opt with
+    | Some b -> b
+    | None -> Branch.of_string (infer_default_branch ~repo_root)
+  in
   match (project, gameplan_path) with
   | None, None ->
+      let repo_root = repo_root_for_fresh in
       let token, owner, repo =
         resolve_github_credentials ~github_token ~repo_root
       in
@@ -2541,6 +2591,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
       let backend =
         if Base.String.is_empty backend then "claude" else backend
       in
+      let main_branch = resolve_branch ~repo_root main_branch in
       Project_store.save_config ~project_name ~github_token:token
         ~github_owner:owner ~github_repo:repo ~backend
         ~main_branch:(Branch.to_string main_branch)
@@ -2571,12 +2622,14 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
             | Some p -> p
             | None -> gameplan.Gameplan.project_name
           in
+          let repo_root = repo_root_for_fresh in
           let token, owner, repo =
             resolve_github_credentials ~github_token ~repo_root
           in
           let backend =
             if Base.String.is_empty backend then "claude" else backend
           in
+          let main_branch = resolve_branch ~repo_root main_branch in
           Project_store.save_config ~project_name ~github_token:token
             ~github_owner:owner ~github_repo:repo ~backend
             ~main_branch:(Branch.to_string main_branch)
@@ -2635,9 +2688,14 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                     merge_cli_stored github_token
                       stored.Project_store.github_token
                   in
+                  let repo_root =
+                    match repo_root with
+                    | Some rr -> normalize_repo_root rr
+                    | None -> stored.Project_store.repo_root
+                  in
                   let token, inferred_owner, inferred_repo =
                     resolve_github_credentials ~github_token:token_from_stored
-                      ~repo_root:stored.Project_store.repo_root
+                      ~repo_root
                   in
                   let owner =
                     let s =
@@ -2652,10 +2710,17 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                     if Base.String.is_empty s then inferred_repo else s
                   in
                   let branch =
-                    if Base.String.equal (Branch.to_string main_branch) "main"
-                    then Branch.of_string stored.Project_store.main_branch
-                    else main_branch
+                    match main_branch with
+                    | Some b -> b
+                    | None -> Branch.of_string stored.Project_store.main_branch
                   in
+                  (* Persist the resolved config so the next launch without
+                     CLI overrides picks up the current values. *)
+                  Project_store.save_config ~project_name:proj
+                    ~github_token:token ~github_owner:owner ~github_repo:repo
+                    ~backend ~main_branch:(Branch.to_string branch)
+                    ~poll_interval:stored.Project_store.poll_interval ~repo_root
+                    ~max_concurrency:stored.Project_store.max_concurrency;
                   let config =
                     {
                       project = Some proj;
@@ -2665,7 +2730,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                       github_repo = repo;
                       main_branch = branch;
                       poll_interval = stored.Project_store.poll_interval;
-                      repo_root = stored.Project_store.repo_root;
+                      repo_root;
                       max_concurrency = stored.Project_store.max_concurrency;
                       headless;
                       user_config =
@@ -2874,8 +2939,9 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 :: common_fibers)
             with Quit_tui -> ())
 
-let run ~project ~gameplan_path ~github_token ~backend ~main_branch
-    ~poll_interval ~repo_root ~max_concurrency ~headless =
+let run ~project ~gameplan_path ~github_token ~backend
+    ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
+    ~max_concurrency ~headless =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
       ~poll_interval ~repo_root ~max_concurrency ~headless
@@ -2922,16 +2988,18 @@ let backend_arg =
 let repo_arg =
   let open Cmdliner in
   Arg.(
-    value & opt string "."
+    value
+    & opt (some string) None
     & info [ "repo" ] ~docv:"PATH"
         ~doc:"Path to the git repository (default: current directory).")
 
 let main_branch_arg =
   let open Cmdliner in
   Arg.(
-    value & opt string "main"
+    value
+    & opt (some string) None
     & info [ "main-branch" ] ~docv:"BRANCH"
-        ~doc:"Main branch name (default: main).")
+        ~doc:"Main branch name. Auto-detected from the git remote when omitted.")
 
 let poll_interval_arg =
   let open Cmdliner in
@@ -2958,10 +3026,13 @@ let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend main_branch
       poll_interval repo_root max_concurrency headless =
+    let main_branch =
+      Base.Option.map main_branch ~f:(fun s ->
+          Branch.of_string (Base.String.strip s))
+    in
     run ~project ~gameplan_path ~github_token
       ~backend:(Base.String.strip backend)
-      ~main_branch:(Branch.of_string (Base.String.strip main_branch))
-      ~poll_interval ~repo_root ~max_concurrency ~headless
+      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
   in
   let term =
     Term.(
