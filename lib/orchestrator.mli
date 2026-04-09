@@ -208,12 +208,13 @@ val apply_conflict_push_result :
     [Push_branch] effect ([None] when no push was requested). Returns the final
     resolution and updated state.
 
-    - [Conflict_done]: conflict fully resolved (push succeeded or was
-      redundant).
+    - [Conflict_done]: conflict fully resolved (rebase succeeded and push
+      landed).
     - [Conflict_retry_push]: rebase succeeded locally but push failed;
       re-enqueues [Merge_conflict] so the next cycle retries.
     - [Conflict_needs_agent]: the coding agent must resolve the conflict
-      manually (rebase was noop/conflict, or push was up-to-date).
+      manually (rebase was noop/conflict — push result is irrelevant because the
+      rebase itself didn't resolve the conflict).
     - [Conflict_give_up]: unrecoverable rebase error. *)
 
 val restore :

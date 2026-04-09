@@ -912,8 +912,13 @@ let mk_bootstrapped () =
 
 (** Simulate one full conflict-noop cycle: poll(conflict) → fire
     Respond(Merge_conflict) → apply_conflict_rebase_result(Noop) →
-    apply_conflict_push_result(Push_up_to_date) → session completes → complete.
-    Returns the updated orchestrator. *)
+    apply_conflict_push_result(Deliver_to_agent, Push_ok) → session completes →
+    complete. Returns the updated orchestrator.
+
+    The push result is [Push_ok] because [force_push_with_lease] succeeds even
+    when the rebase was a noop — it pushes the existing (conflicting) content.
+    This is the path observed in production; the previous version of this helper
+    skipped [apply_conflict_push_result] entirely. *)
 let conflict_noop_cycle orch pid patches =
   let branch_of = branch_of_patches patches in
   let gameplan = make_gameplan patches in
@@ -947,14 +952,24 @@ let conflict_noop_cycle orch pid patches =
     Graph.initial_base (Orchestrator.graph orch) pid ~has_merged ~branch_of
       ~main
   in
-  let orch, _decision, _effects =
+  let orch, decision, _effects =
     Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop new_base
   in
-  (* 4. Session completes without resolving the conflict *)
+  (* 4. Apply push result — force-push succeeds even on noop rebase *)
+  let orch, resolution =
+    Orchestrator.apply_conflict_push_result orch pid decision
+      (Some Worktree.Push_ok)
+  in
   let orch =
     Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
   in
-  Orchestrator.complete orch pid
+  (* Conflict_done means the push handler already completed the agent.
+     Conflict_needs_agent means the agent session ran but we must complete. *)
+  match resolution with
+  | Orchestrator.Conflict_done -> orch
+  | Orchestrator.Conflict_needs_agent -> Orchestrator.complete orch pid
+  | Orchestrator.Conflict_retry_push | Orchestrator.Conflict_give_up ->
+      failwith "unexpected resolution in conflict_noop_cycle"
 
 (** PI-6: Repeated Noop conflict rebase converges to needs_intervention. If the
     rebase keeps returning Noop (stale refs or agent unable to resolve), the
@@ -1058,3 +1073,53 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi7;
   Stdlib.print_endline "PI-7 passed"
+
+(** PI-8: Conflict noop cycle does not re-enqueue Merge_conflict on the next
+    poll. After a full conflict-noop cycle (poll → fire → rebase Noop → push
+    Push_ok → complete), the next poll must NOT re-enqueue Merge_conflict
+    because has_conflict should still be true (had_conflict_before = true). This
+    is a regression test for the infinite conflict notification loop. *)
+let () =
+  let prop_pi8 =
+    QCheck2.Test.make
+      ~name:
+        "PI-8: conflict noop cycle does not re-enqueue Merge_conflict on next \
+         poll"
+      (QCheck2.Gen.return ()) (fun () ->
+        let orch, pid, patches = mk_bootstrapped () in
+        (* Run one full conflict-noop cycle *)
+        let orch = conflict_noop_cycle orch pid patches in
+        let a = Orchestrator.agent orch pid in
+        (* After the cycle, has_conflict must be true so the next poll
+           sees had_conflict_before = true and skips re-enqueue. *)
+        if not a.Patch_agent.has_conflict then
+          failwith
+            "has_conflict is false after conflict_noop_cycle — next poll will \
+             re-enqueue";
+        (* Simulate the next poll with conflict still reported by GitHub *)
+        let branch_of = branch_of_patches patches in
+        let poll_result =
+          make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
+            ~checks_passing:false ~review_comments:false
+        in
+        let observation =
+          Patch_controller.
+            {
+              poll_result;
+              head_branch = Some (branch_of pid);
+              base_branch = None;
+              branch_in_root = false;
+              worktree_path = None;
+            }
+        in
+        let orch, _logs, _blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        let a = Orchestrator.agent orch pid in
+        (* Merge_conflict must NOT be in the queue — it was already handled *)
+        not
+          (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+             ~equal:Operation_kind.equal))
+  in
+  QCheck2.Test.check_exn prop_pi8;
+  Stdlib.print_endline "PI-8 passed"

@@ -274,8 +274,8 @@ let () =
             let a = complete a in
             (not a.busy) && Option.is_none a.current_op
           with _ -> false);
-      (* -- respond Merge_conflict clears has_conflict -- *)
-      Test.make ~name:"respond Merge_conflict clears has_conflict" ~count:1
+      (* -- respond Merge_conflict preserves has_conflict -- *)
+      Test.make ~name:"respond Merge_conflict preserves has_conflict" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           let a =
@@ -285,7 +285,7 @@ let () =
           let a = set_has_conflict a in
           let a = enqueue a Operation_kind.Merge_conflict in
           let a = respond a Operation_kind.Merge_conflict in
-          not a.has_conflict);
+          a.has_conflict);
       (* -- respond Review_comments always sets changed (lazy fetch) -- *)
       Test.make ~name:"respond Review_comments always sets changed (lazy fetch)"
         ~count:1
