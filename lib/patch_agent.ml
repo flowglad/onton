@@ -346,13 +346,11 @@ let respond t k =
   let is_human = equal_k Human in
   let is_ci = equal_k Ci in
   let is_review = equal_k Review_comments in
-  let is_merge_conflict = equal_k Merge_conflict in
   let satisfies = if is_human then false else t.satisfies in
   (* Spec: changed' only when a valid pending comment exists. We set it
      unconditionally here because comment validity is resolved downstream
      by the agent session — a conservative simplification. *)
   let changed = if is_ci || is_review then true else t.changed in
-  let has_conflict = if is_merge_conflict then false else t.has_conflict in
   let ci_failure_count =
     if is_ci then t.ci_failure_count + 1 else t.ci_failure_count
   in
@@ -365,7 +363,6 @@ let respond t k =
     queue;
     satisfies;
     changed;
-    has_conflict;
     human_messages = t.human_messages;
     ci_failure_count;
     merge_ready = false;

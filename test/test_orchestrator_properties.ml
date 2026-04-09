@@ -919,12 +919,15 @@ let () =
         with _ -> false)
   in
 
-  (* Deliver_to_agent + Push_ok -> Conflict_done (push resolved it) *)
+  (* Deliver_to_agent + Push_ok -> Conflict_needs_agent.  A Noop rebase
+     means the local branch was already up-to-date; pushing the same
+     conflicting content does not resolve the GitHub conflict.  The agent
+     must still handle it, so has_conflict must be preserved. *)
   let prop_conflict_push_deliver_ok =
     Test.make
       ~name:
         "apply_conflict_push_result: Deliver_to_agent + Push_ok -> \
-         Conflict_done" (Gen.pair gen_patch_list_unique gen_branch)
+         Conflict_needs_agent" (Gen.pair gen_patch_list_unique gen_branch)
       (fun (patches, new_base) ->
         try
           match patches with
@@ -943,9 +946,8 @@ let () =
               in
               let a = Orchestrator.agent orch pid in
               Orchestrator.equal_conflict_resolution resolution
-                Orchestrator.Conflict_done
-              && (not a.Patch_agent.busy)
-              && not a.Patch_agent.has_conflict
+                Orchestrator.Conflict_needs_agent
+              && a.Patch_agent.has_conflict
         with _ -> false)
   in
 

@@ -478,14 +478,10 @@ let apply_conflict_push_result t patch_id decision
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Conflict_retry_push)
-  | Deliver_to_agent, Some Worktree.Push_ok ->
-      let t = clear_has_conflict t patch_id in
-      let t = complete t patch_id in
-      (t, Conflict_done)
   | ( Deliver_to_agent,
       ( None
       | Some
-          ( Worktree.Push_up_to_date | Worktree.Push_rejected
+          ( Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected
           | Worktree.Push_error _ ) ) ) ->
       (t, Conflict_needs_agent)
   | Conflict_failed, _ -> (t, Conflict_give_up)
