@@ -823,7 +823,7 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
     ~project_name ~show_help ~status_msg ~sorted_patch_ids ~input_mode
     ~prompt_line ~patches_start_row ~patches_scroll_offset
     ~patches_visible_count ~owner ~repo =
-  let buf = Buffer.create 64 in
+  let buf = Tui_input.Edit_buffer.create () in
   let selected_pid () =
     let pids = !sorted_patch_ids in
     let count = Base.List.length pids in
@@ -838,7 +838,14 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
     | Tui_input.Prompt_pr | Tui_input.Prompt_worktree | Tui_input.Prompt_message
     | Tui_input.Prompt_broadcast ->
         let prefix = Tui_input.prompt_prefix !input_mode in
-        prompt_line := Some (prefix ^ Buffer.contents buf)
+        let contents = Tui_input.Edit_buffer.contents buf in
+        let cursor_col =
+          Term.visible_length prefix
+          + Term.visible_length
+              (String.sub contents 0 (Tui_input.Edit_buffer.cursor buf))
+        in
+        prompt_line := Some { Tui.prompt_text = prefix ^ contents; cursor_col };
+        Atomic.set Term.Raw.redraw_needed true
   in
   let history = Tui_input.History.create () in
   let saved_draft = ref "" in
@@ -900,20 +907,20 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
         then
           match key with
           | Term.Key.Paste text ->
-              Buffer.add_string buf (normalize_paste text);
+              Tui_input.Edit_buffer.insert_string buf (normalize_paste text);
               loop ()
           | Term.Key.Escape ->
-              Buffer.clear buf;
+              Tui_input.Edit_buffer.clear buf;
               saved_draft := "";
               Tui_input.History.reset_browse history;
               input_mode := Tui_input.Normal;
               loop ()
           | Term.Key.Enter ->
-              let line = Buffer.contents buf in
+              let line = Tui_input.Edit_buffer.contents buf in
               Tui_input.History.push history line;
               Tui_input.History.reset_browse history;
               let mode = !input_mode in
-              Buffer.clear buf;
+              Tui_input.Edit_buffer.clear buf;
               saved_draft := "";
               input_mode := Tui_input.Normal;
               let line = Base.String.strip line in
@@ -1113,15 +1120,11 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
                   )
               | Tui_input.Normal | Tui_input.Manage_patch -> ());
               loop ()
-          | Term.Key.Backspace | Term.Key.Delete ->
-              let len = Buffer.length buf in
-              if len > 0 then (
-                let contents = Buffer.contents buf in
-                Buffer.clear buf;
-                Buffer.add_string buf (String.sub contents 0 (len - 1)));
+          | Term.Key.Backspace ->
+              Tui_input.Edit_buffer.delete_before buf;
               loop ()
           | Term.Key.Char c ->
-              Buffer.add_char buf c;
+              Tui_input.Edit_buffer.insert_char buf c;
               loop ()
           | Term.Key.Ctrl 'z' ->
               Term.Raw.suspend ();
@@ -1130,23 +1133,46 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
               let was_browsing = Tui_input.History.is_browsing history in
               (match Tui_input.History.older history with
               | Some s ->
-                  if not was_browsing then saved_draft := Buffer.contents buf;
-                  Buffer.clear buf;
-                  Buffer.add_string buf s
+                  if not was_browsing then
+                    saved_draft := Tui_input.Edit_buffer.contents buf;
+                  Tui_input.Edit_buffer.set buf s
               | None -> ());
               loop ()
           | Term.Key.Down ->
               (if Tui_input.History.is_browsing history then
                  match Tui_input.History.newer history with
-                 | Tui_input.History.Entry s ->
-                     Buffer.clear buf;
-                     Buffer.add_string buf s
+                 | Tui_input.History.Entry s -> Tui_input.Edit_buffer.set buf s
                  | Tui_input.History.At_fresh ->
-                     Buffer.clear buf;
-                     Buffer.add_string buf !saved_draft);
+                     Tui_input.Edit_buffer.set buf !saved_draft);
               loop ()
-          | Term.Key.Tab | Term.Key.Left | Term.Key.Right | Term.Key.Home
-          | Term.Key.End | Term.Key.Page_up | Term.Key.Page_down | Term.Key.F _
+          | Term.Key.Left ->
+              Tui_input.Edit_buffer.move_left buf;
+              loop ()
+          | Term.Key.Right ->
+              Tui_input.Edit_buffer.move_right buf;
+              loop ()
+          | Term.Key.Home ->
+              Tui_input.Edit_buffer.move_home buf;
+              loop ()
+          | Term.Key.End ->
+              Tui_input.Edit_buffer.move_end buf;
+              loop ()
+          | Term.Key.Delete ->
+              Tui_input.Edit_buffer.delete_at buf;
+              loop ()
+          | Term.Key.Ctrl 'a' ->
+              Tui_input.Edit_buffer.move_home buf;
+              loop ()
+          | Term.Key.Ctrl 'e' ->
+              Tui_input.Edit_buffer.move_end buf;
+              loop ()
+          | Term.Key.Ctrl 'k' ->
+              ignore (Tui_input.Edit_buffer.kill_to_end buf);
+              loop ()
+          | Term.Key.Ctrl 'u' ->
+              ignore (Tui_input.Edit_buffer.kill_to_start buf);
+              loop ()
+          | Term.Key.Tab | Term.Key.Page_up | Term.Key.Page_down | Term.Key.F _
           | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
               loop ()
         else if Term.Key.equal key (Term.Key.Ctrl 'z') then (
@@ -1158,8 +1184,8 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
               (* In detail view, auto-enter message mode and buffer the paste *)
               match !view_mode with
               | Tui.Detail_view _ ->
-                  Buffer.clear buf;
-                  Buffer.add_string buf (normalize_paste text);
+                  Tui_input.Edit_buffer.clear buf;
+                  Tui_input.Edit_buffer.insert_string buf (normalize_paste text);
                   input_mode := Tui_input.Prompt_message;
                   loop ()
               | Tui.List_view | Tui.Timeline_view -> loop ())
@@ -1226,17 +1252,17 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
                   loop ())
           | Term.Key.Char '*' when Tui.equal_view_mode !view_mode Tui.List_view
             ->
-              Buffer.clear buf;
+              Tui_input.Edit_buffer.clear buf;
               input_mode := Tui_input.Prompt_broadcast;
               loop ()
           | Term.Key.Char '+' when Tui.equal_view_mode !view_mode Tui.List_view
             ->
-              Buffer.clear buf;
+              Tui_input.Edit_buffer.clear buf;
               input_mode := Tui_input.Prompt_pr;
               loop ()
           | Term.Key.Char 'w' when Tui.equal_view_mode !view_mode Tui.List_view
             ->
-              Buffer.clear buf;
+              Tui_input.Edit_buffer.clear buf;
               input_mode := Tui_input.Prompt_worktree;
               loop ()
           | Term.Key.Char 'o'

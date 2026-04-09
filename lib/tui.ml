@@ -380,6 +380,7 @@ let status_indicator = function
 
 (** {1 Status messages} *)
 
+type prompt_info = { prompt_text : string; cursor_col : int }
 type msg_level = Info | Warning | Error [@@deriving show, eq]
 
 type status_msg = {
@@ -1039,10 +1040,28 @@ let render_timeline ~width ~scroll (entries : activity_entry list) =
 
 let render_footer ~width ~view_mode ?prompt_line () =
   match prompt_line with
-  | Some text ->
+  | Some { prompt_text; cursor_col } ->
       let usable = Int.max 1 (width - 2) in
-      let wrapped = Term.wrap_lines usable text in
-      Term.hrule width :: wrapped
+      let wrapped = Term.wrap_lines usable prompt_text in
+      let cursor_line = cursor_col / usable in
+      let cursor_within = cursor_col % usable in
+      let with_cursor =
+        List.mapi wrapped ~f:(fun i line ->
+            if i <> cursor_line || cursor_within >= Term.visible_length line
+            then line
+            else
+              let bp = Term.byte_offset_of_visible_col line cursor_within in
+              let bp_next =
+                Term.byte_offset_of_visible_col line (cursor_within + 1)
+              in
+              let before = String.sub line ~pos:0 ~len:bp in
+              let ch = String.sub line ~pos:bp ~len:(bp_next - bp) in
+              let after =
+                String.sub line ~pos:bp_next ~len:(String.length line - bp_next)
+              in
+              before ^ Term.Sgr.reverse ^ ch ^ Term.Sgr.reset ^ after)
+      in
+      Term.hrule width :: with_cursor
   | None ->
       let help =
         match view_mode with

@@ -300,3 +300,168 @@ module History = struct
     (* browse should be reset *)
     not (is_browsing h)
 end
+
+module Edit_buffer = struct
+  type t = { mutable text : string; mutable pos : int }
+
+  let create () = { text = ""; pos = 0 }
+  let contents t = t.text
+  let cursor t = t.pos
+  let length t = String.length t.text
+
+  let clear t =
+    t.text <- "";
+    t.pos <- 0
+
+  let set t s =
+    t.text <- s;
+    t.pos <- String.length s
+
+  let insert_char t c =
+    let len = String.length t.text in
+    let s = String.make 1 c in
+    t.text <-
+      String.sub t.text ~pos:0 ~len:t.pos
+      ^ s
+      ^ String.sub t.text ~pos:t.pos ~len:(len - t.pos);
+    t.pos <- t.pos + 1
+
+  let insert_string t s =
+    let slen = String.length s in
+    if slen > 0 then begin
+      let len = String.length t.text in
+      t.text <-
+        String.sub t.text ~pos:0 ~len:t.pos
+        ^ s
+        ^ String.sub t.text ~pos:t.pos ~len:(len - t.pos);
+      t.pos <- t.pos + slen
+    end
+
+  let delete_before t =
+    if t.pos > 0 then begin
+      let len = String.length t.text in
+      t.text <-
+        String.sub t.text ~pos:0 ~len:(t.pos - 1)
+        ^ String.sub t.text ~pos:t.pos ~len:(len - t.pos);
+      t.pos <- t.pos - 1
+    end
+
+  let delete_at t =
+    let len = String.length t.text in
+    if t.pos < len then
+      t.text <-
+        String.sub t.text ~pos:0 ~len:t.pos
+        ^ String.sub t.text ~pos:(t.pos + 1) ~len:(len - t.pos - 1)
+
+  let move_left t = if t.pos > 0 then t.pos <- t.pos - 1
+  let move_right t = if t.pos < String.length t.text then t.pos <- t.pos + 1
+  let move_home t = t.pos <- 0
+  let move_end t = t.pos <- String.length t.text
+
+  let kill_to_end t =
+    let len = String.length t.text in
+    let killed = String.sub t.text ~pos:t.pos ~len:(len - t.pos) in
+    t.text <- String.sub t.text ~pos:0 ~len:t.pos;
+    killed
+
+  let kill_to_start t =
+    let len = String.length t.text in
+    let killed = String.sub t.text ~pos:0 ~len:t.pos in
+    t.text <- String.sub t.text ~pos:t.pos ~len:(len - t.pos);
+    t.pos <- 0;
+    killed
+
+  let%test "create is empty with cursor at 0" =
+    let b = create () in
+    String.equal (contents b) "" && cursor b = 0
+
+  let%test "insert_char at end" =
+    let b = create () in
+    insert_char b 'a';
+    insert_char b 'b';
+    String.equal (contents b) "ab" && cursor b = 2
+
+  let%test "insert_char at middle" =
+    let b = create () in
+    insert_char b 'a';
+    insert_char b 'c';
+    move_left b;
+    insert_char b 'b';
+    String.equal (contents b) "abc" && cursor b = 2
+
+  let%test "insert_string at middle" =
+    let b = create () in
+    set b "ac";
+    move_left b;
+    insert_string b "bb";
+    String.equal (contents b) "abbc" && cursor b = 3
+
+  let%test "delete_before at middle" =
+    let b = create () in
+    set b "abc";
+    move_left b;
+    delete_before b;
+    String.equal (contents b) "ac" && cursor b = 1
+
+  let%test "delete_before at start is no-op" =
+    let b = create () in
+    set b "abc";
+    move_home b;
+    delete_before b;
+    String.equal (contents b) "abc" && cursor b = 0
+
+  let%test "delete_at removes char under cursor" =
+    let b = create () in
+    set b "abc";
+    move_home b;
+    delete_at b;
+    String.equal (contents b) "bc" && cursor b = 0
+
+  let%test "delete_at at end is no-op" =
+    let b = create () in
+    set b "abc";
+    delete_at b;
+    String.equal (contents b) "abc" && cursor b = 3
+
+  let%test "move_left clamps at 0" =
+    let b = create () in
+    set b "ab";
+    move_home b;
+    move_left b;
+    cursor b = 0
+
+  let%test "move_right clamps at length" =
+    let b = create () in
+    set b "ab";
+    move_right b;
+    cursor b = 2
+
+  let%test "kill_to_end returns and removes suffix" =
+    let b = create () in
+    set b "abcde";
+    move_home b;
+    move_right b;
+    move_right b;
+    let killed = kill_to_end b in
+    String.equal killed "cde" && String.equal (contents b) "ab" && cursor b = 2
+
+  let%test "kill_to_start returns and removes prefix" =
+    let b = create () in
+    set b "abcde";
+    move_home b;
+    move_right b;
+    move_right b;
+    let killed = kill_to_start b in
+    String.equal killed "ab" && String.equal (contents b) "cde" && cursor b = 0
+
+  let%test "set puts cursor at end" =
+    let b = create () in
+    set b "hello";
+    cursor b = 5 && String.equal (contents b) "hello"
+
+  let%test "clear resets everything" =
+    let b = create () in
+    set b "hello";
+    clear b;
+    cursor b = 0 && String.equal (contents b) ""
+end
