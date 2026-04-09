@@ -841,7 +841,8 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
         let contents = Tui_input.Edit_buffer.contents buf in
         let cursor_col =
           Term.visible_length prefix
-          + Term.visible_length (String.sub contents 0 (Tui_input.Edit_buffer.cursor buf))
+          + Term.visible_length
+              (String.sub contents 0 (Tui_input.Edit_buffer.cursor buf))
         in
         prompt_line := Some { Tui.prompt_text = prefix ^ contents; cursor_col };
         Atomic.set Term.Raw.redraw_needed true

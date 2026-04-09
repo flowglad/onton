@@ -1057,8 +1057,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
               let before = String.sub line ~pos:0 ~len:bp in
               let ch = String.sub line ~pos:bp ~len:(bp_next - bp) in
               let after =
-                String.sub line ~pos:bp_next
-                  ~len:(String.length line - bp_next)
+                String.sub line ~pos:bp_next ~len:(String.length line - bp_next)
               in
               before ^ Term.Sgr.reverse ^ ch ^ Term.Sgr.reset ^ after)
       in
