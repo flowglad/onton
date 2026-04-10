@@ -85,9 +85,6 @@ let apply_poll_result t patch_id
       Orchestrator.mark_merged t patch_id)
     else t
   in
-  let had_conflict_before =
-    (Orchestrator.agent t patch_id).Patch_agent.has_conflict
-  in
   let t =
     if poll_result.has_conflict then (
       let agent = Orchestrator.agent t patch_id in
@@ -142,10 +139,9 @@ let apply_poll_result t patch_id
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Merge_conflict ->
-            if is_new && not had_conflict_before then (
+            if is_new then
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
-              Orchestrator.enqueue acc patch_id kind)
-            else acc
+            Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Implementation_notes ->
             if is_new then

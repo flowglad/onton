@@ -210,11 +210,12 @@ val apply_conflict_rebase_result :
   t * conflict_rebase_decision * rebase_effect list
 (** Apply a rebase outcome during merge-conflict resolution. Pure function. [Ok]
     -> clear_has_conflict + reset_conflict_noop_count + complete +
-    [Conflict_resolved] + [[Push_branch]]. [Noop] ->
+    [Conflict_resolved] + [[Push_branch]]. [Noop] -> clear_has_conflict +
     increment_conflict_noop_count + complete + [Conflict_resolved] +
-    [[Push_branch]] (local is correct, push needed; has_conflict kept true to
-    suppress re-enqueue). [Conflict] -> set_has_conflict + [Deliver_to_agent] +
-    [[]]. [Error _] -> set_session_failed + complete + [Conflict_failed]. *)
+    [[Push_branch]] (local is correct; has_conflict cleared so it purely tracks
+    GitHub state — the poller will re-set and re-enqueue if conflict persists).
+    [Conflict] -> set_has_conflict + [Deliver_to_agent] + [[]]. [Error _] ->
+    set_session_failed + complete + [Conflict_failed]. *)
 
 type conflict_resolution =
   | Conflict_done
