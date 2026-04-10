@@ -645,10 +645,18 @@ let short_op_name = function
 
 let render_patch_row ~width ~selected (pv : patch_view) =
   let badge = render_status_badge pv.status in
+  let patch_label =
+    let id_str = Patch_id.to_string pv.patch_id in
+    let id_short =
+      if String.length id_str > 4 then String.sub id_str ~pos:0 ~len:4
+      else id_str
+    in
+    Printf.sprintf "Patch %-4s" id_short
+  in
   let pr_label =
     match pv.pr_number with
-    | Some n -> Printf.sprintf "#%-4d " (Pr_number.to_int n)
-    | None -> ""
+    | Some n -> Printf.sprintf "#%-5d" (Pr_number.to_int n)
+    | None -> "  --  "
   in
   let op_suffix =
     match pv.current_op with
@@ -676,8 +684,8 @@ let render_patch_row ~width ~selected (pv : patch_view) =
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s%s  %s%s%s%s" cursor pr_label badge pv.title
-         op_suffix ci_info dep_info)
+      (Printf.sprintf "%s%s %s %s  %s%s%s%s" cursor patch_label pr_label badge
+         pv.title op_suffix ci_info dep_info)
   in
   if selected then Term.styled [ Term.Sgr.bold ] row else row
 
