@@ -550,6 +550,7 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
         | None -> "" );
       ("git_status", git_status);
       ("git_diff", git_diff);
+      ("task_context", task_context);
     ]
   in
   render_with_override ~project_name ~name:"merge_conflict" ~vars
