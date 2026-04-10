@@ -31,24 +31,36 @@ let make_busy orch _patches gameplan pid kind =
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   orch
 
-(* ========== AO-1: Non-stale start outcomes produce busy=false ========== *)
+(* ========== AO-1a: Start_failed produces busy=false ========== *)
 
 let () =
-  let prop =
-    QCheck2.Test.make ~name:"AO-1: non-stale start outcomes produce busy=false"
-      (QCheck2.Gen.oneof_list
-         [ Orchestrator.Start_ok; Orchestrator.Start_failed ])
-      (fun outcome ->
-        let patches = mk_patches 1 in
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let pid = pid_of_idx patches 0 in
-        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
-        assert (Orchestrator.agent orch pid).Patch_agent.busy;
-        let orch = Orchestrator.apply_start_outcome orch pid outcome in
-        not (Orchestrator.agent orch pid).Patch_agent.busy)
+  let patches = mk_patches 1 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+  assert (Orchestrator.agent orch pid).Patch_agent.busy;
+  let orch =
+    Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
   in
-  QCheck2.Test.check_exn prop;
-  Stdlib.print_endline "AO-1 passed"
+  assert (not (Orchestrator.agent orch pid).Patch_agent.busy);
+  Stdlib.print_endline "AO-1a passed"
+
+(* ========== AO-1b: Start_ok keeps busy=true (caller completes after PR
+   discovery) ========== *)
+
+let () =
+  let patches = mk_patches 1 in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+  assert (Orchestrator.agent orch pid).Patch_agent.busy;
+  let orch = Orchestrator.apply_start_outcome orch pid Orchestrator.Start_ok in
+  (* busy stays true — caller will complete after PR discovery *)
+  assert (Orchestrator.agent orch pid).Patch_agent.busy;
+  (* caller completes after discovery *)
+  let orch = Orchestrator.complete orch pid in
+  assert (not (Orchestrator.agent orch pid).Patch_agent.busy);
+  Stdlib.print_endline "AO-1b passed"
 
 (* ========== AO-2: Non-stale respond outcomes produce busy=false ========== *)
 

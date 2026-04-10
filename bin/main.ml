@@ -2073,7 +2073,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         Orchestrator.on_pr_discovery_failure
                                           orch patch_id)
                               in
-                              discover 2
+                              discover 2;
+                              Runtime.update_orchestrator runtime (fun orch ->
+                                  Orchestrator.complete orch patch_id)
                           | Orchestrator.Start_stale -> ())))
           | Orchestrator.Rebase (patch_id, new_base) ->
               Some
@@ -2182,8 +2184,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       | Orchestrator.Rebase_push_error ->
                           log_event runtime ~patch_id
                             "runner: enqueuing rebase retry after push error");
-                      Runtime.update_orchestrator runtime (fun orch ->
-                          Orchestrator.complete orch patch_id);
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->

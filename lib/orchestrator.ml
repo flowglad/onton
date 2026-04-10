@@ -542,7 +542,10 @@ type start_outcome = Start_ok | Start_failed | Start_stale
 let apply_start_outcome t patch_id outcome =
   match outcome with
   | Start_stale -> t
-  | Start_ok -> complete t patch_id
+  | Start_ok ->
+      (* Caller must complete explicitly after PR discovery finishes,
+         so busy=true is held throughout the network call. *)
+      t
   | Start_failed -> complete t patch_id
 
 type respond_outcome =
