@@ -4,3 +4,4 @@ _opam/
 /worktrees/
 .claude
 .vercel
+node_modules/
