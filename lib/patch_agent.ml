@@ -169,7 +169,9 @@ let set_notified_base_branch t branch =
   { t with notified_base_branch = Some branch }
 
 let base_branch_changed t =
-  not (Option.equal Branch.equal t.base_branch t.notified_base_branch)
+  match (t.notified_base_branch, t.base_branch) with
+  | Some old_base, Some new_base -> not (Branch.equal old_base new_base)
+  | _ -> false
 
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }

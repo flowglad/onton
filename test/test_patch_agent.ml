@@ -784,6 +784,15 @@ let () =
             let a = rebase a ~base_branch:br in
             not (base_branch_changed a)
           with _ -> false);
+      (* -- set_base_branch before start does not trigger base_branch_changed -- *)
+      Test.make ~name:"set_base_branch before start: base_branch_changed false"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = create ~branch:br pid in
+            let a = set_base_branch a br in
+            not (base_branch_changed a)
+          with _ -> false);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
