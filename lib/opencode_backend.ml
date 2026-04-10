@@ -1,9 +1,13 @@
 open Base
 
-let build_args ~cwd_path ~prompt ~continue =
+let build_args ~cwd_path ~prompt ~resume_session =
   let base = [ "opencode"; "run"; "--format"; "json"; "--dir"; cwd_path ] in
-  let continue_args = if continue then [ "--continue" ] else [] in
-  base @ continue_args @ [ prompt ]
+  let resume_args =
+    match resume_session with
+    | Some session_id -> [ "--resume"; session_id ]
+    | None -> []
+  in
+  base @ resume_args @ [ prompt ]
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -52,11 +56,11 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
-let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt ~continue
-    ~on_event =
+let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
+    ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
   let cwd_path = snd cwd in
-  let args = build_args ~cwd_path ~prompt ~continue in
+  let args = build_args ~cwd_path ~prompt ~resume_session in
   let process_line line =
     let trimmed = String.strip line in
     if String.is_empty trimmed then [] else parse_event trimmed
@@ -68,21 +72,22 @@ let create ~process_mgr ~clock ~timeout : Llm_backend.t =
   {
     name = "OpenCode";
     run_streaming =
-      (fun ~cwd ~patch_id ~prompt ~continue ~on_event ->
+      (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
         run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
-          ~continue ~on_event);
+          ~resume_session ~on_event);
   }
 
 let%test "build_args without continue" =
   let args =
-    build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~continue:false
+    build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [ "opencode"; "run"; "--format"; "json"; "--dir"; "/tmp/work"; "do stuff" ]
 
 let%test "build_args with continue" =
   let args =
-    build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~continue:true
+    build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff"
+      ~resume_session:(Some "x")
   in
   List.equal String.equal args
     [
@@ -92,7 +97,8 @@ let%test "build_args with continue" =
       "json";
       "--dir";
       "/tmp/work";
-      "--continue";
+      "--resume";
+      "x";
       "do stuff";
     ]
 

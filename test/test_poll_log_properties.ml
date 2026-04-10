@@ -50,7 +50,7 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~pr_description_applied:true ~implementation_notes_delivered:true
     ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~checks_passing
     ~current_op ~current_message_id:None ~generation:0 ~worktree_path
-    ~head_branch ~branch_blocked
+    ~head_branch ~branch_blocked ~llm_session_id:None
 
 let make_poll_observation ~head_branch ~branch_in_root ~worktree_path
     poll_result =

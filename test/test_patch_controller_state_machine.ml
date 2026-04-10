@@ -305,6 +305,102 @@ let () =
         with _ -> false
         end)
   in
+  (* F1: llm_session_id survives review → human sequence *)
+  let prop_session_id_survives_review_human =
+    Test.make
+      ~name:
+        "patch_controller_state_machine: llm_session_id survives review → \
+         human sequence"
+      ~count:300
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          (* Start → get PR *)
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch = Orchestrator.complete orch pid in
+          let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+          (* Set llm_session_id *)
+          let orch = Orchestrator.set_llm_session_id orch pid (Some "sess-1") in
+          (* Enqueue Review_comments, plan, accept, session ok, complete *)
+          let orch =
+            Orchestrator.enqueue orch pid Operation_kind.Review_comments
+          in
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch =
+            Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
+          in
+          let orch = Orchestrator.complete orch pid in
+          (* Send human message, plan, accept, session ok, complete *)
+          let orch = Orchestrator.send_human_message orch pid "fix the typo" in
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch =
+            Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
+          in
+          let orch = Orchestrator.complete orch pid in
+          (* Assert session_id survived *)
+          let agent = Orchestrator.agent orch pid in
+          Option.equal String.equal agent.Patch_agent.llm_session_id
+            (Some "sess-1")
+        with _ -> false
+        end)
+  in
+  (* F2: llm_session_id cleared on Session_no_resume *)
+  let prop_session_id_cleared_on_no_resume =
+    Test.make
+      ~name:
+        "patch_controller_state_machine: llm_session_id cleared on \
+         Session_no_resume"
+      ~count:300
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          (* Start → get PR *)
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch = Orchestrator.complete orch pid in
+          let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+          (* Set llm_session_id *)
+          let orch = Orchestrator.set_llm_session_id orch pid (Some "sess-1") in
+          (* Enqueue Ci, plan, accept, session no_resume *)
+          let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch =
+            Orchestrator.apply_session_result orch pid
+              Orchestrator.Session_no_resume
+          in
+          (* Assert session_id cleared and fallback is Tried_fresh *)
+          let agent = Orchestrator.agent orch pid in
+          Option.is_none agent.Patch_agent.llm_session_id
+          && Onton.Patch_agent.equal_session_fallback
+               agent.Patch_agent.session_fallback Onton.Patch_agent.Tried_fresh
+        with _ -> false
+        end)
+  in
   QCheck_base_runner.run_tests ~verbose:true
     [
       prop_replay_deterministic;
@@ -312,5 +408,7 @@ let () =
       prop_human_after_review_completes;
       prop_second_human_after_review;
       prop_human_messages_survive_session_failure;
+      prop_session_id_survives_review_human;
+      prop_session_id_cleared_on_no_resume;
     ]
   |> Stdlib.exit

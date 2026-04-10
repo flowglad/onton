@@ -396,7 +396,18 @@ let rec apply_command orch patches cmd =
       | _ -> orch)
   | Apply_session_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
-      try Orchestrator.apply_session_result orch pid (to_session_result result)
+      try
+        let o =
+          Orchestrator.apply_session_result orch pid (to_session_result result)
+        in
+        match result with
+        | Sess_ok ->
+            Orchestrator.set_llm_session_id o pid
+              (Some (Printf.sprintf "sess-%s" (Patch_id.to_string pid)))
+        | Sess_failed_fresh | Sess_failed_resume | Sess_give_up
+        | Sess_worktree_missing | Sess_process_error_fresh
+        | Sess_process_error_resume | Sess_no_resume ->
+            o
       with Invalid_argument _ -> orch)
   | Apply_rebase_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
@@ -760,6 +771,20 @@ let check_notified_base_branch_coherence (a : Patch_agent.t) =
           notified_base_branch is Some but has_session is false"
          (Patch_id.to_string a.patch_id))
 
+(** I-13: llm_session_id coherence — when session_fallback is Tried_fresh or
+    Given_up, llm_session_id must be None (stale session cleared). *)
+let check_llm_session_id_coherence (a : Patch_agent.t) =
+  match a.session_fallback with
+  | Patch_agent.Tried_fresh | Patch_agent.Given_up ->
+      if Option.is_some a.llm_session_id then
+        failwith
+          (Printf.sprintf
+             "I-13 llm_session_id_coherence violated for %s: \
+              session_fallback=%s but llm_session_id is Some"
+             (Patch_id.to_string a.patch_id)
+             (Patch_agent.show_session_fallback a.session_fallback))
+  | Patch_agent.Fresh_available -> ()
+
 (* ========== Combined check ========== *)
 
 let merged_set_of orch =
@@ -778,7 +803,8 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged ~removed_pids =
       check_ci_failure_count_non_negative a;
       check_queue_no_duplicates a;
       check_conflict_not_cleared_while_in_flight a;
-      check_notified_base_branch_coherence a);
+      check_notified_base_branch_coherence a;
+      check_llm_session_id_coherence a);
   (* Monotonicity *)
   check_merged_monotonicity ~prev_merged ~curr_merged ~removed_pids;
   (* Per-action invariants *)

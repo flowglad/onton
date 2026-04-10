@@ -35,6 +35,7 @@ type t = {
   worktree_path : string option;
   head_branch : Branch.t option;
   branch_blocked : bool;
+  llm_session_id : string option;
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -80,6 +81,7 @@ let create ~branch patch_id =
     worktree_path = None;
     head_branch = None;
     branch_blocked = false;
+    llm_session_id = None;
   }
 
 let create_adhoc ~patch_id ~branch ~pr_number =
@@ -113,6 +115,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     worktree_path = None;
     head_branch = None;
     branch_blocked = false;
+    llm_session_id = None;
   }
 
 let highest_priority t =
@@ -132,13 +135,15 @@ let restore_human_messages t msgs = { t with human_messages = msgs }
 
 let set_session_failed t =
   match t.session_fallback with
-  | Fresh_available -> { t with session_fallback = Tried_fresh }
+  | Fresh_available ->
+      { t with session_fallback = Tried_fresh; llm_session_id = None }
   | Tried_fresh | Given_up -> t
 
 let set_tried_fresh t =
   match t.session_fallback with
-  | Fresh_available -> { t with session_fallback = Tried_fresh }
-  | Tried_fresh -> { t with session_fallback = Given_up }
+  | Fresh_available ->
+      { t with session_fallback = Tried_fresh; llm_session_id = None }
+  | Tried_fresh -> { t with session_fallback = Given_up; llm_session_id = None }
   | Given_up -> t
 
 let clear_session_fallback t = { t with session_fallback = Fresh_available }
@@ -150,7 +155,7 @@ let clear_session_fallback t = { t with session_fallback = Fresh_available }
 let on_session_failure t ~is_fresh =
   if (not (has_pr t)) && is_fresh then
     (* Start path fresh failure: full reset for clean retry *)
-    { t with session_fallback = Fresh_available }
+    { t with session_fallback = Fresh_available; llm_session_id = None }
   else
     let t = set_session_failed t in
     if is_fresh then set_tried_fresh t else t
@@ -214,6 +219,7 @@ let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
 let set_current_message_id t current_message_id = { t with current_message_id }
 let bump_generation t = { t with generation = t.generation + 1 }
+let set_llm_session_id t llm_session_id = { t with llm_session_id }
 
 let resume_current_message t ~op =
   { t with busy = true; has_session = true; current_op = op }
@@ -235,7 +241,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~is_draft ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~conflict_noop_count ~checks_passing ~current_op
     ~current_message_id ~generation ~worktree_path ~head_branch ~branch_blocked
-    =
+    ~llm_session_id =
   {
     patch_id;
     branch;
@@ -266,6 +272,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     worktree_path;
     head_branch;
     branch_blocked;
+    llm_session_id;
   }
 
 let set_pr_number t pr_number =

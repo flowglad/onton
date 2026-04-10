@@ -39,17 +39,21 @@ let pty_wrap args =
     [ "/usr/bin/script"; "-qc"; cmd; "/dev/null" ]
   else "/usr/bin/script" :: "-q" :: "/dev/null" :: args
 
-let build_args ~prompt ~continue =
+let build_args ~prompt ~resume_session =
   let base = [ "claude"; "-p"; prompt; "--output-format"; "text" ] in
-  let session_args = if continue then [ "--continue" ] else [] in
+  let session_args =
+    match resume_session with Some id -> [ "--resume"; id ] | None -> []
+  in
   let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
   base @ session_args @ flags
 
-let build_stream_args ~prompt ~continue =
+let build_stream_args ~prompt ~resume_session =
   let base =
     [ "claude"; "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
   in
-  let session_args = if continue then [ "--continue" ] else [] in
+  let session_args =
+    match resume_session with Some id -> [ "--resume"; id ] | None -> []
+  in
   let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
   base @ session_args @ flags
 
@@ -157,6 +161,15 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
             |> Option.value ~default:"unknown error"
           in
           [ Types.Stream_event.Error err ]
+      | Some "system" -> (
+          let subtype = member "subtype" json |> to_string_option in
+          match subtype with
+          | Some "init" -> (
+              match member "session_id" json |> to_string_option with
+              | Some session_id ->
+                  [ Types.Stream_event.Session_init { session_id } ]
+              | None -> [])
+          | _ -> [])
       | _ -> [])
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
@@ -165,9 +178,9 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
 let parse_stream_event (line : string) : Types.Stream_event.t option =
   match parse_stream_events line with [] -> None | e :: _ -> Some e
 
-let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
+let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
   ignore (patch_id : Types.Patch_id.t);
-  let args = pty_wrap (build_args ~prompt ~continue) in
+  let args = pty_wrap (build_args ~prompt ~resume_session) in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
@@ -200,10 +213,10 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~continue =
     timed_out = false;
   }
 
-let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt ~continue
-    ~on_event =
+let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
+    ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
-  let args = pty_wrap (build_stream_args ~prompt ~continue) in
+  let args = pty_wrap (build_stream_args ~prompt ~resume_session) in
   let process_line line =
     let trimmed = strip_ansi (String.strip line) in
     if String.is_empty trimmed then [] else parse_stream_events trimmed
@@ -211,8 +224,8 @@ let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt ~continue
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
     ~process_line ~on_event
 
-let%test "build_args without continue" =
-  let args = build_args ~prompt:"do stuff" ~continue:false in
+let%test "build_args fresh (no resume)" =
+  let args = build_args ~prompt:"do stuff" ~resume_session:None in
   List.equal String.equal args
     [
       "claude";
@@ -225,8 +238,8 @@ let%test "build_args without continue" =
       "200";
     ]
 
-let%test "build_args with continue" =
-  let args = build_args ~prompt:"do stuff" ~continue:true in
+let%test "build_args with resume session" =
+  let args = build_args ~prompt:"do stuff" ~resume_session:(Some "abc-123") in
   List.equal String.equal args
     [
       "claude";
@@ -234,14 +247,15 @@ let%test "build_args with continue" =
       "do stuff";
       "--output-format";
       "text";
-      "--continue";
+      "--resume";
+      "abc-123";
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
     ]
 
-let%test "build_stream_args without continue" =
-  let args = build_stream_args ~prompt:"do stuff" ~continue:false in
+let%test "build_stream_args fresh (no resume)" =
+  let args = build_stream_args ~prompt:"do stuff" ~resume_session:None in
   List.equal String.equal args
     [
       "claude";
@@ -255,8 +269,10 @@ let%test "build_stream_args without continue" =
       "200";
     ]
 
-let%test "build_stream_args with continue" =
-  let args = build_stream_args ~prompt:"do stuff" ~continue:true in
+let%test "build_stream_args with resume session" =
+  let args =
+    build_stream_args ~prompt:"do stuff" ~resume_session:(Some "abc-123")
+  in
   List.equal String.equal args
     [
       "claude";
@@ -265,7 +281,8 @@ let%test "build_stream_args with continue" =
       "--output-format";
       "stream-json";
       "--verbose";
-      "--continue";
+      "--resume";
+      "abc-123";
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
@@ -331,3 +348,21 @@ let%test "parse_stream_event invalid json returns None" =
 
 let%test "parse_stream_event unknown type returns None" =
   Option.is_none (parse_stream_event {|{"type":"ping"}|})
+
+let%test "parse_stream_events extracts session_id from system/init" =
+  let line =
+    {|{"type":"system","subtype":"init","session_id":"d3c2d71e-0399-4ed3-810a-9c1edce7dd00","tools":[]}|}
+  in
+  List.equal Types.Stream_event.equal (parse_stream_events line)
+    [
+      Types.Stream_event.Session_init
+        { session_id = "d3c2d71e-0399-4ed3-810a-9c1edce7dd00" };
+    ]
+
+let%test "parse_stream_events ignores system events without init subtype" =
+  let line = {|{"type":"system","subtype":"heartbeat"}|} in
+  List.is_empty (parse_stream_events line)
+
+let%test "parse_stream_events ignores system/init without session_id" =
+  let line = {|{"type":"system","subtype":"init"}|} in
+  List.is_empty (parse_stream_events line)

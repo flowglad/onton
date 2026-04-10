@@ -24,11 +24,11 @@ type classification =
 
 let truncate s n = if String.length s <= n then s else String.prefix s n ^ "..."
 
-let classify ~continue result =
+let classify ~is_resume result =
   match result with
   | Error msg -> Process_error msg
   | Ok r when r.timed_out -> Timed_out
-  | Ok r when (not r.got_events) && continue -> No_session_to_resume
+  | Ok r when (not r.got_events) && is_resume -> No_session_to_resume
   | Ok r when r.exit_code = 0 -> Success { stream_errors = r.stream_errors }
   | Ok r ->
       let stderr = String.strip r.stderr in
