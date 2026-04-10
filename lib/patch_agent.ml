@@ -163,7 +163,13 @@ let clear_has_conflict t =
 let increment_conflict_noop_count t =
   { t with conflict_noop_count = t.conflict_noop_count + 1 }
 
-let set_base_branch t branch = { t with base_branch = Some branch }
+let set_base_branch t branch =
+  let notified =
+    if t.has_session then
+      match t.notified_base_branch with None -> Some branch | some -> some
+    else t.notified_base_branch
+  in
+  { t with base_branch = Some branch; notified_base_branch = notified }
 
 let set_notified_base_branch t branch =
   { t with notified_base_branch = Some branch }
@@ -318,11 +324,16 @@ let rebase t ~base_branch =
   in
   {
     t with
+    has_session = true;
     busy = true;
     current_op = Some Rebase;
     current_message_id = None;
     queue;
     base_branch = Some base_branch;
+    notified_base_branch =
+      (match t.notified_base_branch with
+      | None -> Some base_branch
+      | some -> some);
     merge_ready = false;
     checks_passing = false;
   }
@@ -367,6 +378,8 @@ let respond t k =
     changed;
     human_messages = t.human_messages;
     ci_failure_count;
+    notified_base_branch =
+      (match t.notified_base_branch with None -> t.base_branch | some -> some);
     merge_ready = false;
     checks_passing = false;
   }

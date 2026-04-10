@@ -1853,10 +1853,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
            fiber that completes the same patch between read and update. *)
         let was_busy =
           Runtime.update_orchestrator_returning runtime (fun orch ->
-              let agent = Orchestrator.agent orch patch_id in
-              if agent.Patch_agent.busy then
-                (Orchestrator.complete orch patch_id, true)
-              else (orch, false))
+              match Orchestrator.find_agent orch patch_id with
+              | None -> (orch, false)
+              | Some agent ->
+                  if agent.Patch_agent.busy then
+                    (Orchestrator.complete orch patch_id, true)
+                  else (orch, false))
         in
         if was_busy then
           log_event runtime ~patch_id
