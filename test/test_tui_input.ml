@@ -32,7 +32,7 @@ let () =
   assert (Tui_input.equal_command (Tui_input.of_key (Term.Key.Char 'h')) Help);
   assert (Tui_input.equal_command (Tui_input.of_key (Term.Key.Char '?')) Help);
   (* Non-navigation commands don't change selection *)
-  let s = Tui_input.apply_move ~count ~selected:5 Tui_input.Refresh in
+  let s = Tui_input.apply_move ~count ~selected:5 Tui_input.Noop in
   assert (s = 5);
   let s = Tui_input.apply_move ~count ~selected:5 Tui_input.Quit in
   assert (s = 5);

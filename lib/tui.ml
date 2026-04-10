@@ -1104,7 +1104,6 @@ let render_help_overlay ~width ~height =
           "w         Register worktree (enter path)";
           "-/x       Remove selected patch";
           "t         Toggle timeline";
-          "r         Refresh";
           "q         Quit";
         ] );
       ( "Detail View",

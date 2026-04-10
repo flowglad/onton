@@ -7,7 +7,6 @@ open Base
 
 type command =
   | Quit
-  | Refresh
   | Help
   | Move_up
   | Move_down
@@ -44,7 +43,6 @@ let prompt_prefix = function
 let of_key (key : Term.Key.t) : command =
   match key with
   | Char 'q' | Ctrl 'c' -> Quit
-  | Char 'r' -> Refresh
   | Char 'h' | Char '?' -> Help
   | Char 't' -> Timeline
   | Up | Char 'k' -> Move_up
@@ -78,13 +76,13 @@ let apply_move ~count ~selected (cmd : command) =
         if n >= count then -1 else n
     | Page_up -> if selected = -1 then -1 else clamp (selected - 5)
     | Page_down -> if selected = -1 then 0 else clamp (selected + 5)
-    | Quit | Refresh | Help | Select | Back | Timeline | Noop | Send_message _
-    | Add_pr _ | Add_worktree _ | Remove_patch | Open_in_browser ->
+    | Quit | Help | Select | Back | Timeline | Noop | Send_message _ | Add_pr _
+    | Add_worktree _ | Remove_patch | Open_in_browser ->
         if selected >= count then -1 else selected
 
 let%test "q maps to Quit" = equal_command (of_key (Char 'q')) Quit
 let%test "ctrl-c maps to Quit" = equal_command (of_key (Ctrl 'c')) Quit
-let%test "r maps to Refresh" = equal_command (of_key (Char 'r')) Refresh
+let%test "r maps to Noop" = equal_command (of_key (Char 'r')) Noop
 let%test "h maps to Help" = equal_command (of_key (Char 'h')) Help
 let%test "? maps to Help" = equal_command (of_key (Char '?')) Help
 let%test "up arrow maps to Move_up" = equal_command (of_key Up) Move_up

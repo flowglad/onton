@@ -5,7 +5,6 @@
 
 type command =
   | Quit
-  | Refresh
   | Help
   | Move_up
   | Move_down
