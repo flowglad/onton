@@ -144,9 +144,7 @@ let apply_poll_result t patch_id
             if is_new && not had_conflict_before then (
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
               Orchestrator.enqueue acc patch_id kind)
-            else (
-              log "merge-conflict already tracked, skipping";
-              acc)
+            else acc
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Implementation_notes ->
             if is_new then
