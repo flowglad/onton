@@ -32,14 +32,6 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  const secret = req.headers.get("x-upload-secret");
-  if (!secret || secret !== process.env.UPLOAD_SECRET) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
   let body: {
     project_name?: string;
     onton_version?: string;

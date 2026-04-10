@@ -157,19 +157,7 @@ let run ~net ~project_name ~version =
       ]
     |> Yojson.Safe.to_string ~std:true
   in
-  let upload_secret =
-    match Stdlib.Sys.getenv_opt "ONTON_UPLOAD_SECRET" with
-    | Some s -> s
-    | None ->
-        eprintf
-          "Error: ONTON_UPLOAD_SECRET is not set. Set it to the shared upload \
-           secret before running this command.\n\
-           %!";
-        Stdlib.exit 1
-  in
-  let headers =
-    [ ("Content-Type", "application/json"); ("x-upload-secret", upload_secret) ]
-  in
+  let headers = [ ("Content-Type", "application/json") ] in
   match
     http_request ~net ~meth:`POST ~uri:backend_url ~headers ~body:init_body
   with
