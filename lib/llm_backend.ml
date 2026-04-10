@@ -84,7 +84,7 @@ type t = {
     cwd:Eio.Fs.dir_ty Eio.Path.t ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
-    continue:bool ->
+    resume_session:string option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;
 }

@@ -12,7 +12,7 @@ let () =
     Test.make ~name:"classify: Error msg -> Process_error msg" ~count:500
       Gen.(string_size ~gen:printable (int_range 1 80))
       (fun msg ->
-        match classify ~continue:false (Error msg) with
+        match classify ~is_resume:false (Error msg) with
         | Process_error m -> String.equal m msg
         | No_session_to_resume | Timed_out | Success _ | Session_failed _ ->
             false)
@@ -23,7 +23,7 @@ let () =
     Test.make ~name:"classify: timed_out -> Timed_out" ~count:500
       gen_run_outcome (fun r ->
         let r = { r with timed_out = true } in
-        match classify ~continue:false (Ok r) with
+        match classify ~is_resume:false (Ok r) with
         | Timed_out -> true
         | Process_error _ | No_session_to_resume | Success _ | Session_failed _
           ->
@@ -35,7 +35,7 @@ let () =
     Test.make ~name:"classify: no events + continue -> No_session_to_resume"
       ~count:500 gen_run_outcome (fun r ->
         let r = { r with got_events = false; timed_out = false } in
-        match classify ~continue:true (Ok r) with
+        match classify ~is_resume:true (Ok r) with
         | No_session_to_resume -> true
         | Process_error _ | Timed_out | Success _ | Session_failed _ -> false)
   in
@@ -47,7 +47,7 @@ let () =
         let r =
           { r with exit_code = 0; got_events = true; timed_out = false }
         in
-        match classify ~continue:false (Ok r) with
+        match classify ~is_resume:false (Ok r) with
         | Success _ -> true
         | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
           ->
@@ -61,7 +61,7 @@ let () =
         let r =
           { r with exit_code = 1; got_events = true; timed_out = false }
         in
-        match classify ~continue:false (Ok r) with
+        match classify ~is_resume:false (Ok r) with
         | Session_failed _ -> true
         | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
             false)
@@ -74,7 +74,7 @@ let () =
         let r =
           { r with exit_code = 1; got_events = true; timed_out = false }
         in
-        match classify ~continue:false (Ok r) with
+        match classify ~is_resume:false (Ok r) with
         | Session_failed { detail; _ } -> String.length detail <= 503
         | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
             false)
@@ -85,7 +85,7 @@ let () =
     Test.make ~name:"classify: continue=false, no events -> uses exit code"
       ~count:500 gen_run_outcome (fun r ->
         let r = { r with got_events = false; timed_out = false } in
-        match classify ~continue:false (Ok r) with
+        match classify ~is_resume:false (Ok r) with
         | No_session_to_resume -> false (* should not happen without continue *)
         | Process_error _ | Timed_out | Success _ | Session_failed _ -> true)
   in

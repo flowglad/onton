@@ -306,7 +306,8 @@ let gen_patch_agent_started =
     map2
       (fun pid branch ->
         let a = Onton.Patch_agent.create ~branch pid in
-        Onton.Patch_agent.start a ~base_branch:branch)
+        let a = Onton.Patch_agent.start a ~base_branch:branch in
+        Onton.Patch_agent.set_llm_session_id a (Some "test-session"))
       gen_patch_id gen_branch)
 
 let gen_patch_agent_with_queue =
@@ -350,6 +351,9 @@ let gen_patch_agent_fully_populated =
     let* pr_number = option gen_pr_number in
     let* merge_ready = bool in
     let* checks_passing = bool in
+    let* raw_llm_session_id =
+      option (string_size ~gen:printable (int_range 8 36))
+    in
     let a = Onton.Patch_agent.create ~branch pid in
     let a = Onton.Patch_agent.start a ~base_branch:branch in
     let a =
@@ -362,6 +366,14 @@ let gen_patch_agent_fully_populated =
       | Onton.Patch_agent.Tried_fresh -> Onton.Patch_agent.set_tried_fresh a
       | Onton.Patch_agent.Given_up -> Onton.Patch_agent.set_session_failed a
     in
+    (* When session_fallback is Tried_fresh or Given_up, llm_session_id must
+       be None (escalation clears it). Only Fresh_available may have a value. *)
+    let llm_session_id =
+      match fallback with
+      | Onton.Patch_agent.Fresh_available -> raw_llm_session_id
+      | Onton.Patch_agent.Tried_fresh | Onton.Patch_agent.Given_up -> None
+    in
+    let a = Onton.Patch_agent.set_llm_session_id a llm_session_id in
     let a = Onton.Patch_agent.complete a in
     let a = List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue in
     let a = Onton.Patch_agent.set_ci_checks a ci_checks in

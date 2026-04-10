@@ -149,6 +149,7 @@ module Stream_event : sig
     | Tool_use of { name : string; input : string }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
+    | Session_init of { session_id : string }
   [@@deriving show, eq, sexp_of, compare]
 end
 

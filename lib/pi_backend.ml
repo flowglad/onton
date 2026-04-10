@@ -1,9 +1,11 @@
 open Base
 
-let build_args ~cwd_path ~patch_id ~prompt ~continue =
+let build_args ~cwd_path ~patch_id ~prompt ~resume_session =
   let session_dir = cwd_path ^ "/.pi-sessions/" ^ patch_id in
   let base = [ "pi"; "-p"; prompt; "--mode"; "json" ] in
-  let continue_args = if continue then [ "--continue" ] else [] in
+  let continue_args =
+    if Option.is_some resume_session then [ "--continue" ] else []
+  in
   let session_args = [ "--session-dir"; session_dir ] in
   base @ continue_args @ session_args
 
@@ -46,11 +48,13 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
-let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt ~continue
-    ~on_event =
+let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
+    ~resume_session ~on_event =
   let cwd_path = snd cwd in
   let patch_id_str = Types.Patch_id.to_string patch_id in
-  let args = build_args ~cwd_path ~patch_id:patch_id_str ~prompt ~continue in
+  let args =
+    build_args ~cwd_path ~patch_id:patch_id_str ~prompt ~resume_session
+  in
   let process_line line =
     let trimmed = String.strip line in
     if String.is_empty trimmed then [] else parse_event trimmed
@@ -62,15 +66,15 @@ let create ~process_mgr ~clock ~timeout : Llm_backend.t =
   {
     name = "Pi";
     run_streaming =
-      (fun ~cwd ~patch_id ~prompt ~continue ~on_event ->
+      (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
         run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
-          ~continue ~on_event);
+          ~resume_session ~on_event);
   }
 
 let%test "build_args without continue" =
   let args =
     build_args ~cwd_path:"/tmp/work" ~patch_id:"patch-1" ~prompt:"do stuff"
-      ~continue:false
+      ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -86,7 +90,7 @@ let%test "build_args without continue" =
 let%test "build_args with continue" =
   let args =
     build_args ~cwd_path:"/tmp/work" ~patch_id:"patch-1" ~prompt:"do stuff"
-      ~continue:true
+      ~resume_session:(Some "x")
   in
   List.equal String.equal args
     [

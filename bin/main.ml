@@ -294,19 +294,22 @@ let mark_session_failed runtime patch_id =
 
 (** Compute the session mode for the fallback chain.
 
-    The fallback chain is: continue existing session → fresh session → give up.
-    - [Fresh_available] with [has_pr]: use [--continue] to resume worktree
-      session.
-    - [Fresh_available] without [has_pr], or [Tried_fresh]: start fresh (no
-      --continue).
+    The fallback chain is: resume existing session → fresh session → give up.
+    - [Fresh_available] with [llm_session_id = Some id]: use [--resume <id>] to
+      target the specific session.
+    - [Fresh_available] without a stored session_id, or [Tried_fresh]: start
+      fresh (no --resume).
     - [Given_up]: the agent has exhausted its fallback chain — return
       [`Give_up]. *)
-let session_mode (agent : Patch_agent.t) : [ `Continue | `Fresh | `Give_up ] =
+let session_mode (agent : Patch_agent.t) :
+    [ `Resume of string | `Fresh | `Give_up ] =
   match agent.Patch_agent.session_fallback with
   | Patch_agent.Given_up -> `Give_up
   | Patch_agent.Tried_fresh -> `Fresh
-  | Patch_agent.Fresh_available ->
-      if Patch_agent.has_pr agent then `Continue else `Fresh
+  | Patch_agent.Fresh_available -> (
+      match agent.Patch_agent.llm_session_id with
+      | Some id -> `Resume id
+      | None -> `Fresh)
 
 (** Extract a PR number from text containing a GitHub PR URL. Scans for
     [github.com/owner/repo/pull/N] patterns. *)
@@ -491,9 +494,9 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           Orchestrator.apply_session_result orch patch_id
             Orchestrator.Session_give_up);
       `Failed
-  | (`Continue | `Fresh) as mode -> (
-      let continue, is_fresh =
-        match mode with `Continue -> (true, false) | `Fresh -> (false, true)
+  | (`Resume _ | `Fresh) as mode -> (
+      let resume_session, is_fresh =
+        match mode with `Resume id -> (Some id, false) | `Fresh -> (None, true)
       in
       match
         ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name
@@ -521,7 +524,11 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                  "\n---\n**[%02d:%02d:%02d] Delivered to %s%s:**\n\n"
                  tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
                  backend.Llm_backend.name
-                 (if continue then " (--continue)" else ""));
+                 (match resume_session with
+                 | Some id ->
+                     Printf.sprintf " (--resume %s)"
+                       (String.sub id 0 (min 8 (String.length id)))
+                 | None -> ""));
             Buffer.add_string buf prompt;
             Buffer.add_string buf
               (Printf.sprintf "\n\n---\n**%s response:**\n\n"
@@ -545,6 +552,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               last_sync := now;
               sync_transcript ())
           in
+          let captured_session_id = ref None in
           let on_event (event : Types.Stream_event.t) =
             match event with
             | Types.Stream_event.Text_delta text -> (
@@ -616,12 +624,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 Buffer.add_string error_buf msg;
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Stream_error msg)
+            | Types.Stream_event.Session_init { session_id } ->
+                captured_session_id := Some session_id
           in
           let result =
             try
               Ok
                 (backend.Llm_backend.run_streaming ~cwd ~patch_id ~prompt
-                   ~continue ~on_event)
+                   ~resume_session ~on_event)
             with exn -> Error (Printexc.to_string exn)
           in
           let open Run_classification in
@@ -638,7 +648,9 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               result
           in
           let session_result, user_result =
-            match classify ~continue outcome with
+            match
+              classify ~is_resume:(Option.is_some resume_session) outcome
+            with
             | Process_error msg ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "%s process error: %s"
@@ -646,7 +658,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 (Orchestrator.Session_process_error { is_fresh }, `Failed)
             | No_session_to_resume ->
                 log_event runtime ~patch_id
-                  "--continue produced no events (no session to resume), will \
+                  "--resume produced no events (no session to resume), will \
                    retry fresh";
                 (Orchestrator.Session_no_resume, `Failed)
             | Timed_out ->
@@ -681,6 +693,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 let agent_before = Orchestrator.agent orch patch_id in
                 let orch =
                   Orchestrator.apply_session_result orch patch_id session_result
+                in
+                (* Store the captured session_id for future --resume calls *)
+                let orch =
+                  match !captured_session_id with
+                  | Some _ ->
+                      Orchestrator.set_llm_session_id orch patch_id
+                        !captured_session_id
+                  | None -> orch
                 in
                 let agent_after = Orchestrator.agent orch patch_id in
                 (orch, (agent_before, agent_after)))

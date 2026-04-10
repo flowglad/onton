@@ -39,6 +39,7 @@ type t = private {
   worktree_path : string option;
   head_branch : Types.Branch.t option;
   branch_blocked : bool;
+  llm_session_id : string option;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -225,6 +226,10 @@ val set_current_message_id : t -> Types.Message_id.t option -> t
 val bump_generation : t -> t
 (** Advance the patch generation used for deterministic message IDs. *)
 
+val set_llm_session_id : t -> string option -> t
+(** Store the LLM backend's session ID for explicit session resumption. Cleared
+    automatically when [session_fallback] escalates (old session is stale). *)
+
 val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its
     queue-consuming state transition. [~op] restores [current_op] from the
@@ -275,6 +280,7 @@ val restore :
   worktree_path:string option ->
   head_branch:Types.Branch.t option ->
   branch_blocked:bool ->
+  llm_session_id:string option ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

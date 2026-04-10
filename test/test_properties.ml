@@ -640,4 +640,145 @@ let () =
     ];
   Stdlib.print_endline "session result: all properties passed"
 
+(* ========== llm_session_id properties (A1-A6) ========== *)
+
+let () =
+  let open QCheck2 in
+  let open Onton in
+  let module G = Onton_test_support.Test_generators in
+  let mk_busy_orch () =
+    let pid = Types.Patch_id.of_string "p1" in
+    let main = Types.Branch.of_string "main" in
+    let patches =
+      [
+        Types.Patch.
+          {
+            id = pid;
+            title = "P";
+            description = "";
+            branch = Types.Branch.of_string "b1";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+          };
+      ]
+    in
+    let orch = Orchestrator.create ~patches ~main_branch:main in
+    let orch, _effects, _actions = tick orch ~patches in
+    (orch, pid)
+  in
+  (* A1: Session_ok preserves llm_session_id *)
+  let prop_a1_session_ok_preserves_session_id =
+    Test.make ~name:"A1: Session_ok preserves llm_session_id" (Gen.return ())
+      (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
+        let orch = Orchestrator.apply_session_result orch pid Session_ok in
+        let orch = Orchestrator.complete orch pid in
+        let a = Orchestrator.agent orch pid in
+        Option.equal String.equal a.Patch_agent.llm_session_id (Some "test-id"))
+  in
+  (* A2: Resume failure (on_session_failure ~is_fresh:false) clears llm_session_id *)
+  let prop_a2_resume_failure_clears_session_id =
+    Test.make ~name:"A2: resume failure clears llm_session_id" (Gen.return ())
+      (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+        in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
+        let orch = Orchestrator.on_session_failure orch pid ~is_fresh:false in
+        let a = Orchestrator.agent orch pid in
+        Option.is_none a.Patch_agent.llm_session_id)
+  in
+  (* A3: Session_give_up clears llm_session_id *)
+  let prop_a3_give_up_clears_session_id =
+    Test.make ~name:"A3: Session_give_up clears llm_session_id" (Gen.return ())
+      (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
+        let orch = Orchestrator.apply_session_result orch pid Session_give_up in
+        let a = Orchestrator.agent orch pid in
+        Option.is_none a.Patch_agent.llm_session_id)
+  in
+  (* A4: set_llm_session_id is idempotent *)
+  let prop_a4_set_session_id_idempotent =
+    Test.make ~name:"A4: set_llm_session_id is idempotent" ~count:200
+      (Gen.pair G.gen_patch_id (Gen.option Gen.string_small))
+      (fun (pid, v) ->
+        try
+          let main = Types.Branch.of_string "main" in
+          let patches =
+            [
+              Types.Patch.
+                {
+                  id = pid;
+                  title = "P";
+                  description = "";
+                  branch = Types.Branch.of_string "b1";
+                  dependencies = [];
+                  spec = "";
+                  acceptance_criteria = [];
+                  files = [];
+                  classification = "";
+                  changes = [];
+                  test_stubs_introduced = [];
+                  test_stubs_implemented = [];
+                };
+            ]
+          in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let once = Orchestrator.set_llm_session_id orch pid v in
+          let twice = Orchestrator.set_llm_session_id once pid v in
+          let a1 = Orchestrator.agent once pid in
+          let a2 = Orchestrator.agent twice pid in
+          Option.equal String.equal a1.Patch_agent.llm_session_id
+            a2.Patch_agent.llm_session_id
+        with Invalid_argument _ -> false)
+  in
+  (* A5: Fresh failure on respond path clears llm_session_id *)
+  let prop_a5_fresh_failure_clears_session_id =
+    Test.make ~name:"A5: fresh failure on respond path clears llm_session_id"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
+        in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
+        (* on_session_failure ~is_fresh:true with has_pr:
+           set_session_failed (Fresh_available → Tried_fresh, clears session_id)
+           then set_tried_fresh (Tried_fresh → Given_up, clears session_id) *)
+        let orch = Orchestrator.on_session_failure orch pid ~is_fresh:true in
+        let a = Orchestrator.agent orch pid in
+        Option.is_none a.Patch_agent.llm_session_id)
+  in
+  (* A6: Session_no_resume clears llm_session_id *)
+  let prop_a6_no_resume_clears_session_id =
+    Test.make ~name:"A6: Session_no_resume clears llm_session_id"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_resume
+        in
+        let a = Orchestrator.agent orch pid in
+        Option.is_none a.Patch_agent.llm_session_id)
+  in
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
+    [
+      prop_a1_session_ok_preserves_session_id;
+      prop_a2_resume_failure_clears_session_id;
+      prop_a3_give_up_clears_session_id;
+      prop_a4_set_session_id_idempotent;
+      prop_a5_fresh_failure_clears_session_id;
+      prop_a6_no_resume_clears_session_id;
+    ];
+  Stdlib.print_endline "llm_session_id: all properties passed (A1-A6)"
+
 let () = Stdlib.print_endline "all property tests passed"

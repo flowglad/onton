@@ -53,7 +53,7 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~conflict_noop_count:0 ~checks_passing:false
     ~current_op:None ~current_message_id:None ~generation:0 ~worktree_path:None
-    ~head_branch:None ~branch_blocked:false
+    ~head_branch:None ~branch_blocked:false ~llm_session_id:None
 
 let has_notes_queued agent =
   List.mem agent.Patch_agent.queue Operation_kind.Implementation_notes
@@ -530,7 +530,7 @@ let () =
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
             ~checks_passing:false ~current_op:None ~current_message_id:None
             ~generation:0 ~worktree_path:None ~head_branch:None
-            ~branch_blocked:false
+            ~branch_blocked:false ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         let poll =

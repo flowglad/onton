@@ -22,6 +22,7 @@ type classification =
   | Session_failed of { exit_code : int; detail : string }
 [@@deriving show, eq]
 
-val classify : continue:bool -> (run_outcome, string) Result.t -> classification
-(** Classify a Claude runner result into a pure decision value. [continue]
-    indicates whether this was a --continue session. *)
+val classify :
+  is_resume:bool -> (run_outcome, string) Result.t -> classification
+(** Classify a Claude runner result into a pure decision value. [is_resume]
+    indicates whether this was a --resume session (explicit session ID). *)
