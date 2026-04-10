@@ -1360,11 +1360,11 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
                         | Tui_input.Move_down -> 1
                         | Tui_input.Page_up -> -10
                         | Tui_input.Page_down -> 10
-                        | Tui_input.Quit | Tui_input.Refresh | Tui_input.Help
-                        | Tui_input.Select | Tui_input.Back | Tui_input.Timeline
-                        | Tui_input.Noop | Tui_input.Send_message _
-                        | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-                        | Tui_input.Remove_patch | Tui_input.Open_in_browser ->
+                        | Tui_input.Quit | Tui_input.Help | Tui_input.Select
+                        | Tui_input.Back | Tui_input.Timeline | Tui_input.Noop
+                        | Tui_input.Send_message _ | Tui_input.Add_pr _
+                        | Tui_input.Add_worktree _ | Tui_input.Remove_patch
+                        | Tui_input.Open_in_browser ->
                             0
                       in
                       if delta <> 0 then detail_follow := false;
@@ -1458,9 +1458,8 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
                             log_event runtime ~patch_id "Ad-hoc patch removed"))
                   | Tui.Detail_view _ | Tui.Timeline_view -> ());
                   loop ()
-              | Tui_input.Refresh | Tui_input.Noop | Tui_input.Send_message _
-              | Tui_input.Add_pr _ | Tui_input.Add_worktree _
-              | Tui_input.Open_in_browser ->
+              | Tui_input.Noop | Tui_input.Send_message _ | Tui_input.Add_pr _
+              | Tui_input.Add_worktree _ | Tui_input.Open_in_browser ->
                   loop ()))
   in
   loop ()
