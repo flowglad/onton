@@ -83,6 +83,7 @@ val on_session_failure : t -> Patch_id.t -> is_fresh:bool -> t
 val on_pr_discovery_failure : t -> Patch_id.t -> t
 val set_has_conflict : t -> Patch_id.t -> t
 val clear_has_conflict : t -> Patch_id.t -> t
+val reset_conflict_noop_count : t -> Patch_id.t -> t
 val set_base_branch : t -> Patch_id.t -> Branch.t -> t
 val set_notified_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
@@ -155,10 +156,10 @@ type respond_outcome =
 val apply_respond_outcome :
   t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
-    kind-specific transitions (Merge_conflict -> clear_has_conflict;
-    Implementation_notes -> set_implementation_notes_delivered).
-    [Respond_failed] -> complete. [Respond_retry_push] -> complete.
-    [Respond_stale] -> identity. *)
+    kind-specific transitions (Merge_conflict -> clear_has_conflict +
+    reset_conflict_noop_count; Implementation_notes ->
+    set_implementation_notes_delivered). [Respond_failed] -> complete.
+    [Respond_retry_push] -> complete. [Respond_stale] -> identity. *)
 
 (** Side effects emitted by rebase result application. The runner is responsible
     for executing these (e.g. force-pushing the branch to the remote). Modeled
@@ -172,10 +173,10 @@ val apply_rebase_result :
   Branch.t ->
   t * rebase_effect list
 (** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->
-    set_base_branch + clear_has_conflict + complete + [[Push_branch]]. [Noop] ->
-    set_base_branch + complete + [[]]. [Conflict] -> set_base_branch +
-    set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
-    set_session_failed + set_tried_fresh + complete. *)
+    set_base_branch + clear_has_conflict + reset_conflict_noop_count + complete
+    \+ [[Push_branch]]. [Noop] -> set_base_branch + complete + [[]]. [Conflict]
+    -> set_base_branch + set_has_conflict + enqueue Merge_conflict + complete.
+    [Error _] -> set_session_failed + set_tried_fresh + complete. *)
 
 type rebase_push_resolution =
   | Rebase_push_ok
@@ -208,10 +209,13 @@ val apply_conflict_rebase_result :
   Branch.t ->
   t * conflict_rebase_decision * rebase_effect list
 (** Apply a rebase outcome during merge-conflict resolution. Pure function. [Ok]
-    -> clear_has_conflict + complete + [Conflict_resolved] + [[Push_branch]].
-    [Noop] -> set_has_conflict + [Deliver_to_agent] + [[Push_branch]] (local is
-    correct, push needed). [Conflict] -> set_has_conflict + [Deliver_to_agent] +
-    [[]]. [Error _] -> set_session_failed + complete + [Conflict_failed]. *)
+    -> clear_has_conflict + reset_conflict_noop_count + complete +
+    [Conflict_resolved] + [[Push_branch]]. [Noop] -> clear_has_conflict +
+    increment_conflict_noop_count + complete + [Conflict_resolved] +
+    [[Push_branch]] (local is correct; has_conflict cleared so it purely tracks
+    GitHub state — the poller will re-set and re-enqueue if conflict persists).
+    [Conflict] -> set_has_conflict + [Deliver_to_agent] + [[]]. [Error _] ->
+    set_session_failed + complete + [Conflict_failed]. *)
 
 type conflict_resolution =
   | Conflict_done

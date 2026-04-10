@@ -85,9 +85,6 @@ let apply_poll_result t patch_id
       Orchestrator.mark_merged t patch_id)
     else t
   in
-  let had_conflict_before =
-    (Orchestrator.agent t patch_id).Patch_agent.has_conflict
-  in
   let t =
     if poll_result.has_conflict then (
       let agent = Orchestrator.agent t patch_id in
@@ -98,7 +95,8 @@ let apply_poll_result t patch_id
       if agent.Patch_agent.has_conflict then
         if Patch_decision.should_clear_conflict agent then (
           log "conflict cleared (no longer detected)";
-          Orchestrator.clear_has_conflict t patch_id)
+          let t = Orchestrator.clear_has_conflict t patch_id in
+          Orchestrator.reset_conflict_noop_count t patch_id)
         else (
           log "conflict flag retained (resolution in flight)";
           t)
@@ -141,10 +139,9 @@ let apply_poll_result t patch_id
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Merge_conflict ->
-            if is_new && not had_conflict_before then (
+            if is_new then
               log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
-              Orchestrator.enqueue acc patch_id kind)
-            else acc
+            Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Implementation_notes ->
             if is_new then
@@ -631,8 +628,7 @@ let%test "no merge-conflict re-enqueue after noop" =
   let t, decision, _effects =
     Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
   in
-  (* Noop -> Deliver_to_agent, agent still busy *)
+  (* Noop -> Conflict_resolved, agent completed (not busy) *)
   Orchestrator.equal_conflict_rebase_decision decision
-    Orchestrator.Deliver_to_agent
-  && (Orchestrator.agent t pid).Patch_agent.has_conflict
-  && (Orchestrator.agent t pid).Patch_agent.busy
+    Orchestrator.Conflict_resolved
+  && not (Orchestrator.agent t pid).Patch_agent.busy

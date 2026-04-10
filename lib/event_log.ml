@@ -80,17 +80,33 @@ let log_complete t ~patch_id ~result ~agent_before ~agent_after =
          ("agent_after", agent_json agent_after);
        ])
 
-let log_conflict_rebase t ~patch_id ~decision ~agent_before ~agent_after =
+let log_conflict_rebase t ~patch_id ~result ~decision ~agent_before ~agent_after
+    =
   write_entry t
     (`Assoc
        [
          ("ts", `String (timestamp ()));
          ("kind", `String "conflict_rebase");
          ("patch_id", patch_id_json patch_id);
+         ("result", `String (Worktree.show_rebase_result result));
          ( "decision",
            `String (Orchestrator.show_conflict_rebase_decision decision) );
          ("agent_before", agent_json agent_before);
          ("agent_after", agent_json agent_after);
+       ])
+
+let log_conflict_delivery t ~patch_id ~path ~rebase_in_progress ~git_status
+    ~git_diff =
+  write_entry t
+    (`Assoc
+       [
+         ("ts", `String (timestamp ()));
+         ("kind", `String "conflict_delivery");
+         ("patch_id", patch_id_json patch_id);
+         ("path", `String path);
+         ("rebase_in_progress", `Bool rebase_in_progress);
+         ("git_status", `String git_status);
+         ("git_diff_len", `Int (String.length git_diff));
        ])
 
 let log_rebase t ~patch_id ~result ~agent_before ~agent_after =

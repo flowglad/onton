@@ -734,10 +734,10 @@ let () =
         with _ -> false)
   in
 
-  (* Noop -> Deliver_to_agent, still busy, has_conflict set *)
+  (* Noop -> Conflict_resolved, completed (not busy), conflict cleared *)
   let prop_conflict_rebase_noop =
     Test.make
-      ~name:"apply_conflict_rebase_result: Noop -> Deliver_to_agent, busy"
+      ~name:"apply_conflict_rebase_result: Noop -> Conflict_resolved, completed"
       (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
         try
           match patches with
@@ -752,8 +752,8 @@ let () =
               in
               let a = Orchestrator.agent orch' pid in
               Orchestrator.equal_conflict_rebase_decision decision
-                Orchestrator.Deliver_to_agent
-              && a.Patch_agent.busy && a.Patch_agent.has_conflict
+                Orchestrator.Conflict_resolved
+              && (not a.Patch_agent.busy)
               && List.equal Orchestrator.equal_rebase_effect effects
                    [ Orchestrator.Push_branch ]
         with _ -> false)
@@ -919,16 +919,14 @@ let () =
         with _ -> false)
   in
 
-  (* Deliver_to_agent + Push_ok -> Conflict_needs_agent.  A Noop rebase
-     means the local branch was already up-to-date; pushing the same
-     conflicting content does not resolve the GitHub conflict.  The agent
-     must still handle it, so has_conflict must be preserved. *)
+  (* Noop + Push_ok -> Conflict_done.  A Noop rebase means the local
+     branch was already up-to-date, so we just push and complete without
+     involving the agent. *)
   let prop_conflict_push_deliver_ok =
     Test.make
       ~name:
-        "apply_conflict_push_result: Deliver_to_agent + Push_ok -> \
-         Conflict_needs_agent" (Gen.pair gen_patch_list_unique gen_branch)
-      (fun (patches, new_base) ->
+        "apply_conflict_push_result: Noop/Resolved + Push_ok -> Conflict_done"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
         try
           match patches with
           | [] -> true
@@ -936,22 +934,24 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let orch, _decision, _effects =
+              let orch, decision, _effects =
                 Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop
                   new_base
               in
-              let orch, resolution =
-                Orchestrator.apply_conflict_push_result orch pid
-                  Orchestrator.Deliver_to_agent (Some Worktree.Push_ok)
+              Orchestrator.equal_conflict_rebase_decision decision
+                Orchestrator.Conflict_resolved
+              &&
+              let _orch, resolution =
+                Orchestrator.apply_conflict_push_result orch pid decision
+                  (Some Worktree.Push_ok)
               in
-              let a = Orchestrator.agent orch pid in
               Orchestrator.equal_conflict_resolution resolution
-                Orchestrator.Conflict_needs_agent
-              && a.Patch_agent.has_conflict
+                Orchestrator.Conflict_done
         with _ -> false)
   in
 
-  (* Deliver_to_agent + Push_up_to_date -> Conflict_needs_agent *)
+  (* Deliver_to_agent (from Conflict) + Push_up_to_date ->
+     Conflict_needs_agent *)
   let prop_conflict_push_deliver_up_to_date =
     Test.make
       ~name:
@@ -966,8 +966,8 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch, _decision, _effects =
-                Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop
-                  new_base
+                Orchestrator.apply_conflict_rebase_result orch pid
+                  Worktree.Conflict new_base
               in
               let _orch, resolution =
                 Orchestrator.apply_conflict_push_result orch pid

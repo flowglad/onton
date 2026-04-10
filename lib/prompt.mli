@@ -52,6 +52,8 @@ val render_ci_failure_unknown_prompt :
 val render_merge_conflict_prompt :
   project_name:string ->
   ?pr_number:Pr_number.t ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
   base_branch:string ->
   ?git_status:string ->
   ?git_diff:string ->

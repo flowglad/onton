@@ -482,8 +482,8 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
          Run the CI checks locally or check the PR status for details."
         pr_ctx)
 
-let render_merge_conflict_prompt ~(project_name : string) ?pr_number
-    ~(base_branch : string) ?(git_status = "") ?(git_diff = "") () =
+let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
+    ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "") () =
   let pr_ctx =
     match pr_number with
     | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
@@ -509,6 +509,37 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number
 %s
 ```|} git_diff
   in
+  let task_context =
+    match (patch, gameplan) with
+    | Some (patch : Patch.t), Some (gp : Gameplan.t) ->
+        let patch_id = Patch_id.to_string patch.Patch.id in
+        let desc_section =
+          if String.is_empty patch.Patch.description then ""
+          else "\n\n### Your Task\n\n" ^ patch.Patch.description
+        in
+        let changes_section =
+          optional_list_section ~header:"Changes" patch.Patch.changes
+        in
+        let ac_section =
+          optional_list_section ~header:"Acceptance Criteria"
+            patch.Patch.acceptance_criteria
+        in
+        Printf.sprintf
+          {|
+
+## Task Context
+
+**Patch %s: %s**
+
+### Problem Statement
+%s
+
+### Solution Summary
+%s%s%s%s|}
+          patch_id patch.Patch.title gp.Gameplan.problem_statement
+          gp.Gameplan.solution_summary desc_section changes_section ac_section
+    | _ -> ""
+  in
   let vars =
     [
       ("project_name", project_name);
@@ -519,6 +550,7 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number
         | None -> "" );
       ("git_status", git_status);
       ("git_diff", git_diff);
+      ("task_context", task_context);
     ]
   in
   render_with_override ~project_name ~name:"merge_conflict" ~vars
@@ -539,8 +571,10 @@ If the rebase continues and hits further conflicts, repeat the process.
 
 Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
-commits that have already been stripped.%s%s|}
-        pr_ctx base_branch base_branch status_section diff_section)
+commits that have already been stripped.
+
+After resolving all conflicts and completing the rebase, push your changes.%s%s%s|}
+        pr_ctx base_branch base_branch status_section diff_section task_context)
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
