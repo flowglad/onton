@@ -40,11 +40,24 @@ val log_complete :
 val log_conflict_rebase :
   t ->
   patch_id:Patch_id.t ->
+  result:Worktree.rebase_result ->
   decision:Orchestrator.conflict_rebase_decision ->
   agent_before:Patch_agent.t ->
   agent_after:Patch_agent.t ->
   unit
 (** Log a conflict rebase decision with before/after state. *)
+
+val log_conflict_delivery :
+  t ->
+  patch_id:Patch_id.t ->
+  path:string ->
+  rebase_in_progress:bool ->
+  git_status:string ->
+  git_diff:string ->
+  unit
+(** Log the state at the moment a merge-conflict prompt is delivered to the
+    agent. Captures the worktree path, whether a rebase was already in progress,
+    and the git status/diff that were embedded in the prompt. *)
 
 val log_rebase :
   t ->

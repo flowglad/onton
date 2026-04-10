@@ -631,8 +631,7 @@ let%test "no merge-conflict re-enqueue after noop" =
   let t, decision, _effects =
     Orchestrator.apply_conflict_rebase_result t pid Worktree.Noop main
   in
-  (* Noop -> Deliver_to_agent, agent still busy *)
+  (* Noop -> Conflict_resolved, agent completed (not busy) *)
   Orchestrator.equal_conflict_rebase_decision decision
-    Orchestrator.Deliver_to_agent
-  && (Orchestrator.agent t pid).Patch_agent.has_conflict
-  && (Orchestrator.agent t pid).Patch_agent.busy
+    Orchestrator.Conflict_resolved
+  && not (Orchestrator.agent t pid).Patch_agent.busy

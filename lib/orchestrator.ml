@@ -447,10 +447,16 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       let t = complete t patch_id in
       (t, Conflict_resolved, [ Push_branch ])
   | Worktree.Noop ->
+      (* Local branch already contains the target — just push to sync
+         the remote.  There is no in-progress rebase to hand to the
+         agent, so complete instead of delivering.  If GitHub still
+         reports a conflict after the push, the poller will re-enqueue
+         Merge_conflict, and conflict_noop_count will eventually trigger
+         intervention. *)
       let t = set_base_branch t patch_id new_base in
-      let t = set_has_conflict t patch_id in
       let t = increment_conflict_noop_count t patch_id in
-      (t, Deliver_to_agent, [ Push_branch ])
+      let t = complete t patch_id in
+      (t, Conflict_resolved, [ Push_branch ])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in

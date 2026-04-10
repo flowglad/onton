@@ -1022,13 +1022,12 @@ let mk_bootstrapped () =
 
 (** Simulate one full conflict-noop cycle: poll(conflict) → fire
     Respond(Merge_conflict) → apply_conflict_rebase_result(Noop) →
-    apply_conflict_push_result(Deliver_to_agent, Push_ok) → session completes →
-    complete. Returns the updated orchestrator.
+    apply_conflict_push_result(Conflict_resolved, Push_ok) → done.
 
-    The push result is [Push_ok] because [force_push_with_lease] succeeds even
-    when the rebase was a noop — it pushes the existing (conflicting) content.
-    This is the path observed in production; the previous version of this helper
-    skipped [apply_conflict_push_result] entirely. *)
+    Noop means the local branch already contains the target, so there is no
+    in-progress rebase to hand to the agent. We just push and complete. The push
+    result is [Push_ok] because [force_push_with_lease] succeeds even when the
+    rebase was a noop — it pushes the existing (conflicting) content. *)
 let conflict_noop_cycle orch pid patches =
   let branch_of = branch_of_patches patches in
   let gameplan = make_gameplan patches in
@@ -1054,7 +1053,7 @@ let conflict_noop_cycle orch pid patches =
   let orch, _effects, _actions =
     Patch_controller.tick orch ~project_name:"test-project" ~gameplan
   in
-  (* 3. Apply Noop rebase result *)
+  (* 3. Apply Noop rebase result — agent is completed, not delivered to *)
   let has_merged dep_pid =
     (Orchestrator.agent orch dep_pid).Patch_agent.merged
   in
@@ -1070,15 +1069,11 @@ let conflict_noop_cycle orch pid patches =
     Orchestrator.apply_conflict_push_result orch pid decision
       (Some Worktree.Push_ok)
   in
-  let orch =
-    Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
-  in
-  (* Conflict_done means the push handler already completed the agent.
-     Conflict_needs_agent means the agent session ran but we must complete. *)
+  (* Conflict_resolved + Push_ok -> Conflict_done. Agent already completed. *)
   match resolution with
   | Orchestrator.Conflict_done -> orch
-  | Orchestrator.Conflict_needs_agent -> Orchestrator.complete orch pid
-  | Orchestrator.Conflict_retry_push | Orchestrator.Conflict_give_up ->
+  | Orchestrator.Conflict_needs_agent | Orchestrator.Conflict_retry_push
+  | Orchestrator.Conflict_give_up ->
       failwith "unexpected resolution in conflict_noop_cycle"
 
 (** PI-6: Repeated Noop conflict rebase converges to needs_intervention. If the

@@ -2304,6 +2304,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    an enriched prompt to the agent. *)
                                 let deliver_to_agent () =
                                   let pr_number = agent.Patch_agent.pr_number in
+                                  let rebase_still_in_progress =
+                                    Worktree.rebase_in_progress ~process_mgr
+                                      ~path:wt_path
+                                  in
                                   let git_status =
                                     Worktree.git_status ~process_mgr
                                       ~path:wt_path
@@ -2312,12 +2316,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     Worktree.conflict_diff ~process_mgr
                                       ~path:wt_path
                                   in
+                                  Event_log.log_conflict_delivery event_log
+                                    ~patch_id ~path:wt_path
+                                    ~rebase_in_progress:rebase_still_in_progress
+                                    ~git_status ~git_diff;
+                                  let patch =
+                                    Base.List.find gameplan.Gameplan.patches
+                                      ~f:(fun (p : Patch.t) ->
+                                        Patch_id.equal p.Patch.id patch_id)
+                                  in
                                   let prompt =
                                     let raw =
                                       Prompt.render_merge_conflict_prompt
-                                        ~project_name ?pr_number
-                                        ~base_branch:base ~git_status ~git_diff
-                                        ()
+                                        ~project_name ?pr_number ?patch
+                                        ~gameplan ~base_branch:base ~git_status
+                                        ~git_diff ()
                                     in
                                     if String.equal base_changed_prefix "" then
                                       raw
@@ -2428,8 +2441,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                             effects ) ))
                                   in
                                   Event_log.log_conflict_rebase event_log
-                                    ~patch_id ~decision ~agent_before
-                                    ~agent_after;
+                                    ~patch_id ~result:rebase_result ~decision
+                                    ~agent_before ~agent_after;
                                   let push_outcome =
                                     Base.List.find_map effects
                                       ~f:(fun Orchestrator.Push_branch ->
