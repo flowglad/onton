@@ -4,7 +4,7 @@ open Base
 let backend_url =
   match Stdlib.Sys.getenv_opt "ONTON_DEBUG_URL" with
   | Some u -> u
-  | None -> "https://debug.onton.dev/api/upload"
+  | None -> "https://debug.write-gameplan.dev/api/upload"
 
 let max_response_size = 1_000_000
 let printf fmt = Stdlib.Printf.printf fmt
