@@ -536,12 +536,12 @@ let () =
           && not
                (List.mem a.queue Operation_kind.Rebase
                   ~equal:Operation_kind.equal));
-      Test.make ~name:"rebase postconditions (has_session=false)"
+      Test.make ~name:"rebase postconditions (has_session=false -> true)"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
           let new_base = Branch.of_string "new-base" in
           (* Construct agent with has_pr=true but has_session=false via
-             restore *)
+             restore — rebase should promote has_session to true. *)
           let a =
             restore ~patch_id:pid ~branch:br
               ~pr_number:(Some (Pr_number.of_int 1))
@@ -558,7 +558,7 @@ let () =
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
-          a.busy && (not a.has_session)
+          a.busy && a.has_session
           && Option.equal Branch.equal a.base_branch (Some new_base)
           && not
                (List.mem a.queue Operation_kind.Rebase

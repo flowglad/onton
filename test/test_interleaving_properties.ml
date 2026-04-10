@@ -89,6 +89,8 @@ type command =
       result : rebase_result_kind;
     }
   | Apply_rebase_push_result of { patch_idx : int; result : push_result_kind }
+  | Add_adhoc of int
+  | Remove_adhoc of int
 
 let show_poll_kind = function
   | Poll_normal -> "Normal"
@@ -143,6 +145,37 @@ let show_command = function
   | Apply_rebase_push_result { patch_idx; result } ->
       Printf.sprintf "Apply_rebase_push_result(%d, %s)" patch_idx
         (show_push_result_kind result)
+  | Add_adhoc i -> Printf.sprintf "Add_adhoc(%d)" i
+  | Remove_adhoc i -> Printf.sprintf "Remove_adhoc(%d)" i
+
+(* -- Ad-hoc patch helpers -- *)
+
+(** Maximum number of ad-hoc patches in interleaving tests. *)
+let max_adhoc = 2
+
+let adhoc_pid i = Patch_id.of_string (Printf.sprintf "adhoc-%d" i)
+let adhoc_branch i = Branch.of_string (Printf.sprintf "adhoc-b%d" i)
+let adhoc_pr i = Pr_number.of_int (100 + i)
+
+(** Resolve a command index to a patch_id. Indices [0..n-1] map to gameplan
+    patches; indices [n..n+max_adhoc-1] map to ad-hoc patches. *)
+let resolve_pid patches idx =
+  let n = List.length patches in
+  if idx < n then pid_of_idx patches idx else adhoc_pid (idx - n)
+
+(** Extended branch lookup covering both gameplan and ad-hoc patches. *)
+let extended_branch_of patches =
+  let map =
+    List.fold patches
+      ~init:(Map.empty (module Patch_id))
+      ~f:(fun acc (p : Patch.t) ->
+        Map.set acc ~key:p.Patch.id ~data:p.Patch.branch)
+  in
+  let map =
+    List.fold (List.init max_adhoc ~f:Fn.id) ~init:map ~f:(fun acc i ->
+        Map.set acc ~key:(adhoc_pid i) ~data:(adhoc_branch i))
+  in
+  fun pid -> Option.value (Map.find map pid) ~default:main
 
 (* -- Generators -- *)
 
@@ -179,9 +212,9 @@ let gen_push_result_kind =
     [ Push_ok_k; Push_up_to_date_k; Push_rejected_k; Push_error_k ]
 
 let gen_command ~n =
-  if n <= 0 then invalid_arg "gen_command: n must be positive";
+  let total = n + max_adhoc in
   QCheck2.Gen.(
-    let gen_idx = int_range 0 (n - 1) in
+    let gen_idx = int_range 0 (total - 1) in
     oneof
       [
         map2
@@ -205,6 +238,8 @@ let gen_command ~n =
           gen_idx gen_push_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
+        map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
+        map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
       ])
 
 let gen_command_seq ~n ~len =
@@ -212,9 +247,9 @@ let gen_command_seq ~n ~len =
   QCheck2.Gen.(list_size (int_range 1 len) (gen_command ~n))
 
 let gen_atomic_command ~n =
-  if n <= 0 then invalid_arg "gen_atomic_command: n must be positive";
+  let total = n + max_adhoc in
   QCheck2.Gen.(
-    let gen_idx = int_range 0 (n - 1) in
+    let gen_idx = int_range 0 (total - 1) in
     oneof
       [
         map2
@@ -237,6 +272,8 @@ let gen_atomic_command ~n =
           gen_idx gen_push_result_kind;
         map (fun i -> Send_human_message i) gen_idx;
         map (fun i -> Reset_intervention i) gen_idx;
+        map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
+        map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
       ])
 
 let gen_atomic_command_seq ~n ~len =
@@ -310,9 +347,10 @@ let poll_params_of_kind = function
 
 let rec apply_command orch patches cmd =
   let gameplan = make_gameplan patches in
+  let branch_of = extended_branch_of patches in
   match cmd with
   | Apply_poll { patch_idx; poll_kind } -> (
-      let pid = pid_of_idx patches patch_idx in
+      let pid = resolve_pid patches patch_idx in
       let has_conflict, merged, ci_failed, checks_passing, review_comments =
         poll_params_of_kind poll_kind
       in
@@ -320,7 +358,6 @@ let rec apply_command orch patches cmd =
         make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
           ~review_comments
       in
-      let branch_of = branch_of_patches patches in
       let observation =
         Patch_controller.
           {
@@ -353,19 +390,21 @@ let rec apply_command orch patches cmd =
         orch
       with Invalid_argument _ -> orch)
   | Complete patch_idx -> (
-      let pid = pid_of_idx patches patch_idx in
+      let pid = resolve_pid patches patch_idx in
       match Orchestrator.find_agent orch pid with
       | Some agent when agent.Patch_agent.busy -> Orchestrator.complete orch pid
       | _ -> orch)
-  | Apply_session_result { patch_idx; result } ->
-      let pid = pid_of_idx patches patch_idx in
-      Orchestrator.apply_session_result orch pid (to_session_result result)
+  | Apply_session_result { patch_idx; result } -> (
+      let pid = resolve_pid patches patch_idx in
+      try Orchestrator.apply_session_result orch pid (to_session_result result)
+      with Invalid_argument _ -> orch)
   | Apply_rebase_result { patch_idx; result } -> (
-      let pid = pid_of_idx patches patch_idx in
-      let branch_of = branch_of_patches patches in
+      let pid = resolve_pid patches patch_idx in
       try
         let has_merged dep_pid =
-          (Orchestrator.agent orch dep_pid).Patch_agent.merged
+          match Orchestrator.find_agent orch dep_pid with
+          | Some a -> a.Patch_agent.merged
+          | None -> false
         in
         let new_base =
           Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
@@ -379,10 +418,10 @@ let rec apply_command orch patches cmd =
         orch
       with Invalid_argument _ -> orch)
   | Send_human_message patch_idx ->
-      let pid = pid_of_idx patches patch_idx in
+      let pid = resolve_pid patches patch_idx in
       Orchestrator.send_human_message orch pid "test message"
   | Reset_intervention patch_idx ->
-      let pid = pid_of_idx patches patch_idx in
+      let pid = resolve_pid patches patch_idx in
       Orchestrator.reset_intervention_state orch pid
   | Atomic_poll_reconcile { patch_idx; poll_kind } ->
       let orch =
@@ -390,11 +429,12 @@ let rec apply_command orch patches cmd =
       in
       apply_command orch patches Reconcile
   | Apply_conflict_rebase_result { patch_idx; result } -> (
-      let pid = pid_of_idx patches patch_idx in
-      let branch_of = branch_of_patches patches in
+      let pid = resolve_pid patches patch_idx in
       try
         let has_merged dep_pid =
-          (Orchestrator.agent orch dep_pid).Patch_agent.merged
+          match Orchestrator.find_agent orch dep_pid with
+          | Some a -> a.Patch_agent.merged
+          | None -> false
         in
         let new_base =
           Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
@@ -414,14 +454,18 @@ let rec apply_command orch patches cmd =
         | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
       with Invalid_argument _ -> orch)
   | Apply_rebase_push_result { patch_idx; result } -> (
+      let pid = resolve_pid patches patch_idx in
       try
-        let pid = pid_of_idx patches patch_idx in
         let orch, _resolution =
           Orchestrator.apply_rebase_push_result orch pid
             (Some (to_push_result result))
         in
         orch
       with Invalid_argument _ -> orch)
+  | Add_adhoc i ->
+      Orchestrator.add_agent orch ~patch_id:(adhoc_pid i)
+        ~branch:(adhoc_branch i) ~pr_number:(adhoc_pr i)
+  | Remove_adhoc i -> Orchestrator.remove_agent orch (adhoc_pid i)
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
@@ -436,33 +480,35 @@ type poll_log_info = {
 let rec apply_command_with_logs orch patches cmd =
   match cmd with
   | Apply_poll { patch_idx; poll_kind } -> (
-      let pid = pid_of_idx patches patch_idx in
-      let agent_before = Orchestrator.agent orch pid in
-      let has_conflict, merged, ci_failed, checks_passing, review_comments =
-        poll_params_of_kind poll_kind
-      in
-      let poll_result =
-        make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
-          ~review_comments
-      in
-      let branch_of = branch_of_patches patches in
-      let observation =
-        Patch_controller.
-          {
-            poll_result;
-            head_branch = Some (branch_of pid);
-            base_branch = None;
-            branch_in_root = false;
-            worktree_path = None;
-          }
-      in
-      try
-        let orch, logs, _blocked =
-          Patch_controller.apply_poll_result orch pid observation
-        in
-        let info = Some { agent_before; poll_kind; patch_id = pid; logs } in
-        (orch, info)
-      with Invalid_argument _ -> (orch, None))
+      let pid = resolve_pid patches patch_idx in
+      match Orchestrator.find_agent orch pid with
+      | None -> (orch, None)
+      | Some agent_before -> (
+          let has_conflict, merged, ci_failed, checks_passing, review_comments =
+            poll_params_of_kind poll_kind
+          in
+          let poll_result =
+            make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
+              ~review_comments
+          in
+          let branch_of = extended_branch_of patches in
+          let observation =
+            Patch_controller.
+              {
+                poll_result;
+                head_branch = Some (branch_of pid);
+                base_branch = None;
+                branch_in_root = false;
+                worktree_path = None;
+              }
+          in
+          try
+            let orch, logs, _blocked =
+              Patch_controller.apply_poll_result orch pid observation
+            in
+            let info = Some { agent_before; poll_kind; patch_id = pid; logs } in
+            (orch, info)
+          with Invalid_argument _ -> (orch, None)))
   | Atomic_poll_reconcile { patch_idx; poll_kind } ->
       let orch, info =
         apply_command_with_logs orch patches
@@ -472,7 +518,8 @@ let rec apply_command_with_logs orch patches cmd =
       (orch, info)
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
-  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ ->
+  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Add_adhoc _
+  | Remove_adhoc _ ->
       (apply_command orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
@@ -574,10 +621,12 @@ let check_base_branch_freshness orch patches action =
   | Orchestrator.Start (_, _) ->
       ()
 
-(** I-4: merged is monotonic — once merged, never un-merged. *)
-let check_merged_monotonicity ~prev_merged ~curr_merged =
+(** I-4: merged is monotonic — once merged, never un-merged. Patches that were
+    removed from the orchestrator are excluded: their disappearance from the
+    merged set is expected, not a violation. *)
+let check_merged_monotonicity ~prev_merged ~curr_merged ~removed_pids =
   Set.iter prev_merged ~f:(fun pid ->
-      if not (Set.mem curr_merged pid) then
+      if (not (Set.mem curr_merged pid)) && not (Set.mem removed_pids pid) then
         failwith
           (Printf.sprintf "I-4 merged_monotonicity violated: %s un-merged"
              (Patch_id.to_string pid)))
@@ -718,7 +767,7 @@ let merged_set_of orch =
       if a.merged then Some a.patch_id else None)
   |> Set.of_list (module Patch_id)
 
-let check_all_invariants orch patches ~prev_merged ~curr_merged =
+let check_all_invariants orch patches ~prev_merged ~curr_merged ~removed_pids =
   let agents = Orchestrator.all_agents orch in
   let actions =
     Patch_controller.plan_actions orch ~patches:(make_gameplan patches).patches
@@ -731,7 +780,7 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged =
       check_conflict_not_cleared_while_in_flight a;
       check_notified_base_branch_coherence a);
   (* Monotonicity *)
-  check_merged_monotonicity ~prev_merged ~curr_merged;
+  check_merged_monotonicity ~prev_merged ~curr_merged ~removed_pids;
   (* Per-action invariants *)
   List.iter actions ~f:(fun action ->
       check_merged_blocks_actions orch action;
@@ -742,13 +791,38 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged =
   (* Reconciliation invariants *)
   check_merged_no_github_effects orch patches
 
+let removed_pids_of_cmd cmd prev_removed =
+  match cmd with
+  | Remove_adhoc i -> Set.add prev_removed (adhoc_pid i)
+  | Add_adhoc _ | Apply_poll _ | Reconcile | Runner_tick | Complete _
+  | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
+  | Reset_intervention _ | Atomic_poll_reconcile _
+  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ ->
+      prev_removed
+
 let run_sequence ?(debug = false) orch patches cmds =
-  let final, _final_merged, _final_merged_logged =
+  let final, _final_merged, _final_merged_logged, _final_removed =
     List.fold cmds
-      ~init:(orch, merged_set_of orch, Set.empty (module Patch_id))
-      ~f:(fun (o, prev_merged, merged_logged) cmd ->
+      ~init:
+        ( orch,
+          merged_set_of orch,
+          Set.empty (module Patch_id),
+          Set.empty (module Patch_id) )
+      ~f:(fun (o, prev_merged, merged_logged, removed_pids) cmd ->
         if debug then Stdlib.Printf.eprintf "  CMD: %s\n%!" (show_command cmd);
         let o, log_info = apply_command_with_logs o patches cmd in
+        let removed_pids = removed_pids_of_cmd cmd removed_pids in
+        (* Re-adding an adhoc patch resets its lifecycle — clear merge log. *)
+        let merged_logged =
+          match cmd with
+          | Add_adhoc i -> Set.remove merged_logged (adhoc_pid i)
+          | Remove_adhoc _ | Apply_poll _ | Reconcile | Runner_tick | Complete _
+          | Apply_session_result _ | Apply_rebase_result _
+          | Send_human_message _ | Reset_intervention _
+          | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
+          | Apply_rebase_push_result _ ->
+              merged_logged
+        in
         let curr_merged = merged_set_of o in
         if debug then
           List.iter (Orchestrator.all_agents o) ~f:(fun (a : Patch_agent.t) ->
@@ -761,13 +835,13 @@ let run_sequence ?(debug = false) orch patches cmds =
                 (String.concat ~sep:","
                    (List.map a.queue ~f:Operation_kind.to_label))
                 (Patch_agent.needs_intervention a));
-        check_all_invariants o patches ~prev_merged ~curr_merged;
+        check_all_invariants o patches ~prev_merged ~curr_merged ~removed_pids;
         let merged_logged =
           match log_info with
           | Some info -> check_log_invariants info ~merged_logged
           | None -> merged_logged
         in
-        (o, curr_merged, merged_logged))
+        (o, curr_merged, merged_logged, removed_pids))
   in
   final
 
@@ -779,22 +853,39 @@ let drain_and_check orch patches =
     List.filter_map (Orchestrator.all_agents orch)
       ~f:(fun (a : Patch_agent.t) -> if a.busy then Some a.patch_id else None)
   in
+  let no_removed = Set.empty (module Patch_id) in
   List.fold busy_pids ~init:orch ~f:(fun o pid ->
       let prev_merged = merged_set_of o in
       let o = Orchestrator.complete o pid in
       let curr_merged = merged_set_of o in
-      check_all_invariants o patches ~prev_merged ~curr_merged;
+      check_all_invariants o patches ~prev_merged ~curr_merged
+        ~removed_pids:no_removed;
       o)
 
 let safe_verbose cmds patches f =
-  try f ()
-  with Failure msg ->
-    if List.length cmds <= 100 then (
-      Stdlib.Printf.eprintf "INVARIANT VIOLATION: %s\n%!" msg;
-      let orch = bootstrap patches in
-      try ignore (run_sequence ~debug:true orch patches cmds)
-      with Failure _ -> ());
-    false
+  try f () with
+  | Failure msg ->
+      if List.length cmds <= 100 then (
+        Stdlib.Printf.eprintf "INVARIANT VIOLATION: %s\n%!" msg;
+        let orch =
+          if List.is_empty patches then
+            Orchestrator.create ~patches ~main_branch:main
+          else bootstrap patches
+        in
+        try ignore (run_sequence ~debug:true orch patches cmds)
+        with Failure _ | Invalid_argument _ -> ());
+      false
+  | Invalid_argument msg ->
+      if List.length cmds <= 100 then (
+        Stdlib.Printf.eprintf "UNEXPECTED Invalid_argument: %s\n%!" msg;
+        let orch =
+          if List.is_empty patches then
+            Orchestrator.create ~patches ~main_branch:main
+          else bootstrap patches
+        in
+        try ignore (run_sequence ~debug:true orch patches cmds)
+        with Failure _ | Invalid_argument _ -> ());
+      false
 
 (* ========== Properties ========== *)
 
@@ -1142,3 +1233,97 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi8;
   Stdlib.print_endline "PI-8 passed"
+
+(** PI-9: Remove ad-hoc patch while busy, then complete — must not crash.
+    Regression test for the with_busy_guard crash where Orchestrator.agent was
+    called on a removed patch_id in the finally handler. *)
+let () =
+  let prop_pi9 =
+    QCheck2.Test.make
+      ~name:"PI-9: remove ad-hoc patch while busy does not crash complete/tick"
+      (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let gameplan = make_gameplan patches in
+        let orch = bootstrap patches in
+        (* Add an ad-hoc patch *)
+        let pid = adhoc_pid 0 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid ~branch:(adhoc_branch 0)
+            ~pr_number:(adhoc_pr 0)
+        in
+        (* Poll conflict to enqueue Merge_conflict on the ad-hoc patch *)
+        let poll_result =
+          make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
+            ~checks_passing:false ~review_comments:false
+        in
+        let observation =
+          Patch_controller.
+            {
+              poll_result;
+              head_branch = Some (adhoc_branch 0);
+              base_branch = None;
+              branch_in_root = false;
+              worktree_path = None;
+            }
+        in
+        let orch, _logs, _blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        (* Tick to fire the Merge_conflict — ad-hoc agent becomes busy *)
+        let orch, _effects, _actions =
+          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+        in
+        let agent = Orchestrator.agent orch pid in
+        if not agent.Patch_agent.busy then
+          failwith "expected ad-hoc agent to be busy after tick";
+        (* Remove the ad-hoc patch while it's busy — like the TUI handler *)
+        let orch = Orchestrator.remove_agent orch pid in
+        (* complete on the removed patch — this is what with_busy_guard does *)
+        let orch = Orchestrator.complete orch pid in
+        (* Subsequent tick must not crash *)
+        let orch, _effects, _actions =
+          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+        in
+        ignore (drain_and_check orch patches);
+        true)
+  in
+  QCheck2.Test.check_exn prop_pi9;
+  Stdlib.print_endline "PI-9 passed"
+
+(** PI-10: Random interleavings with ad-hoc patches preserve invariants.
+    Exercises Add_adhoc/Remove_adhoc commands alongside the standard vocabulary,
+    including the case where ad-hoc patches are removed while busy. *)
+let () =
+  let n = 3 in
+  let patches = mk_patches n in
+  let prop_pi10 =
+    QCheck2.Test.make
+      ~name:"PI-10: interleavings with ad-hoc add/remove preserve invariants"
+      ~count:1000 (gen_command_seq ~n ~len:50) (fun cmds ->
+        (safe_verbose cmds patches) (fun () ->
+            let orch = bootstrap patches in
+            let final = run_sequence orch patches cmds in
+            ignore (drain_and_check final patches);
+            true))
+  in
+  QCheck2.Test.check_exn prop_pi10;
+  Stdlib.print_endline "PI-10 passed"
+
+(** PI-11: All-adhoc session — no gameplan patches, only ad-hoc additions. Tests
+    that the system handles a completely dynamic patch set where every patch is
+    added at runtime and can be removed at any point. All command indices
+    [0..max_adhoc-1] map to ad-hoc patch slots. *)
+let () =
+  let patches = [] in
+  let prop_pi11 =
+    QCheck2.Test.make
+      ~name:"PI-11: all-adhoc session with no gameplan preserves invariants"
+      ~count:1000 (gen_command_seq ~n:0 ~len:50) (fun cmds ->
+        (safe_verbose cmds patches) (fun () ->
+            let orch = Orchestrator.create ~patches ~main_branch:main in
+            let final = run_sequence orch patches cmds in
+            ignore (drain_and_check final patches);
+            true))
+  in
+  QCheck2.Test.check_exn prop_pi11;
+  Stdlib.print_endline "PI-11 passed"
