@@ -647,13 +647,11 @@ let render_patch_row ~width ~selected (pv : patch_view) =
   let badge = render_status_badge pv.status in
   let patch_label =
     let id_str = Patch_id.to_string pv.patch_id in
-    let is_redundant =
-      match pv.pr_number with
-      | Some n -> String.equal id_str (Int.to_string (Pr_number.to_int n))
-      | None -> false
+    let id_short =
+      if String.length id_str > 4 then String.sub id_str ~pos:0 ~len:4
+      else id_str
     in
-    if is_redundant then Printf.sprintf "%-10s" ""
-    else Printf.sprintf "Patch %-4s" id_str
+    Printf.sprintf "Patch %-4s" id_short
   in
   let pr_label =
     match pv.pr_number with
