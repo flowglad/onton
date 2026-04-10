@@ -1,4 +1,9 @@
 *
 !docs
 !docs/**
+!api
+!api/**
+!package.json
+!package-lock.json
+!tsconfig.json
 !vercel.json
