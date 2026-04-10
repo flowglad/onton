@@ -535,3 +535,38 @@ let apply_session_result t patch_id result =
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
       complete_failed t patch_id
+
+type start_outcome = Start_ok | Start_failed | Start_stale
+[@@deriving show, eq, sexp_of]
+
+let apply_start_outcome t patch_id outcome =
+  match outcome with
+  | Start_stale -> t
+  | Start_ok ->
+      (* Caller must complete explicitly after PR discovery finishes,
+         so busy=true is held throughout the network call. *)
+      t
+  | Start_failed -> complete t patch_id
+
+type respond_outcome =
+  | Respond_ok
+  | Respond_failed
+  | Respond_retry_push
+  | Respond_stale
+[@@deriving show, eq, sexp_of]
+
+let apply_respond_outcome t patch_id kind outcome =
+  match outcome with
+  | Respond_stale -> t
+  | Respond_failed -> complete t patch_id
+  | Respond_retry_push -> complete t patch_id
+  | Respond_ok ->
+      let t = complete t patch_id in
+      let t =
+        if Operation_kind.equal kind Operation_kind.Merge_conflict then
+          clear_has_conflict t patch_id
+        else t
+      in
+      if Operation_kind.equal kind Operation_kind.Implementation_notes then
+        set_implementation_notes_delivered t patch_id true
+      else t

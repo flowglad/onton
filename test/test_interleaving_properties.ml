@@ -743,7 +743,7 @@ let check_all_invariants orch patches ~prev_merged ~curr_merged =
   check_merged_no_github_effects orch patches
 
 let run_sequence ?(debug = false) orch patches cmds =
-  let _final, _final_merged, _final_merged_logged =
+  let final, _final_merged, _final_merged_logged =
     List.fold cmds
       ~init:(orch, merged_set_of orch, Set.empty (module Patch_id))
       ~f:(fun (o, prev_merged, merged_logged) cmd ->
@@ -769,7 +769,22 @@ let run_sequence ?(debug = false) orch patches cmds =
         in
         (o, curr_merged, merged_logged))
   in
-  ()
+  final
+
+(** Drain all busy agents by completing them, checking invariants after each.
+    Models the runner's contract: every fired action must eventually complete
+    without violating invariants. *)
+let drain_and_check orch patches =
+  let busy_pids =
+    List.filter_map (Orchestrator.all_agents orch)
+      ~f:(fun (a : Patch_agent.t) -> if a.busy then Some a.patch_id else None)
+  in
+  List.fold busy_pids ~init:orch ~f:(fun o pid ->
+      let prev_merged = merged_set_of o in
+      let o = Orchestrator.complete o pid in
+      let curr_merged = merged_set_of o in
+      check_all_invariants o patches ~prev_merged ~curr_merged;
+      o)
 
 let safe_verbose cmds patches f =
   try f ()
@@ -777,7 +792,8 @@ let safe_verbose cmds patches f =
     if List.length cmds <= 100 then (
       Stdlib.Printf.eprintf "INVARIANT VIOLATION: %s\n%!" msg;
       let orch = bootstrap patches in
-      try run_sequence ~debug:true orch patches cmds with Failure _ -> ());
+      try ignore (run_sequence ~debug:true orch patches cmds)
+      with Failure _ -> ());
     false
 
 (* ========== Properties ========== *)
@@ -792,7 +808,8 @@ let () =
       ~count:1000 (gen_command_seq ~n ~len:50) (fun cmds ->
         (safe_verbose cmds patches) (fun () ->
             let orch = bootstrap patches in
-            run_sequence orch patches cmds;
+            let final = run_sequence orch patches cmds in
+            ignore (drain_and_check final patches);
             true))
   in
   QCheck2.Test.check_exn prop_pi1;
@@ -808,7 +825,8 @@ let () =
       ~count:1000 (gen_atomic_command_seq ~n ~len:50) (fun cmds ->
         (safe_verbose cmds patches) (fun () ->
             let orch = bootstrap patches in
-            run_sequence orch patches cmds;
+            let final = run_sequence orch patches cmds in
+            ignore (drain_and_check final patches);
             true))
   in
   QCheck2.Test.check_exn prop_pi2;
@@ -825,7 +843,8 @@ let () =
       ~count:1000 (gen_command_seq ~n ~len:50) (fun cmds ->
         (safe_verbose cmds patches) (fun () ->
             let orch = Orchestrator.create ~patches ~main_branch:main in
-            run_sequence orch patches cmds;
+            let final = run_sequence orch patches cmds in
+            ignore (drain_and_check final patches);
             true))
   in
   QCheck2.Test.check_exn prop_pi3;

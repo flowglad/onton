@@ -137,6 +137,29 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     set_tried_fresh + complete. [Session_worktree_missing] ->
     on_pre_session_failure + complete. *)
 
+type start_outcome = Start_ok | Start_failed | Start_stale
+[@@deriving show, eq, sexp_of]
+
+val apply_start_outcome : t -> Patch_id.t -> start_outcome -> t
+(** Apply the outcome of a Start action fiber. [Start_failed] -> complete.
+    [Start_ok] -> identity (caller must [complete] after PR discovery).
+    [Start_stale] -> identity. *)
+
+type respond_outcome =
+  | Respond_ok
+  | Respond_failed
+  | Respond_retry_push
+  | Respond_stale
+[@@deriving show, eq, sexp_of]
+
+val apply_respond_outcome :
+  t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
+(** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
+    kind-specific transitions (Merge_conflict -> clear_has_conflict;
+    Implementation_notes -> set_implementation_notes_delivered).
+    [Respond_failed] -> complete. [Respond_retry_push] -> complete.
+    [Respond_stale] -> identity. *)
+
 (** Side effects emitted by rebase result application. The runner is responsible
     for executing these (e.g. force-pushing the branch to the remote). Modeled
     as data so property tests can assert on effect presence. *)
