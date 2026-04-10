@@ -3,11 +3,13 @@ open Base
 let build_args ~cwd_path ~patch_id ~prompt ~resume_session =
   let session_dir = cwd_path ^ "/.pi-sessions/" ^ patch_id in
   let base = [ "pi"; "-p"; prompt; "--mode"; "json" ] in
-  let continue_args =
-    if Option.is_some resume_session then [ "--continue" ] else []
+  let resume_args =
+    match resume_session with
+    | Some session_id -> [ "--resume"; session_id ]
+    | None -> []
   in
   let session_args = [ "--session-dir"; session_dir ] in
-  base @ continue_args @ session_args
+  base @ resume_args @ session_args
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -99,7 +101,8 @@ let%test "build_args with continue" =
       "do stuff";
       "--mode";
       "json";
-      "--continue";
+      "--resume";
+      "x";
       "--session-dir";
       "/tmp/work/.pi-sessions/patch-1";
     ]

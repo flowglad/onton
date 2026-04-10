@@ -2,10 +2,12 @@ open Base
 
 let build_args ~cwd_path ~prompt ~resume_session =
   let base = [ "opencode"; "run"; "--format"; "json"; "--dir"; cwd_path ] in
-  let continue_args =
-    if Option.is_some resume_session then [ "--continue" ] else []
+  let resume_args =
+    match resume_session with
+    | Some session_id -> [ "--resume"; session_id ]
+    | None -> []
   in
-  base @ continue_args @ [ prompt ]
+  base @ resume_args @ [ prompt ]
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -95,7 +97,8 @@ let%test "build_args with continue" =
       "json";
       "--dir";
       "/tmp/work";
-      "--continue";
+      "--resume";
+      "x";
       "do stuff";
     ]
 

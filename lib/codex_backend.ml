@@ -2,7 +2,8 @@ open Base
 
 let build_args ~cwd_path ~prompt ~resume_session =
   match resume_session with
-  | Some _ -> [ "codex"; "exec"; "resume"; "--last"; "--json"; "-C"; cwd_path ]
+  | Some session_id ->
+      [ "codex"; "exec"; "resume"; session_id; "--json"; "-C"; cwd_path ]
   | None ->
       [
         "codex";
@@ -107,7 +108,7 @@ let%test "build_args with resume session" =
       ~resume_session:(Some "sess-1")
   in
   List.equal String.equal args
-    [ "codex"; "exec"; "resume"; "--last"; "--json"; "-C"; "/tmp/work" ]
+    [ "codex"; "exec"; "resume"; "sess-1"; "--json"; "-C"; "/tmp/work" ]
 
 let%test "parse_event agent_message" =
   let line =
