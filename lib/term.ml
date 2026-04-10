@@ -61,8 +61,17 @@ end
 type style = string list
 (** Style type for composing multiple attributes. *)
 
-let style codes = String.concat codes
-let styled codes text = String.concat codes ^ text ^ Sgr.reset
+(** Whether color output is enabled. Respects $NO_COLOR (https://no-color.org):
+    if set to any non-empty value, all styling is suppressed. *)
+let color_enabled =
+  lazy
+    (match Stdlib.Sys.getenv_opt "NO_COLOR" with
+    | Some s -> String.is_empty s
+    | None -> true)
+
+let styled codes text =
+  if Lazy.force color_enabled then String.concat codes ^ text ^ Sgr.reset
+  else text
 
 (** Strip all ANSI escape sequences from a string. *)
 let strip_ansi s =

@@ -16,32 +16,32 @@ let rec render_inline (inline : Cmarkit.Inline.t) : string =
       List.map inlines ~f:render_inline |> String.concat
   | Cmarkit.Inline.Emphasis n ->
       let inner = render_inline (Cmarkit.Inline.Emphasis.inline (fst n)) in
-      Term.Sgr.italic ^ inner ^ Term.Sgr.reset
+      Term.styled [ Term.Sgr.italic ] inner
   | Cmarkit.Inline.Strong_emphasis n ->
       let inner = render_inline (Cmarkit.Inline.Emphasis.inline (fst n)) in
-      Term.Sgr.bold ^ inner ^ Term.Sgr.reset
+      Term.styled [ Term.Sgr.bold ] inner
   | Cmarkit.Inline.Code_span n ->
       let lines = Cmarkit.Inline.Code_span.code_layout (fst n) in
       let text =
         List.map lines ~f:(fun (_, bl) -> Cmarkit.Block_line.to_string bl)
         |> String.concat ~sep:" "
       in
-      Term.Sgr.fg_cyan ^ text ^ Term.Sgr.reset
+      Term.styled [ Term.Sgr.fg_cyan ] text
   | Cmarkit.Inline.Break n -> (
       match Cmarkit.Inline.Break.type' (fst n) with
       | `Hard -> "\n"
       | `Soft -> " ")
   | Cmarkit.Inline.Link n ->
       let text = render_inline (Cmarkit.Inline.Link.text (fst n)) in
-      Term.Sgr.underline ^ text ^ Term.Sgr.reset
+      Term.styled [ Term.Sgr.underline ] text
   | Cmarkit.Inline.Autolink n ->
       let uri = fst (Cmarkit.Inline.Autolink.link (fst n)) in
-      Term.Sgr.underline ^ Term.Sgr.fg_blue ^ uri ^ Term.Sgr.reset
+      Term.styled [ Term.Sgr.underline; Term.Sgr.fg_blue ] uri
   | Cmarkit.Inline.Raw_html _ -> ""
   | Cmarkit.Inline.Image _ -> "[image]"
   | Cmarkit.Inline.Ext_strikethrough n ->
       let inner = render_inline (Cmarkit.Inline.Strikethrough.inline (fst n)) in
-      Term.Sgr.strikethrough ^ inner ^ Term.Sgr.reset
+      Term.styled [ Term.Sgr.strikethrough ] inner
   | _ -> ""
 
 (** Render a block to a list of lines. *)
@@ -55,14 +55,14 @@ let rec render_block (block : Cmarkit.Block.t) : string list =
       let h = fst n in
       let level = Cmarkit.Block.Heading.level h in
       let text = render_inline (Cmarkit.Block.Heading.inline h) in
-      let color =
+      let style =
         match level with
-        | 1 -> Term.Sgr.fg_magenta ^ Term.Sgr.underline
-        | 2 -> Term.Sgr.fg_green
-        | _ -> Term.Sgr.fg_yellow
+        | 1 -> [ Term.Sgr.bold; Term.Sgr.fg_magenta; Term.Sgr.underline ]
+        | 2 -> [ Term.Sgr.bold; Term.Sgr.fg_green ]
+        | _ -> [ Term.Sgr.bold; Term.Sgr.fg_yellow ]
       in
       let marker = String.make level '#' in
-      [ Term.Sgr.bold ^ color ^ marker ^ " " ^ text ^ Term.Sgr.reset; "" ]
+      [ Term.styled style (marker ^ " " ^ text); "" ]
   | Cmarkit.Block.Code_block n ->
       let cb = fst n in
       let info_label =
@@ -76,18 +76,16 @@ let rec render_block (block : Cmarkit.Block.t) : string list =
       let code_lines = Cmarkit.Block.Code_block.code cb in
       let code =
         List.map code_lines ~f:(fun bl ->
-            "  " ^ Term.Sgr.dim
-            ^ Cmarkit.Block_line.to_string bl
-            ^ Term.Sgr.reset)
+            "  "
+            ^ Term.styled [ Term.Sgr.dim ] (Cmarkit.Block_line.to_string bl))
       in
-      [ Term.Sgr.dim ^ "```" ^ info_label ^ Term.Sgr.reset ]
+      [ Term.styled [ Term.Sgr.dim ] ("```" ^ info_label) ]
       @ code
-      @ [ Term.Sgr.dim ^ "```" ^ Term.Sgr.reset; "" ]
+      @ [ Term.styled [ Term.Sgr.dim ] "```"; "" ]
   | Cmarkit.Block.Block_quote n ->
       let inner = Cmarkit.Block.Block_quote.block (fst n) in
       let inner_lines = render_block inner in
-      List.map inner_lines ~f:(fun l ->
-          Term.Sgr.dim ^ "│ " ^ Term.Sgr.reset ^ l)
+      List.map inner_lines ~f:(fun l -> Term.styled [ Term.Sgr.dim ] "│ " ^ l)
       @ [ "" ]
   | Cmarkit.Block.List n ->
       let lst = fst n in
@@ -111,8 +109,7 @@ let rec render_block (block : Cmarkit.Block.t) : string list =
                 (marker ^ first) :: List.map rest ~f:(fun l -> pad ^ l))
       in
       result @ [ "" ]
-  | Cmarkit.Block.Thematic_break _ ->
-      [ Term.Sgr.dim ^ "───" ^ Term.Sgr.reset; "" ]
+  | Cmarkit.Block.Thematic_break _ -> [ Term.styled [ Term.Sgr.dim ] "───"; "" ]
   | Cmarkit.Block.Blank_line _ -> [ "" ]
   | Cmarkit.Block.Blocks (blocks, _) -> List.concat_map blocks ~f:render_block
   | Cmarkit.Block.Html_block _ -> []
