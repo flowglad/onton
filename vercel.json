@@ -1,4 +1,4 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cp -r docs public"
+  "outputDirectory": "docs"
 }
