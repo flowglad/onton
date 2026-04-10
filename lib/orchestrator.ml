@@ -485,7 +485,6 @@ let apply_conflict_push_result t patch_id decision
   | Conflict_resolved, Some Worktree.Push_up_to_date -> (t, Conflict_done)
   | ( Conflict_resolved,
       (None | Some (Worktree.Push_rejected | Worktree.Push_error _)) ) ->
-      let t = clear_has_conflict t patch_id in
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Conflict_retry_push)
