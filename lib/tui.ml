@@ -65,7 +65,7 @@ let color = function
   | Awaiting_ci -> Term.Sgr.fg_blue
   | Awaiting_review -> Term.Sgr.fg_blue
   | Blocked_by_dep -> Term.Sgr.fg_blue
-  | Pending -> Term.Sgr.fg_white
+  | Pending -> Term.Sgr.fg_default
 
 let to_status_display status = { label = label status; color = color status }
 
@@ -679,8 +679,7 @@ let render_patch_row ~width ~selected (pv : patch_view) =
       (Printf.sprintf "%s%s%s  %s%s%s%s" cursor pr_label badge pv.title
          op_suffix ci_info dep_info)
   in
-  if selected then Term.styled [ Term.Sgr.bold; Term.Sgr.bg_256 236 ] row
-  else row
+  if selected then Term.styled [ Term.Sgr.bold ] row else row
 
 (** Compute visible window: returns (offset, count) for scrolling. *)
 let visible_window ~selected ~total ~max_visible =
@@ -1059,7 +1058,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
               let after =
                 String.sub line ~pos:bp_next ~len:(String.length line - bp_next)
               in
-              before ^ Term.Sgr.reverse ^ ch ^ Term.Sgr.reset ^ after)
+              before ^ Term.styled [ Term.Sgr.underline ] ch ^ after)
       in
       Term.hrule width :: with_cursor
   | None ->
@@ -1067,8 +1066,8 @@ let render_footer ~width ~view_mode ?prompt_line () =
         match view_mode with
         | List_view ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  r:refresh  ↑/↓:navigate  enter:detail  +:add PR  \
-               w:worktree  -:remove  h:help"
+              " q:quit  ↑/↓:navigate  enter:detail  +:add PR  w:worktree  \
+               -:remove  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  enter:message  m:manage  \
