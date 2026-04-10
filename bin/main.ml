@@ -3158,23 +3158,49 @@ let headless_arg =
     value & flag
     & info [ "headless" ] ~doc:"Run without TUI (plain log output).")
 
+let upload_debug_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "upload-debug" ]
+        ~doc:
+          "Upload project debug state for troubleshooting. Requires a project \
+           name.")
+
 let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend main_branch
-      poll_interval repo_root max_concurrency headless =
-    let main_branch =
-      Base.Option.map main_branch ~f:(fun s ->
-          Branch.of_string (Base.String.strip s))
-    in
-    run ~project ~gameplan_path ~github_token
-      ~backend:(Base.String.strip backend)
-      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
+      poll_interval repo_root max_concurrency headless upload_debug =
+    if upload_debug then (
+      match project with
+      | None ->
+          Printf.eprintf
+            "Error: --upload-debug requires a project name.\n\
+             Usage: onton PROJECT --upload-debug\n";
+          Stdlib.exit 1
+      | Some project_name ->
+          if not (Project_store.project_exists project_name) then (
+            Printf.eprintf "Error: no stored project %S.\n" project_name;
+            Printf.eprintf "Known projects: %s\n"
+              (String.concat ", " (Project_store.list_projects ()));
+            Stdlib.exit 1);
+          Eio_main.run @@ fun env ->
+          Debug_upload.run ~net:(Eio.Stdenv.net env) ~project_name
+            ~version:Version.s)
+    else
+      let main_branch =
+        Base.Option.map main_branch ~f:(fun s ->
+            Branch.of_string (Base.String.strip s))
+      in
+      run ~project ~gameplan_path ~github_token
+        ~backend:(Base.String.strip backend)
+        ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ headless_arg)
+      $ max_concurrency_arg $ headless_arg $ upload_debug_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
