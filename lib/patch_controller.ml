@@ -98,7 +98,8 @@ let apply_poll_result t patch_id
       if agent.Patch_agent.has_conflict then
         if Patch_decision.should_clear_conflict agent then (
           log "conflict cleared (no longer detected)";
-          Orchestrator.clear_has_conflict t patch_id)
+          let t = Orchestrator.clear_has_conflict t patch_id in
+          Orchestrator.reset_conflict_noop_count t patch_id)
         else (
           log "conflict flag retained (resolution in flight)";
           t)

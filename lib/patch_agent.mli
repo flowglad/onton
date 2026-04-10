@@ -139,7 +139,14 @@ val set_has_conflict : t -> t
 (** Mark the patch as having a merge conflict. *)
 
 val clear_has_conflict : t -> t
-(** Clear the merge conflict flag. Spec: [mergeable' p = world-mergeable p]. *)
+(** Clear the merge conflict flag. Does NOT reset [conflict_noop_count]; call
+    [reset_conflict_noop_count] explicitly when a conflict is truly resolved
+    (not just a noop). *)
+
+val reset_conflict_noop_count : t -> t
+(** Reset [conflict_noop_count] to 0. Call when a conflict is genuinely resolved
+    (successful rebase, agent resolution, or poll no longer reports conflict).
+*)
 
 val set_base_branch : t -> Types.Branch.t -> t
 (** Update the base branch. *)

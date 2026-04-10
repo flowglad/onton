@@ -314,6 +314,9 @@ let set_has_conflict t patch_id =
 let clear_has_conflict t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_has_conflict
 
+let reset_conflict_noop_count t patch_id =
+  update_agent t patch_id ~f:Patch_agent.reset_conflict_noop_count
+
 let set_base_branch t patch_id branch =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_base_branch a branch)
 
@@ -398,6 +401,7 @@ let apply_rebase_result t patch_id rebase_result new_base =
   | Worktree.Ok ->
       let t = set_base_branch t patch_id new_base in
       let t = clear_has_conflict t patch_id in
+      let t = reset_conflict_noop_count t patch_id in
       (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
@@ -444,6 +448,7 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
   | Worktree.Ok ->
       let t = set_base_branch t patch_id new_base in
       let t = clear_has_conflict t patch_id in
+      let t = reset_conflict_noop_count t patch_id in
       let t = complete t patch_id in
       (t, Conflict_resolved, [ Push_branch ])
   | Worktree.Noop ->
@@ -570,7 +575,8 @@ let apply_respond_outcome t patch_id kind outcome =
       let t = complete t patch_id in
       let t =
         if Operation_kind.equal kind Operation_kind.Merge_conflict then
-          clear_has_conflict t patch_id
+          let t = clear_has_conflict t patch_id in
+          reset_conflict_noop_count t patch_id
         else t
       in
       if Operation_kind.equal kind Operation_kind.Implementation_notes then

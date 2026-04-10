@@ -156,9 +156,8 @@ let on_session_failure t ~is_fresh =
     if is_fresh then set_tried_fresh t else t
 
 let set_has_conflict t = { t with has_conflict = true }
-
-let clear_has_conflict t =
-  { t with has_conflict = false; conflict_noop_count = 0 }
+let clear_has_conflict t = { t with has_conflict = false }
+let reset_conflict_noop_count t = { t with conflict_noop_count = 0 }
 
 let increment_conflict_noop_count t =
   { t with conflict_noop_count = t.conflict_noop_count + 1 }
