@@ -2020,9 +2020,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~user_config:config.user_config
                                         ~worktree_mutex ~backend ~event_log)
                           in
-                          match result with
-                          | `Stale -> ()
-                          | `Failed ->
+                          let start_outcome =
+                            match result with
+                            | `Stale -> Orchestrator.Start_stale
+                            | `Failed -> Orchestrator.Start_failed
+                            | `Ok -> Orchestrator.Start_ok
+                          in
+                          Runtime.update_orchestrator runtime (fun orch ->
+                              Orchestrator.apply_start_outcome orch patch_id
+                                start_outcome);
+                          match start_outcome with
+                          | Orchestrator.Start_failed ->
                               let agent =
                                 Runtime.read runtime (fun snap ->
                                     Orchestrator.agent snap.Runtime.orchestrator
@@ -2036,7 +2044,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         review needed"
                                        (Patch_id.to_string patch_id))
                                   ()
-                          | `Ok ->
+                          | Orchestrator.Start_ok ->
                               (* Always confirm via REST API *)
                               let rec discover remaining =
                                 match
@@ -2065,7 +2073,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         Orchestrator.on_pr_discovery_failure
                                           orch patch_id)
                               in
-                              discover 2)))
+                              discover 2
+                          | Orchestrator.Start_stale -> ())))
           | Orchestrator.Rebase (patch_id, new_base) ->
               Some
                 (fun () ->
@@ -2173,6 +2182,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                       | Orchestrator.Rebase_push_error ->
                           log_event runtime ~patch_id
                             "runner: enqueuing rebase retry after push error");
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.complete orch patch_id);
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->
@@ -2562,9 +2573,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                 | _ -> ());
                                 result)
                       in
-                      match result with
-                      | `Stale -> ()
-                      | `Failed ->
+                      let respond_outcome =
+                        match result with
+                        | `Stale -> Orchestrator.Respond_stale
+                        | `Failed -> Orchestrator.Respond_failed
+                        | `Retry_push -> Orchestrator.Respond_retry_push
+                        | `Ok -> Orchestrator.Respond_ok
+                      in
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.apply_respond_outcome orch patch_id kind
+                            respond_outcome);
+                      match respond_outcome with
+                      | Orchestrator.Respond_failed ->
                           let agent =
                             Runtime.read runtime (fun snap ->
                                 Orchestrator.agent snap.Runtime.orchestrator
@@ -2578,8 +2598,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                     needed"
                                    (Patch_id.to_string patch_id))
                               ()
-                      | `Retry_push -> ()
-                      | `Ok ->
+                      | Orchestrator.Respond_ok ->
                           if
                             Operation_kind.equal kind
                               Operation_kind.Merge_conflict
@@ -2590,23 +2609,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                    "Patch %s: conflict resolved, rebasing…"
                                    (Patch_id.to_string patch_id))
                               ~expires_at:(Unix.gettimeofday () +. 10.0)
-                              ();
-                          Runtime.update_orchestrator runtime (fun orch ->
-                              let orch =
-                                if
-                                  Operation_kind.equal kind
-                                    Operation_kind.Merge_conflict
-                                then
-                                  Orchestrator.clear_has_conflict orch patch_id
-                                else orch
-                              in
-                              if
-                                Operation_kind.equal kind
-                                  Operation_kind.Implementation_notes
-                              then
-                                Orchestrator.set_implementation_notes_delivered
-                                  orch patch_id true
-                              else orch))))
+                              ()
+                      | Orchestrator.Respond_stale
+                      | Orchestrator.Respond_retry_push ->
+                          ())))
     in
     (* Spawn action fibers without waiting for completion. Each fiber is
        guarded by with_busy_guard (ensures complete on exit) and
