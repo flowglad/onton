@@ -4,7 +4,7 @@ open Base
 let backend_url =
   match Stdlib.Sys.getenv_opt "ONTON_DEBUG_URL" with
   | Some u -> u
-  | None -> "https://debug.write-gameplan.dev/api/upload"
+  | None -> "https://debug.onton.dev/api/upload"
 
 let max_response_size = 1_000_000
 let printf fmt = Stdlib.Printf.printf fmt
@@ -44,7 +44,7 @@ let scrub_config_json raw =
                    else (k, v)))
         | other -> other
       in
-      Yojson.Safe.to_string ~std:true scrubbed
+      Yojson.Safe.to_string ~std:true scrubbed |> scrub_token_patterns
   | exception Yojson.Json_error _ -> scrub_token_patterns raw
 
 let collect_files ~project_name =
@@ -103,14 +103,22 @@ let https_fun tls_config uri flow =
   (Tls_eio.client_of_flow tls_config ?host flow :> _ Eio.Flow.two_way)
 
 let http_request ~net ~meth ~uri ~headers ~body =
-  Mirage_crypto_rng_unix.use_default ();
-  match https_config () with
+  let parsed_uri = Uri.of_string uri in
+  let is_https =
+    match Uri.scheme parsed_uri with Some "http" -> false | _ -> true
+  in
+  let client_result =
+    if is_https then (
+      Mirage_crypto_rng_unix.use_default ();
+      match https_config () with
+      | Error msg -> Error msg
+      | Ok tls_config ->
+          Ok (Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net))
+    else Ok (Cohttp_eio.Client.make ~https:None net)
+  in
+  match client_result with
   | Error msg -> Error msg
-  | Ok tls_config ->
-      let client =
-        Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
-      in
-      let parsed_uri = Uri.of_string uri in
+  | Ok client ->
       let headers = Http.Header.of_list headers in
       Eio.Switch.run @@ fun sw ->
       let resp, resp_body =
@@ -145,10 +153,17 @@ let run ~net ~project_name ~version =
       [
         ("project_name", `String project_name);
         ("onton_version", `String version);
+        ("content_length", `Int bundle_size);
       ]
     |> Yojson.Safe.to_string ~std:true
   in
-  let headers = [ ("Content-Type", "application/json") ] in
+  let upload_secret =
+    Stdlib.Sys.getenv_opt "ONTON_UPLOAD_SECRET"
+    |> Option.value ~default:"onton-debug-upload"
+  in
+  let headers =
+    [ ("Content-Type", "application/json"); ("x-upload-secret", upload_secret) ]
+  in
   match
     http_request ~net ~meth:`POST ~uri:backend_url ~headers ~body:init_body
   with
