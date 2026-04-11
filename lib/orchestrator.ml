@@ -375,9 +375,6 @@ let set_llm_session_id t patch_id session_id =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_llm_session_id a session_id)
 
-let set_head_branch t patch_id branch =
-  update_agent t patch_id ~f:(fun a -> Patch_agent.set_head_branch a branch)
-
 (** {2 Queries} *)
 
 let all_agents t = Map.data t.agents

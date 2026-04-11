@@ -515,15 +515,12 @@ let patch_view_of_agent (agent : Patch_agent.t)
   let title =
     match patch_opt with
     | Some p -> p.Patch.title
-    | None -> (
-        match agent.head_branch with
-        | Some b -> Branch.to_string b
-        | None -> Patch_id.to_string patch_id)
+    | None -> Branch.to_string agent.Patch_agent.branch
   in
   let branch =
     match patch_opt with
     | Some p -> p.Patch.branch
-    | None -> Branch.of_string (Patch_id.to_string patch_id)
+    | None -> agent.Patch_agent.branch
   in
   let current_op = agent.Patch_agent.current_op in
   let ctx =

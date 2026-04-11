@@ -362,7 +362,6 @@ let rec apply_command orch patches cmd =
         Patch_controller.
           {
             poll_result;
-            head_branch = Some (branch_of pid);
             base_branch = None;
             branch_in_root = false;
             worktree_path = None;
@@ -502,12 +501,10 @@ let rec apply_command_with_logs orch patches cmd =
             make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
               ~review_comments
           in
-          let branch_of = extended_branch_of patches in
           let observation =
             Patch_controller.
               {
                 poll_result;
-                head_branch = Some (branch_of pid);
                 base_branch = None;
                 branch_in_root = false;
                 worktree_path = None;
@@ -1066,7 +1063,6 @@ let conflict_noop_cycle orch pid patches =
     Patch_controller.
       {
         poll_result;
-        head_branch = Some (branch_of pid);
         base_branch = None;
         branch_in_root = false;
         worktree_path = None;
@@ -1145,7 +1141,6 @@ let () =
           Patch_controller.
             {
               poll_result;
-              head_branch = Some (branch_of pid);
               base_branch = None;
               branch_in_root = false;
               worktree_path = None;
@@ -1225,7 +1220,6 @@ let () =
           failwith
             "has_conflict is true after conflict_noop_cycle — should be cleared";
         (* Simulate the next poll with conflict still reported by GitHub *)
-        let branch_of = branch_of_patches patches in
         let poll_result =
           make_poll_result ~has_conflict:true ~merged:false ~ci_failed:false
             ~checks_passing:false ~review_comments:false
@@ -1234,7 +1228,6 @@ let () =
           Patch_controller.
             {
               poll_result;
-              head_branch = Some (branch_of pid);
               base_branch = None;
               branch_in_root = false;
               worktree_path = None;
@@ -1277,7 +1270,6 @@ let () =
           Patch_controller.
             {
               poll_result;
-              head_branch = Some (adhoc_branch 0);
               base_branch = None;
               branch_in_root = false;
               worktree_path = None;

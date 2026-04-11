@@ -1062,7 +1062,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1102,7 +1101,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1143,7 +1141,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1188,7 +1185,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1229,7 +1225,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1279,7 +1274,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1332,7 +1326,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;
@@ -1375,7 +1368,6 @@ let () =
                   Patch_controller.
                     {
                       poll_result = poll;
-                      head_branch = None;
                       base_branch = None;
                       branch_in_root = false;
                       worktree_path = None;

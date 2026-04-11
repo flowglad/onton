@@ -79,10 +79,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("generation", `Int a.generation);
       ( "worktree_path",
         match a.worktree_path with None -> `Null | Some p -> `String p );
-      ( "head_branch",
-        match a.head_branch with
-        | None -> `Null
-        | Some b -> Branch.yojson_of_t b );
       ("branch_blocked", `Bool a.branch_blocked);
       ( "llm_session_id",
         match a.llm_session_id with None -> `Null | Some s -> `String s );
@@ -117,9 +113,14 @@ let patch_agent_of_yojson ~gameplan json =
        ~patch_id:(Patch_id.of_string (string_member "patch_id" json))
        ~branch:
          (let pid = string_member "patch_id" json in
+          (* Backward compat: old ad-hoc agents stored a synthetic "adhoc-N"
+             branch and the real branch in head_branch. Prefer head_branch
+             when present to migrate to the unified branch field. *)
+          let raw = string_member_opt "branch" json in
+          let head = string_member_opt "head_branch" json in
           Branch.of_string
             (Option.value
-               (string_member_opt "branch" json)
+               (match head with Some _ -> head | None -> raw)
                ~default:
                  (match
                     List.find gameplan.Gameplan.patches ~f:(fun p ->
@@ -170,8 +171,6 @@ let patch_agent_of_yojson ~gameplan json =
          |> Option.map ~f:Message_id.of_string)
        ~generation:(int_member "generation" json)
        ~worktree_path:(string_member_opt "worktree_path" json)
-       ~head_branch:
-         (string_member_opt "head_branch" json |> Option.map ~f:Branch.of_string)
        ~branch_blocked:(bool_member "branch_blocked" json)
        ~llm_session_id:(string_member_opt "llm_session_id" json))
 

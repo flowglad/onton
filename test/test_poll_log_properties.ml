@@ -38,8 +38,7 @@ let make_orch patch agent =
     ~main_branch:main
 
 let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
-    ~checks_passing ~queue ~merged ~is_draft ~head_branch ~branch_blocked
-    ~worktree_path =
+    ~checks_passing ~queue ~merged ~is_draft ~branch_blocked ~worktree_path =
   let busy = Option.is_some current_op in
   Patch_agent.restore ~patch_id ~branch
     ~pr_number:(Some (Pr_number.of_int 42))
@@ -50,18 +49,11 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~pr_description_applied:true ~implementation_notes_delivered:true
     ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~checks_passing
     ~current_op ~current_message_id:None ~generation:0 ~worktree_path
-    ~head_branch ~branch_blocked ~llm_session_id:None
+    ~branch_blocked ~llm_session_id:None
 
-let make_poll_observation ~head_branch ~branch_in_root ~worktree_path
-    poll_result =
+let make_poll_observation ~branch_in_root ~worktree_path poll_result =
   Patch_controller.
-    {
-      poll_result;
-      head_branch;
-      base_branch = None;
-      branch_in_root;
-      worktree_path;
-    }
+    { poll_result; base_branch = None; branch_in_root; worktree_path }
 
 let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
   Poller.
@@ -107,11 +99,7 @@ let gen_poll_log_case =
     in
     let* agent_is_draft = bool in
     let* agent_branch_blocked = bool in
-    (* Agent head_branch / worktree_path: generate optionally *)
-    let* has_agent_head_branch = bool in
-    let* agent_head_branch =
-      if has_agent_head_branch then map Option.some gen_branch else pure None
-    in
+    (* Agent worktree_path: generate optionally *)
     let* has_agent_worktree_path = bool in
     let* agent_worktree_path =
       if has_agent_worktree_path then
@@ -129,10 +117,6 @@ let gen_poll_log_case =
         (list_small gen_feedback_kind)
     in
     (* Observation dimensions *)
-    let* has_obs_head_branch = bool in
-    let* obs_head_branch =
-      if has_obs_head_branch then map Option.some gen_branch else pure None
-    in
     let* obs_branch_in_root = bool in
     let* has_obs_worktree_path = bool in
     let* obs_worktree_path =
@@ -145,8 +129,7 @@ let gen_poll_log_case =
       make_agent ~patch_id:pid ~branch ~has_conflict:agent_has_conflict
         ~ci_failure_count ~current_op ~checks_passing:agent_checks_passing
         ~queue:agent_queue ~merged:agent_merged ~is_draft:agent_is_draft
-        ~head_branch:agent_head_branch ~branch_blocked:agent_branch_blocked
-        ~worktree_path:agent_worktree_path
+        ~branch_blocked:agent_branch_blocked ~worktree_path:agent_worktree_path
     in
     let orch = make_orch patch agent in
     let poll =
@@ -155,8 +138,8 @@ let gen_poll_log_case =
         ~queue:poll_queue
     in
     let observation =
-      make_poll_observation ~head_branch:obs_head_branch
-        ~branch_in_root:obs_branch_in_root ~worktree_path:obs_worktree_path poll
+      make_poll_observation ~branch_in_root:obs_branch_in_root
+        ~worktree_path:obs_worktree_path poll
     in
     return (patch, pid, orch, agent, observation, poll))
 
@@ -166,7 +149,7 @@ let print_case =
     "patch=%s pid=%s agent={merged=%b has_conflict=%b ci_failure_count=%d \
      checks_passing=%b is_draft=%b branch_blocked=%b queue=[%s] current_op=%s} \
      poll={merged=%b has_conflict=%b checks_passing=%b is_draft=%b queue=[%s]} \
-     obs={head_branch=%s branch_in_root=%b worktree_path=%s}"
+     obs={branch_in_root=%b worktree_path=%s}"
     (Patch_id.to_string patch.Patch.id)
     (Patch_id.to_string pid) agent.Patch_agent.merged agent.has_conflict
     agent.ci_failure_count agent.checks_passing agent.is_draft
@@ -176,10 +159,8 @@ let print_case =
        ~f:Operation_kind.to_label)
     poll.Poller.merged poll.has_conflict poll.checks_passing poll.is_draft
     (String.concat ~sep:"," (List.map poll.queue ~f:Operation_kind.to_label))
-    (Option.value_map obs.Patch_controller.head_branch ~default:"none"
-       ~f:Branch.to_string)
-    obs.branch_in_root
-    (Option.value obs.worktree_path ~default:"none")
+    obs.Patch_controller.branch_in_root
+    (Option.value obs.Patch_controller.worktree_path ~default:"none")
 
 (* -- Properties -- *)
 

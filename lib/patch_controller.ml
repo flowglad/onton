@@ -52,7 +52,6 @@ type poll_log_entry = { message : string; patch_id : Patch_id.t }
 
 type poll_observation = {
   poll_result : Poller.t;
-  head_branch : Branch.t option;
   base_branch : Branch.t option;
   branch_in_root : bool;
   worktree_path : string option;
@@ -74,7 +73,7 @@ let enqueue_notes_if_needed t patch_id (agent : Patch_agent.t) =
     else Orchestrator.enqueue t patch_id Operation_kind.Implementation_notes
 
 let apply_poll_result t patch_id
-    ({ poll_result; head_branch; base_branch; branch_in_root; worktree_path } :
+    ({ poll_result; base_branch; branch_in_root; worktree_path } :
       poll_observation) =
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
@@ -173,29 +172,25 @@ let apply_poll_result t patch_id
     | Patch_decision.No_ci_reset -> t
   in
   let t, newly_blocked =
-    match head_branch with
-    | Some branch ->
-        let t = Orchestrator.set_head_branch t patch_id branch in
-        if branch_in_root then
-          let agent = Orchestrator.agent t patch_id in
-          if
-            (not agent.Patch_agent.branch_blocked)
-            && Option.is_none agent.Patch_agent.worktree_path
-          then (
-            log "branch checked out in repo root, blocking worktree operations";
-            (Orchestrator.set_branch_blocked t patch_id, true))
-          else if
-            (not agent.Patch_agent.branch_blocked)
-            && Option.is_some agent.Patch_agent.worktree_path
-          then (t, false)
-          else (Orchestrator.set_branch_blocked t patch_id, false)
-        else
-          let agent = Orchestrator.agent t patch_id in
-          if agent.Patch_agent.branch_blocked then (
-            log "branch no longer in repo root, unblocked";
-            (Orchestrator.clear_branch_blocked t patch_id, false))
-          else (t, false)
-    | None -> (t, false)
+    if branch_in_root then
+      let agent = Orchestrator.agent t patch_id in
+      if
+        (not agent.Patch_agent.branch_blocked)
+        && Option.is_none agent.Patch_agent.worktree_path
+      then (
+        log "branch checked out in repo root, blocking worktree operations";
+        (Orchestrator.set_branch_blocked t patch_id, true))
+      else if
+        (not agent.Patch_agent.branch_blocked)
+        && Option.is_some agent.Patch_agent.worktree_path
+      then (t, false)
+      else (Orchestrator.set_branch_blocked t patch_id, false)
+    else
+      let agent = Orchestrator.agent t patch_id in
+      if agent.Patch_agent.branch_blocked then (
+        log "branch no longer in repo root, unblocked";
+        (Orchestrator.clear_branch_blocked t patch_id, false))
+      else (t, false)
   in
   let t =
     let agent = Orchestrator.agent t patch_id in
@@ -609,7 +604,6 @@ let%test "no merge-conflict re-enqueue after noop" =
   let obs =
     {
       poll_result = poll_conflict;
-      head_branch = Some (Branch.of_string "test-branch");
       base_branch = Some main;
       branch_in_root = false;
       worktree_path = None;

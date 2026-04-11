@@ -18,7 +18,6 @@ type poll_log_entry = { message : string; patch_id : Patch_id.t }
 
 type poll_observation = {
   poll_result : Poller.t;
-  head_branch : Branch.t option;
   base_branch : Branch.t option;
   branch_in_root : bool;
   worktree_path : string option;

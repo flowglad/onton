@@ -37,7 +37,6 @@ type t = private {
   current_message_id : Types.Message_id.t option;
   generation : int;
   worktree_path : string option;
-  head_branch : Types.Branch.t option;
   branch_blocked : bool;
   llm_session_id : string option;
 }
@@ -184,9 +183,6 @@ val set_checks_passing : t -> bool -> t
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
 
-val set_head_branch : t -> Types.Branch.t -> t
-(** Store the PR's head branch (fetched from GitHub). *)
-
 val is_approved : t -> main_branch:Types.Branch.t -> bool
 (** Derived predicate:
     [has_pr && merge_ready && not is_draft && not busy && not needs_intervention
@@ -278,7 +274,6 @@ val restore :
   current_message_id:Types.Message_id.t option ->
   generation:int ->
   worktree_path:string option ->
-  head_branch:Types.Branch.t option ->
   branch_blocked:bool ->
   llm_session_id:string option ->
   t
