@@ -479,7 +479,7 @@ let () =
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None
-              ~head_branch:None ~branch_blocked:false ~llm_session_id:None
+              ~branch_blocked:false ~llm_session_id:None
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -554,7 +554,7 @@ let () =
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None
-              ~head_branch:None ~branch_blocked:false ~llm_session_id:None
+              ~branch_blocked:false ~llm_session_id:None
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
@@ -793,6 +793,13 @@ let () =
             let a = set_base_branch a br in
             not (base_branch_changed a)
           with _ -> false);
+      (* -- create_adhoc stores real branch -- *)
+      Test.make ~name:"create_adhoc stores real branch"
+        Gen.(
+          triple gen_pid gen_branch (map Pr_number.of_int (int_range 1 9999)))
+        (fun (pid, br, pr) ->
+          let a = create_adhoc ~patch_id:pid ~branch:br ~pr_number:pr in
+          Branch.equal a.branch br);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

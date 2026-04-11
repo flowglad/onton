@@ -53,7 +53,7 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~conflict_noop_count:0 ~checks_passing:false
     ~current_op:None ~current_message_id:None ~generation:0 ~worktree_path:None
-    ~head_branch:None ~branch_blocked:false ~llm_session_id:None
+    ~branch_blocked:false ~llm_session_id:None
 
 let has_notes_queued agent =
   List.mem agent.Patch_agent.queue Operation_kind.Implementation_notes
@@ -101,7 +101,6 @@ let make_poll_observation poll_result =
   Patch_controller.
     {
       poll_result;
-      head_branch = None;
       base_branch = None;
       branch_in_root = false;
       worktree_path = None;
@@ -529,8 +528,8 @@ let () =
             ~pr_description_applied:true ~implementation_notes_delivered:true
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
             ~checks_passing:false ~current_op:None ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~head_branch:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         let poll =
@@ -594,12 +593,11 @@ let () =
   let prop_poll_observation_updates_branch_metadata =
     Test.make
       ~name:
-        "patch_controller: poll observation updates head branch, base branch, \
+        "patch_controller: poll observation updates base branch, \
          branch_blocked, and worktree"
       ~count:100
       Gen.(pair gen_patch_id gen_branch)
       (fun (pid, branch) ->
-        let head_branch = Branch.of_string "feature/head" in
         let observed_base = Branch.of_string "stack/base" in
         let patch = make_patch pid branch in
         let agent =
@@ -627,7 +625,6 @@ let () =
           Patch_controller.
             {
               poll_result = poll;
-              head_branch = Some head_branch;
               base_branch = Some observed_base;
               branch_in_root = true;
               worktree_path = Some "/tmp/custom-worktree";
@@ -637,9 +634,7 @@ let () =
           Patch_controller.apply_poll_result orch pid observation
         in
         let a = Orchestrator.agent orch pid in
-        Option.equal Branch.equal a.Patch_agent.head_branch (Some head_branch)
-        && Option.equal Branch.equal a.Patch_agent.base_branch
-             (Some observed_base)
+        Option.equal Branch.equal a.Patch_agent.base_branch (Some observed_base)
         && Option.equal String.equal a.Patch_agent.worktree_path
              (Some "/tmp/custom-worktree")
         && (not a.Patch_agent.branch_blocked)

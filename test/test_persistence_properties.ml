@@ -262,7 +262,9 @@ let () =
             List.fold_left pr_numbers ~init:orchestrator ~f:(fun orch n ->
                 let patch_id = Patch_id.of_string (Int.to_string n) in
                 let pr_number = Pr_number.of_int n in
-                let branch = Branch.of_string ("adhoc-" ^ Int.to_string n) in
+                let branch =
+                  Branch.of_string ("feature/pr-" ^ Int.to_string n)
+                in
                 Onton.Orchestrator.add_agent orch ~patch_id ~branch ~pr_number)
           in
           let snap =

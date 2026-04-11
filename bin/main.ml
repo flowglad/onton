@@ -361,14 +361,10 @@ let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
   | Some p -> p
   | None ->
       let search_branch =
-        match branch with
-        | Some b -> Some b
-        | None -> agent.Patch_agent.head_branch
+        match branch with Some b -> b | None -> agent.Patch_agent.branch
       in
       let found =
-        match search_branch with
-        | Some b -> Worktree.find_for_branch ~process_mgr ~repo_root b
-        | None -> None
+        Worktree.find_for_branch ~process_mgr ~repo_root search_branch
       in
       let path =
         match found with
@@ -393,92 +389,75 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
         Orchestrator.set_worktree_path orch patch_id path);
     Some path)
   else
-    let search_branch =
-      match branch with
-      | Some b -> Some b
-      | None -> agent.Patch_agent.head_branch
+    let br =
+      match branch with Some b -> b | None -> agent.Patch_agent.branch
     in
-    match search_branch with
-    | None ->
+    match Worktree.find_for_branch ~process_mgr ~repo_root br with
+    | Some existing ->
         log_event runtime ~patch_id
-          "worktree not ready and branch unknown, waiting for poller";
-        None
-    | Some br -> (
-        match Worktree.find_for_branch ~process_mgr ~repo_root br with
-        | Some existing ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "found existing worktree for branch at %s"
-                 existing);
+          (Printf.sprintf "found existing worktree for branch at %s" existing);
+        Runtime.update_orchestrator runtime (fun orch ->
+            Orchestrator.set_worktree_path orch patch_id existing);
+        Some existing
+    | None ->
+        if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br then (
+          let main_root = Worktree.resolve_main_root ~process_mgr ~repo_root in
+          log_event runtime ~patch_id
+            (Printf.sprintf
+               "branch %s is currently checked out in the main working tree \
+                (%s). Cannot create a worktree for a branch that is checked \
+                out there. Please switch to a different branch (e.g. `git -C \
+                %s checkout <default-branch>`) before continuing."
+               (Branch.to_string br) main_root main_root);
+          None)
+        else
+          let base =
+            match base_ref with
+            | Some b -> b
+            | None -> (
+                match agent.Patch_agent.base_branch with
+                | Some b -> Branch.to_string b
+                | None -> "HEAD")
+          in
+          log_event runtime ~patch_id
+            (Printf.sprintf "creating worktree at %s" path);
+          (match
+             Eio.Mutex.use_rw ~protect:true worktree_mutex (fun () ->
+                 ignore
+                   (Worktree.create ~process_mgr ~repo_root ~project_name
+                      ~patch_id ~branch:br ~base_ref:base))
+           with
+          | () -> ()
+          | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
+          | exception exn ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "worktree creation failed: %s"
+                   (Printexc.to_string exn)));
+          if Stdlib.Sys.file_exists path then (
             Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.set_worktree_path orch patch_id existing);
-            Some existing
-        | None ->
-            if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br
-            then (
-              let main_root =
-                Worktree.resolve_main_root ~process_mgr ~repo_root
-              in
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "branch %s is currently checked out in the main working \
-                    tree (%s). Cannot create a worktree for a branch that is \
-                    checked out there. Please switch to a different branch \
-                    (e.g. `git -C %s checkout <default-branch>`) before \
-                    continuing."
-                   (Branch.to_string br) main_root main_root);
-              None)
-            else
-              let base =
-                match base_ref with
-                | Some b -> b
-                | None -> (
-                    match agent.Patch_agent.base_branch with
-                    | Some b -> Branch.to_string b
-                    | None -> "HEAD")
-              in
-              log_event runtime ~patch_id
-                (Printf.sprintf "creating worktree at %s" path);
-              (match
-                 Eio.Mutex.use_rw ~protect:true worktree_mutex (fun () ->
-                     ignore
-                       (Worktree.create ~process_mgr ~repo_root ~project_name
-                          ~patch_id ~branch:br ~base_ref:base))
-               with
-              | () -> ()
-              | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
-              | exception exn ->
-                  log_event runtime ~patch_id
-                    (Printf.sprintf "worktree creation failed: %s"
-                       (Printexc.to_string exn)));
-              if Stdlib.Sys.file_exists path then (
-                Runtime.update_orchestrator runtime (fun orch ->
-                    Orchestrator.set_worktree_path orch patch_id path);
-                (match user_config.User_config.on_worktree_create with
-                | Some script -> (
-                    let env =
-                      [
-                        ("ONTON_WORKTREE_PATH", path);
-                        ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
-                        ("ONTON_BRANCH", Branch.to_string br);
-                      ]
-                    in
-                    let cwd = Eio.Path.(fs / path) in
-                    match
-                      User_config.run_hook ~process_mgr ~script ~cwd ~env
-                    with
-                    | Ok () ->
-                        log_event runtime ~patch_id
-                          "on_worktree_create hook ran"
-                    | Error msg ->
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "on_worktree_create hook failed: %s"
-                             msg))
-                | None -> ());
-                Some path)
-              else (
-                log_event runtime ~patch_id
-                  (Printf.sprintf "worktree still missing at %s" path);
-                None))
+                Orchestrator.set_worktree_path orch patch_id path);
+            (match user_config.User_config.on_worktree_create with
+            | Some script -> (
+                let env =
+                  [
+                    ("ONTON_WORKTREE_PATH", path);
+                    ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
+                    ("ONTON_BRANCH", Branch.to_string br);
+                  ]
+                in
+                let cwd = Eio.Path.(fs / path) in
+                match User_config.run_hook ~process_mgr ~script ~cwd ~env with
+                | Ok () ->
+                    log_event runtime ~patch_id "on_worktree_create hook ran"
+                | Error msg ->
+                    log_event runtime ~patch_id
+                      (Printf.sprintf "on_worktree_create hook failed: %s" msg))
+            | None -> ());
+            Some path)
+          else (
+            log_event runtime ~patch_id
+              (Printf.sprintf "worktree still missing at %s" path);
+            None)
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
@@ -838,7 +817,7 @@ let normalize_paste text =
   let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
   Base.String.tr text ~target:'\r' ~replacement:' '
 
-let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
+let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
     ~project_name ~show_help ~status_msg ~sorted_patch_ids ~input_mode
     ~prompt_line ~patches_start_row ~patches_scroll_offset
@@ -1013,15 +992,43 @@ let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
                         log_event runtime ~patch_id
                           (Printf.sprintf "Ad-hoc PR #%d already registered" n)
                       else (
-                        Pr_registry.register pr_registry ~patch_id ~pr_number;
-                        let branch =
-                          Branch.of_string ("adhoc-" ^ Int.to_string n)
-                        in
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.add_agent orch ~patch_id ~branch
-                              ~pr_number);
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "Ad-hoc PR #%d added" n))
+                        status_msg :=
+                          Some
+                            {
+                              Tui.level = Tui.Info;
+                              text = Printf.sprintf "Fetching PR #%d…" n;
+                              expires_at = None;
+                            };
+                        match Github.pr_state ~net github pr_number with
+                        | Error err ->
+                            status_msg := None;
+                            log_event runtime ~patch_id
+                              (Printf.sprintf "Cannot add ad-hoc PR #%d: %s" n
+                                 (Github.show_error err))
+                        | Ok pr_state when Pr_state.is_fork pr_state ->
+                            status_msg := None;
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "Cannot add ad-hoc PR #%d: fork PRs not \
+                                  supported"
+                                 n)
+                        | Ok pr_state -> (
+                            status_msg := None;
+                            match pr_state.Pr_state.head_branch with
+                            | None ->
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf
+                                     "Cannot add ad-hoc PR #%d: no head branch"
+                                     n)
+                            | Some branch ->
+                                Pr_registry.register pr_registry ~patch_id
+                                  ~pr_number;
+                                Runtime.update_orchestrator runtime (fun orch ->
+                                    Orchestrator.add_agent orch ~patch_id
+                                      ~branch ~pr_number);
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
+                                     (Branch.to_string branch))))
                   | _ ->
                       if not (Base.String.is_empty line) then
                         log_event runtime
@@ -1620,10 +1627,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                                 Orchestrator.find_agent
                                   snap.Runtime.orchestrator patch_id
                               with
-                              | Some agent -> (
-                                  match agent.Patch_agent.head_branch with
-                                  | Some b -> b
-                                  | None -> agent.Patch_agent.branch)
+                              | Some agent -> agent.Patch_agent.branch
                               | None -> branch_of patch_id)
                     in
                     (match
@@ -1699,7 +1703,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       Patch_controller.
                         {
                           poll_result;
-                          head_branch = pr_state.Pr_state.head_branch;
                           base_branch = pr_state.Pr_state.base_branch;
                           branch_in_root;
                           worktree_path = worktree_candidate;
@@ -1709,7 +1712,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       ( patch_id,
                         observation,
                         failed_ci,
-                        pr_state.Pr_state.head_branch,
                         pr_state.Pr_state.ci_checks_truncated )))
     in
     (* Phase 2: Single atomic update — apply all poll results + reconcile.
@@ -1720,10 +1722,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
           (* Apply all poll results *)
           let orch, sides =
             Base.List.fold observations ~init:(orch, [])
-              ~f:(fun
-                  (orch, sides)
-                  (patch_id, obs, failed_ci, head_branch, ci_truncated)
-                ->
+              ~f:(fun (orch, sides) (patch_id, obs, failed_ci, ci_truncated) ->
                 match Orchestrator.find_agent orch patch_id with
                 | None -> (orch, sides)
                 | Some agent_before ->
@@ -1743,7 +1742,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         log_entries,
                         newly_blocked,
                         failed_ci,
-                        head_branch,
                         ci_truncated )
                       :: sides ))
           in
@@ -1789,14 +1787,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
     in
     (* Phase 3: Side effects — outside the lock *)
     Base.List.iter per_patch_sides
-      ~f:(fun
-          ( patch_id,
-            log_entries,
-            newly_blocked,
-            failed_ci,
-            head_branch,
-            ci_truncated )
-        ->
+      ~f:(fun (patch_id, log_entries, newly_blocked, failed_ci, ci_truncated) ->
         if not (Base.List.is_empty failed_ci) then
           Hashtbl.replace ci_checks_cache patch_id failed_ci
         else Hashtbl.remove ci_checks_cache patch_id;
@@ -1805,19 +1796,23 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
             log_event runtime ~patch_id:entry.Patch_controller.patch_id
               entry.Patch_controller.message);
         (if newly_blocked then
-           match head_branch with
-           | Some b ->
-               let main_root =
-                 Worktree.resolve_main_root ~process_mgr
-                   ~repo_root:config.repo_root
-               in
-               log_event runtime ~patch_id
-                 (Printf.sprintf
-                    "branch %s is checked out in the main working tree (%s) — \
-                     release it (e.g. `git -C %s checkout <default-branch>`) \
-                     before onton can work on this patch"
-                    (Branch.to_string b) main_root main_root)
-           | None -> ());
+           let b =
+             Runtime.read runtime (fun snap ->
+                 match
+                   Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+                 with
+                 | Some a -> Branch.to_string a.Patch_agent.branch
+                 | None -> "unknown")
+           in
+           let main_root =
+             Worktree.resolve_main_root ~process_mgr ~repo_root:config.repo_root
+           in
+           log_event runtime ~patch_id
+             (Printf.sprintf
+                "branch %s is checked out in the main working tree (%s) — \
+                 release it (e.g. `git -C %s checkout <default-branch>`) \
+                 before onton can work on this patch"
+                b main_root main_root));
         if ci_truncated then
           log_event runtime ~patch_id
             "warning: CI check list was truncated (>100 checks); some failures \
@@ -3102,7 +3097,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
                      ~input_mode ~prompt_line ~patches_start_row
                      ~patches_scroll_offset ~patches_visible_count)
                 :: (fun () ->
-                  input_fiber ~runtime ~process_mgr ~list_selected
+                  input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
                     ~detail_scroll ~detail_follow ~timeline_scroll
                     ~detail_scrolls ~view_mode ~pr_registry ~project_name
                     ~show_help ~status_msg ~sorted_patch_ids ~input_mode

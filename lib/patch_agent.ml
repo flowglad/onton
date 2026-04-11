@@ -33,7 +33,6 @@ type t = {
   current_message_id : Message_id.t option;
   generation : int;
   worktree_path : string option;
-  head_branch : Branch.t option;
   branch_blocked : bool;
   llm_session_id : string option;
 }
@@ -79,7 +78,6 @@ let create ~branch patch_id =
     current_message_id = None;
     generation = 0;
     worktree_path = None;
-    head_branch = None;
     branch_blocked = false;
     llm_session_id = None;
   }
@@ -113,7 +111,6 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     current_message_id = None;
     generation = 0;
     worktree_path = None;
-    head_branch = None;
     branch_blocked = false;
     llm_session_id = None;
   }
@@ -202,7 +199,6 @@ let on_pre_session_failure t =
 
 let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
-let set_head_branch t branch = { t with head_branch = Some branch }
 
 let is_approved t ~main_branch =
   has_pr t && t.merge_ready && (not t.busy)
@@ -240,7 +236,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~merge_ready
     ~is_draft ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr ~conflict_noop_count ~checks_passing ~current_op
-    ~current_message_id ~generation ~worktree_path ~head_branch ~branch_blocked
+    ~current_message_id ~generation ~worktree_path ~branch_blocked
     ~llm_session_id =
   {
     patch_id;
@@ -270,7 +266,6 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     current_message_id;
     generation;
     worktree_path;
-    head_branch;
     branch_blocked;
     llm_session_id;
   }
