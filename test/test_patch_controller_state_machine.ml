@@ -305,6 +305,108 @@ let () =
         with _ -> false
         end)
   in
+  (* Message enqueued during a busy Human session must survive complete
+     and be delivered in the next cycle. This is the root bug scenario:
+     complete used to blanket-clear human_messages, losing message B. *)
+  let prop_message_during_busy_human_survives =
+    Test.make
+      ~name:
+        "patch_controller_state_machine: message enqueued during busy Human is \
+         delivered in next cycle"
+      ~count:300
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          (* Start → get PR *)
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch = Orchestrator.complete orch pid in
+          let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+          (* Send message A, plan + accept → agent busy with Human *)
+          let orch = Orchestrator.send_human_message orch pid "message A" in
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let agent = Orchestrator.agent orch pid in
+          assert agent.Patch_agent.busy;
+          assert (
+            Option.equal Operation_kind.equal agent.Patch_agent.current_op
+              (Some Operation_kind.Human));
+          (* Message B arrives while agent is busy *)
+          let orch = Orchestrator.send_human_message orch pid "message B" in
+          (* Agent finishes responding to A *)
+          let orch = Orchestrator.complete orch pid in
+          (* After complete: message B must be in inbox *)
+          let agent = Orchestrator.agent orch pid in
+          let b_in_inbox =
+            not (List.is_empty agent.Patch_agent.human_messages)
+          in
+          (* Next tick must plan a Human Respond for message B *)
+          let _orch2, _eff2, msgs2 =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let replanned =
+            List.exists msgs2 ~f:(fun msg ->
+                match Orchestrator.message_action msg with
+                | Orchestrator.Respond (p, kind) ->
+                    Patch_id.equal p pid
+                    && Operation_kind.equal kind Operation_kind.Human
+                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+          in
+          b_in_inbox && replanned
+        with _ -> false
+        end)
+  in
+  (* After respond Human + accept, the inflight messages are non-empty
+     while inbox is empty. A delivery guard that checks inbox would
+     incorrectly skip every Human delivery. *)
+  let prop_inflight_nonempty_after_accept =
+    Test.make
+      ~name:
+        "patch_controller_state_machine: after accept Human, inflight \
+         non-empty and inbox empty"
+      ~count:300
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          (* Start → get PR *)
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let orch = Orchestrator.complete orch pid in
+          let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+          (* Send human message, plan + accept *)
+          let orch = Orchestrator.send_human_message orch pid "check this" in
+          let orch, _eff, msgs =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          let orch = accept_all_messages orch msgs in
+          let agent = Orchestrator.agent orch pid in
+          (* inflight must be non-empty (deliverable content) *)
+          let inflight_ok =
+            not (List.is_empty agent.Patch_agent.inflight_human_messages)
+          in
+          (* inbox must be empty (messages moved to inflight) *)
+          let inbox_empty = List.is_empty agent.Patch_agent.human_messages in
+          inflight_ok && inbox_empty
+        with _ -> false
+        end)
+  in
   (* F1: llm_session_id survives review → human sequence *)
   let prop_session_id_survives_review_human =
     Test.make
@@ -408,6 +510,8 @@ let () =
       prop_human_after_review_completes;
       prop_second_human_after_review;
       prop_human_messages_survive_session_failure;
+      prop_message_during_busy_human_survives;
+      prop_inflight_nonempty_after_accept;
       prop_session_id_survives_review_human;
       prop_session_id_cleared_on_no_resume;
     ]

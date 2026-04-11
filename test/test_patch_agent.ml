@@ -419,6 +419,131 @@ let () =
             List.length a.human_messages = List.length during_msgs
             && List.is_empty a.inflight_human_messages
           with _ -> false);
+      (* -- property: inbox is always empty after respond Human, so any
+         empty-delivery guard must check inflight, not inbox -- *)
+      Test.make
+        ~name:
+          "respond Human: inbox always empty (guard must use inflight, not \
+           inbox)"
+        Gen.(
+          pair gen_pid
+            (list_size (int_range 1 10) (string_size ~gen:printable (pure 5))))
+        (fun (pid, msgs) ->
+          try
+            let a =
+              create ~branch:br0 pid |> fun a ->
+              start_with_pr a ~base_branch:br0
+            in
+            let a = complete a in
+            let a =
+              List.fold msgs ~init:a ~f:(fun a m -> add_human_message a m)
+            in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            (* A guard that checks human_messages here would always skip
+               delivery — the bug we're guarding against. *)
+            List.is_empty a.human_messages
+            && not (List.is_empty a.inflight_human_messages)
+          with _ -> false);
+      (* -- property: CI checks remain accessible during Ci respond for
+         fresh-fetch filtering at delivery time -- *)
+      Test.make
+        ~name:
+          "respond Ci: ci_checks remain on agent for delivery-time filtering"
+        Gen.(
+          pair gen_pid
+            (list_size (int_range 1 5)
+               (pair
+                  (string_size ~gen:printable (pure 8))
+                  (oneof_list
+                     [ "failure"; "success"; "error"; "neutral"; "timed_out" ]))))
+        (fun (pid, check_specs) ->
+          try
+            let a =
+              create ~branch:br0 pid |> fun a ->
+              start_with_pr a ~base_branch:br0
+            in
+            let a = complete a in
+            let checks =
+              List.map check_specs ~f:(fun (name, conclusion) ->
+                  Ci_check.
+                    {
+                      name;
+                      conclusion;
+                      details_url = None;
+                      description = None;
+                      started_at = None;
+                    })
+            in
+            let a = set_ci_checks a checks in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            (* ci_checks must still be readable so the runner can filter
+               for failures at delivery time *)
+            let failure_conclusions =
+              [
+                "failure";
+                "error";
+                "action_required";
+                "timed_out";
+                "startup_failure";
+              ]
+            in
+            let has_any_failure =
+              List.exists a.ci_checks ~f:(fun c ->
+                  List.mem failure_conclusions c.Ci_check.conclusion
+                    ~equal:String.equal)
+            in
+            let input_has_failure =
+              List.exists check_specs ~f:(fun (_name, conc) ->
+                  List.mem failure_conclusions conc ~equal:String.equal)
+            in
+            Bool.equal has_any_failure input_has_failure
+          with _ -> false);
+      (* -- property: CI with all-passing checks at delivery time yields
+         empty failure list (delivery should be skipped) -- *)
+      Test.make
+        ~name:
+          "respond Ci: all-passing checks -> empty failure filter (skip \
+           delivery)"
+        Gen.(
+          pair gen_pid
+            (list_size (int_range 1 5) (string_size ~gen:printable (pure 8))))
+        (fun (pid, check_names) ->
+          try
+            let a =
+              create ~branch:br0 pid |> fun a ->
+              start_with_pr a ~base_branch:br0
+            in
+            let a = complete a in
+            let checks =
+              List.map check_names ~f:(fun name ->
+                  Ci_check.
+                    {
+                      name;
+                      conclusion = "success";
+                      details_url = None;
+                      description = None;
+                      started_at = None;
+                    })
+            in
+            let a = set_ci_checks a checks in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            let failure_conclusions =
+              [
+                "failure";
+                "error";
+                "action_required";
+                "timed_out";
+                "startup_failure";
+              ]
+            in
+            not
+              (List.exists a.ci_checks ~f:(fun c ->
+                   List.mem failure_conclusions c.Ci_check.conclusion
+                     ~equal:String.equal))
+          with _ -> false);
       (* -- property: non-Human respond preserves inbox, inflight unchanged -- *)
       Test.make ~name:"non-Human respond leaves human_messages untouched"
         Gen.(
