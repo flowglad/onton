@@ -223,8 +223,10 @@ val bump_generation : t -> t
 (** Advance the patch generation used for deterministic message IDs. *)
 
 val set_llm_session_id : t -> string option -> t
-(** Store the LLM backend's session ID for explicit session resumption. Cleared
-    automatically when [session_fallback] escalates (old session is stale). *)
+(** Store the LLM backend's session ID for explicit session resumption.
+    Preserved across fallback escalation so the operator can resume the session
+    after intervention. Cleared explicitly only when the session is known dead
+    (no-resume, give-up). *)
 
 val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its

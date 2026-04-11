@@ -132,15 +132,13 @@ let restore_human_messages t msgs = { t with human_messages = msgs }
 
 let set_session_failed t =
   match t.session_fallback with
-  | Fresh_available ->
-      { t with session_fallback = Tried_fresh; llm_session_id = None }
+  | Fresh_available -> { t with session_fallback = Tried_fresh }
   | Tried_fresh | Given_up -> t
 
 let set_tried_fresh t =
   match t.session_fallback with
-  | Fresh_available ->
-      { t with session_fallback = Tried_fresh; llm_session_id = None }
-  | Tried_fresh -> { t with session_fallback = Given_up; llm_session_id = None }
+  | Fresh_available -> { t with session_fallback = Tried_fresh }
+  | Tried_fresh -> { t with session_fallback = Given_up }
   | Given_up -> t
 
 let clear_session_fallback t = { t with session_fallback = Fresh_available }
@@ -148,14 +146,13 @@ let clear_session_fallback t = { t with session_fallback = Fresh_available }
 (** Handle a Claude session failure. Pure decision logic:
     - Start path (no PR) + fresh failure: reset to Fresh_available for retry
     - Resume failure: escalate to Tried_fresh (will try fresh next)
-    - Respond path fresh failure: escalate to Given_up → needs_intervention *)
+    - Fresh failure (respond path): escalate one step via set_tried_fresh *)
 let on_session_failure t ~is_fresh =
   if (not (has_pr t)) && is_fresh then
     (* Start path fresh failure: full reset for clean retry *)
     { t with session_fallback = Fresh_available; llm_session_id = None }
-  else
-    let t = set_session_failed t in
-    if is_fresh then set_tried_fresh t else t
+  else if is_fresh then set_tried_fresh t
+  else set_session_failed t
 
 let set_has_conflict t = { t with has_conflict = true }
 let clear_has_conflict t = { t with has_conflict = false }
@@ -421,7 +418,16 @@ let%test "on_session_failure: resume failure escalates to Tried_fresh" =
   let t = on_session_failure t ~is_fresh:false in
   equal_session_fallback t.session_fallback Tried_fresh
 
-let%test "on_session_failure: respond path fresh escalates to Given_up" =
+let%test "on_session_failure: respond path fresh escalates to Tried_fresh" =
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
+  let t = set_pr_number t (Pr_number.of_int 1) in
+  let t = { t with busy = true; session_fallback = Fresh_available } in
+  let t = on_session_failure t ~is_fresh:true in
+  equal_session_fallback t.session_fallback Tried_fresh
+
+let%test
+    "on_session_failure: respond path second fresh failure escalates to \
+     Given_up" =
   let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
   let t = set_pr_number t (Pr_number.of_int 1) in
   let t = { t with busy = true; session_fallback = Tried_fresh } in
