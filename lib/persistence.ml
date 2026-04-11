@@ -60,6 +60,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         Patch_agent.yojson_of_session_fallback a.session_fallback );
       ( "human_messages",
         `List (List.map a.human_messages ~f:(fun s -> `String s)) );
+      ( "inflight_human_messages",
+        `List (List.map a.inflight_human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
@@ -93,6 +95,12 @@ let patch_agent_of_yojson ~gameplan json =
   in
   let human_messages =
     match Yojson.Safe.Util.member "human_messages" json with
+    | `List items ->
+        List.filter_map items ~f:(fun j -> Yojson.Safe.Util.to_string_option j)
+    | _ -> []
+  in
+  let inflight_human_messages =
+    match Yojson.Safe.Util.member "inflight_human_messages" json with
     | `List items ->
         List.filter_map items ~f:(fun j -> Yojson.Safe.Util.to_string_option j)
     | _ -> []
@@ -163,7 +171,7 @@ let patch_agent_of_yojson ~gameplan json =
                |> Option.map ~f:Branch.of_string
              else None)
        ~ci_failure_count:(int_member "ci_failure_count" json)
-       ~session_fallback ~human_messages ~ci_checks
+       ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
        ~is_draft:(bool_member "is_draft" json)
        ~pr_description_applied:(bool_member "pr_description_applied" json)

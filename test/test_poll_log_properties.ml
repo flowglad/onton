@@ -45,11 +45,11 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~has_session:busy ~busy ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict ~base_branch:(Some main) ~notified_base_branch:(Some main)
     ~ci_failure_count ~session_fallback:Patch_agent.Fresh_available
-    ~human_messages:[] ~ci_checks:[] ~merge_ready:false ~is_draft
-    ~pr_description_applied:true ~implementation_notes_delivered:true
-    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~checks_passing
-    ~current_op ~current_message_id:None ~generation:0 ~worktree_path
-    ~branch_blocked ~llm_session_id:None
+    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+    ~merge_ready:false ~is_draft ~pr_description_applied:true
+    ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+    ~conflict_noop_count:0 ~checks_passing ~current_op ~current_message_id:None
+    ~generation:0 ~worktree_path ~branch_blocked ~llm_session_id:None
 
 let make_poll_observation ~branch_in_root ~worktree_path poll_result =
   Patch_controller.

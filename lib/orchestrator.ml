@@ -506,25 +506,24 @@ type session_result =
   | Session_worktree_missing
 [@@deriving show, eq, sexp_of]
 
-(** Complete a failed session, preserving human messages. When
-    [current_op = Human], [complete] clears [human_messages] because it assumes
-    the messages were delivered. On failure they were NOT delivered, so we save
-    them before [complete] and restore + re-enqueue afterwards. *)
+(** Complete a failed session, restoring inflight human messages to the inbox.
+    On failure the messages were NOT delivered, so we prepend
+    [inflight_human_messages] back to [human_messages] before [complete] clears
+    the inflight slot. *)
 let complete_failed t patch_id =
-  let agent = agent t patch_id in
-  let was_human =
-    Option.equal Operation_kind.equal agent.Patch_agent.current_op
-      (Some Operation_kind.Human)
-  in
-  let saved_messages = agent.Patch_agent.human_messages in
-  let t = complete t patch_id in
-  if was_human && not (List.is_empty saved_messages) then
-    let t =
+  let a = agent t patch_id in
+  let inflight = a.Patch_agent.inflight_human_messages in
+  let t =
+    if not (List.is_empty inflight) then
       update_agent t patch_id ~f:(fun a ->
-          Patch_agent.restore_human_messages a saved_messages)
-    in
-    enqueue t patch_id Operation_kind.Human
-  else t
+          Patch_agent.add_human_messages a inflight)
+    else t
+  in
+  let t = complete t patch_id in
+  let has_messages =
+    not (List.is_empty (agent t patch_id).Patch_agent.human_messages)
+  in
+  if has_messages then enqueue t patch_id Operation_kind.Human else t
 
 let apply_session_result t patch_id result =
   match result with
