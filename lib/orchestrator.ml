@@ -534,6 +534,10 @@ let apply_session_result t patch_id result =
       complete_failed t patch_id
   | Session_no_resume ->
       let t = on_session_failure t patch_id ~is_fresh:false in
+      let t =
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_llm_session_id a None)
+      in
       complete_failed t patch_id
   | Session_failed { is_fresh } ->
       let t = on_session_failure t patch_id ~is_fresh in
@@ -541,6 +545,10 @@ let apply_session_result t patch_id result =
   | Session_give_up ->
       let t = set_session_failed t patch_id in
       let t = set_tried_fresh t patch_id in
+      let t =
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_llm_session_id a None)
+      in
       complete_failed t patch_id
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in

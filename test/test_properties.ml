@@ -683,10 +683,10 @@ let () =
         let a = Orchestrator.agent orch pid in
         Option.equal String.equal a.Patch_agent.llm_session_id (Some "test-id"))
   in
-  (* A2: Resume failure (on_session_failure ~is_fresh:false) clears llm_session_id *)
-  let prop_a2_resume_failure_clears_session_id =
-    Test.make ~name:"A2: resume failure clears llm_session_id" (Gen.return ())
-      (fun () ->
+  (* A2: Resume failure preserves llm_session_id (session may still be valid) *)
+  let prop_a2_resume_failure_preserves_session_id =
+    Test.make ~name:"A2: resume failure preserves llm_session_id"
+      (Gen.return ()) (fun () ->
         let orch, pid = mk_busy_orch () in
         let orch =
           Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
@@ -694,7 +694,7 @@ let () =
         let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
         let orch = Orchestrator.on_session_failure orch pid ~is_fresh:false in
         let a = Orchestrator.agent orch pid in
-        Option.is_none a.Patch_agent.llm_session_id)
+        Option.equal String.equal a.Patch_agent.llm_session_id (Some "test-id"))
   in
   (* A3: Session_give_up clears llm_session_id *)
   let prop_a3_give_up_clears_session_id =
@@ -741,21 +741,18 @@ let () =
             a2.Patch_agent.llm_session_id
         with Invalid_argument _ -> false)
   in
-  (* A5: Fresh failure on respond path clears llm_session_id *)
-  let prop_a5_fresh_failure_clears_session_id =
-    Test.make ~name:"A5: fresh failure on respond path clears llm_session_id"
+  (* A5: Fresh failure on respond path preserves llm_session_id *)
+  let prop_a5_fresh_failure_preserves_session_id =
+    Test.make ~name:"A5: fresh failure on respond path preserves llm_session_id"
       (Gen.return ()) (fun () ->
         let orch, pid = mk_busy_orch () in
         let orch =
           Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
         in
         let orch = Orchestrator.set_llm_session_id orch pid (Some "test-id") in
-        (* on_session_failure ~is_fresh:true with has_pr:
-           set_session_failed (Fresh_available → Tried_fresh, clears session_id)
-           then set_tried_fresh (Tried_fresh → Given_up, clears session_id) *)
         let orch = Orchestrator.on_session_failure orch pid ~is_fresh:true in
         let a = Orchestrator.agent orch pid in
-        Option.is_none a.Patch_agent.llm_session_id)
+        Option.equal String.equal a.Patch_agent.llm_session_id (Some "test-id"))
   in
   (* A6: Session_no_resume clears llm_session_id *)
   let prop_a6_no_resume_clears_session_id =
@@ -773,10 +770,10 @@ let () =
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
       prop_a1_session_ok_preserves_session_id;
-      prop_a2_resume_failure_clears_session_id;
+      prop_a2_resume_failure_preserves_session_id;
       prop_a3_give_up_clears_session_id;
       prop_a4_set_session_id_idempotent;
-      prop_a5_fresh_failure_clears_session_id;
+      prop_a5_fresh_failure_preserves_session_id;
       prop_a6_no_resume_clears_session_id;
     ];
   Stdlib.print_endline "llm_session_id: all properties passed (A1-A6)"

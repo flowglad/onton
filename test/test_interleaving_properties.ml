@@ -768,19 +768,10 @@ let check_notified_base_branch_coherence (a : Patch_agent.t) =
           notified_base_branch is Some but has_session is false"
          (Patch_id.to_string a.patch_id))
 
-(** I-13: llm_session_id coherence — when session_fallback is Tried_fresh or
-    Given_up, llm_session_id must be None (stale session cleared). *)
-let check_llm_session_id_coherence (a : Patch_agent.t) =
-  match a.session_fallback with
-  | Patch_agent.Tried_fresh | Patch_agent.Given_up ->
-      if Option.is_some a.llm_session_id then
-        failwith
-          (Printf.sprintf
-             "I-13 llm_session_id_coherence violated for %s: \
-              session_fallback=%s but llm_session_id is Some"
-             (Patch_id.to_string a.patch_id)
-             (Patch_agent.show_session_fallback a.session_fallback))
-  | Patch_agent.Fresh_available -> ()
+(** I-13: llm_session_id coherence — session ID is preserved through fallback
+    escalation so the operator can resume after intervention. No constraint
+    between session_fallback and llm_session_id. *)
+let check_llm_session_id_coherence (_a : Patch_agent.t) = ()
 
 (* ========== Combined check ========== *)
 
