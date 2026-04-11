@@ -307,9 +307,8 @@ let () =
             List.fold msgs ~init:a ~f:(fun a m -> add_human_message a m)
           in
           List.length a.human_messages = List.length msgs);
-      (* -- respond Human preserves human_messages until completion -- *)
-      Test.make ~name:"respond Human preserves human_messages until completion"
-        ~count:1
+      (* -- respond Human moves messages to inflight -- *)
+      Test.make ~name:"respond Human moves inbox to inflight" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           try
@@ -320,9 +319,11 @@ let () =
             let a = add_human_message a "hello" in
             let a = enqueue a Operation_kind.Human in
             let a = respond a Operation_kind.Human in
-            not (List.is_empty a.human_messages)
+            List.is_empty a.human_messages
+            && not (List.is_empty a.inflight_human_messages)
           with _ -> false);
-      Test.make ~name:"complete Human clears human_messages" ~count:1
+      (* -- complete clears inflight_human_messages -- *)
+      Test.make ~name:"complete clears inflight_human_messages" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
           try
@@ -335,6 +336,25 @@ let () =
             let a = respond a Operation_kind.Human in
             let a = complete a in
             List.is_empty a.human_messages
+            && List.is_empty a.inflight_human_messages
+          with _ -> false);
+      (* -- messages enqueued during busy are preserved -- *)
+      Test.make ~name:"messages enqueued during busy survive complete" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = add_human_message a "first" in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            (* message arrives while busy *)
+            let a = add_human_message a "second" in
+            let a = complete a in
+            List.length a.human_messages = 1
+            && List.is_empty a.inflight_human_messages
           with _ -> false);
       (* -- respond Review_comments does not clear human_messages -- *)
       Test.make ~name:"respond Review_comments preserves human_messages"
@@ -349,6 +369,80 @@ let () =
           let a = enqueue a Operation_kind.Review_comments in
           let a = respond a Operation_kind.Review_comments in
           List.length a.human_messages = 1);
+      (* -- property: respond Human partitions messages into inflight -- *)
+      Test.make ~name:"respond Human: total messages = inbox + inflight"
+        Gen.(
+          pair gen_pid
+            (list_size (int_range 1 10) (string_size ~gen:printable (pure 5))))
+        (fun (pid, msgs) ->
+          try
+            let a =
+              create ~branch:br0 pid |> fun a ->
+              start_with_pr a ~base_branch:br0
+            in
+            let a = complete a in
+            let a =
+              List.fold msgs ~init:a ~f:(fun a m -> add_human_message a m)
+            in
+            let n_before = List.length a.human_messages in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            List.length a.inflight_human_messages = n_before
+            && List.is_empty a.human_messages
+          with _ -> false);
+      (* -- property: messages added during busy are disjoint from inflight -- *)
+      Test.make
+        ~name:
+          "inflight disjoint: busy-time messages survive, pre-respond cleared"
+        Gen.(
+          triple gen_pid
+            (list_size (int_range 1 5) (string_size ~gen:printable (pure 4)))
+            (list_size (int_range 1 5) (string_size ~gen:printable (pure 4))))
+        (fun (pid, before_msgs, during_msgs) ->
+          try
+            let a =
+              create ~branch:br0 pid |> fun a ->
+              start_with_pr a ~base_branch:br0
+            in
+            let a = complete a in
+            let a =
+              List.fold before_msgs ~init:a ~f:(fun a m ->
+                  add_human_message a m)
+            in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            let a =
+              List.fold during_msgs ~init:a ~f:(fun a m ->
+                  add_human_message a m)
+            in
+            let a = complete a in
+            List.length a.human_messages = List.length during_msgs
+            && List.is_empty a.inflight_human_messages
+          with _ -> false);
+      (* -- property: non-Human respond preserves inbox, inflight unchanged -- *)
+      Test.make ~name:"non-Human respond leaves human_messages untouched"
+        Gen.(
+          triple gen_pid
+            (list_size (int_range 0 5) (string_size ~gen:printable (pure 4)))
+            (oneof_list
+               Operation_kind.
+                 [ Ci; Review_comments; Merge_conflict; Implementation_notes ]))
+        (fun (pid, msgs, op) ->
+          try
+            let a =
+              create ~branch:br0 pid |> fun a ->
+              start_with_pr a ~base_branch:br0
+            in
+            let a = complete a in
+            let a =
+              List.fold msgs ~init:a ~f:(fun a m -> add_human_message a m)
+            in
+            let n = List.length a.human_messages in
+            let a = enqueue a op in
+            let a = respond a op in
+            List.length a.human_messages = n
+            && List.is_empty a.inflight_human_messages
+          with _ -> false);
       (* -- 2 ci failures does NOT trigger needs_intervention (boundary) -- *)
       (* respond increments ci_failure_count, so 1 prior + 1 from respond = 2 *)
       Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
@@ -474,8 +568,8 @@ let () =
               ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
               ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
-              ~ci_checks:a.ci_checks ~merge_ready:false ~is_draft:false
-              ~pr_description_applied:false
+              ~inflight_human_messages:[] ~ci_checks:a.ci_checks
+              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -549,8 +643,8 @@ let () =
               ~satisfies:true ~changed:false ~has_conflict:false
               ~base_branch:(Some br) ~notified_base_branch:(Some br)
               ~ci_failure_count:0 ~session_fallback:Fresh_available
-              ~human_messages:[] ~ci_checks:[] ~merge_ready:false
-              ~is_draft:false ~pr_description_applied:false
+              ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None

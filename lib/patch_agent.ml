@@ -21,6 +21,7 @@ type t = {
   ci_failure_count : int;
   session_fallback : session_fallback;
   human_messages : string list;
+  inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
   merge_ready : bool;
   is_draft : bool;
@@ -66,6 +67,7 @@ let create ~branch patch_id =
     ci_failure_count = 0;
     session_fallback = Fresh_available;
     human_messages = [];
+    inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
     is_draft = false;
@@ -99,6 +101,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     ci_failure_count = 0;
     session_fallback = Fresh_available;
     human_messages = [];
+    inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
     is_draft = false;
@@ -128,7 +131,8 @@ let mark_merged t = { t with merged = true }
 let add_human_message t msg =
   { t with human_messages = msg :: t.human_messages }
 
-let restore_human_messages t msgs = { t with human_messages = msgs }
+let add_human_messages t msgs =
+  { t with human_messages = List.rev_append msgs t.human_messages }
 
 let set_session_failed t =
   match t.session_fallback with
@@ -233,11 +237,11 @@ let reset_busy t = if not t.busy then t else { t with busy = false }
 
 let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
-    ~ci_failure_count ~session_fallback ~human_messages ~ci_checks ~merge_ready
-    ~is_draft ~pr_description_applied ~implementation_notes_delivered
-    ~start_attempts_without_pr ~conflict_noop_count ~checks_passing ~current_op
-    ~current_message_id ~generation ~worktree_path ~branch_blocked
-    ~llm_session_id =
+    ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
+    ~ci_checks ~merge_ready ~is_draft ~pr_description_applied
+    ~implementation_notes_delivered ~start_attempts_without_pr
+    ~conflict_noop_count ~checks_passing ~current_op ~current_message_id
+    ~generation ~worktree_path ~branch_blocked ~llm_session_id =
   {
     patch_id;
     branch;
@@ -254,6 +258,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ci_failure_count;
     session_fallback;
     human_messages;
+    inflight_human_messages;
     ci_checks;
     merge_ready;
     is_draft;
@@ -377,7 +382,9 @@ let respond t k =
     queue;
     satisfies;
     changed;
-    human_messages = t.human_messages;
+    human_messages = (if is_human then [] else t.human_messages);
+    inflight_human_messages =
+      (if is_human then t.human_messages else t.inflight_human_messages);
     ci_failure_count;
     notified_base_branch =
       (match t.notified_base_branch with None -> t.base_branch | some -> some);
@@ -393,16 +400,7 @@ let complete t =
       busy = false;
       current_op = None;
       current_message_id = None;
-      human_messages =
-        (match t.current_op with
-        | Some Human -> []
-        | Some Rebase
-        | Some Ci
-        | Some Review_comments
-        | Some Merge_conflict
-        | Some Implementation_notes
-        | None ->
-            t.human_messages);
+      inflight_human_messages = [];
     }
 
 (* -- Tests for session failure recovery -- *)

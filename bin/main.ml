@@ -1560,7 +1560,7 @@ type poll_intent =
 (** Poller fiber — periodically polls GitHub for PR state changes and
     reconciles. *)
 let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
-    ~pr_registry ~branch_of ~ci_checks_cache ~event_log =
+    ~pr_registry ~branch_of ~event_log =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
@@ -1614,7 +1614,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                      This path does its own I/O and separate atomic update;
                      it doesn't participate in the batched update below. *)
                   if poll_result.Poller.closed then (
-                    Hashtbl.remove ci_checks_cache patch_id;
                     log_event runtime ~patch_id
                       (Printf.sprintf "PR #%d closed, looking for replacement"
                          (Pr_number.to_int pr_number));
@@ -1787,10 +1786,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
     in
     (* Phase 3: Side effects — outside the lock *)
     Base.List.iter per_patch_sides
-      ~f:(fun (patch_id, log_entries, newly_blocked, failed_ci, ci_truncated) ->
-        if not (Base.List.is_empty failed_ci) then
-          Hashtbl.replace ci_checks_cache patch_id failed_ci
-        else Hashtbl.remove ci_checks_cache patch_id;
+      ~f:(fun
+          (patch_id, log_entries, newly_blocked, _failed_ci, ci_truncated) ->
         Base.List.iter log_entries
           ~f:(fun (entry : Patch_controller.poll_log_entry) ->
             log_event runtime ~patch_id:entry.Patch_controller.patch_id
@@ -1826,8 +1823,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-    ~ci_checks_cache ~transcripts ~github ~net ~event_log ?status_msg () =
+let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
+    ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
@@ -2522,7 +2519,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         (Operation_kind.to_label kind)
                                         (Base.List.length
                                            source_agent
-                                             .Patch_agent.human_messages)
+                                             .Patch_agent
+                                              .inflight_human_messages)
                                   | Operation_kind.Ci | Operation_kind.Rebase
                                   | Operation_kind.Merge_conflict
                                   | Operation_kind.Implementation_notes ->
@@ -2530,19 +2528,30 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         (Operation_kind.to_label kind));
                                 let prompt =
                                   match kind with
-                                  | Operation_kind.Ci -> (
-                                      match
-                                        Hashtbl.find_opt ci_checks_cache
-                                          patch_id
-                                      with
-                                      | Some checks
-                                        when not (Base.List.is_empty checks) ->
-                                          Prompt.render_ci_failure_prompt
-                                            ~project_name ?pr_number checks
-                                      | _ ->
-                                          Prompt
-                                          .render_ci_failure_unknown_prompt
-                                            ~project_name ?pr_number ())
+                                  | Operation_kind.Ci ->
+                                      let failure_conclusions =
+                                        [
+                                          "failure";
+                                          "error";
+                                          "action_required";
+                                          "timed_out";
+                                          "startup_failure";
+                                        ]
+                                      in
+                                      let failed =
+                                        Base.List.filter
+                                          source_agent.Patch_agent.ci_checks
+                                          ~f:(fun (c : Ci_check.t) ->
+                                            Base.List.mem failure_conclusions
+                                              c.Ci_check.conclusion
+                                              ~equal:Base.String.equal)
+                                      in
+                                      if Base.List.is_empty failed then
+                                        Prompt.render_ci_failure_unknown_prompt
+                                          ~project_name ?pr_number ()
+                                      else
+                                        Prompt.render_ci_failure_prompt
+                                          ~project_name ?pr_number failed
                                   | Operation_kind.Review_comments ->
                                       Prompt.render_review_prompt ~project_name
                                         ?pr_number prefetched_comments
@@ -2555,7 +2564,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
                                         ~project_name
                                         (Base.List.rev
                                            source_agent
-                                             .Patch_agent.human_messages)
+                                             .Patch_agent
+                                              .inflight_human_messages)
                                   | Operation_kind.Implementation_notes ->
                                       let patch =
                                         Base.List.find_exn
@@ -2963,9 +2973,6 @@ let run_with_config (config : config) gameplan existing_snapshot =
       let clock = Eio.Stdenv.clock env in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
-      let ci_checks_cache : (Patch_id.t, Ci_check.t list) Hashtbl.t =
-        Hashtbl.create 16
-      in
       (* Capture agent state and worktree list BEFORE launching concurrent
          fibers, so the reconciler sees the pre-session state rather than racing
          with the runner which creates worktrees and sets agents busy. *)
@@ -3046,7 +3053,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
           reconciliation_fiber;
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
-              ~project_name ~pr_registry ~branch_of ~ci_checks_cache ~event_log);
+              ~project_name ~pr_registry ~branch_of ~event_log);
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
@@ -3056,7 +3063,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~ci_checks_cache ~transcripts ~github ~net ~event_log ())
+              ~transcripts ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -3106,8 +3113,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
                     ~repo:config.github_repo)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-                    ~ci_checks_cache ~transcripts ~github ~net ~event_log
-                    ~status_msg ())
+                    ~transcripts ~github ~net ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 
