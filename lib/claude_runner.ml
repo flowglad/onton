@@ -1,8 +1,13 @@
 open Base
 
-(** Compiled regex for ANSI escape sequences and carriage returns. Matches CSI
-    sequences (ESC\[ ... letter), OSC sequences (ESC\] ... BEL/ST), and bare \r
-    from PTY line endings. Compiled once at module load. *)
+(** Compiled regex for ANSI escape sequences, carriage returns, and stray
+    control characters injected by the PTY wrapper ([script]). Matches:
+    - CSI sequences (ESC\[ ... letter)
+    - OSC sequences (ESC\] ... BEL/ST)
+    - Bare \r from PTY line endings
+    - C0 control characters (0x00–0x1F except \n and \t) such as ^D/BS that
+      [script] prepends to its first output line. Compiled once at module load.
+*)
 let ansi_re =
   let esc = Re.char '\x1b' in
   let csi =
@@ -18,7 +23,18 @@ let ansi_re =
       ]
   in
   let cr = Re.char '\r' in
-  Re.compile (Re.alt [ csi; osc; cr ])
+  (* C0 control chars except \t (0x09) and \n (0x0a) — covers ^D, BS, etc. *)
+  let c0 =
+    Re.alt
+      [
+        Re.rg '\x00' '\x08';
+        Re.rg '\x0b' '\x0c';
+        Re.rg '\x0e' '\x1a';
+        (* 0x1b = ESC is handled by csi/osc above *)
+        Re.rg '\x1c' '\x1f';
+      ]
+  in
+  Re.compile (Re.alt [ csi; osc; cr; c0 ])
 
 (** Strip ANSI escape sequences injected by the PTY wrapper. *)
 let strip_ansi s = Re.replace_string ansi_re ~by:"" s
@@ -57,8 +73,16 @@ let build_stream_args ~prompt ~resume_session =
   let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
   base @ session_args @ flags
 
+(** Find the first '\{' in [s] and return the substring starting there. The PTY
+    wrapper ([script]) can prepend junk (e.g. literal "^D" + backspaces) before
+    the JSON object, which would cause [from_string] to fail. *)
+let find_json_start s =
+  match String.lfindi s ~f:(fun _ c -> Char.equal c '{') with
+  | Some 0 | None -> s
+  | Some n -> String.drop_prefix s n
+
 let parse_stream_events (line : string) : Types.Stream_event.t list =
-  match Yojson.Safe.from_string line with
+  match Yojson.Safe.from_string (find_json_start line) with
   | json -> (
       let open Yojson.Safe.Util in
       let typ = member "type" json |> to_string_option in
@@ -128,6 +152,15 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
             member "is_error" json |> to_bool_option
             |> Option.value ~default:false
           in
+          (* The result event also carries session_id — extract it as a
+             fallback in case the system/init event was lost (e.g. PTY
+             wrapper mangling the first line of output). *)
+          let session_init =
+            match member "session_id" json |> to_string_option with
+            | Some sid ->
+                [ Types.Stream_event.Session_init { session_id = sid } ]
+            | None -> []
+          in
           if is_error then
             let errors =
               match member "errors" json with
@@ -140,7 +173,7 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
               | [] -> "unknown error"
               | errs -> String.concat ~sep:"; " errs
             in
-            [ Types.Stream_event.Error msg ]
+            session_init @ [ Types.Stream_event.Error msg ]
           else
             let text =
               member "result" json |> to_string_option
@@ -154,7 +187,8 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
               Types.Stop_reason.of_string raw_reason
               |> Option.value ~default:Types.Stop_reason.End_turn
             in
-            [ Types.Stream_event.Final_result { text; stop_reason } ]
+            session_init
+            @ [ Types.Stream_event.Final_result { text; stop_reason } ]
       | Some "error" ->
           let err =
             member "error" json |> member "message" |> to_string_option
@@ -294,6 +328,12 @@ let%test "strip_ansi removes escape sequences" =
 let%test "strip_ansi passes clean text through" =
   String.equal (strip_ansi "hello world") "hello world"
 
+let%test "strip_ansi removes backspaces from PTY wrapper" =
+  String.equal (strip_ansi "\x08\x08hello") "hello"
+
+let%test "strip_ansi removes NUL and other C0 chars" =
+  String.equal (strip_ansi "\x04\x00\x01hello") "hello"
+
 let%test "pty_wrap prepends script command" =
   let args = pty_wrap [ "claude"; "-p"; "hello" ] in
   if is_linux then
@@ -366,3 +406,40 @@ let%test "parse_stream_events ignores system events without init subtype" =
 let%test "parse_stream_events ignores system/init without session_id" =
   let line = {|{"type":"system","subtype":"init"}|} in
   List.is_empty (parse_stream_events line)
+
+let%test "parse_stream_events extracts session_id from PTY-mangled system/init"
+    =
+  (* script(1) on macOS prepends ^D + backspaces before the JSON *)
+  let line =
+    "^D\x08\x08{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"abc-123\",\"tools\":[]}"
+  in
+  List.equal Types.Stream_event.equal (parse_stream_events line)
+    [ Types.Stream_event.Session_init { session_id = "abc-123" } ]
+
+let%test "parse_stream_events extracts session_id from result event" =
+  let line =
+    {|{"type":"result","result":"done","stop_reason":"end_turn","session_id":"def-456"}|}
+  in
+  List.equal Types.Stream_event.equal (parse_stream_events line)
+    [
+      Types.Stream_event.Session_init { session_id = "def-456" };
+      Types.Stream_event.Final_result
+        { text = "done"; stop_reason = Types.Stop_reason.End_turn };
+    ]
+
+let%test "parse_stream_events result without session_id omits Session_init" =
+  let line = {|{"type":"result","result":"done","stop_reason":"end_turn"}|} in
+  List.equal Types.Stream_event.equal (parse_stream_events line)
+    [
+      Types.Stream_event.Final_result
+        { text = "done"; stop_reason = Types.Stop_reason.End_turn };
+    ]
+
+let%test "find_json_start strips leading junk" =
+  String.equal (find_json_start "^D\x08\x08{\"type\":\"x\"}") "{\"type\":\"x\"}"
+
+let%test "find_json_start passthrough when clean" =
+  String.equal (find_json_start "{\"type\":\"x\"}") "{\"type\":\"x\"}"
+
+let%test "find_json_start returns input when no brace" =
+  String.equal (find_json_start "no json here") "no json here"
