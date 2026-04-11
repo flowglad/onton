@@ -2290,7 +2290,27 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   Operation_kind.equal kind Operation_kind.Human
                                 then
                                   Base.List.is_empty
-                                    source_agent.Patch_agent.human_messages
+                                    source_agent
+                                      .Patch_agent.inflight_human_messages
+                                else if
+                                  Operation_kind.equal kind Operation_kind.Ci
+                                then
+                                  let failure_conclusions =
+                                    [
+                                      "failure";
+                                      "error";
+                                      "action_required";
+                                      "timed_out";
+                                      "startup_failure";
+                                    ]
+                                  in
+                                  not
+                                    (Base.List.exists
+                                       source_agent.Patch_agent.ci_checks
+                                       ~f:(fun (c : Ci_check.t) ->
+                                         Base.List.mem failure_conclusions
+                                           c.Ci_check.conclusion
+                                           ~equal:Base.String.equal))
                                 else false
                               in
                               if is_empty_delivery then (
