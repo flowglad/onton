@@ -126,7 +126,11 @@ let patch_agent_of_yojson ~gameplan json =
             | Some _ -> head
             | None -> (
                 match raw with
-                | Some r when String.is_prefix r ~prefix:"adhoc-" -> None
+                | Some r
+                  when String.is_prefix r ~prefix:"adhoc-"
+                       && String.for_all (String.drop_prefix r 6)
+                            ~f:Char.is_digit ->
+                    None
                 | _ -> raw)
           in
           Branch.of_string

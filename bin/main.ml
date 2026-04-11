@@ -1001,16 +1001,19 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                             };
                         match Github.pr_state ~net github pr_number with
                         | Error err ->
+                            status_msg := None;
                             log_event runtime ~patch_id
                               (Printf.sprintf "Cannot add ad-hoc PR #%d: %s" n
                                  (Github.show_error err))
                         | Ok pr_state when Pr_state.is_fork pr_state ->
+                            status_msg := None;
                             log_event runtime ~patch_id
                               (Printf.sprintf
                                  "Cannot add ad-hoc PR #%d: fork PRs not \
                                   supported"
                                  n)
                         | Ok pr_state -> (
+                            status_msg := None;
                             match pr_state.Pr_state.head_branch with
                             | None ->
                                 log_event runtime ~patch_id
