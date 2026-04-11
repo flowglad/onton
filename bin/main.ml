@@ -979,7 +979,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                   end
               | Tui_input.Prompt_pr -> (
                   match Base.Int.of_string_opt line with
-                  | Some n when n > 0 -> (
+                  | Some n when n > 0 ->
                       let pr_number = Pr_number.of_int n in
                       let patch_id = Patch_id.of_string (Int.to_string n) in
                       let already_exists =
@@ -991,7 +991,14 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                       if already_exists then
                         log_event runtime ~patch_id
                           (Printf.sprintf "Ad-hoc PR #%d already registered" n)
-                      else
+                      else (
+                        status_msg :=
+                          Some
+                            {
+                              Tui.level = Tui.Info;
+                              text = Printf.sprintf "Fetching PR #%d…" n;
+                              expires_at = None;
+                            };
                         match Github.pr_state ~net github pr_number with
                         | Error err ->
                             log_event runtime ~patch_id

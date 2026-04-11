@@ -118,9 +118,19 @@ let patch_agent_of_yojson ~gameplan json =
              when present to migrate to the unified branch field. *)
           let raw = string_member_opt "branch" json in
           let head = string_member_opt "head_branch" json in
+          (* Treat synthetic "adhoc-N" raw values as unresolvable so they
+             fall through to the gameplan/pid default instead of creating
+             ghost worktrees that silently block worktree creation. *)
+          let resolved =
+            match head with
+            | Some _ -> head
+            | None -> (
+                match raw with
+                | Some r when String.is_prefix r ~prefix:"adhoc-" -> None
+                | _ -> raw)
+          in
           Branch.of_string
-            (Option.value
-               (match head with Some _ -> head | None -> raw)
+            (Option.value resolved
                ~default:
                  (match
                     List.find gameplan.Gameplan.patches ~f:(fun p ->
