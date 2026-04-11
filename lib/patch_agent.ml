@@ -132,7 +132,7 @@ let add_human_message t msg =
   { t with human_messages = msg :: t.human_messages }
 
 let add_human_messages t msgs =
-  { t with human_messages = List.rev_append msgs t.human_messages }
+  { t with human_messages = List.append msgs t.human_messages }
 
 let set_session_failed t =
   match t.session_fallback with
