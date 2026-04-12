@@ -412,7 +412,7 @@ let render_review_prompt ~(project_name : string) ?pr_number
             \   `gh api graphql -f query='mutation { \
              resolveReviewThread(input: {threadId: \"{thread_id}\"}) { thread \
              { isResolved } } }'`\n\n\
-             After addressing all comments, push your changes."
+             After addressing all comments, commit and push your changes."
             pr_ctx formatted pr_num_str)
 
 let render_ci_failure_prompt ~(project_name : string) ?pr_number
@@ -455,8 +455,11 @@ let render_ci_failure_prompt ~(project_name : string) ?pr_number
       render_with_override ~project_name ~name:"ci_failure" ~vars
         ~default:(fun () ->
           Printf.sprintf
-            "# CI Failures%s\n\nThe following CI checks failed:\n\n%s" pr_ctx
-            formatted)
+            "# CI Failures%s\n\n\
+             The following CI checks failed:\n\n\
+             %s\n\n\
+             After making your changes, commit and push."
+            pr_ctx formatted)
 
 let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
   let pr_ctx =
@@ -479,7 +482,8 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
         "# CI Failures%s\n\n\
          One or more CI checks failed. Please investigate the failures and fix \
          them.\n\n\
-         Run the CI checks locally or check the PR status for details."
+         Run the CI checks locally or check the PR status for details.\n\n\
+         After making your changes, commit and push."
         pr_ctx)
 
 let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
@@ -573,7 +577,7 @@ Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
 commits that have already been stripped.
 
-After resolving all conflicts and completing the rebase, push your changes.%s%s%s|}
+After resolving all conflicts and completing the rebase, commit and push your changes.%s%s%s|}
         pr_ctx base_branch base_branch status_section diff_section task_context)
 
 let render_human_message_prompt ~(project_name : string)
@@ -597,8 +601,17 @@ let render_human_message_prompt ~(project_name : string)
       render_with_override ~project_name ~name:"human_message" ~vars
         ~default:(fun () ->
           if Int.equal (List.length messages) 1 then
-            Printf.sprintf "# Message from Human\n\n%s" formatted_flat
-          else Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
+            Printf.sprintf
+              "# Message from Human\n\n\
+               %s\n\n\
+               After making your changes, commit and push."
+              formatted_flat
+          else
+            Printf.sprintf
+              "# Messages from Human\n\n\
+               %s\n\n\
+               After making your changes, commit and push."
+              formatted_numbered)
 
 let render_base_branch_changed ~old_base ~new_base =
   Printf.sprintf
