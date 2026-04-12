@@ -19,6 +19,7 @@ let load ~github_owner ~github_repo =
   { on_worktree_create }
 
 let run_hook ~process_mgr ~script ~cwd ~env =
+  let stderr_buf = Buffer.create 256 in
   try
     let env_array =
       Array.of_list (List.map env ~f:(fun (k, v) -> Printf.sprintf "%s=%s" k v))
@@ -27,6 +28,12 @@ let run_hook ~process_mgr ~script ~cwd ~env =
     let merged =
       Array.of_list (List.append inherited (Array.to_list env_array))
     in
-    Eio.Process.run process_mgr ~env:merged ~cwd [ script ];
+    Eio.Process.run process_mgr ~env:merged ~cwd
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      [ script ];
     Ok ()
-  with exn -> Error (Stdlib.Printexc.to_string exn)
+  with exn ->
+    let stderr = String.strip (Buffer.contents stderr_buf) in
+    let msg = Stdlib.Printexc.to_string exn in
+    if String.is_empty stderr then Error msg
+    else Error (Printf.sprintf "%s\nstderr: %s" msg stderr)
