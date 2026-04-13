@@ -193,7 +193,17 @@ let parse_response_json ~owner json =
                          state — it conflates cancelled runs (e.g.
                          superseded by a newer commit) with real failures.
                          See [Pr_state.derive_check_status] for semantics. *)
-                      let status = Pr_state.derive_check_status checks in
+                      let status =
+                        let base = Pr_state.derive_check_status checks in
+                        (* Passing is only reliable when we've seen every check.
+                           If the list is truncated, treat as Pending to avoid
+                           approving a merge that might have failures on page 2+. *)
+                        if
+                          truncated
+                          && Pr_state.equal_check_status base Pr_state.Passing
+                        then Pr_state.Pending
+                        else base
+                      in
                       (status, checks, truncated))
             in
             let review_threads =
