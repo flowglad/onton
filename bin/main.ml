@@ -2763,23 +2763,27 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         else None
                                       with _ -> None
                                     in
-                                    match (body_opt, pr_number) with
-                                    | None, _ ->
+                                    match body_opt with
+                                    | None ->
                                         log_event runtime ~patch_id
                                           (Printf.sprintf
                                              "pr-body: artifact missing at %s; \
                                               keeping gameplan body"
                                              artifact_path)
-                                    | Some body, _
+                                    | Some body
                                       when String.length (String.trim body) = 0
                                       ->
                                         log_event runtime ~patch_id
                                           "pr-body: artifact empty; keeping \
                                            gameplan body"
-                                    | Some _, None ->
-                                        log_event runtime ~patch_id
-                                          "pr-body: no PR number to update"
-                                    | Some body, Some pr -> (
+                                    | Some body -> (
+                                        (* pr_number is guaranteed Some here:
+                                           value_exn above would have raised
+                                           before the session started if it
+                                           were None. *)
+                                        let pr =
+                                          Base.Option.value_exn pr_number
+                                        in
                                         match
                                           Github.update_pr_body ~net github
                                             ~pr_number:pr ~body
