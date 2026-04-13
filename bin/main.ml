@@ -708,22 +708,28 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
              session_result so commits made before a partial failure still
              reach the remote. *)
           let branch = agent.Patch_agent.branch in
-          (match
-             Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
-               ~branch
-           with
-          | Worktree.Push_ok ->
-              log_event runtime ~patch_id "runner: pushed after session"
-          | Worktree.Push_up_to_date ->
-              log_event runtime ~patch_id
-                "runner: push up-to-date after session (no new commits)"
-          | Worktree.Push_rejected ->
-              log_event runtime ~patch_id
-                "runner: push rejected after session (lease)"
-          | Worktree.Push_error msg ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "runner: push error after session: %s" msg));
-          user_result)
+          let push_result =
+            match
+              Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
+                ~branch
+            with
+            | Worktree.Push_ok ->
+                log_event runtime ~patch_id "runner: pushed after session";
+                user_result
+            | Worktree.Push_up_to_date ->
+                log_event runtime ~patch_id
+                  "runner: push up-to-date after session (no new commits)";
+                user_result
+            | Worktree.Push_rejected ->
+                log_event runtime ~patch_id
+                  "runner: push rejected after session (lease)";
+                `Failed
+            | Worktree.Push_error msg ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "runner: push error after session: %s" msg);
+                `Failed
+          in
+          push_result)
 
 (** {1 Fibers} *)
 

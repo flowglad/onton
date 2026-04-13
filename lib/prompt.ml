@@ -580,7 +580,7 @@ Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
 commits that have already been stripped.
 
-After resolving all conflicts and completing the rebase, commit your changes. The supervisor will push them for you — do not run `git push`.%s%s%s|}
+After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s|}
         pr_ctx base_branch base_branch status_section diff_section task_context)
 
 let render_human_message_prompt ~(project_name : string)
