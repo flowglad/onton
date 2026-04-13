@@ -12,6 +12,8 @@ type command =
   | Move_down
   | Page_up
   | Page_down
+  | Scroll_top
+  | Scroll_bottom
   | Select
   | Back
   | Noop
@@ -49,12 +51,14 @@ let of_key (key : Term.Key.t) : command =
   | Down | Char 'j' -> Move_down
   | Page_up -> Page_up
   | Page_down -> Page_down
+  | Home -> Scroll_top
+  | End -> Scroll_bottom
   | Enter -> Select
   | Escape | Backspace -> Back
   | Char '-' | Char 'x' -> Remove_patch
   | Char 'o' -> Open_in_browser
-  | Char _ | Tab | Delete | Home | End | Left | Right | F _ | Ctrl _ | Paste _
-  | Mouse _ | Unknown _ ->
+  | Char _ | Tab | Delete | Left | Right | F _ | Ctrl _ | Paste _ | Mouse _
+  | Unknown _ ->
       Noop
 
 (** Apply a command to the selected index. Returns [-1] when no patch should be
@@ -76,6 +80,8 @@ let apply_move ~count ~selected (cmd : command) =
         if n >= count then -1 else n
     | Page_up -> if selected = -1 then -1 else clamp (selected - 5)
     | Page_down -> if selected = -1 then 0 else clamp (selected + 5)
+    | Scroll_top -> 0
+    | Scroll_bottom -> count - 1
     | Quit | Help | Select | Back | Timeline | Noop | Send_message _ | Add_pr _
     | Add_worktree _ | Remove_patch | Open_in_browser ->
         if selected >= count then -1 else selected
@@ -94,6 +100,8 @@ let%test "page_up maps to Page_up" = equal_command (of_key Page_up) Page_up
 let%test "page_down maps to Page_down" =
   equal_command (of_key Page_down) Page_down
 
+let%test "home maps to Scroll_top" = equal_command (of_key Home) Scroll_top
+let%test "end maps to Scroll_bottom" = equal_command (of_key End) Scroll_bottom
 let%test "enter maps to Select" = equal_command (of_key Enter) Select
 let%test "escape maps to Back" = equal_command (of_key Escape) Back
 let%test "backspace maps to Back" = equal_command (of_key Backspace) Back

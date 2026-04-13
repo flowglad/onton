@@ -10,6 +10,8 @@ type command =
   | Move_down
   | Page_up
   | Page_down
+  | Scroll_top
+  | Scroll_bottom
   | Select
   | Back
   | Noop

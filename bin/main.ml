@@ -1360,7 +1360,8 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
               match cmd with
               | Tui_input.Quit -> raise Quit_tui
               | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
-              | Tui_input.Page_down ->
+              | Tui_input.Page_down | Tui_input.Scroll_top
+              | Tui_input.Scroll_bottom ->
                   (match !view_mode with
                   | Tui.List_view ->
                       let count = Base.List.length !sorted_patch_ids in
@@ -1386,22 +1387,36 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                         Tui_input.apply_move ~count:(max_offset + 1)
                           ~selected:(Base.Int.min !timeline_scroll max_offset)
                           cmd
-                  | Tui.Detail_view _ ->
-                      let delta =
-                        match cmd with
-                        | Tui_input.Move_up -> -1
-                        | Tui_input.Move_down -> 1
-                        | Tui_input.Page_up -> -10
-                        | Tui_input.Page_down -> 10
-                        | Tui_input.Quit | Tui_input.Help | Tui_input.Select
-                        | Tui_input.Back | Tui_input.Timeline | Tui_input.Noop
-                        | Tui_input.Send_message _ | Tui_input.Add_pr _
-                        | Tui_input.Add_worktree _ | Tui_input.Remove_patch
-                        | Tui_input.Open_in_browser ->
-                            0
-                      in
-                      if delta <> 0 then detail_follow := false;
-                      detail_scroll := Base.Int.max 0 (!detail_scroll + delta));
+                  | Tui.Detail_view _ -> (
+                      match cmd with
+                      | Tui_input.Scroll_top ->
+                          detail_follow := false;
+                          detail_scroll := 0
+                      | Tui_input.Scroll_bottom -> detail_follow := true
+                      | Tui_input.Move_up | Tui_input.Move_down
+                      | Tui_input.Page_up | Tui_input.Page_down | Tui_input.Quit
+                      | Tui_input.Help | Tui_input.Select | Tui_input.Back
+                      | Tui_input.Timeline | Tui_input.Noop
+                      | Tui_input.Send_message _ | Tui_input.Add_pr _
+                      | Tui_input.Add_worktree _ | Tui_input.Remove_patch
+                      | Tui_input.Open_in_browser ->
+                          let delta =
+                            match cmd with
+                            | Tui_input.Move_up -> -1
+                            | Tui_input.Move_down -> 1
+                            | Tui_input.Page_up -> -10
+                            | Tui_input.Page_down -> 10
+                            | Tui_input.Quit | Tui_input.Help | Tui_input.Select
+                            | Tui_input.Back | Tui_input.Timeline
+                            | Tui_input.Noop | Tui_input.Send_message _
+                            | Tui_input.Add_pr _ | Tui_input.Add_worktree _
+                            | Tui_input.Remove_patch | Tui_input.Open_in_browser
+                            | Tui_input.Scroll_top | Tui_input.Scroll_bottom ->
+                                0
+                          in
+                          if delta <> 0 then detail_follow := false;
+                          detail_scroll :=
+                            Base.Int.max 0 (!detail_scroll + delta)));
                   loop ()
               | Tui_input.Select -> (
                   match !view_mode with
