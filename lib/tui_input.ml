@@ -73,8 +73,10 @@ let apply_move ~count ~selected (cmd : command) =
     in
     match cmd with
     | Move_up ->
-        let n = selected - 1 in
-        if n < -1 then -1 else n
+        if selected = -1 then count - 1
+        else
+          let n = selected - 1 in
+          if n < -1 then -1 else n
     | Move_down ->
         let n = if selected = -1 then 0 else selected + 1 in
         if n >= count then -1 else n
@@ -146,8 +148,8 @@ let%test "apply_move down past last deselects" =
 let%test "apply_move down from deselected selects first" =
   apply_move ~count:5 ~selected:(-1) Move_down = 0
 
-let%test "apply_move up from deselected stays deselected" =
-  apply_move ~count:5 ~selected:(-1) Move_up = -1
+let%test "apply_move up from deselected selects last" =
+  apply_move ~count:5 ~selected:(-1) Move_up = 4
 
 (** Input history for the text-mode prompt.
 
