@@ -481,13 +481,7 @@ let () =
             (* ci_checks must still be readable so the runner can filter
                for failures at delivery time *)
             let failure_conclusions =
-              [
-                "failure";
-                "error";
-                "action_required";
-                "timed_out";
-                "startup_failure";
-              ]
+              Onton.Patch_decision.ci_failure_conclusions
             in
             let has_any_failure =
               List.exists a.ci_checks ~f:(fun c ->
@@ -531,13 +525,7 @@ let () =
             let a = enqueue a Operation_kind.Ci in
             let a = respond a Operation_kind.Ci in
             let failure_conclusions =
-              [
-                "failure";
-                "error";
-                "action_required";
-                "timed_out";
-                "startup_failure";
-              ]
+              Onton.Patch_decision.ci_failure_conclusions
             in
             not
               (List.exists a.ci_checks ~f:(fun c ->
