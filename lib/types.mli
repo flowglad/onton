@@ -150,6 +150,10 @@ module Stop_reason : sig
   [@@deriving show, eq, sexp_of, compare]
 
   val of_string : string -> t option
+
+  val to_display : t -> string
+  (** Human-readable label for use in user-facing strings (e.g. activity log).
+      Distinct from [show], which produces OCaml variant names. *)
 end
 
 (** Events from Claude Code's NDJSON stdout (--output-format stream-json), not

@@ -181,8 +181,8 @@ let () =
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
             in
-            (not (has_log_matching "conflict cleared" logs))
-            && not (has_log_matching "conflict flag retained" logs)
+            (not (has_log_matching "Conflict cleared" logs))
+            && not (has_log_matching "Conflict flag retained" logs)
           else true
         with _ -> false)
   in
@@ -201,7 +201,7 @@ let () =
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
             in
-            not (has_log_matching "merge conflict detected" logs)
+            not (has_log_matching "Merge conflict detected" logs)
           else true
         with _ -> false)
   in
@@ -219,7 +219,7 @@ let () =
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
             in
-            not (has_log_matching "merged" logs)
+            not (has_log_matching "Merged" logs)
           else true
         with _ -> false)
   in
@@ -236,7 +236,7 @@ let () =
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
             in
-            count_log_matching "merged" logs = 1
+            count_log_matching "Merged" logs = 1
           else true
         with _ -> false)
   in
@@ -256,13 +256,13 @@ let () =
           let _orch2, logs2, _blocked2 =
             Patch_controller.apply_poll_result orch1 pid observation
           in
-          (not (has_log_matching "merged" logs2))
-          && (not (has_log_matching "merge conflict detected" logs2))
-          && (not (has_log_matching "conflict cleared" logs2))
-          && (not (has_log_matching "marked as" logs2))
+          (not (has_log_matching "Merged" logs2))
+          && (not (has_log_matching "Merge conflict detected" logs2))
+          && (not (has_log_matching "Conflict cleared" logs2))
+          && (not (has_log_matching "Marked as" logs2))
           && (not (has_log_matching "blocking worktree" logs2))
           && (not (has_log_matching "unblocked" logs2))
-          && not (has_log_matching "worktree path discovered" logs2)
+          && not (has_log_matching "Worktree path discovered" logs2)
         with _ -> false)
   in
 
@@ -281,7 +281,7 @@ let () =
               Patch_controller.apply_poll_result orch pid observation
             in
             let ci_log_count =
-              count_log_matching "enqueued ci" logs
+              count_log_matching "Enqueued ci" logs
               + count_log_matching "CI already queued" logs
               + count_log_matching "CI fix in progress" logs
               + count_log_matching "CI failure cap reached" logs
@@ -319,9 +319,9 @@ let () =
             Patch_controller.apply_poll_result orch pid observation
           in
           List.for_all logs ~f:(fun (entry : Patch_controller.poll_log_entry) ->
-              if String.is_prefix entry.message ~prefix:"enqueued " then
+              if String.is_prefix entry.message ~prefix:"Enqueued " then
                 let label =
-                  String.chop_prefix_exn entry.message ~prefix:"enqueued "
+                  String.chop_prefix_exn entry.message ~prefix:"Enqueued "
                 in
                 let kind =
                   List.find

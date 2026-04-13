@@ -233,13 +233,13 @@ let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
 let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
   match kind with
   | Activity_log.Stream_entry.Tool_use (name, input) ->
-      if String.length input > 0 then Printf.sprintf "Tool: %s — %s" name input
-      else Printf.sprintf "Tool: %s" name
+      if String.length input > 0 then Printf.sprintf "Tool %s — %s" name input
+      else Printf.sprintf "Tool %s" name
   | Activity_log.Stream_entry.Text_chunk text -> text
   | Activity_log.Stream_entry.Finished reason ->
-      Printf.sprintf "Finished (%s)" reason
+      Printf.sprintf "Finished — %s" reason
   | Activity_log.Stream_entry.Stream_error msg ->
-      Printf.sprintf "Stream error: %s" msg
+      Printf.sprintf "Stream error — %s" msg
 
 let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
   merged_log_entries ~log ~limit
@@ -283,6 +283,13 @@ let build_branch_map (gameplan : Gameplan.t) ~default =
   fun pid -> Base.Option.value (Base.Map.find map pid) ~default
 
 (** {1 Shared helpers} *)
+
+(** Pluralize a count for inline rendering: [pluralize 1 "comment"] →
+    ["1 comment"], [pluralize 2 "comment"] → ["2 comments"]. Pass [~plural] when
+    the plural is irregular. *)
+let pluralize ?plural n singular =
+  let many = match plural with Some p -> p | None -> singular ^ "s" in
+  Printf.sprintf "%d %s" n (if n = 1 then singular else many)
 
 let log_event runtime ?patch_id msg =
   Runtime.update_activity_log runtime (fun log ->
@@ -401,7 +408,7 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
     match Worktree.find_for_branch ~process_mgr ~repo_root br with
     | Some existing ->
         log_event runtime ~patch_id
-          (Printf.sprintf "found existing worktree for branch at %s" existing);
+          (Printf.sprintf "Found existing worktree for branch at %s" existing);
         Runtime.update_orchestrator runtime (fun orch ->
             Orchestrator.set_worktree_path orch patch_id existing);
         Some existing
@@ -410,10 +417,9 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
           let main_root = Worktree.resolve_main_root ~process_mgr ~repo_root in
           log_event runtime ~patch_id
             (Printf.sprintf
-               "branch %s is currently checked out in the main working tree \
-                (%s). Cannot create a worktree for a branch that is checked \
-                out there. Please switch to a different branch (e.g. `git -C \
-                %s checkout <default-branch>`) before continuing."
+               "Cannot create worktree — branch %s is checked out in the main \
+                working tree (%s). Switch the main tree to another branch \
+                (e.g. `git -C %s checkout <default-branch>`) and try again."
                (Branch.to_string br) main_root main_root);
           None)
         else
@@ -426,7 +432,7 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                 | None -> "HEAD")
           in
           log_event runtime ~patch_id
-            (Printf.sprintf "creating worktree at %s" path);
+            (Printf.sprintf "Creating worktree at %s" path);
           (match
              Eio.Mutex.use_rw ~protect:true worktree_mutex (fun () ->
                  ignore
@@ -437,7 +443,7 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
           | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
           | exception exn ->
               log_event runtime ~patch_id
-                (Printf.sprintf "worktree creation failed: %s"
+                (Printf.sprintf "Worktree creation failed — %s"
                    (Printexc.to_string exn)));
           if Stdlib.Sys.file_exists path then (
             Runtime.update_orchestrator runtime (fun orch ->
@@ -454,15 +460,16 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                 let cwd = Eio.Path.(fs / path) in
                 match User_config.run_hook ~process_mgr ~script ~cwd ~env with
                 | Ok () ->
-                    log_event runtime ~patch_id "on_worktree_create hook ran"
+                    log_event runtime ~patch_id "Ran on_worktree_create hook"
                 | Error msg ->
                     log_event runtime ~patch_id
-                      (Printf.sprintf "on_worktree_create hook failed: %s" msg))
+                      (Printf.sprintf "Hook on_worktree_create failed — %s" msg)
+                )
             | None -> ());
             Some path)
           else (
             log_event runtime ~patch_id
-              (Printf.sprintf "worktree still missing at %s" path);
+              (Printf.sprintf "Worktree still missing at %s" path);
             None)
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
@@ -473,7 +480,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
-        "session fallback exhausted (continue failed, fresh failed), needs \
+        "Session fallback exhausted — continue and fresh both failed, needs \
          intervention";
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.apply_session_result orch patch_id
@@ -600,7 +607,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                   (Activity_log.Stream_entry.Tool_use (name, summary))
             | Types.Stream_event.Final_result { stop_reason; _ } ->
                 sync_transcript ();
-                let reason = Types.Stop_reason.show stop_reason in
+                let reason = Types.Stop_reason.to_display stop_reason in
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Finished reason)
             | Types.Stream_event.Error msg ->
@@ -638,23 +645,24 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
             with
             | Process_error msg ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf "%s process error: %s"
+                  (Printf.sprintf "Process error from %s — %s"
                      backend.Llm_backend.name msg);
                 (Orchestrator.Session_process_error { is_fresh }, `Failed)
             | No_session_to_resume ->
                 log_event runtime ~patch_id
-                  "--resume produced no events (no session to resume), will \
-                   retry fresh";
+                  "Resume produced no events — no session to resume, retrying \
+                   fresh";
                 (Orchestrator.Session_no_resume, `Failed)
             | Timed_out ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf "%s session timed out, marking failed"
+                  (Printf.sprintf "Session timed out (%s) — marking failed"
                      backend.Llm_backend.name);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
             | Success { stream_errors } ->
                 if String.length stream_errors > 0 then
                   log_event runtime ~patch_id
-                    (Printf.sprintf "%s exited 0 but had stream errors: %s"
+                    (Printf.sprintf
+                       "Session exited 0 (%s) with stream errors — %s"
                        backend.Llm_backend.name
                        (truncate stream_errors 500));
                 let text_len = Buffer.length text_buf in
@@ -662,14 +670,15 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 if tools = 0 && text_len < 200 then
                   log_event runtime ~patch_id
                     (Printf.sprintf
-                       "%s exited 0 with no tool use and %d chars of text: %s"
-                       backend.Llm_backend.name text_len
+                       "Session exited 0 (%s) with no tool use and %s of text \
+                        — %s"
+                       backend.Llm_backend.name
+                       (pluralize text_len "char")
                        (truncate (String.trim (Buffer.contents text_buf)) 200));
                 (Orchestrator.Session_ok, `Ok)
             | Session_failed { exit_code; detail } ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf
-                     "%s exited with code %d, marking session failed: %s"
+                  (Printf.sprintf "Session failed (%s) — exit %d: %s"
                      backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
@@ -866,7 +875,8 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
            giving up. *)
         eof_count := !eof_count + 1;
         if !eof_count >= 10 then
-          log_event runtime "input fiber: stdin closed (10 consecutive EOFs)"
+          log_event runtime
+            "Stdin closed — input fiber giving up after 10 consecutive EOFs"
         else (
           Eio.Fiber.yield ();
           loop ())
@@ -892,10 +902,10 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                   in
                   if busy then
                     log_event runtime ~patch_id
-                      "Cannot force-mark as merged: patch is currently busy"
+                      "Cannot force-mark as merged — patch is currently busy"
                   else if not has_pr then
                     log_event runtime ~patch_id
-                      "Cannot force-mark as merged: patch has no PR"
+                      "Cannot force-mark as merged — patch has no PR"
                   else (
                     Runtime.update_orchestrator runtime (fun orch ->
                         Orchestrator.mark_merged orch patch_id);
@@ -945,11 +955,11 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                           Runtime.update_orchestrator runtime (fun orch ->
                               Orchestrator.send_human_message orch patch_id line);
                           log_event runtime ~patch_id
-                            (Printf.sprintf "Human message sent: %s" line))
+                            (Printf.sprintf "Sent human message — %s" line))
                         else
                           log_event runtime
                             (Printf.sprintf
-                               "Cannot send human message: unknown patch %s"
+                               "Cannot send human message — unknown patch %s"
                                (Patch_id.to_string patch_id))
                     | Tui.List_view | Tui.Timeline_view -> ())
               | Tui_input.Prompt_broadcast ->
@@ -980,7 +990,9 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                             Orchestrator.send_human_message orch pv.Tui.patch_id
                               line));
                     log_event runtime
-                      (Printf.sprintf "Broadcast to %d active patches: %s" count
+                      (Printf.sprintf "Broadcast to %s — %s"
+                         (pluralize count "active patch"
+                            ~plural:"active patches")
                          line)
                   end
               | Tui_input.Prompt_pr -> (
@@ -1009,13 +1021,13 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                         | Error err ->
                             status_msg := None;
                             log_event runtime ~patch_id
-                              (Printf.sprintf "Cannot add ad-hoc PR #%d: %s" n
+                              (Printf.sprintf "Cannot add ad-hoc PR #%d — %s" n
                                  (Github.show_error err))
                         | Ok pr_state when Pr_state.is_fork pr_state ->
                             status_msg := None;
                             log_event runtime ~patch_id
                               (Printf.sprintf
-                                 "Cannot add ad-hoc PR #%d: fork PRs not \
+                                 "Cannot add ad-hoc PR #%d — fork PRs not \
                                   supported"
                                  n)
                         | Ok pr_state -> (
@@ -1024,7 +1036,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                             | None ->
                                 log_event runtime ~patch_id
                                   (Printf.sprintf
-                                     "Cannot add ad-hoc PR #%d: no head branch"
+                                     "Cannot add ad-hoc PR #%d — no head branch"
                                      n)
                             | Some branch ->
                                 Pr_registry.register pr_registry ~patch_id
@@ -1038,14 +1050,14 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                   | _ ->
                       if not (Base.String.is_empty line) then
                         log_event runtime
-                          (Printf.sprintf "Invalid PR number: %s" line))
+                          (Printf.sprintf "Invalid PR number — %s" line))
               | Tui_input.Prompt_worktree -> (
                   if not (Base.String.is_empty line) then
                     let path = line in
                     match selected_pid () with
                     | None ->
                         log_event runtime
-                          "Cannot add worktree: no selectable patch"
+                          "Cannot add worktree — no selectable patch"
                     | Some patch_id -> (
                         let busy =
                           Runtime.read runtime (fun snap ->
@@ -1055,7 +1067,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                         in
                         if busy then
                           log_event runtime ~patch_id
-                            "Warning: patch is currently running — changing \
+                            "Warning — patch is currently running, changing \
                              worktree may affect the live session";
                         let expected =
                           Worktree.worktree_dir ~project_name ~patch_id
@@ -1124,7 +1136,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                           else
                             log_event runtime ~patch_id
                               (Printf.sprintf
-                                 "Worktree registered: symlinked %s → %s"
+                                 "Registered worktree — symlinked %s → %s"
                                  expected canonical_real)
                         with
                         | Failure msg ->
@@ -1136,7 +1148,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                                   expires_at = None;
                                 };
                             log_event runtime ~patch_id
-                              (Printf.sprintf "Failed to add worktree: %s" msg)
+                              (Printf.sprintf "Failed to add worktree — %s" msg)
                         | exn ->
                             let msg = Printexc.to_string exn in
                             status_msg :=
@@ -1149,8 +1161,8 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                                   expires_at = None;
                                 };
                             log_event runtime ~patch_id
-                              (Printf.sprintf "Failed to add worktree: %s" msg))
-                  )
+                              (Printf.sprintf "Failed to add worktree — %s" msg)
+                        ))
               | Tui_input.Normal | Tui_input.Manage_patch -> ());
               loop ()
           | Term.Key.Backspace ->
@@ -1476,7 +1488,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                       match selected_pid () with
                       | None ->
                           log_event runtime
-                            "Cannot remove patch: no selectable patch"
+                            "Cannot remove patch — no selectable patch"
                       | Some patch_id ->
                           let busy, in_gameplan =
                             Runtime.read runtime (fun snap ->
@@ -1494,16 +1506,17 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                           in
                           if in_gameplan then
                             log_event runtime ~patch_id
-                              "Cannot remove gameplan patch"
+                              "Cannot remove gameplan patch — only ad-hoc \
+                               patches can be removed"
                           else (
                             if busy then
                               log_event runtime ~patch_id
-                                "Warning: patch is currently running — it may \
+                                "Warning — patch is currently running, it may \
                                  create a GitHub PR before stopping";
                             Runtime.update_orchestrator runtime (fun orch ->
                                 Orchestrator.remove_agent orch patch_id);
                             Pr_registry.unregister pr_registry ~patch_id;
-                            log_event runtime ~patch_id "Ad-hoc patch removed"))
+                            log_event runtime ~patch_id "Removed ad-hoc patch"))
                   | Tui.Detail_view _ | Tui.Timeline_view -> ());
                   loop ()
               | Tui_input.Noop | Tui_input.Send_message _ | Tui_input.Add_pr _
@@ -1613,20 +1626,20 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
               if not (Hashtbl.mem skip_logged patch_id) then (
                 Hashtbl.replace skip_logged patch_id true;
                 log_event runtime ~patch_id
-                  "skipping poll: no PR number registered");
+                  "Skipping poll — no PR number registered");
               None
           | Poll { patch_id; pr_number; was_merged } -> (
               match Github.pr_state ~net github pr_number with
               | Error err ->
                   log_event runtime ~patch_id
-                    (Printf.sprintf "poll error: %s" (Github.show_error err));
+                    (Printf.sprintf "Poll error — %s" (Github.show_error err));
                   None
               | Ok pr_state when Pr_state.is_fork pr_state ->
                   if not (Hashtbl.mem skip_logged patch_id) then (
                     Hashtbl.replace skip_logged patch_id true;
                     log_event runtime ~patch_id
                       (Printf.sprintf
-                         "skipping PR #%d: fork PRs are not supported"
+                         "Skipping PR #%d — fork PRs are not supported"
                          (Pr_number.to_int pr_number)));
                   None
               | Ok pr_state ->
@@ -1636,7 +1649,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                      it doesn't participate in the batched update below. *)
                   if poll_result.Poller.closed then (
                     log_event runtime ~patch_id
-                      (Printf.sprintf "PR #%d closed, looking for replacement"
+                      (Printf.sprintf "PR #%d closed — looking for replacement"
                          (Pr_number.to_int pr_number));
                     let branch =
                       match pr_state.Pr_state.head_branch with
@@ -1655,7 +1668,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                      with
                     | Ok (Some (new_pr, base_branch, merged)) ->
                         log_event runtime ~patch_id
-                          (Printf.sprintf "switched to PR #%d"
+                          (Printf.sprintf "Switched to PR #%d"
                              (Pr_number.to_int new_pr));
                         Pr_registry.register pr_registry ~patch_id
                           ~pr_number:new_pr;
@@ -1664,14 +1677,14 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                               ~pr_number:new_pr ~base_branch ~merged)
                     | Ok None ->
                         log_event runtime ~patch_id
-                          "no open PR found — clearing stale PR state, will \
+                          "No open PR found — cleared stale PR state, will \
                            create on next session";
                         Pr_registry.unregister pr_registry ~patch_id;
                         Runtime.update_orchestrator runtime (fun orch ->
                             Orchestrator.clear_pr orch patch_id)
                     | Error msg ->
                         log_event runtime ~patch_id
-                          (Printf.sprintf "PR re-discovery failed: %s" msg));
+                          (Printf.sprintf "PR re-discovery failed — %s" msg));
                     None)
                   else
                     let branch_in_root =
@@ -1818,14 +1831,14 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
            in
            log_event runtime ~patch_id
              (Printf.sprintf
-                "branch %s is checked out in the main working tree (%s) — \
-                 release it (e.g. `git -C %s checkout <default-branch>`) \
-                 before onton can work on this patch"
+                "Cannot work on patch — branch %s is checked out in the main \
+                 working tree (%s); release it (e.g. `git -C %s checkout \
+                 <default-branch>`) before continuing"
                 b main_root main_root));
         if ci_truncated then
           log_event runtime ~patch_id
-            "warning: CI check list was truncated (>100 checks); some failures \
-             may not appear in the prompt");
+            "Warning — CI check list was truncated (>100 checks); some \
+             failures may not appear in the prompt");
     Base.List.iter reconcile_logs ~f:(fun (msg, pid) ->
         log_event runtime ~patch_id:pid msg);
     Eio.Time.sleep clock config.poll_interval;
@@ -1888,13 +1901,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
         in
         if was_busy then
           log_event runtime ~patch_id
-            "runner: fiber exiting with busy=true, forcing complete")
+            "Forced complete — runner fiber exited with busy=true")
       (fun () ->
         try f () with
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | exn ->
             log_event runtime ~patch_id
-              (Printf.sprintf "runner: unexpected action exception: %s"
+              (Printf.sprintf "Unexpected action exception — %s"
                  (Printexc.to_string exn));
             mark_session_failed runtime patch_id)
   in
@@ -1985,7 +1998,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
               with
               | None ->
                   log_event runtime ~patch_id
-                    "runner: patch not found in gameplan, skipping";
+                    "Skipping start — patch not found in gameplan";
                   mark_session_failed runtime patch_id;
                   None
               | Some patch ->
@@ -2006,8 +2019,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   || not agent.Patch_agent.busy
                                 then (
                                   log_event runtime ~patch_id
-                                    "runner: action stale after semaphore \
-                                     wait, skipping";
+                                    "Skipping action — became stale during \
+                                     semaphore wait";
                                   `Stale)
                                 else
                                   match
@@ -2082,7 +2095,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                 with
                                 | Ok pr_number ->
                                     log_event runtime ~patch_id
-                                      (Printf.sprintf "PR #%d created"
+                                      (Printf.sprintf "Created PR #%d"
                                          (Pr_number.to_int pr_number));
                                     Pr_registry.register pr_registry ~patch_id
                                       ~pr_number;
@@ -2095,7 +2108,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     discover (remaining - 1)
                                 | Error msg ->
                                     log_event runtime ~patch_id
-                                      (Printf.sprintf "PR discovery failed: %s"
+                                      (Printf.sprintf "PR discovery failed — %s"
                                          msg);
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
@@ -2137,7 +2150,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               ~target:remote_target
                         | Result.Error msg ->
                             log_event runtime ~patch_id
-                              (Printf.sprintf "runner: fetch error: %s" msg);
+                              (Printf.sprintf "Fetch failed before rebase — %s"
+                                 msg);
                             Worktree.Error
                               (Printf.sprintf "fetch before rebase failed: %s"
                                  msg)
@@ -2145,17 +2159,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       (match rebase_result with
                       | Worktree.Ok ->
                           log_event runtime ~patch_id
-                            (Printf.sprintf "runner: rebase onto %s succeeded"
+                            (Printf.sprintf "Rebased onto %s"
                                (Branch.to_string new_base))
                       | Worktree.Noop ->
                           log_event runtime ~patch_id
-                            "runner: rebase is a noop (already up-to-date)"
+                            "Rebase noop — already up-to-date"
                       | Worktree.Conflict ->
                           log_event runtime ~patch_id
-                            "runner: rebase conflict, enqueuing merge-conflict"
+                            "Rebase conflict — enqueued merge-conflict"
                       | Worktree.Error msg ->
                           log_event runtime ~patch_id
-                            (Printf.sprintf "runner: rebase error: %s" msg));
+                            (Printf.sprintf "Rebase failed — %s" msg));
                       let agent_before, (agent_after, effects) =
                         Runtime.update_orchestrator_returning runtime
                           (fun orch ->
@@ -2182,17 +2196,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             (match result with
                             | Worktree.Push_ok ->
                                 log_event runtime ~patch_id
-                                  "runner: force-pushed after rebase"
+                                  "Force-pushed after rebase"
                             | Worktree.Push_up_to_date ->
                                 log_event runtime ~patch_id
-                                  "runner: push up-to-date after rebase (noop)"
+                                  "Push noop after rebase — already up-to-date"
                             | Worktree.Push_rejected ->
                                 log_event runtime ~patch_id
-                                  "runner: force-push rejected (lease)"
+                                  "Force-push rejected — lease violated"
                             | Worktree.Push_error msg ->
                                 log_event runtime ~patch_id
-                                  (Printf.sprintf "runner: force-push error: %s"
-                                     msg));
+                                  (Printf.sprintf "Force-push failed — %s" msg));
                             Some result)
                       in
                       let resolution =
@@ -2208,11 +2221,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       | Orchestrator.Rebase_push_ok -> ()
                       | Orchestrator.Rebase_push_failed ->
                           log_event runtime ~patch_id
-                            "runner: enqueuing merge-conflict after rebase \
-                             push rejection"
+                            "Enqueued merge-conflict after rebase push \
+                             rejection"
                       | Orchestrator.Rebase_push_error ->
                           log_event runtime ~patch_id
-                            "runner: enqueuing rebase retry after push error");
+                            "Enqueued rebase retry after push error");
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->
@@ -2240,12 +2253,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       with
                       | Some pr_num -> (
                           log_event runtime ~patch_id
-                            "fetching fresh review comments from GitHub";
+                            "Fetching fresh review comments from GitHub";
                           match Github.pr_state ~net github pr_num with
                           | Ok pr_state -> pr_state.Pr_state.comments
                           | Error _err ->
                               log_event runtime ~patch_id
-                                "failed to fetch fresh comments";
+                                "Failed to fetch fresh review comments";
                               [])
                       | None -> []
                     else []
@@ -2268,8 +2281,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               | Some bc ->
                                   log_event runtime ~patch_id
                                     (Printf.sprintf
-                                       "runner: base branch changed from %s to \
-                                        %s, will notify agent"
+                                       "Base branch changed from %s to %s — \
+                                        notifying agent"
                                        bc.Patch_decision.old_base
                                        bc.Patch_decision.new_base);
                                   Prompt.render_base_branch_changed
@@ -2280,13 +2293,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             match delivery with
                             | Patch_decision.Respond_stale ->
                                 log_event runtime ~patch_id
-                                  "runner: action stale after semaphore wait, \
-                                   skipping";
+                                  "Skipping action — became stale during \
+                                   semaphore wait";
                                 `Stale
                             | Patch_decision.Skip_empty ->
                                 log_event runtime ~patch_id
                                   (Printf.sprintf
-                                     "%s: nothing to deliver, skipping"
+                                     "Skipped %s — nothing to deliver"
                                      (Operation_kind.to_label kind));
                                 `Skip_empty
                             | Patch_decision.Deliver
@@ -2376,8 +2389,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     ~path:wt_path
                                 then (
                                   log_event runtime ~patch_id
-                                    "delivering merge-conflict (rebase already \
-                                     in progress)";
+                                    "Delivering merge-conflict — rebase \
+                                     already in progress";
                                   deliver_to_agent ())
                                 else
                                   (* Fetch fresh remote refs so rebase_onto
@@ -2400,7 +2413,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     | Result.Error msg ->
                                         log_event runtime ~patch_id
                                           (Printf.sprintf
-                                             "merge-conflict: fetch error: %s"
+                                             "Fetch failed before \
+                                              merge-conflict rebase — %s"
                                              msg);
                                         Worktree.Error
                                           (Printf.sprintf
@@ -2411,22 +2425,20 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   | Worktree.Ok ->
                                       log_event runtime ~patch_id
                                         (Printf.sprintf
-                                           "merge-conflict: rebase onto %s \
-                                            succeeded"
+                                           "Conflict rebase onto %s succeeded"
                                            base)
                                   | Worktree.Noop ->
                                       log_event runtime ~patch_id
-                                        "merge-conflict: rebase is a noop \
-                                         (local already up-to-date), will push"
+                                        "Conflict rebase noop — local already \
+                                         up-to-date, will push"
                                   | Worktree.Conflict ->
                                       log_event runtime ~patch_id
-                                        "merge-conflict: rebase hit conflicts, \
+                                        "Conflict rebase hit conflicts — \
                                          delivering to agent"
                                   | Worktree.Error msg ->
                                       log_event runtime ~patch_id
                                         (Printf.sprintf
-                                           "merge-conflict: rebase error: %s"
-                                           msg));
+                                           "Conflict rebase failed — %s" msg));
                                   let ( decision,
                                         agent_before,
                                         agent_after,
@@ -2465,21 +2477,20 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         (match result with
                                         | Worktree.Push_ok ->
                                             log_event runtime ~patch_id
-                                              "merge-conflict: force-pushed to \
-                                               resolve conflict"
+                                              "Force-pushed to resolve conflict"
                                         | Worktree.Push_up_to_date ->
                                             log_event runtime ~patch_id
-                                              "merge-conflict: push is \
-                                               up-to-date (noop)"
+                                              "Conflict push noop — already \
+                                               up-to-date"
                                         | Worktree.Push_rejected ->
                                             log_event runtime ~patch_id
-                                              "merge-conflict: force-push \
-                                               rejected (lease)"
+                                              "Conflict force-push rejected — \
+                                               lease violated"
                                         | Worktree.Push_error msg ->
                                             log_event runtime ~patch_id
                                               (Printf.sprintf
-                                                 "merge-conflict: force-push \
-                                                  error: %s"
+                                                 "Conflict force-push failed — \
+                                                  %s"
                                                  msg));
                                         Some result)
                                   in
@@ -2497,7 +2508,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   | Orchestrator.Conflict_done -> `Ok
                                   | Orchestrator.Conflict_retry_push ->
                                       log_event runtime ~patch_id
-                                        "merge-conflict: re-enqueuing after \
+                                        "Re-enqueued conflict resolution after \
                                          push failure";
                                       `Retry_push
                                   | Orchestrator.Conflict_needs_agent ->
@@ -2521,19 +2532,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   (match payload with
                                   | Patch_decision.Review_payload { comments }
                                     ->
-                                      Printf.sprintf
-                                        "delivering %s (%d comments)"
+                                      Printf.sprintf "Delivering %s (%s)"
                                         (Operation_kind.to_label kind)
-                                        (Base.List.length comments)
+                                        (pluralize
+                                           (Base.List.length comments)
+                                           "comment")
                                   | Patch_decision.Human_payload { messages } ->
-                                      Printf.sprintf
-                                        "delivering %s (%d messages)"
+                                      Printf.sprintf "Delivering %s (%s)"
                                         (Operation_kind.to_label kind)
-                                        (Base.List.length messages)
+                                        (pluralize
+                                           (Base.List.length messages)
+                                           "message")
                                   | Patch_decision.Ci_payload _
                                   | Patch_decision.Implementation_notes_payload
                                   | Patch_decision.Merge_conflict_payload ->
-                                      Printf.sprintf "delivering %s"
+                                      Printf.sprintf "Delivering %s"
                                         (Operation_kind.to_label kind));
                                 let prompt =
                                   match payload with
@@ -2678,7 +2691,7 @@ let persistence_fiber ~runtime ~clock ~project_name ~transcripts =
     (match Persistence.save ~path snap with
     | Ok () -> ()
     | Error msg ->
-        log_event runtime (Printf.sprintf "persistence save error: %s" msg));
+        log_event runtime (Printf.sprintf "Persistence save failed — %s" msg));
     loop ()
   in
   loop ()
@@ -2988,7 +3001,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
           Base.List.map startup.Startup_reconciler.errors
             ~f:(fun (patch_id, err) ->
               log_event runtime ~patch_id
-                (Printf.sprintf "startup discovery error: %s" err);
+                (Printf.sprintf "Startup discovery failed — %s" err);
               patch_id)
           |> Base.Hash_set.of_list (module Patch_id)
         in
@@ -3020,16 +3033,16 @@ let run_with_config (config : config) gameplan existing_snapshot =
                 | None -> orch));
         Base.List.iter startup.reset_pending ~f:(fun patch_id ->
             log_event runtime ~patch_id
-              "reset stale busy agent from crashed session";
+              "Reset stale busy agent from crashed session";
             Runtime.update_orchestrator runtime (fun orch ->
                 Orchestrator.reset_busy orch patch_id));
         Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
             log_event runtime ~patch_id:wr.worktree_patch_id
-              (Printf.sprintf "recovered worktree at %s" wr.worktree_path));
+              (Printf.sprintf "Recovered worktree at %s" wr.worktree_path));
         Base.List.iter
           (startup.worktree_errors @ Base.Option.to_list pre_wt_error)
           ~f:(fun err ->
-            log_event runtime (Printf.sprintf "startup worktree error: %s" err))
+            log_event runtime (Printf.sprintf "Startup worktree error — %s" err))
       in
       let transcripts =
         let t = Hashtbl.create 16 in

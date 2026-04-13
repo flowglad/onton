@@ -95,24 +95,24 @@ let apply_poll_result t patch_id
   let t =
     if poll_result.merged then (
       let agent = Orchestrator.agent t patch_id in
-      if not agent.Patch_agent.merged then log "merged";
+      if not agent.Patch_agent.merged then log "Merged";
       Orchestrator.mark_merged t patch_id)
     else t
   in
   let t =
     if poll_result.has_conflict then (
       let agent = Orchestrator.agent t patch_id in
-      if not agent.Patch_agent.has_conflict then log "merge conflict detected";
+      if not agent.Patch_agent.has_conflict then log "Merge conflict detected";
       Orchestrator.set_has_conflict t patch_id)
     else
       let agent = Orchestrator.agent t patch_id in
       if agent.Patch_agent.has_conflict then
         if Patch_decision.should_clear_conflict agent then (
-          log "conflict cleared (no longer detected)";
+          log "Conflict cleared — no longer detected";
           let t = Orchestrator.clear_has_conflict t patch_id in
           Orchestrator.reset_conflict_noop_count t patch_id)
         else (
-          log "conflict flag retained (resolution in flight)";
+          log "Conflict flag retained — resolution in flight";
           t)
       else t
   in
@@ -136,39 +136,39 @@ let apply_poll_result t patch_id
             | Patch_decision.Enqueue_ci ->
                 if is_new then
                   log
-                    (Printf.sprintf "enqueued %s"
+                    (Printf.sprintf "Enqueued %s"
                        (Operation_kind.to_label kind));
                 Orchestrator.enqueue acc patch_id kind
             | Patch_decision.Ci_already_queued ->
-                log "CI already queued, skipping";
+                log "CI already queued — skipping";
                 acc
             | Patch_decision.Ci_fix_in_progress ->
-                log "CI fix in progress, skipping";
+                log "CI fix in progress — skipping";
                 acc
             | Patch_decision.Cap_reached ->
-                log "CI failure cap reached (>=3), skipping CI enqueue";
+                log "CI failure cap reached (>=3) — skipping CI enqueue";
                 acc)
         | Operation_kind.Review_comments ->
             if is_new then
-              log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
+              log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Merge_conflict ->
             if is_new then
-              log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
+              log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
         | Operation_kind.Rebase | Operation_kind.Human
         | Operation_kind.Implementation_notes ->
             if is_new then
-              log (Printf.sprintf "enqueued %s" (Operation_kind.to_label kind));
+              log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind)
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t =
     let was_draft = (Orchestrator.agent t patch_id).Patch_agent.is_draft in
     let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
-    if (not was_draft) && poll_result.is_draft then log "marked as draft"
+    if (not was_draft) && poll_result.is_draft then log "Marked as draft"
     else if was_draft && not poll_result.is_draft then
-      log "marked as ready for review";
+      log "Marked as ready for review";
     t
   in
   let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
@@ -182,7 +182,7 @@ let apply_poll_result t patch_id
         ~checks_passing:poll_result.checks_passing
     with
     | Patch_decision.Reset_ci_failure_count ->
-        log "CI checks now passing, clearing failure history";
+        log "CI checks now passing — cleared failure history";
         Orchestrator.reset_ci_failure_count t patch_id
     | Patch_decision.No_ci_reset -> t
   in
@@ -193,7 +193,7 @@ let apply_poll_result t patch_id
         (not agent.Patch_agent.branch_blocked)
         && Option.is_none agent.Patch_agent.worktree_path
       then (
-        log "branch checked out in repo root, blocking worktree operations";
+        log "Branch checked out in repo root — blocking worktree operations";
         (Orchestrator.set_branch_blocked t patch_id, true))
       else if
         (not agent.Patch_agent.branch_blocked)
@@ -203,7 +203,7 @@ let apply_poll_result t patch_id
     else
       let agent = Orchestrator.agent t patch_id in
       if agent.Patch_agent.branch_blocked then (
-        log "branch no longer in repo root, unblocked";
+        log "Branch no longer in repo root — unblocked";
         (Orchestrator.clear_branch_blocked t patch_id, false))
       else (t, false)
   in
@@ -219,7 +219,7 @@ let apply_poll_result t patch_id
         let t = Orchestrator.set_worktree_path t patch_id path in
         let agent = Orchestrator.agent t patch_id in
         if agent.Patch_agent.branch_blocked then (
-          log "worktree path discovered, unblocking branch operations";
+          log "Worktree path discovered — unblocking branch operations";
           Orchestrator.clear_branch_blocked t patch_id)
         else t
     | _ -> t

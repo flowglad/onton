@@ -192,6 +192,15 @@ module Stop_reason = struct
     | "refusal" -> Some Refusal
     | "model_context_window_exceeded" -> Some Model_context_window_exceeded
     | _ -> None
+
+  let to_display = function
+    | End_turn -> "ended turn"
+    | Tool_use -> "awaiting tool"
+    | Max_tokens -> "max tokens"
+    | Stop_sequence -> "stop sequence"
+    | Pause_turn -> "paused"
+    | Refusal -> "refused"
+    | Model_context_window_exceeded -> "context window exceeded"
 end
 
 (* Models events from Claude Code's NDJSON stdout

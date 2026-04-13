@@ -583,8 +583,8 @@ let check_no_phantom_conflict_cleared (info : poll_log_info) =
   if (not info.agent_before.Patch_agent.has_conflict) && not poll_has_conflict
   then
     if
-      has_log_matching "conflict cleared" info.logs
-      || has_log_matching "conflict flag retained" info.logs
+      has_log_matching "Conflict cleared" info.logs
+      || has_log_matching "Conflict flag retained" info.logs
     then
       failwith
         (Printf.sprintf "L-I-1 no_phantom_conflict_cleared violated for %s"
@@ -592,7 +592,7 @@ let check_no_phantom_conflict_cleared (info : poll_log_info) =
 
 (** L-I-2: Merged at most once per patch across the full sequence. *)
 let check_merged_logged_at_most_once (info : poll_log_info) ~merged_logged =
-  if has_log_matching "merged" info.logs then
+  if has_log_matching "Merged" info.logs then
     if Set.mem merged_logged info.patch_id then
       failwith
         (Printf.sprintf "L-I-2 merged_logged_at_most_once violated for %s"
@@ -604,7 +604,7 @@ let check_merged_logged_at_most_once (info : poll_log_info) ~merged_logged =
     conflict, no "merge conflict detected" log. *)
 let check_conflict_detected_requires_transition (info : poll_log_info) =
   if info.agent_before.Patch_agent.has_conflict then
-    if has_log_matching "merge conflict detected" info.logs then
+    if has_log_matching "Merge conflict detected" info.logs then
       failwith
         (Printf.sprintf
            "L-I-3 conflict_detected_requires_transition violated for %s"
