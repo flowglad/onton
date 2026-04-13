@@ -414,23 +414,28 @@ let rec apply_command orch patches cmd =
       with Invalid_argument _ -> orch)
   | Apply_rebase_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
-      try
-        let has_merged dep_pid =
-          match Orchestrator.find_agent orch dep_pid with
-          | Some a -> a.Patch_agent.merged
-          | None -> false
-        in
-        let new_base =
-          Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
-            ~branch_of ~main
-        in
-        let orch, _effects =
-          Orchestrator.apply_rebase_result orch pid
-            (to_worktree_result result)
-            new_base
-        in
-        orch
-      with Invalid_argument _ -> orch)
+      match Orchestrator.find_agent orch pid with
+      | Some agent
+        when Option.equal Operation_kind.equal agent.Patch_agent.current_op
+               (Some Operation_kind.Rebase) -> (
+          try
+            let has_merged dep_pid =
+              match Orchestrator.find_agent orch dep_pid with
+              | Some a -> a.Patch_agent.merged
+              | None -> false
+            in
+            let new_base =
+              Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
+                ~branch_of ~main
+            in
+            let orch, _effects =
+              Orchestrator.apply_rebase_result orch pid
+                (to_worktree_result result)
+                new_base
+            in
+            orch
+          with Invalid_argument _ -> orch)
+      | _ -> orch)
   | Send_human_message patch_idx ->
       let pid = resolve_pid patches patch_idx in
       Orchestrator.send_human_message orch pid "test message"
@@ -444,29 +449,31 @@ let rec apply_command orch patches cmd =
       apply_command orch patches Reconcile
   | Apply_conflict_rebase_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
-      try
-        let has_merged dep_pid =
-          match Orchestrator.find_agent orch dep_pid with
-          | Some a -> a.Patch_agent.merged
-          | None -> false
-        in
-        let new_base =
-          Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
-            ~branch_of ~main
-        in
-        let orch', decision, _effects =
-          Orchestrator.apply_conflict_rebase_result orch pid
-            (to_worktree_result result)
-            new_base
-        in
-        match decision with
-        | Orchestrator.Deliver_to_agent ->
-            (* Don't auto-resolve — leave the agent busy so subsequent random
-               Apply_session_result commands drive the outcome, just like real
-               execution. The agent may or may not clear has_conflict. *)
-            orch'
-        | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed -> orch'
-      with Invalid_argument _ -> orch)
+      match Orchestrator.find_agent orch pid with
+      | Some agent
+        when Option.equal Operation_kind.equal agent.Patch_agent.current_op
+               (Some Operation_kind.Merge_conflict) -> (
+          try
+            let has_merged dep_pid =
+              match Orchestrator.find_agent orch dep_pid with
+              | Some a -> a.Patch_agent.merged
+              | None -> false
+            in
+            let new_base =
+              Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
+                ~branch_of ~main
+            in
+            let orch', decision, _effects =
+              Orchestrator.apply_conflict_rebase_result orch pid
+                (to_worktree_result result)
+                new_base
+            in
+            match decision with
+            | Orchestrator.Deliver_to_agent -> orch'
+            | Orchestrator.Conflict_resolved | Orchestrator.Conflict_failed ->
+                orch'
+          with Invalid_argument _ -> orch)
+      | _ -> orch)
   | Apply_rebase_push_result { patch_idx; result } -> (
       let pid = resolve_pid patches patch_idx in
       try
@@ -802,25 +809,19 @@ let check_llm_session_id_coherence (_a : Patch_agent.t) = ()
 
 (** I-14: human messages are never silently lost. The total count of messages
     across human_messages + inflight_human_messages must be monotonically
-    non-decreasing between steps, except when a successful completion (busy→idle
-    with empty inflight) consumes them. In other words: messages can only
-    disappear via complete on a non-failed session. *)
+    non-decreasing between steps, except when an explicit successful completion
+    consumes them. [~successfully_delivered] is determined from the command that
+    was applied, not inferred from state, so a failed delivery that drops
+    inflight messages is not silently exempted. *)
 let check_human_messages_preserved ~(prev : Patch_agent.t)
-    ~(curr : Patch_agent.t) =
+    ~(curr : Patch_agent.t) ~successfully_delivered =
   let prev_total =
     List.length prev.human_messages + List.length prev.inflight_human_messages
   in
   let curr_total =
     List.length curr.human_messages + List.length curr.inflight_human_messages
   in
-  (* Messages can be added (send_human_message) or consumed (successful
-     complete). They must NEVER decrease without a successful delivery —
-     i.e. if the agent went busy→idle, inflight is consumed. Otherwise,
-     total must be >= prev_total. *)
-  let was_delivered =
-    prev.busy && (not curr.busy) && List.is_empty curr.inflight_human_messages
-  in
-  if (not was_delivered) && curr_total < prev_total then
+  if (not successfully_delivered) && curr_total < prev_total then
     failwith
       (Printf.sprintf
          "I-14 human_messages_preserved violated for %s: total went from %d to \
@@ -836,7 +837,7 @@ let merged_set_of orch =
   |> Set.of_list (module Patch_id)
 
 let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
-    ~removed_pids =
+    ~removed_pids ~delivered_pid =
   let agents = Orchestrator.all_agents orch in
   let actions =
     Patch_controller.plan_actions orch ~patches:(make_gameplan patches).patches
@@ -851,7 +852,13 @@ let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
       check_llm_session_id_coherence a;
       (* I-14: human messages preserved — skip for removed/re-added patches *)
       match Map.find prev_agents a.Patch_agent.patch_id with
-      | Some prev -> check_human_messages_preserved ~prev ~curr:a
+      | Some prev ->
+          let successfully_delivered =
+            match delivered_pid with
+            | Some pid -> Patch_id.equal pid a.Patch_agent.patch_id
+            | None -> false
+          in
+          check_human_messages_preserved ~prev ~curr:a ~successfully_delivered
       | None -> ());
   (* Monotonicity *)
   check_merged_monotonicity ~prev_merged ~curr_merged ~removed_pids;
@@ -864,6 +871,15 @@ let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
       check_base_branch_freshness orch patches action);
   (* Reconciliation invariants *)
   check_merged_no_github_effects orch patches
+
+let delivered_pid_of_cmd cmd patches =
+  match cmd with
+  | Complete patch_idx -> Some (resolve_pid patches patch_idx)
+  | Apply_poll _ | Reconcile | Runner_tick | Apply_session_result _
+  | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
+  | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
+  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _ ->
+      None
 
 let removed_pids_of_cmd cmd prev_removed =
   match cmd with
@@ -912,8 +928,9 @@ let run_sequence ?(debug = false) orch patches cmds =
                 (String.concat ~sep:","
                    (List.map a.queue ~f:Operation_kind.to_label))
                 (Patch_agent.needs_intervention a));
+        let delivered_pid = delivered_pid_of_cmd cmd patches in
         check_all_invariants o patches ~prev_agents ~prev_merged ~curr_merged
-          ~removed_pids;
+          ~removed_pids ~delivered_pid;
         let merged_logged =
           match log_info with
           | Some info -> check_log_invariants info ~merged_logged
@@ -939,7 +956,7 @@ let drain_and_check orch patches =
       let o = Orchestrator.complete o pid in
       let curr_merged = merged_set_of o in
       check_all_invariants o patches ~prev_agents ~prev_merged ~curr_merged
-        ~removed_pids:no_removed;
+        ~removed_pids:no_removed ~delivered_pid:(Some pid);
       o)
 
 let safe_verbose cmds patches f =
