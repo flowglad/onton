@@ -395,6 +395,20 @@ let update_pr_body ~net t ~pr_number ~body =
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
+(** Update the base (target) branch of a PR via REST API. *)
+let update_pr_base ~net t ~pr_number ~base =
+  let path =
+    Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
+      (Types.Pr_number.to_int pr_number)
+  in
+  let req_body =
+    `Assoc [ ("base", `String (Types.Branch.to_string base)) ]
+    |> Yojson.Safe.to_string
+  in
+  match request ~net t ~meth:`PATCH ~path ~body:req_body () with
+  | Ok _ -> Ok ()
+  | Error _ as e -> e
+
 (** Fetch the GraphQL node ID for a PR via REST API. *)
 let pr_node_id ~net t ~pr_number =
   let path =

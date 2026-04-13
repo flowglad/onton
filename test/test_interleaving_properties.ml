@@ -91,6 +91,7 @@ type command =
   | Apply_rebase_push_result of { patch_idx : int; result : push_result_kind }
   | Add_adhoc of int
   | Remove_adhoc of int
+  | Discover_pr of int
 
 let show_poll_kind = function
   | Poll_normal -> "Normal"
@@ -147,6 +148,7 @@ let show_command = function
         (show_push_result_kind result)
   | Add_adhoc i -> Printf.sprintf "Add_adhoc(%d)" i
   | Remove_adhoc i -> Printf.sprintf "Remove_adhoc(%d)" i
+  | Discover_pr i -> Printf.sprintf "Discover_pr(%d)" i
 
 (* -- Ad-hoc patch helpers -- *)
 
@@ -240,6 +242,7 @@ let gen_command ~n =
         map (fun i -> Reset_intervention i) gen_idx;
         map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
+        map (fun i -> Discover_pr i) gen_idx;
       ])
 
 let gen_command_seq ~n ~len =
@@ -274,6 +277,7 @@ let gen_atomic_command ~n =
         map (fun i -> Reset_intervention i) gen_idx;
         map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
+        map (fun i -> Discover_pr i) gen_idx;
       ])
 
 let gen_atomic_command_seq ~n ~len =
@@ -476,6 +480,29 @@ let rec apply_command orch patches cmd =
       Orchestrator.add_agent orch ~patch_id:(adhoc_pid i)
         ~branch:(adhoc_branch i) ~pr_number:(adhoc_pr i)
   | Remove_adhoc i -> Orchestrator.remove_agent orch (adhoc_pid i)
+  | Discover_pr patch_idx -> (
+      let pid = resolve_pid patches patch_idx in
+      match Orchestrator.find_agent orch pid with
+      | Some agent
+        when agent.Patch_agent.has_session
+             && (not (Patch_agent.has_pr agent))
+             && not agent.Patch_agent.merged ->
+          let pr = Pr_number.of_int (patch_idx + 50) in
+          let has_merged dep_pid =
+            match Orchestrator.find_agent orch dep_pid with
+            | Some a -> a.Patch_agent.merged
+            | None -> false
+          in
+          let base =
+            try
+              Graph.initial_base (Orchestrator.graph orch) pid ~has_merged
+                ~branch_of:(extended_branch_of patches)
+                ~main
+            with Invalid_argument _ -> main
+          in
+          let orch = Orchestrator.set_pr_number orch pid pr in
+          Orchestrator.set_base_branch orch pid base
+      | _ -> orch)
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
@@ -527,7 +554,7 @@ let rec apply_command_with_logs orch patches cmd =
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Add_adhoc _
-  | Remove_adhoc _ ->
+  | Remove_adhoc _ | Discover_pr _ ->
       (apply_command orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
@@ -811,7 +838,8 @@ let removed_pids_of_cmd cmd prev_removed =
   | Add_adhoc _ | Apply_poll _ | Reconcile | Runner_tick | Complete _
   | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
   | Reset_intervention _ | Atomic_poll_reconcile _
-  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ ->
+  | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Discover_pr _
+    ->
       prev_removed
 
 let run_sequence ?(debug = false) orch patches cmds =
@@ -834,7 +862,7 @@ let run_sequence ?(debug = false) orch patches cmds =
           | Apply_session_result _ | Apply_rebase_result _
           | Send_human_message _ | Reset_intervention _
           | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-          | Apply_rebase_push_result _ ->
+          | Apply_rebase_push_result _ | Discover_pr _ ->
               merged_logged
         in
         let curr_merged = merged_set_of o in

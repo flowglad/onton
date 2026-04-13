@@ -125,8 +125,9 @@ val on_session_failure : t -> is_fresh:bool -> t
     - Respond path fresh failure: escalate to [Given_up] → needs_intervention *)
 
 val on_pr_discovery_failure : t -> t
-(** Handle a successful Claude run where PR discovery failed. Resets fallback so
-    the patch retries from scratch. *)
+(** Handle a successful Claude run where PR discovery failed. Increments the
+    durable attempt counter so [needs_intervention] fires after repeated
+    failures. No-op when the agent already has a PR. *)
 
 val on_pre_session_failure : t -> t
 (** Handle a failure that occurs before a Claude session starts (worktree

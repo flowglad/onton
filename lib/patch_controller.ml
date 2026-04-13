@@ -45,6 +45,11 @@ type github_effect =
       pr_number : Pr_number.t;
       draft : bool;
     }
+  | Set_pr_base of {
+      patch_id : Patch_id.t;
+      pr_number : Pr_number.t;
+      base : Branch.t;
+    }
 [@@deriving show, eq, sexp_of]
 
 type poll_log_entry = { message : string; patch_id : Patch_id.t }
@@ -56,6 +61,16 @@ type poll_observation = {
   branch_in_root : bool;
   worktree_path : string option;
 }
+
+let discovery_intents orch =
+  Orchestrator.all_agents orch
+  |> List.filter_map ~f:(fun (agent : Patch_agent.t) ->
+      if
+        agent.has_session
+        && (not (Patch_agent.has_pr agent))
+        && not agent.merged
+      then Some (agent.patch_id, agent.branch)
+      else None)
 
 let enqueue_notes_if_needed t patch_id (agent : Patch_agent.t) =
   if
@@ -193,10 +208,9 @@ let apply_poll_result t patch_id
       else (t, false)
   in
   let t =
-    let agent = Orchestrator.agent t patch_id in
-    match (agent.Patch_agent.base_branch, base_branch) with
-    | None, Some branch -> Orchestrator.set_base_branch t patch_id branch
-    | _ -> t
+    match base_branch with
+    | Some branch -> Orchestrator.set_base_branch t patch_id branch
+    | None -> t
   in
   let t =
     let agent = Orchestrator.agent t patch_id in
@@ -237,16 +251,36 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
               }
             :: !effects;
         match agent.base_branch with
-        | Some base_branch ->
-            let desired_draft =
-              if Branch.equal base_branch (Orchestrator.main_branch t) then
-                not agent.implementation_notes_delivered
-              else true
+        | Some actual_base ->
+            let has_merged pid =
+              (Orchestrator.agent t pid).Patch_agent.merged
             in
-            if Bool.(agent.is_draft <> desired_draft) then
-              effects :=
-                Set_pr_draft { patch_id; pr_number; draft = desired_draft }
-                :: !effects
+            let open_deps =
+              Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged
+            in
+            if List.length open_deps <= 1 then begin
+              let branch_of pid =
+                (Orchestrator.agent t pid).Patch_agent.branch
+              in
+              let expected_base =
+                Graph.initial_base (Orchestrator.graph t) patch_id ~has_merged
+                  ~branch_of
+                  ~main:(Orchestrator.main_branch t)
+              in
+              let desired_draft =
+                if Branch.equal expected_base (Orchestrator.main_branch t) then
+                  not agent.implementation_notes_delivered
+                else true
+              in
+              if Bool.(agent.is_draft <> desired_draft) then
+                effects :=
+                  Set_pr_draft { patch_id; pr_number; draft = desired_draft }
+                  :: !effects;
+              if not (Branch.equal actual_base expected_base) then
+                effects :=
+                  Set_pr_base { patch_id; pr_number; base = expected_base }
+                  :: !effects
+            end
         | None -> ())
     | None -> ());
     (t, List.rev !effects)
@@ -430,24 +464,25 @@ let apply_github_effect_success t = function
       Orchestrator.set_pr_description_applied t patch_id true
   | Set_pr_draft { patch_id; draft; _ } ->
       Orchestrator.set_is_draft t patch_id draft
+  | Set_pr_base { patch_id; base; _ } ->
+      Orchestrator.set_base_branch t patch_id base
 
 let make_orchestrator ~patch_id ~main_branch =
   let patch =
-    Patch.
-      {
-        id = patch_id;
-        title = "test";
-        description = "test";
-        branch = Branch.of_string "test-branch";
-        dependencies = [];
-        spec = "";
-        acceptance_criteria = [];
-        changes = [];
-        files = [];
-        classification = "";
-        test_stubs_introduced = [];
-        test_stubs_implemented = [];
-      }
+    {
+      Patch.id = patch_id;
+      title = "test";
+      description = "test";
+      branch = Branch.of_string "test-branch";
+      dependencies = [];
+      spec = "";
+      acceptance_criteria = [];
+      changes = [];
+      files = [];
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+    }
   in
   (patch, Orchestrator.create ~patches:[ patch ] ~main_branch)
 
@@ -528,7 +563,7 @@ let%test "reconcile_patch emits description effect while unapplied" =
   in
   List.exists effects ~f:(function
     | Set_pr_description { patch_id; _ } -> Patch_id.equal patch_id pid
-    | Set_pr_draft _ -> false)
+    | Set_pr_draft _ | Set_pr_base _ -> false)
 
 let%test "reconcile_patch requests ready-for-review after notes on main" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
@@ -555,7 +590,7 @@ let%test "reconcile_patch requests ready-for-review after notes on main" =
   in
   List.exists effects ~f:(function
     | Set_pr_draft { patch_id; draft = false; _ } -> Patch_id.equal patch_id pid
-    | Set_pr_description _ | Set_pr_draft _ -> false)
+    | Set_pr_description _ | Set_pr_draft _ | Set_pr_base _ -> false)
 
 let%test "reconcile_patch emits no effects for merged agent" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

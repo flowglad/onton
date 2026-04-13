@@ -53,6 +53,15 @@ val update_pr_body :
 (** [update_pr_body ~net t ~pr_number ~body] updates the PR description via
     [PATCH /repos/:owner/:repo/pulls/:number]. *)
 
+val update_pr_base :
+  net:_ Eio.Net.t ->
+  t ->
+  pr_number:Types.Pr_number.t ->
+  base:Types.Branch.t ->
+  (unit, error) Result.t
+(** [update_pr_base ~net t ~pr_number ~base] retargets the PR to [base] via
+    [PATCH /repos/:owner/:repo/pulls/:number]. *)
+
 val set_draft :
   net:_ Eio.Net.t ->
   t ->

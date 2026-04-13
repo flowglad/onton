@@ -11,6 +11,11 @@ type github_effect =
       pr_number : Pr_number.t;
       draft : bool;
     }
+  | Set_pr_base of {
+      patch_id : Patch_id.t;
+      pr_number : Pr_number.t;
+      base : Branch.t;
+    }
 [@@deriving show, eq, sexp_of]
 
 type poll_log_entry = { message : string; patch_id : Patch_id.t }
@@ -22,6 +27,11 @@ type poll_observation = {
   branch_in_root : bool;
   worktree_path : string option;
 }
+
+val discovery_intents : Orchestrator.t -> (Patch_id.t * Branch.t) list
+(** Patches that have run at least once ([has_session]) but lack a PR and are
+    not merged. Returns [(patch_id, branch)] pairs for tick-based PR discovery
+    in the poller. *)
 
 val reconcile_patch :
   Orchestrator.t ->
