@@ -157,9 +157,9 @@ val combine_session_and_push :
     - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
     - [Session_ok] with [Push_rejected] or [Push_error] becomes
       [Session_push_failed] — the LLM ran fine but commits didn't ship.
-    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the
-      LLM ran cleanly but left no commits on the branch, so the push was
-      skipped (a base-equal branch can't become a PR). *)
+    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the LLM
+      ran cleanly but left no commits on the branch, so the push was skipped (a
+      base-equal branch can't become a PR). *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]

@@ -1514,14 +1514,13 @@ let () =
 
 (** PI-14: Two consecutive Session_no_commits promote to needs_intervention —
     without a pending Human in the queue, the counter crossing 2 is enough to
-    stop the scheduler from re-enqueueing Start. Regression for the class of
-    bug where an LLM produces no commits and the supervisor silently loops
-    forever trying to push an empty branch. *)
+    stop the scheduler from re-enqueueing Start. Regression for the class of bug
+    where an LLM produces no commits and the supervisor silently loops forever
+    trying to push an empty branch. *)
 let () =
   let prop_pi14 =
     QCheck2.Test.make
-      ~name:
-        "PI-14: two consecutive Session_no_commits flip needs_intervention"
+      ~name:"PI-14: two consecutive Session_no_commits flip needs_intervention"
       ~count:200 (QCheck2.Gen.return ()) (fun () ->
         let patches = mk_patches 1 in
         let orch = Orchestrator.create ~patches ~main_branch:main in
@@ -1542,12 +1541,12 @@ let () =
           failwith "needs_intervention fired too early (count = 1)";
         if
           not
-            (Patch_agent.equal_session_fallback
-               a1.Patch_agent.session_fallback Patch_agent.Fresh_available)
+            (Patch_agent.equal_session_fallback a1.Patch_agent.session_fallback
+               Patch_agent.Fresh_available)
         then
           failwith
-            "session_fallback was not preserved as Fresh_available (LLM \
-             itself was healthy)";
+            "session_fallback was not preserved as Fresh_available (LLM itself \
+             was healthy)";
         let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
         if not (Orchestrator.agent orch pid).Patch_agent.busy then
           failwith "agent not busy after re-Start";
@@ -1566,17 +1565,16 @@ let () =
   Stdlib.print_endline "PI-14 passed"
 
 (** PI-14b: A human message sent mid-session survives Session_no_commits —
-    complete_failed restores inflight_human_messages into human_messages so
-    the scheduler re-enqueues Human on the next cycle. Note: while a Human is
-    pending, needs_intervention is deliberately gated off (operator may need
-    to respond first); the counter still increments and will surface once the
-    Human queue is drained. *)
+    complete_failed restores inflight_human_messages into human_messages so the
+    scheduler re-enqueues Human on the next cycle. Note: while a Human is
+    pending, needs_intervention is deliberately gated off (operator may need to
+    respond first); the counter still increments and will surface once the Human
+    queue is drained. *)
 let () =
   let prop_pi14b =
     QCheck2.Test.make
       ~name:
-        "PI-14b: human message survives Session_no_commits \
-         (complete_failed)"
+        "PI-14b: human message survives Session_no_commits (complete_failed)"
       ~count:200
       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
       (fun msg ->
@@ -1592,9 +1590,7 @@ let () =
         let a = Orchestrator.agent orch pid in
         if a.Patch_agent.busy then
           failwith "agent still busy after Session_no_commits";
-        if
-          not
-            (List.mem a.Patch_agent.human_messages msg ~equal:String.equal)
+        if not (List.mem a.Patch_agent.human_messages msg ~equal:String.equal)
         then failwith "human message lost after Session_no_commits";
         if not (Int.equal a.Patch_agent.no_commits_push_count 1) then
           failwith "counter not incremented";
@@ -1605,10 +1601,10 @@ let () =
   QCheck2.Test.check_exn prop_pi14b;
   Stdlib.print_endline "PI-14b passed"
 
-(** PI-15: Session_ok after a Session_no_commits cleanly resets the counter
-    and intervention state — the agent recovers on its next healthy session
-    and isn't stuck in a half-broken state. Regression for the bug where the
-    counter leaks across successful sessions. *)
+(** PI-15: Session_ok after a Session_no_commits cleanly resets the counter and
+    intervention state — the agent recovers on its next healthy session and
+    isn't stuck in a half-broken state. Regression for the bug where the counter
+    leaks across successful sessions. *)
 let () =
   let prop_pi15 =
     QCheck2.Test.make
@@ -1646,15 +1642,15 @@ let () =
   QCheck2.Test.check_exn prop_pi15;
   Stdlib.print_endline "PI-15 passed"
 
-(** PI-16: The retire-blue-green/patch-2 scenario end-to-end — a dependent
-    patch whose PR gets auto-retargeted by GitHub when its dep merges and
-    whose branch is never thereby rebased. The drift detector must catch it.
+(** PI-16: The retire-blue-green/patch-2 scenario end-to-end — a dependent patch
+    whose PR gets auto-retargeted by GitHub when its dep merges and whose branch
+    is never thereby rebased. The drift detector must catch it.
 
     Setup: two patches, patch b depends on patch a. Both bootstrap to having
     PRs; b's branch_rebased_onto is patch-a's branch (where it started). a
-    merges (agent flagged merged, GitHub deletes a's branch and retargets b's
-    PR to main — modeled by updating b.base_branch to main). The reconciler
-    must enqueue a Rebase on b. *)
+    merges (agent flagged merged, GitHub deletes a's branch and retargets b's PR
+    to main — modeled by updating b.base_branch to main). The reconciler must
+    enqueue a Rebase on b. *)
 let () =
   let prop_pi16 =
     QCheck2.Test.make
@@ -1680,7 +1676,8 @@ let () =
           }
         in
         let b : Patch.t =
-          { a with
+          {
+            a with
             id = Patch_id.of_string "b";
             title = "b";
             branch = Branch.of_string "b";
@@ -1730,9 +1727,8 @@ let () =
               else None)
         in
         let actions =
-          Reconciler.reconcile
-            ~graph:(Orchestrator.graph orch)
-            ~main ~merged_pr_patches:merged_patches ~branch_of patch_views
+          Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+            ~merged_pr_patches:merged_patches ~branch_of patch_views
         in
         (* The reconciler must emit Enqueue_rebase for b. *)
         List.exists actions ~f:(function

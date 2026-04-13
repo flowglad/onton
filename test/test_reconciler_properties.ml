@@ -154,7 +154,7 @@ let prop_detect_rebases_skips_already_queued =
                 branch_blocked = false;
                 queue = [ Types.Operation_kind.Rebase ];
                 base_branch = main;
-                  branch_rebased_onto = Some main;
+                branch_rebased_onto = Some main;
               })
       in
       return (graph, views, ids))
@@ -439,7 +439,8 @@ let pid s = Types.Patch_id.of_string s
 let prop_drift_fires_on_divergence =
   QCheck2.Test.make ~name:"drift: fires when rebased_onto != base_branch"
     ~count:1
-    QCheck2.Gen.(return ()) (fun () ->
+    QCheck2.Gen.(return ())
+    (fun () ->
       let v =
         mk_view ~id:(pid "p1") ~base_branch:main_br
           ~branch_rebased_onto:(Some dep_br) ()
@@ -452,7 +453,9 @@ let prop_drift_fires_on_divergence =
 
 let prop_drift_silent_on_match =
   QCheck2.Test.make ~name:"drift: silent when rebased_onto == base_branch"
-    ~count:1 QCheck2.Gen.(return ()) (fun () ->
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
       let v =
         mk_view ~id:(pid "p1") ~base_branch:main_br
           ~branch_rebased_onto:(Some main_br) ()
@@ -462,16 +465,17 @@ let prop_drift_silent_on_match =
 let prop_drift_silent_on_none =
   QCheck2.Test.make
     ~name:"drift: silent when branch_rebased_onto = None (pre-start)" ~count:1
-    QCheck2.Gen.(return ()) (fun () ->
+    QCheck2.Gen.(return ())
+    (fun () ->
       let v =
-        mk_view ~id:(pid "p1") ~base_branch:main_br ~branch_rebased_onto:None
-          ()
+        mk_view ~id:(pid "p1") ~base_branch:main_br ~branch_rebased_onto:None ()
       in
       List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
 
 let prop_drift_silent_on_merged =
   QCheck2.Test.make ~name:"drift: silent on merged patches" ~count:1
-    QCheck2.Gen.(return ()) (fun () ->
+    QCheck2.Gen.(return ())
+    (fun () ->
       let v =
         mk_view ~id:(pid "p1") ~merged:true ~base_branch:main_br
           ~branch_rebased_onto:(Some dep_br) ()
@@ -480,7 +484,8 @@ let prop_drift_silent_on_merged =
 
 let prop_drift_silent_on_no_pr =
   QCheck2.Test.make ~name:"drift: silent when has_pr = false" ~count:1
-    QCheck2.Gen.(return ()) (fun () ->
+    QCheck2.Gen.(return ())
+    (fun () ->
       let v =
         mk_view ~id:(pid "p1") ~has_pr:false ~base_branch:main_br
           ~branch_rebased_onto:(Some dep_br) ()
@@ -490,7 +495,9 @@ let prop_drift_silent_on_no_pr =
 let prop_drift_silent_when_rebase_queued =
   QCheck2.Test.make
     ~name:"drift: silent when Rebase is already in the queue (idempotent)"
-    ~count:1 QCheck2.Gen.(return ()) (fun () ->
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
       let v =
         mk_view ~id:(pid "p1")
           ~queue:[ Types.Operation_kind.Rebase ]
@@ -499,10 +506,12 @@ let prop_drift_silent_when_rebase_queued =
       List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
 
 let prop_drift_always_produces_enqueue_rebase =
-  QCheck2.Test.make
-    ~name:"drift: every emitted action is Enqueue_rebase" ~count:200
-    (QCheck2.Gen.list_size (QCheck2.Gen.int_range 1 6)
-       Onton_test_support.Test_generators.gen_patch_view) (fun views ->
+  QCheck2.Test.make ~name:"drift: every emitted action is Enqueue_rebase"
+    ~count:200
+    (QCheck2.Gen.list_size
+       (QCheck2.Gen.int_range 1 6)
+       Onton_test_support.Test_generators.gen_patch_view)
+    (fun views ->
       (* Force some drift by setting rebased_onto to a branch different from
          base_branch on a random subset. *)
       let drifted_views =
@@ -523,7 +532,9 @@ let prop_drift_always_produces_enqueue_rebase =
 let prop_reconcile_e2e_catches_drift =
   QCheck2.Test.make
     ~name:"reconcile: drift detector catches GitHub-auto-retargeted case"
-    ~count:1 QCheck2.Gen.(return ()) (fun () ->
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
       (* Single patch with no deps; base_branch = main, rebased_onto = dep
          (stale). No merged_prs. *)
       let patch : Types.Patch.t =
@@ -563,7 +574,8 @@ let prop_reconcile_e2e_catches_drift =
 let prop_reconcile_dedup_rebase =
   QCheck2.Test.make
     ~name:"reconcile: dedup — at most one Enqueue_rebase per patch" ~count:1
-    QCheck2.Gen.(return ()) (fun () ->
+    QCheck2.Gen.(return ())
+    (fun () ->
       let patch : Types.Patch.t =
         {
           id = pid "p1";

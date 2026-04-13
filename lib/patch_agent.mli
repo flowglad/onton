@@ -157,9 +157,9 @@ val set_notified_base_branch : t -> Types.Branch.t -> t
 (** Record that the agent session has been informed of this base branch. *)
 
 val set_branch_rebased_onto : t -> Types.Branch.t -> t
-(** Record that the local branch has been rebased onto this base (either by
-    an explicit successful [Rebase] action, or by the initial [Start] which
-    plants the branch on its base). Drives [detect_notified_base_drift]. *)
+(** Record that the local branch has been rebased onto this base (either by an
+    explicit successful [Rebase] action, or by the initial [Start] which plants
+    the branch on its base). Drives [detect_notified_base_drift]. *)
 
 val base_branch_changed : t -> bool
 (** [true] when [base_branch] differs from [notified_base_branch], meaning the
@@ -193,8 +193,8 @@ val increment_no_commits_push_count : t -> t
     committing its work and further retries are wasted. *)
 
 val reset_no_commits_push_count : t -> t
-(** Reset [no_commits_push_count] to 0. Called on [Session_ok] with a
-    successful push, because the agent has demonstrated it can commit. *)
+(** Reset [no_commits_push_count] to 0. Called on [Session_ok] with a successful
+    push, because the agent has demonstrated it can commit. *)
 
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
@@ -223,8 +223,8 @@ val reset_ci_failure_count : t -> t
 val reset_intervention_state : t -> t
 (** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
     [start_attempts_without_pr] to 0, [conflict_noop_count] to 0, and
-    [no_commits_push_count] to 0. Used after manual resolution (e.g., sending
-    a human message) to give the patch a fresh start. *)
+    [no_commits_push_count] to 0. Used after manual resolution (e.g., sending a
+    human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)

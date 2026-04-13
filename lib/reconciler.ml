@@ -66,27 +66,26 @@ let detect_rebases graph views ~newly_merged =
 
 (** Detect agents whose local branch is rebased onto something other than
     [base_branch]. [branch_rebased_onto] is updated by Start (to the initial
-    base) and by successful Rebase (to the rebase target). If [base_branch]
-    has since moved — typically because a dep branch was merged and deleted
-    on GitHub, causing GitHub to auto-retarget the PR to [main], and the
-    poller then refreshed [base_branch] to match — the local branch still
-    carries the old dep's commits in its history and needs a rebase even
-    though [base_branch] already equals the structurally-correct base.
+    base) and by successful Rebase (to the rebase target). If [base_branch] has
+    since moved — typically because a dep branch was merged and deleted on
+    GitHub, causing GitHub to auto-retarget the PR to [main], and the poller
+    then refreshed [base_branch] to match — the local branch still carries the
+    old dep's commits in its history and needs a rebase even though
+    [base_branch] already equals the structurally-correct base.
 
     This is the case [detect_stale_bases] misses: there, the structural check
-    [base_branch vs initial_base] both read [main] and agreed, so no rebase
-    was enqueued. *)
+    [base_branch vs initial_base] both read [main] and agreed, so no rebase was
+    enqueued. *)
 let detect_notified_base_drift views =
   List.filter_map views ~f:(fun v ->
       if
         v.has_pr && (not v.merged)
-        && (not
-              (List.mem v.queue Operation_kind.Rebase
-                 ~equal:Operation_kind.equal))
+        && not
+             (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
       then
         match v.branch_rebased_onto with
-        | Some rebased_onto
-          when not (Branch.equal rebased_onto v.base_branch) ->
+        | Some rebased_onto when not (Branch.equal rebased_onto v.base_branch)
+          ->
             Some (Enqueue_rebase v.id)
         | Some _ | None -> None
       else None)
@@ -167,14 +166,11 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
     let add_unseen seen actions =
       List.fold actions ~init:(seen, []) ~f:(fun (seen, acc) a ->
           match pid_of a with
-          | Some pid when not (Set.mem seen pid) ->
-              (Set.add seen pid, a :: acc)
+          | Some pid when not (Set.mem seen pid) -> (Set.add seen pid, a :: acc)
           | Some _ -> (seen, acc)
           | None -> (seen, a :: acc))
     in
-    let seen, kept1 =
-      add_unseen (Set.empty (module Patch_id)) event_rebases
-    in
+    let seen, kept1 = add_unseen (Set.empty (module Patch_id)) event_rebases in
     let seen, kept2 = add_unseen seen stale_rebases in
     let _seen, kept3 = add_unseen seen drift_rebases in
     List.rev kept1 @ List.rev kept2 @ List.rev kept3

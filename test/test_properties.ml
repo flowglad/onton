@@ -1025,8 +1025,7 @@ let () =
     Test.make
       ~name:
         "PNC-7: apply_session_result Session_no_commits clears busy \
-         (complete_failed)"
-      (Gen.return ()) (fun () ->
+         (complete_failed)" (Gen.return ()) (fun () ->
         let orch, pid = mk_busy_orch () in
         let orch =
           Orchestrator.apply_session_result orch pid Session_no_commits
@@ -1080,8 +1079,7 @@ let () =
     Test.make
       ~name:
         "PG-3: push_gate_from_count None = Proceed (unknown defaults to push, \
-         so real failures surface via push)"
-      (Gen.return ()) (fun () ->
+         so real failures surface via push)" (Gen.return ()) (fun () ->
         Worktree.equal_push_gate
           (Worktree.push_gate_from_count None)
           Worktree.Proceed)
@@ -1091,7 +1089,8 @@ let () =
       ~name:
         "PG-4: parse_commit_count code<>0 = None (git error -> unknown, not \
          zero)"
-      (Gen.pair (Gen.int_range 1 255) Gen.string_small) (fun (code, stdout) ->
+      (Gen.pair (Gen.int_range 1 255) Gen.string_small)
+      (fun (code, stdout) ->
         Option.is_none (Worktree.parse_commit_count ~code ~stdout))
   in
   let prop_commit_count_valid_int =
@@ -1105,8 +1104,7 @@ let () =
     Test.make
       ~name:
         "PG-6: parse_commit_count code=0 strips surrounding whitespace (git \
-         appends \\n)"
-      (Gen.int_range 0 10000) (fun n ->
+         appends \\n)" (Gen.int_range 0 10000) (fun n ->
         Option.equal Int.equal
           (Worktree.parse_commit_count ~code:0
              ~stdout:(Printf.sprintf "  %d\n" n))
@@ -1115,8 +1113,8 @@ let () =
   let prop_commit_count_garbage_none =
     Test.make
       ~name:"PG-7: parse_commit_count code=0 of non-int = None (defensive)"
-      (Gen.oneof_list [ "hello"; "12abc"; ""; "  "; "-"; "1.5" ]) (fun s ->
-        Option.is_none (Worktree.parse_commit_count ~code:0 ~stdout:s))
+      (Gen.oneof_list [ "hello"; "12abc"; ""; "  "; "-"; "1.5" ])
+      (fun s -> Option.is_none (Worktree.parse_commit_count ~code:0 ~stdout:s))
   in
   let prop_classify_ok_zero_porcelain_equal_up_to_date =
     Test.make
@@ -1159,12 +1157,10 @@ let () =
          Push_error"
       (Gen.pair (Gen.int_range 1 255) Gen.string_small)
       (fun (code, stderr) ->
-        match
-          Worktree.classify_push_result ~code ~stdout:"" ~stderr
-        with
+        match Worktree.classify_push_result ~code ~stdout:"" ~stderr with
         | Worktree.Push_error _ -> true
-        | Worktree.Push_ok | Worktree.Push_up_to_date
-        | Worktree.Push_no_commits | Worktree.Push_rejected ->
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
+        | Worktree.Push_rejected ->
             false)
   in
   let prop_classify_never_returns_no_commits =
@@ -1177,8 +1173,8 @@ let () =
       (fun (code, stdout, stderr) ->
         match Worktree.classify_push_result ~code ~stdout ~stderr with
         | Worktree.Push_no_commits -> false
-        | Worktree.Push_ok | Worktree.Push_up_to_date
-        | Worktree.Push_rejected | Worktree.Push_error _ ->
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected
+        | Worktree.Push_error _ ->
             true)
   in
   List.iter

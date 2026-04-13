@@ -104,10 +104,10 @@ val push_gate_from_count : int option -> push_gate
 
 val classify_push_result :
   code:int -> stdout:string -> stderr:string -> push_result
-(** Pure: classify a [git push --porcelain --force-with-lease] invocation
-    into a [push_result]. [Push_no_commits] is never returned by this function
-    — that variant is only produced by the gate (the push is skipped entirely
-    when the branch has no commits ahead of base). *)
+(** Pure: classify a [git push --porcelain --force-with-lease] invocation into a
+    [push_result]. [Push_no_commits] is never returned by this function — that
+    variant is only produced by the gate (the push is skipped entirely when the
+    branch has no commits ahead of base). *)
 
 val force_push_with_lease :
   process_mgr:_ Eio.Process.mgr ->

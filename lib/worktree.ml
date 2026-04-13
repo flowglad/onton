@@ -501,24 +501,22 @@ let parse_push_porcelain stdout =
     Returns [None] on non-zero exit or unparseable stdout (treat as unknown —
     caller may decide to proceed with the push rather than erroneously skip). *)
 let parse_commit_count ~code ~stdout =
-  if code <> 0 then None
-  else Stdlib.int_of_string_opt (String.strip stdout)
+  if code <> 0 then None else Stdlib.int_of_string_opt (String.strip stdout)
 
 type push_gate = Proceed | Skip_no_commits [@@deriving show, eq, sexp_of]
 
 (** Pure: given a commit-count result, decide whether to push. Zero commits
-    ahead of base means a push would publish an empty ref that GitHub rejects
-    on PR creation — skip. Unknown ([None]) defaults to [Proceed] so real
-    failures surface via the push step rather than being masked by a silent
-    skip. *)
+    ahead of base means a push would publish an empty ref that GitHub rejects on
+    PR creation — skip. Unknown ([None]) defaults to [Proceed] so real failures
+    surface via the push step rather than being masked by a silent skip. *)
 let push_gate_from_count = function
   | Some 0 -> Skip_no_commits
   | None | Some _ -> Proceed
 
-(** Pure: classify a [git push --porcelain --force-with-lease] invocation
-    from its exit code + stdout + stderr. Split out so the mapping from raw
-    git output to [push_result] can be property-tested independently of the
-    shell. *)
+(** Pure: classify a [git push --porcelain --force-with-lease] invocation from
+    its exit code + stdout + stderr. Split out so the mapping from raw git
+    output to [push_result] can be property-tested independently of the shell.
+*)
 let classify_push_result ~code ~stdout ~stderr =
   if code = 0 then
     match parse_push_porcelain stdout with
@@ -529,8 +527,7 @@ let classify_push_result ~code ~stdout ~stderr =
     | Some '!' -> Push_rejected
     | _ ->
         Push_error
-          (Printf.sprintf "push failed (exit %d): %s" code
-             (String.strip stderr))
+          (Printf.sprintf "push failed (exit %d): %s" code (String.strip stderr))
 
 (** Effectful: run [git rev-list --count base..HEAD] in the worktree. *)
 let commits_ahead_of_base ~process_mgr ~path ~base =
