@@ -1667,18 +1667,9 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       | None -> false
                     in
                     let failed_ci =
-                      let failure_conclusions =
-                        [
-                          "failure";
-                          "error";
-                          "action_required";
-                          "timed_out";
-                          "startup_failure";
-                        ]
-                      in
                       Base.List.filter poll_result.Poller.ci_checks
                         ~f:(fun (c : Ci_check.t) ->
-                          Base.List.mem failure_conclusions
+                          Base.List.mem Patch_decision.failure_conclusions
                             c.Ci_check.conclusion ~equal:Base.String.equal)
                     in
                     let worktree_candidate =
