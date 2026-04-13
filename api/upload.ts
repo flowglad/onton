@@ -22,7 +22,7 @@ function generateCaseId(): string {
   return `${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}`;
 }
 
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "POST") {
