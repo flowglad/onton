@@ -38,3 +38,9 @@ val no_unresolved_comments : t -> bool
 val has_conflict : t -> bool
 val ci_failed : t -> bool
 val is_fork : t -> bool
+
+val derive_check_status : Ci_check.t list -> check_status
+(** Aggregate [check_status] from individual CI check conclusions. Source of
+    truth for the orchestrator's notion of passing/failing/pending CI,
+    independent of GitHub's [statusCheckRollup.state] (which treats cancelled
+    runs as FAILURE). See implementation for exact semantics. *)

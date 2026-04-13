@@ -115,6 +115,17 @@ module Ci_check : sig
     started_at : string option;
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
+
+  val failure_conclusions : string list
+  (** Conclusions that represent an actionable CI failure the agent can fix.
+      Excludes ["cancelled"] — a cancelled check typically means the run was
+      superseded by a newer commit or manually cancelled, not a real failure. *)
+
+  val success_conclusions : string list
+  (** Conclusions that represent a terminal successful outcome. *)
+
+  val is_failure : t -> bool
+  val is_success : t -> bool
 end
 
 module Pr_url : sig

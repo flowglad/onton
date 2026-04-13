@@ -84,8 +84,30 @@ let gen_patch =
 let gen_ci_check =
   QCheck2.Gen.(
     let gen_name = string_size ~gen:(char_range 'a' 'z') (int_range 3 15) in
+    (* Cover the full GitHub CheckConclusionState / StatusState universe
+       the parser can produce, including ambiguous cases ("cancelled",
+       "stale", empty string, "pending") that are neither a terminal
+       failure nor a terminal success. Properties that conflate any subset
+       of these with "failure" will surface via QCheck rather than via
+       production incidents. *)
     let gen_conclusion =
-      oneof_list [ "success"; "failure"; "neutral"; "skipped" ]
+      oneof_list
+        [
+          "success";
+          "failure";
+          "error";
+          "neutral";
+          "skipped";
+          "cancelled";
+          "action_required";
+          "timed_out";
+          "startup_failure";
+          "stale";
+          "pending";
+          "in_progress";
+          "queued";
+          "";
+        ]
     in
     let gen_url = option (pure "https://ci.example.com/1") in
     let gen_desc = option (string_size ~gen:printable (int_range 5 40)) in

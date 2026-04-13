@@ -582,6 +582,14 @@ let apply_respond_outcome t patch_id kind outcome =
   | Respond_skip_empty -> complete t patch_id
   | Respond_ok ->
       let t = complete t patch_id in
+      (* Only count CI fix attempts that actually delivered a payload with
+         failure conclusions. Cancelled/pending/success-only runs yield
+         [Respond_skip_empty] above and do not pollute the cap. *)
+      let t =
+        if Operation_kind.equal kind Operation_kind.Ci then
+          increment_ci_failure_count t patch_id
+        else t
+      in
       let t =
         if Operation_kind.equal kind Operation_kind.Merge_conflict then
           let t = clear_has_conflict t patch_id in

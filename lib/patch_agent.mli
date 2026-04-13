@@ -192,7 +192,10 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
     passing checks, and branch protection. *)
 
 val increment_ci_failure_count : t -> t
-(** Increment the CI failure counter. *)
+(** Increment the CI failure counter. Called from
+    [Orchestrator.apply_respond_outcome] on [Respond_ok] for a Ci delivery, so
+    the counter only reflects CI fix attempts that actually delivered a payload
+    with failure conclusions. *)
 
 val reset_ci_failure_count : t -> t
 (** Reset [ci_failure_count] to 0. Called by the poller when CI checks pass

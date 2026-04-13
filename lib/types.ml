@@ -142,6 +142,22 @@ module Ci_check = struct
     started_at : string option;
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
+
+  (** Conclusions that represent an actionable CI failure the agent can fix.
+      Notably excludes ["cancelled"] — a cancelled check typically means the run
+      was superseded by a newer commit or manually cancelled, not that anything
+      actually failed. *)
+  let failure_conclusions =
+    [ "failure"; "error"; "action_required"; "timed_out"; "startup_failure" ]
+
+  (** Conclusions that represent a terminal successful outcome. *)
+  let success_conclusions = [ "success"; "skipped"; "neutral" ]
+
+  let is_failure (c : t) =
+    List.mem failure_conclusions c.conclusion ~equal:String.equal
+
+  let is_success (c : t) =
+    List.mem success_conclusions c.conclusion ~equal:String.equal
 end
 
 module Pr_url = struct

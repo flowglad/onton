@@ -370,9 +370,10 @@ let respond t k =
      unconditionally here because comment validity is resolved downstream
      by the agent session — a conservative simplification. *)
   let changed = if is_ci || is_review then true else t.changed in
-  let ci_failure_count =
-    if is_ci then t.ci_failure_count + 1 else t.ci_failure_count
-  in
+  (* NB: [ci_failure_count] is NOT bumped here. The bump happens in
+     [Orchestrator.apply_respond_outcome] on [Respond_ok] for Ci, so the
+     counter only reflects CI fix attempts that actually delivered a payload
+     (i.e. had at least one failure conclusion) and ran to completion. *)
   {
     t with
     has_session = true;
@@ -385,7 +386,6 @@ let respond t k =
     human_messages = (if is_human then [] else t.human_messages);
     inflight_human_messages =
       (if is_human then t.human_messages else t.inflight_human_messages);
-    ci_failure_count;
     notified_base_branch =
       (match t.notified_base_branch with None -> t.base_branch | some -> some);
     merge_ready = false;
