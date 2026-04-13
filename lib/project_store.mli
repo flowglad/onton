@@ -66,6 +66,12 @@ val stored_gameplan_path : string -> string
 (** Returns the path to whichever stored gameplan file exists ([gameplan.md]
     takes precedence; falls back to [gameplan.json]). *)
 
+val pr_body_artifact_path :
+  project_name:string -> patch_id:Types.Patch_id.t -> string
+(** Absolute path the agent writes the LLM-authored PR body to. Lives under the
+    project's data directory at [artifacts/<patch_id>/pr-body.md] — outside the
+    worktree so it can never be accidentally committed. *)
+
 val project_exists : string -> bool
 (** Whether a project data directory with config exists. *)
 

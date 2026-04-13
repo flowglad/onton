@@ -94,6 +94,7 @@ val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
 val set_pr_description_applied : t -> Patch_id.t -> bool -> t
 val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
+val set_pr_body_delivered : t -> Patch_id.t -> bool -> t
 val increment_start_attempts_without_pr : t -> Patch_id.t -> t
 val reset_intervention_state : t -> Patch_id.t -> t
 val set_branch_blocked : t -> Patch_id.t -> t

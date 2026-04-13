@@ -31,7 +31,7 @@ let disposition (a : Patch_agent.t) : disposition =
         | Operation_kind.Rebase -> Ready_rebase
         | Operation_kind.Human | Operation_kind.Merge_conflict
         | Operation_kind.Ci | Operation_kind.Review_comments
-        | Operation_kind.Implementation_notes ->
+        | Operation_kind.Pr_body | Operation_kind.Implementation_notes ->
             Ready_respond k)
 
 type ci_decision =
@@ -99,6 +99,7 @@ type delivery_payload =
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
+  | Pr_body_payload
   | Implementation_notes_payload
   | Merge_conflict_payload
 [@@deriving show, eq, sexp_of, compare]
@@ -128,8 +129,8 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
           not
             (List.exists source.ci_checks ~f:(fun (c : Ci_check.t) ->
                  List.mem failure_conclusions c.conclusion ~equal:String.equal))
-      | Operation_kind.Merge_conflict | Operation_kind.Implementation_notes
-      | Operation_kind.Rebase ->
+      | Operation_kind.Merge_conflict | Operation_kind.Pr_body
+      | Operation_kind.Implementation_notes | Operation_kind.Rebase ->
           false
     in
     if is_empty then Skip_empty
@@ -159,6 +160,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
             Ci_payload { failed_checks = failed }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }
+        | Operation_kind.Pr_body -> Pr_body_payload
         | Operation_kind.Implementation_notes -> Implementation_notes_payload
         | Operation_kind.Merge_conflict -> Merge_conflict_payload
         | Operation_kind.Rebase ->

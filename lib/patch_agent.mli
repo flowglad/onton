@@ -30,6 +30,7 @@ type t = private {
   merge_ready : bool;
   is_draft : bool;
   pr_description_applied : bool;
+  pr_body_delivered : bool;
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   conflict_noop_count : int;
@@ -170,6 +171,12 @@ val set_pr_description_applied : t -> bool -> t
 val set_implementation_notes_delivered : t -> bool -> t
 (** Record whether implementation notes were successfully delivered. *)
 
+val set_pr_body_delivered : t -> bool -> t
+(** Record whether the LLM-authored PR body has been written to the artifact and
+    PATCHed onto the PR. Set to [true] on Pr_body Respond_ok regardless of
+    whether the artifact existed (so we don't loop on missing artifacts —
+    documented fallback is to keep the gameplan-derived body). *)
+
 val increment_start_attempts_without_pr : t -> t
 (** Record a successful Start run that still failed to discover a PR. *)
 
@@ -272,6 +279,7 @@ val restore :
   merge_ready:bool ->
   is_draft:bool ->
   pr_description_applied:bool ->
+  pr_body_delivered:bool ->
   implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->

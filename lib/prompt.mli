@@ -17,6 +17,13 @@ val render_patch_prompt :
 val render_pr_description :
   project_name:string -> Patch.t -> Gameplan.t -> string
 
+val render_pr_body_prompt :
+  project_name:string ->
+  pr_number:Pr_number.t ->
+  pr_body:string ->
+  artifact_path:string ->
+  string
+
 val render_implementation_notes_prompt :
   project_name:string -> pr_number:Pr_number.t -> pr_body:string -> string
 

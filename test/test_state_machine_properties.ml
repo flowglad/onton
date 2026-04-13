@@ -205,6 +205,14 @@ let () =
                 let orch =
                   Orchestrator.set_pr_number orch pid (Types.Pr_number.of_int 1)
                 in
+                (* Mark the post-PR-creation phases done so the controller
+                   doesn't auto-enqueue Pr_body / Implementation_notes and
+                   shadow the [kind] under test (they have lower priority than
+                   each other but higher than the explicitly-enqueued kind). *)
+                let orch = Orchestrator.set_pr_body_delivered orch pid true in
+                let orch =
+                  Orchestrator.set_implementation_notes_delivered orch pid true
+                in
                 let orch = Orchestrator.complete orch pid in
                 let orch = Orchestrator.enqueue orch pid kind in
                 let _, _effects, actions =

@@ -53,6 +53,7 @@ module Operation_kind = struct
     | Merge_conflict
     | Ci
     | Review_comments
+    | Pr_body
     | Implementation_notes
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
@@ -62,6 +63,7 @@ module Operation_kind = struct
     | Merge_conflict -> "merge-conflict"
     | Ci -> "ci"
     | Review_comments -> "review-comments"
+    | Pr_body -> "pr-body"
     | Implementation_notes -> "implementation-notes"
 end
 

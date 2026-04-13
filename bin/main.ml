@@ -2611,6 +2611,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     ( Patch_decision.Human_payload _
                                     | Patch_decision.Ci_payload _
                                     | Patch_decision.Review_payload _
+                                    | Patch_decision.Pr_body_payload
                                     | Patch_decision
                                       .Implementation_notes_payload ) as payload;
                                   base_change;
@@ -2635,6 +2636,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                            (Base.List.length messages)
                                            "message")
                                   | Patch_decision.Ci_payload _
+                                  | Patch_decision.Pr_body_payload
                                   | Patch_decision.Implementation_notes_payload
                                   | Patch_decision.Merge_conflict_payload ->
                                       Printf.sprintf "Delivering %s"
@@ -2656,6 +2658,27 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   | Patch_decision.Human_payload { messages } ->
                                       Prompt.render_human_message_prompt
                                         ~project_name messages
+                                  | Patch_decision.Pr_body_payload ->
+                                      let patch =
+                                        Base.List.find_exn
+                                          gameplan.Gameplan.patches
+                                          ~f:(fun (p : Patch.t) ->
+                                            Patch_id.equal p.Patch.id patch_id)
+                                      in
+                                      let pr_body =
+                                        Prompt.render_pr_description
+                                          ~project_name patch gameplan
+                                      in
+                                      let artifact_path =
+                                        Project_store.pr_body_artifact_path
+                                          ~project_name ~patch_id
+                                      in
+                                      Project_store.ensure_dir
+                                        (Stdlib.Filename.dirname artifact_path);
+                                      Prompt.render_pr_body_prompt ~project_name
+                                        ~pr_number:
+                                          (Base.Option.value_exn pr_number)
+                                        ~pr_body ~artifact_path
                                   | Patch_decision.Implementation_notes_payload
                                     ->
                                       let patch =
@@ -2706,6 +2729,78 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         Orchestrator.set_notified_base_branch
                                           orch patch_id (Branch.of_string base))
                                 | _ -> ());
+                                (* Pr_body: read the artifact the agent wrote
+                                   and PATCH the PR body. Falls back silently
+                                   to keep the gameplan-derived body if the
+                                   artifact is missing or unreadable. The
+                                   pr_body_delivered flag flips to true via
+                                   apply_respond_outcome on Respond_ok
+                                   regardless of whether the PATCH happened —
+                                   that's the documented fallback. *)
+                                (match payload with
+                                | Patch_decision.Pr_body_payload
+                                  when match result with
+                                       | `Ok -> true
+                                       | _ -> false -> (
+                                    let artifact_path =
+                                      Project_store.pr_body_artifact_path
+                                        ~project_name ~patch_id
+                                    in
+                                    let body_opt =
+                                      try
+                                        if Stdlib.Sys.file_exists artifact_path
+                                        then (
+                                          let ic =
+                                            Stdlib.open_in artifact_path
+                                          in
+                                          let len =
+                                            Stdlib.in_channel_length ic
+                                          in
+                                          let s = Bytes.create len in
+                                          Stdlib.really_input ic s 0 len;
+                                          Stdlib.close_in ic;
+                                          Some (Bytes.to_string s))
+                                        else None
+                                      with _ -> None
+                                    in
+                                    match (body_opt, pr_number) with
+                                    | None, _ ->
+                                        log_event runtime ~patch_id
+                                          (Printf.sprintf
+                                             "pr-body: artifact missing at %s; \
+                                              keeping gameplan body"
+                                             artifact_path)
+                                    | Some body, _
+                                      when String.length (String.trim body) = 0
+                                      ->
+                                        log_event runtime ~patch_id
+                                          "pr-body: artifact empty; keeping \
+                                           gameplan body"
+                                    | Some _, None ->
+                                        log_event runtime ~patch_id
+                                          "pr-body: no PR number to update"
+                                    | Some body, Some pr -> (
+                                        match
+                                          Github.update_pr_body ~net github
+                                            ~pr_number:pr ~body
+                                        with
+                                        | Ok () ->
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "pr-body: PATCHed PR #%d"
+                                                 (Pr_number.to_int pr))
+                                        | Error e ->
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "pr-body: PATCH failed — %s"
+                                                 (Github.show_error e))))
+                                | Patch_decision.Pr_body_payload
+                                | Patch_decision.Human_payload _
+                                | Patch_decision.Ci_payload _
+                                | Patch_decision.Review_payload _
+                                | Patch_decision.Implementation_notes_payload
+                                | Patch_decision.Merge_conflict_payload ->
+                                    ());
                                 result)
                       in
                       let respond_outcome =

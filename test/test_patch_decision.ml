@@ -344,8 +344,8 @@ let () =
     | Deliver
         {
           payload =
-            ( Ci_payload _ | Review_payload _ | Implementation_notes_payload
-            | Merge_conflict_payload );
+            ( Ci_payload _ | Review_payload _ | Pr_body_payload
+            | Implementation_notes_payload | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -377,8 +377,8 @@ let () =
     | Deliver
         {
           payload =
-            ( Ci_payload _ | Review_payload _ | Implementation_notes_payload
-            | Merge_conflict_payload );
+            ( Ci_payload _ | Review_payload _ | Pr_body_payload
+            | Implementation_notes_payload | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -442,7 +442,7 @@ let () =
         | Deliver
             {
               payload =
-                ( Human_payload _ | Review_payload _
+                ( Human_payload _ | Review_payload _ | Pr_body_payload
                 | Implementation_notes_payload | Merge_conflict_payload );
               _;
             }

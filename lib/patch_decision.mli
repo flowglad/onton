@@ -80,6 +80,7 @@ type delivery_payload =
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
+  | Pr_body_payload
   | Implementation_notes_payload
   | Merge_conflict_payload
 [@@deriving show, eq, sexp_of, compare]

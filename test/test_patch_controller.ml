@@ -45,12 +45,15 @@ let make_orch patch agent =
 let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~is_draft ~pr_description_applied ~implementation_notes_delivered
     ~start_attempts_without_pr =
+  (* Default pr_body_delivered=true for existing tests so the notes-gate
+     does not block notes enqueuing. New Pr_body-specific tests construct
+     agents via Patch_agent.restore directly. *)
   Patch_agent.restore ~patch_id ~branch ~pr_number ~has_session:false
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-    ~merge_ready:false ~is_draft ~pr_description_applied
+    ~merge_ready:false ~is_draft ~pr_description_applied ~pr_body_delivered:true
     ~implementation_notes_delivered ~start_attempts_without_pr
     ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
     ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -534,10 +537,11 @@ let () =
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_description_applied:true
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~pr_body_delivered:true ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         let poll =
@@ -871,10 +875,11 @@ let () =
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
             ~is_draft:false ~pr_description_applied:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~pr_body_delivered:true ~implementation_notes_delivered:false
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch =
           Orchestrator.restore
@@ -908,10 +913,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_description_applied:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~pr_body_delivered:true ~implementation_notes_delivered:false
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch =
           Orchestrator.restore

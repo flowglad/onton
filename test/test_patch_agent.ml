@@ -677,10 +677,11 @@ let () =
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
               ~merge_ready:false ~is_draft:false ~pr_description_applied:false
-              ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
-              ~current_message_id:None ~generation:0 ~worktree_path:None
-              ~branch_blocked:false ~llm_session_id:None
+              ~pr_body_delivered:false ~implementation_notes_delivered:false
+              ~start_attempts_without_pr:0 ~conflict_noop_count:0
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~branch_blocked:false
+              ~llm_session_id:None
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -752,10 +753,11 @@ let () =
               ~ci_failure_count:0 ~session_fallback:Fresh_available
               ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
               ~merge_ready:false ~is_draft:false ~pr_description_applied:false
-              ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
-              ~current_message_id:None ~generation:0 ~worktree_path:None
-              ~branch_blocked:false ~llm_session_id:None
+              ~pr_body_delivered:false ~implementation_notes_delivered:false
+              ~start_attempts_without_pr:0 ~conflict_noop_count:0
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~branch_blocked:false
+              ~llm_session_id:None
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in

@@ -301,6 +301,41 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
 {{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
         vars)
 
+let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
+    ~(pr_body : string) ~(artifact_path : string) =
+  let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
+  let vars =
+    [
+      ("pr_number", pr_num_str);
+      ("pr_body", pr_body);
+      ("artifact_path", artifact_path);
+    ]
+  in
+  render_with_override ~project_name ~name:"pr_body" ~vars ~default:(fun () ->
+      substitute_variables
+        {|You have just finished implementing this patch. PR #{{pr_number}} was opened with a generic, gameplan-derived body. Your task is to write a better one — describing what you actually built — and the supervisor will upload it.
+
+The current PR body (gameplan-derived, will be replaced by what you write) is:
+
+---
+{{pr_body}}
+---
+
+**Write the full PR body to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. Do NOT run `gh`, `git`, or any forge command; the supervisor reads the file and PATCHes the PR.
+
+What to include in the body:
+
+- A short summary of what this patch does, in your own words.
+- Key implementation decisions and trade-offs you made.
+- Anything surprising or non-obvious about the approach.
+- Deviations from the original plan (if any).
+- Important context a reviewer should know.
+
+Write the **full body** (not a delta). It will replace the existing description verbatim. If you genuinely have nothing to add over the gameplan-derived body, write that body verbatim — the supervisor PATCH is idempotent.
+
+A separate, later phase will append `## Implementation Notes` to this body — do not include that section here.|}
+        vars)
+
 let render_implementation_notes_prompt ~(project_name : string)
     ~(pr_number : Pr_number.t) ~(pr_body : string) =
   let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in

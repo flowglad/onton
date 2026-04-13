@@ -491,6 +491,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Addressing_review -> Addressing_review
     | Resolving_conflict -> Resolving_conflict
     | Responding_to_human -> Responding_to_human
+    | Writing_pr_body -> Writing_pr_body
     | Adding_notes -> Adding_notes
     | Rebasing -> Rebasing
     | Starting -> Starting
@@ -512,6 +513,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Addressing_review;
       Resolving_conflict;
       Responding_to_human;
+      Writing_pr_body;
       Adding_notes;
       Rebasing;
       Starting;
