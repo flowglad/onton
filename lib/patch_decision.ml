@@ -87,3 +87,43 @@ let should_clear_conflict (a : Patch_agent.t) : bool =
     (List.mem a.queue Operation_kind.Merge_conflict ~equal:Operation_kind.equal
     || Option.equal Operation_kind.equal a.current_op
          (Some Operation_kind.Merge_conflict))
+
+(** CI conclusion strings that count as failures. *)
+let ci_failure_conclusions =
+  [ "failure"; "error"; "action_required"; "timed_out"; "startup_failure" ]
+
+let filter_failed_ci_checks (checks : Ci_check.t list) : Ci_check.t list =
+  List.filter checks ~f:(fun (c : Ci_check.t) ->
+      List.mem ci_failure_conclusions c.conclusion ~equal:String.equal)
+
+let has_failed_ci_checks (checks : Ci_check.t list) : bool =
+  List.exists checks ~f:(fun (c : Ci_check.t) ->
+      List.mem ci_failure_conclusions c.conclusion ~equal:String.equal)
+
+type ci_prompt_kind =
+  | Known_failures of Ci_check.t list
+      (** Non-empty list of checks with failure conclusions. *)
+  | Unknown_failure  (** CI failed but no check matches failure conclusions. *)
+[@@deriving show, eq, sexp_of, compare]
+
+let ci_prompt_kind (checks : Ci_check.t list) : ci_prompt_kind =
+  let failed = filter_failed_ci_checks checks in
+  if List.is_empty failed then Unknown_failure else Known_failures failed
+
+let is_stale (a : Patch_agent.t) : bool =
+  a.merged || Patch_agent.needs_intervention a || a.branch_blocked || not a.busy
+
+type delivery_decision =
+  | Deliver  (** There is content to deliver to the agent. *)
+  | Skip_empty  (** Nothing to deliver — skip this operation. *)
+[@@deriving show, eq, sexp_of, compare]
+
+let delivery_decision ~(kind : Operation_kind.t)
+    ~(inflight_human_messages : string list) ~(review_comment_count : int)
+    ~(ci_checks : Ci_check.t list) : delivery_decision =
+  match kind with
+  | Human ->
+      if List.is_empty inflight_human_messages then Skip_empty else Deliver
+  | Review_comments -> if review_comment_count = 0 then Skip_empty else Deliver
+  | Ci -> if has_failed_ci_checks ci_checks then Deliver else Skip_empty
+  | Merge_conflict | Implementation_notes | Rebase -> Deliver

@@ -1661,19 +1661,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       | None -> false
                     in
                     let failed_ci =
-                      let failure_conclusions =
-                        [
-                          "failure";
-                          "error";
-                          "action_required";
-                          "timed_out";
-                          "startup_failure";
-                        ]
-                      in
-                      Base.List.filter poll_result.Poller.ci_checks
-                        ~f:(fun (c : Ci_check.t) ->
-                          Base.List.mem failure_conclusions
-                            c.Ci_check.conclusion ~equal:Base.String.equal)
+                      Patch_decision.filter_failed_ci_checks
+                        poll_result.Poller.ci_checks
                     in
                     let worktree_candidate =
                       let agent =
@@ -1985,12 +1974,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       Orchestrator.agent
                                         snap.Runtime.orchestrator patch_id)
                                 in
-                                if
-                                  agent.Patch_agent.merged
-                                  || Patch_agent.needs_intervention agent
-                                  || agent.Patch_agent.branch_blocked
-                                  || not agent.Patch_agent.busy
-                                then (
+                                if Patch_decision.is_stale agent then (
                                   log_event runtime ~patch_id
                                     "runner: action stale after semaphore \
                                      wait, skipping";
@@ -2201,8 +2185,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->
-              (* Use pre-fire agent state for human_messages — fire/respond
-                 clears them as a postcondition. *)
+              (* Use pre-fire agent state for ci_checks — fire/respond
+                 may clear them.  Human inflight_human_messages must use
+                 the post-fire agent (re-read from runtime) because
+                 respond is what moves human_messages → inflight. *)
               let pre_fire_agent =
                 Base.List.Assoc.find pre_fire_agents patch_id
                   ~equal:Patch_id.equal
@@ -2243,12 +2229,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   Orchestrator.agent snap.Runtime.orchestrator
                                     patch_id)
                             in
-                            if
-                              agent.Patch_agent.merged
-                              || Patch_agent.needs_intervention agent
-                              || agent.Patch_agent.branch_blocked
-                              || not agent.Patch_agent.busy
-                            then (
+                            if Patch_decision.is_stale agent then (
                               log_event runtime ~patch_id
                                 "runner: action stale after semaphore wait, \
                                  skipping";
@@ -2280,40 +2261,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               let source_agent =
                                 Base.Option.value pre_fire_agent ~default:agent
                               in
-                              (* Skip empty deliveries — review/human with
-                                 nothing to deliver means they were already
-                                 handled or resolved externally. *)
-                              let is_empty_delivery =
-                                if is_review then
-                                  Base.List.is_empty prefetched_comments
-                                else if
-                                  Operation_kind.equal kind Operation_kind.Human
-                                then
-                                  Base.List.is_empty
-                                    source_agent
-                                      .Patch_agent.inflight_human_messages
-                                else if
-                                  Operation_kind.equal kind Operation_kind.Ci
-                                then
-                                  let failure_conclusions =
-                                    [
-                                      "failure";
-                                      "error";
-                                      "action_required";
-                                      "timed_out";
-                                      "startup_failure";
-                                    ]
-                                  in
-                                  not
-                                    (Base.List.exists
-                                       source_agent.Patch_agent.ci_checks
-                                       ~f:(fun (c : Ci_check.t) ->
-                                         Base.List.mem failure_conclusions
-                                           c.Ci_check.conclusion
-                                           ~equal:Base.String.equal))
-                                else false
+                              let delivery =
+                                Patch_decision.delivery_decision ~kind
+                                  ~inflight_human_messages:
+                                    agent.Patch_agent.inflight_human_messages
+                                  ~review_comment_count:
+                                    (Base.List.length prefetched_comments)
+                                  ~ci_checks:source_agent.Patch_agent.ci_checks
                               in
-                              if is_empty_delivery then (
+                              if
+                                Patch_decision.equal_delivery_decision delivery
+                                  Patch_decision.Skip_empty
+                              then (
                                 log_event runtime ~patch_id
                                   (Printf.sprintf
                                      "%s: nothing to deliver, skipping"
@@ -2538,7 +2497,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         "delivering %s (%d messages)"
                                         (Operation_kind.to_label kind)
                                         (Base.List.length
-                                           source_agent
+                                           agent
                                              .Patch_agent
                                               .inflight_human_messages)
                                   | Operation_kind.Ci | Operation_kind.Rebase
@@ -2548,30 +2507,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         (Operation_kind.to_label kind));
                                 let prompt =
                                   match kind with
-                                  | Operation_kind.Ci ->
-                                      let failure_conclusions =
-                                        [
-                                          "failure";
-                                          "error";
-                                          "action_required";
-                                          "timed_out";
-                                          "startup_failure";
-                                        ]
-                                      in
-                                      let failed =
-                                        Base.List.filter
+                                  | Operation_kind.Ci -> (
+                                      match
+                                        Patch_decision.ci_prompt_kind
                                           source_agent.Patch_agent.ci_checks
-                                          ~f:(fun (c : Ci_check.t) ->
-                                            Base.List.mem failure_conclusions
-                                              c.Ci_check.conclusion
-                                              ~equal:Base.String.equal)
-                                      in
-                                      if Base.List.is_empty failed then
-                                        Prompt.render_ci_failure_unknown_prompt
-                                          ~project_name ?pr_number ()
-                                      else
-                                        Prompt.render_ci_failure_prompt
-                                          ~project_name ?pr_number failed
+                                      with
+                                      | Patch_decision.Unknown_failure ->
+                                          Prompt
+                                          .render_ci_failure_unknown_prompt
+                                            ~project_name ?pr_number ()
+                                      | Patch_decision.Known_failures failed ->
+                                          Prompt.render_ci_failure_prompt
+                                            ~project_name ?pr_number failed)
                                   | Operation_kind.Review_comments ->
                                       Prompt.render_review_prompt ~project_name
                                         ?pr_number prefetched_comments
@@ -2583,7 +2530,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       Prompt.render_human_message_prompt
                                         ~project_name
                                         (Base.List.rev
-                                           source_agent
+                                           agent
                                              .Patch_agent
                                               .inflight_human_messages)
                                   | Operation_kind.Implementation_notes ->

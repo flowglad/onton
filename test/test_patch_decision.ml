@@ -21,6 +21,28 @@ let feedback_ops =
 
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
+let gen_conclusion =
+  QCheck2.Gen.oneof_list
+    (ci_failure_conclusions @ [ "success"; "neutral"; "cancelled"; "skipped" ])
+
+let gen_ci_check =
+  QCheck2.Gen.(
+    map
+      (fun (name, conclusion) ->
+        {
+          Ci_check.name;
+          conclusion;
+          details_url = None;
+          description = None;
+          started_at = None;
+        })
+      (pair
+         (string_size ~gen:(char_range 'a' 'z') (int_range 2 8))
+         gen_conclusion))
+
+let gen_ci_checks =
+  QCheck2.Gen.list_size (QCheck2.Gen.int_range 0 8) gen_ci_check
+
 (** Start + set PR so the agent is in has_pr=true, busy=false state. *)
 let with_pr pid br =
   let a = create ~branch:br pid |> fun a -> start a ~base_branch:br in
@@ -227,6 +249,236 @@ let () =
           let a = enqueue a Operation_kind.Human in
           let a = respond a Operation_kind.Human in
           should_clear_conflict a);
+      (* ---- delivery_decision: Human with messages -> Deliver ---- *)
+      Test.make ~name:"delivery_decision: Human with inflight -> Deliver"
+        Gen.(
+          list_size (int_range 0 5)
+            (string_size ~gen:(char_range 'a' 'z') (int_range 1 10)))
+        (fun msgs ->
+          let msgs = List.filter msgs ~f:(fun s -> not (String.is_empty s)) in
+          if List.is_empty msgs then true
+          else
+            equal_delivery_decision
+              (delivery_decision ~kind:Operation_kind.Human
+                 ~inflight_human_messages:msgs ~review_comment_count:0
+                 ~ci_checks:[])
+              Deliver);
+      (* ---- delivery_decision: Human with no messages -> Skip_empty ---- *)
+      Test.make
+        ~name:"delivery_decision: Human with empty inflight -> Skip_empty"
+        Gen.unit (fun () ->
+          equal_delivery_decision
+            (delivery_decision ~kind:Operation_kind.Human
+               ~inflight_human_messages:[] ~review_comment_count:0 ~ci_checks:[])
+            Skip_empty);
+      (* ---- delivery_decision: Review with comments -> Deliver ---- *)
+      Test.make ~name:"delivery_decision: Review with comments -> Deliver"
+        Gen.(int_range 1 100)
+        (fun n ->
+          equal_delivery_decision
+            (delivery_decision ~kind:Operation_kind.Review_comments
+               ~inflight_human_messages:[] ~review_comment_count:n ~ci_checks:[])
+            Deliver);
+      (* ---- delivery_decision: Review with 0 comments -> Skip_empty ---- *)
+      Test.make ~name:"delivery_decision: Review with 0 comments -> Skip_empty"
+        Gen.unit (fun () ->
+          equal_delivery_decision
+            (delivery_decision ~kind:Operation_kind.Review_comments
+               ~inflight_human_messages:[] ~review_comment_count:0 ~ci_checks:[])
+            Skip_empty);
+      (* ---- delivery_decision: Ci with failures -> Deliver ---- *)
+      Test.make ~name:"delivery_decision: Ci with failures -> Deliver"
+        Gen.(oneof_list ci_failure_conclusions)
+        (fun conclusion ->
+          let check =
+            {
+              Ci_check.name = "ci";
+              conclusion;
+              details_url = None;
+              description = None;
+              started_at = None;
+            }
+          in
+          equal_delivery_decision
+            (delivery_decision ~kind:Operation_kind.Ci
+               ~inflight_human_messages:[] ~review_comment_count:0
+               ~ci_checks:[ check ])
+            Deliver);
+      (* ---- delivery_decision: Ci with only success -> Skip_empty ---- *)
+      Test.make ~name:"delivery_decision: Ci with success only -> Skip_empty"
+        Gen.unit (fun () ->
+          let check =
+            {
+              Ci_check.name = "ci";
+              conclusion = "success";
+              details_url = None;
+              description = None;
+              started_at = None;
+            }
+          in
+          equal_delivery_decision
+            (delivery_decision ~kind:Operation_kind.Ci
+               ~inflight_human_messages:[] ~review_comment_count:0
+               ~ci_checks:[ check ])
+            Skip_empty);
+      (* ---- delivery_decision: Merge_conflict always Deliver ---- *)
+      Test.make ~name:"delivery_decision: Merge_conflict -> Deliver" Gen.unit
+        (fun () ->
+          equal_delivery_decision
+            (delivery_decision ~kind:Operation_kind.Merge_conflict
+               ~inflight_human_messages:[] ~review_comment_count:0 ~ci_checks:[])
+            Deliver);
+      (* ---- delivery_decision agrees with respond postcondition ---- *)
+      (* This is the property that would have caught the original bug:
+         after respond(Human), the post-fire agent's inflight_human_messages
+         is non-empty iff there were human_messages before respond. *)
+      Test.make
+        ~name:
+          "delivery_decision: after respond(Human), Deliver iff messages \
+           existed"
+        Gen.(
+          triple gen_pid gen_branch
+            (list_size (int_range 0 5)
+               (string_size ~gen:(char_range 'a' 'z') (int_range 1 10))))
+        (fun (pid, br, msgs) ->
+          try
+            let msgs = List.filter msgs ~f:(fun s -> not (String.is_empty s)) in
+            let a = with_pr pid br in
+            let a = List.fold msgs ~init:a ~f:add_human_message in
+            let a = enqueue a Operation_kind.Human in
+            let post_fire = respond a Operation_kind.Human in
+            let decision =
+              delivery_decision ~kind:Operation_kind.Human
+                ~inflight_human_messages:post_fire.inflight_human_messages
+                ~review_comment_count:0 ~ci_checks:[]
+            in
+            if List.is_empty msgs then
+              equal_delivery_decision decision Skip_empty
+            else equal_delivery_decision decision Deliver
+          with _ -> false);
+      (* ==== is_stale ==== *)
+      (* ---- merged implies stale (even when busy) ---- *)
+      Test.make ~name:"is_stale: merged -> true"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = with_pr pid br in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            (* busy=true now *)
+            let a = mark_merged a in
+            is_stale a
+          with _ -> false);
+      (* ---- needs_intervention implies stale ---- *)
+      Test.make ~name:"is_stale: needs_intervention -> true"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = with_pr pid br in
+            let a =
+              increment_ci_failure_count a |> increment_ci_failure_count
+            in
+            let a = enqueue a Operation_kind.Ci in
+            let a = respond a Operation_kind.Ci in
+            (* ci_failure_count is now 3 after respond Ci increments;
+               agent is busy from respond — needs_intervention still true *)
+            is_stale a
+          with _ -> false);
+      (* ---- branch_blocked implies stale ---- *)
+      Test.make ~name:"is_stale: branch_blocked -> true"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = with_pr pid br in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            let a = set_branch_blocked a in
+            is_stale a
+          with _ -> false);
+      (* ---- not busy implies stale ---- *)
+      Test.make ~name:"is_stale: not busy -> true"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let a = with_pr pid br in
+          (* a is idle (busy=false) after with_pr *)
+          is_stale a);
+      (* ---- busy + not merged + not intervention + not blocked -> not stale ---- *)
+      Test.make ~name:"is_stale: healthy busy agent -> false"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = with_pr pid br in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            (* busy=true, not merged, ci_failure_count=0, branch_blocked=false *)
+            not (is_stale a)
+          with _ -> false);
+      (* ---- is_stale cross-check with disposition ---- *)
+      Test.make ~name:"is_stale: merged disposition Skip -> stale when busy"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          try
+            let a = with_pr pid br in
+            let a = enqueue a Operation_kind.Human in
+            let a = respond a Operation_kind.Human in
+            let a = mark_merged a in
+            equal_disposition (disposition a) Skip && is_stale a
+          with _ -> false);
+      (* ==== filter_failed_ci_checks ==== *)
+      (* ---- output is subset of input ---- *)
+      Test.make ~name:"filter_failed_ci_checks: output subset of input"
+        gen_ci_checks (fun checks ->
+          let filtered = filter_failed_ci_checks checks in
+          List.for_all filtered ~f:(fun c ->
+              List.exists checks ~f:(Ci_check.equal c)));
+      (* ---- all results have failure conclusions ---- *)
+      Test.make ~name:"filter_failed_ci_checks: all results are failures"
+        gen_ci_checks (fun checks ->
+          let filtered = filter_failed_ci_checks checks in
+          List.for_all filtered ~f:(fun (c : Ci_check.t) ->
+              List.mem ci_failure_conclusions c.Ci_check.conclusion
+                ~equal:String.equal));
+      (* ---- no failures lost ---- *)
+      Test.make ~name:"filter_failed_ci_checks: no failures lost" gen_ci_checks
+        (fun checks ->
+          let filtered = filter_failed_ci_checks checks in
+          List.for_all checks ~f:(fun (c : Ci_check.t) ->
+              if
+                List.mem ci_failure_conclusions c.Ci_check.conclusion
+                  ~equal:String.equal
+              then List.exists filtered ~f:(Ci_check.equal c)
+              else true));
+      (* ---- idempotent ---- *)
+      Test.make ~name:"filter_failed_ci_checks: idempotent" gen_ci_checks
+        (fun checks ->
+          let once = filter_failed_ci_checks checks in
+          let twice = filter_failed_ci_checks once in
+          List.equal Ci_check.equal once twice);
+      (* ==== ci_prompt_kind ==== *)
+      (* ---- Known_failures list is non-empty ---- *)
+      Test.make ~name:"ci_prompt_kind: Known_failures is non-empty"
+        gen_ci_checks (fun checks ->
+          match ci_prompt_kind checks with
+          | Known_failures fs -> not (List.is_empty fs)
+          | Unknown_failure -> true);
+      (* ---- Unknown_failure means no failures ---- *)
+      Test.make ~name:"ci_prompt_kind: Unknown_failure -> no failed checks"
+        gen_ci_checks (fun checks ->
+          match ci_prompt_kind checks with
+          | Unknown_failure -> not (has_failed_ci_checks checks)
+          | Known_failures _ -> true);
+      (* ---- Known_failures agrees with filter ---- *)
+      Test.make ~name:"ci_prompt_kind: Known_failures = filter_failed_ci_checks"
+        gen_ci_checks (fun checks ->
+          match ci_prompt_kind checks with
+          | Known_failures fs ->
+              let expected = filter_failed_ci_checks checks in
+              List.equal
+                (fun (a : Ci_check.t) (b : Ci_check.t) ->
+                  String.equal a.Ci_check.name b.Ci_check.name
+                  && String.equal a.Ci_check.conclusion b.Ci_check.conclusion)
+                fs expected
+          | Unknown_failure -> true);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t)
