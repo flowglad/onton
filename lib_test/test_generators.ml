@@ -282,7 +282,9 @@ let gen_github_error =
     oneof
       [
         map2
-          (fun code msg -> Onton.Github.Http_error (code, msg))
+          (fun status body ->
+            Onton.Github.Http_error
+              { meth = "GET"; path = "/test"; status; body })
           (int_range 400 599)
           (string_size ~gen:printable (int_range 5 30));
         map

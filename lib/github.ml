@@ -1,11 +1,46 @@
 open Base
 
 type error =
-  | Http_error of int * string
+  | Http_error of { meth : string; path : string; status : int; body : string }
   | Json_parse_error of string
   | Graphql_error of string list
-  | Transport_error of string
-[@@deriving show, eq]
+  | Transport_error of { meth : string; path : string; msg : string }
+
+(* Extract GitHub's "message" field from a JSON error body, falling back to the
+   raw body (truncated) when parsing fails. GitHub 4xx responses always include
+   this field with a human-readable explanation. *)
+let extract_github_message body =
+  let truncate s =
+    if String.length s <= 200 then s else String.sub s ~pos:0 ~len:200 ^ "…"
+  in
+  try
+    let json = Yojson.Safe.from_string body in
+    match Yojson.Safe.Util.(json |> member "message" |> to_string_option) with
+    | Some msg -> msg
+    | None -> truncate body
+  with _ -> truncate body
+
+(* Hint added to permission-related HTTP errors so users know which PAT scopes
+   to check. Fine-grained PATs need distinct permissions per endpoint category,
+   which is the root cause of the opaque-error problem in issue #166. *)
+let permission_hint = function
+  | 401 -> " — check that your GITHUB_TOKEN is set and not expired"
+  | 403 ->
+      " — check your GH PAT scopes (classic: `repo`; fine-grained: Pull \
+       requests read/write, Contents read, Metadata read)"
+  | 404 -> " — resource not found, or your PAT lacks access to this repo"
+  | _ -> ""
+
+let show_error = function
+  | Http_error { meth; path; status; body } ->
+      Printf.sprintf "GitHub API %s %s → HTTP %d: %s%s" meth path status
+        (extract_github_message body)
+        (permission_hint status)
+  | Transport_error { meth; path; msg } ->
+      Printf.sprintf "GitHub API %s %s → transport error: %s" meth path msg
+  | Json_parse_error msg -> Printf.sprintf "GitHub API JSON parse error: %s" msg
+  | Graphql_error msgs ->
+      Printf.sprintf "GitHub GraphQL error: %s" (String.concat ~sep:"; " msgs)
 
 type t = { token : string; owner : string; repo : string }
 
@@ -284,11 +319,18 @@ let max_response_size = 1_000_000
 
 (** Internal: execute an HTTP request against api.github.com. Returns the raw
     response body on 2xx, [Http_error] otherwise. *)
+let meth_to_string = function
+  | `GET -> "GET"
+  | `POST -> "POST"
+  | `PATCH -> "PATCH"
+
 let request ~net t ~meth ~path ?(query = []) ?body () =
+  let meth_s = meth_to_string meth in
   try
     Mirage_crypto_rng_unix.use_default ();
     Result.bind
-      (Result.map_error (https_config ()) ~f:(fun msg -> Transport_error msg))
+      (Result.map_error (https_config ()) ~f:(fun msg ->
+           Transport_error { meth = meth_s; path; msg }))
       ~f:(fun tls_config ->
         let client =
           Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
@@ -328,8 +370,9 @@ let request ~net t ~meth ~path ?(query = []) ?body () =
             of_flow ~max_size:max_response_size resp_body |> take_all)
         in
         if status >= 200 && status < 300 then Ok resp_str
-        else Error (Http_error (status, resp_str)))
-  with exn -> Error (Transport_error (Exn.to_string exn))
+        else Error (Http_error { meth = meth_s; path; status; body = resp_str }))
+  with exn ->
+    Error (Transport_error { meth = meth_s; path; msg = Exn.to_string exn })
 
 let pr_state ~net t pr =
   let body = build_request_body t pr in
@@ -517,6 +560,35 @@ let%test "parse_rest_pr_list mixed" =
 
 let%test "parse_rest_pr_list invalid json" =
   match parse_rest_pr_list "not json" with Error _ -> true | Ok _ -> false
+
+let%expect_test "show_error includes endpoint + permission hint on 403" =
+  let err =
+    Http_error
+      {
+        meth = "PATCH";
+        path = "/repos/foo/bar/pulls/42";
+        status = 403;
+        body = {|{"message":"Resource not accessible by integration"}|};
+      }
+  in
+  Stdlib.print_endline (show_error err);
+  [%expect
+    {| GitHub API PATCH /repos/foo/bar/pulls/42 → HTTP 403: Resource not accessible by integration — check your GH PAT scopes (classic: `repo`; fine-grained: Pull requests read/write, Contents read, Metadata read) |}]
+
+let%expect_test "show_error falls back to raw body when not JSON" =
+  let err =
+    Http_error { meth = "GET"; path = "/graphql"; status = 500; body = "oops" }
+  in
+  Stdlib.print_endline (show_error err);
+  [%expect {| GitHub API GET /graphql → HTTP 500: oops |}]
+
+let%expect_test "show_error transport error includes endpoint" =
+  let err =
+    Transport_error
+      { meth = "POST"; path = "/graphql"; msg = "connection refused" }
+  in
+  Stdlib.print_endline (show_error err);
+  [%expect {| GitHub API POST /graphql → transport error: connection refused |}]
 
 (* Static assertion: Github satisfies Forge.S *)
 let (_ : (module Forge.S)) =

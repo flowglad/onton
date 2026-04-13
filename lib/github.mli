@@ -3,11 +3,16 @@
     Queries the GitHub GraphQL API for PR/world state. Satisfies {!Forge.S}. *)
 
 type error =
-  | Http_error of int * string
+  | Http_error of { meth : string; path : string; status : int; body : string }
   | Json_parse_error of string
   | Graphql_error of string list
-  | Transport_error of string
-[@@deriving show, eq]
+  | Transport_error of { meth : string; path : string; msg : string }
+
+val show_error : error -> string
+(** Render an error as a human-readable string. Includes the HTTP method and
+    path for [Http_error]/[Transport_error], extracts GitHub's "message" field
+    from the response body, and appends a hint about PAT scopes for 401/403/404
+    so users can fix permission problems without guesswork. *)
 
 type t
 
