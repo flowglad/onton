@@ -369,7 +369,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `pr_state` | Pull request state tracking and derived status |
 | `run_classification` | Classify agent run outcomes (success, failure, needs intervention) |
 | `forge` | Git forge (GitHub) abstraction |
-| `invariants` | Runtime spec invariant checker (gated via `ONTON_CHECK_INVARIANTS`) |
+| `invariants` | Pure spec invariant checker over `State.t` — used by property tests and ad-hoc snapshot inspection (no production call site) |
 | `persistence` | JSON snapshot save/load for the current durable schema, including transcripts and the message ledger |
 | `project_store` | Project config and gameplan storage at `~/.local/share/onton/` |
 | `user_config` | Per-repo user configuration and hook execution from `~/.config/onton/<owner>/<repo>/` |

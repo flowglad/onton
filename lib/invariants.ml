@@ -68,22 +68,3 @@ let all_checks =
 
 let check_invariants (state : State.t) : violation list =
   List.concat_map all_checks ~f:(fun check -> check state)
-
-let check_invariants_exn (state : State.t) : unit =
-  match check_invariants state with
-  | [] -> ()
-  | violations ->
-      let msg =
-        List.map violations ~f:(fun v ->
-            Printf.sprintf "[%s] %s" v.invariant v.details)
-        |> String.concat ~sep:"; "
-      in
-      failwith (Printf.sprintf "Invariant violations: %s" msg)
-
-let should_check_at_runtime () =
-  match Stdlib.Sys.getenv_opt "ONTON_CHECK_INVARIANTS" with
-  | Some "1" | Some "true" -> true
-  | _ -> false
-
-let maybe_check_invariants_exn (state : State.t) : unit =
-  if should_check_at_runtime () then check_invariants_exn state
