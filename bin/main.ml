@@ -2175,10 +2175,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                             (fun orch ->
                                               Orchestrator.set_pr_number orch
                                                 patch_id pr_number)
-                                      | Ok [] | Error _ ->
+                                      | Ok [] ->
                                           log_event runtime ~patch_id
                                             "PR creation failed (422) and \
-                                             discovery found nothing";
+                                             discovery found no open PRs";
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .on_pr_discovery_failure orch
+                                                patch_id)
+                                      | Error disc_err ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "PR creation failed (422) and \
+                                                discovery also failed — %s"
+                                               (Github.show_error disc_err));
                                           Runtime.update_orchestrator runtime
                                             (fun orch ->
                                               Orchestrator
