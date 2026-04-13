@@ -800,6 +800,34 @@ let check_notified_base_branch_coherence (a : Patch_agent.t) =
     between session_fallback and llm_session_id. *)
 let check_llm_session_id_coherence (_a : Patch_agent.t) = ()
 
+(** I-14: human messages are never silently lost. The total count of messages
+    across human_messages + inflight_human_messages must be monotonically
+    non-decreasing between steps, except when a successful completion (busy→idle
+    with empty inflight) consumes them. In other words: messages can only
+    disappear via complete on a non-failed session. *)
+let check_human_messages_preserved ~(prev : Patch_agent.t)
+    ~(curr : Patch_agent.t) =
+  let prev_total =
+    List.length prev.human_messages + List.length prev.inflight_human_messages
+  in
+  let curr_total =
+    List.length curr.human_messages + List.length curr.inflight_human_messages
+  in
+  (* Messages can be added (send_human_message) or consumed (successful
+     complete). They must NEVER decrease without a successful delivery —
+     i.e. if the agent went busy→idle, inflight is consumed. Otherwise,
+     total must be >= prev_total. *)
+  let was_delivered =
+    prev.busy && (not curr.busy) && List.is_empty curr.inflight_human_messages
+  in
+  if (not was_delivered) && curr_total < prev_total then
+    failwith
+      (Printf.sprintf
+         "I-14 human_messages_preserved violated for %s: total went from %d to \
+          %d without successful delivery"
+         (Patch_id.to_string curr.patch_id)
+         prev_total curr_total)
+
 (* ========== Combined check ========== *)
 
 let merged_set_of orch =
@@ -807,19 +835,24 @@ let merged_set_of orch =
       if a.merged then Some a.patch_id else None)
   |> Set.of_list (module Patch_id)
 
-let check_all_invariants orch patches ~prev_merged ~curr_merged ~removed_pids =
+let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
+    ~removed_pids =
   let agents = Orchestrator.all_agents orch in
   let actions =
     Patch_controller.plan_actions orch ~patches:(make_gameplan patches).patches
   in
   (* Per-agent invariants *)
-  List.iter agents ~f:(fun a ->
+  List.iter agents ~f:(fun (a : Patch_agent.t) ->
       check_busy_implies_has_session a;
       check_ci_failure_count_non_negative a;
       check_queue_no_duplicates a;
       check_conflict_not_cleared_while_in_flight a;
       check_notified_base_branch_coherence a;
-      check_llm_session_id_coherence a);
+      check_llm_session_id_coherence a;
+      (* I-14: human messages preserved — skip for removed/re-added patches *)
+      match Map.find prev_agents a.Patch_agent.patch_id with
+      | Some prev -> check_human_messages_preserved ~prev ~curr:a
+      | None -> ());
   (* Monotonicity *)
   check_merged_monotonicity ~prev_merged ~curr_merged ~removed_pids;
   (* Per-action invariants *)
@@ -843,14 +876,16 @@ let removed_pids_of_cmd cmd prev_removed =
       prev_removed
 
 let run_sequence ?(debug = false) orch patches cmds =
-  let final, _final_merged, _final_merged_logged, _final_removed =
+  let final, _final_merged, _final_merged_logged, _final_removed, _final_agents
+      =
     List.fold cmds
       ~init:
         ( orch,
           merged_set_of orch,
           Set.empty (module Patch_id),
-          Set.empty (module Patch_id) )
-      ~f:(fun (o, prev_merged, merged_logged, removed_pids) cmd ->
+          Set.empty (module Patch_id),
+          Orchestrator.agents_map orch )
+      ~f:(fun (o, prev_merged, merged_logged, removed_pids, prev_agents) cmd ->
         if debug then Stdlib.Printf.eprintf "  CMD: %s\n%!" (show_command cmd);
         let o, log_info = apply_command_with_logs o patches cmd in
         let removed_pids = removed_pids_of_cmd cmd removed_pids in
@@ -877,13 +912,15 @@ let run_sequence ?(debug = false) orch patches cmds =
                 (String.concat ~sep:","
                    (List.map a.queue ~f:Operation_kind.to_label))
                 (Patch_agent.needs_intervention a));
-        check_all_invariants o patches ~prev_merged ~curr_merged ~removed_pids;
+        check_all_invariants o patches ~prev_agents ~prev_merged ~curr_merged
+          ~removed_pids;
         let merged_logged =
           match log_info with
           | Some info -> check_log_invariants info ~merged_logged
           | None -> merged_logged
         in
-        (o, curr_merged, merged_logged, removed_pids))
+        let curr_agents = Orchestrator.agents_map o in
+        (o, curr_merged, merged_logged, removed_pids, curr_agents))
   in
   final
 
@@ -897,10 +934,11 @@ let drain_and_check orch patches =
   in
   let no_removed = Set.empty (module Patch_id) in
   List.fold busy_pids ~init:orch ~f:(fun o pid ->
+      let prev_agents = Orchestrator.agents_map o in
       let prev_merged = merged_set_of o in
       let o = Orchestrator.complete o pid in
       let curr_merged = merged_set_of o in
-      check_all_invariants o patches ~prev_merged ~curr_merged
+      check_all_invariants o patches ~prev_agents ~prev_merged ~curr_merged
         ~removed_pids:no_removed;
       o)
 
@@ -1355,3 +1393,49 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi11;
   Stdlib.print_endline "PI-11 passed"
+
+(** PI-12: Human message liveness — send_human_message on an idle patch with a
+    PR always produces a Respond(Human) action on the next tick, and after
+    firing, the message is in inflight_human_messages. This is the end-to-end
+    invariant that the bug (reading inflight instead of inbox on the pre-fire
+    snapshot) violated. *)
+let () =
+  let prop_pi12 =
+    QCheck2.Test.make
+      ~name:
+        "PI-12: human message on idle patch produces Respond(Human) with \
+         inflight messages"
+      ~count:500
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 100))
+      (fun msg ->
+        let orch, pid, patches = mk_bootstrapped () in
+        let gameplan = make_gameplan patches in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        (* Tick fires the action *)
+        let orch, _effects, actions =
+          Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+        in
+        (* Must have produced Respond(_, Human) *)
+        let has_human_respond =
+          List.exists actions ~f:(fun action ->
+              match action with
+              | Orchestrator.Respond (p, k) ->
+                  Patch_id.equal p pid
+                  && Operation_kind.equal k Operation_kind.Human
+              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
+        in
+        if not has_human_respond then
+          failwith "no Respond(Human) action produced after send_human_message";
+        let agent = Orchestrator.agent orch pid in
+        (* Agent must be busy with inflight messages *)
+        if not agent.Patch_agent.busy then failwith "agent not busy after tick";
+        if List.is_empty agent.Patch_agent.inflight_human_messages then
+          failwith "inflight_human_messages empty after firing Human action";
+        if not (List.is_empty agent.Patch_agent.human_messages) then
+          failwith "human_messages not empty after firing Human action";
+        (* The message content must be preserved *)
+        List.mem agent.Patch_agent.inflight_human_messages msg
+          ~equal:String.equal)
+  in
+  QCheck2.Test.check_exn prop_pi12;
+  Stdlib.print_endline "PI-12 passed"

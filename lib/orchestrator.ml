@@ -571,13 +571,15 @@ type respond_outcome =
   | Respond_failed
   | Respond_retry_push
   | Respond_stale
+  | Respond_skip_empty
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
   match outcome with
   | Respond_stale -> t
-  | Respond_failed -> complete t patch_id
+  | Respond_failed -> complete_failed t patch_id
   | Respond_retry_push -> complete t patch_id
+  | Respond_skip_empty -> complete t patch_id
   | Respond_ok ->
       let t = complete t patch_id in
       let t =

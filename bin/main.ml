@@ -158,6 +158,16 @@ module Pr_registry = struct
         Hashtbl.remove t.table patch_id)
 end
 
+(** Discover PR number for a branch via GitHub REST API. Returns [Ok] with the
+    PR number or [Error] with a diagnostic message. *)
+let discover_pr_number ~net ~github ~branch ~base_branch =
+  match
+    Github.list_prs ~net github ~branch ~base:(Some base_branch) ~state:`Open ()
+  with
+  | Ok ((pr_number, _, _) :: _) -> Ok pr_number
+  | Ok [] -> Error "no PRs found for branch"
+  | Error e -> Error (Github.show_error e)
+
 (** Execute declarative GitHub effects and record successful observations back
     into durable state. *)
 let execute_github_effects ~runtime ~net ~github effects =
@@ -1560,28 +1570,6 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
-    (* Phase 0: Tick-based PR discovery for patches that have run but lack
-       a PR. Uses branch-only search (no base filter) so it finds PRs
-       regardless of which base they target. *)
-    let discovery_candidates =
-      Runtime.read runtime (fun snap ->
-          Patch_controller.discovery_intents snap.Runtime.orchestrator)
-    in
-    Base.List.iter discovery_candidates ~f:(fun (patch_id, branch) ->
-        match Github.list_prs ~net github ~branch ~state:`Open () with
-        | Ok ((pr_number, base_branch, _merged) :: _) ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "tick discovery: PR #%d"
-                 (Pr_number.to_int pr_number));
-            Pr_registry.register pr_registry ~patch_id ~pr_number;
-            Runtime.update_orchestrator runtime (fun orch ->
-                let orch = Orchestrator.set_pr_number orch patch_id pr_number in
-                Orchestrator.set_base_branch orch patch_id base_branch)
-        | Ok [] -> ()
-        | Error err ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "tick discovery error: %s" (Github.show_error err)));
-    (* Phase 1: Poll known PRs for state changes. *)
     let intents =
       Runtime.read runtime (fun snap ->
           let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
@@ -1679,8 +1667,19 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                       | None -> false
                     in
                     let failed_ci =
-                      Patch_decision.filter_failed_ci_checks
-                        poll_result.Poller.ci_checks
+                      let failure_conclusions =
+                        [
+                          "failure";
+                          "error";
+                          "action_required";
+                          "timed_out";
+                          "startup_failure";
+                        ]
+                      in
+                      Base.List.filter poll_result.Poller.ci_checks
+                        ~f:(fun (c : Ci_check.t) ->
+                          Base.List.mem failure_conclusions
+                            c.Ci_check.conclusion ~equal:Base.String.equal)
                     in
                     let worktree_candidate =
                       let agent =
@@ -1830,8 +1829,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
-    ~event_log ?status_msg () =
+let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
+    ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
@@ -1992,7 +1991,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                       Orchestrator.agent
                                         snap.Runtime.orchestrator patch_id)
                                 in
-                                if Patch_decision.is_stale agent then (
+                                if
+                                  agent.Patch_agent.merged
+                                  || Patch_agent.needs_intervention agent
+                                  || agent.Patch_agent.branch_blocked
+                                  || not agent.Patch_agent.busy
+                                then (
                                   log_event runtime ~patch_id
                                     "runner: action stale after semaphore \
                                      wait, skipping";
@@ -2061,13 +2065,35 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                        (Patch_id.to_string patch_id))
                                   ()
                           | Orchestrator.Start_ok ->
-                              (* PR discovery is tick-based in the poller.
-                                 Bump the counter so needs_intervention
-                                 triggers after 2 Starts without a PR;
-                                 set_pr_number resets it when found. *)
-                              Runtime.update_orchestrator runtime (fun orch ->
-                                  Orchestrator.on_pr_discovery_failure orch
-                                    patch_id);
+                              (* Always confirm via REST API *)
+                              let rec discover remaining =
+                                match
+                                  discover_pr_number ~net ~github
+                                    ~branch:patch.Patch.branch ~base_branch
+                                with
+                                | Ok pr_number ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "PR #%d created"
+                                         (Pr_number.to_int pr_number));
+                                    Pr_registry.register pr_registry ~patch_id
+                                      ~pr_number;
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.set_pr_number orch patch_id
+                                          pr_number)
+                                | Error _ when remaining > 0 ->
+                                    Eio.Time.sleep clock 2.0;
+                                    discover (remaining - 1)
+                                | Error msg ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "PR discovery failed: %s"
+                                         msg);
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.on_pr_discovery_failure
+                                          orch patch_id)
+                              in
+                              discover 2;
                               Runtime.update_orchestrator runtime (fun orch ->
                                   Orchestrator.complete orch patch_id)
                           | Orchestrator.Start_stale -> ())))
@@ -2181,10 +2207,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                       Event_log.log_rebase event_log ~patch_id
                         ~result:rebase_result ~agent_before ~agent_after))
           | Orchestrator.Respond (patch_id, kind) ->
-              (* Use pre-fire agent state for ci_checks — fire/respond
-                 may clear them.  Human inflight_human_messages must use
-                 the post-fire agent (re-read from runtime) because
-                 respond is what moves human_messages → inflight. *)
+              (* Use pre-fire agent state for human_messages — fire/respond
+                 clears them as a postcondition. *)
               let pre_fire_agent =
                 Base.List.Assoc.find pre_fire_agents patch_id
                   ~equal:Patch_id.equal
@@ -2225,61 +2249,52 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                   Orchestrator.agent snap.Runtime.orchestrator
                                     patch_id)
                             in
-                            if Patch_decision.is_stale agent then (
-                              log_event runtime ~patch_id
-                                "runner: action stale after semaphore wait, \
-                                 skipping";
-                              `Stale)
-                            else
-                              let base =
-                                Base.Option.value_map
-                                  agent.Patch_agent.base_branch
-                                  ~default:(Branch.to_string main)
-                                  ~f:Branch.to_string
-                              in
-                              let base_changed_prefix =
-                                if Patch_agent.base_branch_changed agent then (
-                                  let old_base =
-                                    Base.Option.value_map
-                                      agent.Patch_agent.notified_base_branch
-                                      ~default:(Branch.to_string main)
-                                      ~f:Branch.to_string
-                                  in
+                            let delivery =
+                              Patch_decision.respond_delivery ~agent ~kind
+                                ~pre_fire_agent ~prefetched_comments
+                                ~main_branch:(Branch.to_string main)
+                            in
+                            let render_base_changed_prefix base_change =
+                              match base_change with
+                              | Some bc ->
                                   log_event runtime ~patch_id
                                     (Printf.sprintf
                                        "runner: base branch changed from %s to \
                                         %s, will notify agent"
-                                       old_base base);
-                                  Prompt.render_base_branch_changed ~old_base
-                                    ~new_base:base)
-                                else ""
-                              in
-                              let source_agent =
-                                Base.Option.value pre_fire_agent ~default:agent
-                              in
-                              let delivery =
-                                Patch_decision.delivery_decision ~kind
-                                  ~inflight_human_messages:
-                                    agent.Patch_agent.inflight_human_messages
-                                  ~review_comment_count:
-                                    (Base.List.length prefetched_comments)
-                                  ~ci_checks:source_agent.Patch_agent.ci_checks
-                              in
-                              if
-                                Patch_decision.equal_delivery_decision delivery
-                                  Patch_decision.Skip_empty
-                              then (
+                                       bc.Patch_decision.old_base
+                                       bc.Patch_decision.new_base);
+                                  Prompt.render_base_branch_changed
+                                    ~old_base:bc.Patch_decision.old_base
+                                    ~new_base:bc.Patch_decision.new_base
+                              | None -> ""
+                            in
+                            match delivery with
+                            | Patch_decision.Respond_stale ->
+                                log_event runtime ~patch_id
+                                  "runner: action stale after semaphore wait, \
+                                   skipping";
+                                `Stale
+                            | Patch_decision.Skip_empty ->
                                 log_event runtime ~patch_id
                                   (Printf.sprintf
                                      "%s: nothing to deliver, skipping"
                                      (Operation_kind.to_label kind));
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.complete orch patch_id);
-                                `Ok)
-                              else if
-                                Operation_kind.equal kind
-                                  Operation_kind.Merge_conflict
-                              then (
+                                `Skip_empty
+                            | Patch_decision.Deliver
+                                {
+                                  payload =
+                                    Patch_decision.Merge_conflict_payload;
+                                  base_change;
+                                } -> (
+                                let base =
+                                  Base.Option.value_map
+                                    agent.Patch_agent.base_branch
+                                    ~default:(Branch.to_string main)
+                                    ~f:Branch.to_string
+                                in
+                                let base_changed_prefix =
+                                  render_base_changed_prefix base_change
+                                in
                                 let wt_path =
                                   match agent.Patch_agent.worktree_path with
                                   | Some p -> p
@@ -2479,57 +2494,57 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                   | Orchestrator.Conflict_needs_agent ->
                                       deliver_to_agent ()
                                   | Orchestrator.Conflict_give_up -> `Failed)
-                              else
+                            | Patch_decision.Deliver
+                                {
+                                  payload =
+                                    ( Patch_decision.Human_payload _
+                                    | Patch_decision.Ci_payload _
+                                    | Patch_decision.Review_payload _
+                                    | Patch_decision
+                                      .Implementation_notes_payload ) as payload;
+                                  base_change;
+                                } ->
                                 let pr_number = agent.Patch_agent.pr_number in
+                                let base_changed_prefix =
+                                  render_base_changed_prefix base_change
+                                in
                                 log_event runtime ~patch_id
-                                  (match kind with
-                                  | Operation_kind.Review_comments ->
+                                  (match payload with
+                                  | Patch_decision.Review_payload { comments }
+                                    ->
                                       Printf.sprintf
                                         "delivering %s (%d comments)"
                                         (Operation_kind.to_label kind)
-                                        (Base.List.length prefetched_comments)
-                                  | Operation_kind.Human ->
+                                        (Base.List.length comments)
+                                  | Patch_decision.Human_payload { messages } ->
                                       Printf.sprintf
                                         "delivering %s (%d messages)"
                                         (Operation_kind.to_label kind)
-                                        (Base.List.length
-                                           agent
-                                             .Patch_agent
-                                              .inflight_human_messages)
-                                  | Operation_kind.Ci | Operation_kind.Rebase
-                                  | Operation_kind.Merge_conflict
-                                  | Operation_kind.Implementation_notes ->
+                                        (Base.List.length messages)
+                                  | Patch_decision.Ci_payload _
+                                  | Patch_decision.Implementation_notes_payload
+                                  | Patch_decision.Merge_conflict_payload ->
                                       Printf.sprintf "delivering %s"
                                         (Operation_kind.to_label kind));
                                 let prompt =
-                                  match kind with
-                                  | Operation_kind.Ci -> (
-                                      match
-                                        Patch_decision.ci_prompt_kind
-                                          source_agent.Patch_agent.ci_checks
-                                      with
-                                      | Patch_decision.Unknown_failure ->
-                                          Prompt
-                                          .render_ci_failure_unknown_prompt
-                                            ~project_name ?pr_number ()
-                                      | Patch_decision.Known_failures failed ->
-                                          Prompt.render_ci_failure_prompt
-                                            ~project_name ?pr_number failed)
-                                  | Operation_kind.Review_comments ->
+                                  match payload with
+                                  | Patch_decision.Ci_payload { failed_checks }
+                                    ->
+                                      if Base.List.is_empty failed_checks then
+                                        Prompt.render_ci_failure_unknown_prompt
+                                          ~project_name ?pr_number ()
+                                      else
+                                        Prompt.render_ci_failure_prompt
+                                          ~project_name ?pr_number failed_checks
+                                  | Patch_decision.Review_payload { comments }
+                                    ->
                                       Prompt.render_review_prompt ~project_name
-                                        ?pr_number prefetched_comments
-                                  | Operation_kind.Merge_conflict ->
-                                      (* Invariant: Merge_conflict is handled
-                                         in the pre-rebase block above *)
-                                      assert false
-                                  | Operation_kind.Human ->
+                                        ?pr_number comments
+                                  | Patch_decision.Human_payload { messages } ->
                                       Prompt.render_human_message_prompt
-                                        ~project_name
-                                        (Base.List.rev
-                                           agent
-                                             .Patch_agent
-                                              .inflight_human_messages)
-                                  | Operation_kind.Implementation_notes ->
+                                        ~project_name messages
+                                  | Patch_decision.Implementation_notes_payload
+                                    ->
                                       let patch =
                                         Base.List.find_exn
                                           gameplan.Gameplan.patches
@@ -2545,9 +2560,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                         ~pr_number:
                                           (Base.Option.value_exn pr_number)
                                         ~pr_body
-                                  | Operation_kind.Rebase ->
-                                      (* Invariant: Rebase is never routed
-                                       through Respond *)
+                                  | Patch_decision.Merge_conflict_payload ->
+                                      (* Invariant: Merge_conflict is handled
+                                         in the dedicated match arm above *)
                                       assert false
                                 in
                                 let prompt =
@@ -2556,6 +2571,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                   else base_changed_prefix ^ "\n" ^ prompt
                                 in
                                 let on_pr_detected _pr_number = () in
+                                let base =
+                                  Base.Option.value_map
+                                    agent.Patch_agent.base_branch
+                                    ~default:(Branch.to_string main)
+                                    ~f:Branch.to_string
+                                in
                                 let result =
                                   run_claude_and_handle ~runtime ~process_mgr
                                     ~fs ~project_name ~patch_id
@@ -2566,9 +2587,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                                     ~worktree_mutex ~backend ~event_log
                                 in
                                 (match result with
-                                | `Ok
-                                  when not (String.equal base_changed_prefix "")
-                                  ->
+                                | `Ok when Base.Option.is_some base_change ->
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
                                         Orchestrator.set_notified_base_branch
@@ -2579,6 +2598,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                       let respond_outcome =
                         match result with
                         | `Stale -> Orchestrator.Respond_stale
+                        | `Skip_empty -> Orchestrator.Respond_skip_empty
                         | `Failed -> Orchestrator.Respond_failed
                         | `Retry_push -> Orchestrator.Respond_retry_push
                         | `Ok -> Orchestrator.Respond_ok
@@ -2614,7 +2634,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
                               ~expires_at:(Unix.gettimeofday () +. 10.0)
                               ()
                       | Orchestrator.Respond_stale
-                      | Orchestrator.Respond_retry_push ->
+                      | Orchestrator.Respond_retry_push
+                      | Orchestrator.Respond_skip_empty ->
                           ())))
     in
     (* Spawn action fibers without waiting for completion. Each fiber is
@@ -3025,8 +3046,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
-            runner_fiber ~runtime ~env ~config ~project_name ~transcripts
-              ~github ~net ~event_log ())
+            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+              ~transcripts ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -3075,8 +3096,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo)
                 :: (fun () ->
-                  runner_fiber ~runtime ~env ~config ~project_name ~transcripts
-                    ~github ~net ~event_log ~status_msg ())
+                  runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
+                    ~transcripts ~github ~net ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 
