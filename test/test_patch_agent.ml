@@ -557,7 +557,6 @@ let () =
             && List.is_empty a.inflight_human_messages
           with _ -> false);
       (* -- 2 ci failures does NOT trigger needs_intervention (boundary) -- *)
-      (* respond increments ci_failure_count, so 1 prior + 1 from respond = 2 *)
       Test.make ~name:"2 ci failures no intervention (boundary)" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -566,12 +565,9 @@ let () =
           in
           let a = complete a in
           let a = increment_ci_failure_count a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
+          let a = increment_ci_failure_count a in
           not (needs_intervention a));
       (* -- 3 ci failures triggers needs_intervention -- *)
-      (* respond increments ci_failure_count, so 2 prior + 1 from respond = 3 *)
       Test.make ~name:"3 ci failures triggers intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -581,9 +577,7 @@ let () =
           let a = complete a in
           let a = increment_ci_failure_count a in
           let a = increment_ci_failure_count a in
-          let a = enqueue a Operation_kind.Ci in
-          let a = respond a Operation_kind.Ci in
-          let a = complete a in
+          let a = increment_ci_failure_count a in
           needs_intervention a);
       (* -- session_failed triggers needs_intervention -- *)
       Test.make ~name:"session_failed triggers intervention" ~count:1
@@ -841,7 +835,6 @@ let () =
             not (is_approved a ~main_branch:br0)
           with _ -> false);
       (* -- is_approved false when needs_intervention -- *)
-      (* respond increments ci_failure_count, so 2 prior + 1 from respond = 3 *)
       Test.make ~name:"is_approved false when needs_intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -852,9 +845,7 @@ let () =
             let a = complete a in
             let a = increment_ci_failure_count a in
             let a = increment_ci_failure_count a in
-            let a = enqueue a Operation_kind.Ci in
-            let a = respond a Operation_kind.Ci in
-            let a = complete a in
+            let a = increment_ci_failure_count a in
             let a = set_merge_ready a true in
             not (is_approved a ~main_branch:br0)
           with _ -> false);

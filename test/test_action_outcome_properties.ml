@@ -205,3 +205,68 @@ let () =
   assert (List.is_empty agent.Patch_agent.inflight_human_messages);
   assert (not agent.Patch_agent.busy);
   Stdlib.print_endline "AO-6 passed"
+
+(* ========== AO-7: Ci respond counter is bumped only on Respond_ok ========== *)
+
+(* Respond_ok bumps ci_failure_count; Skip_empty / Failed / Retry_push /
+   Stale do NOT. This locks in the invariant that a CI fix attempt only
+   counts against the cap when a real payload was delivered. Regression for
+   the production incident where cancelled-only rollups drove the cap to 3
+   and forced needs_intervention without any actionable failures. *)
+let () =
+  let with_ci_busy () =
+    let orch, patches, gameplan, pid = bootstrap_one () in
+    let orch = make_busy orch patches gameplan pid Operation_kind.Ci in
+    let before = (Orchestrator.agent orch pid).Patch_agent.ci_failure_count in
+    (orch, pid, before)
+  in
+  let ci_count orch pid =
+    (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
+  in
+  (* Respond_ok bumps *)
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_ok
+  in
+  assert (ci_count orch pid = before + 1);
+  (* Respond_skip_empty does NOT bump *)
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_skip_empty
+  in
+  assert (ci_count orch pid = before);
+  (* Respond_failed does NOT bump *)
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_failed
+  in
+  assert (ci_count orch pid = before);
+  (* Respond_retry_push does NOT bump *)
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_retry_push
+  in
+  assert (ci_count orch pid = before);
+  (* Respond_stale does NOT bump *)
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_stale
+  in
+  assert (ci_count orch pid = before);
+  (* Respond_ok for non-Ci kinds does NOT bump ci_failure_count *)
+  let orch, patches, gameplan, pid = bootstrap_one () in
+  let orch =
+    make_busy orch patches gameplan pid Operation_kind.Review_comments
+  in
+  let before = ci_count orch pid in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Review_comments
+      Orchestrator.Respond_ok
+  in
+  assert (ci_count orch pid = before);
+  Stdlib.print_endline "AO-7 passed"

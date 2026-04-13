@@ -87,11 +87,6 @@ let parse_merge_state = function
   | "CONFLICTING" -> Pr_state.Conflicting
   | _ -> Pr_state.Unknown
 
-let parse_check_status = function
-  | "SUCCESS" -> Pr_state.Passing
-  | "FAILURE" | "ERROR" -> Pr_state.Failing
-  | _ -> Pr_state.Pending
-
 let parse_check_context_node node =
   let open Yojson.Safe.Util in
   let typename = node |> member "__typename" |> to_string_option in
@@ -183,10 +178,6 @@ let parse_response_json ~owner json =
                   match rollup with
                   | `Null -> (Pr_state.Pending, [], false)
                   | rollup ->
-                      let status =
-                        rollup |> member "state" |> to_string
-                        |> parse_check_status
-                      in
                       let contexts = rollup |> member "contexts" in
                       let truncated =
                         contexts |> member "pageInfo" |> member "hasNextPage"
@@ -196,6 +187,22 @@ let parse_response_json ~owner json =
                       let checks =
                         contexts |> member "nodes" |> to_list
                         |> List.filter_map ~f:parse_check_context_node
+                      in
+                      (* Derive check_status from individual conclusions.
+                         We deliberately do NOT use the GraphQL rollup
+                         state — it conflates cancelled runs (e.g.
+                         superseded by a newer commit) with real failures.
+                         See [Pr_state.derive_check_status] for semantics. *)
+                      let status =
+                        let base = Pr_state.derive_check_status checks in
+                        (* Passing is only reliable when we've seen every check.
+                           If the list is truncated, treat as Pending to avoid
+                           approving a merge that might have failures on page 2+. *)
+                        if
+                          truncated
+                          && Pr_state.equal_check_status base Pr_state.Passing
+                        then Pr_state.Pending
+                        else base
                       in
                       (status, checks, truncated))
             in

@@ -90,8 +90,7 @@ let should_clear_conflict (a : Patch_agent.t) : bool =
 
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
-let failure_conclusions =
-  [ "failure"; "error"; "action_required"; "timed_out"; "startup_failure" ]
+let failure_conclusions = Ci_check.failure_conclusions
 
 type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
