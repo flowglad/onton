@@ -127,6 +127,7 @@ type session_result =
   | Session_failed of { is_fresh : bool }
   | Session_give_up
   | Session_worktree_missing
+  | Session_push_failed
 [@@deriving show, eq, sexp_of]
 
 val apply_session_result : t -> Patch_id.t -> session_result -> t
@@ -136,7 +137,10 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     on_session_failure + complete. [Session_no_resume] -> on_session_failure
     (not fresh) + complete. [Session_give_up] -> set_session_failed +
     set_tried_fresh + complete. [Session_worktree_missing] ->
-    on_pre_session_failure + complete. *)
+    on_pre_session_failure + complete. [Session_push_failed] ->
+    clear_session_fallback (LLM session itself was healthy) + complete_failed
+    (commits did not reach the remote — retry on next iteration). Use this when
+    the LLM ran cleanly but the supervisor's post-session push failed. *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]

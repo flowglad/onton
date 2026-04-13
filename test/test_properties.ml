@@ -614,7 +614,8 @@ let () =
             true
         | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
         | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-        | Orchestrator.Session_worktree_missing ->
+        | Orchestrator.Session_worktree_missing
+        | Orchestrator.Session_push_failed ->
             not a.Patch_agent.busy)
   in
   (* Property: Session_give_up sets needs_intervention *)

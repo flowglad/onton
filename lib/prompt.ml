@@ -139,24 +139,10 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     match pr_number with
     | Some _ -> ""
     | None ->
-        substitute_variables
-          {|
-**IMPORTANT: Open a draft PR immediately after your first commit.** Do not wait until implementation is complete.
+        {|
+**Do NOT create a PR yourself.** The supervisor opens the draft PR after your first commit lands on the remote, with a gameplan-derived title and body. Just commit your changes and the supervisor will handle PR creation and base-branch management.
 
-After your first commit, run:
-```bash
-gh pr create --draft --title '[{{project_name}}] Patch {{patch_id}}: {{title}}' --body 'Work in progress' --base {{base_branch}}
-```
-
-**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches and draft status automatically.
-
-Then continue implementing until all tests pass.|}
-          [
-            ("project_name", project_name);
-            ("patch_id", patch_id);
-            ("title", patch.Patch.title);
-            ("base_branch", base_branch);
-          ]
+Continue implementing until all tests pass.|}
   in
   let vars =
     [
@@ -267,13 +253,6 @@ Then continue implementing until all tests pass.|}
 - Base branch: {{base_branch}}
 - PR: {{pr_str}}
 {{base_branch_note}}{{pr_instructions}}
-## PR Title (CRITICAL)
-**You MUST use this EXACT title format:**
-
-`[{{project_name}}] Patch {{patch_id}}: {{title}}`
-
-Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed project name and patch number are required for tracking.
-
 ## Patches in Gameplan
 {{patches_list}}|}
         vars)

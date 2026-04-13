@@ -504,6 +504,7 @@ type session_result =
   | Session_failed of { is_fresh : bool }
   | Session_give_up
   | Session_worktree_missing
+  | Session_push_failed
 [@@deriving show, eq, sexp_of]
 
 (** Complete a failed session, restoring inflight human messages to the inbox.
@@ -552,6 +553,13 @@ let apply_session_result t patch_id result =
       complete_failed t patch_id
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
+      complete_failed t patch_id
+  | Session_push_failed ->
+      (* The LLM session itself ran cleanly — clear its fallback state so we
+         resume the same session next iteration. The push failure is treated
+         as a soft failure: complete_failed clears busy and re-enqueues any
+         inflight human messages so the next iteration retries. *)
+      let t = clear_session_fallback t patch_id in
       complete_failed t patch_id
 
 type start_outcome = Start_ok | Start_failed | Start_stale

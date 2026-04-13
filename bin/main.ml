@@ -158,16 +158,6 @@ module Pr_registry = struct
         Hashtbl.remove t.table patch_id)
 end
 
-(** Discover PR number for a branch via GitHub REST API. Returns [Ok] with the
-    PR number or [Error] with a diagnostic message. *)
-let discover_pr_number ~net ~github ~branch ~base_branch =
-  match
-    Github.list_prs ~net github ~branch ~base:(Some base_branch) ~state:`Open ()
-  with
-  | Ok ((pr_number, _, _) :: _) -> Ok pr_number
-  | Ok [] -> Error "no PRs found for branch"
-  | Error e -> Error (Github.show_error e)
-
 (** Execute declarative GitHub effects and record successful observations back
     into durable state. *)
 let execute_github_effects ~runtime ~net ~github effects =
@@ -682,11 +672,58 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                      backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
+          (* Supervisor-owned push: agent commits locally; we push every
+             local commit to the remote at session end. force_push_with_lease
+             is idempotent (Push_up_to_date when nothing new), and lease-safe
+             against concurrent remote updates. Runs regardless of the LLM's
+             session result so commits made before a partial failure still
+             reach the remote. *)
+          let branch = agent.Patch_agent.branch in
+          let push_outcome =
+            Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
+              ~branch
+          in
+          (match push_outcome with
+          | Worktree.Push_ok ->
+              log_event runtime ~patch_id "runner: pushed after session"
+          | Worktree.Push_up_to_date ->
+              log_event runtime ~patch_id
+                "runner: push up-to-date after session (no new commits)"
+          | Worktree.Push_rejected ->
+              log_event runtime ~patch_id
+                "runner: push rejected after session (lease)"
+          | Worktree.Push_error msg ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "runner: push error after session: %s" msg));
+          (* Combine LLM session outcome with push outcome into a single
+             session_result. A push failure when the LLM was otherwise
+             healthy is recorded as Session_push_failed so the orchestrator
+             treats it as a retryable failure without poisoning
+             session_fallback. A pre-existing LLM failure takes precedence —
+             the push outcome doesn't change it. *)
+          let final_session_result, final_user_result =
+            match session_result with
+            | Orchestrator.Session_ok -> (
+                match push_outcome with
+                | Worktree.Push_ok | Worktree.Push_up_to_date ->
+                    (session_result, user_result)
+                | Worktree.Push_rejected | Worktree.Push_error _ ->
+                    (Orchestrator.Session_push_failed, `Failed))
+            | Orchestrator.Session_process_error _
+            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
+            | Orchestrator.Session_give_up
+            | Orchestrator.Session_worktree_missing
+            | Orchestrator.Session_push_failed ->
+                (* Pre-existing LLM/setup failure — push outcome doesn't
+                   change anything. *)
+                (session_result, user_result)
+          in
           let agent_before, agent_after =
             Runtime.update_orchestrator_returning runtime (fun orch ->
                 let agent_before = Orchestrator.agent orch patch_id in
                 let orch =
-                  Orchestrator.apply_session_result orch patch_id session_result
+                  Orchestrator.apply_session_result orch patch_id
+                    final_session_result
                 in
                 (* Store the captured session_id for future --resume calls *)
                 let orch =
@@ -699,37 +736,9 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 let agent_after = Orchestrator.agent orch patch_id in
                 (orch, (agent_before, agent_after)))
           in
-          Event_log.log_complete event_log ~patch_id ~result:session_result
-            ~agent_before ~agent_after;
-          (* Supervisor-owned push: agent commits locally; we push every
-             local commit to the remote at session end. force_push_with_lease
-             is idempotent (Push_up_to_date when nothing new), and lease-safe
-             against concurrent remote updates. Runs regardless of
-             session_result so commits made before a partial failure still
-             reach the remote. *)
-          let branch = agent.Patch_agent.branch in
-          let push_result =
-            match
-              Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
-                ~branch
-            with
-            | Worktree.Push_ok ->
-                log_event runtime ~patch_id "runner: pushed after session";
-                user_result
-            | Worktree.Push_up_to_date ->
-                log_event runtime ~patch_id
-                  "runner: push up-to-date after session (no new commits)";
-                user_result
-            | Worktree.Push_rejected ->
-                log_event runtime ~patch_id
-                  "runner: push rejected after session (lease)";
-                `Failed
-            | Worktree.Push_error msg ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "runner: push error after session: %s" msg);
-                `Failed
-          in
-          push_result)
+          Event_log.log_complete event_log ~patch_id
+            ~result:final_session_result ~agent_before ~agent_after;
+          final_user_result)
 
 (** {1 Fibers} *)
 
@@ -2115,35 +2124,42 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                        (Patch_id.to_string patch_id))
                                   ()
                           | Orchestrator.Start_ok ->
-                              (* Always confirm via REST API *)
-                              let rec discover remaining =
-                                match
-                                  discover_pr_number ~net ~github
-                                    ~branch:patch.Patch.branch ~base_branch
-                                with
-                                | Ok pr_number ->
-                                    log_event runtime ~patch_id
-                                      (Printf.sprintf "Created PR #%d"
-                                         (Pr_number.to_int pr_number));
-                                    Pr_registry.register pr_registry ~patch_id
-                                      ~pr_number;
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.set_pr_number orch patch_id
-                                          pr_number)
-                                | Error _ when remaining > 0 ->
-                                    Eio.Time.sleep clock 2.0;
-                                    discover (remaining - 1)
-                                | Error msg ->
-                                    log_event runtime ~patch_id
-                                      (Printf.sprintf "PR discovery failed — %s"
-                                         msg);
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.on_pr_discovery_failure
-                                          orch patch_id)
+                              (* Supervisor-owned PR creation: the agent
+                                 commits and the supervisor pushed at session
+                                 end; now we open the draft PR with a
+                                 gameplan-derived title and body. *)
+                              let pr_title =
+                                Printf.sprintf "[%s] Patch %s: %s" project_name
+                                  (Patch_id.to_string patch.Patch.id)
+                                  patch.Patch.title
                               in
-                              discover 2;
+                              let pr_body =
+                                Prompt.render_pr_description ~project_name patch
+                                  gameplan
+                              in
+                              (match
+                                 Github.create_pull_request ~net github
+                                   ~title:pr_title ~head:patch.Patch.branch
+                                   ~base:base_branch ~body:pr_body ~draft:true
+                               with
+                              | Ok pr_number ->
+                                  log_event runtime ~patch_id
+                                    (Printf.sprintf "PR #%d created"
+                                       (Pr_number.to_int pr_number));
+                                  Pr_registry.register pr_registry ~patch_id
+                                    ~pr_number;
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.set_pr_number orch patch_id
+                                        pr_number)
+                              | Error e ->
+                                  log_event runtime ~patch_id
+                                    (Printf.sprintf "PR creation failed — %s"
+                                       (Github.show_error e));
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.on_pr_discovery_failure orch
+                                        patch_id));
                               Runtime.update_orchestrator runtime (fun orch ->
                                   Orchestrator.complete orch patch_id)
                           | Orchestrator.Start_stale -> ())))

@@ -445,6 +445,31 @@ let update_pr_body ~net t ~pr_number ~body =
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
+(** Create a draft pull request via REST API. Returns the new PR number. *)
+let create_pull_request ~net t ~title ~head ~base ~body ~draft =
+  let path = Printf.sprintf "/repos/%s/%s/pulls" t.owner t.repo in
+  let req_body =
+    `Assoc
+      [
+        ("title", `String title);
+        ("head", `String (Types.Branch.to_string head));
+        ("base", `String (Types.Branch.to_string base));
+        ("body", `String body);
+        ("draft", `Bool draft);
+      ]
+    |> Yojson.Safe.to_string
+  in
+  match request ~net t ~meth:`POST ~path ~body:req_body () with
+  | Error _ as e -> e
+  | Ok resp_str -> (
+      try
+        let json = Yojson.Safe.from_string resp_str in
+        let number = Yojson.Safe.Util.(json |> member "number" |> to_int) in
+        Ok (Types.Pr_number.of_int number)
+      with
+      | Yojson.Json_error msg -> Error (Json_parse_error msg)
+      | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg))
+
 (** Update the base (target) branch of a PR via REST API. *)
 let update_pr_base ~net t ~pr_number ~base =
   let path =
