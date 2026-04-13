@@ -70,6 +70,7 @@ let () =
       Orchestrator.Respond_ok;
       Orchestrator.Respond_failed;
       Orchestrator.Respond_retry_push;
+      Orchestrator.Respond_skip_empty;
     ]
   in
   let respond_kinds =
@@ -183,3 +184,24 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-5 passed"
+
+(* ========== AO-6: Respond_failed restores inflight human messages ========== *)
+
+let () =
+  let orch, patches, gameplan, pid = bootstrap_one () in
+  let orch = Orchestrator.send_human_message orch pid "fix this" in
+  let orch = make_busy orch patches gameplan pid Operation_kind.Human in
+  let agent = Orchestrator.agent orch pid in
+  (* After fire, messages should be in inflight *)
+  assert (not (List.is_empty agent.Patch_agent.inflight_human_messages));
+  assert (List.is_empty agent.Patch_agent.human_messages);
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+      Orchestrator.Respond_failed
+  in
+  let agent = Orchestrator.agent orch pid in
+  (* Messages should be restored to human_messages *)
+  assert (not (List.is_empty agent.Patch_agent.human_messages));
+  assert (List.is_empty agent.Patch_agent.inflight_human_messages);
+  assert (not agent.Patch_agent.busy);
+  Stdlib.print_endline "AO-6 passed"

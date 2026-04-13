@@ -876,7 +876,7 @@ let detail_info_rows (pv : patch_view) ~width =
   let ci_section =
     if List.is_empty pv.ci_checks then []
     else
-      let failure_conclusions = Patch_decision.ci_failure_conclusions in
+      let failure_conclusions = Patch_decision.failure_conclusions in
       (* Deduplicate by name, keeping the most recent result by started_at.
          ISO 8601 timestamps sort lexicographically. *)
       let deduped =

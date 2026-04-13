@@ -88,42 +88,82 @@ let should_clear_conflict (a : Patch_agent.t) : bool =
     || Option.equal Operation_kind.equal a.current_op
          (Some Operation_kind.Merge_conflict))
 
-(** CI conclusion strings that count as failures. *)
-let ci_failure_conclusions =
+(** {2 Respond delivery — pre-session decisions for the runner} *)
+
+let failure_conclusions =
   [ "failure"; "error"; "action_required"; "timed_out"; "startup_failure" ]
 
-let filter_failed_ci_checks (checks : Ci_check.t list) : Ci_check.t list =
-  List.filter checks ~f:(fun (c : Ci_check.t) ->
-      List.mem ci_failure_conclusions c.conclusion ~equal:String.equal)
-
-let has_failed_ci_checks (checks : Ci_check.t list) : bool =
-  List.exists checks ~f:(fun (c : Ci_check.t) ->
-      List.mem ci_failure_conclusions c.conclusion ~equal:String.equal)
-
-type ci_prompt_kind =
-  | Known_failures of Ci_check.t list
-      (** Non-empty list of checks with failure conclusions. *)
-  | Unknown_failure  (** CI failed but no check matches failure conclusions. *)
+type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
 
-let ci_prompt_kind (checks : Ci_check.t list) : ci_prompt_kind =
-  let failed = filter_failed_ci_checks checks in
-  if List.is_empty failed then Unknown_failure else Known_failures failed
-
-let is_stale (a : Patch_agent.t) : bool =
-  a.merged || Patch_agent.needs_intervention a || a.branch_blocked || not a.busy
-
-type delivery_decision =
-  | Deliver  (** There is content to deliver to the agent. *)
-  | Skip_empty  (** Nothing to deliver — skip this operation. *)
+type delivery_payload =
+  | Human_payload of { messages : string list }
+  | Ci_payload of { failed_checks : Ci_check.t list }
+  | Review_payload of { comments : Comment.t list }
+  | Implementation_notes_payload
+  | Merge_conflict_payload
 [@@deriving show, eq, sexp_of, compare]
 
-let delivery_decision ~(kind : Operation_kind.t)
-    ~(inflight_human_messages : string list) ~(review_comment_count : int)
-    ~(ci_checks : Ci_check.t list) : delivery_decision =
-  match kind with
-  | Human ->
-      if List.is_empty inflight_human_messages then Skip_empty else Deliver
-  | Review_comments -> if review_comment_count = 0 then Skip_empty else Deliver
-  | Ci -> if has_failed_ci_checks ci_checks then Deliver else Skip_empty
-  | Merge_conflict | Implementation_notes | Rebase -> Deliver
+type respond_delivery =
+  | Deliver of { payload : delivery_payload; base_change : base_change option }
+  | Skip_empty
+  | Respond_stale
+[@@deriving show, eq, sexp_of, compare]
+
+let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
+    ~(pre_fire_agent : Patch_agent.t option)
+    ~(prefetched_comments : Comment.t list) ~(main_branch : string) :
+    respond_delivery =
+  if
+    agent.merged
+    || Patch_agent.needs_intervention agent
+    || agent.branch_blocked || not agent.busy
+  then Respond_stale
+  else
+    let source = Option.value pre_fire_agent ~default:agent in
+    let is_empty =
+      match kind with
+      | Operation_kind.Review_comments -> List.is_empty prefetched_comments
+      | Operation_kind.Human -> List.is_empty source.human_messages
+      | Operation_kind.Ci ->
+          not
+            (List.exists source.ci_checks ~f:(fun (c : Ci_check.t) ->
+                 List.mem failure_conclusions c.conclusion ~equal:String.equal))
+      | Operation_kind.Merge_conflict | Operation_kind.Implementation_notes
+      | Operation_kind.Rebase ->
+          false
+    in
+    if is_empty then Skip_empty
+    else
+      let base_change =
+        if Patch_agent.base_branch_changed agent then
+          let old_base =
+            Option.value_map agent.notified_base_branch ~default:main_branch
+              ~f:Branch.to_string
+          in
+          let new_base =
+            Option.value_map agent.base_branch ~default:main_branch
+              ~f:Branch.to_string
+          in
+          Some { old_base; new_base }
+        else None
+      in
+      let payload =
+        match kind with
+        | Operation_kind.Human ->
+            Human_payload { messages = List.rev source.human_messages }
+        | Operation_kind.Ci ->
+            let failed =
+              List.filter source.ci_checks ~f:(fun (c : Ci_check.t) ->
+                  List.mem failure_conclusions c.conclusion ~equal:String.equal)
+            in
+            Ci_payload { failed_checks = failed }
+        | Operation_kind.Review_comments ->
+            Review_payload { comments = prefetched_comments }
+        | Operation_kind.Implementation_notes -> Implementation_notes_payload
+        | Operation_kind.Merge_conflict -> Merge_conflict_payload
+        | Operation_kind.Rebase ->
+            (* Invariant: Rebase is never routed through Respond *)
+            assert false
+      in
+      Deliver { payload; base_change }

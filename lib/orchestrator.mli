@@ -151,6 +151,7 @@ type respond_outcome =
   | Respond_failed
   | Respond_retry_push
   | Respond_stale
+  | Respond_skip_empty
 [@@deriving show, eq, sexp_of]
 
 val apply_respond_outcome :
@@ -158,7 +159,8 @@ val apply_respond_outcome :
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
     kind-specific transitions (Merge_conflict -> clear_has_conflict +
     reset_conflict_noop_count; Implementation_notes ->
-    set_implementation_notes_delivered). [Respond_failed] -> complete.
+    set_implementation_notes_delivered). [Respond_failed] -> complete_failed
+    (restores inflight human messages). [Respond_skip_empty] -> complete.
     [Respond_retry_push] -> complete. [Respond_stale] -> identity. *)
 
 (** Side effects emitted by rebase result application. The runner is responsible

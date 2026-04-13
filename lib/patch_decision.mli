@@ -68,46 +68,39 @@ val should_clear_conflict : Patch_agent.t -> bool
     Merge_conflict operation is queued or in-flight, since clearing would race
     with the active resolution. *)
 
-(** {2 Delivery decision — should the runner skip an empty delivery?} *)
+(** {2 Respond delivery — pre-session decisions for the runner} *)
 
-val ci_failure_conclusions : string list
-(** CI conclusion strings that count as failures. *)
+val failure_conclusions : string list
+(** CI check conclusions that indicate failure. *)
 
-val filter_failed_ci_checks : Ci_check.t list -> Ci_check.t list
-(** Return only checks whose conclusion is in [ci_failure_conclusions]. *)
-
-val has_failed_ci_checks : Ci_check.t list -> bool
-(** Whether any check has a failure conclusion. *)
-
-type ci_prompt_kind =
-  | Known_failures of Ci_check.t list
-      (** Non-empty list of checks with failure conclusions. *)
-  | Unknown_failure  (** CI failed but no check matches failure conclusions. *)
+type base_change = { old_base : string; new_base : string }
 [@@deriving show, eq, sexp_of, compare]
 
-val ci_prompt_kind : Ci_check.t list -> ci_prompt_kind
-(** Decide which CI prompt variant to render. Returns [Known_failures] with the
-    filtered list when at least one check has a failure conclusion,
-    [Unknown_failure] otherwise. *)
-
-val is_stale : Patch_agent.t -> bool
-(** Whether an action should be skipped because the agent state changed while
-    waiting for a Claude slot. True when any of: merged, needs_intervention,
-    branch_blocked, or not busy. *)
-
-type delivery_decision =
-  | Deliver  (** There is content to deliver to the agent. *)
-  | Skip_empty  (** Nothing to deliver — skip this operation. *)
+type delivery_payload =
+  | Human_payload of { messages : string list }
+  | Ci_payload of { failed_checks : Ci_check.t list }
+  | Review_payload of { comments : Comment.t list }
+  | Implementation_notes_payload
+  | Merge_conflict_payload
 [@@deriving show, eq, sexp_of, compare]
 
-val delivery_decision :
+type respond_delivery =
+  | Deliver of { payload : delivery_payload; base_change : base_change option }
+  | Skip_empty
+  | Respond_stale
+[@@deriving show, eq, sexp_of, compare]
+
+val respond_delivery :
+  agent:Patch_agent.t ->
   kind:Operation_kind.t ->
-  inflight_human_messages:string list ->
-  review_comment_count:int ->
-  ci_checks:Ci_check.t list ->
-  delivery_decision
-(** Pure decision: given the operation kind and the relevant payload data,
-    decide whether there is content to deliver. The caller must pass:
-    - [inflight_human_messages]: post-fire agent's inflight messages
-    - [review_comment_count]: number of prefetched review comments
-    - [ci_checks]: agent's CI check list at fire time *)
+  pre_fire_agent:Patch_agent.t option ->
+  prefetched_comments:Comment.t list ->
+  main_branch:string ->
+  respond_delivery
+(** Pure pre-session decision for Respond actions. Determines whether the
+    delivery should proceed, be skipped (empty payload), or is stale.
+
+    When [pre_fire_agent] is [Some pfa], human messages and CI checks are read
+    from [pfa] (the snapshot before fire moved messages to inflight). When
+    [None], falls back to [agent]. Review comments come from
+    [prefetched_comments] (fetched from GitHub before the decision). *)
