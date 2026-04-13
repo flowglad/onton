@@ -24,47 +24,6 @@ type t = {
 }
 [@@deriving show, eq]
 
-(** Parse a single PR JSON object, returning [(pr_number, base_branch, merged)]
-    for OPEN/MERGED PRs, [None] for CLOSED, or [Error] for unexpected shapes. *)
-let parse_pr_entry fields =
-  match
-    ( List.Assoc.find fields ~equal:String.equal "number",
-      List.Assoc.find fields ~equal:String.equal "state",
-      List.Assoc.find fields ~equal:String.equal "baseRefName" )
-  with
-  | Some (`Int n), Some (`String "OPEN"), Some (`String base) ->
-      Ok (Some (Pr_number.of_int n, Branch.of_string base, (* merged *) false))
-  | Some (`Int n), Some (`String "MERGED"), Some (`String base) ->
-      Ok (Some (Pr_number.of_int n, Branch.of_string base, (* merged *) true))
-  | Some (`Int _), Some (`String "CLOSED"), _ -> Ok None
-  | Some (`Int _), Some (`String state), _ ->
-      Error (Printf.sprintf "unexpected PR state: %s" state)
-  | _ -> Error "unexpected PR JSON field shape"
-
-(** Parse raw JSON output from [gh pr list --json number,state,baseRefName],
-    returning the first non-CLOSED PR entry or [None]. Pure function. *)
-let discover_pr_from_json output =
-  try
-    match Yojson.Basic.from_string output with
-    | `List entries ->
-        let rec find_live = function
-          | [] -> Ok None
-          | `Assoc fields :: rest -> (
-              match parse_pr_entry fields with
-              | Ok (Some _ as result) -> Ok result
-              | Ok None -> find_live rest
-              | Error _ as e -> e)
-          | _ :: _ ->
-              Error (Printf.sprintf "unexpected PR JSON shape: %s" output)
-        in
-        find_live entries
-    | _ -> Error (Printf.sprintf "unexpected JSON: %s" output)
-  with
-  | Yojson.Json_error msg ->
-      Error (Printf.sprintf "could not parse gh output as JSON: %s" msg)
-  | Yojson.Basic.Util.Type_error (msg, _) ->
-      Error (Printf.sprintf "unexpected JSON structure from gh: %s" msg)
-
 (** Query GitHub REST API for a branch, returning discovery info for the first
     non-CLOSED PR. *)
 let discover_pr ~net ~github ~branch =

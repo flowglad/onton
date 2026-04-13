@@ -2019,8 +2019,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                             (Branch.to_string base_branch)
                                       in
                                       (* PR detection from stream text is a hint
-                                     only — always confirmed via gh pr list
-                                     after Claude finishes *)
+                                     only — always confirmed via the GitHub
+                                     REST API (Github.list_prs) after Claude
+                                     finishes *)
                                       let on_pr_detected _pr_number = () in
                                       run_claude_and_handle ~runtime
                                         ~process_mgr ~fs ~project_name ~patch_id

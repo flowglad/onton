@@ -83,10 +83,117 @@ opam install . --deps-only
 dune build
 ```
 
-## Requirements
+## Dependencies
 
-- Claude Code CLI (`claude` on PATH)
-- GitHub CLI (`gh` on PATH) for PR discovery
+Onton shells out to several external tools and talks to the GitHub API. All
+of these must be installed and configured before onton can run.
+
+### Runtime dependencies
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| `git` | Worktree CRUD, branch detection, rebase | `brew install git` (or system package manager) |
+| `gh` (GitHub CLI) | Token resolution, PR discovery (`gh pr list`), and the main vehicle agents use to interact with GitHub (`gh pr create`, `gh pr edit`, `gh pr view`, `gh api`, `gh api graphql`) | `brew install gh`, then `gh auth login` |
+| Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode`, `pi`. Selected via `--backend` (default `claude`) and must be on `PATH` | See each tool's docs |
+| `/usr/bin/script` | Used to allocate a pseudo-TTY around the Claude CLI so `-p` streaming works. Ships with macOS and most Linux distros — no install needed | — |
+
+Onton is built and tested on macOS (ARM64 and x86_64). Linux should work but is
+not part of the release pipeline.
+
+### GitHub authentication
+
+Onton talks to GitHub two ways and both need credentials:
+
+1. **The OCaml binary** opens its own HTTPS connection to `api.github.com`
+   (REST + GraphQL) for everything it does itself: polling, PR discovery at
+   startup, merge-state lookups, draft toggles, base updates, etc. It needs a
+   token in `Authorization: bearer …`. The only `gh` invocation from the
+   binary itself is `gh auth token` during startup, used solely as a fallback
+   to source that token.
+2. **The agent processes** shell out to `gh` for higher-level operations like
+   creating PRs (`gh pr create`), editing PR bodies (`gh pr edit`), and
+   calling `gh api` / `gh api graphql`. `gh` uses its own credential store
+   seeded by `gh auth login`.
+
+#### Token resolution order
+
+The token used by the OCaml binary is resolved in this order (see
+`bin/main.ml:47`):
+
+1. `--token` CLI flag
+2. `GITHUB_TOKEN` environment variable
+3. `gh auth token` (executed as a subprocess)
+
+If all three are empty, onton refuses to start with
+`--token / GITHUB_TOKEN is required`.
+
+The simplest setup is therefore: install `gh`, run `gh auth login`, and let
+onton pick up the token automatically. Confirm with `gh auth token` that a
+non-empty value is printed.
+
+#### Token scopes
+
+The token must be able to read and write PRs, issue comments, and check runs
+on the target repository.
+
+- **Classic personal access token**: enable `repo` (full control of private
+  repositories — needed because we read PR state, post comments, change base
+  branches, and toggle draft status) and `read:org` if the repo lives under a
+  GitHub organization with SSO. `workflow` is required if any patch touches
+  files under `.github/workflows/`.
+- **Fine-grained personal access token** (recommended): scope it to the
+  specific repository and grant these repository permissions:
+  - **Contents**: Read and write (worktree pushes, branch metadata)
+  - **Pull requests**: Read and write (create/update PRs, change base, toggle
+    draft, merge state)
+  - **Issues**: Read and write (PR review/issue comments share the issues API)
+  - **Checks**: Read (CI status polling)
+  - **Commit statuses**: Read (legacy CI status polling)
+  - **Metadata**: Read (always required)
+  - **Workflows**: Read and write — only if patches will modify
+    `.github/workflows/*`
+- **GitHub App installation token**: same permissions as the fine-grained PAT
+  list above. Pass it via `--token` or `GITHUB_TOKEN`; `gh` will not produce
+  installation tokens for you.
+- **SSO-protected orgs**: after creating the token, click "Configure SSO" on
+  the token page and authorize it for the org, otherwise every API call returns
+  `401`.
+
+If you see `403`/`401` from the poller, the most common causes are: missing
+SSO authorization, missing `Pull requests: write` (for draft/base updates), or
+a fine-grained token that wasn't granted access to the specific repository.
+
+#### `gh` configuration
+
+`gh auth login` (choose HTTPS, authenticate via browser or paste a token)
+configures `gh` itself. Verify with:
+
+```sh
+gh auth status        # shows which host and scopes are active
+gh auth token         # prints the token onton will pick up
+gh pr list --limit 1  # smoke-test repo access
+```
+
+If you'd rather keep `gh`'s token separate from onton's, set `GITHUB_TOKEN`
+explicitly and `gh` will prefer that variable too — keeping both in sync.
+
+### Optional: per-repo and project state directories
+
+Onton writes to two locations on disk. Neither requires setup but both are
+worth knowing about:
+
+- `~/.local/share/onton/<project>/` — durable project state (snapshot,
+  message ledger, transcripts). Created on first run.
+- `~/.config/onton/<owner>/<repo>/` — per-repo user configuration, including
+  the `on_worktree_create` hook described below. You create this directory by
+  hand if you want a hook.
+
+### Building from source (development only)
+
+In addition to the runtime dependencies above, building from source needs the
+OCaml toolchain listed under [Option C](#option-c-from-source): OCaml 5.4.0,
+dune 3.21, and opam. `opam install . --deps-only` installs the rest
+(`base`, `eio`, `cmarkit`, `re`, `cmdliner`, `qcheck`, etc.).
 
 ## Usage
 
