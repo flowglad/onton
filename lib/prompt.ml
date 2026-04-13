@@ -601,17 +601,8 @@ let render_human_message_prompt ~(project_name : string)
       render_with_override ~project_name ~name:"human_message" ~vars
         ~default:(fun () ->
           if Int.equal (List.length messages) 1 then
-            Printf.sprintf
-              "# Message from Human\n\n\
-               %s\n\n\
-               After making your changes, commit and push."
-              formatted_flat
-          else
-            Printf.sprintf
-              "# Messages from Human\n\n\
-               %s\n\n\
-               After making your changes, commit and push."
-              formatted_numbered)
+            Printf.sprintf "# Message from Human\n\n%s" formatted_flat
+          else Printf.sprintf "# Messages from Human\n\n%s" formatted_numbered)
 
 let render_base_branch_changed ~old_base ~new_base =
   Printf.sprintf
