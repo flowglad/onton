@@ -338,13 +338,11 @@ let apply_notes_artifact ~runtime ~net ~github ~project_name ~patch_id
       log_event runtime ~patch_id "notes: artifact empty; not updating PR body"
   | Some notes -> (
       let body_base =
-        match
-          read_artifact_file
-            (Project_store.pr_body_artifact_path ~project_name ~patch_id)
-        with
-        | Some body when String.length (String.trim body) > 0 -> body
-        | Some _ | None ->
-            Prompt.render_pr_description ~project_name patch gameplan
+        Prompt.resolve_pr_body_source
+          ~artifact:
+            (read_artifact_file
+               (Project_store.pr_body_artifact_path ~project_name ~patch_id))
+          ~fallback:(Prompt.render_pr_description ~project_name patch gameplan)
       in
       let composed =
         Printf.sprintf "%s\n\n## Implementation Notes\n\n%s" body_base
@@ -768,27 +766,23 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
               log_event runtime ~patch_id
                 (Printf.sprintf "runner: push error after session: %s" msg));
           (* Combine LLM session outcome with push outcome into a single
-             session_result. A push failure when the LLM was otherwise
-             healthy is recorded as Session_push_failed so the orchestrator
-             treats it as a retryable failure without poisoning
-             session_fallback. A pre-existing LLM failure takes precedence —
-             the push outcome doesn't change it. *)
-          let final_session_result, final_user_result =
-            match session_result with
-            | Orchestrator.Session_ok -> (
-                match push_outcome with
-                | Worktree.Push_ok | Worktree.Push_up_to_date ->
-                    (session_result, user_result)
-                | Worktree.Push_rejected | Worktree.Push_error _ ->
-                    (Orchestrator.Session_push_failed, `Failed))
+             session_result via the pure decision in
+             [Orchestrator.combine_session_and_push]. user_result mirrors:
+             same Ok/Failed disposition unless the combination promoted us
+             to Session_push_failed (which is always Failed). *)
+          let final_session_result =
+            Orchestrator.combine_session_and_push ~session:session_result
+              ~push:push_outcome
+          in
+          let final_user_result =
+            match final_session_result with
+            | Orchestrator.Session_ok -> user_result
             | Orchestrator.Session_process_error _
             | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
             | Orchestrator.Session_give_up
             | Orchestrator.Session_worktree_missing
             | Orchestrator.Session_push_failed ->
-                (* Pre-existing LLM/setup failure — push outcome doesn't
-                   change anything. *)
-                (session_result, user_result)
+                `Failed
           in
           let agent_before, agent_after =
             Runtime.update_orchestrator_returning runtime (fun orch ->

@@ -779,4 +779,168 @@ let () =
     ];
   Stdlib.print_endline "llm_session_id: all properties passed (A1-A6)"
 
+(* Session_push_failed semantics — distinguishes "LLM ran fine but commits
+   didn't ship" from a genuine LLM failure. Pins down the three behaviors
+   that justify the variant's existence, plus the pure
+   combine_session_and_push mapping the runner uses to fold push outcomes
+   into session_result. *)
+let () =
+  let open QCheck2 in
+  let main = Types.Branch.of_string "main" in
+  let mk_busy_orch () =
+    let pid = Types.Patch_id.of_string "psf-pid" in
+    let patches =
+      [
+        Types.Patch.
+          {
+            id = pid;
+            title = "P";
+            description = "";
+            branch = Types.Branch.of_string "psf";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+          };
+      ]
+    in
+    let orch = Orchestrator.create ~patches ~main_branch:main in
+    let orch, _, _ = tick orch ~patches in
+    (orch, pid)
+  in
+  let prop_psf1_clears_session_fallback =
+    Test.make ~name:"PSF-1: Session_push_failed clears session_fallback"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        (* Drive the agent into Tried_fresh via an explicit fresh failure,
+           then assert Session_push_failed resets it back to
+           Fresh_available. *)
+        let orch = Orchestrator.set_tried_fresh orch pid in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_push_failed
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+          Patch_agent.Fresh_available)
+  in
+  let prop_psf2_leaves_start_attempts_untouched =
+    Test.make
+      ~name:"PSF-2: Session_push_failed leaves start_attempts_without_pr"
+      (Gen.int_range 0 3) (fun n ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
+              Orchestrator.increment_start_attempts_without_pr o pid)
+        in
+        let before =
+          (Orchestrator.agent orch pid).Patch_agent.start_attempts_without_pr
+        in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_push_failed
+        in
+        let after =
+          (Orchestrator.agent orch pid).Patch_agent.start_attempts_without_pr
+        in
+        Int.equal before after)
+  in
+  let prop_psf3_leaves_ci_failure_count_untouched =
+    Test.make ~name:"PSF-3: Session_push_failed leaves ci_failure_count"
+      (Gen.int_range 0 2) (fun n ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
+              Orchestrator.increment_ci_failure_count o pid)
+        in
+        let before =
+          (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
+        in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_push_failed
+        in
+        let after =
+          (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
+        in
+        Int.equal before after)
+  in
+  let prop_cp1_ok_pushok =
+    Test.make ~name:"CP-1: Session_ok + Push_ok = Session_ok" (Gen.return ())
+      (fun () ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session:Session_ok
+             ~push:Worktree.Push_ok)
+          Session_ok)
+  in
+  let prop_cp2_ok_uptodate =
+    Test.make ~name:"CP-2: Session_ok + Push_up_to_date = Session_ok"
+      (Gen.return ()) (fun () ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session:Session_ok
+             ~push:Worktree.Push_up_to_date)
+          Session_ok)
+  in
+  let prop_cp3_ok_rejected =
+    Test.make ~name:"CP-3: Session_ok + Push_rejected = Session_push_failed"
+      (Gen.return ()) (fun () ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session:Session_ok
+             ~push:Worktree.Push_rejected)
+          Session_push_failed)
+  in
+  let prop_cp4_ok_error =
+    Test.make ~name:"CP-4: Session_ok + Push_error = Session_push_failed"
+      Gen.string_small (fun msg ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session:Session_ok
+             ~push:(Worktree.Push_error msg))
+          Session_push_failed)
+  in
+  let gen_non_ok_session : Orchestrator.session_result Gen.t =
+    Gen.oneof
+      [
+        Gen.map
+          (fun b -> Orchestrator.Session_process_error { is_fresh = b })
+          Gen.bool;
+        Gen.return Orchestrator.Session_no_resume;
+        Gen.map (fun b -> Orchestrator.Session_failed { is_fresh = b }) Gen.bool;
+        Gen.return Orchestrator.Session_give_up;
+        Gen.return Orchestrator.Session_worktree_missing;
+        Gen.return Orchestrator.Session_push_failed;
+      ]
+  in
+  let gen_push : Worktree.push_result Gen.t =
+    Gen.oneof
+      [
+        Gen.return Worktree.Push_ok;
+        Gen.return Worktree.Push_up_to_date;
+        Gen.return Worktree.Push_rejected;
+        Gen.map (fun s -> Worktree.Push_error s) Gen.string_small;
+      ]
+  in
+  let prop_cp5_failure_dominates =
+    Test.make ~name:"CP-5: pre-existing failure dominates any push outcome"
+      ~count:300 (Gen.pair gen_non_ok_session gen_push) (fun (session, push) ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session ~push)
+          session)
+  in
+  List.iter
+    ~f:(fun t -> QCheck2.Test.check_exn t)
+    [
+      prop_psf1_clears_session_fallback;
+      prop_psf2_leaves_start_attempts_untouched;
+      prop_psf3_leaves_ci_failure_count_untouched;
+      prop_cp1_ok_pushok;
+      prop_cp2_ok_uptodate;
+      prop_cp3_ok_rejected;
+      prop_cp4_ok_error;
+      prop_cp5_failure_dominates;
+    ];
+  Stdlib.print_endline
+    "Session_push_failed + combine_session_and_push: all properties passed \
+     (PSF-1..3, CP-1..5)"
+
 let () = Stdlib.print_endline "all property tests passed"

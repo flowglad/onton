@@ -142,6 +142,18 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     (commits did not reach the remote — retry on next iteration). Use this when
     the LLM ran cleanly but the supervisor's post-session push failed. *)
 
+val combine_session_and_push :
+  session:session_result -> push:Worktree.push_result -> session_result
+(** Pure: fold the LLM session outcome and the supervisor's post-session push
+    outcome into a single [session_result] for [apply_session_result].
+    - A pre-existing LLM failure ([Session_process_error], [Session_failed],
+      [Session_no_resume], [Session_give_up], [Session_worktree_missing],
+      [Session_push_failed]) is preserved unchanged — the push outcome doesn't
+      change anything.
+    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
+    - [Session_ok] with [Push_rejected] or [Push_error] becomes
+      [Session_push_failed] — the LLM ran fine but commits didn't ship. *)
+
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
 

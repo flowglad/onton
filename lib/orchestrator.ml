@@ -561,6 +561,17 @@ let apply_session_result t patch_id result =
       let t = clear_session_fallback t patch_id in
       complete_failed t patch_id
 
+let combine_session_and_push ~(session : session_result)
+    ~(push : Worktree.push_result) : session_result =
+  match session with
+  | Session_ok -> (
+      match push with
+      | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
+      | Worktree.Push_rejected | Worktree.Push_error _ -> Session_push_failed)
+  | Session_process_error _ | Session_no_resume | Session_failed _
+  | Session_give_up | Session_worktree_missing | Session_push_failed ->
+      session
+
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
 

@@ -1456,3 +1456,58 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi12;
   Stdlib.print_endline "PI-12 passed"
+
+(** PI-13: Human messages enqueued while a Pr_body session is in flight are
+    re-delivered after the supervisor's push fails. This validates the
+    Session_push_failed contract end-to-end at the interleaving level: the LLM
+    session itself ran cleanly (so session_fallback is preserved), but
+    [complete_failed] still restored any inflight human messages so the next
+    iteration delivers them. Regression for the class of bug where a push
+    failure during a non-Human phase silently drops human messages. *)
+let () =
+  let prop_pi13 =
+    QCheck2.Test.make
+      ~name:"PI-13: human messages survive Session_push_failed during Pr_body"
+      ~count:300
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        (* Reach a Pr_body-eligible state: PR exists, !pr_body_delivered.
+           Enqueue Pr_body so the Respond action's precondition holds. *)
+        let orch = Orchestrator.set_pr_body_delivered orch pid false in
+        let orch = Orchestrator.enqueue orch pid Operation_kind.Pr_body in
+        (* Begin a Pr_body session by firing the action — moves agent into
+           busy with current_op = Pr_body. *)
+        let orch =
+          Orchestrator.fire orch
+            (Orchestrator.Respond (pid, Operation_kind.Pr_body))
+        in
+        if not (Orchestrator.agent orch pid).Patch_agent.busy then
+          failwith "agent not busy after firing Respond(Pr_body)";
+        (* A human message arrives mid-session — supervisor enqueues it. *)
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let pre = Orchestrator.agent orch pid in
+        if not (List.mem pre.Patch_agent.human_messages msg ~equal:String.equal)
+        then failwith "human message not in inbox after send";
+        (* Session ends with Session_push_failed (LLM ok, push failed).
+           apply_session_result must clear session_fallback (LLM was healthy)
+           AND complete_failed (commits did not ship — re-enqueue). *)
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_push_failed
+        in
+        let post = Orchestrator.agent orch pid in
+        if post.Patch_agent.busy then
+          failwith "agent still busy after Session_push_failed";
+        (* The crucial invariant: the human message is still pending. *)
+        if
+          not (List.mem post.Patch_agent.human_messages msg ~equal:String.equal)
+        then failwith "human message lost after Session_push_failed";
+        (* And session_fallback was reset to Fresh_available so the next
+           iteration resumes the same session rather than burning its
+           fallback budget on a push problem. *)
+        Patch_agent.equal_session_fallback post.Patch_agent.session_fallback
+          Patch_agent.Fresh_available)
+  in
+  QCheck2.Test.check_exn prop_pi13;
+  Stdlib.print_endline "PI-13 passed"
