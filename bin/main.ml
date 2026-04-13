@@ -2152,14 +2152,50 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     (fun orch ->
                                       Orchestrator.set_pr_number orch patch_id
                                         pr_number)
-                              | Error e ->
-                                  log_event runtime ~patch_id
-                                    (Printf.sprintf "PR creation failed — %s"
-                                       (Github.show_error e));
-                                  Runtime.update_orchestrator runtime
-                                    (fun orch ->
-                                      Orchestrator.on_pr_discovery_failure orch
-                                        patch_id));
+                              | Error e -> (
+                                  match e with
+                                  | Github.Http_error { status = 422; _ } -> (
+                                      (* PR already exists — discover it rather
+                                         than treating this as failure *)
+                                      match
+                                        Github.list_prs ~net github
+                                          ~branch:patch.Patch.branch
+                                          ~base:(Some base_branch) ~state:`Open
+                                          ()
+                                      with
+                                      | Ok ((pr_number, _, _) :: _) ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "PR #%d already existed, \
+                                                associated"
+                                               (Pr_number.to_int pr_number));
+                                          Pr_registry.register pr_registry
+                                            ~patch_id ~pr_number;
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator.set_pr_number orch
+                                                patch_id pr_number)
+                                      | Ok [] | Error _ ->
+                                          log_event runtime ~patch_id
+                                            "PR creation failed (422) and \
+                                             discovery found nothing";
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .on_pr_discovery_failure orch
+                                                patch_id))
+                                  | Github.Http_error _
+                                  | Github.Json_parse_error _
+                                  | Github.Graphql_error _
+                                  | Github.Transport_error _ ->
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "PR creation failed — %s"
+                                           (Github.show_error e));
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.on_pr_discovery_failure
+                                            orch patch_id)));
                               Runtime.update_orchestrator runtime (fun orch ->
                                   Orchestrator.complete orch patch_id)
                           | Orchestrator.Start_stale -> ())))
