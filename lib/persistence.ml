@@ -194,8 +194,16 @@ let patch_agent_of_yojson ~gameplan json =
        ~no_commits_push_count:
          (Option.value (int_member_opt "no_commits_push_count" json) ~default:0)
        ~branch_rebased_onto:
-         (string_member_opt "branch_rebased_onto" json
-         |> Option.map ~f:Branch.of_string)
+         (match string_member_opt "branch_rebased_onto" json with
+         | Some s -> Some (Branch.of_string s)
+         | None ->
+             (* Backward compat: assume existing PR agents are rebased onto
+                their current base_branch so drift detection activates if
+                GitHub later auto-retargets the PR. *)
+             if Option.is_some (int_member_opt "pr_number" json) then
+               string_member_opt "base_branch" json
+               |> Option.map ~f:Branch.of_string
+             else None)
        ~checks_passing:(bool_member "checks_passing" json)
        ~current_op:
          (match Yojson.Safe.Util.member "current_op" json with
