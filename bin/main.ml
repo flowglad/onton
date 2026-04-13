@@ -103,7 +103,7 @@ let infer_default_branch ~repo_root =
           | Some _ -> "master"
           | None -> "main"))
 
-let known_backends = [ "claude"; "codex"; "opencode"; "pi" ]
+let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
 
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
@@ -1839,6 +1839,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
     | "opencode" ->
         Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | "pi" -> Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
+    | "gemini" ->
+        Gemini_backend.create ~process_mgr ~clock ~timeout:session_timeout
     | other ->
         invalid_arg
           (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
@@ -3137,7 +3139,7 @@ let backend_arg =
   Arg.(
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
-        ~doc:"LLM backend to use: claude or codex.")
+        ~doc:"LLM backend to use: claude, codex, opencode, pi, or gemini.")
 
 let repo_arg =
   let open Cmdliner in
