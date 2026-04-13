@@ -192,8 +192,11 @@ let increment_start_attempts_without_pr t =
   { t with start_attempts_without_pr = t.start_attempts_without_pr + 1 }
 
 (** Handle a successful Claude run where PR discovery failed by recording a
-    durable attempt. The controller derives intervention from this fact. *)
-let on_pr_discovery_failure t = increment_start_attempts_without_pr t
+    durable attempt. The controller derives intervention from this fact.
+    No-op when the agent already has a PR — reruns after the first session
+    should not accumulate this counter. *)
+let on_pr_discovery_failure t =
+  if has_pr t then t else increment_start_attempts_without_pr t
 
 let on_pre_session_failure t =
   if has_pr t then t else increment_start_attempts_without_pr t
@@ -451,3 +454,9 @@ let%test "on_pr_discovery_failure increments attempts again" =
   let t = on_pr_discovery_failure t in
   let t = on_pr_discovery_failure t in
   t.start_attempts_without_pr = 2
+
+let%test "on_pr_discovery_failure is no-op when agent has a PR" =
+  let t = create ~branch:(Branch.of_string "b1") (Patch_id.of_string "1") in
+  let t = set_pr_number t (Pr_number.of_int 42) in
+  let t = on_pr_discovery_failure t in
+  t.start_attempts_without_pr = 0
