@@ -139,24 +139,10 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     match pr_number with
     | Some _ -> ""
     | None ->
-        substitute_variables
-          {|
-**IMPORTANT: Open a draft PR immediately after your first commit.** Do not wait until implementation is complete.
+        {|
+**Do NOT create a PR yourself.** The supervisor opens the draft PR after your first commit lands on the remote, with a gameplan-derived title and body. Just commit your changes and the supervisor will handle PR creation and base-branch management.
 
-After your first commit, run:
-```bash
-gh pr create --draft --title '[{{project_name}}] Patch {{patch_id}}: {{title}}' --body 'Work in progress' --base {{base_branch}}
-```
-
-**NEVER change the PR base branch after creation.** The orchestrator manages PR base branches and draft status automatically.
-
-Then continue implementing until all tests pass.|}
-          [
-            ("project_name", project_name);
-            ("patch_id", patch_id);
-            ("title", patch.Patch.title);
-            ("base_branch", base_branch);
-          ]
+Continue implementing until all tests pass.|}
   in
   let vars =
     [
@@ -267,16 +253,36 @@ Then continue implementing until all tests pass.|}
 - Base branch: {{base_branch}}
 - PR: {{pr_str}}
 {{base_branch_note}}{{pr_instructions}}
-## PR Title (CRITICAL)
-**You MUST use this EXACT title format:**
-
-`[{{project_name}}] Patch {{patch_id}}: {{title}}`
-
-Do NOT use conventional commit format (e.g., `feat:`, `fix:`). The bracketed project name and patch number are required for tracking.
-
 ## Patches in Gameplan
 {{patches_list}}|}
         vars)
+
+let resolve_pr_body_source ~(artifact : string option) ~(fallback : string) :
+    string =
+  match artifact with
+  | Some body when String.length (String.strip body) > 0 -> body
+  | Some _ | None -> fallback
+
+let%test "resolve_pr_body_source: None artifact returns fallback" =
+  String.equal
+    (resolve_pr_body_source ~artifact:None ~fallback:"gameplan body")
+    "gameplan body"
+
+let%test "resolve_pr_body_source: empty artifact returns fallback" =
+  String.equal
+    (resolve_pr_body_source ~artifact:(Some "") ~fallback:"gameplan body")
+    "gameplan body"
+
+let%test "resolve_pr_body_source: whitespace-only artifact returns fallback" =
+  String.equal
+    (resolve_pr_body_source ~artifact:(Some "  \n\t  ")
+       ~fallback:"gameplan body")
+    "gameplan body"
+
+let%test "resolve_pr_body_source: non-empty artifact wins" =
+  String.equal
+    (resolve_pr_body_source ~artifact:(Some "agent body") ~fallback:"gameplan")
+    "agent body"
 
 let render_pr_description ~(project_name : string) (patch : Patch.t)
     (gameplan : Gameplan.t) =
@@ -322,31 +328,62 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
 {{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
         vars)
 
-let render_implementation_notes_prompt ~(project_name : string)
-    ~(pr_number : Pr_number.t) ~(pr_body : string) =
+let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
+    ~(pr_body : string) ~(artifact_path : string) =
   let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
-  let vars = [ ("pr_number", pr_num_str); ("pr_body", pr_body) ] in
-  render_with_override ~project_name ~name:"implementation_notes" ~vars
-    ~default:(fun () ->
+  let vars =
+    [
+      ("pr_number", pr_num_str);
+      ("pr_body", pr_body);
+      ("artifact_path", artifact_path);
+    ]
+  in
+  render_with_override ~project_name ~name:"pr_body" ~vars ~default:(fun () ->
       substitute_variables
-        {|You have just finished implementing this patch and a PR has been created.
+        {|You have just finished implementing this patch. PR #{{pr_number}} was opened with a generic, gameplan-derived body. Your task is to write a better one — describing what you actually built — and the supervisor will upload it.
 
-The current PR description is:
+The current PR body (gameplan-derived, will be replaced by what you write) is:
 
 ---
 {{pr_body}}
 ---
 
-Your task: append an **## Implementation Notes** section to the PR body that describes what you actually did. Focus on:
+**Write the full PR body to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. Do NOT run `gh`, `git`, or any forge command; the supervisor reads the file and PATCHes the PR.
 
-- Key implementation decisions and trade-offs you made
-- Anything surprising or non-obvious about the approach
-- Deviations from the original plan (if any)
-- Important details a reviewer should know
+What to include in the body:
 
-Do NOT repeat information already in the description. Keep it concise — a few bullet points is ideal.
+- A short summary of what this patch does, in your own words.
+- Key implementation decisions and trade-offs you made.
+- Anything surprising or non-obvious about the approach.
+- Deviations from the original plan (if any).
+- Important context a reviewer should know.
 
-Use `gh pr edit {{pr_number}} --body-file -` to update the PR body. Read the current body first with `gh pr view {{pr_number}} --json body -q .body`, append your Implementation Notes section, then write the full body back. If an Implementation Notes section already exists, update it rather than duplicating it.|}
+Write the **full body** (not a delta). It will replace the existing description verbatim. If you genuinely have nothing to add over the gameplan-derived body, write that body verbatim — the supervisor PATCH is idempotent.
+
+A separate, later phase will append `## Implementation Notes` to this body — do not include that section here.|}
+        vars)
+
+let render_implementation_notes_prompt ~(project_name : string)
+    ~(pr_number : Pr_number.t) ~(artifact_path : string) =
+  let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
+  let vars = [ ("pr_number", pr_num_str); ("artifact_path", artifact_path) ] in
+  render_with_override ~project_name ~name:"implementation_notes" ~vars
+    ~default:(fun () ->
+      substitute_variables
+        {|You have just finished implementing this patch and a PR has been created. The supervisor opens a final phase where you write **just the implementation notes** — the "## Implementation Notes" section a reviewer cares about.
+
+**Write the notes content (markdown, no header line) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. The supervisor reads the file, prepends `## Implementation Notes`, and appends it to the PR body.
+
+Do NOT run `gh`, `git`, or any forge command — the supervisor handles upload.
+
+Focus on:
+
+- Key implementation decisions and trade-offs you made.
+- Anything surprising or non-obvious about the approach.
+- Deviations from the original plan (if any).
+- Important details a reviewer should know.
+
+Keep it concise — a few bullet points usually suffices. If you have nothing material to add (the patch is straightforward), write a single line acknowledging that.|}
         vars)
 
 let render_review_prompt ~(project_name : string) ?pr_number
@@ -412,7 +449,8 @@ let render_review_prompt ~(project_name : string) ?pr_number
             \   `gh api graphql -f query='mutation { \
              resolveReviewThread(input: {threadId: \"{thread_id}\"}) { thread \
              { isResolved } } }'`\n\n\
-             After addressing all comments, commit and push your changes."
+             After addressing all comments, commit your changes. The \
+             supervisor will push them for you — do not run `git push`."
             pr_ctx formatted pr_num_str)
 
 let render_ci_failure_prompt ~(project_name : string) ?pr_number
@@ -458,7 +496,8 @@ let render_ci_failure_prompt ~(project_name : string) ?pr_number
             "# CI Failures%s\n\n\
              The following CI checks failed:\n\n\
              %s\n\n\
-             After making your changes, commit and push."
+             After making your changes, commit them. The supervisor will push \
+             them for you — do not run `git push`."
             pr_ctx formatted)
 
 let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
@@ -483,7 +522,8 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
          One or more CI checks failed. Please investigate the failures and fix \
          them.\n\n\
          Run the CI checks locally or check the PR status for details.\n\n\
-         After making your changes, commit and push."
+         After making your changes, commit them. The supervisor will push them \
+         for you — do not run `git push`."
         pr_ctx)
 
 let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
@@ -577,7 +617,7 @@ Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
 commits that have already been stripped.
 
-After resolving all conflicts and completing the rebase, commit and push your changes.%s%s%s|}
+After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s|}
         pr_ctx base_branch base_branch status_section diff_section task_context)
 
 let render_human_message_prompt ~(project_name : string)

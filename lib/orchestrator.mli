@@ -92,8 +92,8 @@ val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
-val set_pr_description_applied : t -> Patch_id.t -> bool -> t
 val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
+val set_pr_body_delivered : t -> Patch_id.t -> bool -> t
 val increment_start_attempts_without_pr : t -> Patch_id.t -> t
 val reset_intervention_state : t -> Patch_id.t -> t
 val set_branch_blocked : t -> Patch_id.t -> t
@@ -127,6 +127,7 @@ type session_result =
   | Session_failed of { is_fresh : bool }
   | Session_give_up
   | Session_worktree_missing
+  | Session_push_failed
 [@@deriving show, eq, sexp_of]
 
 val apply_session_result : t -> Patch_id.t -> session_result -> t
@@ -136,7 +137,22 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     on_session_failure + complete. [Session_no_resume] -> on_session_failure
     (not fresh) + complete. [Session_give_up] -> set_session_failed +
     set_tried_fresh + complete. [Session_worktree_missing] ->
-    on_pre_session_failure + complete. *)
+    on_pre_session_failure + complete. [Session_push_failed] ->
+    clear_session_fallback (LLM session itself was healthy) + complete_failed
+    (commits did not reach the remote — retry on next iteration). Use this when
+    the LLM ran cleanly but the supervisor's post-session push failed. *)
+
+val combine_session_and_push :
+  session:session_result -> push:Worktree.push_result -> session_result
+(** Pure: fold the LLM session outcome and the supervisor's post-session push
+    outcome into a single [session_result] for [apply_session_result].
+    - A pre-existing LLM failure ([Session_process_error], [Session_failed],
+      [Session_no_resume], [Session_give_up], [Session_worktree_missing],
+      [Session_push_failed]) is preserved unchanged — the push outcome doesn't
+      change anything.
+    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
+    - [Session_ok] with [Push_rejected] or [Push_error] becomes
+      [Session_push_failed] — the LLM ran fine but commits didn't ship. *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]

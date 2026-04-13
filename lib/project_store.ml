@@ -41,6 +41,16 @@ let stored_gameplan_path project_name =
   let md = gameplan_path project_name in
   if Stdlib.Sys.file_exists md then md else gameplan_json_path project_name
 
+let artifact_dir ~project_name ~patch_id =
+  Stdlib.Filename.concat (project_dir project_name)
+    (Stdlib.Filename.concat "artifacts" (Types.Patch_id.to_string patch_id))
+
+let pr_body_artifact_path ~project_name ~patch_id =
+  Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "pr-body.md"
+
+let implementation_notes_artifact_path ~project_name ~patch_id =
+  Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "notes.md"
+
 let ensure_dir path =
   let rec mkdir_p dir =
     if not (Stdlib.Sys.file_exists dir) then (

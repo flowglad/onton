@@ -491,6 +491,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Addressing_review -> Addressing_review
     | Resolving_conflict -> Resolving_conflict
     | Responding_to_human -> Responding_to_human
+    | Writing_pr_body -> Writing_pr_body
     | Adding_notes -> Adding_notes
     | Rebasing -> Rebasing
     | Starting -> Starting
@@ -512,9 +513,11 @@ let all_display_statuses : Onton.Tui.display_status list =
       Addressing_review;
       Resolving_conflict;
       Responding_to_human;
+      Writing_pr_body;
       Adding_notes;
       Rebasing;
       Starting;
+      Updating;
       Ci_queued;
       Review_queued;
       Awaiting_ci;
@@ -612,6 +615,7 @@ let gen_session_result =
         map (fun b -> Onton.Orchestrator.Session_failed { is_fresh = b }) bool;
         return Onton.Orchestrator.Session_give_up;
         return Onton.Orchestrator.Session_worktree_missing;
+        return Onton.Orchestrator.Session_push_failed;
       ])
 
 let print_session_result = Onton.Orchestrator.show_session_result

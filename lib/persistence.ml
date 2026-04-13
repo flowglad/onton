@@ -17,6 +17,11 @@ let int_member_opt key json =
   | `Null -> None
   | v -> Some (Yojson.Safe.Util.to_int v)
 
+let bool_member_opt key json =
+  match Yojson.Safe.Util.member key json with
+  | `Null -> None
+  | v -> Some (Yojson.Safe.Util.to_bool v)
+
 let result_all xs =
   List.fold_right xs ~init:(Ok []) ~f:(fun x acc ->
       Result.bind acc ~f:(fun tl -> Result.map x ~f:(fun hd -> hd :: tl)))
@@ -65,7 +70,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
-      ("pr_description_applied", `Bool a.pr_description_applied);
+      ("pr_body_delivered", `Bool a.pr_body_delivered);
       ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("conflict_noop_count", `Int a.conflict_noop_count);
@@ -174,7 +179,8 @@ let patch_agent_of_yojson ~gameplan json =
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
        ~is_draft:(bool_member "is_draft" json)
-       ~pr_description_applied:(bool_member "pr_description_applied" json)
+       ~pr_body_delivered:
+         (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
        ~implementation_notes_delivered:
          (bool_member "implementation_notes_delivered" json)
        ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)

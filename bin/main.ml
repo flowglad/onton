@@ -158,25 +158,12 @@ module Pr_registry = struct
         Hashtbl.remove t.table patch_id)
 end
 
-(** Discover PR number for a branch via GitHub REST API. Returns [Ok] with the
-    PR number or [Error] with a diagnostic message. *)
-let discover_pr_number ~net ~github ~branch ~base_branch =
-  match
-    Github.list_prs ~net github ~branch ~base:(Some base_branch) ~state:`Open ()
-  with
-  | Ok ((pr_number, _, _) :: _) -> Ok pr_number
-  | Ok [] -> Error "no PRs found for branch"
-  | Error e -> Error (Github.show_error e)
-
 (** Execute declarative GitHub effects and record successful observations back
     into durable state. *)
 let execute_github_effects ~runtime ~net ~github effects =
   Base.List.iter effects ~f:(fun github_effect ->
       let label =
         match github_effect with
-        | Patch_controller.Set_pr_description { pr_number; _ } ->
-            Printf.sprintf "set_pr_description (PR #%d)"
-              (Pr_number.to_int pr_number)
         | Patch_controller.Set_pr_draft { pr_number; draft; _ } ->
             Printf.sprintf "set_pr_draft (PR #%d, draft=%b)"
               (Pr_number.to_int pr_number)
@@ -189,9 +176,6 @@ let execute_github_effects ~runtime ~net ~github effects =
       try
         let result =
           match github_effect with
-          | Patch_controller.Set_pr_description
-              { patch_id = _; pr_number; body } ->
-              Github.update_pr_body ~net github ~pr_number ~body
           | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
               Github.set_draft ~net github ~pr_number ~draft
           | Patch_controller.Set_pr_base { patch_id = _; pr_number; base } ->
@@ -296,6 +280,82 @@ let log_event runtime ?patch_id msg =
       Activity_log.add_event log
         (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
            msg))
+
+(** Read an artifact file. Returns [Some contents] if the file exists and is
+    readable, [None] otherwise. *)
+let read_artifact_file path =
+  try
+    if Stdlib.Sys.file_exists path then (
+      let ic = Stdlib.open_in path in
+      let len = Stdlib.in_channel_length ic in
+      let s = Bytes.create len in
+      Stdlib.really_input ic s 0 len;
+      Stdlib.close_in ic;
+      Some (Bytes.to_string s))
+    else None
+  with _ -> None
+
+(** Apply the agent-authored PR body artifact to the PR. Falls back to keeping
+    the gameplan-derived body if the artifact is missing or empty. *)
+let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
+    ~pr_number =
+  let artifact_path =
+    Project_store.pr_body_artifact_path ~project_name ~patch_id
+  in
+  match read_artifact_file artifact_path with
+  | None ->
+      log_event runtime ~patch_id
+        (Printf.sprintf "pr-body: artifact missing at %s; keeping gameplan body"
+           artifact_path)
+  | Some body when String.length (String.trim body) = 0 ->
+      log_event runtime ~patch_id
+        "pr-body: artifact empty; keeping gameplan body"
+  | Some body -> (
+      match Github.update_pr_body ~net github ~pr_number ~body with
+      | Ok () ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "pr-body: PATCHed PR #%d"
+               (Pr_number.to_int pr_number))
+      | Error e ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "pr-body: PATCH failed — %s" (Github.show_error e)))
+
+(** Apply the agent-authored notes artifact: compose
+    [<pr-body>\n\n## Implementation Notes\n\n<notes>] and PATCH the PR. The body
+    source is the local pr-body.md artifact; if missing, falls back to the
+    gameplan-derived body. *)
+let apply_notes_artifact ~runtime ~net ~github ~project_name ~patch_id
+    ~pr_number ~patch ~gameplan =
+  let notes_path =
+    Project_store.implementation_notes_artifact_path ~project_name ~patch_id
+  in
+  match read_artifact_file notes_path with
+  | None ->
+      log_event runtime ~patch_id
+        (Printf.sprintf "notes: artifact missing at %s; not updating PR body"
+           notes_path)
+  | Some notes when String.length (String.trim notes) = 0 ->
+      log_event runtime ~patch_id "notes: artifact empty; not updating PR body"
+  | Some notes -> (
+      let body_base =
+        Prompt.resolve_pr_body_source
+          ~artifact:
+            (read_artifact_file
+               (Project_store.pr_body_artifact_path ~project_name ~patch_id))
+          ~fallback:(Prompt.render_pr_description ~project_name patch gameplan)
+      in
+      let composed =
+        Printf.sprintf "%s\n\n## Implementation Notes\n\n%s" body_base
+          (String.trim notes)
+      in
+      match Github.update_pr_body ~net github ~pr_number ~body:composed with
+      | Ok () ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "notes: PATCHed PR #%d (body + notes section)"
+               (Pr_number.to_int pr_number))
+      | Error e ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "notes: PATCH failed — %s" (Github.show_error e)))
 
 (** Terminal failure — forces [Given_up] so [complete] raises intervention. Used
     for non-retryable errors (patch not found, PR discovery failed). *)
@@ -682,11 +742,58 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                      backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
+          (* Supervisor-owned push: agent commits locally; we push every
+             local commit to the remote at session end. force_push_with_lease
+             is idempotent (Push_up_to_date when nothing new), and lease-safe
+             against concurrent remote updates. Runs regardless of the LLM's
+             session result so commits made before a partial failure still
+             reach the remote. *)
+          let branch = agent.Patch_agent.branch in
+          let push_outcome =
+            Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
+              ~branch
+          in
+          (match push_outcome with
+          | Worktree.Push_ok ->
+              log_event runtime ~patch_id "runner: pushed after session"
+          | Worktree.Push_up_to_date ->
+              log_event runtime ~patch_id
+                "runner: push up-to-date after session (no new commits)"
+          | Worktree.Push_rejected ->
+              log_event runtime ~patch_id
+                "runner: push rejected after session (lease)"
+          | Worktree.Push_error msg ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "runner: push error after session: %s" msg));
+          (* Combine LLM session outcome with push outcome into a single
+             session_result via the pure decision in
+             [Orchestrator.combine_session_and_push]. user_result mirrors:
+             same Ok/Failed disposition unless the combination promoted us
+             to Session_push_failed (which is always Failed). *)
+          let final_session_result =
+            Orchestrator.combine_session_and_push ~session:session_result
+              ~push:push_outcome
+          in
+          let final_user_result =
+            match final_session_result with
+            | Orchestrator.Session_ok -> user_result
+            | Orchestrator.Session_push_failed ->
+                (* LLM session ran fine but push failed — signal retry so
+                   the Respond path uses Respond_retry_push (clean complete)
+                   and the reconciler re-enqueues the operation naturally. *)
+                `Retry_push
+            | Orchestrator.Session_process_error _
+            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
+            | Orchestrator.Session_give_up
+            | Orchestrator.Session_worktree_missing ->
+                `Failed
+          in
           let agent_before, agent_after =
             Runtime.update_orchestrator_returning runtime (fun orch ->
                 let agent_before = Orchestrator.agent orch patch_id in
                 let orch =
-                  Orchestrator.apply_session_result orch patch_id session_result
+                  Orchestrator.apply_session_result orch patch_id
+                    final_session_result
                 in
                 (* Store the captured session_id for future --resume calls *)
                 let orch =
@@ -699,9 +806,9 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                 let agent_after = Orchestrator.agent orch patch_id in
                 (orch, (agent_before, agent_after)))
           in
-          Event_log.log_complete event_log ~patch_id ~result:session_result
-            ~agent_before ~agent_after;
-          user_result)
+          Event_log.log_complete event_log ~patch_id
+            ~result:final_session_result ~agent_before ~agent_after;
+          final_user_result)
 
 (** {1 Fibers} *)
 
@@ -2065,7 +2172,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                           let start_outcome =
                             match result with
                             | `Stale -> Orchestrator.Start_stale
-                            | `Failed -> Orchestrator.Start_failed
+                            | `Failed | `Retry_push -> Orchestrator.Start_failed
                             | `Ok -> Orchestrator.Start_ok
                           in
                           Runtime.update_orchestrator runtime (fun orch ->
@@ -2087,35 +2194,99 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                        (Patch_id.to_string patch_id))
                                   ()
                           | Orchestrator.Start_ok ->
-                              (* Always confirm via REST API *)
-                              let rec discover remaining =
-                                match
-                                  discover_pr_number ~net ~github
-                                    ~branch:patch.Patch.branch ~base_branch
-                                with
-                                | Ok pr_number ->
-                                    log_event runtime ~patch_id
-                                      (Printf.sprintf "Created PR #%d"
-                                         (Pr_number.to_int pr_number));
-                                    Pr_registry.register pr_registry ~patch_id
-                                      ~pr_number;
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.set_pr_number orch patch_id
-                                          pr_number)
-                                | Error _ when remaining > 0 ->
-                                    Eio.Time.sleep clock 2.0;
-                                    discover (remaining - 1)
-                                | Error msg ->
-                                    log_event runtime ~patch_id
-                                      (Printf.sprintf "PR discovery failed — %s"
-                                         msg);
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.on_pr_discovery_failure
-                                          orch patch_id)
+                              (* Supervisor-owned PR creation: the agent
+                                 commits and the supervisor pushed at session
+                                 end; now we open the draft PR with a
+                                 gameplan-derived title and body. *)
+                              let pr_title =
+                                Printf.sprintf "[%s] Patch %s: %s" project_name
+                                  (Patch_id.to_string patch.Patch.id)
+                                  patch.Patch.title
                               in
-                              discover 2;
+                              let pr_body =
+                                Prompt.render_pr_description ~project_name patch
+                                  gameplan
+                              in
+                              (match
+                                 Github.create_pull_request ~net github
+                                   ~title:pr_title ~head:patch.Patch.branch
+                                   ~base:base_branch ~body:pr_body ~draft:true
+                               with
+                              | Ok pr_number ->
+                                  log_event runtime ~patch_id
+                                    (Printf.sprintf "PR #%d created"
+                                       (Pr_number.to_int pr_number));
+                                  Pr_registry.register pr_registry ~patch_id
+                                    ~pr_number;
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.set_pr_number orch patch_id
+                                        pr_number)
+                              | Error e -> (
+                                  match e with
+                                  | Github.Http_error { status = 422; body; _ }
+                                    when Github.response_error_message_contains
+                                           body
+                                           ~substring:
+                                             "pull request already exists" -> (
+                                      (* PR already exists — discover it rather
+                                         than treating this as failure. We
+                                         only fall back on this specific 422;
+                                         other 422s (no commits, head missing,
+                                         etc.) propagate with the original
+                                         error message. *)
+                                      match
+                                        Github.list_prs ~net github
+                                          ~branch:patch.Patch.branch
+                                          ~base:(Some base_branch) ~state:`Open
+                                          ()
+                                      with
+                                      | Ok ((pr_number, _, _) :: _) ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "PR #%d already existed, \
+                                                associated"
+                                               (Pr_number.to_int pr_number));
+                                          Pr_registry.register pr_registry
+                                            ~patch_id ~pr_number;
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator.set_pr_number orch
+                                                patch_id pr_number)
+                                      | Ok [] ->
+                                          log_event runtime ~patch_id
+                                            "PR creation failed (422 \
+                                             already-exists) and discovery \
+                                             found no open PRs";
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .on_pr_discovery_failure orch
+                                                patch_id)
+                                      | Error disc_err ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "PR creation failed (422 \
+                                                already-exists) and discovery \
+                                                also failed — %s"
+                                               (Github.show_error disc_err));
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .on_pr_discovery_failure orch
+                                                patch_id))
+                                  | Github.Http_error _
+                                  | Github.Json_parse_error _
+                                  | Github.Graphql_error _
+                                  | Github.Transport_error _ ->
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "PR creation failed — %s"
+                                           (Github.show_error e));
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.on_pr_discovery_failure
+                                            orch patch_id)));
                               Runtime.update_orchestrator runtime (fun orch ->
                                   Orchestrator.complete orch patch_id)
                           | Orchestrator.Start_stale -> ())))
@@ -2520,6 +2691,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     ( Patch_decision.Human_payload _
                                     | Patch_decision.Ci_payload _
                                     | Patch_decision.Review_payload _
+                                    | Patch_decision.Pr_body_payload
                                     | Patch_decision
                                       .Implementation_notes_payload ) as payload;
                                   base_change;
@@ -2544,6 +2716,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                            (Base.List.length messages)
                                            "message")
                                   | Patch_decision.Ci_payload _
+                                  | Patch_decision.Pr_body_payload
                                   | Patch_decision.Implementation_notes_payload
                                   | Patch_decision.Merge_conflict_payload ->
                                       Printf.sprintf "Delivering %s"
@@ -2565,8 +2738,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   | Patch_decision.Human_payload { messages } ->
                                       Prompt.render_human_message_prompt
                                         ~project_name messages
-                                  | Patch_decision.Implementation_notes_payload
-                                    ->
+                                  | Patch_decision.Pr_body_payload ->
                                       let patch =
                                         Base.List.find_exn
                                           gameplan.Gameplan.patches
@@ -2577,11 +2749,30 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         Prompt.render_pr_description
                                           ~project_name patch gameplan
                                       in
+                                      let artifact_path =
+                                        Project_store.pr_body_artifact_path
+                                          ~project_name ~patch_id
+                                      in
+                                      Project_store.ensure_dir
+                                        (Stdlib.Filename.dirname artifact_path);
+                                      Prompt.render_pr_body_prompt ~project_name
+                                        ~pr_number:
+                                          (Base.Option.value_exn pr_number)
+                                        ~pr_body ~artifact_path
+                                  | Patch_decision.Implementation_notes_payload
+                                    ->
+                                      let artifact_path =
+                                        Project_store
+                                        .implementation_notes_artifact_path
+                                          ~project_name ~patch_id
+                                      in
+                                      Project_store.ensure_dir
+                                        (Stdlib.Filename.dirname artifact_path);
                                       Prompt.render_implementation_notes_prompt
                                         ~project_name
                                         ~pr_number:
                                           (Base.Option.value_exn pr_number)
-                                        ~pr_body
+                                        ~artifact_path
                                   | Patch_decision.Merge_conflict_payload ->
                                       (* Invariant: Merge_conflict is handled
                                          in the dedicated match arm above *)
@@ -2615,6 +2806,43 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         Orchestrator.set_notified_base_branch
                                           orch patch_id (Branch.of_string base))
                                 | _ -> ());
+                                (* Artifact-driven phases (Pr_body, Notes):
+                                   read the agent's artifact and PATCH the PR
+                                   body. Falls back gracefully if the artifact
+                                   is missing — the *_delivered flag flips
+                                   true via apply_respond_outcome on
+                                   Respond_ok regardless, so we don't loop. *)
+                                let session_ok =
+                                  match result with `Ok -> true | _ -> false
+                                in
+                                (if session_ok then
+                                   match payload with
+                                   | Patch_decision.Pr_body_payload ->
+                                       let pr =
+                                         Base.Option.value_exn pr_number
+                                       in
+                                       apply_pr_body_artifact ~runtime ~net
+                                         ~github ~project_name ~patch_id
+                                         ~pr_number:pr
+                                   | Patch_decision.Implementation_notes_payload
+                                     ->
+                                       let pr =
+                                         Base.Option.value_exn pr_number
+                                       in
+                                       let patch =
+                                         Base.List.find_exn
+                                           gameplan.Gameplan.patches
+                                           ~f:(fun (p : Patch.t) ->
+                                             Patch_id.equal p.Patch.id patch_id)
+                                       in
+                                       apply_notes_artifact ~runtime ~net
+                                         ~github ~project_name ~patch_id
+                                         ~pr_number:pr ~patch ~gameplan
+                                   | Patch_decision.Human_payload _
+                                   | Patch_decision.Ci_payload _
+                                   | Patch_decision.Review_payload _
+                                   | Patch_decision.Merge_conflict_payload ->
+                                       ());
                                 result)
                       in
                       let respond_outcome =

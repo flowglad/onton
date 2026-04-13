@@ -277,6 +277,7 @@ let prop_plan_new_base_only_for_rebase =
             | Types.Operation_kind.Rebase -> Option.is_some new_base
             | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
             | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
+            | Types.Operation_kind.Pr_body
             | Types.Operation_kind.Implementation_notes ->
                 Option.is_none new_base)
         | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true))
@@ -296,6 +297,7 @@ let prop_plan_suppresses_rebase_multi_dep =
                 List.length (Graph.open_pr_deps graph patch_id ~has_merged) <= 1
             | Types.Operation_kind.Human | Types.Operation_kind.Merge_conflict
             | Types.Operation_kind.Ci | Types.Operation_kind.Review_comments
+            | Types.Operation_kind.Pr_body
             | Types.Operation_kind.Implementation_notes ->
                 true)
         | Reconciler.Mark_merged _ | Reconciler.Enqueue_rebase _ -> true))

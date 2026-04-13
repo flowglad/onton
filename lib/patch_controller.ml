@@ -35,11 +35,6 @@ let message_of_action (patch_agent : Patch_agent.t) action =
     }
 
 type github_effect =
-  | Set_pr_description of {
-      patch_id : Patch_id.t;
-      pr_number : Pr_number.t;
-      body : string;
-    }
   | Set_pr_draft of {
       patch_id : Patch_id.t;
       pr_number : Pr_number.t;
@@ -72,10 +67,26 @@ let discovery_intents orch =
       then Some (agent.patch_id, agent.branch)
       else None)
 
+let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
+  if (not (Patch_agent.has_pr agent)) || agent.merged || agent.pr_body_delivered
+  then t
+  else
+    let already_queued =
+      List.mem agent.queue Operation_kind.Pr_body ~equal:Operation_kind.equal
+      || Option.equal Operation_kind.equal agent.current_op
+           (Some Operation_kind.Pr_body)
+    in
+    if already_queued then t
+    else Orchestrator.enqueue t patch_id Operation_kind.Pr_body
+
+(* Notes wait until the PR body has been delivered so the body PATCH never
+   races with notes-appended writes. *)
 let enqueue_notes_if_needed t patch_id (agent : Patch_agent.t) =
   if
     (not (Patch_agent.has_pr agent))
-    || agent.merged || agent.implementation_notes_delivered
+    || agent.merged
+    || (not agent.pr_body_delivered)
+    || agent.implementation_notes_delivered
   then t
   else
     let already_queued =
@@ -156,7 +167,7 @@ let apply_poll_result t patch_id
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind
-        | Operation_kind.Rebase | Operation_kind.Human
+        | Operation_kind.Rebase | Operation_kind.Human | Operation_kind.Pr_body
         | Operation_kind.Implementation_notes ->
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
@@ -231,25 +242,18 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
   let t = Orchestrator.set_base_branch t patch_id base_branch in
   if merged then Orchestrator.mark_merged t patch_id else t
 
-let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
+let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
   let patch_id = patch.id in
   let agent = Orchestrator.agent t patch_id in
   if agent.Patch_agent.merged then (t, [])
   else
+    let t = enqueue_pr_body_if_needed t patch_id agent in
+    let agent = Orchestrator.agent t patch_id in
     let t = enqueue_notes_if_needed t patch_id agent in
     let agent = Orchestrator.agent t patch_id in
     let effects = ref [] in
     (match agent.pr_number with
     | Some pr_number -> (
-        if not agent.pr_description_applied then
-          effects :=
-            Set_pr_description
-              {
-                patch_id;
-                pr_number;
-                body = Prompt.render_pr_description ~project_name patch gameplan;
-              }
-            :: !effects;
         match agent.base_branch with
         | Some actual_base ->
             let has_merged pid =
@@ -460,8 +464,6 @@ let tick t ~project_name ~gameplan =
   (t, effects, actions)
 
 let apply_github_effect_success t = function
-  | Set_pr_description { patch_id; _ } ->
-      Orchestrator.set_pr_description_applied t patch_id true
   | Set_pr_draft { patch_id; draft; _ } ->
       Orchestrator.set_is_draft t patch_id draft
   | Set_pr_base { patch_id; base; _ } ->
@@ -514,56 +516,42 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
   in
   Patch_agent.needs_intervention (Orchestrator.agent t pid)
 
-let%test "reconcile_patch enqueues implementation notes while missing" =
+let%test "reconcile_patch enqueues pr_body before implementation_notes" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
   let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
   let t = Orchestrator.complete t pid in
-  let t, _ =
-    reconcile_patch t ~project_name:"proj"
-      ~gameplan:
-        Gameplan.
-          {
-            project_name = "proj";
-            problem_statement = "";
-            solution_summary = "";
-            final_state_spec = "";
-            patches = [ patch ];
-            current_state_analysis = "";
-            explicit_opinions = "";
-            acceptance_criteria = [];
-            open_questions = [];
-          }
-      ~patch
+  let gp =
+    Gameplan.
+      {
+        project_name = "proj";
+        problem_statement = "";
+        solution_summary = "";
+        final_state_spec = "";
+        patches = [ patch ];
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+        open_questions = [];
+      }
   in
-  List.mem (Orchestrator.agent t pid).Patch_agent.queue
-    Operation_kind.Implementation_notes ~equal:Operation_kind.equal
-
-let%test "reconcile_patch emits description effect while unapplied" =
-  let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
-  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
-  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
-  let t = Orchestrator.complete t pid in
-  let _, effects =
-    reconcile_patch t ~project_name:"proj"
-      ~gameplan:
-        Gameplan.
-          {
-            project_name = "proj";
-            problem_statement = "";
-            solution_summary = "";
-            final_state_spec = "";
-            patches = [ patch ];
-            current_state_analysis = "";
-            explicit_opinions = "";
-            acceptance_criteria = [];
-            open_questions = [];
-          }
-      ~patch
+  let t, _ = reconcile_patch t ~project_name:"proj" ~gameplan:gp ~patch in
+  let queue = (Orchestrator.agent t pid).Patch_agent.queue in
+  (* Pr_body fires; Implementation_notes is gated on pr_body_delivered so it
+     does NOT yet appear. After Pr_body delivery, notes joins the queue. *)
+  let has_pr_body =
+    List.mem queue Operation_kind.Pr_body ~equal:Operation_kind.equal
   in
-  List.exists effects ~f:(function
-    | Set_pr_description { patch_id; _ } -> Patch_id.equal patch_id pid
-    | Set_pr_draft _ | Set_pr_base _ -> false)
+  let has_notes =
+    List.mem queue Operation_kind.Implementation_notes
+      ~equal:Operation_kind.equal
+  in
+  if (not has_pr_body) || has_notes then false
+  else
+    let t = Orchestrator.set_pr_body_delivered t pid true in
+    let t, _ = reconcile_patch t ~project_name:"proj" ~gameplan:gp ~patch in
+    List.mem (Orchestrator.agent t pid).Patch_agent.queue
+      Operation_kind.Implementation_notes ~equal:Operation_kind.equal
 
 let%test "reconcile_patch requests ready-for-review after notes on main" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
@@ -590,7 +578,7 @@ let%test "reconcile_patch requests ready-for-review after notes on main" =
   in
   List.exists effects ~f:(function
     | Set_pr_draft { patch_id; draft = false; _ } -> Patch_id.equal patch_id pid
-    | Set_pr_description _ | Set_pr_draft _ | Set_pr_base _ -> false)
+    | Set_pr_draft _ | Set_pr_base _ -> false)
 
 let%test "reconcile_patch emits no effects for merged agent" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

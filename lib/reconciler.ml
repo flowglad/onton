@@ -100,7 +100,7 @@ let plan_operations views ~has_merged ~branch_of ~graph ~main =
                     Some (merge_target graph v.id ~has_merged ~branch_of ~main)
               | Operation_kind.Human | Operation_kind.Merge_conflict
               | Operation_kind.Ci | Operation_kind.Review_comments
-              | Operation_kind.Implementation_notes ->
+              | Operation_kind.Pr_body | Operation_kind.Implementation_notes ->
                   None
             in
             if

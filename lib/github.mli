@@ -14,6 +14,12 @@ val show_error : error -> string
     from the response body, and appends a hint about PAT scopes for 401/403/404
     so users can fix permission problems without guesswork. *)
 
+val response_error_message_contains : string -> substring:string -> bool
+(** Returns [true] if any [errors[].message] in a GitHub validation response
+    body contains [substring] (case-insensitive). Use this to discriminate
+    between distinct 422 cases (e.g. "pull request already exists" vs "no
+    commits between"). Pure; safe on malformed input. *)
+
 type t
 
 val create : token:string -> owner:string -> repo:string -> t
@@ -57,6 +63,19 @@ val update_pr_body :
   (unit, error) Result.t
 (** [update_pr_body ~net t ~pr_number ~body] updates the PR description via
     [PATCH /repos/:owner/:repo/pulls/:number]. *)
+
+val create_pull_request :
+  net:_ Eio.Net.t ->
+  t ->
+  title:string ->
+  head:Types.Branch.t ->
+  base:Types.Branch.t ->
+  body:string ->
+  draft:bool ->
+  (Types.Pr_number.t, error) Result.t
+(** [create_pull_request ~net t ~title ~head ~base ~body ~draft] creates a pull
+    request via [POST /repos/:owner/:repo/pulls] and returns the new PR number.
+*)
 
 val update_pr_base :
   net:_ Eio.Net.t ->

@@ -20,6 +20,44 @@ let extract_github_message body =
     | None -> truncate body
   with _ -> truncate body
 
+(* Returns [true] if any [errors[].message] in a GitHub 422 validation response
+   body contains [substring] (case-insensitive). 422 covers many distinct
+   validation cases (no commits between head/base, head doesn't exist, branch
+   already has PR, etc.) — callers use this to discriminate which one. Pure;
+   safe on malformed input (returns false). *)
+let response_error_message_contains body ~substring =
+  try
+    let json = Yojson.Safe.from_string body in
+    let errors = Yojson.Safe.Util.(json |> member "errors" |> to_list) in
+    let needle = String.lowercase substring in
+    List.exists errors ~f:(fun err ->
+        match
+          Yojson.Safe.Util.(err |> member "message" |> to_string_option)
+        with
+        | None -> false
+        | Some msg ->
+            String.is_substring (String.lowercase msg) ~substring:needle)
+  with _ -> false
+
+let%test "response_error_message_contains: empty body returns false" =
+  not (response_error_message_contains "" ~substring:"already exists")
+
+let%test "response_error_message_contains: matches errors[].message substring" =
+  response_error_message_contains
+    {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for foo/bar:branch."}]}|}
+    ~substring:"pull request already exists"
+
+let%test "response_error_message_contains: no match for unrelated error" =
+  not
+    (response_error_message_contains
+       {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between main and feature."}]}|}
+       ~substring:"pull request already exists")
+
+let%test "response_error_message_contains: missing errors[] returns false" =
+  not
+    (response_error_message_contains {|{"message":"Not Found"}|}
+       ~substring:"pull request already exists")
+
 (* Hint added to permission-related HTTP errors so users know which PAT scopes
    to check. Fine-grained PATs need distinct permissions per endpoint category,
    which is the root cause of the opaque-error problem in issue #166. *)
@@ -444,6 +482,31 @@ let update_pr_body ~net t ~pr_number ~body =
   match request ~net t ~meth:`PATCH ~path ~body:req_body () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
+
+(** Create a draft pull request via REST API. Returns the new PR number. *)
+let create_pull_request ~net t ~title ~head ~base ~body ~draft =
+  let path = Printf.sprintf "/repos/%s/%s/pulls" t.owner t.repo in
+  let req_body =
+    `Assoc
+      [
+        ("title", `String title);
+        ("head", `String (Types.Branch.to_string head));
+        ("base", `String (Types.Branch.to_string base));
+        ("body", `String body);
+        ("draft", `Bool draft);
+      ]
+    |> Yojson.Safe.to_string
+  in
+  match request ~net t ~meth:`POST ~path ~body:req_body () with
+  | Error _ as e -> e
+  | Ok resp_str -> (
+      try
+        let json = Yojson.Safe.from_string resp_str in
+        let number = Yojson.Safe.Util.(json |> member "number" |> to_int) in
+        Ok (Types.Pr_number.of_int number)
+      with
+      | Yojson.Json_error msg -> Error (Json_parse_error msg)
+      | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg))
 
 (** Update the base (target) branch of a PR via REST API. *)
 let update_pr_base ~net t ~pr_number ~base =

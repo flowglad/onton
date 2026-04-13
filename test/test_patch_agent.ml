@@ -47,7 +47,6 @@ let () =
           && Option.is_none t.base_branch
           && t.ci_failure_count = 0
           && equal_session_fallback t.session_fallback Fresh_available
-          && (not t.pr_description_applied)
           && (not t.implementation_notes_delivered)
           && t.start_attempts_without_pr = 0
           && List.is_empty t.human_messages
@@ -676,7 +675,7 @@ let () =
               ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
-              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+              ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -751,7 +750,7 @@ let () =
               ~base_branch:(Some br) ~notified_base_branch:(Some br)
               ~ci_failure_count:0 ~session_fallback:Fresh_available
               ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-              ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+              ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
               ~implementation_notes_delivered:false ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
               ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -879,11 +878,10 @@ let () =
         (fun pid ->
           let a = create ~branch:br0 pid in
           let a = increment_start_attempts_without_pr a in
-          let a = set_pr_description_applied a true in
+          let a = set_pr_body_delivered a true in
           let a = set_implementation_notes_delivered a true in
           let a = set_pr_number a (Pr_number.of_int 7) in
-          has_pr a && a.is_draft
-          && (not a.pr_description_applied)
+          has_pr a && a.is_draft && (not a.pr_body_delivered)
           && (not a.implementation_notes_delivered)
           && a.start_attempts_without_pr = 0);
       Test.make ~name:"on_pr_discovery_failure increments durable attempt count"

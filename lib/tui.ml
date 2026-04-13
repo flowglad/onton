@@ -12,6 +12,7 @@ type display_status =
   | Addressing_review
   | Resolving_conflict
   | Responding_to_human
+  | Writing_pr_body
   | Adding_notes
   | Rebasing
   | Starting
@@ -36,6 +37,7 @@ let label = function
   | Addressing_review -> "addressing-review"
   | Resolving_conflict -> "resolving-conflict"
   | Responding_to_human -> "responding-to-human"
+  | Writing_pr_body -> "writing-pr-body"
   | Adding_notes -> "adding-notes"
   | Rebasing -> "rebasing"
   | Starting -> "starting"
@@ -56,6 +58,7 @@ let color = function
   | Addressing_review -> Term.Sgr.fg_yellow
   | Resolving_conflict -> Term.Sgr.fg_yellow
   | Responding_to_human -> Term.Sgr.fg_magenta
+  | Writing_pr_body -> Term.Sgr.fg_cyan
   | Adding_notes -> Term.Sgr.fg_cyan
   | Rebasing -> Term.Sgr.fg_cyan
   | Starting -> Term.Sgr.fg_cyan
@@ -98,6 +101,7 @@ let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     | Some Review_comments -> Addressing_review
     | Some Merge_conflict -> Resolving_conflict
     | Some Human -> Responding_to_human
+    | Some Pr_body -> Writing_pr_body
     | Some Implementation_notes -> Adding_notes
     | Some Rebase -> Rebasing
     | None ->
@@ -353,7 +357,7 @@ let status_style = function
   | Approved_idle -> [ Term.Sgr.fg_green ]
   | Approved_running -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Adding_notes ->
+  | Writing_pr_body | Adding_notes ->
       [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Rebasing -> [ Term.Sgr.fg_yellow ]
   | Starting | Updating -> [ Term.Sgr.fg_cyan ]
@@ -369,7 +373,7 @@ let status_indicator = function
   | Approved_idle -> "✓"
   | Approved_running -> "▶"
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Adding_notes ->
+  | Writing_pr_body | Adding_notes ->
       "▶"
   | Rebasing -> "↻"
   | Starting | Updating -> "▶"
@@ -637,6 +641,7 @@ let short_op_name = function
   | Operation_kind.Review_comments -> "review"
   | Operation_kind.Merge_conflict -> "conflict"
   | Operation_kind.Human -> "human"
+  | Operation_kind.Pr_body -> "pr-body"
   | Operation_kind.Implementation_notes -> "notes"
   | Operation_kind.Rebase -> "rebase"
 
@@ -745,7 +750,8 @@ let render_summary (views : patch_view list) =
   let is_running status =
     match status with
     | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-    | Adding_notes | Rebasing | Starting | Updating | Approved_running ->
+    | Writing_pr_body | Adding_notes | Rebasing | Starting | Updating
+    | Approved_running ->
         true
     | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
     | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending ->

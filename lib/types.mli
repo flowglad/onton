@@ -51,6 +51,7 @@ module Operation_kind : sig
     | Merge_conflict
     | Ci
     | Review_comments
+    | Pr_body
     | Implementation_notes
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 

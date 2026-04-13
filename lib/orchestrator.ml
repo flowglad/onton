@@ -342,13 +342,12 @@ let set_merge_ready t patch_id v =
 let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)
 
-let set_pr_description_applied t patch_id v =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_pr_description_applied a v)
-
 let set_implementation_notes_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_implementation_notes_delivered a v)
+
+let set_pr_body_delivered t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_body_delivered a v)
 
 let increment_conflict_noop_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_conflict_noop_count
@@ -504,6 +503,7 @@ type session_result =
   | Session_failed of { is_fresh : bool }
   | Session_give_up
   | Session_worktree_missing
+  | Session_push_failed
 [@@deriving show, eq, sexp_of]
 
 (** Complete a failed session, restoring inflight human messages to the inbox.
@@ -553,6 +553,24 @@ let apply_session_result t patch_id result =
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
       complete_failed t patch_id
+  | Session_push_failed ->
+      (* The LLM session itself ran cleanly — clear its fallback state so we
+         resume the same session next iteration. The push failure is treated
+         as a soft failure: complete_failed clears busy and re-enqueues any
+         inflight human messages so the next iteration retries. *)
+      let t = clear_session_fallback t patch_id in
+      complete_failed t patch_id
+
+let combine_session_and_push ~(session : session_result)
+    ~(push : Worktree.push_result) : session_result =
+  match session with
+  | Session_ok -> (
+      match push with
+      | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
+      | Worktree.Push_rejected | Worktree.Push_error _ -> Session_push_failed)
+  | Session_process_error _ | Session_no_resume | Session_failed _
+  | Session_give_up | Session_worktree_missing | Session_push_failed ->
+      session
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
@@ -594,6 +612,11 @@ let apply_respond_outcome t patch_id kind outcome =
         if Operation_kind.equal kind Operation_kind.Merge_conflict then
           let t = clear_has_conflict t patch_id in
           reset_conflict_noop_count t patch_id
+        else t
+      in
+      let t =
+        if Operation_kind.equal kind Operation_kind.Pr_body then
+          set_pr_body_delivered t patch_id true
         else t
       in
       if Operation_kind.equal kind Operation_kind.Implementation_notes then
