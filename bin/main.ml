@@ -701,6 +701,28 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           in
           Event_log.log_complete event_log ~patch_id ~result:session_result
             ~agent_before ~agent_after;
+          (* Supervisor-owned push: agent commits locally; we push every
+             local commit to the remote at session end. force_push_with_lease
+             is idempotent (Push_up_to_date when nothing new), and lease-safe
+             against concurrent remote updates. Runs regardless of
+             session_result so commits made before a partial failure still
+             reach the remote. *)
+          let branch = agent.Patch_agent.branch in
+          (match
+             Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
+               ~branch
+           with
+          | Worktree.Push_ok ->
+              log_event runtime ~patch_id "runner: pushed after session"
+          | Worktree.Push_up_to_date ->
+              log_event runtime ~patch_id
+                "runner: push up-to-date after session (no new commits)"
+          | Worktree.Push_rejected ->
+              log_event runtime ~patch_id
+                "runner: push rejected after session (lease)"
+          | Worktree.Push_error msg ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "runner: push error after session: %s" msg));
           user_result)
 
 (** {1 Fibers} *)
