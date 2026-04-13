@@ -777,11 +777,15 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           let final_user_result =
             match final_session_result with
             | Orchestrator.Session_ok -> user_result
+            | Orchestrator.Session_push_failed ->
+                (* LLM session ran fine but push failed — signal retry so
+                   the Respond path uses Respond_retry_push (clean complete)
+                   and the reconciler re-enqueues the operation naturally. *)
+                `Retry_push
             | Orchestrator.Session_process_error _
             | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
             | Orchestrator.Session_give_up
-            | Orchestrator.Session_worktree_missing
-            | Orchestrator.Session_push_failed ->
+            | Orchestrator.Session_worktree_missing ->
                 `Failed
           in
           let agent_before, agent_after =
@@ -2168,7 +2172,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                           let start_outcome =
                             match result with
                             | `Stale -> Orchestrator.Start_stale
-                            | `Failed -> Orchestrator.Start_failed
+                            | `Failed | `Retry_push -> Orchestrator.Start_failed
                             | `Ok -> Orchestrator.Start_ok
                           in
                           Runtime.update_orchestrator runtime (fun orch ->
