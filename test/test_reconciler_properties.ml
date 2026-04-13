@@ -92,6 +92,7 @@ let gen_rebase_scenario =
                   branch_blocked = false;
                   queue = [];
                   base_branch = main;
+                  branch_rebased_onto = Some main;
                 })
         in
         (graph, views, newly_merged))
@@ -153,6 +154,7 @@ let prop_detect_rebases_skips_already_queued =
                 branch_blocked = false;
                 queue = [ Types.Operation_kind.Rebase ];
                 base_branch = main;
+                branch_rebased_onto = Some main;
               })
       in
       return (graph, views, ids))
@@ -189,6 +191,7 @@ let gen_plan_scenario =
                   branch_blocked = false;
                   queue;
                   base_branch = main;
+                  branch_rebased_onto = Some main;
                 }))))
 
 let prop_plan_skips_busy =
@@ -357,6 +360,7 @@ let gen_reconcile_scenario =
                   branch_blocked = false;
                   queue = [];
                   base_branch = main;
+                  branch_rebased_onto = Some main;
                 }))))
 
 let prop_reconcile_merges_subset =
@@ -404,6 +408,212 @@ let prop_reconcile_no_action_on_merged =
       in
       not (List.exists actions ~f:is_start_operation))
 
+(* ========== detect_notified_base_drift properties ========== *)
+
+(* Tests specifically for the drift detector that catches the
+   GitHub-auto-retargeted-after-merge case. Each property constructs views
+   explicitly (not through the randomized gen_patch_view which defaults to no
+   drift). *)
+
+let main_br = Types.Branch.of_string "main"
+let dep_br = Types.Branch.of_string "dep"
+let other_br = Types.Branch.of_string "other"
+
+let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
+    ?(base_branch = main_br) ?(branch_rebased_onto = Some main_br) () =
+  Reconciler.
+    {
+      id;
+      has_pr;
+      merged;
+      busy = false;
+      needs_intervention = false;
+      branch_blocked = false;
+      queue;
+      base_branch;
+      branch_rebased_onto;
+    }
+
+let pid s = Types.Patch_id.of_string s
+
+let prop_drift_fires_on_divergence =
+  QCheck2.Test.make ~name:"drift: fires when rebased_onto != base_branch"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1") ~base_branch:main_br
+          ~branch_rebased_onto:(Some dep_br) ()
+      in
+      match Reconciler.detect_notified_base_drift [ v ] with
+      | [ Reconciler.Enqueue_rebase p ] -> Types.Patch_id.equal p (pid "p1")
+      | [] -> false
+      | [ Reconciler.Mark_merged _ ] | [ Reconciler.Start_operation _ ] -> false
+      | _ :: _ :: _ -> false)
+
+let prop_drift_silent_on_match =
+  QCheck2.Test.make ~name:"drift: silent when rebased_onto == base_branch"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1") ~base_branch:main_br
+          ~branch_rebased_onto:(Some main_br) ()
+      in
+      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+
+let prop_drift_silent_on_none =
+  QCheck2.Test.make
+    ~name:"drift: silent when branch_rebased_onto = None (pre-start)" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1") ~base_branch:main_br ~branch_rebased_onto:None ()
+      in
+      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+
+let prop_drift_silent_on_merged =
+  QCheck2.Test.make ~name:"drift: silent on merged patches" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1") ~merged:true ~base_branch:main_br
+          ~branch_rebased_onto:(Some dep_br) ()
+      in
+      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+
+let prop_drift_silent_on_no_pr =
+  QCheck2.Test.make ~name:"drift: silent when has_pr = false" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1") ~has_pr:false ~base_branch:main_br
+          ~branch_rebased_onto:(Some dep_br) ()
+      in
+      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+
+let prop_drift_silent_when_rebase_queued =
+  QCheck2.Test.make
+    ~name:"drift: silent when Rebase is already in the queue (idempotent)"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1")
+          ~queue:[ Types.Operation_kind.Rebase ]
+          ~base_branch:main_br ~branch_rebased_onto:(Some dep_br) ()
+      in
+      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+
+let prop_drift_always_produces_enqueue_rebase =
+  QCheck2.Test.make ~name:"drift: every emitted action is Enqueue_rebase"
+    ~count:200
+    (QCheck2.Gen.list_size
+       (QCheck2.Gen.int_range 1 6)
+       Onton_test_support.Test_generators.gen_patch_view)
+    (fun views ->
+      (* Force some drift by setting rebased_onto to a branch different from
+         base_branch on a random subset. *)
+      let drifted_views =
+        List.mapi views ~f:(fun i v ->
+            if i % 2 = 0 then
+              { v with Reconciler.branch_rebased_onto = Some other_br }
+            else v)
+      in
+      Reconciler.detect_notified_base_drift drifted_views
+      |> List.for_all ~f:(function
+        | Reconciler.Enqueue_rebase _ -> true
+        | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+
+(* End-to-end: reconcile emits Enqueue_rebase on a drifted view when no
+   other detector would have caught it (base_branch already matches
+   initial_base, merged list is empty, no newly_merged). This is the exact
+   patch-2 scenario from retire-blue-green. *)
+let prop_reconcile_e2e_catches_drift =
+  QCheck2.Test.make
+    ~name:"reconcile: drift detector catches GitHub-auto-retargeted case"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      (* Single patch with no deps; base_branch = main, rebased_onto = dep
+         (stale). No merged_prs. *)
+      let patch : Types.Patch.t =
+        {
+          id = pid "p1";
+          title = "t";
+          description = "";
+          branch = Types.Branch.of_string "p1";
+          dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+        }
+      in
+      let graph = Graph.of_patches [ patch ] in
+      let views =
+        [
+          mk_view ~id:(pid "p1") ~base_branch:main_br
+            ~branch_rebased_onto:(Some dep_br) ();
+        ]
+      in
+      let actions =
+        Reconciler.reconcile ~graph ~main:main_br ~merged_pr_patches:[]
+          ~branch_of:(fun _ -> main_br)
+          views
+      in
+      List.exists actions ~f:(function
+        | Reconciler.Enqueue_rebase p -> Types.Patch_id.equal p (pid "p1")
+        | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+
+(* Dedup: when both stale-base and drift detectors would fire for the same
+   patch, reconcile emits exactly one Enqueue_rebase. *)
+let prop_reconcile_dedup_rebase =
+  QCheck2.Test.make
+    ~name:"reconcile: dedup — at most one Enqueue_rebase per patch" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let patch : Types.Patch.t =
+        {
+          id = pid "p1";
+          title = "t";
+          description = "";
+          branch = Types.Branch.of_string "p1";
+          dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+        }
+      in
+      let graph = Graph.of_patches [ patch ] in
+      (* Construct a view that triggers BOTH detect_stale_bases and
+         detect_notified_base_drift: base_branch=dep (stale vs initial_base
+         which is main), rebased_onto=other (stale vs base). *)
+      let views =
+        [
+          mk_view ~id:(pid "p1") ~base_branch:dep_br
+            ~branch_rebased_onto:(Some other_br) ();
+        ]
+      in
+      let actions =
+        Reconciler.reconcile ~graph ~main:main_br ~merged_pr_patches:[]
+          ~branch_of:(fun _ -> main_br)
+          views
+      in
+      let rebases =
+        List.filter actions ~f:(function
+          | Reconciler.Enqueue_rebase _ -> true
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false)
+      in
+      List.length rebases = 1)
+
 let () =
   let tests =
     [
@@ -425,6 +635,15 @@ let () =
       prop_reconcile_merges_subset;
       prop_reconcile_no_dup_action_types_per_patch;
       prop_reconcile_no_action_on_merged;
+      prop_drift_fires_on_divergence;
+      prop_drift_silent_on_match;
+      prop_drift_silent_on_none;
+      prop_drift_silent_on_merged;
+      prop_drift_silent_on_no_pr;
+      prop_drift_silent_when_rebase_queued;
+      prop_drift_always_produces_enqueue_rebase;
+      prop_reconcile_e2e_catches_drift;
+      prop_reconcile_dedup_rebase;
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

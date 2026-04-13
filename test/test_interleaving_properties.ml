@@ -1511,3 +1511,229 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi13;
   Stdlib.print_endline "PI-13 passed"
+
+(** PI-14: Two consecutive Session_no_commits promote to needs_intervention —
+    without a pending Human in the queue, the counter crossing 2 is enough to
+    stop the scheduler from re-enqueueing Start. Regression for the class of bug
+    where an LLM produces no commits and the supervisor silently loops forever
+    trying to push an empty branch. *)
+let () =
+  let prop_pi14 =
+    QCheck2.Test.make
+      ~name:"PI-14: two consecutive Session_no_commits flip needs_intervention"
+      ~count:200 (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        let pid = pid_of_idx patches 0 in
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+        if not (Orchestrator.agent orch pid).Patch_agent.busy then
+          failwith "agent not busy after Start";
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_no_commits
+        in
+        let a1 = Orchestrator.agent orch pid in
+        if a1.Patch_agent.busy then
+          failwith "agent still busy after first Session_no_commits";
+        if not (Int.equal a1.Patch_agent.no_commits_push_count 1) then
+          failwith "counter not incremented after first Session_no_commits";
+        if Patch_agent.needs_intervention a1 then
+          failwith "needs_intervention fired too early (count = 1)";
+        if
+          not
+            (Patch_agent.equal_session_fallback a1.Patch_agent.session_fallback
+               Patch_agent.Fresh_available)
+        then
+          failwith
+            "session_fallback was not preserved as Fresh_available (LLM itself \
+             was healthy)";
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+        if not (Orchestrator.agent orch pid).Patch_agent.busy then
+          failwith "agent not busy after re-Start";
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_no_commits
+        in
+        let a2 = Orchestrator.agent orch pid in
+        if not (Int.equal a2.Patch_agent.no_commits_push_count 2) then
+          failwith "counter not incremented to 2 after second no-commits";
+        if not (Patch_agent.needs_intervention a2) then
+          failwith "needs_intervention not flipped at count = 2";
+        true)
+  in
+  QCheck2.Test.check_exn prop_pi14;
+  Stdlib.print_endline "PI-14 passed"
+
+(** PI-14b: A human message sent mid-session survives Session_no_commits —
+    complete_failed restores inflight_human_messages into human_messages so the
+    scheduler re-enqueues Human on the next cycle. Note: while a Human is
+    pending, needs_intervention is deliberately gated off (operator may need to
+    respond first); the counter still increments and will surface once the Human
+    queue is drained. *)
+let () =
+  let prop_pi14b =
+    QCheck2.Test.make
+      ~name:
+        "PI-14b: human message survives Session_no_commits (complete_failed)"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let patches = mk_patches 1 in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        let pid = pid_of_idx patches 0 in
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_no_commits
+        in
+        let a = Orchestrator.agent orch pid in
+        if a.Patch_agent.busy then
+          failwith "agent still busy after Session_no_commits";
+        if not (List.mem a.Patch_agent.human_messages msg ~equal:String.equal)
+        then failwith "human message lost after Session_no_commits";
+        if not (Int.equal a.Patch_agent.no_commits_push_count 1) then
+          failwith "counter not incremented";
+        (* With Human pending in queue, needs_intervention is gated off —
+           deliberately. *)
+        not (Patch_agent.needs_intervention a))
+  in
+  QCheck2.Test.check_exn prop_pi14b;
+  Stdlib.print_endline "PI-14b passed"
+
+(** PI-15: Session_ok after a Session_no_commits cleanly resets the counter and
+    intervention state — the agent recovers on its next healthy session and
+    isn't stuck in a half-broken state. Regression for the bug where the counter
+    leaks across successful sessions. *)
+let () =
+  let prop_pi15 =
+    QCheck2.Test.make
+      ~name:
+        "PI-15: Session_ok after Session_no_commits resets \
+         no_commits_push_count"
+      ~count:100 (QCheck2.Gen.int_range 1 2) (fun n_no_commits ->
+        let patches = mk_patches 1 in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        let pid = pid_of_idx patches 0 in
+        let orch =
+          (* Fire Start -> Session_no_commits n times. *)
+          List.fold (List.range 0 n_no_commits) ~init:orch ~f:(fun o _ ->
+              let o = Orchestrator.fire o (Orchestrator.Start (pid, main)) in
+              Orchestrator.apply_session_result o pid
+                Orchestrator.Session_no_commits)
+        in
+        if
+          not
+            (Int.equal
+               (Orchestrator.agent orch pid).Patch_agent.no_commits_push_count
+               n_no_commits)
+        then failwith "counter did not accumulate as expected";
+        (* Fire Start one more time and end with Session_ok. *)
+        let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+        let orch =
+          Orchestrator.apply_session_result orch pid Orchestrator.Session_ok
+        in
+        let a = Orchestrator.agent orch pid in
+        (* Session_ok does NOT complete — agent stays busy per existing
+           contract — but the counter MUST be zeroed. *)
+        Int.equal a.Patch_agent.no_commits_push_count 0
+        && not (Patch_agent.needs_intervention a))
+  in
+  QCheck2.Test.check_exn prop_pi15;
+  Stdlib.print_endline "PI-15 passed"
+
+(** PI-16: The retire-blue-green/patch-2 scenario end-to-end — a dependent patch
+    whose PR gets auto-retargeted by GitHub when its dep merges and whose branch
+    is never thereby rebased. The drift detector must catch it.
+
+    Setup: two patches, patch b depends on patch a. Both bootstrap to having
+    PRs; b's branch_rebased_onto is patch-a's branch (where it started). a
+    merges (agent flagged merged, GitHub deletes a's branch and retargets b's PR
+    to main — modeled by updating b.base_branch to main). The reconciler must
+    enqueue a Rebase on b. *)
+let () =
+  let prop_pi16 =
+    QCheck2.Test.make
+      ~name:
+        "PI-16: drift detector catches GitHub-auto-retargeted PR after dep \
+         merge"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        (* Build a linear 2-patch gameplan: b depends on a *)
+        let a : Patch.t =
+          {
+            id = Patch_id.of_string "a";
+            title = "a";
+            description = "";
+            branch = Branch.of_string "a";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+          }
+        in
+        let b : Patch.t =
+          {
+            a with
+            id = Patch_id.of_string "b";
+            title = "b";
+            branch = Branch.of_string "b";
+            dependencies = [ Patch_id.of_string "a" ];
+          }
+        in
+        let patches = [ a; b ] in
+        let orch = bootstrap patches in
+        let pid_a = a.id and pid_b = b.id in
+        (* Sanity: b started with base_branch = a's branch (per
+           Graph.initial_base) and branch_rebased_onto set to same. *)
+        let agent_b = Orchestrator.agent orch pid_b in
+        if
+          not
+            (Option.equal Branch.equal agent_b.Patch_agent.branch_rebased_onto
+               (Some a.branch))
+        then
+          failwith "patch b did not start with branch_rebased_onto = a's branch";
+        (* a merges *)
+        let orch = Orchestrator.mark_merged orch pid_a in
+        (* GitHub auto-retargets b's PR to main (modeled by explicit
+           set_base_branch on b). Simultaneously b's branch_rebased_onto is
+           still pointing at a's branch because no Rebase has run yet. *)
+        let orch = Orchestrator.set_base_branch orch pid_b main in
+        (* Now run reconcile like the poll fiber does *)
+        let agents = Orchestrator.all_agents orch in
+        let branch_of = branch_of_patches patches in
+        let patch_views =
+          List.map agents ~f:(fun (ag : Patch_agent.t) ->
+              Reconciler.
+                {
+                  id = ag.Patch_agent.patch_id;
+                  has_pr = Patch_agent.has_pr ag;
+                  merged = ag.Patch_agent.merged;
+                  busy = ag.Patch_agent.busy;
+                  needs_intervention = Patch_agent.needs_intervention ag;
+                  branch_blocked = ag.Patch_agent.branch_blocked;
+                  queue = ag.Patch_agent.queue;
+                  base_branch =
+                    Option.value ag.Patch_agent.base_branch ~default:main;
+                  branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+                })
+        in
+        let merged_patches =
+          List.filter_map agents ~f:(fun (ag : Patch_agent.t) ->
+              if ag.Patch_agent.merged then Some ag.Patch_agent.patch_id
+              else None)
+        in
+        let actions =
+          Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+            ~merged_pr_patches:merged_patches ~branch_of patch_views
+        in
+        (* The reconciler must emit Enqueue_rebase for b. *)
+        List.exists actions ~f:(function
+          | Reconciler.Enqueue_rebase p -> Patch_id.equal p pid_b
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+  in
+  QCheck2.Test.check_exn prop_pi16;
+  Stdlib.print_endline "PI-16 passed"

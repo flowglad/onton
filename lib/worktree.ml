@@ -474,6 +474,7 @@ let rebase_onto ~process_mgr ~path ~target =
 type push_result =
   | Push_ok
   | Push_up_to_date
+  | Push_no_commits
   | Push_rejected
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
@@ -496,21 +497,27 @@ let parse_push_porcelain stdout =
       | s when String.length s > 0 -> Some s.[0]
       | _ -> None)
 
-let force_push_with_lease ~process_mgr ~path ~branch =
-  let branch_str = Types.Branch.to_string branch in
-  let code, stdout, stderr =
-    run_git_exit_code ~process_mgr
-      [
-        "git";
-        "-C";
-        path;
-        "push";
-        "--porcelain";
-        "--force-with-lease";
-        "origin";
-        branch_str;
-      ]
-  in
+(** Pure: parse [git rev-list --count base..HEAD] output into a commit count.
+    Returns [None] on non-zero exit or unparseable stdout (treat as unknown —
+    caller may decide to proceed with the push rather than erroneously skip). *)
+let parse_commit_count ~code ~stdout =
+  if code <> 0 then None else Stdlib.int_of_string_opt (String.strip stdout)
+
+type push_gate = Proceed | Skip_no_commits [@@deriving show, eq, sexp_of]
+
+(** Pure: given a commit-count result, decide whether to push. Zero commits
+    ahead of base means a push would publish an empty ref that GitHub rejects on
+    PR creation — skip. Unknown ([None]) defaults to [Proceed] so real failures
+    surface via the push step rather than being masked by a silent skip. *)
+let push_gate_from_count = function
+  | Some 0 -> Skip_no_commits
+  | None | Some _ -> Proceed
+
+(** Pure: classify a [git push --porcelain --force-with-lease] invocation from
+    its exit code + stdout + stderr. Split out so the mapping from raw git
+    output to [push_result] can be property-tested independently of the shell.
+*)
+let classify_push_result ~code ~stdout ~stderr =
   if code = 0 then
     match parse_push_porcelain stdout with
     | Some '=' -> Push_up_to_date
@@ -521,6 +528,36 @@ let force_push_with_lease ~process_mgr ~path ~branch =
     | _ ->
         Push_error
           (Printf.sprintf "push failed (exit %d): %s" code (String.strip stderr))
+
+(** Effectful: run [git rev-list --count base..HEAD] in the worktree. *)
+let commits_ahead_of_base ~process_mgr ~path ~base =
+  let base_str = Types.Branch.to_string base in
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "rev-list"; "--count"; base_str ^ "..HEAD" ]
+  in
+  parse_commit_count ~code ~stdout
+
+let force_push_with_lease ~process_mgr ~path ~branch ~base =
+  let count = commits_ahead_of_base ~process_mgr ~path ~base in
+  match push_gate_from_count count with
+  | Skip_no_commits -> Push_no_commits
+  | Proceed ->
+      let branch_str = Types.Branch.to_string branch in
+      let code, stdout, stderr =
+        run_git_exit_code ~process_mgr
+          [
+            "git";
+            "-C";
+            path;
+            "push";
+            "--porcelain";
+            "--force-with-lease";
+            "origin";
+            branch_str;
+          ]
+      in
+      classify_push_result ~code ~stdout ~stderr
 
 let rebase_in_progress ~process_mgr ~path =
   let code, stdout, _ =

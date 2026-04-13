@@ -10,6 +10,7 @@ type patch_view = {
   branch_blocked : bool;
   queue : Operation_kind.t list;
   base_branch : Branch.t;
+  branch_rebased_onto : Branch.t option;
 }
 [@@deriving sexp_of]
 
@@ -62,6 +63,32 @@ let detect_rebases graph views ~newly_merged =
                      ~equal:Operation_kind.equal) ->
           Some (Enqueue_rebase dep_id)
       | _ -> None)
+
+(** Detect agents whose local branch is rebased onto something other than
+    [base_branch]. [branch_rebased_onto] is updated by Start (to the initial
+    base) and by successful Rebase (to the rebase target). If [base_branch] has
+    since moved — typically because a dep branch was merged and deleted on
+    GitHub, causing GitHub to auto-retarget the PR to [main], and the poller
+    then refreshed [base_branch] to match — the local branch still carries the
+    old dep's commits in its history and needs a rebase even though
+    [base_branch] already equals the structurally-correct base.
+
+    This is the case [detect_stale_bases] misses: there, the structural check
+    [base_branch vs initial_base] both read [main] and agreed, so no rebase was
+    enqueued. *)
+let detect_notified_base_drift views =
+  List.filter_map views ~f:(fun v ->
+      if
+        v.has_pr && (not v.merged)
+        && not
+             (List.mem v.queue Operation_kind.Rebase ~equal:Operation_kind.equal)
+      then
+        match v.branch_rebased_onto with
+        | Some rebased_onto when not (Branch.equal rebased_onto v.base_branch)
+          ->
+            Some (Enqueue_rebase v.id)
+        | Some _ | None -> None
+      else None)
 
 (** Detect agents whose base_branch still points at a merged dependency's
     branch. This catches cases where the event-driven detect_rebases missed the
@@ -126,19 +153,27 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
   let stale_rebases =
     detect_stale_bases graph views ~has_merged ~branch_of ~main
   in
-  (* Deduplicate: event-driven rebases may overlap with stale-base rebases *)
+  let drift_rebases = detect_notified_base_drift views in
+  (* Deduplicate across the three rebase detectors. Priority is arbitrary —
+     they all emit the same [Enqueue_rebase] with the same patch_id — but we
+     must not emit duplicates, since the orchestrator's [enqueue] is
+     idempotent but tests assert on action counts. *)
   let rebases =
-    let seen =
-      Set.of_list
-        (module Patch_id)
-        (List.filter_map event_rebases ~f:(function
-          | Enqueue_rebase pid -> Some pid
-          | Mark_merged _ | Start_operation _ -> None))
+    let pid_of = function
+      | Enqueue_rebase pid -> Some pid
+      | Mark_merged _ | Start_operation _ -> None
     in
-    event_rebases
-    @ List.filter stale_rebases ~f:(function
-      | Enqueue_rebase pid -> not (Set.mem seen pid)
-      | Mark_merged _ | Start_operation _ -> true)
+    let add_unseen seen actions =
+      List.fold actions ~init:(seen, []) ~f:(fun (seen, acc) a ->
+          match pid_of a with
+          | Some pid when not (Set.mem seen pid) -> (Set.add seen pid, a :: acc)
+          | Some _ -> (seen, acc)
+          | None -> (seen, a :: acc))
+    in
+    let seen, kept1 = add_unseen (Set.empty (module Patch_id)) event_rebases in
+    let seen, kept2 = add_unseen seen stale_rebases in
+    let _seen, kept3 = add_unseen seen drift_rebases in
+    List.rev kept1 @ List.rev kept2 @ List.rev kept3
   in
   let rebase_set =
     List.filter_map rebases ~f:(function

@@ -749,9 +749,18 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
              session result so commits made before a partial failure still
              reach the remote. *)
           let branch = agent.Patch_agent.branch in
+          let base =
+            match agent.Patch_agent.base_branch with
+            | Some b -> b
+            | None ->
+                (* Invariant: a running session always has a base_branch set
+                   by start/respond/rebase. Fall back to main just in case. *)
+                Runtime.read runtime (fun snap ->
+                    Orchestrator.main_branch snap.Runtime.orchestrator)
+          in
           let push_outcome =
             Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
-              ~branch
+              ~branch ~base
           in
           (match push_outcome with
           | Worktree.Push_ok ->
@@ -759,6 +768,10 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           | Worktree.Push_up_to_date ->
               log_event runtime ~patch_id
                 "runner: push up-to-date after session (no new commits)"
+          | Worktree.Push_no_commits ->
+              log_event runtime ~patch_id
+                "runner: session ended with no commits on branch — push \
+                 skipped, PR creation deferred"
           | Worktree.Push_rejected ->
               log_event runtime ~patch_id
                 "runner: push rejected after session (lease)"
@@ -777,10 +790,14 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           let final_user_result =
             match final_session_result with
             | Orchestrator.Session_ok -> user_result
-            | Orchestrator.Session_push_failed ->
-                (* LLM session ran fine but push failed — signal retry so
-                   the Respond path uses Respond_retry_push (clean complete)
-                   and the reconciler re-enqueues the operation naturally. *)
+            | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits
+              ->
+                (* LLM session ran fine but commits didn't ship (push failed
+                   or the agent made no commits) — signal retry so the
+                   Respond path uses Respond_retry_push (clean complete) and
+                   the reconciler re-enqueues the operation naturally. After
+                   2 consecutive no-commit sessions, needs_intervention fires
+                   and the scheduler stops re-enqueueing. *)
                 `Retry_push
             | Orchestrator.Session_process_error _
             | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
@@ -1891,6 +1908,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                     queue = a.Patch_agent.queue;
                     base_branch =
                       Base.Option.value a.Patch_agent.base_branch ~default:main;
+                    branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
                   })
           in
           let merged_patches =
@@ -2362,7 +2380,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             let branch = agent.Patch_agent.branch in
                             let result =
                               Worktree.force_push_with_lease ~process_mgr
-                                ~path:wt_path ~branch
+                                ~path:wt_path ~branch ~base:new_base
                             in
                             (match result with
                             | Worktree.Push_ok ->
@@ -2371,6 +2389,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             | Worktree.Push_up_to_date ->
                                 log_event runtime ~patch_id
                                   "Push noop after rebase — already up-to-date"
+                            | Worktree.Push_no_commits ->
+                                log_event runtime ~patch_id
+                                  "Force-push skipped after rebase — branch \
+                                   has no commits ahead of base"
                             | Worktree.Push_rejected ->
                                 log_event runtime ~patch_id
                                   "Force-push rejected — lease violated"
@@ -2644,6 +2666,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         let result =
                                           Worktree.force_push_with_lease
                                             ~process_mgr ~path:wt_path ~branch
+                                            ~base:(Types.Branch.of_string base)
                                         in
                                         (match result with
                                         | Worktree.Push_ok ->
@@ -2653,6 +2676,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                             log_event runtime ~patch_id
                                               "Conflict push noop — already \
                                                up-to-date"
+                                        | Worktree.Push_no_commits ->
+                                            log_event runtime ~patch_id
+                                              "Conflict force-push skipped — \
+                                               branch has no commits ahead of \
+                                               base"
                                         | Worktree.Push_rejected ->
                                             log_event runtime ~patch_id
                                               "Conflict force-push rejected — \

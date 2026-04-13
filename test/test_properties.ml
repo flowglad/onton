@@ -349,6 +349,7 @@ let () =
         branch_blocked;
         queue;
         base_branch = main;
+        branch_rebased_onto = Some main;
       }
   in
   let mk_patch id =
@@ -615,7 +616,7 @@ let () =
         | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
         | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
         | Orchestrator.Session_worktree_missing
-        | Orchestrator.Session_push_failed ->
+        | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits ->
             not a.Patch_agent.busy)
   in
   (* Property: Session_give_up sets needs_intervention *)
@@ -909,6 +910,7 @@ let () =
         Gen.return Orchestrator.Session_give_up;
         Gen.return Orchestrator.Session_worktree_missing;
         Gen.return Orchestrator.Session_push_failed;
+        Gen.return Orchestrator.Session_no_commits;
       ]
   in
   let gen_push : Worktree.push_result Gen.t =
@@ -916,6 +918,7 @@ let () =
       [
         Gen.return Worktree.Push_ok;
         Gen.return Worktree.Push_up_to_date;
+        Gen.return Worktree.Push_no_commits;
         Gen.return Worktree.Push_rejected;
         Gen.map (fun s -> Worktree.Push_error s) Gen.string_small;
       ]
@@ -926,6 +929,253 @@ let () =
         Orchestrator.equal_session_result
           (Orchestrator.combine_session_and_push ~session ~push)
           session)
+  in
+  let prop_cp6_ok_no_commits =
+    Test.make ~name:"CP-6: Session_ok + Push_no_commits = Session_no_commits"
+      (Gen.return ()) (fun () ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session:Session_ok
+             ~push:Worktree.Push_no_commits)
+          Session_no_commits)
+  in
+  (* Session_no_commits property tests (PNC-N) mirror PSF-N: clear fallback,
+     increment counter, reset on Session_ok, trigger needs_intervention at
+     the threshold, and reset_intervention_state clears the counter. PNC-2
+     through PNC-5 test the pure [Patch_agent] functions directly (no
+     orchestrator noise); PNC-1 and PNC-6 through PNC-8 go through
+     [apply_session_result]. *)
+  let fresh_agent () =
+    Patch_agent.create
+      ~branch:(Types.Branch.of_string "nc")
+      (Types.Patch_id.of_string "nc-pid")
+  in
+  let prop_pnc1_clears_session_fallback =
+    Test.make ~name:"PNC-1: Session_no_commits clears session_fallback"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_tried_fresh orch pid in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_commits
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+          Patch_agent.Fresh_available)
+  in
+  let prop_pnc2_increments_counter =
+    Test.make
+      ~name:
+        "PNC-2: increment_no_commits_push_count bumps the counter by exactly 1"
+      (Gen.int_range 0 5) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.increment_no_commits_push_count a)
+        in
+        Int.equal a.Patch_agent.no_commits_push_count n)
+  in
+  let prop_pnc3_intervention_threshold =
+    Test.make ~name:"PNC-3: no_commits_push_count >= 2 flips needs_intervention"
+      (Gen.int_range 0 4) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.increment_no_commits_push_count a)
+        in
+        Bool.equal (Patch_agent.needs_intervention a) (n >= 2))
+  in
+  let prop_pnc4_reset_counter =
+    Test.make
+      ~name:"PNC-4: reset_no_commits_push_count zeros the counter (idempotent)"
+      (Gen.int_range 0 5) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.increment_no_commits_push_count a)
+        in
+        let a = Patch_agent.reset_no_commits_push_count a in
+        let a = Patch_agent.reset_no_commits_push_count a in
+        Int.equal a.Patch_agent.no_commits_push_count 0)
+  in
+  let prop_pnc5_reset_intervention_clears_counter =
+    Test.make
+      ~name:"PNC-5: reset_intervention_state zeros no_commits_push_count"
+      (Gen.int_range 0 5) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.increment_no_commits_push_count a)
+        in
+        let a = Patch_agent.reset_intervention_state a in
+        Int.equal a.Patch_agent.no_commits_push_count 0
+        && not (Patch_agent.needs_intervention a))
+  in
+  let prop_pnc6_apply_bumps_counter =
+    Test.make
+      ~name:"PNC-6: apply_session_result Session_no_commits bumps counter by 1"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let before =
+          (Orchestrator.agent orch pid).Patch_agent.no_commits_push_count
+        in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_commits
+        in
+        let after =
+          (Orchestrator.agent orch pid).Patch_agent.no_commits_push_count
+        in
+        Int.equal before 0 && Int.equal after 1)
+  in
+  let prop_pnc7_apply_completes_failed =
+    Test.make
+      ~name:
+        "PNC-7: apply_session_result Session_no_commits clears busy \
+         (complete_failed)" (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_commits
+        in
+        let a = Orchestrator.agent orch pid in
+        not a.Patch_agent.busy)
+  in
+  let prop_pnc8_apply_preserves_other_counters =
+    Test.make
+      ~name:
+        "PNC-8: apply_session_result Session_no_commits leaves \
+         start_attempts_without_pr and ci_failure_count untouched"
+      (Gen.pair (Gen.int_range 0 3) (Gen.int_range 0 2))
+      (fun (start_n, ci_n) ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          List.fold (List.range 0 start_n) ~init:orch ~f:(fun o _ ->
+              Orchestrator.increment_start_attempts_without_pr o pid)
+        in
+        let orch =
+          List.fold (List.range 0 ci_n) ~init:orch ~f:(fun o _ ->
+              Orchestrator.increment_ci_failure_count o pid)
+        in
+        let a_before = Orchestrator.agent orch pid in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_commits
+        in
+        let a_after = Orchestrator.agent orch pid in
+        Int.equal a_before.Patch_agent.start_attempts_without_pr
+          a_after.Patch_agent.start_attempts_without_pr
+        && Int.equal a_before.Patch_agent.ci_failure_count
+             a_after.Patch_agent.ci_failure_count)
+  in
+  (* Pure push-gate tests — verify the two pure decision helpers in
+     [Worktree] that drive [force_push_with_lease]. *)
+  let prop_gate_zero_skips =
+    Test.make ~name:"PG-1: push_gate_from_count (Some 0) = Skip_no_commits"
+      (Gen.return ()) (fun () ->
+        Worktree.equal_push_gate
+          (Worktree.push_gate_from_count (Some 0))
+          Worktree.Skip_no_commits)
+  in
+  let prop_gate_positive_proceeds =
+    Test.make ~name:"PG-2: push_gate_from_count (Some n>0) = Proceed"
+      (Gen.int_range 1 1000) (fun n ->
+        Worktree.equal_push_gate
+          (Worktree.push_gate_from_count (Some n))
+          Worktree.Proceed)
+  in
+  let prop_gate_unknown_proceeds =
+    Test.make
+      ~name:
+        "PG-3: push_gate_from_count None = Proceed (unknown defaults to push, \
+         so real failures surface via push)" (Gen.return ()) (fun () ->
+        Worktree.equal_push_gate
+          (Worktree.push_gate_from_count None)
+          Worktree.Proceed)
+  in
+  let prop_commit_count_nonzero_exit_none =
+    Test.make
+      ~name:
+        "PG-4: parse_commit_count code<>0 = None (git error -> unknown, not \
+         zero)"
+      (Gen.pair (Gen.int_range 1 255) Gen.string_small)
+      (fun (code, stdout) ->
+        Option.is_none (Worktree.parse_commit_count ~code ~stdout))
+  in
+  let prop_commit_count_valid_int =
+    Test.make ~name:"PG-5: parse_commit_count code=0 of int string = Some n"
+      (Gen.int_range 0 10000) (fun n ->
+        Option.equal Int.equal
+          (Worktree.parse_commit_count ~code:0 ~stdout:(Int.to_string n))
+          (Some n))
+  in
+  let prop_commit_count_trailing_newline =
+    Test.make
+      ~name:
+        "PG-6: parse_commit_count code=0 strips surrounding whitespace (git \
+         appends \\n)" (Gen.int_range 0 10000) (fun n ->
+        Option.equal Int.equal
+          (Worktree.parse_commit_count ~code:0
+             ~stdout:(Printf.sprintf "  %d\n" n))
+          (Some n))
+  in
+  let prop_commit_count_garbage_none =
+    Test.make
+      ~name:"PG-7: parse_commit_count code=0 of non-int = None (defensive)"
+      (Gen.oneof_list [ "hello"; "12abc"; ""; "  "; "-"; "1.5" ])
+      (fun s -> Option.is_none (Worktree.parse_commit_count ~code:0 ~stdout:s))
+  in
+  let prop_classify_ok_zero_porcelain_equal_up_to_date =
+    Test.make
+      ~name:
+        "PG-8: classify_push_result code=0 with '=' porcelain = Push_up_to_date"
+      (Gen.return ()) (fun () ->
+        Worktree.equal_push_result
+          (Worktree.classify_push_result ~code:0
+             ~stdout:"To origin\n= refs/heads/x:refs/heads/x [up to date]\nDone"
+             ~stderr:"")
+          Worktree.Push_up_to_date)
+  in
+  let prop_classify_ok_forced_equal_push_ok =
+    Test.make
+      ~name:"PG-9: classify_push_result code=0 with '+' porcelain = Push_ok"
+      (Gen.return ()) (fun () ->
+        Worktree.equal_push_result
+          (Worktree.classify_push_result ~code:0
+             ~stdout:"To origin\n+ refs/heads/x:refs/heads/x [forced]\nDone"
+             ~stderr:"")
+          Worktree.Push_ok)
+  in
+  let prop_classify_nonzero_bang_equal_rejected =
+    Test.make
+      ~name:
+        "PG-10: classify_push_result code<>0 with '!' porcelain = Push_rejected"
+      (Gen.int_range 1 255) (fun code ->
+        Worktree.equal_push_result
+          (Worktree.classify_push_result ~code
+             ~stdout:
+               "To origin\n\
+               \ ! [rejected] refs/heads/x -> refs/heads/x (stale info)"
+             ~stderr:"")
+          Worktree.Push_rejected)
+  in
+  let prop_classify_nonzero_no_porcelain_equal_error =
+    Test.make
+      ~name:
+        "PG-11: classify_push_result code<>0 with no recognizable porcelain = \
+         Push_error"
+      (Gen.pair (Gen.int_range 1 255) Gen.string_small)
+      (fun (code, stderr) ->
+        match Worktree.classify_push_result ~code ~stdout:"" ~stderr with
+        | Worktree.Push_error _ -> true
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
+        | Worktree.Push_rejected ->
+            false)
+  in
+  let prop_classify_never_returns_no_commits =
+    Test.make
+      ~name:
+        "PG-12: classify_push_result never returns Push_no_commits (that \
+         variant is only produced by the gate)"
+      ~count:500
+      (Gen.triple (Gen.int_range 0 255) Gen.string_small Gen.string_small)
+      (fun (code, stdout, stderr) ->
+        match Worktree.classify_push_result ~code ~stdout ~stderr with
+        | Worktree.Push_no_commits -> false
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected
+        | Worktree.Push_error _ ->
+            true)
   in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
@@ -938,9 +1188,30 @@ let () =
       prop_cp3_ok_rejected;
       prop_cp4_ok_error;
       prop_cp5_failure_dominates;
+      prop_cp6_ok_no_commits;
+      prop_pnc1_clears_session_fallback;
+      prop_pnc2_increments_counter;
+      prop_pnc3_intervention_threshold;
+      prop_pnc4_reset_counter;
+      prop_pnc5_reset_intervention_clears_counter;
+      prop_pnc6_apply_bumps_counter;
+      prop_pnc7_apply_completes_failed;
+      prop_pnc8_apply_preserves_other_counters;
+      prop_gate_zero_skips;
+      prop_gate_positive_proceeds;
+      prop_gate_unknown_proceeds;
+      prop_commit_count_nonzero_exit_none;
+      prop_commit_count_valid_int;
+      prop_commit_count_trailing_newline;
+      prop_commit_count_garbage_none;
+      prop_classify_ok_zero_porcelain_equal_up_to_date;
+      prop_classify_ok_forced_equal_push_ok;
+      prop_classify_nonzero_bang_equal_rejected;
+      prop_classify_nonzero_no_porcelain_equal_error;
+      prop_classify_never_returns_no_commits;
     ];
   Stdlib.print_endline
     "Session_push_failed + combine_session_and_push: all properties passed \
-     (PSF-1..3, CP-1..5)"
+     (PSF-1..3, CP-1..6, PNC-1..8, PG-1..12)"
 
 let () = Stdlib.print_endline "all property tests passed"

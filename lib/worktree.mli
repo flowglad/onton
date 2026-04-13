@@ -85,19 +85,41 @@ val parse_push_porcelain : string -> char option
 type push_result =
   | Push_ok
   | Push_up_to_date
+  | Push_no_commits
   | Push_rejected
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
+
+type push_gate = Proceed | Skip_no_commits [@@deriving show, eq, sexp_of]
+
+val parse_commit_count : code:int -> stdout:string -> int option
+(** Pure: parse [git rev-list --count base..HEAD] output into a commit count.
+    [None] when [code <> 0] or stdout is unparseable. *)
+
+val push_gate_from_count : int option -> push_gate
+(** Pure: decide whether to push given a commit-count result.
+    - [Some 0] → [Skip_no_commits] (branch is base-equal; GitHub would reject).
+    - [None] or [Some _] → [Proceed] (unknown counts default to proceeding so
+      real failures surface via the push step, not via a silent skip). *)
+
+val classify_push_result :
+  code:int -> stdout:string -> stderr:string -> push_result
+(** Pure: classify a [git push --porcelain --force-with-lease] invocation into a
+    [push_result]. [Push_no_commits] is never returned by this function — that
+    variant is only produced by the gate (the push is skipped entirely when the
+    branch has no commits ahead of base). *)
 
 val force_push_with_lease :
   process_mgr:_ Eio.Process.mgr ->
   path:string ->
   branch:Types.Branch.t ->
+  base:Types.Branch.t ->
   push_result
-(** Force-push with lease the given branch from the worktree at [path]. Returns
-    [Push_ok] on success, [Push_up_to_date] when the remote already has the same
-    SHA (nothing changed), [Push_rejected] if the lease check fails (remote was
-    updated by someone else), or [Push_error] on other failures. *)
+(** Force-push with lease the given branch from the worktree at [path]. Thin
+    effectful orchestrator: runs [git rev-list --count base..HEAD], applies
+    [push_gate_from_count] to decide whether to push, and classifies the push
+    output via [classify_push_result]. See [push_gate_from_count] and
+    [classify_push_result] for the pure decision logic. *)
 
 val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at

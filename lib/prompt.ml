@@ -136,11 +136,19 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
         base_branch base_branch
   in
   let pr_instructions =
+    let commit_block =
+      {|
+**Commit your work with `git commit` before ending the session.** Every code change you make must land in a commit — uncommitted changes are discarded by the supervisor's push, and no PR can be opened from an empty branch. Multiple commits are fine; commit whenever it makes sense.
+
+**Do NOT run `git push` or `gh pr create` yourself.** The supervisor pushes your commits and opens/updates the PR.|}
+    in
     match pr_number with
-    | Some _ -> ""
+    | Some _ -> commit_block ^ "\n\nContinue implementing until all tests pass."
     | None ->
-        {|
-**Do NOT create a PR yourself.** The supervisor opens the draft PR after your first commit lands on the remote, with a gameplan-derived title and body. Just commit your changes and the supervisor will handle PR creation and base-branch management.
+        commit_block
+        ^ {|
+
+The supervisor opens the draft PR after your first commit lands on the remote, with a gameplan-derived title and body.
 
 Continue implementing until all tests pass.|}
   in
