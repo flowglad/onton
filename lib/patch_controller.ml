@@ -252,24 +252,13 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
             :: !effects;
         match agent.base_branch with
         | Some actual_base ->
-            let desired_draft =
-              if Branch.equal actual_base (Orchestrator.main_branch t) then
-                not agent.implementation_notes_delivered
-              else true
-            in
-            if Bool.(agent.is_draft <> desired_draft) then
-              effects :=
-                Set_pr_draft { patch_id; pr_number; draft = desired_draft }
-                :: !effects;
-            (* Base branch reconciliation: retarget PR if GitHub base differs
-               from the expected base computed from the dependency graph. *)
             let has_merged pid =
               (Orchestrator.agent t pid).Patch_agent.merged
             in
             let open_deps =
               Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged
             in
-            if List.length open_deps <= 1 then
+            if List.length open_deps <= 1 then begin
               let branch_of pid =
                 (Orchestrator.agent t pid).Patch_agent.branch
               in
@@ -278,10 +267,20 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
                   ~branch_of
                   ~main:(Orchestrator.main_branch t)
               in
+              let desired_draft =
+                if Branch.equal expected_base (Orchestrator.main_branch t) then
+                  not agent.implementation_notes_delivered
+                else true
+              in
+              if Bool.(agent.is_draft <> desired_draft) then
+                effects :=
+                  Set_pr_draft { patch_id; pr_number; draft = desired_draft }
+                  :: !effects;
               if not (Branch.equal actual_base expected_base) then
                 effects :=
                   Set_pr_base { patch_id; pr_number; base = expected_base }
                   :: !effects
+            end
         | None -> ())
     | None -> ());
     (t, List.rev !effects)
