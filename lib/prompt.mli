@@ -17,6 +17,13 @@ val render_patch_prompt :
 val render_pr_description :
   project_name:string -> Patch.t -> Gameplan.t -> string
 
+val resolve_pr_body_source : artifact:string option -> fallback:string -> string
+(** Pure: choose between the agent-authored PR body artifact and a deterministic
+    fallback (typically the gameplan-derived body). Returns [fallback] when
+    [artifact] is [None] or contains only whitespace; returns the artifact
+    contents otherwise. Used by the supervisor when composing the final PR body
+    for the implementation-notes phase. *)
+
 val render_pr_body_prompt :
   project_name:string ->
   pr_number:Pr_number.t ->

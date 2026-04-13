@@ -630,40 +630,49 @@ let () =
         let orch = make_orch patch agent in
         begin try
           (* Cycle 1: Pr_body enqueued *)
-          let orch1, _effects1, _actions1 =
+          let orch1, _effects1, actions1 =
             run_controller_cycle ~gameplan orch
           in
-          (* Fire Pr_body action and simulate delivery *)
-          let orch1 =
-            Orchestrator.fire orch1
-              (Orchestrator.Respond (pid, Operation_kind.Pr_body))
+          let has_pr_body_action =
+            List.exists actions1 ~f:(function
+              | Orchestrator.Respond (action_pid, kind) ->
+                  Patch_id.equal action_pid pid
+                  && Operation_kind.equal kind Operation_kind.Pr_body
+              | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
           in
-          let orch1 = Orchestrator.set_pr_body_delivered orch1 pid true in
-          let orch1 = Orchestrator.complete orch1 pid in
-          (* Cycle 2: notes now eligible *)
-          let orch2, _effects2, actions2 =
-            run_controller_cycle ~gameplan orch1
-          in
-          match implementation_notes_action actions2 pid with
-          | None -> false
-          | Some notes_action ->
-              let orch2 = Orchestrator.fire orch2 notes_action in
-              let orch2 =
-                Orchestrator.set_implementation_notes_delivered orch2 pid true
-              in
-              let orch2 = Orchestrator.complete orch2 pid in
-              (* Cycle 3: should converge — only draft effect *)
-              let _orch3, effects3, actions3 =
-                run_controller_cycle ~gameplan orch2
-              in
-              has_draft_effect effects3
-              && not
-                   (List.exists actions3 ~f:(function
-                     | Orchestrator.Respond (action_pid, kind) ->
-                         Patch_id.equal action_pid pid
-                         && Operation_kind.equal kind
-                              Operation_kind.Implementation_notes
-                     | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+          if not has_pr_body_action then false
+          else
+            (* Fire Pr_body action and simulate delivery *)
+            let orch1 =
+              Orchestrator.fire orch1
+                (Orchestrator.Respond (pid, Operation_kind.Pr_body))
+            in
+            let orch1 = Orchestrator.set_pr_body_delivered orch1 pid true in
+            let orch1 = Orchestrator.complete orch1 pid in
+            (* Cycle 2: notes now eligible *)
+            let orch2, _effects2, actions2 =
+              run_controller_cycle ~gameplan orch1
+            in
+            match implementation_notes_action actions2 pid with
+            | None -> false
+            | Some notes_action ->
+                let orch2 = Orchestrator.fire orch2 notes_action in
+                let orch2 =
+                  Orchestrator.set_implementation_notes_delivered orch2 pid true
+                in
+                let orch2 = Orchestrator.complete orch2 pid in
+                (* Cycle 3: should converge — only draft effect *)
+                let _orch3, effects3, actions3 =
+                  run_controller_cycle ~gameplan orch2
+                in
+                has_draft_effect effects3
+                && not
+                     (List.exists actions3 ~f:(function
+                       | Orchestrator.Respond (action_pid, kind) ->
+                           Patch_id.equal action_pid pid
+                           && Operation_kind.equal kind
+                                Operation_kind.Implementation_notes
+                       | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
         with _ -> false
         end)
   in

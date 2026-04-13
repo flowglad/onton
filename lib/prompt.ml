@@ -257,6 +257,33 @@ Continue implementing until all tests pass.|}
 {{patches_list}}|}
         vars)
 
+let resolve_pr_body_source ~(artifact : string option) ~(fallback : string) :
+    string =
+  match artifact with
+  | Some body when String.length (String.strip body) > 0 -> body
+  | Some _ | None -> fallback
+
+let%test "resolve_pr_body_source: None artifact returns fallback" =
+  String.equal
+    (resolve_pr_body_source ~artifact:None ~fallback:"gameplan body")
+    "gameplan body"
+
+let%test "resolve_pr_body_source: empty artifact returns fallback" =
+  String.equal
+    (resolve_pr_body_source ~artifact:(Some "") ~fallback:"gameplan body")
+    "gameplan body"
+
+let%test "resolve_pr_body_source: whitespace-only artifact returns fallback" =
+  String.equal
+    (resolve_pr_body_source ~artifact:(Some "  \n\t  ")
+       ~fallback:"gameplan body")
+    "gameplan body"
+
+let%test "resolve_pr_body_source: non-empty artifact wins" =
+  String.equal
+    (resolve_pr_body_source ~artifact:(Some "agent body") ~fallback:"gameplan")
+    "agent body"
+
 let render_pr_description ~(project_name : string) (patch : Patch.t)
     (gameplan : Gameplan.t) =
   let patch_id = Patch_id.to_string patch.Patch.id in
