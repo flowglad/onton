@@ -4,7 +4,7 @@ open Base
 let backend_url =
   match Stdlib.Sys.getenv_opt "ONTON_DEBUG_URL" with
   | Some u -> u
-  | None -> "https://debug.onton.dev/api/upload"
+  | None -> "https://debug.write-gameplan.dev/api/upload"
 
 let max_response_size = 1_000_000
 let printf fmt = Stdlib.Printf.printf fmt
@@ -118,22 +118,30 @@ let http_request ~net ~meth ~uri ~headers ~body =
   in
   match client_result with
   | Error msg -> Error msg
-  | Ok client ->
+  | Ok client -> (
       let headers = Http.Header.of_list headers in
-      Eio.Switch.run @@ fun sw ->
-      let resp, resp_body =
-        let body = Cohttp_eio.Body.of_string body in
-        match meth with
-        | `POST -> Cohttp_eio.Client.post client ~sw ~headers ~body parsed_uri
-        | `PUT -> Cohttp_eio.Client.put client ~sw ~headers ~body parsed_uri
-        | _ -> failwith "unsupported method"
-      in
-      let status = Http.Response.status resp |> Http.Status.to_int in
-      let resp_str =
-        Eio.Buf_read.(of_flow ~max_size:max_response_size resp_body |> take_all)
-      in
-      if status >= 200 && status < 300 then Ok resp_str
-      else Error (Stdlib.Printf.sprintf "HTTP %d: %s" status resp_str)
+      try
+        Eio.Switch.run @@ fun sw ->
+        let resp, resp_body =
+          let body = Cohttp_eio.Body.of_string body in
+          match meth with
+          | `POST -> Cohttp_eio.Client.post client ~sw ~headers ~body parsed_uri
+          | `PUT -> Cohttp_eio.Client.put client ~sw ~headers ~body parsed_uri
+          | _ -> failwith "unsupported method"
+        in
+        let status = Http.Response.status resp |> Http.Status.to_int in
+        let resp_str =
+          Eio.Buf_read.(
+            of_flow ~max_size:max_response_size resp_body |> take_all)
+        in
+        if status >= 200 && status < 300 then Ok resp_str
+        else Error (Stdlib.Printf.sprintf "HTTP %d: %s" status resp_str)
+      with
+      | Failure msg -> Error (Stdlib.Printf.sprintf "request failed: %s" msg)
+      | exn ->
+          Error
+            (Stdlib.Printf.sprintf "request failed: %s"
+               (Stdlib.Printexc.to_string exn)))
 
 let run ~net ~project_name ~version =
   printf "Collecting debug state for project %S...\n%!" project_name;
