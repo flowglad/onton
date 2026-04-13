@@ -400,13 +400,23 @@ let apply_rebase_result t patch_id rebase_result new_base =
   match rebase_result with
   | Worktree.Ok ->
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_branch_rebased_onto a new_base)
+      in
       let t = clear_has_conflict t patch_id in
       let t = reset_conflict_noop_count t patch_id in
       (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
-      (* Push even on Noop: the local branch may already be rebased from a
-         prior attempt whose push failed, leaving the remote stale. *)
+      (* Noop: the local branch already contains [new_base] in its history,
+         so the branch is (transitively) based on it. Record this so the
+         drift detector doesn't re-fire. Push even on Noop — the remote may
+         be stale from a prior failed push. *)
+      let t =
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_branch_rebased_onto a new_base)
+      in
       (complete t patch_id, [ Push_branch ])
   | Worktree.Conflict ->
       let t = set_base_branch t patch_id new_base in
@@ -449,6 +459,10 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
   match rebase_result with
   | Worktree.Ok ->
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_branch_rebased_onto a new_base)
+      in
       let t = clear_has_conflict t patch_id in
       let t = reset_conflict_noop_count t patch_id in
       let t = complete t patch_id in
@@ -460,6 +474,10 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
          if the conflict persists, and conflict_noop_count will
          eventually trigger intervention. *)
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:(fun a ->
+            Patch_agent.set_branch_rebased_onto a new_base)
+      in
       let t = clear_has_conflict t patch_id in
       let t = increment_conflict_noop_count t patch_id in
       let t = complete t patch_id in

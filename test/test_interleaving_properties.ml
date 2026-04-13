@@ -1645,3 +1645,99 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi15;
   Stdlib.print_endline "PI-15 passed"
+
+(** PI-16: The retire-blue-green/patch-2 scenario end-to-end — a dependent
+    patch whose PR gets auto-retargeted by GitHub when its dep merges and
+    whose branch is never thereby rebased. The drift detector must catch it.
+
+    Setup: two patches, patch b depends on patch a. Both bootstrap to having
+    PRs; b's branch_rebased_onto is patch-a's branch (where it started). a
+    merges (agent flagged merged, GitHub deletes a's branch and retargets b's
+    PR to main — modeled by updating b.base_branch to main). The reconciler
+    must enqueue a Rebase on b. *)
+let () =
+  let prop_pi16 =
+    QCheck2.Test.make
+      ~name:
+        "PI-16: drift detector catches GitHub-auto-retargeted PR after dep \
+         merge"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        (* Build a linear 2-patch gameplan: b depends on a *)
+        let a : Patch.t =
+          {
+            id = Patch_id.of_string "a";
+            title = "a";
+            description = "";
+            branch = Branch.of_string "a";
+            dependencies = [];
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+          }
+        in
+        let b : Patch.t =
+          { a with
+            id = Patch_id.of_string "b";
+            title = "b";
+            branch = Branch.of_string "b";
+            dependencies = [ Patch_id.of_string "a" ];
+          }
+        in
+        let patches = [ a; b ] in
+        let orch = bootstrap patches in
+        let pid_a = a.id and pid_b = b.id in
+        (* Sanity: b started with base_branch = a's branch (per
+           Graph.initial_base) and branch_rebased_onto set to same. *)
+        let agent_b = Orchestrator.agent orch pid_b in
+        if
+          not
+            (Option.equal Branch.equal agent_b.Patch_agent.branch_rebased_onto
+               (Some a.branch))
+        then
+          failwith "patch b did not start with branch_rebased_onto = a's branch";
+        (* a merges *)
+        let orch = Orchestrator.mark_merged orch pid_a in
+        (* GitHub auto-retargets b's PR to main (modeled by explicit
+           set_base_branch on b). Simultaneously b's branch_rebased_onto is
+           still pointing at a's branch because no Rebase has run yet. *)
+        let orch = Orchestrator.set_base_branch orch pid_b main in
+        (* Now run reconcile like the poll fiber does *)
+        let agents = Orchestrator.all_agents orch in
+        let branch_of = branch_of_patches patches in
+        let patch_views =
+          List.map agents ~f:(fun (ag : Patch_agent.t) ->
+              Reconciler.
+                {
+                  id = ag.Patch_agent.patch_id;
+                  has_pr = Patch_agent.has_pr ag;
+                  merged = ag.Patch_agent.merged;
+                  busy = ag.Patch_agent.busy;
+                  needs_intervention = Patch_agent.needs_intervention ag;
+                  branch_blocked = ag.Patch_agent.branch_blocked;
+                  queue = ag.Patch_agent.queue;
+                  base_branch =
+                    Option.value ag.Patch_agent.base_branch ~default:main;
+                  branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+                })
+        in
+        let merged_patches =
+          List.filter_map agents ~f:(fun (ag : Patch_agent.t) ->
+              if ag.Patch_agent.merged then Some ag.Patch_agent.patch_id
+              else None)
+        in
+        let actions =
+          Reconciler.reconcile
+            ~graph:(Orchestrator.graph orch)
+            ~main ~merged_pr_patches:merged_patches ~branch_of patch_views
+        in
+        (* The reconciler must emit Enqueue_rebase for b. *)
+        List.exists actions ~f:(function
+          | Reconciler.Enqueue_rebase p -> Patch_id.equal p pid_b
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+  in
+  QCheck2.Test.check_exn prop_pi16;
+  Stdlib.print_endline "PI-16 passed"

@@ -349,6 +349,7 @@ let () =
         branch_blocked;
         queue;
         base_branch = main;
+        branch_rebased_onto = Some main;
       }
   in
   let mk_patch id =

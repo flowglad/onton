@@ -427,6 +427,11 @@ let gen_patch_view =
             branch_blocked;
             queue;
             base_branch;
+            (* Conservative default for existing randomized tests: no drift
+               (local branch is on the current base). Drift-specific tests
+               construct views explicitly rather than relying on this
+               generator. *)
+            branch_rebased_onto = Some base_branch;
           })
       (pair gen_patch_id gen_branch)
       (quad bool bool bool bool)
@@ -682,6 +687,7 @@ let apply_reconcile_actions orch ~main ~branch_of =
             queue = a.Onton.Patch_agent.queue;
             base_branch =
               Option.value a.Onton.Patch_agent.base_branch ~default:main;
+            branch_rebased_onto = a.Onton.Patch_agent.branch_rebased_onto;
           })
   in
   let merged_patches =

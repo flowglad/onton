@@ -34,6 +34,7 @@ type t = private {
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
+  branch_rebased_onto : Types.Branch.t option;
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
   current_message_id : Types.Message_id.t option;
@@ -154,6 +155,11 @@ val set_base_branch : t -> Types.Branch.t -> t
 
 val set_notified_base_branch : t -> Types.Branch.t -> t
 (** Record that the agent session has been informed of this base branch. *)
+
+val set_branch_rebased_onto : t -> Types.Branch.t -> t
+(** Record that the local branch has been rebased onto this base (either by
+    an explicit successful [Rebase] action, or by the initial [Start] which
+    plants the branch on its base). Drives [detect_notified_base_drift]. *)
 
 val base_branch_changed : t -> bool
 (** [true] when [base_branch] differs from [notified_base_branch], meaning the
@@ -290,6 +296,7 @@ val restore :
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->
+  branch_rebased_onto:Types.Branch.t option ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
   current_message_id:Types.Message_id.t option ->

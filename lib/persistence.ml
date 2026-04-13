@@ -75,6 +75,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("conflict_noop_count", `Int a.conflict_noop_count);
       ("no_commits_push_count", `Int a.no_commits_push_count);
+      ( "branch_rebased_onto",
+        match a.branch_rebased_onto with
+        | None -> `Null
+        | Some b -> Branch.yojson_of_t b );
       ("checks_passing", `Bool a.checks_passing);
       ( "current_op",
         match a.current_op with
@@ -189,6 +193,9 @@ let patch_agent_of_yojson ~gameplan json =
          (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)
        ~no_commits_push_count:
          (Option.value (int_member_opt "no_commits_push_count" json) ~default:0)
+       ~branch_rebased_onto:
+         (string_member_opt "branch_rebased_onto" json
+         |> Option.map ~f:Branch.of_string)
        ~checks_passing:(bool_member "checks_passing" json)
        ~current_op:
          (match Yojson.Safe.Util.member "current_op" json with

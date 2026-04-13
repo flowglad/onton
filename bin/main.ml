@@ -1908,6 +1908,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                     queue = a.Patch_agent.queue;
                     base_branch =
                       Base.Option.value a.Patch_agent.base_branch ~default:main;
+                    branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
                   })
           in
           let merged_patches =

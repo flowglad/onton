@@ -18,6 +18,13 @@ type patch_view = {
   branch_blocked : bool;
   queue : Types.Operation_kind.t list;
   base_branch : Types.Branch.t;
+  branch_rebased_onto : Types.Branch.t option;
+      (** The base the local branch is actually rebased onto. [None] before
+          the first [Start]. Updated by [Start] (to the start base) and by
+          successful [Rebase] (to the rebase target). When this diverges from
+          [base_branch], the local branch still carries the old dep's commits
+          even if GitHub auto-retargeted the PR — a rebase is required. Used
+          by [detect_notified_base_drift]. *)
 }
 [@@deriving sexp_of]
 (** Observable state of a single patch, projected for reconciliation. *)
@@ -58,6 +65,19 @@ val detect_rebases :
 (** [detect_rebases graph views ~newly_merged] returns [Enqueue_rebase] for
     dependents of [newly_merged] patches that have a PR, are not merged, and do
     not already have a rebase queued. *)
+
+val detect_notified_base_drift : patch_view list -> action list
+(** [detect_notified_base_drift views] returns [Enqueue_rebase] for agents
+    whose [branch_rebased_onto] is [Some b] and differs from the current
+    [base_branch]. This catches the case where a dependency's branch was
+    merged and deleted on GitHub, which auto-retargets the PR to [main]; the
+    poller then updates [base_branch] to match, but the local branch still
+    carries the merged dep's commits and must be rebased. [detect_stale_bases]
+    can't catch this because once [base_branch] equals [initial_base], the
+    structural check passes.
+
+    Same precondition guards as other rebase detectors: has_pr, !merged,
+    !Rebase-in-queue. *)
 
 val plan_operations :
   patch_view list ->

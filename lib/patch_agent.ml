@@ -30,6 +30,7 @@ type t = {
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
+  branch_rebased_onto : Branch.t option;
   checks_passing : bool;
   current_op : Operation_kind.t option;
   current_message_id : Message_id.t option;
@@ -78,6 +79,7 @@ let create ~branch patch_id =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    branch_rebased_onto = None;
     checks_passing = false;
     current_op = None;
     current_message_id = None;
@@ -113,6 +115,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    branch_rebased_onto = None;
     checks_passing = false;
     current_op = None;
     current_message_id = None;
@@ -251,9 +254,9 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
     ~implementation_notes_delivered ~start_attempts_without_pr
-    ~conflict_noop_count ~no_commits_push_count ~checks_passing ~current_op
-    ~current_message_id ~generation ~worktree_path ~branch_blocked
-    ~llm_session_id =
+    ~conflict_noop_count ~no_commits_push_count ~branch_rebased_onto
+    ~checks_passing ~current_op ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id =
   {
     patch_id;
     branch;
@@ -279,6 +282,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     start_attempts_without_pr;
     conflict_noop_count;
     no_commits_push_count;
+    branch_rebased_onto;
     checks_passing;
     current_op;
     current_message_id;
@@ -323,8 +327,15 @@ let start t ~base_branch =
     satisfies = true;
     base_branch = Some base_branch;
     notified_base_branch = Some base_branch;
+    (* The initial Start plants the branch on [base_branch]; the local branch
+       tip is literally this base's HEAD until the agent commits. Record it
+       so the drift detector knows the branch is on the right base. *)
+    branch_rebased_onto = Some base_branch;
     ci_checks = [];
   }
+
+let set_branch_rebased_onto t branch =
+  { t with branch_rebased_onto = Some branch }
 
 let rebase t ~base_branch =
   if not (has_pr t) then invalid_arg "Patch_agent.rebase: patch has no PR";

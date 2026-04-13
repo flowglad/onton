@@ -54,7 +54,7 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
     ~merge_ready:false ~is_draft ~pr_body_delivered:true
     ~implementation_notes_delivered ~start_attempts_without_pr
-    ~conflict_noop_count:0 ~no_commits_push_count:0 ~checks_passing:false ~current_op:None
+    ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
     ~current_message_id:None ~generation:0 ~worktree_path:None
     ~branch_blocked:false ~llm_session_id:None
 
@@ -358,7 +358,7 @@ let () =
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
             ~implementation_notes_delivered:true ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0 ~checks_passing:false ~current_op:None
+            ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None
         in
@@ -487,7 +487,7 @@ let () =
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~implementation_notes_delivered:true ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0 ~checks_passing:false ~current_op:None
+            ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None
         in
@@ -623,7 +623,7 @@ let () =
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0 ~checks_passing:false ~current_op:None
+            ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None
         in
@@ -837,7 +837,7 @@ let () =
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
             ~is_draft:false ~pr_body_delivered:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0 ~checks_passing:false ~current_op:None
+            ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None
         in
@@ -874,7 +874,7 @@ let () =
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0 ~checks_passing:false ~current_op:None
+            ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None
         in
