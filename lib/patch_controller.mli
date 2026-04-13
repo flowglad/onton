@@ -1,11 +1,6 @@
 open Types
 
 type github_effect =
-  | Set_pr_description of {
-      patch_id : Patch_id.t;
-      pr_number : Pr_number.t;
-      body : string;
-    }
   | Set_pr_draft of {
       patch_id : Patch_id.t;
       pr_number : Pr_number.t;

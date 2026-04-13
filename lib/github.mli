@@ -14,6 +14,12 @@ val show_error : error -> string
     from the response body, and appends a hint about PAT scopes for 401/403/404
     so users can fix permission problems without guesswork. *)
 
+val response_error_message_contains : string -> substring:string -> bool
+(** Returns [true] if any [errors[].message] in a GitHub validation response
+    body contains [substring] (case-insensitive). Use this to discriminate
+    between distinct 422 cases (e.g. "pull request already exists" vs "no
+    commits between"). Pure; safe on malformed input. *)
+
 type t
 
 val create : token:string -> owner:string -> repo:string -> t

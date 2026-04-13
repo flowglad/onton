@@ -25,7 +25,7 @@ val render_pr_body_prompt :
   string
 
 val render_implementation_notes_prompt :
-  project_name:string -> pr_number:Pr_number.t -> pr_body:string -> string
+  project_name:string -> pr_number:Pr_number.t -> artifact_path:string -> string
 
 val render_review_prompt :
   project_name:string -> ?pr_number:Pr_number.t -> Comment.t list -> string

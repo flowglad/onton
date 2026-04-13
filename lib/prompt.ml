@@ -337,30 +337,26 @@ A separate, later phase will append `## Implementation Notes` to this body — d
         vars)
 
 let render_implementation_notes_prompt ~(project_name : string)
-    ~(pr_number : Pr_number.t) ~(pr_body : string) =
+    ~(pr_number : Pr_number.t) ~(artifact_path : string) =
   let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
-  let vars = [ ("pr_number", pr_num_str); ("pr_body", pr_body) ] in
+  let vars = [ ("pr_number", pr_num_str); ("artifact_path", artifact_path) ] in
   render_with_override ~project_name ~name:"implementation_notes" ~vars
     ~default:(fun () ->
       substitute_variables
-        {|You have just finished implementing this patch and a PR has been created.
+        {|You have just finished implementing this patch and a PR has been created. The supervisor opens a final phase where you write **just the implementation notes** — the "## Implementation Notes" section a reviewer cares about.
 
-The current PR description is:
+**Write the notes content (markdown, no header line) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. The supervisor reads the file, prepends `## Implementation Notes`, and appends it to the PR body.
 
----
-{{pr_body}}
----
+Do NOT run `gh`, `git`, or any forge command — the supervisor handles upload.
 
-Your task: append an **## Implementation Notes** section to the PR body that describes what you actually did. Focus on:
+Focus on:
 
-- Key implementation decisions and trade-offs you made
-- Anything surprising or non-obvious about the approach
-- Deviations from the original plan (if any)
-- Important details a reviewer should know
+- Key implementation decisions and trade-offs you made.
+- Anything surprising or non-obvious about the approach.
+- Deviations from the original plan (if any).
+- Important details a reviewer should know.
 
-Do NOT repeat information already in the description. Keep it concise — a few bullet points is ideal.
-
-Use `gh pr edit {{pr_number}} --body-file -` to update the PR body. Read the current body first with `gh pr view {{pr_number}} --json body -q .body`, append your Implementation Notes section, then write the full body back. If an Implementation Notes section already exists, update it rather than duplicating it.|}
+Keep it concise — a few bullet points usually suffices. If you have nothing material to add (the patch is straightforward), write a single line acknowledging that.|}
         vars)
 
 let render_review_prompt ~(project_name : string) ?pr_number

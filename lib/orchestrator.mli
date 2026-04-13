@@ -92,7 +92,6 @@ val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
-val set_pr_description_applied : t -> Patch_id.t -> bool -> t
 val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
 val set_pr_body_delivered : t -> Patch_id.t -> bool -> t
 val increment_start_attempts_without_pr : t -> Patch_id.t -> t

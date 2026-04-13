@@ -29,7 +29,6 @@ type t = private {
   ci_checks : Types.Ci_check.t list;
   merge_ready : bool;
   is_draft : bool;
-  pr_description_applied : bool;
   pr_body_delivered : bool;
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
@@ -165,9 +164,6 @@ val set_merge_ready : t -> bool -> t
 val set_is_draft : t -> bool -> t
 (** Set the draft flag from GitHub PR state. *)
 
-val set_pr_description_applied : t -> bool -> t
-(** Record whether the orchestrator has successfully applied the PR body. *)
-
 val set_implementation_notes_delivered : t -> bool -> t
 (** Record whether implementation notes were successfully delivered. *)
 
@@ -278,7 +274,6 @@ val restore :
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
   is_draft:bool ->
-  pr_description_applied:bool ->
   pr_body_delivered:bool ->
   implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->

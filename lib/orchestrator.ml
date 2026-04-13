@@ -342,10 +342,6 @@ let set_merge_ready t patch_id v =
 let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)
 
-let set_pr_description_applied t patch_id v =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_pr_description_applied a v)
-
 let set_implementation_notes_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_implementation_notes_delivered a v)

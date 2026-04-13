@@ -20,6 +20,44 @@ let extract_github_message body =
     | None -> truncate body
   with _ -> truncate body
 
+(* Returns [true] if any [errors[].message] in a GitHub 422 validation response
+   body contains [substring] (case-insensitive). 422 covers many distinct
+   validation cases (no commits between head/base, head doesn't exist, branch
+   already has PR, etc.) — callers use this to discriminate which one. Pure;
+   safe on malformed input (returns false). *)
+let response_error_message_contains body ~substring =
+  try
+    let json = Yojson.Safe.from_string body in
+    let errors = Yojson.Safe.Util.(json |> member "errors" |> to_list) in
+    let needle = String.lowercase substring in
+    List.exists errors ~f:(fun err ->
+        match
+          Yojson.Safe.Util.(err |> member "message" |> to_string_option)
+        with
+        | None -> false
+        | Some msg ->
+            String.is_substring (String.lowercase msg) ~substring:needle)
+  with _ -> false
+
+let%test "response_error_message_contains: empty body returns false" =
+  not (response_error_message_contains "" ~substring:"already exists")
+
+let%test "response_error_message_contains: matches errors[].message substring" =
+  response_error_message_contains
+    {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for foo/bar:branch."}]}|}
+    ~substring:"pull request already exists"
+
+let%test "response_error_message_contains: no match for unrelated error" =
+  not
+    (response_error_message_contains
+       {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between main and feature."}]}|}
+       ~substring:"pull request already exists")
+
+let%test "response_error_message_contains: missing errors[] returns false" =
+  not
+    (response_error_message_contains {|{"message":"Not Found"}|}
+       ~substring:"pull request already exists")
+
 (* Hint added to permission-related HTTP errors so users know which PAT scopes
    to check. Fine-grained PATs need distinct permissions per endpoint category,
    which is the root cause of the opaque-error problem in issue #166. *)
