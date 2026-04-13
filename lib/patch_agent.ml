@@ -29,6 +29,7 @@ type t = {
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   conflict_noop_count : int;
+  no_commits_push_count : int;
   checks_passing : bool;
   current_op : Operation_kind.t option;
   current_message_id : Message_id.t option;
@@ -48,7 +49,8 @@ let needs_intervention t =
   && (t.ci_failure_count >= 3
      || equal_session_fallback t.session_fallback Given_up
      || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
-     || t.conflict_noop_count >= 2)
+     || t.conflict_noop_count >= 2
+     || t.no_commits_push_count >= 2)
 
 let create ~branch patch_id =
   {
@@ -75,6 +77,7 @@ let create ~branch patch_id =
     implementation_notes_delivered = false;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
+    no_commits_push_count = 0;
     checks_passing = false;
     current_op = None;
     current_message_id = None;
@@ -109,6 +112,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     implementation_notes_delivered = true;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
+    no_commits_push_count = 0;
     checks_passing = false;
     current_op = None;
     current_message_id = None;
@@ -164,6 +168,11 @@ let reset_conflict_noop_count t = { t with conflict_noop_count = 0 }
 
 let increment_conflict_noop_count t =
   { t with conflict_noop_count = t.conflict_noop_count + 1 }
+
+let increment_no_commits_push_count t =
+  { t with no_commits_push_count = t.no_commits_push_count + 1 }
+
+let reset_no_commits_push_count t = { t with no_commits_push_count = 0 }
 
 let set_base_branch t branch =
   let notified =
@@ -232,6 +241,7 @@ let reset_intervention_state t =
     ci_failure_count = 0;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
+    no_commits_push_count = 0;
   }
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
@@ -241,8 +251,9 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
     ~implementation_notes_delivered ~start_attempts_without_pr
-    ~conflict_noop_count ~checks_passing ~current_op ~current_message_id
-    ~generation ~worktree_path ~branch_blocked ~llm_session_id =
+    ~conflict_noop_count ~no_commits_push_count ~checks_passing ~current_op
+    ~current_message_id ~generation ~worktree_path ~branch_blocked
+    ~llm_session_id =
   {
     patch_id;
     branch;
@@ -267,6 +278,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     implementation_notes_delivered;
     start_attempts_without_pr;
     conflict_noop_count;
+    no_commits_push_count;
     checks_passing;
     current_op;
     current_message_id;

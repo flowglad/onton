@@ -433,7 +433,9 @@ let apply_rebase_push_result t patch_id
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Rebase_push_failed)
-  | Some (Worktree.Push_error _) ->
+  | Some Worktree.Push_no_commits | Some (Worktree.Push_error _) ->
+      (* Push_no_commits after rebase means every commit squashed away — treat
+         as an infrastructure error and retry the rebase. *)
       let t = enqueue t patch_id Operation_kind.Rebase in
       (t, Rebase_push_error)
 
@@ -484,14 +486,18 @@ let apply_conflict_push_result t patch_id decision
   | Conflict_resolved, Some Worktree.Push_ok -> (t, Conflict_done)
   | Conflict_resolved, Some Worktree.Push_up_to_date -> (t, Conflict_done)
   | ( Conflict_resolved,
-      (None | Some (Worktree.Push_rejected | Worktree.Push_error _)) ) ->
+      ( None
+      | Some
+          ( Worktree.Push_rejected | Worktree.Push_no_commits
+          | Worktree.Push_error _ ) ) ) ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Conflict_retry_push)
   | ( Deliver_to_agent,
       ( None
       | Some
-          ( Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected
+          ( Worktree.Push_ok | Worktree.Push_up_to_date
+          | Worktree.Push_no_commits | Worktree.Push_rejected
           | Worktree.Push_error _ ) ) ) ->
       (t, Conflict_needs_agent)
   | Conflict_failed, _ -> (t, Conflict_give_up)
@@ -504,6 +510,7 @@ type session_result =
   | Session_give_up
   | Session_worktree_missing
   | Session_push_failed
+  | Session_no_commits
 [@@deriving show, eq, sexp_of]
 
 (** Complete a failed session, restoring inflight human messages to the inbox.
@@ -527,7 +534,10 @@ let complete_failed t patch_id =
 
 let apply_session_result t patch_id result =
   match result with
-  | Session_ok -> clear_session_fallback t patch_id
+  | Session_ok ->
+      let t = clear_session_fallback t patch_id in
+      (* A healthy session that pushed commits clears the no-commits counter. *)
+      update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
   | Session_process_error { is_fresh } ->
       let t = on_session_failure t patch_id ~is_fresh in
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
@@ -560,6 +570,16 @@ let apply_session_result t patch_id result =
          inflight human messages so the next iteration retries. *)
       let t = clear_session_fallback t patch_id in
       complete_failed t patch_id
+  | Session_no_commits ->
+      (* The LLM session ran cleanly but left no commits on the branch (HEAD
+         == base), so the supervisor skipped the push. Clear session fallback
+         (the LLM itself was healthy), bump the no-commits counter (which
+         feeds [needs_intervention] at >= 2), and retry via complete_failed. *)
+      let t = clear_session_fallback t patch_id in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
+      in
+      complete_failed t patch_id
 
 let combine_session_and_push ~(session : session_result)
     ~(push : Worktree.push_result) : session_result =
@@ -567,9 +587,11 @@ let combine_session_and_push ~(session : session_result)
   | Session_ok -> (
       match push with
       | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
+      | Worktree.Push_no_commits -> Session_no_commits
       | Worktree.Push_rejected | Worktree.Push_error _ -> Session_push_failed)
   | Session_process_error _ | Session_no_resume | Session_failed _
-  | Session_give_up | Session_worktree_missing | Session_push_failed ->
+  | Session_give_up | Session_worktree_missing | Session_push_failed
+  | Session_no_commits ->
       session
 
 type start_outcome = Start_ok | Start_failed | Start_stale

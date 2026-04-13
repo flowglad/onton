@@ -128,6 +128,7 @@ type session_result =
   | Session_give_up
   | Session_worktree_missing
   | Session_push_failed
+  | Session_no_commits
 [@@deriving show, eq, sexp_of]
 
 val apply_session_result : t -> Patch_id.t -> session_result -> t
@@ -140,7 +141,10 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     on_pre_session_failure + complete. [Session_push_failed] ->
     clear_session_fallback (LLM session itself was healthy) + complete_failed
     (commits did not reach the remote — retry on next iteration). Use this when
-    the LLM ran cleanly but the supervisor's post-session push failed. *)
+    the LLM ran cleanly but the supervisor's post-session push failed.
+    [Session_no_commits] -> clear_session_fallback +
+    increment_no_commits_push_count + complete_failed. The LLM ran but produced
+    no commits; after 2 such sessions [needs_intervention] fires. *)
 
 val combine_session_and_push :
   session:session_result -> push:Worktree.push_result -> session_result
@@ -152,7 +156,10 @@ val combine_session_and_push :
       change anything.
     - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
     - [Session_ok] with [Push_rejected] or [Push_error] becomes
-      [Session_push_failed] — the LLM ran fine but commits didn't ship. *)
+      [Session_push_failed] — the LLM ran fine but commits didn't ship.
+    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the
+      LLM ran cleanly but left no commits on the branch, so the push was
+      skipped (a base-equal branch can't become a PR). *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]

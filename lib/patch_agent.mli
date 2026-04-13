@@ -33,6 +33,7 @@ type t = private {
   implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   conflict_noop_count : int;
+  no_commits_push_count : int;
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
   current_message_id : Types.Message_id.t option;
@@ -64,8 +65,8 @@ val has_pr : t -> bool
 val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
     [ci_failure_count >= 3], [session_fallback = Given_up],
-    [(not has_pr) && start_attempts_without_pr >= 2], or
-    [conflict_noop_count >= 2]. *)
+    [(not has_pr) && start_attempts_without_pr >= 2],
+    [conflict_noop_count >= 2], or [no_commits_push_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -180,6 +181,15 @@ val increment_conflict_noop_count : t -> t
 (** Record a conflict resolution attempt where rebase returned Noop (stale refs
     or no real diff). After 2 noop attempts, [needs_intervention] triggers. *)
 
+val increment_no_commits_push_count : t -> t
+(** Record a session that ended with no commits on the branch (HEAD == base).
+    After 2 such sessions, [needs_intervention] triggers — the agent is not
+    committing its work and further retries are wasted. *)
+
+val reset_no_commits_push_count : t -> t
+(** Reset [no_commits_push_count] to 0. Called on [Session_ok] with a
+    successful push, because the agent has demonstrated it can commit. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -205,9 +215,10 @@ val reset_ci_failure_count : t -> t
     after failures. [needs_intervention] is re-derived automatically. *)
 
 val reset_intervention_state : t -> t
-(** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0, and
-    [start_attempts_without_pr] to 0. Used after manual resolution (e.g.,
-    sending a human message) to give the patch a fresh start. *)
+(** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
+    [start_attempts_without_pr] to 0, [conflict_noop_count] to 0, and
+    [no_commits_push_count] to 0. Used after manual resolution (e.g., sending
+    a human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)
@@ -278,6 +289,7 @@ val restore :
   implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
+  no_commits_push_count:int ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
   current_message_id:Types.Message_id.t option ->
