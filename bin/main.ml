@@ -158,16 +158,6 @@ module Pr_registry = struct
         Hashtbl.remove t.table patch_id)
 end
 
-(** Discover PR number for a branch via GitHub REST API. Returns [Ok] with the
-    PR number or [Error] with a diagnostic message. *)
-let discover_pr_number ~net ~github ~branch ~base_branch =
-  match
-    Github.list_prs ~net github ~branch ~base:(Some base_branch) ~state:`Open ()
-  with
-  | Ok ((pr_number, _, _) :: _) -> Ok pr_number
-  | Ok [] -> Error "no PRs found for branch"
-  | Error e -> Error (Github.show_error e)
-
 (** Execute declarative GitHub effects and record successful observations back
     into durable state. *)
 let execute_github_effects ~runtime ~net ~github effects =
@@ -181,6 +171,10 @@ let execute_github_effects ~runtime ~net ~github effects =
             Printf.sprintf "set_pr_draft (PR #%d, draft=%b)"
               (Pr_number.to_int pr_number)
               draft
+        | Patch_controller.Set_pr_base { pr_number; base; _ } ->
+            Printf.sprintf "set_pr_base (PR #%d, base=%s)"
+              (Pr_number.to_int pr_number)
+              (Branch.to_string base)
       in
       try
         let result =
@@ -190,6 +184,8 @@ let execute_github_effects ~runtime ~net ~github effects =
               Github.update_pr_body ~net github ~pr_number ~body
           | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
               Github.set_draft ~net github ~pr_number ~draft
+          | Patch_controller.Set_pr_base { patch_id = _; pr_number; base } ->
+              Github.update_pr_base ~net github ~pr_number ~base
         in
         match result with
         | Ok () ->
@@ -1564,6 +1560,28 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
+    (* Phase 0: Tick-based PR discovery for patches that have run but lack
+       a PR. Uses branch-only search (no base filter) so it finds PRs
+       regardless of which base they target. *)
+    let discovery_candidates =
+      Runtime.read runtime (fun snap ->
+          Patch_controller.discovery_intents snap.Runtime.orchestrator)
+    in
+    Base.List.iter discovery_candidates ~f:(fun (patch_id, branch) ->
+        match Github.list_prs ~net github ~branch ~state:`Open () with
+        | Ok ((pr_number, base_branch, _merged) :: _) ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "tick discovery: PR #%d"
+                 (Pr_number.to_int pr_number));
+            Pr_registry.register pr_registry ~patch_id ~pr_number;
+            Runtime.update_orchestrator runtime (fun orch ->
+                let orch = Orchestrator.set_pr_number orch patch_id pr_number in
+                Orchestrator.set_base_branch orch patch_id base_branch)
+        | Ok [] -> ()
+        | Error err ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "tick discovery error: %s" (Github.show_error err)));
+    (* Phase 1: Poll known PRs for state changes. *)
     let intents =
       Runtime.read runtime (fun snap ->
           let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
@@ -1823,8 +1841,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
-    ~github ~net ~event_log ?status_msg () =
+let runner_fiber ~runtime ~env ~config ~project_name ~transcripts ~github ~net
+    ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
@@ -2059,35 +2077,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                        (Patch_id.to_string patch_id))
                                   ()
                           | Orchestrator.Start_ok ->
-                              (* Always confirm via REST API *)
-                              let rec discover remaining =
-                                match
-                                  discover_pr_number ~net ~github
-                                    ~branch:patch.Patch.branch ~base_branch
-                                with
-                                | Ok pr_number ->
-                                    log_event runtime ~patch_id
-                                      (Printf.sprintf "PR #%d created"
-                                         (Pr_number.to_int pr_number));
-                                    Pr_registry.register pr_registry ~patch_id
-                                      ~pr_number;
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.set_pr_number orch patch_id
-                                          pr_number)
-                                | Error _ when remaining > 0 ->
-                                    Eio.Time.sleep clock 2.0;
-                                    discover (remaining - 1)
-                                | Error msg ->
-                                    log_event runtime ~patch_id
-                                      (Printf.sprintf "PR discovery failed: %s"
-                                         msg);
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.on_pr_discovery_failure
-                                          orch patch_id)
-                              in
-                              discover 2;
+                              (* PR discovery is tick-based in the poller.
+                                 Bump the counter so needs_intervention
+                                 triggers after 2 Starts without a PR;
+                                 set_pr_number resets it when found. *)
+                              Runtime.update_orchestrator runtime (fun orch ->
+                                  Orchestrator.on_pr_discovery_failure orch
+                                    patch_id);
                               Runtime.update_orchestrator runtime (fun orch ->
                                   Orchestrator.complete orch patch_id)
                           | Orchestrator.Start_stale -> ())))
@@ -3082,8 +3078,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
-            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~transcripts ~github ~net ~event_log ())
+            runner_fiber ~runtime ~env ~config ~project_name ~transcripts
+              ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -3132,8 +3128,8 @@ let run_with_config (config : config) gameplan existing_snapshot =
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo)
                 :: (fun () ->
-                  runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-                    ~transcripts ~github ~net ~event_log ~status_msg ())
+                  runner_fiber ~runtime ~env ~config ~project_name ~transcripts
+                    ~github ~net ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

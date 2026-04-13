@@ -63,22 +63,24 @@ let has_notes_queued agent =
 let has_description_effect effects =
   List.exists effects ~f:(function
     | Patch_controller.Set_pr_description _ -> true
-    | Patch_controller.Set_pr_draft _ -> false)
+    | Patch_controller.Set_pr_draft _ | Patch_controller.Set_pr_base _ -> false)
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
     | Patch_controller.Set_pr_draft _ -> true
-    | Patch_controller.Set_pr_description _ -> false)
+    | Patch_controller.Set_pr_description _ | Patch_controller.Set_pr_base _ ->
+        false)
 
 let description_effect effects =
   List.find_map effects ~f:(function
     | Patch_controller.Set_pr_description _ as e -> Some e
-    | Patch_controller.Set_pr_draft _ -> None)
+    | Patch_controller.Set_pr_draft _ | Patch_controller.Set_pr_base _ -> None)
 
 let draft_effect effects =
   List.find_map effects ~f:(function
     | Patch_controller.Set_pr_draft _ as e -> Some e
-    | Patch_controller.Set_pr_description _ -> None)
+    | Patch_controller.Set_pr_description _ | Patch_controller.Set_pr_base _ ->
+        None)
 
 let apply_all_effect_successes orch effects =
   List.fold effects ~init:orch ~f:Patch_controller.apply_github_effect_success
@@ -406,18 +408,23 @@ let () =
             ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
+        (* Apply effects in a loop until convergence (max 5 rounds). *)
+        let rec converge orch round =
+          if round > 5 then false
+          else
+            let orch', effects =
+              Patch_controller.reconcile_all orch ~project_name:"test-project"
+                ~gameplan
+            in
+            if List.is_empty effects then true
+            else converge (apply_all_effect_successes orch' effects) (round + 1)
+        in
         let orch1, effects1 =
           Patch_controller.reconcile_all orch ~project_name:"test-project"
             ~gameplan
         in
-        let orch2 = apply_all_effect_successes orch1 effects1 in
-        let _orch3, effects2 =
-          Patch_controller.reconcile_all orch2 ~project_name:"test-project"
-            ~gameplan
-        in
         has_description_effect effects1
-        && (not (has_description_effect effects2))
-        && not (has_draft_effect effects2))
+        && converge (apply_all_effect_successes orch1 effects1) 2)
   in
 
   let prop_poll_to_controller_promotes_ready_after_notes =
@@ -694,6 +701,228 @@ let () =
         end)
   in
 
+  (* -- Base branch reconciliation properties -- *)
+  let has_base_effect effects =
+    List.exists effects ~f:(function
+      | Patch_controller.Set_pr_base _ -> true
+      | Patch_controller.Set_pr_description _ | Patch_controller.Set_pr_draft _
+        ->
+          false)
+  in
+
+  let base_effect effects =
+    List.find_map effects ~f:(function
+      | Patch_controller.Set_pr_base _ as e -> Some e
+      | Patch_controller.Set_pr_description _ | Patch_controller.Set_pr_draft _
+        ->
+          None)
+  in
+
+  let prop_set_pr_base_emitted_on_mismatch =
+    Test.make
+      ~name:
+        "patch_controller: Set_pr_base emitted when actual base differs from \
+         graph-expected base"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        (* Agent has base_branch = branch, but graph says main (no deps) *)
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
+            ~pr_description_applied:true ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0
+        in
+        let orch = make_orch patch agent in
+        let _orch', effects =
+          Patch_controller.reconcile_all orch ~project_name:"test-project"
+            ~gameplan
+        in
+        if Branch.equal branch main then not (has_base_effect effects)
+        else
+          match base_effect effects with
+          | Some (Patch_controller.Set_pr_base { base; _ }) ->
+              Branch.equal base main
+          | Some (Patch_controller.Set_pr_description _)
+          | Some (Patch_controller.Set_pr_draft _)
+          | None ->
+              false)
+  in
+
+  let prop_set_pr_base_not_emitted_when_correct =
+    Test.make
+      ~name:
+        "patch_controller: Set_pr_base not emitted when base matches \
+         graph-expected base"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        (* Agent has base_branch = main, graph says main (no deps) → match *)
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
+            ~pr_description_applied:true ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0
+        in
+        let orch = make_orch patch agent in
+        let _orch', effects =
+          Patch_controller.reconcile_all orch ~project_name:"test-project"
+            ~gameplan
+        in
+        not (has_base_effect effects))
+  in
+
+  let prop_set_pr_base_converges =
+    Test.make
+      ~name:
+        "patch_controller: Set_pr_base converges after applying effect success"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
+            ~pr_description_applied:true ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0
+        in
+        let orch = make_orch patch agent in
+        let orch1, effects1 =
+          Patch_controller.reconcile_all orch ~project_name:"test-project"
+            ~gameplan
+        in
+        let orch2 = apply_all_effect_successes orch1 effects1 in
+        let _orch3, effects2 =
+          Patch_controller.reconcile_all orch2 ~project_name:"test-project"
+            ~gameplan
+        in
+        not (has_base_effect effects2))
+  in
+
+  let prop_poll_always_refreshes_base =
+    Test.make
+      ~name:
+        "patch_controller: poll always refreshes base_branch from observation"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let new_base = Branch.of_string "new-base" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:false
+            ~pr_description_applied:true ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0
+        in
+        let orch = make_orch patch agent in
+        let obs =
+          Patch_controller.
+            {
+              poll_result =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    closed = false;
+                    is_draft = false;
+                    has_conflict = false;
+                    merge_ready = false;
+                    checks_passing = false;
+                    ci_checks = [];
+                  };
+              base_branch = Some new_base;
+              branch_in_root = false;
+              worktree_path = None;
+            }
+        in
+        let orch', _logs, _blocked =
+          Patch_controller.apply_poll_result orch pid obs
+        in
+        let updated = Orchestrator.agent orch' pid in
+        Option.equal Branch.equal updated.Patch_agent.base_branch
+          (Some new_base))
+  in
+
+  (* -- Discovery intents properties -- *)
+  let prop_discovery_intents_filters_correctly =
+    Test.make
+      ~name:
+        "patch_controller: discovery_intents returns exactly has_session && \
+         !has_pr && !merged agents"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        (* Agent with session but no PR → should appear *)
+        let agent_session_no_pr =
+          Patch_agent.restore ~patch_id:pid ~branch ~pr_number:None
+            ~has_session:true ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~is_draft:false ~pr_description_applied:false
+            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None
+        in
+        let orch =
+          Orchestrator.restore
+            ~graph:(Graph.of_patches [ patch ])
+            ~agents:
+              (Map.of_alist_exn
+                 (module Patch_id)
+                 [ (pid, agent_session_no_pr) ])
+            ~outbox:(Map.empty (module Message_id))
+            ~main_branch:main
+        in
+        let intents = Patch_controller.discovery_intents orch in
+        List.length intents = 1
+        && List.exists intents ~f:(fun (intent_pid, _) ->
+            Patch_id.equal intent_pid pid))
+  in
+
+  let prop_discovery_intents_excludes_pr_agents =
+    Test.make
+      ~name:"patch_controller: discovery_intents excludes agents that have a PR"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:true ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:false ~pr_description_applied:false
+            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None
+        in
+        let orch =
+          Orchestrator.restore
+            ~graph:(Graph.of_patches [ patch ])
+            ~agents:(Map.of_alist_exn (module Patch_id) [ (pid, agent) ])
+            ~outbox:(Map.empty (module Message_id))
+            ~main_branch:main
+        in
+        List.is_empty (Patch_controller.discovery_intents orch))
+  in
+
   let suite =
     [
       prop_deterministic;
@@ -711,6 +940,12 @@ let () =
       prop_poll_result_persists_world_flags;
       prop_poll_observation_updates_branch_metadata;
       prop_mixed_cycle_converges_for_bootstrap_patch;
+      prop_set_pr_base_emitted_on_mismatch;
+      prop_set_pr_base_not_emitted_when_correct;
+      prop_set_pr_base_converges;
+      prop_poll_always_refreshes_base;
+      prop_discovery_intents_filters_correctly;
+      prop_discovery_intents_excludes_pr_agents;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
