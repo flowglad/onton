@@ -53,7 +53,13 @@ let parse_event (line : string) : Types.Stream_event.t list =
                   { text = ""; stop_reason = Types.Stop_reason.End_turn };
               ]
           | Some other ->
-              [ Types.Stream_event.Error (Printf.sprintf "gemini %s" other) ]
+              let detail =
+                match member "message" json |> to_string_option with
+                | Some m when not (String.is_empty m) ->
+                    Printf.sprintf "gemini %s: %s" other m
+                | _ -> Printf.sprintf "gemini %s" other
+              in
+              [ Types.Stream_event.Error detail ]
           | None -> [])
       | Some "error" ->
           let msg =
