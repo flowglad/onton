@@ -182,9 +182,7 @@ let patch_agent_of_yojson ~gameplan json =
        ~is_draft:(bool_member "is_draft" json)
        ~pr_description_applied:(bool_member "pr_description_applied" json)
        ~pr_body_delivered:
-         (Option.value
-            (bool_member_opt "pr_body_delivered" json)
-            ~default:false)
+         (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
        ~implementation_notes_delivered:
          (bool_member "implementation_notes_delivered" json)
        ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)

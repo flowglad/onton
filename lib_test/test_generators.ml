@@ -517,6 +517,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Adding_notes;
       Rebasing;
       Starting;
+      Updating;
       Ci_queued;
       Review_queued;
       Awaiting_ci;

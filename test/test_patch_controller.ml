@@ -230,12 +230,23 @@ let () =
       (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
+        (* pr_body_delivered must be false so that Set_pr_description fires;
+           once the agent-authored body is delivered, it supersedes the
+           gameplan-derived description. *)
         let agent =
-          make_agent ~patch_id:pid ~branch
+          Patch_agent.restore ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
-            ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
-            ~pr_description_applied:false ~implementation_notes_delivered:false
-            ~start_attempts_without_pr:0
+            ~has_session:false ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:true ~pr_description_applied:false
+            ~pr_body_delivered:false ~implementation_notes_delivered:false
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         begin try
@@ -403,12 +414,21 @@ let () =
       (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
+        (* pr_body_delivered=false so Set_pr_description fires *)
         let agent =
-          make_agent ~patch_id:pid ~branch
+          Patch_agent.restore ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
-            ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
-            ~pr_description_applied:false ~implementation_notes_delivered:true
-            ~start_attempts_without_pr:0
+            ~has_session:false ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:true ~pr_description_applied:false
+            ~pr_body_delivered:false ~implementation_notes_delivered:true
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         (* Apply effects in a loop until convergence (max 5 rounds). *)
@@ -663,44 +683,64 @@ let () =
       (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
+        (* pr_body_delivered=false so Set_pr_description fires in cycle 1.
+           After description ack + pr_body delivery, notes become eligible
+           in cycle 2. After notes delivery, cycle 3 should converge with
+           only a draft effect. *)
         let agent =
-          make_agent ~patch_id:pid ~branch
+          Patch_agent.restore ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
-            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_description_applied:false ~implementation_notes_delivered:false
-            ~start_attempts_without_pr:0
+            ~has_session:false ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:true ~pr_description_applied:false
+            ~pr_body_delivered:false ~implementation_notes_delivered:false
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         begin try
-          let orch1, effects1, actions1 = run_controller_cycle ~gameplan orch in
-          match implementation_notes_action actions1 pid with
-          | None -> false
-          | Some notes_action ->
-              let orch1 = Orchestrator.fire orch1 notes_action in
-              let orch1 =
-                let orch1 =
-                  Orchestrator.set_implementation_notes_delivered orch1 pid true
+          (* Cycle 1: description effect fires, Pr_body enqueued *)
+          let orch1, effects1, _actions1 =
+            run_controller_cycle ~gameplan orch
+          in
+          if not (has_description_effect effects1) then false
+          else
+            (* Fire Pr_body action and simulate delivery *)
+            let orch1 =
+              Orchestrator.fire orch1
+                (Orchestrator.Respond (pid, Operation_kind.Pr_body))
+            in
+            let orch1 = Orchestrator.set_pr_body_delivered orch1 pid true in
+            let orch1 = Orchestrator.complete orch1 pid in
+            (* Cycle 2: notes now eligible *)
+            let orch2, _effects2, actions2 =
+              run_controller_cycle ~gameplan orch1
+            in
+            match implementation_notes_action actions2 pid with
+            | None -> false
+            | Some notes_action ->
+                let orch2 = Orchestrator.fire orch2 notes_action in
+                let orch2 =
+                  Orchestrator.set_implementation_notes_delivered orch2 pid true
                 in
-                Orchestrator.complete orch1 pid
-              in
-              let _orch2, effects2, actions2 =
-                run_controller_cycle ~gameplan orch1
-              in
-              has_description_effect effects1
-              && List.exists actions1 ~f:(function
-                | Orchestrator.Respond (action_pid, kind) ->
-                    Patch_id.equal action_pid pid
-                    && Operation_kind.equal kind
-                         Operation_kind.Implementation_notes
-                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
-              && has_draft_effect effects2
-              && not
-                   (List.exists actions2 ~f:(function
-                     | Orchestrator.Respond (action_pid, kind) ->
-                         Patch_id.equal action_pid pid
-                         && Operation_kind.equal kind
-                              Operation_kind.Implementation_notes
-                     | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+                let orch2 = Orchestrator.complete orch2 pid in
+                (* Cycle 3: should converge — only draft effect *)
+                let _orch3, effects3, actions3 =
+                  run_controller_cycle ~gameplan orch2
+                in
+                has_draft_effect effects3
+                && not
+                     (List.exists actions3 ~f:(function
+                       | Orchestrator.Respond (action_pid, kind) ->
+                           Patch_id.equal action_pid pid
+                           && Operation_kind.equal kind
+                                Operation_kind.Implementation_notes
+                       | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
         with _ -> false
         end)
   in

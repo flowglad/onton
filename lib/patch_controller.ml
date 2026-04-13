@@ -259,7 +259,8 @@ let reconcile_patch t ~project_name ~gameplan ~(patch : Patch.t) =
     let effects = ref [] in
     (match agent.pr_number with
     | Some pr_number -> (
-        if not agent.pr_description_applied then
+        if (not agent.pr_description_applied) && not agent.pr_body_delivered
+        then
           effects :=
             Set_pr_description
               {
