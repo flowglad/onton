@@ -515,15 +515,35 @@ A separate, later phase will append `## Implementation Notes` to this body — d
         vars)
 
 let render_implementation_notes_prompt ~(project_name : string)
-    ~(pr_number : Pr_number.t) ~(artifact_path : string) =
+    ~(pr_number : Pr_number.t) ~(pr_description : string)
+    ~(spec_suffix : string) ~(artifact_path : string) =
   let pr_num_str = Int.to_string (Pr_number.to_int pr_number) in
-  let vars = [ ("pr_number", pr_num_str); ("artifact_path", artifact_path) ] in
+  let spec_context =
+    if String.is_empty (String.strip spec_suffix) then ""
+    else
+      "\n\nThe following specifications govern this patch:\n" ^ spec_suffix
+      ^ "\n"
+  in
+  let vars =
+    [
+      ("pr_number", pr_num_str);
+      ("artifact_path", artifact_path);
+      ("pr_description", pr_description);
+      ("spec_context", spec_context);
+    ]
+  in
   render_with_override ~project_name ~name:"implementation_notes" ~vars
     ~default:(fun () ->
       substitute_variables
         {|You have just finished implementing this patch and a PR has been created. The supervisor opens a final phase where you write **just the implementation notes** — the "## Implementation Notes" section a reviewer cares about.
 
-**Write the notes content (markdown, no header line) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. The supervisor reads the file, prepends `## Implementation Notes`, and appends it to the PR body.
+Here is the PR description you wrote:
+
+---
+{{pr_description}}
+---
+{{spec_context}}
+**Write the notes content (markdown, no header line) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. The supervisor reads the file, prepends `## Implementation Notes`, and appends it to the PR body (after the description and specifications).
 
 Do NOT run `gh`, `git`, or any forge command — the supervisor handles upload.
 
@@ -533,6 +553,8 @@ Focus on:
 - Anything surprising or non-obvious about the approach.
 - Deviations from the original plan (if any).
 - Important details a reviewer should know.
+
+Do not repeat information already in the PR description — add only what a reviewer needs beyond what's already written above.
 
 Keep it concise — a few bullet points usually suffices. If you have nothing material to add (the patch is straightforward), write a single line acknowledging that.|}
         vars)

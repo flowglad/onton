@@ -347,8 +347,8 @@ let apply_notes_artifact ~runtime ~net ~github ~project_name ~patch_id
       in
       let spec_suffix = Prompt.render_spec_suffix patch gameplan in
       let composed =
-        Printf.sprintf "%s\n\n## Implementation Notes\n\n%s%s" body_base
-          (String.trim notes) spec_suffix
+        Printf.sprintf "%s%s\n\n## Implementation Notes\n\n%s" body_base
+          spec_suffix (String.trim notes)
       in
       match Github.update_pr_body ~net github ~pr_number ~body:composed with
       | Ok () ->
@@ -2815,6 +2815,26 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         ~pr_body ~artifact_path
                                   | Patch_decision.Implementation_notes_payload
                                     ->
+                                      let patch =
+                                        Base.List.find_exn
+                                          gameplan.Gameplan.patches
+                                          ~f:(fun (p : Patch.t) ->
+                                            Patch_id.equal p.Patch.id patch_id)
+                                      in
+                                      let pr_description =
+                                        Prompt.resolve_pr_body_source
+                                          ~artifact:
+                                            (read_artifact_file
+                                               (Project_store
+                                                .pr_body_artifact_path
+                                                  ~project_name ~patch_id))
+                                          ~fallback:
+                                            (Prompt.render_pr_description
+                                               ~project_name patch gameplan)
+                                      in
+                                      let spec_suffix =
+                                        Prompt.render_spec_suffix patch gameplan
+                                      in
                                       let artifact_path =
                                         Project_store
                                         .implementation_notes_artifact_path
@@ -2826,6 +2846,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         ~project_name
                                         ~pr_number:
                                           (Base.Option.value_exn pr_number)
+                                        ~pr_description ~spec_suffix
                                         ~artifact_path
                                   | Patch_decision.Merge_conflict_payload ->
                                       (* Invariant: Merge_conflict is handled
