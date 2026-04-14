@@ -1737,3 +1737,115 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi16;
   Stdlib.print_endline "PI-16 passed"
+
+(** PI-17: When a dependency merges while its dependent's session is running,
+    re-deriving the base branch at PR-creation time yields [main], not the
+    now-deleted dependency branch.
+
+    Regression test for the spec-aware-review/patch-4 422: the Start message
+    captured [base = dep-branch] at dispatch time, but by the time the session
+    finished and the supervisor tried to create the PR, the dep had merged and
+    its branch was deleted — causing a GitHub 422. The fix re-computes
+    [Graph.initial_base] from fresh orchestrator state at PR creation time.
+
+    The property generates random linear chains of 2-5 patches. For each
+    dependent patch, it: 1. Fires Start (capturing the dep-branch as base) 2.
+    Merges the dependency while the dependent is busy 3. Re-derives initial_base
+    from current state 4. Asserts the fresh base is [main] (all deps now merged)
+*)
+let () =
+  let prop_pi17 =
+    QCheck2.Test.make
+      ~name:
+        "PI-17: fresh initial_base after dep merge yields main, not stale \
+         dep-branch" ~count:300 (QCheck2.Gen.int_range 2 5) (fun n ->
+        let patches = mk_patches n in
+        let branch_of = branch_of_patches patches in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        (* Bootstrap: start and complete all patches in dependency order,
+           giving each a PR — except patch 1 (the first dependent), which
+           we leave without a PR to model the "first session" scenario. *)
+        let orch =
+          List.foldi patches ~init:orch ~f:(fun i o _p ->
+              let pid = pid_of_idx patches i in
+              let has_merged dep_pid =
+                (Orchestrator.agent o dep_pid).Patch_agent.merged
+              in
+              let base =
+                Graph.initial_base (Orchestrator.graph o) pid ~has_merged
+                  ~branch_of ~main
+              in
+              let o = Orchestrator.fire o (Orchestrator.Start (pid, base)) in
+              let o =
+                if i = 0 then
+                  Orchestrator.set_pr_number o pid (Pr_number.of_int 1)
+                else o
+              in
+              Orchestrator.complete o pid)
+        in
+        (* For each patch with a dependency, test the interleaving:
+           1. Start the dependent (no PR — first session)
+           2. Merge the immediate dependency while the dependent is busy
+           3. Re-derive initial_base from fresh state
+           4. Assert the fresh base is main (all deps of this patch merged) *)
+        List.for_alli patches ~f:(fun i _p ->
+            if i = 0 then true (* patch 0 has no deps *)
+            else
+              let dep_pid = pid_of_idx patches (i - 1) in
+              let pid = pid_of_idx patches i in
+              (* Merge all patches before the immediate dep so that
+                 the only open dep is [dep_pid] *)
+              let orch =
+                List.foldi patches ~init:orch ~f:(fun j o _p ->
+                    if j < i - 1 then
+                      let jpid = pid_of_idx patches j in
+                      if not (Orchestrator.agent o jpid).Patch_agent.merged then
+                        Orchestrator.mark_merged o jpid
+                      else o
+                    else o)
+              in
+              (* Verify the stale base is the dep's branch *)
+              let has_merged_pre dep =
+                (Orchestrator.agent orch dep).Patch_agent.merged
+              in
+              let stale_base =
+                Graph.initial_base (Orchestrator.graph orch) pid
+                  ~has_merged:has_merged_pre ~branch_of ~main
+              in
+              let dep_branch = branch_of dep_pid in
+              if not (Branch.equal stale_base dep_branch) then
+                QCheck2.Test.fail_reportf
+                  "PI-17 setup: expected stale_base=%s, got %s"
+                  (Branch.to_string dep_branch)
+                  (Branch.to_string stale_base);
+              (* Fire Start to make the dependent busy (no PR → fire succeeds) *)
+              let orch =
+                Orchestrator.fire orch (Orchestrator.Start (pid, stale_base))
+              in
+              let agent = Orchestrator.agent orch pid in
+              if not agent.Patch_agent.busy then
+                QCheck2.Test.fail_reportf
+                  "PI-17: patch %s should be busy after Start"
+                  (Patch_id.to_string pid);
+              (* Dependency merges while dependent is busy *)
+              let orch = Orchestrator.mark_merged orch dep_pid in
+              (* Re-derive initial_base from fresh state — this is what
+                 the supervisor now does at PR creation time *)
+              let has_merged_post dep =
+                (Orchestrator.agent orch dep).Patch_agent.merged
+              in
+              let fresh_base =
+                Graph.initial_base (Orchestrator.graph orch) pid
+                  ~has_merged:has_merged_post ~branch_of ~main
+              in
+              if not (Branch.equal fresh_base main) then
+                QCheck2.Test.fail_reportf
+                  "PI-17: after dep %s merged, fresh initial_base for %s \
+                   should be main, got %s"
+                  (Patch_id.to_string dep_pid)
+                  (Patch_id.to_string pid)
+                  (Branch.to_string fresh_base);
+              true))
+  in
+  QCheck2.Test.check_exn prop_pi17;
+  Stdlib.print_endline "PI-17 passed"
