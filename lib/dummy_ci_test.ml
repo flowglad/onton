@@ -13,3 +13,10 @@ let find_max lst =
     | x :: xs -> aux (if x > best then x else best) xs
   in
   aux (List.hd lst) (List.tl lst)
+
+let cache : (string, string) Hashtbl.t = Hashtbl.create 16
+
+let lookup key =
+  let v = Hashtbl.find cache key in
+  Printf.printf "found: %s\n" v;
+  v
