@@ -50,6 +50,15 @@ module Operation_kind = struct
   type t = Rebase | Human | Merge_conflict | Ci | Review_comments | Pr_body
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
+  (** Migration-aware deserializer: maps removed constructors to their
+      replacements so persisted state from older versions can still load. *)
+  let t_of_yojson_compat json =
+    match json with
+    | `List [ `String "Implementation_notes" ] | `String "Implementation_notes"
+      ->
+        Pr_body
+    | _ -> t_of_yojson json
+
   let to_label = function
     | Rebase -> "rebase"
     | Human -> "human"

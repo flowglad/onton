@@ -100,7 +100,7 @@ let patch_agent_of_yojson ~gameplan json =
   let* queue =
     result_all
       (List.map (list_member "queue" json) ~f:(fun j ->
-           try_of_yojson Operation_kind.t_of_yojson j))
+           try_of_yojson Operation_kind.t_of_yojson_compat j))
   in
   let human_messages =
     match Yojson.Safe.Util.member "human_messages" json with
@@ -206,7 +206,7 @@ let patch_agent_of_yojson ~gameplan json =
          (match Yojson.Safe.Util.member "current_op" json with
          | `Null -> None
          | v -> (
-             match try_of_yojson Operation_kind.t_of_yojson v with
+             match try_of_yojson Operation_kind.t_of_yojson_compat v with
              | Ok op -> Some op
              | Error _ -> None))
        ~current_message_id:
@@ -316,7 +316,7 @@ let action_of_yojson json =
              Branch.of_string (string_member "base_branch" json) ))
   | "respond" ->
       let* op_kind =
-        try_of_yojson Operation_kind.t_of_yojson
+        try_of_yojson Operation_kind.t_of_yojson_compat
           (Yojson.Safe.Util.member "operation_kind" json)
       in
       Ok
