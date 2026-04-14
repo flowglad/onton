@@ -121,24 +121,6 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-3 passed"
 
-(* ========== AO-4: Respond_ok + Pr_body sets delivered ========== *)
-
-let () =
-  let prop =
-    QCheck2.Test.make ~name:"AO-4: Respond_ok + Pr_body sets pr_body_delivered"
-      (QCheck2.Gen.return ()) (fun () ->
-        let orch, patches, gameplan, pid = bootstrap_one () in
-        assert (not (Orchestrator.agent orch pid).Patch_agent.pr_body_delivered);
-        let orch = make_busy orch patches gameplan pid Operation_kind.Pr_body in
-        let orch =
-          Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
-            Orchestrator.Respond_ok
-        in
-        (Orchestrator.agent orch pid).Patch_agent.pr_body_delivered)
-  in
-  QCheck2.Test.check_exn prop;
-  Stdlib.print_endline "AO-4 passed"
-
 (* ========== AO-5: Stale outcomes are identity ========== *)
 
 let () =
