@@ -15,10 +15,7 @@ let gen_branch =
     map Branch.of_string
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
-let feedback_ops =
-  Operation_kind.
-    [ Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
-
+let feedback_ops = Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
 (** Start + set PR so the agent is in has_pr=true, busy=false state. *)
@@ -345,7 +342,7 @@ let () =
         {
           payload =
             ( Ci_payload _ | Review_payload _ | Pr_body_payload
-            | Implementation_notes_payload | Merge_conflict_payload );
+            | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -378,7 +375,7 @@ let () =
         {
           payload =
             ( Ci_payload _ | Review_payload _ | Pr_body_payload
-            | Implementation_notes_payload | Merge_conflict_payload );
+            | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -443,7 +440,7 @@ let () =
             {
               payload =
                 ( Human_payload _ | Review_payload _ | Pr_body_payload
-                | Implementation_notes_payload | Merge_conflict_payload );
+                | Merge_conflict_payload );
               _;
             }
         | Skip_empty | Respond_stale ->
@@ -453,12 +450,11 @@ let () =
     Stdlib.print_endline "RD-6 passed"
   in
 
-  (* RD-7: Merge_conflict and Implementation_notes never Skip_empty *)
+  (* RD-7: Merge_conflict and Pr_body never Skip_empty *)
   let () =
     let pid = Patch_id.of_string "rd7" in
     let br = Branch.of_string "b" in
-    List.iter
-      [ Operation_kind.Merge_conflict; Operation_kind.Implementation_notes ]
+    List.iter [ Operation_kind.Merge_conflict; Operation_kind.Pr_body ]
       ~f:(fun kind ->
         let a = with_pr pid br in
         let a = enqueue a kind in

@@ -303,14 +303,10 @@ let () =
                 Orchestrator.set_pr_number orch first.Patch.id
                   (Pr_number.of_int 1)
               in
-              (* Mark post-PR phases done so the controller doesn't auto-
-                 enqueue Pr_body / Implementation_notes alongside [kind]. *)
+              (* Mark post-PR phase done so the controller doesn't auto-
+                 enqueue Pr_body alongside [kind]. *)
               let orch =
                 Orchestrator.set_pr_body_delivered orch first.Patch.id true
-              in
-              let orch =
-                Orchestrator.set_implementation_notes_delivered orch
-                  first.Patch.id true
               in
               let orch = Orchestrator.complete orch first.Patch.id in
               let orch = Orchestrator.enqueue orch first.Patch.id kind in

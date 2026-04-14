@@ -71,7 +71,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
-      ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("conflict_noop_count", `Int a.conflict_noop_count);
       ("no_commits_push_count", `Int a.no_commits_push_count);
@@ -186,8 +185,6 @@ let patch_agent_of_yojson ~gameplan json =
        ~is_draft:(bool_member "is_draft" json)
        ~pr_body_delivered:
          (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
-       ~implementation_notes_delivered:
-         (bool_member "implementation_notes_delivered" json)
        ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
        ~conflict_noop_count:
          (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)

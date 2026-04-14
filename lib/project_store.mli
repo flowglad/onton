@@ -72,13 +72,6 @@ val pr_body_artifact_path :
     project's data directory at [artifacts/<patch_id>/pr-body.md] — outside the
     worktree so it can never be accidentally committed. *)
 
-val implementation_notes_artifact_path :
-  project_name:string -> patch_id:Types.Patch_id.t -> string
-(** Absolute path the agent writes the implementation-notes section to. Sibling
-    of [pr_body_artifact_path] at [artifacts/<patch_id>/notes.md]. The
-    supervisor composes the final PR body as
-    [<pr-body.md>\n\n## Implementation Notes\n\n<notes.md>]. *)
-
 val project_exists : string -> bool
 (** Whether a project data directory with config exists. *)
 

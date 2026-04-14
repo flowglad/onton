@@ -45,14 +45,7 @@ module Branch : sig
 end
 
 module Operation_kind : sig
-  type t =
-    | Rebase
-    | Human
-    | Merge_conflict
-    | Ci
-    | Review_comments
-    | Pr_body
-    | Implementation_notes
+  type t = Rebase | Human | Merge_conflict | Ci | Review_comments | Pr_body
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   val to_label : t -> string

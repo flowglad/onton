@@ -295,8 +295,10 @@ let read_artifact_file path =
     else None
   with _ -> None
 
-(** Apply the agent-authored PR body artifact to the PR. Falls back to keeping
-    the gameplan-derived body if the artifact is missing or empty. *)
+(** Apply the agent-authored notes artifact to the PR. Composes the final body
+    as: gameplan description + specs + Implementation Notes (from artifact).
+    Falls back to keeping the existing PR body if the artifact is missing or
+    empty. *)
 let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
     ~pr_number ~patch ~gameplan =
   let artifact_path =
@@ -305,13 +307,21 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
   match read_artifact_file artifact_path with
   | None ->
       log_event runtime ~patch_id
-        (Printf.sprintf "pr-body: artifact missing at %s; keeping gameplan body"
+        (Printf.sprintf
+           "pr-body: artifact missing at %s; keeping initial PR body"
            artifact_path)
-  | Some body when String.length (String.trim body) = 0 ->
+  | Some notes when String.length (String.trim notes) = 0 ->
       log_event runtime ~patch_id
-        "pr-body: artifact empty; keeping gameplan body"
-  | Some body -> (
-      let body = body ^ Prompt.render_spec_suffix patch gameplan in
+        "pr-body: artifact empty; keeping initial PR body"
+  | Some notes -> (
+      let description =
+        Prompt.render_pr_description ~project_name patch gameplan
+      in
+      let spec_suffix = Prompt.render_spec_suffix patch gameplan in
+      let body =
+        Printf.sprintf "%s%s\n\n## Implementation Notes\n\n%s" description
+          spec_suffix (String.trim notes)
+      in
       match Github.update_pr_body ~net github ~pr_number ~body with
       | Ok () ->
           log_event runtime ~patch_id
@@ -320,44 +330,6 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
       | Error e ->
           log_event runtime ~patch_id
             (Printf.sprintf "pr-body: PATCH failed — %s" (Github.show_error e)))
-
-(** Apply the agent-authored notes artifact: compose
-    [<pr-body>\n\n## Implementation Notes\n\n<notes>] and PATCH the PR. The body
-    source is the local pr-body.md artifact; if missing, falls back to the
-    gameplan-derived body. *)
-let apply_notes_artifact ~runtime ~net ~github ~project_name ~patch_id
-    ~pr_number ~patch ~gameplan =
-  let notes_path =
-    Project_store.implementation_notes_artifact_path ~project_name ~patch_id
-  in
-  match read_artifact_file notes_path with
-  | None ->
-      log_event runtime ~patch_id
-        (Printf.sprintf "notes: artifact missing at %s; not updating PR body"
-           notes_path)
-  | Some notes when String.length (String.trim notes) = 0 ->
-      log_event runtime ~patch_id "notes: artifact empty; not updating PR body"
-  | Some notes -> (
-      let body_base =
-        Prompt.resolve_pr_body_source
-          ~artifact:
-            (read_artifact_file
-               (Project_store.pr_body_artifact_path ~project_name ~patch_id))
-          ~fallback:(Prompt.render_pr_description ~project_name patch gameplan)
-      in
-      let spec_suffix = Prompt.render_spec_suffix patch gameplan in
-      let composed =
-        Printf.sprintf "%s%s\n\n## Implementation Notes\n\n%s" body_base
-          spec_suffix (String.trim notes)
-      in
-      match Github.update_pr_body ~net github ~pr_number ~body:composed with
-      | Ok () ->
-          log_event runtime ~patch_id
-            (Printf.sprintf "notes: PATCHed PR #%d (body + notes section)"
-               (Pr_number.to_int pr_number))
-      | Error e ->
-          log_event runtime ~patch_id
-            (Printf.sprintf "notes: PATCH failed — %s" (Github.show_error e)))
 
 (** Terminal failure — forces [Given_up] so [complete] raises intervention. Used
     for non-retryable errors (patch not found, PR discovery failed). *)
@@ -2745,9 +2717,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     ( Patch_decision.Human_payload _
                                     | Patch_decision.Ci_payload _
                                     | Patch_decision.Review_payload _
-                                    | Patch_decision.Pr_body_payload
-                                    | Patch_decision
-                                      .Implementation_notes_payload ) as payload;
+                                    | Patch_decision.Pr_body_payload ) as
+                                    payload;
                                   base_change;
                                 } ->
                                 let pr_number = agent.Patch_agent.pr_number in
@@ -2771,7 +2742,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                            "message")
                                   | Patch_decision.Ci_payload _
                                   | Patch_decision.Pr_body_payload
-                                  | Patch_decision.Implementation_notes_payload
                                   | Patch_decision.Merge_conflict_payload ->
                                       Printf.sprintf "Delivering %s"
                                         (Operation_kind.to_label kind));
@@ -2803,6 +2773,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         Prompt.render_pr_description
                                           ~project_name patch gameplan
                                       in
+                                      let spec_suffix =
+                                        Prompt.render_spec_suffix patch gameplan
+                                      in
                                       let artifact_path =
                                         Project_store.pr_body_artifact_path
                                           ~project_name ~patch_id
@@ -2812,42 +2785,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       Prompt.render_pr_body_prompt ~project_name
                                         ~pr_number:
                                           (Base.Option.value_exn pr_number)
-                                        ~pr_body ~artifact_path
-                                  | Patch_decision.Implementation_notes_payload
-                                    ->
-                                      let patch =
-                                        Base.List.find_exn
-                                          gameplan.Gameplan.patches
-                                          ~f:(fun (p : Patch.t) ->
-                                            Patch_id.equal p.Patch.id patch_id)
-                                      in
-                                      let pr_description =
-                                        Prompt.resolve_pr_body_source
-                                          ~artifact:
-                                            (read_artifact_file
-                                               (Project_store
-                                                .pr_body_artifact_path
-                                                  ~project_name ~patch_id))
-                                          ~fallback:
-                                            (Prompt.render_pr_description
-                                               ~project_name patch gameplan)
-                                      in
-                                      let spec_suffix =
-                                        Prompt.render_spec_suffix patch gameplan
-                                      in
-                                      let artifact_path =
-                                        Project_store
-                                        .implementation_notes_artifact_path
-                                          ~project_name ~patch_id
-                                      in
-                                      Project_store.ensure_dir
-                                        (Stdlib.Filename.dirname artifact_path);
-                                      Prompt.render_implementation_notes_prompt
-                                        ~project_name
-                                        ~pr_number:
-                                          (Base.Option.value_exn pr_number)
-                                        ~pr_description ~spec_suffix
-                                        ~artifact_path
+                                        ~pr_body ~spec_suffix ~artifact_path
                                   | Patch_decision.Merge_conflict_payload ->
                                       (* Invariant: Merge_conflict is handled
                                          in the dedicated match arm above *)
@@ -2881,12 +2819,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         Orchestrator.set_notified_base_branch
                                           orch patch_id (Branch.of_string base))
                                 | _ -> ());
-                                (* Artifact-driven phases (Pr_body, Notes):
-                                   read the agent's artifact and PATCH the PR
-                                   body. Falls back gracefully if the artifact
-                                   is missing — the *_delivered flag flips
-                                   true via apply_respond_outcome on
-                                   Respond_ok regardless, so we don't loop. *)
+                                (* Artifact-driven phase (Pr_body): read
+                                   the agent's artifact and PATCH the PR body.
+                                   Falls back gracefully if the artifact is
+                                   missing — pr_body_delivered flips true via
+                                   apply_respond_outcome on Respond_ok
+                                   regardless, so we don't loop. *)
                                 let session_ok =
                                   match result with `Ok -> true | _ -> false
                                 in
@@ -2903,20 +2841,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                              Patch_id.equal p.Patch.id patch_id)
                                        in
                                        apply_pr_body_artifact ~runtime ~net
-                                         ~github ~project_name ~patch_id
-                                         ~pr_number:pr ~patch ~gameplan
-                                   | Patch_decision.Implementation_notes_payload
-                                     ->
-                                       let pr =
-                                         Base.Option.value_exn pr_number
-                                       in
-                                       let patch =
-                                         Base.List.find_exn
-                                           gameplan.Gameplan.patches
-                                           ~f:(fun (p : Patch.t) ->
-                                             Patch_id.equal p.Patch.id patch_id)
-                                       in
-                                       apply_notes_artifact ~runtime ~net
                                          ~github ~project_name ~patch_id
                                          ~pr_number:pr ~patch ~gameplan
                                    | Patch_decision.Human_payload _

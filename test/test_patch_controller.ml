@@ -43,24 +43,16 @@ let make_orch patch agent =
     ~main_branch:main
 
 let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
-    ~is_draft ~implementation_notes_delivered ~start_attempts_without_pr =
-  (* Default pr_body_delivered=true for existing tests so the notes-gate
-     does not block notes enqueuing. New Pr_body-specific tests construct
-     agents via Patch_agent.restore directly. *)
+    ~is_draft ~pr_body_delivered ~start_attempts_without_pr =
   Patch_agent.restore ~patch_id ~branch ~pr_number ~has_session:false
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-    ~merge_ready:false ~is_draft ~pr_body_delivered:true
-    ~implementation_notes_delivered ~start_attempts_without_pr
+    ~merge_ready:false ~is_draft ~pr_body_delivered ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None
     ~checks_passing:false ~current_op:None ~current_message_id:None
     ~generation:0 ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
-
-let has_notes_queued agent =
-  List.mem agent.Patch_agent.queue Operation_kind.Implementation_notes
-    ~equal:Operation_kind.equal
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -74,13 +66,6 @@ let draft_effect effects =
 
 let apply_all_effect_successes orch effects =
   List.fold effects ~init:orch ~f:Patch_controller.apply_github_effect_success
-
-let implementation_notes_action actions pid =
-  List.find actions ~f:(function
-    | Orchestrator.Respond (action_pid, kind) ->
-        Patch_id.equal action_pid pid
-        && Operation_kind.equal kind Operation_kind.Implementation_notes
-    | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)
 
 let run_controller_cycle ~gameplan orch =
   let orch, effects, actions =
@@ -111,7 +96,7 @@ let () =
       let* queue = gen_operation_kind_queue in
       let* use_main_base = bool in
       let* is_draft = bool in
-      let* implementation_notes_delivered = bool in
+      let* pr_body_delivered = bool in
       let* start_attempts_without_pr = int_range 0 3 in
       let base_branch =
         if has_pr then Some (if use_main_base then main else branch) else None
@@ -120,7 +105,7 @@ let () =
       let patch = make_patch pid branch in
       let agent =
         make_agent ~patch_id:pid ~branch ~pr_number ~merged ~queue ~base_branch
-          ~is_draft ~implementation_notes_delivered ~start_attempts_without_pr
+          ~is_draft ~pr_body_delivered ~start_attempts_without_pr
       in
       return (patch, make_gameplan patch, make_orch patch agent))
   in
@@ -174,9 +159,8 @@ let () =
         && List.equal action_equal actions1 actions2)
   in
 
-  let prop_notes_queue_idempotent =
-    Test.make
-      ~name:"patch_controller: implementation notes queueing is idempotent"
+  let prop_pr_body_queue_idempotent =
+    Test.make ~name:"patch_controller: pr_body queueing is idempotent"
       ~count:200
       Gen.(pair gen_patch_id gen_branch)
       (fun (pid, branch) ->
@@ -186,24 +170,27 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
-        let orch1, effects1 =
+        let orch1, _effects1 =
           Patch_controller.reconcile_patch orch ~project_name:"test-project"
             ~gameplan ~patch
         in
-        let orch2, effects2 =
+        let orch2, _effects2 =
           Patch_controller.reconcile_patch orch1 ~project_name:"test-project"
             ~gameplan ~patch
         in
         let a1 = Orchestrator.agent orch1 pid in
         let a2 = Orchestrator.agent orch2 pid in
-        has_notes_queued a1 && has_notes_queued a2
+        let has_pr_body a =
+          List.mem a.Patch_agent.queue Operation_kind.Pr_body
+            ~equal:Operation_kind.equal
+        in
+        has_pr_body a1 && has_pr_body a2
         && List.count a2.Patch_agent.queue
-             ~f:(Operation_kind.equal Operation_kind.Implementation_notes)
-           = 1
-        && List.is_empty effects1 && List.is_empty effects2)
+             ~f:(Operation_kind.equal Operation_kind.Pr_body)
+           = 1)
   in
 
   let prop_draft_reemits_until_success =
@@ -218,8 +205,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main)
-            ~is_draft:(not desired_draft)
-            ~implementation_notes_delivered:notes_delivered
+            ~is_draft:(not desired_draft) ~pr_body_delivered:notes_delivered
             ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
@@ -254,8 +240,8 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch ~pr_number:None ~merged:false
-            ~queue:[] ~base_branch:None ~is_draft:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:2
+            ~queue:[] ~base_branch:None ~is_draft:false ~pr_body_delivered:false
+            ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -273,11 +259,11 @@ let () =
         && List.is_empty effects1 && List.is_empty effects2)
   in
 
-  let prop_reconcile_all_exposes_notes_as_next_action =
+  let prop_reconcile_all_exposes_pr_body_as_next_action =
     Test.make
       ~name:
-        "patch_controller: reconcile_all exposes missing implementation notes \
-         as next Respond action"
+        "patch_controller: reconcile_all exposes missing pr_body as next \
+         Respond action"
       ~count:200
       Gen.(pair gen_patch_id gen_branch)
       (fun (pid, branch) ->
@@ -287,7 +273,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let orch, effects =
@@ -301,7 +287,7 @@ let () =
         && List.exists actions ~f:(function
           | Orchestrator.Respond (action_pid, kind) ->
               Patch_id.equal action_pid pid
-              && Operation_kind.equal kind Operation_kind.Implementation_notes
+              && Operation_kind.equal kind Operation_kind.Pr_body
           | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
   in
 
@@ -317,8 +303,8 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch ~pr_number:None ~merged:false
-            ~queue:[] ~base_branch:None ~is_draft:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:2
+            ~queue:[] ~base_branch:None ~is_draft:false ~pr_body_delivered:false
+            ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
         let orch, effects =
@@ -357,11 +343,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~branch_rebased_onto:None
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         (* Apply effects in a loop until convergence (max 5 rounds). *)
@@ -382,10 +368,10 @@ let () =
         converge (apply_all_effect_successes orch1 effects1) 2)
   in
 
-  let prop_poll_to_controller_promotes_ready_after_notes =
+  let prop_poll_to_controller_promotes_ready_after_pr_body =
     Test.make
       ~name:
-        "patch_controller: poll draft state plus delivered notes yields no \
+        "patch_controller: poll draft state plus delivered pr_body yields no \
          further draft effect once acknowledged"
       ~count:200
       Gen.(pair gen_patch_id gen_branch)
@@ -396,7 +382,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let poll =
@@ -423,11 +409,11 @@ let () =
         has_draft_effect effects1 && not (has_draft_effect effects2))
   in
 
-  let prop_poll_ci_failure_never_erases_notes_followup =
+  let prop_poll_ci_failure_never_erases_pr_body_followup =
     Test.make
       ~name:
         "patch_controller: poll-applicator CI queue does not suppress missing \
-         implementation notes action"
+         pr_body action"
       ~count:200
       Gen.(pair gen_patch_id gen_branch)
       (fun (pid, branch) ->
@@ -437,7 +423,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let poll =
@@ -460,8 +446,9 @@ let () =
         let orch, _effects, actions = run_controller_cycle ~gameplan orch in
         let a = Orchestrator.agent orch pid in
         (* CI is dispatched as the current action (higher priority), while
-           implementation notes remain queued for the next cycle. *)
-        has_notes_queued a
+           pr_body remains queued for the next cycle. *)
+        List.mem a.Patch_agent.queue Operation_kind.Pr_body
+          ~equal:Operation_kind.equal
         && List.exists actions ~f:(function
           | Orchestrator.Respond (action_pid, kind) ->
               Patch_id.equal action_pid pid
@@ -487,11 +474,11 @@ let () =
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~branch_rebased_onto:None
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         let poll =
@@ -526,7 +513,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let poll =
@@ -565,7 +552,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:None ~is_draft:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let poll =
@@ -611,10 +598,9 @@ let () =
       (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
-        (* pr_body_delivered=false so Set_pr_description fires in cycle 1.
-           After description ack + pr_body delivery, notes become eligible
-           in cycle 2. After notes delivery, cycle 3 should converge with
-           only a draft effect. *)
+        (* pr_body_delivered=false so Pr_body is enqueued in cycle 1.
+           After pr_body delivery, cycle 2 should converge with only a
+           draft effect and no more Respond actions. *)
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
@@ -624,11 +610,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~branch_rebased_onto:None
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch = make_orch patch agent in
         begin try
@@ -652,30 +638,16 @@ let () =
             in
             let orch1 = Orchestrator.set_pr_body_delivered orch1 pid true in
             let orch1 = Orchestrator.complete orch1 pid in
-            (* Cycle 2: notes now eligible *)
-            let orch2, _effects2, actions2 =
+            (* Cycle 2: should converge — only draft effect *)
+            let _orch2, effects2, actions2 =
               run_controller_cycle ~gameplan orch1
             in
-            match implementation_notes_action actions2 pid with
-            | None -> false
-            | Some notes_action ->
-                let orch2 = Orchestrator.fire orch2 notes_action in
-                let orch2 =
-                  Orchestrator.set_implementation_notes_delivered orch2 pid true
-                in
-                let orch2 = Orchestrator.complete orch2 pid in
-                (* Cycle 3: should converge — only draft effect *)
-                let _orch3, effects3, actions3 =
-                  run_controller_cycle ~gameplan orch2
-                in
-                has_draft_effect effects3
-                && not
-                     (List.exists actions3 ~f:(function
-                       | Orchestrator.Respond (action_pid, kind) ->
-                           Patch_id.equal action_pid pid
-                           && Operation_kind.equal kind
-                                Operation_kind.Implementation_notes
-                       | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
+            has_draft_effect effects2
+            && not
+                 (List.exists actions2 ~f:(function
+                   | Orchestrator.Respond (action_pid, _kind) ->
+                       Patch_id.equal action_pid pid
+                   | Orchestrator.Start _ | Orchestrator.Rebase _ -> false))
         with _ -> false
         end)
   in
@@ -708,7 +680,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let _orch', effects =
@@ -738,7 +710,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let _orch', effects =
@@ -761,7 +733,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -789,7 +761,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:false
-            ~implementation_notes_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
         let orch = make_orch patch agent in
         let obs =
@@ -838,8 +810,7 @@ let () =
             ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
+            ~is_draft:false ~pr_body_delivered:true ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -877,11 +848,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
-            ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~branch_rebased_onto:None
+            ~checks_passing:false ~current_op:None ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None
         in
         let orch =
           Orchestrator.restore
@@ -897,14 +868,14 @@ let () =
     [
       prop_deterministic;
       prop_plan_tick_deterministic;
-      prop_notes_queue_idempotent;
+      prop_pr_body_queue_idempotent;
       prop_draft_reemits_until_success;
       prop_intervention_stable_after_threshold;
-      prop_reconcile_all_exposes_notes_as_next_action;
+      prop_reconcile_all_exposes_pr_body_as_next_action;
       prop_reconcile_all_blocks_restart_after_intervention;
       prop_reconcile_all_converges_after_acknowledged_effects;
-      prop_poll_to_controller_promotes_ready_after_notes;
-      prop_poll_ci_failure_never_erases_notes_followup;
+      prop_poll_to_controller_promotes_ready_after_pr_body;
+      prop_poll_ci_failure_never_erases_pr_body_followup;
       prop_idle_ci_failure_count_allows_reenqueue;
       prop_poll_result_persists_world_flags;
       prop_poll_observation_updates_branch_metadata;

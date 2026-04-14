@@ -3,8 +3,7 @@ open Onton.Types
 open Onton.Patch_agent
 
 let all_ops =
-  Operation_kind.
-    [ Rebase; Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
+  Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
 
 let gen_pid =
   QCheck2.Gen.(
@@ -17,11 +16,7 @@ let gen_branch =
       (string_size ~gen:(char_range 'a' 'z') (int_range 3 20)))
 
 let gen_op = QCheck2.Gen.oneof_list all_ops
-
-let feedback_ops =
-  Operation_kind.
-    [ Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
-
+let feedback_ops = Operation_kind.[ Human; Merge_conflict; Ci; Review_comments ]
 let gen_feedback_op = QCheck2.Gen.oneof_list feedback_ops
 
 (** Simulate the full start+PR-confirmed flow for tests that need has_pr=true.
@@ -47,7 +42,6 @@ let () =
           && Option.is_none t.base_branch
           && t.ci_failure_count = 0
           && equal_session_fallback t.session_fallback Fresh_available
-          && (not t.implementation_notes_delivered)
           && t.start_attempts_without_pr = 0
           && List.is_empty t.human_messages
           && List.is_empty t.ci_checks && (not t.merge_ready)
@@ -536,9 +530,7 @@ let () =
         Gen.(
           triple gen_pid
             (list_size (int_range 0 5) (string_size ~gen:printable (pure 4)))
-            (oneof_list
-               Operation_kind.
-                 [ Ci; Review_comments; Merge_conflict; Implementation_notes ]))
+            (oneof_list Operation_kind.[ Ci; Review_comments; Merge_conflict ]))
         (fun (pid, msgs, op) ->
           try
             let a =
@@ -676,11 +668,11 @@ let () =
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
-              ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~conflict_noop_count:0 ~no_commits_push_count:0
-              ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-              ~current_message_id:None ~generation:0 ~worktree_path:None
-              ~branch_blocked:false ~llm_session_id:None
+              ~start_attempts_without_pr:0 ~conflict_noop_count:0
+              ~no_commits_push_count:0 ~branch_rebased_onto:None
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~branch_blocked:false
+              ~llm_session_id:None
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -752,11 +744,11 @@ let () =
               ~ci_failure_count:0 ~session_fallback:Fresh_available
               ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
-              ~implementation_notes_delivered:false ~start_attempts_without_pr:0
-              ~conflict_noop_count:0 ~no_commits_push_count:0
-              ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-              ~current_message_id:None ~generation:0 ~worktree_path:None
-              ~branch_blocked:false ~llm_session_id:None
+              ~start_attempts_without_pr:0 ~conflict_noop_count:0
+              ~no_commits_push_count:0 ~branch_rebased_onto:None
+              ~checks_passing:false ~current_op:None ~current_message_id:None
+              ~generation:0 ~worktree_path:None ~branch_blocked:false
+              ~llm_session_id:None
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in
@@ -881,10 +873,8 @@ let () =
           let a = create ~branch:br0 pid in
           let a = increment_start_attempts_without_pr a in
           let a = set_pr_body_delivered a true in
-          let a = set_implementation_notes_delivered a true in
           let a = set_pr_number a (Pr_number.of_int 7) in
           has_pr a && a.is_draft && (not a.pr_body_delivered)
-          && (not a.implementation_notes_delivered)
           && a.start_attempts_without_pr = 0);
       Test.make ~name:"on_pr_discovery_failure increments durable attempt count"
         ~count:1

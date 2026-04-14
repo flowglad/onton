@@ -47,14 +47,7 @@ module Branch = struct
 end
 
 module Operation_kind = struct
-  type t =
-    | Rebase
-    | Human
-    | Merge_conflict
-    | Ci
-    | Review_comments
-    | Pr_body
-    | Implementation_notes
+  type t = Rebase | Human | Merge_conflict | Ci | Review_comments | Pr_body
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   let to_label = function
@@ -64,7 +57,6 @@ module Operation_kind = struct
     | Ci -> "ci"
     | Review_comments -> "review-comments"
     | Pr_body -> "pr-body"
-    | Implementation_notes -> "implementation-notes"
 end
 
 module Comment_id = struct
