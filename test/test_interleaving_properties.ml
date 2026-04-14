@@ -1847,7 +1847,9 @@ let () =
                     (Patch_id.to_string pid)
                     (Branch.to_string fresh_base);
                 true)
-        with _ -> false)
+        with
+        | QCheck2.Test.Test_fail _ as e -> raise e
+        | _ -> false)
   in
   QCheck2.Test.check_exn prop_pi17;
   Stdlib.print_endline "PI-17 passed"
