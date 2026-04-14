@@ -45,15 +45,12 @@ module Branch : sig
 end
 
 module Operation_kind : sig
-  type t =
-    | Rebase
-    | Human
-    | Merge_conflict
-    | Ci
-    | Review_comments
-    | Pr_body
-    | Implementation_notes
+  type t = Rebase | Human | Merge_conflict | Ci | Review_comments | Pr_body
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
+
+  val t_of_yojson_compat : Yojson.Safe.t -> t
+  (** Migration-aware deserializer that accepts removed constructors (e.g.
+      [Implementation_notes] -> [Pr_body]). *)
 
   val to_label : t -> string
   (** Human-readable label for log messages (e.g. ["ci"], ["review-comments"]).

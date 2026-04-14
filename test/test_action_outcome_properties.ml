@@ -80,7 +80,6 @@ let () =
       Operation_kind.Human;
       Operation_kind.Merge_conflict;
       Operation_kind.Pr_body;
-      Operation_kind.Implementation_notes;
     ]
   in
   let prop =
@@ -122,46 +121,13 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-3 passed"
 
-(* ========== AO-4: Respond_ok + Implementation_notes sets delivered ========== *)
-
-let () =
-  let prop =
-    QCheck2.Test.make
-      ~name:"AO-4: Respond_ok + Implementation_notes sets delivered"
-      (QCheck2.Gen.return ()) (fun () ->
-        let orch, patches, gameplan, pid = bootstrap_one () in
-        assert (
-          not
-            (Orchestrator.agent orch pid)
-              .Patch_agent.implementation_notes_delivered);
-        let orch =
-          make_busy orch patches gameplan pid
-            Operation_kind.Implementation_notes
-        in
-        let orch =
-          Orchestrator.apply_respond_outcome orch pid
-            Operation_kind.Implementation_notes Orchestrator.Respond_ok
-        in
-        (Orchestrator.agent orch pid).Patch_agent.implementation_notes_delivered)
-  in
-  QCheck2.Test.check_exn prop;
-  Stdlib.print_endline "AO-4 passed"
-
 (* ========== AO-5: Stale outcomes are identity ========== *)
 
 let () =
   let prop =
     QCheck2.Test.make ~name:"AO-5: stale outcomes are identity"
       (QCheck2.Gen.oneof_list
-         Operation_kind.
-           [
-             Ci;
-             Review_comments;
-             Human;
-             Merge_conflict;
-             Pr_body;
-             Implementation_notes;
-           ])
+         Operation_kind.[ Ci; Review_comments; Human; Merge_conflict; Pr_body ])
       (fun kind ->
         try
           let orch, patches, gameplan, pid = bootstrap_one () in
@@ -300,10 +266,9 @@ let () =
 (* ========== AO-9: Non-Respond_ok outcomes leave delivered flags untouched
    ========== *)
 
-(* Pinned-down variant of AO-2: only Respond_ok flips the *_delivered flag.
-   Failed/Skip_empty/Retry_push/Stale must leave pr_body_delivered and
-   implementation_notes_delivered alone, so the next reconcile cycle re-
-   enqueues the phase. *)
+(* Pinned-down variant of AO-2: only Respond_ok flips pr_body_delivered.
+   Failed/Skip_empty/Retry_push/Stale must leave it alone, so the next
+   reconcile cycle re-enqueues the phase. *)
 let () =
   let non_ok_outcomes =
     [
@@ -315,21 +280,18 @@ let () =
   in
   let prop =
     QCheck2.Test.make
-      ~name:
-        "AO-9: non-Respond_ok outcomes leave Pr_body / Notes delivered flags \
-         false"
-      (QCheck2.Gen.pair
-         (QCheck2.Gen.oneof_list non_ok_outcomes)
-         (QCheck2.Gen.oneof_list
-            Operation_kind.[ Pr_body; Implementation_notes ]))
-      (fun (outcome, kind) ->
+      ~name:"AO-9: non-Respond_ok outcomes leave pr_body_delivered false"
+      (QCheck2.Gen.oneof_list non_ok_outcomes) (fun outcome ->
         try
           let orch, patches, gameplan, pid = bootstrap_one () in
-          let orch = make_busy orch patches gameplan pid kind in
-          let orch = Orchestrator.apply_respond_outcome orch pid kind outcome in
-          let a = Orchestrator.agent orch pid in
-          (not a.Patch_agent.pr_body_delivered)
-          && not a.Patch_agent.implementation_notes_delivered
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Pr_body
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+              outcome
+          in
+          not (Orchestrator.agent orch pid).Patch_agent.pr_body_delivered
         with _ -> false)
   in
   QCheck2.Test.check_exn prop;

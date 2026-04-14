@@ -26,7 +26,6 @@ type t = {
   merge_ready : bool;
   is_draft : bool;
   pr_body_delivered : bool;
-  implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
@@ -75,7 +74,6 @@ let create ~branch patch_id =
     merge_ready = false;
     is_draft = false;
     pr_body_delivered = false;
-    implementation_notes_delivered = false;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
@@ -111,7 +109,6 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     merge_ready = false;
     is_draft = false;
     pr_body_delivered = true;
-    implementation_notes_delivered = true;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
@@ -195,10 +192,6 @@ let base_branch_changed t =
 
 let set_merge_ready t v = { t with merge_ready = v }
 let set_is_draft t v = { t with is_draft = v }
-
-let set_implementation_notes_delivered t v =
-  { t with implementation_notes_delivered = v }
-
 let set_pr_body_delivered t v = { t with pr_body_delivered = v }
 
 let increment_start_attempts_without_pr t =
@@ -253,10 +246,9 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
-    ~implementation_notes_delivered ~start_attempts_without_pr
-    ~conflict_noop_count ~no_commits_push_count ~branch_rebased_onto
-    ~checks_passing ~current_op ~current_message_id ~generation ~worktree_path
-    ~branch_blocked ~llm_session_id =
+    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
+    ~branch_rebased_onto ~checks_passing ~current_op ~current_message_id
+    ~generation ~worktree_path ~branch_blocked ~llm_session_id =
   {
     patch_id;
     branch;
@@ -278,7 +270,6 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     merge_ready;
     is_draft;
     pr_body_delivered;
-    implementation_notes_delivered;
     start_attempts_without_pr;
     conflict_noop_count;
     no_commits_push_count;
@@ -298,7 +289,6 @@ let set_pr_number t pr_number =
     pr_number = Some pr_number;
     is_draft = true;
     pr_body_delivered = false;
-    implementation_notes_delivered = false;
     start_attempts_without_pr = 0;
   }
 

@@ -26,14 +26,11 @@ let gen_branch =
 let gen_operation_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.
-      [
-        Rebase; Human; Merge_conflict; Ci; Review_comments; Implementation_notes;
-      ]
+      [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
 
 let gen_feedback_kind =
   QCheck2.Gen.oneof_list
-    Operation_kind.
-      [ Human; Merge_conflict; Ci; Review_comments; Implementation_notes ]
+    Operation_kind.[ Human; Merge_conflict; Ci; Review_comments; Pr_body ]
 
 let gen_operation_kind_queue =
   QCheck2.Gen.(
@@ -497,7 +494,6 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Resolving_conflict -> Resolving_conflict
     | Responding_to_human -> Responding_to_human
     | Writing_pr_body -> Writing_pr_body
-    | Adding_notes -> Adding_notes
     | Rebasing -> Rebasing
     | Starting -> Starting
     | Updating -> Updating
@@ -519,7 +515,6 @@ let all_display_statuses : Onton.Tui.display_status list =
       Resolving_conflict;
       Responding_to_human;
       Writing_pr_body;
-      Adding_notes;
       Rebasing;
       Starting;
       Updating;

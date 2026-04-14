@@ -342,10 +342,6 @@ let set_merge_ready t patch_id v =
 let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)
 
-let set_implementation_notes_delivered t patch_id v =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_implementation_notes_delivered a v)
-
 let set_pr_body_delivered t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_pr_body_delivered a v)
 
@@ -654,11 +650,6 @@ let apply_respond_outcome t patch_id kind outcome =
           reset_conflict_noop_count t patch_id
         else t
       in
-      let t =
-        if Operation_kind.equal kind Operation_kind.Pr_body then
-          set_pr_body_delivered t patch_id true
-        else t
-      in
-      if Operation_kind.equal kind Operation_kind.Implementation_notes then
-        set_implementation_notes_delivered t patch_id true
+      if Operation_kind.equal kind Operation_kind.Pr_body then
+        set_pr_body_delivered t patch_id true
       else t

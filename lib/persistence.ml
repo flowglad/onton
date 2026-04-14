@@ -71,7 +71,6 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("merge_ready", `Bool a.merge_ready);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
-      ("implementation_notes_delivered", `Bool a.implementation_notes_delivered);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("conflict_noop_count", `Int a.conflict_noop_count);
       ("no_commits_push_count", `Int a.no_commits_push_count);
@@ -101,7 +100,7 @@ let patch_agent_of_yojson ~gameplan json =
   let* queue =
     result_all
       (List.map (list_member "queue" json) ~f:(fun j ->
-           try_of_yojson Operation_kind.t_of_yojson j))
+           try_of_yojson Operation_kind.t_of_yojson_compat j))
   in
   let human_messages =
     match Yojson.Safe.Util.member "human_messages" json with
@@ -186,8 +185,6 @@ let patch_agent_of_yojson ~gameplan json =
        ~is_draft:(bool_member "is_draft" json)
        ~pr_body_delivered:
          (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
-       ~implementation_notes_delivered:
-         (bool_member "implementation_notes_delivered" json)
        ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
        ~conflict_noop_count:
          (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)
@@ -209,7 +206,7 @@ let patch_agent_of_yojson ~gameplan json =
          (match Yojson.Safe.Util.member "current_op" json with
          | `Null -> None
          | v -> (
-             match try_of_yojson Operation_kind.t_of_yojson v with
+             match try_of_yojson Operation_kind.t_of_yojson_compat v with
              | Ok op -> Some op
              | Error _ -> None))
        ~current_message_id:
@@ -319,7 +316,7 @@ let action_of_yojson json =
              Branch.of_string (string_member "base_branch" json) ))
   | "respond" ->
       let* op_kind =
-        try_of_yojson Operation_kind.t_of_yojson
+        try_of_yojson Operation_kind.t_of_yojson_compat
           (Yojson.Safe.Util.member "operation_kind" json)
       in
       Ok

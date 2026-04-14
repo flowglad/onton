@@ -48,9 +48,6 @@ let artifact_dir ~project_name ~patch_id =
 let pr_body_artifact_path ~project_name ~patch_id =
   Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "pr-body.md"
 
-let implementation_notes_artifact_path ~project_name ~patch_id =
-  Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "notes.md"
-
 let ensure_dir path =
   let rec mkdir_p dir =
     if not (Stdlib.Sys.file_exists dir) then (

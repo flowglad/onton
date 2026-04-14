@@ -92,7 +92,6 @@ val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
-val set_implementation_notes_delivered : t -> Patch_id.t -> bool -> t
 val set_pr_body_delivered : t -> Patch_id.t -> bool -> t
 val increment_start_attempts_without_pr : t -> Patch_id.t -> t
 val reset_intervention_state : t -> Patch_id.t -> t
@@ -181,10 +180,10 @@ val apply_respond_outcome :
   t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
     kind-specific transitions (Merge_conflict -> clear_has_conflict +
-    reset_conflict_noop_count; Implementation_notes ->
-    set_implementation_notes_delivered). [Respond_failed] -> complete_failed
-    (restores inflight human messages). [Respond_skip_empty] -> complete.
-    [Respond_retry_push] -> complete. [Respond_stale] -> identity. *)
+    reset_conflict_noop_count; Pr_body -> set_pr_body_delivered).
+    [Respond_failed] -> complete_failed (restores inflight human messages).
+    [Respond_skip_empty] -> complete. [Respond_retry_push] -> complete.
+    [Respond_stale] -> identity. *)
 
 (** Side effects emitted by rebase result application. The runner is responsible
     for executing these (e.g. force-pushing the branch to the remote). Modeled

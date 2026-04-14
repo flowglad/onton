@@ -13,7 +13,6 @@ type display_status =
   | Resolving_conflict
   | Responding_to_human
   | Writing_pr_body
-  | Adding_notes
   | Rebasing
   | Starting
   | Updating
@@ -38,7 +37,6 @@ let label = function
   | Resolving_conflict -> "resolving-conflict"
   | Responding_to_human -> "responding-to-human"
   | Writing_pr_body -> "writing-pr-body"
-  | Adding_notes -> "adding-notes"
   | Rebasing -> "rebasing"
   | Starting -> "starting"
   | Updating -> "updating"
@@ -59,7 +57,6 @@ let color = function
   | Resolving_conflict -> Term.Sgr.fg_yellow
   | Responding_to_human -> Term.Sgr.fg_magenta
   | Writing_pr_body -> Term.Sgr.fg_cyan
-  | Adding_notes -> Term.Sgr.fg_cyan
   | Rebasing -> Term.Sgr.fg_cyan
   | Starting -> Term.Sgr.fg_cyan
   | Updating -> Term.Sgr.fg_cyan
@@ -102,7 +99,6 @@ let derive_display_status (ctx : State.Patch_ctx.t) ~patch_id
     | Some Merge_conflict -> Resolving_conflict
     | Some Human -> Responding_to_human
     | Some Pr_body -> Writing_pr_body
-    | Some Implementation_notes -> Adding_notes
     | Some Rebase -> Rebasing
     | None ->
         if State.Patch_ctx.has_pr ctx ~patch_id then Updating else Starting
@@ -357,7 +353,7 @@ let status_style = function
   | Approved_idle -> [ Term.Sgr.fg_green ]
   | Approved_running -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Writing_pr_body | Adding_notes ->
+  | Writing_pr_body ->
       [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Rebasing -> [ Term.Sgr.fg_yellow ]
   | Starting | Updating -> [ Term.Sgr.fg_cyan ]
@@ -373,7 +369,7 @@ let status_indicator = function
   | Approved_idle -> "✓"
   | Approved_running -> "▶"
   | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Writing_pr_body | Adding_notes ->
+  | Writing_pr_body ->
       "▶"
   | Rebasing -> "↻"
   | Starting | Updating -> "▶"
@@ -642,7 +638,6 @@ let short_op_name = function
   | Operation_kind.Merge_conflict -> "conflict"
   | Operation_kind.Human -> "human"
   | Operation_kind.Pr_body -> "pr-body"
-  | Operation_kind.Implementation_notes -> "notes"
   | Operation_kind.Rebase -> "rebase"
 
 let render_patch_row ~width ~selected (pv : patch_view) =
@@ -750,8 +745,7 @@ let render_summary (views : patch_view list) =
   let is_running status =
     match status with
     | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-    | Writing_pr_body | Adding_notes | Rebasing | Starting | Updating
-    | Approved_running ->
+    | Writing_pr_body | Rebasing | Starting | Updating | Approved_running ->
         true
     | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
     | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending ->

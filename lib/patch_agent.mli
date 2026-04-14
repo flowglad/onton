@@ -30,7 +30,6 @@ type t = private {
   merge_ready : bool;
   is_draft : bool;
   pr_body_delivered : bool;
-  implementation_notes_delivered : bool;
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
@@ -171,9 +170,6 @@ val set_merge_ready : t -> bool -> t
 val set_is_draft : t -> bool -> t
 (** Set the draft flag from GitHub PR state. *)
 
-val set_implementation_notes_delivered : t -> bool -> t
-(** Record whether implementation notes were successfully delivered. *)
-
 val set_pr_body_delivered : t -> bool -> t
 (** Record whether the LLM-authored PR body has been written to the artifact and
     PATCHed onto the PR. Set to [true] on Pr_body Respond_ok regardless of
@@ -292,7 +288,6 @@ val restore :
   merge_ready:bool ->
   is_draft:bool ->
   pr_body_delivered:bool ->
-  implementation_notes_delivered:bool ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->
