@@ -24,6 +24,12 @@ val resolve_pr_body_source : artifact:string option -> fallback:string -> string
     contents otherwise. Used by the supervisor when composing the final PR body
     for the implementation-notes phase. *)
 
+val render_spec_suffix : Types.Patch.t -> Types.Gameplan.t -> string
+(** Pure: render the Gameplan Specification and Patch Specification sections.
+    Returns the empty string when both specs are absent. Appended by the
+    supervisor after the agent-authored PR body, so the agent cannot
+    accidentally drop them. *)
+
 val render_pr_body_prompt :
   project_name:string ->
   pr_number:Pr_number.t ->

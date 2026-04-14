@@ -292,6 +292,154 @@ let%test "resolve_pr_body_source: non-empty artifact wins" =
     (resolve_pr_body_source ~artifact:(Some "agent body") ~fallback:"gameplan")
     "agent body"
 
+let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
+  let gp =
+    let ds = gameplan.Gameplan.final_state_spec in
+    if String.is_empty ds then ""
+    else "\n## Gameplan Specification\n\n```\n" ^ ds ^ "\n```\n"
+  in
+  let ps =
+    if String.is_empty patch.Patch.spec then ""
+    else "\n## Patch Specification\n\n```\n" ^ patch.spec ^ "\n```\n"
+  in
+  gp ^ ps
+
+let%test "render_spec_suffix: both empty" =
+  let patch =
+    {
+      Patch.id = Patch_id.of_string "1";
+      title = "";
+      description = "";
+      spec = "";
+      changes = [];
+      acceptance_criteria = [];
+      files = [];
+      dependencies = [];
+      branch = Branch.of_string "b";
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+    }
+  in
+  let gameplan =
+    {
+      Gameplan.project_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "";
+      patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+  in
+  String.equal (render_spec_suffix patch gameplan) ""
+
+let%test "render_spec_suffix: gameplan spec only" =
+  let patch =
+    {
+      Patch.id = Patch_id.of_string "1";
+      title = "";
+      description = "";
+      spec = "";
+      changes = [];
+      acceptance_criteria = [];
+      files = [];
+      dependencies = [];
+      branch = Branch.of_string "b";
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+    }
+  in
+  let gameplan =
+    {
+      Gameplan.project_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "module FOO.\nsome spec";
+      patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+  in
+  let result = render_spec_suffix patch gameplan in
+  String.is_substring result ~substring:"## Gameplan Specification"
+  && String.is_substring result ~substring:"module FOO."
+  && not (String.is_substring result ~substring:"## Patch Specification")
+
+let%test "render_spec_suffix: patch spec only" =
+  let patch =
+    {
+      Patch.id = Patch_id.of_string "1";
+      title = "";
+      description = "";
+      spec = "module BAR.\npatch spec";
+      changes = [];
+      acceptance_criteria = [];
+      files = [];
+      dependencies = [];
+      branch = Branch.of_string "b";
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+    }
+  in
+  let gameplan =
+    {
+      Gameplan.project_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "";
+      patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+  in
+  let result = render_spec_suffix patch gameplan in
+  String.is_substring result ~substring:"## Patch Specification"
+  && String.is_substring result ~substring:"module BAR."
+  && not (String.is_substring result ~substring:"## Gameplan Specification")
+
+let%test "render_spec_suffix: both present" =
+  let patch =
+    {
+      Patch.id = Patch_id.of_string "1";
+      title = "";
+      description = "";
+      spec = "module BAR.\npatch spec";
+      changes = [];
+      acceptance_criteria = [];
+      files = [];
+      dependencies = [];
+      branch = Branch.of_string "b";
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+    }
+  in
+  let gameplan =
+    {
+      Gameplan.project_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "module FOO.\ngameplan spec";
+      patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+  in
+  let result = render_spec_suffix patch gameplan in
+  String.is_substring result ~substring:"## Gameplan Specification"
+  && String.is_substring result ~substring:"## Patch Specification"
+
 let render_pr_description ~(project_name : string) (patch : Patch.t)
     (gameplan : Gameplan.t) =
   let patch_id = Patch_id.to_string patch.Patch.id in
@@ -313,13 +461,8 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
       ("solution_summary", gameplan.Gameplan.solution_summary);
       ("dependencies", deps);
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
-      ( "gameplan_spec_section",
-        let ds = gameplan.Gameplan.final_state_spec in
-        if String.is_empty ds then ""
-        else "\n## Gameplan Specification\n\n```\n" ^ ds ^ "\n```\n" );
-      ( "patch_spec_section",
-        if String.is_empty patch.spec then ""
-        else "\n## Patch Specification\n\n```\n" ^ patch.spec ^ "\n```\n" );
+      ("gameplan_spec_section", "");
+      ("patch_spec_section", "");
       ( "acceptance_criteria_section",
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
