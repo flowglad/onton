@@ -2217,7 +2217,31 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               (* Supervisor-owned PR creation: the agent
                                  commits and the supervisor pushed at session
                                  end; now we open the draft PR with a
-                                 gameplan-derived title and body. *)
+                                 gameplan-derived title and body.
+
+                                 Re-derive the base branch from current
+                                 orchestrator state — dependencies may have
+                                 merged while the agent session was running,
+                                 making the base captured at dispatch time
+                                 stale. *)
+                              let fresh_base =
+                                Runtime.read runtime (fun snap ->
+                                    let orch = snap.Runtime.orchestrator in
+                                    let has_merged pid =
+                                      (Orchestrator.agent orch pid)
+                                        .Patch_agent.merged
+                                    in
+                                    let branch_of pid =
+                                      (Base.List.find_exn
+                                         gameplan.Gameplan.patches
+                                         ~f:(fun (p : Patch.t) ->
+                                           Patch_id.equal p.Patch.id pid))
+                                        .Patch.branch
+                                    in
+                                    Graph.initial_base (Orchestrator.graph orch)
+                                      patch_id ~has_merged ~branch_of
+                                      ~main:(Orchestrator.main_branch orch))
+                              in
                               let pr_title =
                                 Printf.sprintf "[%s] Patch %s: %s" project_name
                                   (Patch_id.to_string patch.Patch.id)
@@ -2231,7 +2255,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               (match
                                  Github.create_pull_request ~net github
                                    ~title:pr_title ~head:patch.Patch.branch
-                                   ~base:base_branch ~body:pr_body ~draft:true
+                                   ~base:fresh_base ~body:pr_body ~draft:true
                                with
                               | Ok pr_number ->
                                   log_event runtime ~patch_id
@@ -2259,7 +2283,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       match
                                         Github.list_prs ~net github
                                           ~branch:patch.Patch.branch
-                                          ~base:(Some base_branch) ~state:`Open
+                                          ~base:(Some fresh_base) ~state:`Open
                                           ()
                                       with
                                       | Ok ((pr_number, _, _) :: _) ->
