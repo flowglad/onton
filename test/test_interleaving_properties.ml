@@ -1762,9 +1762,9 @@ let () =
         let patches = mk_patches n in
         let branch_of = branch_of_patches patches in
         let orch = Orchestrator.create ~patches ~main_branch:main in
-        (* Bootstrap: start and complete all patches in dependency order,
-           giving each a PR — except patch 1 (the first dependent), which
-           we leave without a PR to model the "first session" scenario. *)
+        (* Bootstrap: start and complete all patches in dependency order.
+           Only patch 0 gets a PR; all dependents (patches 1..n-1) are left
+           without one, so Start can fire for them again in each sub-scenario. *)
         let orch =
           List.foldi patches ~init:orch ~f:(fun i o _p ->
               let pid = pid_of_idx patches i in
