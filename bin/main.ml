@@ -298,7 +298,7 @@ let read_artifact_file path =
 (** Apply the agent-authored PR body artifact to the PR. Falls back to keeping
     the gameplan-derived body if the artifact is missing or empty. *)
 let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
-    ~pr_number =
+    ~pr_number ~patch ~gameplan =
   let artifact_path =
     Project_store.pr_body_artifact_path ~project_name ~patch_id
   in
@@ -311,6 +311,7 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
       log_event runtime ~patch_id
         "pr-body: artifact empty; keeping gameplan body"
   | Some body -> (
+      let body = body ^ Prompt.render_spec_suffix patch gameplan in
       match Github.update_pr_body ~net github ~pr_number ~body with
       | Ok () ->
           log_event runtime ~patch_id
@@ -344,9 +345,10 @@ let apply_notes_artifact ~runtime ~net ~github ~project_name ~patch_id
                (Project_store.pr_body_artifact_path ~project_name ~patch_id))
           ~fallback:(Prompt.render_pr_description ~project_name patch gameplan)
       in
+      let spec_suffix = Prompt.render_spec_suffix patch gameplan in
       let composed =
-        Printf.sprintf "%s\n\n## Implementation Notes\n\n%s" body_base
-          (String.trim notes)
+        Printf.sprintf "%s\n\n## Implementation Notes\n\n%s%s" body_base
+          (String.trim notes) spec_suffix
       in
       match Github.update_pr_body ~net github ~pr_number ~body:composed with
       | Ok () ->
@@ -2224,6 +2226,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               let pr_body =
                                 Prompt.render_pr_description ~project_name patch
                                   gameplan
+                                ^ Prompt.render_spec_suffix patch gameplan
                               in
                               (match
                                  Github.create_pull_request ~net github
@@ -2849,9 +2852,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                        let pr =
                                          Base.Option.value_exn pr_number
                                        in
+                                       let patch =
+                                         Base.List.find_exn
+                                           gameplan.Gameplan.patches
+                                           ~f:(fun (p : Patch.t) ->
+                                             Patch_id.equal p.Patch.id patch_id)
+                                       in
                                        apply_pr_body_artifact ~runtime ~net
                                          ~github ~project_name ~patch_id
-                                         ~pr_number:pr
+                                         ~pr_number:pr ~patch ~gameplan
                                    | Patch_decision.Implementation_notes_payload
                                      ->
                                        let pr =
