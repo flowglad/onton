@@ -2282,9 +2282,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                          error message. *)
                                       match
                                         Github.list_prs ~net github
-                                          ~branch:patch.Patch.branch
-                                          ~base:(Some fresh_base) ~state:`Open
-                                          ()
+                                          ~branch:patch.Patch.branch ~base:None
+                                          ~state:`Open ()
                                       with
                                       | Ok ((pr_number, _, _) :: _) ->
                                           log_event runtime ~patch_id
