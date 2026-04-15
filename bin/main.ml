@@ -506,6 +506,56 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
               (Printf.sprintf "Worktree still missing at %s" path);
             None)
 
+(** Execute a [Worktree_plan.t] against the live filesystem. The plan is built
+    purely (see [Worktree_plan.for_rebase] / [for_merge_conflict]); this
+    function is the single place that turns its ops into git invocations.
+
+    Short-circuits on the first failing op:
+    - [Ensure_worktree] failure →
+      [Worktree.Error "<label> failed: worktree missing"]
+    - [Fetch_origin] error → [Worktree.Error "fetch before rebase failed: ..."]
+      (this exact prefix matches the historical log/event format)
+    - [Rebase_onto] returns its result verbatim; only [Worktree.Ok] continues.
+
+    Returns the final result paired with the worktree path so callers can use it
+    for follow-on effects like [Worktree.force_push_with_lease]. *)
+let execute_worktree_plan ~runtime ~process_mgr ~fs ~repo_root ~project_name
+    ~patch_id ~(agent : Patch_agent.t) ~user_config ~worktree_mutex ~fetch_lock
+    ~fail_label (plan : Worktree_plan.t) =
+  let default_path = Worktree.worktree_dir ~project_name ~patch_id in
+  let rec loop ~path = function
+    | [] -> (Worktree.Ok, path)
+    | Worktree_plan.Ensure_worktree :: rest -> (
+        match
+          ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name
+            ~patch_id ~agent ~user_config ~worktree_mutex ()
+        with
+        | Some p -> loop ~path:p rest
+        | None ->
+            log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Cannot %s — worktree missing and could not be created"
+                 fail_label);
+            ( Worktree.Error
+                (Printf.sprintf "%s failed: worktree missing" fail_label),
+              path ))
+    | Worktree_plan.Fetch_origin :: rest -> (
+        match Worktree.fetch_origin ~fetch_lock ~process_mgr ~path with
+        | Result.Ok () -> loop ~path rest
+        | Result.Error msg ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "Fetch failed before %s — %s" fail_label msg);
+            ( Worktree.Error
+                (Printf.sprintf "fetch before rebase failed: %s" msg),
+              path ))
+    | Worktree_plan.Rebase_onto target :: rest -> (
+        match Worktree.rebase_onto ~process_mgr ~path ~target with
+        | Worktree.Ok -> loop ~path rest
+        | (Worktree.Noop | Worktree.Conflict | Worktree.Error _) as r ->
+            (r, path))
+  in
+  loop ~path:default_path plan
+
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
 let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
@@ -2318,34 +2368,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             Orchestrator.agent snap.Runtime.orchestrator
                               patch_id)
                       in
-                      let wt_path =
-                        match agent.Patch_agent.worktree_path with
-                        | Some p -> p
-                        | None -> Worktree.worktree_dir ~project_name ~patch_id
-                      in
-                      (* Fetch fresh remote refs before rebasing.
-                         Fail closed: if fetch fails, don't rebase against
-                         stale refs. *)
-                      let rebase_result =
-                        match
-                          Worktree.fetch_origin ~fetch_lock:fetch_mutex
-                            ~process_mgr ~path:wt_path
-                        with
-                        | Result.Ok () ->
-                            let remote_target =
-                              Types.Branch.of_string
-                                (Printf.sprintf "origin/%s"
-                                   (Branch.to_string new_base))
-                            in
-                            Worktree.rebase_onto ~process_mgr ~path:wt_path
-                              ~target:remote_target
-                        | Result.Error msg ->
-                            log_event runtime ~patch_id
-                              (Printf.sprintf "Fetch failed before rebase — %s"
-                                 msg);
-                            Worktree.Error
-                              (Printf.sprintf "fetch before rebase failed: %s"
-                                 msg)
+                      let rebase_result, wt_path =
+                        execute_worktree_plan ~runtime ~process_mgr ~fs
+                          ~repo_root:config.repo_root ~project_name ~patch_id
+                          ~agent ~user_config:config.user_config ~worktree_mutex
+                          ~fetch_lock:fetch_mutex ~fail_label:"rebase"
+                          (Worktree_plan.for_rebase ~new_base)
                       in
                       (match rebase_result with
                       | Worktree.Ok ->
@@ -2512,8 +2540,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                 let base_changed_prefix =
                                   render_base_changed_prefix base_change
                                 in
+                                let wt_path_opt =
+                                  ensure_worktree ~runtime ~process_mgr ~fs
+                                    ~repo_root:config.repo_root ~project_name
+                                    ~patch_id ~agent
+                                    ~user_config:config.user_config
+                                    ~worktree_mutex ()
+                                in
                                 let wt_path =
-                                  match agent.Patch_agent.worktree_path with
+                                  match wt_path_opt with
                                   | Some p -> p
                                   | None ->
                                       Worktree.worktree_dir ~project_name
@@ -2588,34 +2623,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                      already in progress";
                                   deliver_to_agent ())
                                 else
-                                  (* Fetch fresh remote refs so rebase_onto
-                                     sees the latest origin/<base>, not a
-                                     stale local tracking ref. Fail closed:
-                                     if fetch fails, don't rebase against
-                                     stale refs. *)
-                                  let rebase_result =
-                                    match
-                                      Worktree.fetch_origin
-                                        ~fetch_lock:fetch_mutex ~process_mgr
-                                        ~path:wt_path
-                                    with
-                                    | Result.Ok () ->
-                                        let target =
-                                          Types.Branch.of_string
-                                            (Printf.sprintf "origin/%s" base)
-                                        in
-                                        Worktree.rebase_onto ~process_mgr
-                                          ~path:wt_path ~target
-                                    | Result.Error msg ->
-                                        log_event runtime ~patch_id
-                                          (Printf.sprintf
-                                             "Fetch failed before \
-                                              merge-conflict rebase — %s"
-                                             msg);
-                                        Worktree.Error
-                                          (Printf.sprintf
-                                             "fetch before rebase failed: %s"
-                                             msg)
+                                  (* Plan-driven: the planner guarantees
+                                     Ensure_worktree precedes Fetch_origin
+                                     and Rebase_onto. The executor short-
+                                     circuits on the first failure. Plans
+                                     target origin/<base> so we rebase
+                                     against fresh refs, not the stale
+                                     local tracking ref. *)
+                                  let rebase_result, _wt_path =
+                                    execute_worktree_plan ~runtime ~process_mgr
+                                      ~fs ~repo_root:config.repo_root
+                                      ~project_name ~patch_id ~agent
+                                      ~user_config:config.user_config
+                                      ~worktree_mutex ~fetch_lock:fetch_mutex
+                                      ~fail_label:"merge-conflict rebase"
+                                      (Worktree_plan.for_merge_conflict
+                                         ~base:(Types.Branch.of_string base))
                                   in
                                   (match rebase_result with
                                   | Worktree.Ok ->
