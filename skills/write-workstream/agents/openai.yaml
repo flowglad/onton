@@ -1,0 +1,7 @@
+interface:
+  display_name: "Write Workstream"
+  short_description: "Plan multi-milestone project workstreams"
+  default_prompt: "Use $write-workstream to help define a milestone-based workstream for this project."
+
+policy:
+  allow_implicit_invocation: true

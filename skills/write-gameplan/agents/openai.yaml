@@ -1,0 +1,7 @@
+interface:
+  display_name: "Write Gameplan"
+  short_description: "Create structured implementation gameplans"
+  default_prompt: "Use $write-gameplan to draft a JSON gameplan for this codebase change."
+
+policy:
+  allow_implicit_invocation: true

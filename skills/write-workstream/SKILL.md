@@ -1,3 +1,8 @@
+---
+name: write-workstream
+description: Help the user define a multi-milestone workstream for a larger project through clarifying questions, risk identification, milestone design, and dependency sequencing. Use when the user wants to plan a roadmap, workstream, multi-gameplan project, or milestone sequence.
+---
+
 # Write Workstream
 
 You are helping the user define a **workstream** — a large-scale project that will span weeks or months of work and consist of multiple gameplans as milestones.
