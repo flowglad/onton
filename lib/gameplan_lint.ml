@@ -35,12 +35,12 @@ let duplicates ~key items =
 (** Tarjan-flavoured DFS that finds at least one cycle and returns the list of
     patch ids that participate in it (in traversal order). Returns [None] when
     the graph is acyclic. Uses the patches' declared dependencies as edges. *)
-let find_cycle (patches : Types.Patch.t list) =
+let find_cycle ~known_ids (patches : Types.Patch.t list) =
   let adj = Hashtbl.create (module Types.Patch_id) in
   List.iter patches ~f:(fun p ->
       let real_deps =
         List.filter p.dependencies ~f:(fun d ->
-            not (Types.Patch_id.equal d p.id))
+            (not (Types.Patch_id.equal d p.id)) && Set.mem known_ids d)
       in
       Hashtbl.update adj p.id ~f:(function
         | None -> real_deps
@@ -132,12 +132,8 @@ let lint_gameplan_globals (g : Types.Gameplan.t) =
        |> Set.of_list (module Types.Patch_id)
      in
      let has_dup_ids = List.length g.patches <> Set.length known_ids in
-     let has_unknown_deps =
-       List.exists g.patches ~f:(fun p ->
-           List.exists p.dependencies ~f:(fun d -> not (Set.mem known_ids d)))
-     in
-     if not (has_unknown_deps || has_dup_ids) then
-       match find_cycle g.patches with
+     if not has_dup_ids then
+       match find_cycle ~known_ids g.patches with
        | None -> ()
        | Some chain ->
            let rendered =
