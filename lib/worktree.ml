@@ -419,10 +419,17 @@ let fetch_origin ~fetch_lock ~process_mgr ~path =
      "cannot lock ref ...: is at X but expected Y" in the loser. The mutex
      eliminates that race by construction. *)
   Eio.Mutex.use_ro fetch_lock (fun () ->
-      let code, _stdout, stderr =
-        run_git_exit_code ~process_mgr [ "git"; "-C"; path; "fetch"; "origin" ]
-      in
-      classify_fetch_result ~code ~stderr)
+      try
+        let code, _stdout, stderr =
+          run_git_exit_code ~process_mgr
+            [ "git"; "-C"; path; "fetch"; "origin" ]
+        in
+        classify_fetch_result ~code ~stderr
+      with
+      | exn when has_cancellation exn -> raise exn
+      | exn ->
+          Result.Error
+            (Printf.sprintf "git fetch origin crashed: %s" (Exn.to_string exn)))
 
 let git_status ~process_mgr ~path =
   let code, stdout, _ =
