@@ -3448,11 +3448,56 @@ let upload_debug_arg =
           "Upload project debug state for troubleshooting. Requires a project \
            name.")
 
+let lint_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "lint" ]
+        ~doc:
+          "Validate the gameplan referenced by --gameplan and exit. Reports \
+           every structural error and stylistic warning without running any \
+           agents. Exits non-zero iff at least one error is found.")
+
+(** Lint mode: parse the gameplan, run {!Onton.Gameplan_lint.lint}, print the
+    findings, and exit. Exit codes: 0 = no errors (warnings only or clean), 1 =
+    at least one error or the file could not be parsed, 2 = no --gameplan path
+    supplied. *)
+let run_lint ~gameplan_path =
+  match gameplan_path with
+  | None ->
+      Printf.eprintf
+        "Error: --lint requires --gameplan PATH.\n\
+         Usage: onton --lint --gameplan GAMEPLAN\n";
+      Stdlib.exit 2
+  | Some path -> (
+      match Gameplan_parser.parse_file path with
+      | Error msg ->
+          Printf.eprintf "Error: failed to parse %s: %s\n" path msg;
+          Stdlib.exit 1
+      | Ok { Gameplan_parser.gameplan; dependency_graph = _ } ->
+          let issues = Gameplan_lint.lint gameplan in
+          if List.is_empty issues then (
+            Printf.printf "%s: no issues found.\n" path;
+            Stdlib.exit 0)
+          else (
+            print_string (Gameplan_lint.format_issues issues);
+            let n_errors =
+              Base.List.count issues
+                ~f:(fun { Gameplan_lint.Issue.severity; _ } ->
+                  Gameplan_lint.Severity.equal severity
+                    Gameplan_lint.Severity.Error)
+            in
+            let n_warnings = List.length issues - n_errors in
+            Printf.printf "%s: %d error(s), %d warning(s)\n" path n_errors
+              n_warnings;
+            Stdlib.exit (if n_errors > 0 then 1 else 0)))
+
 let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend main_branch
-      poll_interval repo_root max_concurrency headless upload_debug =
-    if upload_debug then (
+      poll_interval repo_root max_concurrency headless upload_debug lint =
+    if lint then run_lint ~gameplan_path
+    else if upload_debug then (
       match project with
       | None ->
           Printf.eprintf
@@ -3481,7 +3526,7 @@ let main_cmd =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ headless_arg $ upload_debug_arg)
+      $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ lint_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
@@ -3490,7 +3535,9 @@ let main_cmd =
          Usage:\n\
         \  onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   Start a new project\n\
         \  onton PROJECT [OPTIONS]                         Resume a saved \
-         project"
+         project\n\
+        \  onton --lint --gameplan GAMEPLAN                Validate a gameplan \
+         and exit"
   in
   Cmd.v info term
 
