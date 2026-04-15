@@ -152,11 +152,10 @@ let () =
     Test.make ~name:"classify_fetch_result: exit != 0 -> Error" ~count:200
       Gen.(pair (int_range (-128) 255) string)
       (fun (code, stderr) ->
-        if code = 0 then true
-        else
-          match Worktree.classify_fetch_result ~code ~stderr with
-          | Result.Error _ -> true
-          | Result.Ok () -> false)
+        QCheck2.assume (code <> 0);
+        match Worktree.classify_fetch_result ~code ~stderr with
+        | Result.Error _ -> true
+        | Result.Ok () -> false)
   in
   let prop_error_message_includes_code =
     Test.make ~name:"classify_fetch_result: Error message embeds exit code"
@@ -168,37 +167,32 @@ let () =
             String.is_substring msg ~substring:(Printf.sprintf "exit %d" code)
         | Result.Ok () -> false)
   in
-  let prop_error_message_strips_stderr =
-    Test.make ~name:"classify_fetch_result: stderr is stripped in Error message"
-      ~count:1 Gen.unit (fun () ->
-        let stderr = "  oops  \n" in
-        match Worktree.classify_fetch_result ~code:1 ~stderr with
-        | Result.Error msg ->
-            String.is_substring msg ~substring:"oops"
-            && not (String.is_substring msg ~substring:"  oops")
-        | Result.Ok () -> false)
+  (* Unit assertions — deterministic fixtures, no generation needed. *)
+  let () =
+    let stderr = "  oops  \n" in
+    match Worktree.classify_fetch_result ~code:1 ~stderr with
+    | Result.Error msg ->
+        assert (String.is_substring msg ~substring:"oops");
+        assert (not (String.is_substring msg ~substring:"  oops"))
+    | Result.Ok () -> assert false
   in
-  let prop_ref_lock_error_surfaces_verbatim =
-    Test.make
-      ~name:
-        "classify_fetch_result: real 'cannot lock ref' stderr surfaces in Error"
-      ~count:1 Gen.unit (fun () ->
-        (* Regression: this was the stderr observed in the outcome-tracking
-           run. The classifier should surface it so downstream log/telemetry
-           can still identify the race. *)
-        let stderr =
-          "error: cannot lock ref 'refs/remotes/origin/main': is at \
-           11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
-           d97cc64a88e05401a2f8fdf3624b79dbfb16671d\n\
-           From github.com:flowglad/review-service\n\
-          \ ! d97cc64..11ea3d8  main       -> origin/main  (unable to update \
-           local ref)"
-        in
-        match Worktree.classify_fetch_result ~code:1 ~stderr with
-        | Result.Error msg ->
-            String.is_substring msg ~substring:"cannot lock ref"
-            && String.is_substring msg ~substring:"exit 1"
-        | Result.Ok () -> false)
+  let () =
+    (* Regression: this was the stderr observed in the outcome-tracking
+       run. The classifier should surface it so downstream log/telemetry
+       can still identify the race. *)
+    let stderr =
+      "error: cannot lock ref 'refs/remotes/origin/main': is at \
+       11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
+       d97cc64a88e05401a2f8fdf3624b79dbfb16671d\n\
+       From github.com:flowglad/review-service\n\
+      \ ! d97cc64..11ea3d8  main       -> origin/main  (unable to update \
+       local ref)"
+    in
+    match Worktree.classify_fetch_result ~code:1 ~stderr with
+    | Result.Error msg ->
+        assert (String.is_substring msg ~substring:"cannot lock ref");
+        assert (String.is_substring msg ~substring:"exit 1")
+    | Result.Ok () -> assert false
   in
   let prop_total_no_raise =
     (* Totality: the classifier never raises for any (code, stderr). *)
@@ -215,8 +209,6 @@ let () =
       prop_exit_zero_is_ok;
       prop_nonzero_is_error;
       prop_error_message_includes_code;
-      prop_error_message_strips_stderr;
-      prop_ref_lock_error_surfaces_verbatim;
       prop_total_no_raise;
     ]
   in
