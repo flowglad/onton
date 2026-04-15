@@ -418,7 +418,7 @@ let fetch_origin ~fetch_lock ~process_mgr ~path =
      [refs/remotes/origin/*], producing
      "cannot lock ref ...: is at X but expected Y" in the loser. The mutex
      eliminates that race by construction. *)
-  Eio.Mutex.use_rw ~protect:true fetch_lock (fun () ->
+  Eio.Mutex.use_ro fetch_lock (fun () ->
       let code, _stdout, stderr =
         run_git_exit_code ~process_mgr [ "git"; "-C"; path; "fetch"; "origin" ]
       in
