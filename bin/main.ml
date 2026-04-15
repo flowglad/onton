@@ -1984,6 +1984,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
     Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
   in
   let worktree_mutex = Eio.Mutex.create () in
+  (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
+     the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
+  let fetch_mutex = Eio.Mutex.create () in
   let with_busy_guard ~patch_id f =
     Fun.protect
       ~finally:(fun () ->
@@ -2325,7 +2328,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                          stale refs. *)
                       let rebase_result =
                         match
-                          Worktree.fetch_origin ~process_mgr ~path:wt_path
+                          Worktree.fetch_origin ~fetch_lock:fetch_mutex
+                            ~process_mgr ~path:wt_path
                         with
                         | Result.Ok () ->
                             let remote_target =
@@ -2591,7 +2595,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                      stale refs. *)
                                   let rebase_result =
                                     match
-                                      Worktree.fetch_origin ~process_mgr
+                                      Worktree.fetch_origin
+                                        ~fetch_lock:fetch_mutex ~process_mgr
                                         ~path:wt_path
                                     with
                                     | Result.Ok () ->

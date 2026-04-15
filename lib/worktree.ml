@@ -401,15 +401,35 @@ let find_old_base ~process_mgr ~path ~target =
                (String.strip stderr))
         else Result.Ok (String.strip stdout)
 
-let fetch_origin ~process_mgr ~path =
-  let code, _stdout, stderr =
-    run_git_exit_code ~process_mgr [ "git"; "-C"; path; "fetch"; "origin" ]
-  in
-  if code <> 0 then
+(** Pure: classify a [git fetch origin] invocation from its exit code and
+    stderr. Split out so the mapping from raw git output to fetch outcome can be
+    property-tested independently of the subprocess and mutex. *)
+let classify_fetch_result ~code ~stderr =
+  if code = 0 then Result.Ok ()
+  else
     Result.Error
       (Printf.sprintf "git fetch origin failed (exit %d): %s" code
          (String.strip stderr))
-  else Result.Ok ()
+
+let fetch_origin ~fetch_lock ~process_mgr ~path =
+  (* Serialize concurrent fetches across worktrees of the same repo. All
+     worktrees share the main repo's ref store, so simultaneous
+     [git fetch origin] processes race on the compare-and-swap update of
+     [refs/remotes/origin/*], producing
+     "cannot lock ref ...: is at X but expected Y" in the loser. The mutex
+     eliminates that race by construction. *)
+  Eio.Mutex.use_ro fetch_lock (fun () ->
+      try
+        let code, _stdout, stderr =
+          run_git_exit_code ~process_mgr
+            [ "git"; "-C"; path; "fetch"; "origin" ]
+        in
+        classify_fetch_result ~code ~stderr
+      with
+      | exn when has_cancellation exn -> raise exn
+      | exn ->
+          Result.Error
+            (Printf.sprintf "git fetch origin crashed: %s" (Exn.to_string exn)))
 
 let git_status ~process_mgr ~path =
   let code, stdout, _ =

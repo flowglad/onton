@@ -136,6 +136,91 @@ let () =
   if errcode <> 0 then Stdlib.exit errcode
 
 (* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.classify_fetch_result]
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let prop_exit_zero_is_ok =
+    Test.make ~name:"classify_fetch_result: exit 0 -> Ok ()" ~count:200
+      Gen.string (fun stderr ->
+        match Worktree.classify_fetch_result ~code:0 ~stderr with
+        | Result.Ok () -> true
+        | Result.Error _ -> false)
+  in
+  let prop_nonzero_is_error =
+    Test.make ~name:"classify_fetch_result: exit != 0 -> Error" ~count:200
+      Gen.(pair (int_range 1 255) string)
+      (fun (code, stderr) ->
+        match Worktree.classify_fetch_result ~code ~stderr with
+        | Result.Error _ -> true
+        | Result.Ok () -> false)
+  in
+  let prop_error_message_includes_code =
+    Test.make ~name:"classify_fetch_result: Error message embeds exit code"
+      ~count:200
+      Gen.(pair (int_range 1 255) string)
+      (fun (code, stderr) ->
+        match Worktree.classify_fetch_result ~code ~stderr with
+        | Result.Error msg ->
+            String.is_substring msg ~substring:(Printf.sprintf "exit %d" code)
+        | Result.Ok () -> false)
+  in
+  let prop_stderr_stripped =
+    Test.make ~name:"classify_fetch_result: stderr is stripped in Error msg"
+      ~count:1 Gen.unit (fun () ->
+        let stderr = "  oops  \n" in
+        match Worktree.classify_fetch_result ~code:1 ~stderr with
+        | Result.Error msg ->
+            String.is_substring msg ~substring:"oops"
+            && (not (String.is_substring msg ~substring:"  oops"))
+            && not (String.is_substring msg ~substring:"oops  ")
+        | Result.Ok () -> false)
+  in
+  let prop_regression_ref_lock_error =
+    (* Regression: this was the stderr observed in the outcome-tracking
+       run. The classifier should surface it so downstream log/telemetry
+       can still identify the race. *)
+    Test.make ~name:"classify_fetch_result: regression ref-lock stderr" ~count:1
+      Gen.unit (fun () ->
+        let stderr =
+          "error: cannot lock ref 'refs/remotes/origin/main': is at \
+           11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
+           d97cc64a88e05401a2f8fdf3624b79dbfb16671d\n\
+           From github.com:flowglad/review-service\n\
+          \ ! d97cc64..11ea3d8  main       -> origin/main  (unable to update \
+           local ref)"
+        in
+        match Worktree.classify_fetch_result ~code:1 ~stderr with
+        | Result.Error msg ->
+            String.is_substring msg ~substring:"cannot lock ref"
+            && String.is_substring msg ~substring:"exit 1"
+        | Result.Ok () -> false)
+  in
+  let prop_total_no_raise =
+    (* Totality: the classifier never raises for any (code, stderr). *)
+    Test.make ~name:"classify_fetch_result: total (never raises)" ~count:500
+      Gen.(pair (int_range (-256) 512) string)
+      (fun (code, stderr) ->
+        try
+          let _ = Worktree.classify_fetch_result ~code ~stderr in
+          true
+        with _ -> false)
+  in
+  let suite =
+    [
+      prop_exit_zero_is_ok;
+      prop_nonzero_is_error;
+      prop_error_message_includes_code;
+      prop_stderr_stripped;
+      prop_regression_ref_lock_error;
+      prop_total_no_raise;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
    Integration tests for [Worktree.rebase_onto]
 
    Each test creates a temporary git repo with a realistic branch topology,
