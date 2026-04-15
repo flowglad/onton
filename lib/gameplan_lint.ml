@@ -37,7 +37,14 @@ let duplicates ~key items =
     the graph is acyclic. Uses the patches' declared dependencies as edges. *)
 let find_cycle (patches : Types.Patch.t list) =
   let adj = Hashtbl.create (module Types.Patch_id) in
-  List.iter patches ~f:(fun p -> Hashtbl.set adj ~key:p.id ~data:p.dependencies);
+  List.iter patches ~f:(fun p ->
+      let real_deps =
+        List.filter p.dependencies ~f:(fun d ->
+            not (Types.Patch_id.equal d p.id))
+      in
+      Hashtbl.update adj p.id ~f:(function
+        | None -> real_deps
+        | Some deps -> deps @ real_deps));
   let color = Hashtbl.create (module Types.Patch_id) in
   let stack : Types.Patch_id.t list ref = ref [] in
   let cycle : Types.Patch_id.t list option ref = ref None in
@@ -51,7 +58,7 @@ let find_cycle (patches : Types.Patch.t list) =
             List.take_while !stack ~f:(fun n ->
                 not (Types.Patch_id.equal n node))
           in
-          cycle := Some (List.rev (node :: in_cycle))
+          cycle := Some (node :: List.rev in_cycle)
       | Some `White | None ->
           Hashtbl.set color ~key:node ~data:`Gray;
           stack := node :: !stack;
@@ -90,7 +97,10 @@ let lint_patch ~known_ids (p : Types.Patch.t) =
   List.iter dep_dups ~f:(fun d ->
       add ?patch_id:pid Severity.Warning
         (Printf.sprintf "duplicate dependency %s" d));
-  List.iter p.dependencies ~f:(fun d ->
+  let unique_deps =
+    List.dedup_and_sort p.dependencies ~compare:Types.Patch_id.compare
+  in
+  List.iter unique_deps ~f:(fun d ->
       if not (Set.mem known_ids d) then
         add ?patch_id:pid Severity.Error
           (Printf.sprintf "depends on unknown patch %s"
@@ -116,16 +126,25 @@ let lint_gameplan_globals (g : Types.Gameplan.t) =
      in
      List.iter (duplicates branches ~key:Fn.id) ~f:(fun b ->
          add Severity.Error (Printf.sprintf "duplicate branch name %s" b));
-     match find_cycle g.patches with
-     | None -> ()
-     | Some chain ->
-         let rendered =
-           List.map chain ~f:Types.Patch_id.to_string
-           |> String.concat ~sep:" -> "
-         in
-         add Severity.Error
-           (Printf.sprintf "dependency cycle: %s -> %s" rendered
-              (Types.Patch_id.to_string (List.hd_exn chain))));
+     let known_ids =
+       List.map g.patches ~f:(fun p -> p.id)
+       |> Set.of_list (module Types.Patch_id)
+     in
+     let has_unknown_deps =
+       List.exists g.patches ~f:(fun p ->
+           List.exists p.dependencies ~f:(fun d -> not (Set.mem known_ids d)))
+     in
+     if not has_unknown_deps then
+       match find_cycle g.patches with
+       | None -> ()
+       | Some chain ->
+           let rendered =
+             List.map chain ~f:Types.Patch_id.to_string
+             |> String.concat ~sep:" -> "
+           in
+           add Severity.Error
+             (Printf.sprintf "dependency cycle: %s -> %s" rendered
+                (Types.Patch_id.to_string (List.hd_exn chain))));
   !acc
 
 let compare_issue a b =

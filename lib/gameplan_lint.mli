@@ -1,5 +1,3 @@
-open Base
-
 (** Aggregate all structural and stylistic issues in a parsed gameplan.
 
     Complements {!Gameplan_parser.validate}, which fails fast on the first
@@ -26,8 +24,7 @@ end
 
 val known_classifications : string list
 (** Recognised values for {!Types.Patch.classification}. Empty classifications
-    are tolerated (warning, not error) for compatibility with older gameplans.
-*)
+    produce no issue (older gameplans often omit this field). *)
 
 val lint : Types.Gameplan.t -> Issue.t list
 (** Inspect [gameplan] and return all detected issues, ordered by severity
