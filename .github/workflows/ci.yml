@@ -18,6 +18,7 @@ concurrency:
 #       opam 2.5.1 publishes binaries.
 env:
   OPAM_VERSION: "2.5.0"
+  OPAM_SHA256: "7aae51da01a66666c8733130852c2c00546eff486effb0999b78145cb75aee74"
   OCAML_VERSION: "5.4.0"
   OPAMYES: "1"
   OPAMCONFIRMLEVEL: "unsafe-yes"
@@ -33,6 +34,7 @@ jobs:
         run: |
           sudo curl -fsSL "https://github.com/ocaml/opam/releases/download/${OPAM_VERSION}/opam-${OPAM_VERSION}-x86_64-linux" \
             -o /usr/local/bin/opam
+          echo "${OPAM_SHA256}  /usr/local/bin/opam" | sha256sum -c -
           sudo chmod +x /usr/local/bin/opam
 
       - name: Cache opam root
@@ -103,6 +105,7 @@ jobs:
         run: |
           sudo curl -fsSL "https://github.com/ocaml/opam/releases/download/${OPAM_VERSION}/opam-${OPAM_VERSION}-x86_64-linux" \
             -o /usr/local/bin/opam
+          echo "${OPAM_SHA256}  /usr/local/bin/opam" | sha256sum -c -
           sudo chmod +x /usr/local/bin/opam
 
       - name: Cache opam root
@@ -150,6 +153,7 @@ jobs:
         run: |
           sudo curl -fsSL "https://github.com/ocaml/opam/releases/download/${OPAM_VERSION}/opam-${OPAM_VERSION}-x86_64-linux" \
             -o /usr/local/bin/opam
+          echo "${OPAM_SHA256}  /usr/local/bin/opam" | sha256sum -c -
           sudo chmod +x /usr/local/bin/opam
 
       - name: Cache opam root (fmt)
