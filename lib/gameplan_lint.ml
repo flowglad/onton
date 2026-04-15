@@ -32,9 +32,10 @@ let duplicates ~key items =
           if not (List.mem !dups k ~equal:String.equal) then dups := k :: !dups);
   List.rev !dups
 
-(** Tarjan-flavoured DFS that finds at least one cycle and returns the list of
-    patch ids that participate in it (in traversal order). Returns [None] when
-    the graph is acyclic. Uses the patches' declared dependencies as edges. *)
+(** DFS-based cycle detector: finds at least one cycle and returns the nodes
+    participating in it (in the order a -> ... -> a). Returns [None] when the
+    graph is acyclic. Self-edges and unknown deps are excluded before building
+    the adjacency list. *)
 let find_cycle ~known_ids (patches : Types.Patch.t list) =
   let adj = Hashtbl.create (module Types.Patch_id) in
   List.iter patches ~f:(fun p ->
@@ -42,9 +43,7 @@ let find_cycle ~known_ids (patches : Types.Patch.t list) =
         List.filter p.dependencies ~f:(fun d ->
             (not (Types.Patch_id.equal d p.id)) && Set.mem known_ids d)
       in
-      Hashtbl.update adj p.id ~f:(function
-        | None -> real_deps
-        | Some deps -> deps @ real_deps));
+      Hashtbl.set adj ~key:p.id ~data:real_deps);
   let color = Hashtbl.create (module Types.Patch_id) in
   let stack : Types.Patch_id.t list ref = ref [] in
   let cycle : Types.Patch_id.t list option ref = ref None in
@@ -64,7 +63,7 @@ let find_cycle ~known_ids (patches : Types.Patch.t list) =
           stack := node :: !stack;
           let neighbours = Hashtbl.find adj node |> Option.value ~default:[] in
           List.iter neighbours ~f:visit;
-          stack := List.tl_exn !stack;
+          (stack := match !stack with _ :: rest -> rest | [] -> []);
           Hashtbl.set color ~key:node ~data:`Black
   in
   List.iter patches ~f:(fun p -> visit p.id);
@@ -98,10 +97,10 @@ let lint_patch ~known_ids (p : Types.Patch.t) =
   let dep_dups = duplicates non_self_deps ~key:Types.Patch_id.to_string in
   List.iter dep_dups ~f:(fun d ->
       add Severity.Warning (Printf.sprintf "duplicate dependency %s" d));
-  let unique_deps =
-    List.dedup_and_sort p.dependencies ~compare:Types.Patch_id.compare
+  let unique_non_self_deps =
+    List.dedup_and_sort non_self_deps ~compare:Types.Patch_id.compare
   in
-  List.iter unique_deps ~f:(fun d ->
+  List.iter unique_non_self_deps ~f:(fun d ->
       if not (Set.mem known_ids d) then
         add Severity.Error
           (Printf.sprintf "depends on unknown patch %s"

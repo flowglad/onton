@@ -3462,23 +3462,23 @@ let lint_arg =
     findings, and exit. Exit codes: 0 = no errors (warnings only or clean), 1 =
     at least one error or the file could not be parsed, 2 = no --gameplan path
     supplied. *)
-let run_lint ~gameplan_path =
+let run_lint ~gameplan_path : int =
   match gameplan_path with
   | None ->
       Printf.eprintf
         "Error: --lint requires --gameplan PATH.\n\
          Usage: onton --lint --gameplan GAMEPLAN\n";
-      Stdlib.exit 2
+      2
   | Some path -> (
       match Gameplan_parser.parse_file path with
       | Error msg ->
           Printf.eprintf "Error: failed to parse %s: %s\n" path msg;
-          Stdlib.exit 1
+          1
       | Ok { Gameplan_parser.gameplan; dependency_graph = _ } ->
           let issues = Gameplan_lint.lint gameplan in
           if List.is_empty issues then (
             Printf.printf "%s: no issues found.\n" path;
-            Stdlib.exit 0)
+            0)
           else (
             print_string (Gameplan_lint.format_issues issues);
             let n_errors =
@@ -3490,13 +3490,13 @@ let run_lint ~gameplan_path =
             let n_warnings = Base.List.length issues - n_errors in
             Printf.printf "%s: %d error(s), %d warning(s)\n" path n_errors
               n_warnings;
-            Stdlib.exit (if n_errors > 0 then 1 else 0)))
+            if n_errors > 0 then 1 else 0))
 
 let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend main_branch
       poll_interval repo_root max_concurrency headless upload_debug lint =
-    if lint then run_lint ~gameplan_path
+    if lint then Stdlib.exit (run_lint ~gameplan_path)
     else if upload_debug then (
       match project with
       | None ->
