@@ -3487,7 +3487,7 @@ let run_lint ~gameplan_path =
                   Gameplan_lint.Severity.equal severity
                     Gameplan_lint.Severity.Error)
             in
-            let n_warnings = List.length issues - n_errors in
+            let n_warnings = Base.List.length issues - n_errors in
             Printf.printf "%s: %d error(s), %d warning(s)\n" path n_errors
               n_warnings;
             Stdlib.exit (if n_errors > 0 then 1 else 0)))

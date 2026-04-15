@@ -73,36 +73,37 @@ let find_cycle (patches : Types.Patch.t list) =
 (** Patch-level checks that do not depend on the rest of the gameplan. *)
 let lint_patch ~known_ids (p : Types.Patch.t) =
   let acc = ref [] in
-  let add ?patch_id sev msg = acc := issue ?patch_id sev msg :: !acc in
-  let pid = Some p.id in
+  let add sev msg = acc := issue ~patch_id:p.id sev msg :: !acc in
   if String.is_empty (String.strip p.title) then
-    add ?patch_id:pid Severity.Error "title is empty";
+    add Severity.Error "title is empty";
   if String.is_empty (String.strip (Types.Branch.to_string p.branch)) then
-    add ?patch_id:pid Severity.Error "branch name is empty";
+    add Severity.Error "branch name is empty";
   if String.is_empty (String.strip p.spec) then
-    add ?patch_id:pid Severity.Warning "spec is empty";
+    add Severity.Warning "spec is empty";
   if List.is_empty p.acceptance_criteria then
-    add ?patch_id:pid Severity.Warning "no acceptance criteria";
+    add Severity.Warning "no acceptance criteria";
   let cls = String.strip p.classification in
   if
     (not (String.is_empty cls))
     && not (List.mem known_classifications cls ~equal:String.equal)
   then
-    add ?patch_id:pid Severity.Warning
+    add Severity.Warning
       (Printf.sprintf "unknown classification %S (expected one of: %s)" cls
          (String.concat ~sep:", " known_classifications));
   if List.mem p.dependencies p.id ~equal:Types.Patch_id.equal then
-    add ?patch_id:pid Severity.Error "patch depends on itself";
-  let dep_dups = duplicates p.dependencies ~key:Types.Patch_id.to_string in
+    add Severity.Error "patch depends on itself";
+  let non_self_deps =
+    List.filter p.dependencies ~f:(fun d -> not (Types.Patch_id.equal d p.id))
+  in
+  let dep_dups = duplicates non_self_deps ~key:Types.Patch_id.to_string in
   List.iter dep_dups ~f:(fun d ->
-      add ?patch_id:pid Severity.Warning
-        (Printf.sprintf "duplicate dependency %s" d));
+      add Severity.Warning (Printf.sprintf "duplicate dependency %s" d));
   let unique_deps =
     List.dedup_and_sort p.dependencies ~compare:Types.Patch_id.compare
   in
   List.iter unique_deps ~f:(fun d ->
       if not (Set.mem known_ids d) then
-        add ?patch_id:pid Severity.Error
+        add Severity.Error
           (Printf.sprintf "depends on unknown patch %s"
              (Types.Patch_id.to_string d)));
   !acc
@@ -130,11 +131,12 @@ let lint_gameplan_globals (g : Types.Gameplan.t) =
        List.map g.patches ~f:(fun p -> p.id)
        |> Set.of_list (module Types.Patch_id)
      in
+     let has_dup_ids = List.length g.patches <> Set.length known_ids in
      let has_unknown_deps =
        List.exists g.patches ~f:(fun p ->
            List.exists p.dependencies ~f:(fun d -> not (Set.mem known_ids d)))
      in
-     if not has_unknown_deps then
+     if not (has_unknown_deps || has_dup_ids) then
        match find_cycle g.patches with
        | None -> ()
        | Some chain ->
