@@ -63,10 +63,26 @@ val conflict_diff : process_mgr:_ Eio.Process.mgr -> path:string -> string
     Returns empty string if no conflicts or on failure. Truncates at 4000 chars.
 *)
 
+val classify_fetch_result : code:int -> stderr:string -> (unit, string) Result.t
+(** Pure: classify a [git fetch origin] invocation from its exit code and stderr
+    into [Ok ()] (exit 0) or [Error msg] (non-zero, with the exit code and
+    stripped stderr embedded in the message). Split out from [fetch_origin] so
+    the decision can be property-tested independently of the subprocess and
+    mutex. *)
+
 val fetch_origin :
-  process_mgr:_ Eio.Process.mgr -> path:string -> (unit, string) Result.t
+  fetch_lock:Eio.Mutex.t ->
+  process_mgr:_ Eio.Process.mgr ->
+  path:string ->
+  (unit, string) Result.t
 (** Run [git fetch origin] in the worktree at [path] to update remote tracking
-    refs. Returns [Ok ()] on success, [Error msg] on failure. *)
+    refs. Returns [Ok ()] on success, [Error msg] on failure.
+
+    [fetch_lock] must be shared across all worktrees of the same repo. Git
+    worktrees share the main repo's ref store, so concurrent fetches race on the
+    compare-and-swap update of [refs/remotes/origin/*] and the losing process
+    fails with "cannot lock ref". The lock serializes fetches to prevent this.
+*)
 
 type rebase_result = Ok | Noop | Conflict | Error of string
 [@@deriving show, eq, sexp_of, compare]
