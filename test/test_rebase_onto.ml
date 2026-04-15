@@ -175,7 +175,7 @@ let () =
         match Worktree.classify_fetch_result ~code:1 ~stderr with
         | Result.Error msg ->
             String.is_substring msg ~substring:"oops"
-            && not (String.is_substring msg ~substring:"oops  \n")
+            && not (String.is_substring msg ~substring:"  oops")
         | Result.Ok () -> false)
   in
   let prop_ref_lock_error_surfaces_verbatim =
