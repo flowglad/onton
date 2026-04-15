@@ -21,7 +21,7 @@ jobs:
           path: _opam
           key: opam-macos-14-ocaml-5.4.0-${{ hashFiles('*.opam') }}
 
-      - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
+      - uses: ocaml/setup-ocaml@fefd9c240b9d934d5d25aa9c2a8caae6c7b40079 # v3
         if: steps.cache-opam.outputs.cache-hit != 'true'
         with:
           ocaml-compiler: '5.4.0'
