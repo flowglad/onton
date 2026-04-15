@@ -174,6 +174,8 @@ let () =
         | Result.Error msg ->
             String.is_substring msg ~substring:"oops"
             && not (String.is_substring msg ~substring:"  oops")
+            && not (String.is_substring msg ~substring:"oops  ")
+            && not (String.is_substring msg ~substring:"oops\n")
         | Result.Ok () -> false)
   in
   let prop_regression_ref_lock_error =
