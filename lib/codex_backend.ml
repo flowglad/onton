@@ -26,17 +26,24 @@ let parse_event (line : string) : Types.Stream_event.t list =
           let item_type = member "type" item |> to_string_option in
           match item_type with
           | Some "agent_message" ->
-              let content =
-                match member "content" item with
-                | `List l ->
-                    List.filter_map l ~f:(fun block ->
-                        match member "type" block |> to_string_option with
-                        | Some "output_text" ->
-                            member "text" block |> to_string_option
-                        | _ -> None)
-                | _ -> []
+              (* Support both the modern schema ({text:"..."} on the item)
+                 and the older content-array schema. *)
+              let text =
+                match member "text" item |> to_string_option with
+                | Some t -> t
+                | None ->
+                    let parts =
+                      match member "content" item with
+                      | `List l ->
+                          List.filter_map l ~f:(fun block ->
+                              match member "type" block |> to_string_option with
+                              | Some "output_text" ->
+                                  member "text" block |> to_string_option
+                              | _ -> None)
+                      | _ -> []
+                    in
+                    String.concat ~sep:"" parts
               in
-              let text = String.concat ~sep:"" content in
               if String.is_empty text then []
               else [ Types.Stream_event.Text_delta text ]
           | Some "command_execution" -> []
@@ -48,7 +55,13 @@ let parse_event (line : string) : Types.Stream_event.t list =
           | Some "command_execution" -> (
               match member "command" item |> to_string_option with
               | Some cmd when not (String.is_empty cmd) ->
-                  [ Types.Stream_event.Tool_use { name = "Bash"; input = cmd } ]
+                  (* Encode as JSON object so the renderer's input parser
+                     (which expects {"command":...}) finds it. Matches the
+                     convention used by every other backend. *)
+                  let input =
+                    Yojson.Safe.to_string (`Assoc [ ("command", `String cmd) ])
+                  in
+                  [ Types.Stream_event.Tool_use { name = "Bash"; input } ]
               | _ -> [])
           | _ -> [])
       | Some "turn.completed" ->
@@ -110,19 +123,41 @@ let%test "build_args with resume session" =
   List.equal String.equal args
     [ "codex"; "exec"; "resume"; "sess-1"; "--json"; "-C"; "/tmp/work" ]
 
-let%test "parse_event agent_message" =
+let%test "parse_event agent_message (content-array schema)" =
   let line =
     {|{"type":"item.completed","item":{"type":"agent_message","content":[{"type":"output_text","text":"hello"}]}}|}
   in
   List.equal Types.Stream_event.equal (parse_event line)
     [ Types.Stream_event.Text_delta "hello" ]
 
-let%test "parse_event command_execution started" =
+let%test "parse_event agent_message (modern text-field schema)" =
+  let line =
+    {|{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [ Types.Stream_event.Text_delta "hello" ]
+
+let%test "parse_event command_execution started encodes input as JSON" =
   let line =
     {|{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}|}
   in
   List.equal Types.Stream_event.equal (parse_event line)
-    [ Types.Stream_event.Tool_use { name = "Bash"; input = "ls -la" } ]
+    [
+      Types.Stream_event.Tool_use
+        { name = "Bash"; input = {|{"command":"ls -la"}|} };
+    ]
+
+let%test "parse_event command_execution input survives JSON parse + extract" =
+  (* Mirrors the renderer's extraction in bin/main.ml: parse [input] as JSON
+     and pull the "command" string. Protects parity with other backends. *)
+  let line =
+    {|{"type":"item.started","item":{"type":"command_execution","command":"echo \"hi\" && ls"}}|}
+  in
+  let expected =
+    Yojson.Safe.to_string (`Assoc [ ("command", `String {|echo "hi" && ls|}) ])
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [ Types.Stream_event.Tool_use { name = "Bash"; input = expected } ]
 
 let%test "parse_event command_execution completed is ignored" =
   let line =
