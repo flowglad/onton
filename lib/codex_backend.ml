@@ -3,7 +3,17 @@ open Base
 let build_args ~cwd_path ~prompt ~resume_session =
   match resume_session with
   | Some session_id ->
-      [ "codex"; "exec"; "resume"; session_id; "--json"; "-C"; cwd_path ]
+      [
+        "codex";
+        "exec";
+        "resume";
+        session_id;
+        prompt;
+        "--json";
+        "--dangerously-bypass-approvals-and-sandbox";
+        "-C";
+        cwd_path;
+      ]
   | None ->
       [
         "codex";
@@ -64,6 +74,11 @@ let parse_event (line : string) : Types.Stream_event.t list =
                   [ Types.Stream_event.Tool_use { name = "Bash"; input } ]
               | _ -> [])
           | _ -> [])
+      | Some "thread.started" -> (
+          match member "thread_id" json |> to_string_option with
+          | Some id when not (String.is_empty id) ->
+              [ Types.Stream_event.Session_init { session_id = id } ]
+          | _ -> [])
       | Some "turn.completed" ->
           [
             Types.Stream_event.Final_result
@@ -115,13 +130,37 @@ let%test "build_args fresh (no resume)" =
       "/tmp/work";
     ]
 
-let%test "build_args with resume session" =
+let%test "build_args with resume session passes prompt and bypass flag" =
   let args =
     build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff"
       ~resume_session:(Some "sess-1")
   in
   List.equal String.equal args
-    [ "codex"; "exec"; "resume"; "sess-1"; "--json"; "-C"; "/tmp/work" ]
+    [
+      "codex";
+      "exec";
+      "resume";
+      "sess-1";
+      "do stuff";
+      "--json";
+      "--dangerously-bypass-approvals-and-sandbox";
+      "-C";
+      "/tmp/work";
+    ]
+
+let%test "parse_event thread.started emits Session_init" =
+  let line =
+    {|{"type":"thread.started","thread_id":"019d91e0-5731-7182-ac68-19922a243e95"}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Session_init
+        { session_id = "019d91e0-5731-7182-ac68-19922a243e95" };
+    ]
+
+let%test "parse_event thread.started without thread_id is ignored" =
+  let line = {|{"type":"thread.started"}|} in
+  List.is_empty (parse_event line)
 
 let%test "parse_event agent_message (content-array schema)" =
   let line =
