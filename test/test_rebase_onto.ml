@@ -173,7 +173,7 @@ let () =
         match Worktree.classify_fetch_result ~code:1 ~stderr with
         | Result.Error msg ->
             String.is_substring msg ~substring:"oops"
-            && not (String.is_substring msg ~substring:"  oops")
+            && (not (String.is_substring msg ~substring:"  oops"))
             && not (String.is_substring msg ~substring:"oops  ")
         | Result.Ok () -> false)
   in
@@ -181,8 +181,8 @@ let () =
     (* Regression: this was the stderr observed in the outcome-tracking
        run. The classifier should surface it so downstream log/telemetry
        can still identify the race. *)
-    Test.make ~name:"classify_fetch_result: regression ref-lock stderr"
-      ~count:1 Gen.unit (fun () ->
+    Test.make ~name:"classify_fetch_result: regression ref-lock stderr" ~count:1
+      Gen.unit (fun () ->
         let stderr =
           "error: cannot lock ref 'refs/remotes/origin/main': is at \
            11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
