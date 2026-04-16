@@ -1642,8 +1642,8 @@ let () =
   Stdlib.print_endline "PI-14b passed"
 
 (** PI-14c: Session_no_commits on the Respond(Human) path increments
-    [no_commits_push_count] and preserves the pending human message content.
-    The Start-path coverage in PI-14/PI-14b exercises the counter increment and
+    [no_commits_push_count] and preserves the pending human message content. The
+    Start-path coverage in PI-14/PI-14b exercises the counter increment and
     message survival separately; this variant exercises both on the Respond path
     where [respond] moves [human_messages] into [inflight_human_messages] and
     the success path consumes them via plain [complete]. *)
@@ -1966,7 +1966,7 @@ let () =
 
 (** Determine whether the Respond(Human) pipeline has converged: no human
     payload is pending (queue, inbox, or inflight), OR the agent needs
-    intervention.  Checking all three pending-state fields — not just queue
+    intervention. Checking all three pending-state fields — not just queue
     membership — guards against a regression where [Human] is dropped from the
     queue while [human_messages] or [inflight_human_messages] still holds
     undelivered content. *)
@@ -2142,12 +2142,12 @@ let () =
   Stdlib.print_endline "CV-3 passed"
 
 (** CV-3b: Same as CV-3, but with a pre-existing [llm_session_id] so the first
-    iteration takes the Resume→Fresh escalation path ([Session_failed
-    {is_fresh=false}]) rather than Fresh-first.  [mk_bootstrapped] leaves
-    [llm_session_id = None], so CV-3 only exercises [Fresh fail → Given_up];
-    this variant covers the full [Resume fail → Tried_fresh → Fresh fail →
-    Given_up] chain, which is the typical runtime ordering after a resumable
-    session has been established. *)
+    iteration takes the Resume→Fresh escalation path
+    ([Session_failed {is_fresh=false}]) rather than Fresh-first.
+    [mk_bootstrapped] leaves [llm_session_id = None], so CV-3 only exercises
+    [Fresh fail → Given_up]; this variant covers the full
+    [Resume fail → Tried_fresh → Fresh fail → Given_up] chain, which is the
+    typical runtime ordering after a resumable session has been established. *)
 let () =
   let prop_cv3b =
     QCheck2.Test.make
@@ -2317,12 +2317,10 @@ let () =
             | None ->
                 if converged orch pid then true
                 else
-                  let queue =
-                    (Orchestrator.agent orch pid).Patch_agent.queue
-                  in
+                  let queue = (Orchestrator.agent orch pid).Patch_agent.queue in
                   QCheck2.Test.fail_reportf
-                    "CV-5: stuck — Human not fireable and not converged \
-                     (iter %d, template %s, actual %s, queue=[%s])"
+                    "CV-5: stuck — Human not fireable and not converged (iter \
+                     %d, template %s, actual %s, queue=[%s])"
                     iter
                     (Orchestrator.show_session_result result_template)
                     (Orchestrator.show_session_result result)
