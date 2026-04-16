@@ -1711,16 +1711,17 @@ let () =
         let orch = Orchestrator.create ~patches ~main_branch:main in
         let pid = pid_of_idx patches 0 in
         let orch =
-          (* Fire Start -> Session_no_commits -> complete n times.
-             Session_no_commits defers completion, so we call complete
-             to model the full apply_start_outcome pipeline. *)
+          (* Fire Start -> Session_no_commits -> apply_start_outcome n times.
+             Session_no_commits defers completion; exercise the production
+             path via apply_start_outcome so any future side-effects on
+             Start_failed are observed by this test. *)
           List.fold (List.range 0 n_no_commits) ~init:orch ~f:(fun o _ ->
               let o = Orchestrator.fire o (Orchestrator.Start (pid, main)) in
               let o =
                 Orchestrator.apply_session_result o pid
                   Orchestrator.Session_no_commits
               in
-              Orchestrator.complete o pid)
+              Orchestrator.apply_start_outcome o pid Orchestrator.Start_failed)
         in
         if
           not
@@ -2275,7 +2276,13 @@ let () =
     (b) "Session failed" (all others): the LLM could not run or crashed.
     Messages were NOT delivered. Converges via the escalation chain (Resume fail
     -> Fresh fail -> Give_up -> intervention). Each iteration adapts the result
-    to the current session_mode, matching the production runner's behavior. *)
+    to the current session_mode, matching the production runner's behavior.
+
+    Resume-path coverage: [mk_bootstrapped] leaves [llm_session_id = None], so
+    [session_failure_for_state] here always enters on the Fresh-first arm
+    (Session_failed {is_fresh=true}).  The Resume-first arm (Session_failed
+    {is_fresh=false}) — i.e. the full [Resume fail → Tried_fresh → Fresh fail
+    → Given_up] chain — is covered explicitly by CV-3b. *)
 let () =
   let prop_cv5 =
     QCheck2.Test.make
