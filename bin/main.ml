@@ -1461,9 +1461,25 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
           | Term.Key.Char 'o'
             when match !view_mode with
                  | Tui.Detail_view _ -> true
-                 | Tui.List_view | Tui.Timeline_view -> false ->
-              (match !view_mode with
-              | Tui.Detail_view patch_id -> (
+                 | Tui.List_view ->
+                     let pids = !sorted_patch_ids in
+                     let count = Base.List.length pids in
+                     count > 0 && !list_selected >= 0
+                 | Tui.Timeline_view -> false ->
+              let target_patch_id =
+                match !view_mode with
+                | Tui.Detail_view patch_id -> Some patch_id
+                | Tui.List_view ->
+                    let pids = !sorted_patch_ids in
+                    let count = Base.List.length pids in
+                    if count > 0 && !list_selected >= 0 then
+                      let idx = Base.Int.min !list_selected (count - 1) in
+                      Some (Base.List.nth_exn pids idx)
+                    else None
+                | Tui.Timeline_view -> None
+              in
+              (match target_patch_id with
+              | Some patch_id -> (
                   match Pr_registry.find pr_registry ~patch_id with
                   | Some pr_number -> (
                       let url =
@@ -1503,7 +1519,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                             text = "No PR to open";
                             expires_at = None;
                           })
-              | Tui.List_view | Tui.Timeline_view -> ());
+              | None -> ());
               loop ()
           | Term.Key.Char 'm'
             when match !view_mode with
