@@ -1960,15 +1960,24 @@ let () =
 (* only the infinite sequence is pathological.                         *)
 (* ================================================================== *)
 
-(** Determine whether the Respond(Human) pipeline has converged: Human is no
-    longer schedulable (either drained or intervention). *)
+(** Determine whether the Respond(Human) pipeline has converged: no human
+    payload is pending (queue, inbox, or inflight), OR the agent needs
+    intervention.  Checking all three pending-state fields — not just queue
+    membership — guards against a regression where [Human] is dropped from the
+    queue while [human_messages] or [inflight_human_messages] still holds
+    undelivered content. *)
 let converged orch pid =
   let a = Orchestrator.agent orch pid in
   let human_in_queue =
     List.mem a.Patch_agent.queue Operation_kind.Human
       ~equal:Operation_kind.equal
   in
-  (not human_in_queue) || Patch_agent.needs_intervention a
+  let pending_human =
+    human_in_queue
+    || (not (List.is_empty a.Patch_agent.human_messages))
+    || not (List.is_empty a.Patch_agent.inflight_human_messages)
+  in
+  (not pending_human) || Patch_agent.needs_intervention a
 
 (** Map a session_result to the respond_outcome the runner would produce. This
     mirrors the mapping in bin/main.ml (run_claude_and_handle →
@@ -2234,8 +2243,17 @@ let () =
               (Orchestrator.show_session_result result_template)
           else
             let a = Orchestrator.agent orch pid in
+            (* For failure templates, use the generated template on the
+               first iteration so variants like [Session_no_resume],
+               [Session_process_error], and [Session_worktree_missing]
+               actually exercise their [apply_session_result] branches.
+               Subsequent iterations model the persistent-failure escalation
+               chain via [session_failure_for_state] because those specific
+               variants wouldn't normally recur (the state no longer
+               matches). *)
             let result =
               if is_success_result result_template then result_template
+              else if iter = 0 then result_template
               else session_failure_for_state a
             in
             match try_respond_human_pipeline orch pid result with
