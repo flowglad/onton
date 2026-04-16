@@ -1068,11 +1068,11 @@ let render_footer ~width ~view_mode ?prompt_line () =
         | List_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  ↑/↓:navigate  enter:detail  +:add PR  w:worktree  \
-               -:remove  h:help"
+               -:remove  o:open browser  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  esc/backspace:back  enter:message  m:manage  \
-               t:timeline  h:help"
+              " q:quit  esc/backspace:back  enter:message  m:manage  o:open \
+               browser  t:timeline  h:help"
         | Timeline_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
@@ -1103,6 +1103,7 @@ let render_help_overlay ~width ~height =
           "+         Add PR (enter number)";
           "w         Register worktree (enter path)";
           "-/x       Remove selected patch";
+          "o         Open PR in browser";
           "t         Toggle timeline";
           "q         Quit";
         ] );
