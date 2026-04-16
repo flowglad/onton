@@ -468,7 +468,7 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
           log_event runtime ~patch_id
             (Printf.sprintf "Creating worktree at %s" path);
           (match
-             Eio.Mutex.use_rw ~protect:true worktree_mutex (fun () ->
+             Eio.Mutex.use_ro worktree_mutex (fun () ->
                  ignore
                    (Worktree.create ~process_mgr ~repo_root ~project_name
                       ~patch_id ~branch:br ~base_ref:base))
