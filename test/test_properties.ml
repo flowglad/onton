@@ -602,7 +602,10 @@ let () =
           true
         with _ -> false)
   in
-  (* Property: all failure results leave agent not-busy *)
+  (* Property: session results either complete (failure) or defer (success).
+     Session_ok, Session_push_failed, and Session_no_commits all represent a
+     healthy LLM session; completion is deferred to apply_respond_outcome.
+     All other failure results complete the agent immediately. *)
   let prop_failure_results_complete =
     Test.make ~name:"session: failure results leave agent not-busy" ~count:500
       G.gen_session_result (fun result ->
@@ -610,13 +613,14 @@ let () =
         let orch = Orchestrator.apply_session_result orch pid result in
         let a = Orchestrator.agent orch pid in
         match result with
-        | Orchestrator.Session_ok ->
-            (* Session_ok does NOT complete — agent stays busy *)
-            true
+        | Orchestrator.Session_ok | Orchestrator.Session_push_failed
+        | Orchestrator.Session_no_commits ->
+            (* LLM session succeeded — completion deferred to
+               apply_respond_outcome, so agent stays busy here. *)
+            a.Patch_agent.busy
         | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
         | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-        | Orchestrator.Session_worktree_missing
-        | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits ->
+        | Orchestrator.Session_worktree_missing ->
             not a.Patch_agent.busy)
   in
   (* Property: Session_give_up sets needs_intervention *)
@@ -1024,14 +1028,17 @@ let () =
   let prop_pnc7_apply_completes_failed =
     Test.make
       ~name:
-        "PNC-7: apply_session_result Session_no_commits clears busy \
-         (complete_failed)" (Gen.return ()) (fun () ->
+        "PNC-7: apply_session_result Session_no_commits defers completion \
+         (agent stays busy)" (Gen.return ()) (fun () ->
         let orch, pid = mk_busy_orch () in
         let orch =
           Orchestrator.apply_session_result orch pid Session_no_commits
         in
         let a = Orchestrator.agent orch pid in
-        not a.Patch_agent.busy)
+        (* Session_no_commits defers completion to apply_respond_outcome
+           via Respond_retry_push, so agent stays busy after
+           apply_session_result alone. *)
+        a.Patch_agent.busy)
   in
   let prop_pnc8_apply_preserves_other_counters =
     Test.make

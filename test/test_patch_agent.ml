@@ -586,8 +586,10 @@ let () =
           (* session_fallback = Given_up and Human not in queue →
              needs_intervention *)
           needs_intervention a);
-      (* -- Human queued suppresses intervention from session_failed -- *)
-      Test.make ~name:"Human queued suppresses intervention (session_failed)"
+      (* -- Given_up overrides Human exemption — delivery is impossible -- *)
+      Test.make
+        ~name:
+          "Given_up with Human queued triggers intervention (not suppressed)"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -597,11 +599,14 @@ let () =
           let a = complete a in
           let a = set_session_failed a in
           let a = set_tried_fresh a in
+          (* Agent is now Given_up.  A Given_up agent cannot start any
+             session, so the Human exemption must not apply — otherwise
+             complete_failed would re-enqueue Human and loop forever. *)
           let a = enqueue a Operation_kind.Human in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
-          not (needs_intervention a));
+          needs_intervention a);
       (* -- Human queued suppresses intervention from 3 ci failures -- *)
       Test.make ~name:"Human queued suppresses intervention (3 ci failures)"
         ~count:1

@@ -1490,16 +1490,38 @@ let () =
         if not (List.mem pre.Patch_agent.human_messages msg ~equal:String.equal)
         then failwith "human message not in inbox after send";
         (* Session ends with Session_push_failed (LLM ok, push failed).
-           apply_session_result must clear session_fallback (LLM was healthy)
-           AND complete_failed (commits did not ship — re-enqueue). *)
+           apply_session_result clears session_fallback (LLM was healthy)
+           but does NOT complete — completion is deferred to
+           apply_respond_outcome via Respond_retry_push. *)
         let orch =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_push_failed
         in
+        let mid = Orchestrator.agent orch pid in
+        if not mid.Patch_agent.busy then
+          failwith
+            "agent should stay busy after apply_session_result — completion is \
+             deferred to apply_respond_outcome";
+        (* Complete the full pipeline via apply_respond_outcome. The caller
+           maps Session_push_failed to Respond_retry_push which calls plain
+           [complete] — this does NOT restore inflight messages, preventing
+           the infinite loop that occurred when complete_failed re-enqueued
+           Human on every push failure.
+
+           Note: this models a *Pr_body* session ending in push-failure —
+           the kind passed here is [Pr_body], not [Human]. The Human-session
+           push-failure path (where the human message is inflight rather
+           than pending) is covered by CV-1. *)
+        let orch =
+          Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+            Orchestrator.Respond_retry_push
+        in
         let post = Orchestrator.agent orch pid in
         if post.Patch_agent.busy then
-          failwith "agent still busy after Session_push_failed";
-        (* The crucial invariant: the human message is still pending. *)
+          failwith "agent still busy after apply_respond_outcome";
+        (* The crucial invariant: the human message is still pending.
+           It was never inflight (it arrived mid-Pr_body, not mid-Human),
+           so it lives in human_messages throughout. *)
         if
           not (List.mem post.Patch_agent.human_messages msg ~equal:String.equal)
         then failwith "human message lost after Session_push_failed";
@@ -1516,7 +1538,11 @@ let () =
     without a pending Human in the queue, the counter crossing 2 is enough to
     stop the scheduler from re-enqueueing Start. Regression for the class of bug
     where an LLM produces no commits and the supervisor silently loops forever
-    trying to push an empty branch. *)
+    trying to push an empty branch.
+
+    Session_no_commits defers completion to the caller (apply_start_outcome or
+    apply_respond_outcome), so we model the full pipeline by calling [complete]
+    after each [apply_session_result]. *)
 let () =
   let prop_pi14 =
     QCheck2.Test.make
@@ -1532,9 +1558,14 @@ let () =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_no_commits
         in
+        (* Completion is deferred by apply_session_result for Session_no_commits
+           — exercise the real production path via apply_start_outcome. *)
+        let orch =
+          Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+        in
         let a1 = Orchestrator.agent orch pid in
         if a1.Patch_agent.busy then
-          failwith "agent still busy after first Session_no_commits";
+          failwith "agent still busy after first Session_no_commits + complete";
         if not (Int.equal a1.Patch_agent.no_commits_push_count 1) then
           failwith "counter not incremented after first Session_no_commits";
         if Patch_agent.needs_intervention a1 then
@@ -1554,6 +1585,9 @@ let () =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_no_commits
         in
+        let orch =
+          Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+        in
         let a2 = Orchestrator.agent orch pid in
         if not (Int.equal a2.Patch_agent.no_commits_push_count 2) then
           failwith "counter not incremented to 2 after second no-commits";
@@ -1564,17 +1598,20 @@ let () =
   QCheck2.Test.check_exn prop_pi14;
   Stdlib.print_endline "PI-14 passed"
 
-(** PI-14b: A human message sent mid-session survives Session_no_commits —
-    complete_failed restores inflight_human_messages into human_messages so the
-    scheduler re-enqueues Human on the next cycle. Note: while a Human is
-    pending, needs_intervention is deliberately gated off (operator may need to
-    respond first); the counter still increments and will surface once the Human
-    queue is drained. *)
+(** PI-14b: A human message sent mid-session survives Session_no_commits — the
+    message lives in [human_messages] (not inflight, since this is a Start
+    session) and is untouched by [complete]. Note: while a Human is pending,
+    needs_intervention is deliberately gated off (operator may need to respond
+    first); the counter still increments and will surface once the Human queue
+    is drained.
+
+    Session_no_commits defers completion to the caller, so we model the full
+    pipeline by calling [complete] after [apply_session_result]. *)
 let () =
   let prop_pi14b =
     QCheck2.Test.make
       ~name:
-        "PI-14b: human message survives Session_no_commits (complete_failed)"
+        "PI-14b: human message survives Session_no_commits (deferred complete)"
       ~count:200
       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
       (fun msg ->
@@ -1587,9 +1624,17 @@ let () =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_no_commits
         in
+        (* Exercise the production path via apply_start_outcome so any
+           future side-effects added to the Start_failed branch are
+           observed by this test. *)
+        let orch =
+          Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+        in
         let a = Orchestrator.agent orch pid in
         if a.Patch_agent.busy then
-          failwith "agent still busy after Session_no_commits";
+          failwith "agent still busy after Session_no_commits + complete";
+        (* Message was in human_messages (not inflight), so plain [complete]
+           does not clear it. *)
         if not (List.mem a.Patch_agent.human_messages msg ~equal:String.equal)
         then failwith "human message lost after Session_no_commits";
         if not (Int.equal a.Patch_agent.no_commits_push_count 1) then
@@ -1600,6 +1645,56 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi14b;
   Stdlib.print_endline "PI-14b passed"
+
+(** PI-14c: Session_no_commits on the Respond(Human) path increments
+    [no_commits_push_count] and preserves the pending human message content. The
+    Start-path coverage in PI-14/PI-14b exercises the counter increment and
+    message survival separately; this variant exercises both on the Respond path
+    where [respond] moves [human_messages] into [inflight_human_messages] and
+    the success path consumes them via plain [complete]. *)
+let () =
+  let prop_pi14c =
+    QCheck2.Test.make
+      ~name:
+        "PI-14c: Session_no_commits on Respond(Human) increments counter and \
+         drains inflight"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let orch =
+          Orchestrator.fire orch
+            (Orchestrator.Respond (pid, Operation_kind.Human))
+        in
+        let pre = Orchestrator.agent orch pid in
+        if List.is_empty pre.Patch_agent.inflight_human_messages then
+          failwith "PI-14c: message should be inflight after fire(Human)";
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_no_commits
+        in
+        let orch =
+          Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+            Orchestrator.Respond_retry_push
+        in
+        let post = Orchestrator.agent orch pid in
+        if post.Patch_agent.busy then
+          failwith "PI-14c: agent still busy after Respond_retry_push";
+        if not (Int.equal post.Patch_agent.no_commits_push_count 1) then
+          failwith "PI-14c: no_commits_push_count not incremented to 1";
+        (* The delivered message is consumed — not restored to the inbox.
+           This is the invariant that prevents the infinite loop. *)
+        if not (List.is_empty post.Patch_agent.inflight_human_messages) then
+          failwith "PI-14c: inflight_human_messages not drained";
+        if not (List.is_empty post.Patch_agent.human_messages) then
+          failwith "PI-14c: delivered message incorrectly restored to inbox";
+        (* Fallback preserved — LLM itself was healthy. *)
+        Patch_agent.equal_session_fallback post.Patch_agent.session_fallback
+          Patch_agent.Fresh_available)
+  in
+  QCheck2.Test.check_exn prop_pi14c;
+  Stdlib.print_endline "PI-14c passed"
 
 (** PI-15: Session_ok after a Session_no_commits cleanly resets the counter and
     intervention state — the agent recovers on its next healthy session and
@@ -1616,11 +1711,17 @@ let () =
         let orch = Orchestrator.create ~patches ~main_branch:main in
         let pid = pid_of_idx patches 0 in
         let orch =
-          (* Fire Start -> Session_no_commits n times. *)
+          (* Fire Start -> Session_no_commits -> apply_start_outcome n times.
+             Session_no_commits defers completion; exercise the production
+             path via apply_start_outcome so any future side-effects on
+             Start_failed are observed by this test. *)
           List.fold (List.range 0 n_no_commits) ~init:orch ~f:(fun o _ ->
               let o = Orchestrator.fire o (Orchestrator.Start (pid, main)) in
-              Orchestrator.apply_session_result o pid
-                Orchestrator.Session_no_commits)
+              let o =
+                Orchestrator.apply_session_result o pid
+                  Orchestrator.Session_no_commits
+              in
+              Orchestrator.apply_start_outcome o pid Orchestrator.Start_failed)
         in
         if
           not
@@ -1853,3 +1954,400 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi17;
   Stdlib.print_endline "PI-17 passed"
+
+(* ================================================================== *)
+(* Convergence properties (CV-1 .. CV-5)                               *)
+(*                                                                     *)
+(* These properties test TERMINATION: that repeatedly applying the     *)
+(* full Respond(Human) pipeline under a persistent failure mode        *)
+(* eventually drains the Human operation from the queue or reaches     *)
+(* needs_intervention within a bounded number of iterations.           *)
+(*                                                                     *)
+(* The bug these guard against: complete_failed re-enqueues Human,     *)
+(* the reconciler re-dispatches it, the same failure recurs, and the   *)
+(* system loops forever.  Single-step invariant tests cannot catch     *)
+(* this class of bug because every individual state is well-formed;    *)
+(* only the infinite sequence is pathological.                         *)
+(* ================================================================== *)
+
+(** Determine whether the Respond(Human) pipeline has converged: no human
+    payload is pending (queue, inbox, or inflight), OR the agent needs
+    intervention. Checking all three pending-state fields — not just queue
+    membership — guards against a regression where [Human] is dropped from the
+    queue while [human_messages] or [inflight_human_messages] still holds
+    undelivered content. *)
+let converged orch pid =
+  let a = Orchestrator.agent orch pid in
+  let human_in_queue =
+    List.mem a.Patch_agent.queue Operation_kind.Human
+      ~equal:Operation_kind.equal
+  in
+  let pending_human =
+    human_in_queue
+    || (not (List.is_empty a.Patch_agent.human_messages))
+    || not (List.is_empty a.Patch_agent.inflight_human_messages)
+  in
+  (not pending_human) || Patch_agent.needs_intervention a
+
+(** Map a session_result to the respond_outcome the runner would produce. This
+    mirrors the mapping in bin/main.ml (run_claude_and_handle →
+    combine_session_and_push → respond_outcome).
+
+    [Session_worktree_missing] only arises on the Start path in production (the
+    worktree is created before Respond actions fire), and is handled by
+    [apply_start_outcome Start_failed], never by [apply_respond_outcome].
+    Mapping it to [Respond_failed] here is a conservative over-approximation
+    used only for convergence testing on the Respond path — the termination
+    property is the same. *)
+let respond_outcome_of session_result =
+  match session_result with
+  | Orchestrator.Session_ok -> Orchestrator.Respond_ok
+  | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits ->
+      Orchestrator.Respond_retry_push
+  | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
+  | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
+  | Orchestrator.Session_worktree_missing ->
+      Orchestrator.Respond_failed
+
+(** Given the current agent state, produce the session_result that a
+    persistent LLM failure would yield.  This models the session_mode →
+    failure chain: Resume → Session_failed{is_fresh=false}, Fresh →
+    Session_failed{is_fresh=true}, Give_up → Session_give_up. *)
+let session_failure_for_state (a : Patch_agent.t) =
+  match a.Patch_agent.session_fallback with
+  | Patch_agent.Fresh_available -> (
+      match a.Patch_agent.llm_session_id with
+      | Some _ ->
+          (* Would attempt Resume → fails *)
+          Orchestrator.Session_failed { is_fresh = false }
+      | None ->
+          (* Would attempt Fresh → fails *)
+          Orchestrator.Session_failed { is_fresh = true })
+  | Patch_agent.Tried_fresh ->
+      (* Would attempt Fresh → fails *)
+      Orchestrator.Session_failed { is_fresh = true }
+  | Patch_agent.Given_up -> Orchestrator.Session_give_up
+
+(** Run one full Respond(Human) pipeline iteration: fire → apply_session_result
+    → apply_respond_outcome. Returns None if the preconditions for
+    fire(Respond(Human)) are not met (agent busy, merged, needs_intervention,
+    Human not in queue, or not highest priority). Returns Some orch on success.
+*)
+let try_respond_human_pipeline orch pid session_result =
+  let a = Orchestrator.agent orch pid in
+  if
+    a.Patch_agent.busy || a.Patch_agent.merged
+    || Patch_agent.needs_intervention a
+    || not
+         (List.mem a.Patch_agent.queue Operation_kind.Human
+            ~equal:Operation_kind.equal)
+  then None
+  else
+    let hp = Patch_agent.highest_priority a in
+    if not (Option.equal Operation_kind.equal hp (Some Operation_kind.Human))
+    then None
+    else
+      let respond_outcome = respond_outcome_of session_result in
+      let orch =
+        Orchestrator.fire orch
+          (Orchestrator.Respond (pid, Operation_kind.Human))
+      in
+      let orch = Orchestrator.apply_session_result orch pid session_result in
+      let orch =
+        Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+          respond_outcome
+      in
+      Some orch
+
+(** CV-1: Persistent push failure during Respond(Human) converges in 1
+    iteration. The session succeeds (messages delivered) but the push fails.
+    After the fix, inflight messages are NOT restored — Human drains from the
+    queue immediately. *)
+let () =
+  let prop_cv1 =
+    QCheck2.Test.make
+      ~name:
+        "CV-1: persistent Session_push_failed with Human converges in 1 \
+         iteration"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        match
+          try_respond_human_pipeline orch pid Orchestrator.Session_push_failed
+        with
+        | None -> QCheck2.Test.fail_report "CV-1: pipeline precondition failed"
+        | Some orch ->
+            if not (converged orch pid) then
+              QCheck2.Test.fail_report
+                "CV-1: Human still schedulable after 1 push-failure iteration";
+            true)
+  in
+  QCheck2.Test.check_exn prop_cv1;
+  Stdlib.print_endline "CV-1 passed"
+
+(** CV-2: Persistent Session_no_commits during Respond(Human) converges in 1
+    iteration. Same reasoning as CV-1 — session succeeded, no commits, but
+    messages were delivered. *)
+let () =
+  let prop_cv2 =
+    QCheck2.Test.make
+      ~name:
+        "CV-2: persistent Session_no_commits with Human converges in 1 \
+         iteration"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        match
+          try_respond_human_pipeline orch pid Orchestrator.Session_no_commits
+        with
+        | None -> QCheck2.Test.fail_report "CV-2: pipeline precondition failed"
+        | Some orch ->
+            if not (converged orch pid) then
+              QCheck2.Test.fail_report
+                "CV-2: Human still schedulable after 1 no-commits iteration";
+            true)
+  in
+  QCheck2.Test.check_exn prop_cv2;
+  Stdlib.print_endline "CV-2 passed"
+
+(** CV-3: Persistent LLM session failure during Respond(Human) converges within
+    4 iterations via the escalation chain: Resume fail → Tried_fresh → Fresh
+    fail → Given_up → Give_up → intervention. Each iteration picks the
+    session_result that matches the current session_mode, modeling a persistent
+    LLM-side failure. *)
+let () =
+  let prop_cv3 =
+    QCheck2.Test.make
+      ~name:
+        "CV-3: persistent session failure with Human converges within 4 \
+         iterations"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let max_iter = 4 in
+        let rec loop orch iter =
+          if converged orch pid then true
+          else if iter >= max_iter then
+            QCheck2.Test.fail_reportf
+              "CV-3: not converged after %d iterations (session_fallback=%s)"
+              max_iter
+              (Patch_agent.show_session_fallback
+                 (Orchestrator.agent orch pid).Patch_agent.session_fallback)
+          else
+            let a = Orchestrator.agent orch pid in
+            let result = session_failure_for_state a in
+            match try_respond_human_pipeline orch pid result with
+            | None ->
+                (* Can't fire — might already be converged via
+                   needs_intervention, or Human is not highest priority. *)
+                converged orch pid
+            | Some orch -> loop orch (iter + 1)
+        in
+        loop orch 0)
+  in
+  QCheck2.Test.check_exn prop_cv3;
+  Stdlib.print_endline "CV-3 passed"
+
+(** CV-3b: Same as CV-3, but with a pre-existing [llm_session_id] so the first
+    iteration takes the Resume→Fresh escalation path
+    ([Session_failed {is_fresh=false}]) rather than Fresh-first.
+    [mk_bootstrapped] leaves [llm_session_id = None], so CV-3 only exercises
+    [Fresh fail → Given_up]; this variant covers the full
+    [Resume fail → Tried_fresh → Fresh fail → Given_up] chain, which is the
+    typical runtime ordering after a resumable session has been established. *)
+let () =
+  let prop_cv3b =
+    QCheck2.Test.make
+      ~name:
+        "CV-3b: persistent failure starting from Resume path converges within \
+         4 iterations"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let orch =
+          Orchestrator.set_llm_session_id orch pid (Some "cv-3b-session")
+        in
+        (* Sanity: the first failure should be a Resume failure. *)
+        let a0 = Orchestrator.agent orch pid in
+        let first = session_failure_for_state a0 in
+        let is_resume_failure =
+          Orchestrator.equal_session_result first
+            (Orchestrator.Session_failed { is_fresh = false })
+        in
+        if not is_resume_failure then
+          QCheck2.Test.fail_reportf
+            "CV-3b: expected first failure on Resume path, got %s"
+            (Orchestrator.show_session_result first);
+        let max_iter = 4 in
+        let rec loop orch iter =
+          if converged orch pid then true
+          else if iter >= max_iter then
+            QCheck2.Test.fail_reportf
+              "CV-3b: not converged after %d iterations (session_fallback=%s)"
+              max_iter
+              (Patch_agent.show_session_fallback
+                 (Orchestrator.agent orch pid).Patch_agent.session_fallback)
+          else
+            let a = Orchestrator.agent orch pid in
+            let result = session_failure_for_state a in
+            match try_respond_human_pipeline orch pid result with
+            | None -> converged orch pid
+            | Some orch -> loop orch (iter + 1)
+        in
+        loop orch 0)
+  in
+  QCheck2.Test.check_exn prop_cv3b;
+  Stdlib.print_endline "CV-3b passed"
+
+(** CV-4: Session_give_up with inflight Human messages converges. The Give_up
+    handler's complete_failed restores messages and re-enqueues Human, but
+    needs_intervention now overrides the Human exemption for Given_up agents, so
+    the reconciler stops scheduling and the agent surfaces for manual
+    intervention.
+
+    Note: send_human_message resets intervention state (by design — a new user
+    message gives the agent a fresh chance). The loop scenario arises from
+    INFLIGHT messages that complete_failed restores without resetting fallback.
+*)
+let () =
+  let prop_cv4 =
+    QCheck2.Test.make
+      ~name:
+        "CV-4: Session_give_up with inflight Human converges via \
+         needs_intervention"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        (* Send a message, then start delivering it. *)
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let orch =
+          Orchestrator.fire orch
+            (Orchestrator.Respond (pid, Operation_kind.Human))
+        in
+        let a = Orchestrator.agent orch pid in
+        if List.is_empty a.Patch_agent.inflight_human_messages then
+          QCheck2.Test.fail_report
+            "CV-4: message should be inflight after fire(Human)";
+        (* Session escalates to Give_up (simulates the end of the
+           Resume → Fresh → Give_up chain). *)
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_give_up
+        in
+        let orch =
+          Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+            Orchestrator.Respond_failed
+        in
+        let a = Orchestrator.agent orch pid in
+        (* Messages should be restored by complete_failed. *)
+        if List.is_empty a.Patch_agent.human_messages then
+          QCheck2.Test.fail_report
+            "CV-4: messages should be restored after Session_give_up";
+        (* But needs_intervention should fire — Given_up overrides the
+           Human exemption, preventing the infinite loop. *)
+        if not (Patch_agent.needs_intervention a) then
+          QCheck2.Test.fail_report
+            "CV-4: Given_up + Human should trigger needs_intervention";
+        true)
+  in
+  QCheck2.Test.check_exn prop_cv4;
+  Stdlib.print_endline "CV-4 passed"
+
+(** CV-5: Universal convergence — for ANY session_result category, the full
+    Respond(Human) pipeline repeated up to 10 times either drains the queue or
+    reaches needs_intervention. This is the catch-all property that would have
+    detected the original Session_push_failed infinite loop.
+
+    Two classes of session_result:
+
+    (a) "Session succeeded" (Session_ok, Session_push_failed,
+    Session_no_commits): the LLM ran. Messages were delivered. Converges in 1
+    iteration because inflight messages are consumed.
+
+    (b) "Session failed" (all others): the LLM could not run or crashed.
+    Messages were NOT delivered. Converges via the escalation chain (Resume fail
+    -> Fresh fail -> Give_up -> intervention). Each iteration adapts the result
+    to the current session_mode, matching the production runner's behavior.
+
+    Resume-path coverage: [mk_bootstrapped] leaves [llm_session_id = None], so
+    [session_failure_for_state] here always enters on the Fresh-first arm
+    (Session_failed {is_fresh=true}).  The Resume-first arm (Session_failed
+    {is_fresh=false}) — i.e. the full [Resume fail → Tried_fresh → Fresh fail
+    → Given_up] chain — is covered explicitly by CV-3b. *)
+let () =
+  let prop_cv5 =
+    QCheck2.Test.make
+      ~name:
+        "CV-5: universal convergence — any session_result category terminates \
+         within 10 iterations"
+      ~count:500
+      (QCheck2.Gen.pair
+         (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 40))
+         Onton_test_support.Test_generators.gen_session_result)
+      (fun (msg, result_template) ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let max_iter = 10 in
+        (* For "session succeeded" results, use the template as-is.
+           For "session failed" results, adapt to the current session_mode
+           to model the real escalation chain. *)
+        let is_success_result r =
+          match r with
+          | Orchestrator.Session_ok | Orchestrator.Session_push_failed
+          | Orchestrator.Session_no_commits ->
+              true
+          | Orchestrator.Session_failed _ | Orchestrator.Session_process_error _
+          | Orchestrator.Session_no_resume | Orchestrator.Session_give_up
+          | Orchestrator.Session_worktree_missing ->
+              false
+        in
+        let rec loop orch iter =
+          if converged orch pid then true
+          else if iter >= max_iter then
+            QCheck2.Test.fail_reportf
+              "CV-5: not converged after %d iterations with template %s"
+              max_iter
+              (Orchestrator.show_session_result result_template)
+          else
+            let a = Orchestrator.agent orch pid in
+            (* For failure templates, use the generated template on the
+               first iteration so variants like [Session_no_resume],
+               [Session_process_error], and [Session_worktree_missing]
+               actually exercise their [apply_session_result] branches.
+               Subsequent iterations model the persistent-failure escalation
+               chain via [session_failure_for_state] because those specific
+               variants wouldn't normally recur (the state no longer
+               matches). *)
+            let result =
+              if is_success_result result_template then result_template
+              else if iter = 0 then result_template
+              else session_failure_for_state a
+            in
+            match try_respond_human_pipeline orch pid result with
+            | None ->
+                if converged orch pid then true
+                else
+                  let queue = (Orchestrator.agent orch pid).Patch_agent.queue in
+                  QCheck2.Test.fail_reportf
+                    "CV-5: stuck — Human not fireable and not converged (iter \
+                     %d, template %s, actual %s, queue=[%s])"
+                    iter
+                    (Orchestrator.show_session_result result_template)
+                    (Orchestrator.show_session_result result)
+                    (String.concat ~sep:","
+                       (List.map queue ~f:Operation_kind.show))
+            | Some orch -> loop orch (iter + 1)
+        in
+        loop orch 0)
+  in
+  QCheck2.Test.check_exn prop_cv5;
+  Stdlib.print_endline "CV-5 passed"

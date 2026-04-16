@@ -45,12 +45,29 @@ let show t = Sexp.to_string_hum (sexp_of_t t)
 let has_pr t = Option.is_some t.pr_number
 
 let needs_intervention t =
-  (not (List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal))
-  && (t.ci_failure_count >= 3
-     || equal_session_fallback t.session_fallback Given_up
-     || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
-     || t.conflict_noop_count >= 2
-     || t.no_commits_push_count >= 2)
+  let human_in_queue =
+    List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
+  in
+  (* The Human exemption lets a newly-arrived human message be delivered
+     even to an agent with a high ci_failure_count or other failure state.
+     However, the exemption does NOT apply when session_fallback = Given_up:
+     a Given_up agent cannot start any session, so the delivery attempt
+     immediately fails at the Give_up check and complete_failed re-enqueues
+     Human — creating an infinite loop.  Override the exemption so the
+     reconciler stops scheduling actions and the agent surfaces for
+     manual intervention.
+
+     [merged] is terminal — a merged agent never needs intervention, so
+     short-circuit on it to keep the predicate self-consistent even for
+     callers that don't pre-filter by [merged]. *)
+  let given_up = equal_session_fallback t.session_fallback Given_up in
+  (not t.merged)
+  && (given_up
+     || (not human_in_queue)
+        && (t.ci_failure_count >= 3
+           || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
+           || t.conflict_noop_count >= 2
+           || t.no_commits_push_count >= 2))
 
 let create ~branch patch_id =
   {

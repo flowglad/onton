@@ -133,17 +133,25 @@ type session_result =
 val apply_session_result : t -> Patch_id.t -> session_result -> t
 (** Apply a Claude session outcome to the orchestrator. Pure function.
     [Session_ok] -> clear_session_fallback. [Session_process_error] ->
-    on_session_failure + on_pre_session_failure + complete. [Session_failed] ->
-    on_session_failure + complete. [Session_no_resume] -> on_session_failure
-    (not fresh) + complete. [Session_give_up] -> set_session_failed +
-    set_tried_fresh + complete. [Session_worktree_missing] ->
-    on_pre_session_failure + complete. [Session_push_failed] ->
-    clear_session_fallback (LLM session itself was healthy) + complete_failed
-    (commits did not reach the remote — retry on next iteration). Use this when
-    the LLM ran cleanly but the supervisor's post-session push failed.
-    [Session_no_commits] -> clear_session_fallback +
-    increment_no_commits_push_count + complete_failed. The LLM ran but produced
-    no commits; after 2 such sessions [needs_intervention] fires. *)
+    on_session_failure + on_pre_session_failure + complete_failed.
+    [Session_failed] -> on_session_failure + complete_failed.
+    [Session_no_resume] -> on_session_failure (not fresh) + clear llm_session_id
+    \+ complete_failed. [Session_give_up] -> set_session_failed +
+    set_tried_fresh + clear llm_session_id + complete_failed.
+    [Session_worktree_missing] -> on_pre_session_failure + complete_failed.
+
+    {b Deferred completion}: [Session_push_failed] and [Session_no_commits] do
+    NOT complete the agent — they only adjust state ([clear_session_fallback] in
+    both cases; [increment_no_commits_push_count] for [Session_no_commits]).
+    [busy] remains [true]. The caller MUST follow up in the same atomic snapshot
+    write with either [apply_start_outcome _ Start_failed] (Start path) or
+    [apply_respond_outcome _ _ Respond_retry_push] (Respond path) to clear
+    [busy]. This two-phase design is deliberate: the LLM session itself
+    succeeded (messages were delivered; commits were made locally), so any
+    inflight human payload must be consumed by plain [complete] rather than
+    restored by [complete_failed] — the latter would re-enqueue Human and cause
+    an infinite re-delivery loop. After 2 consecutive [Session_no_commits]
+    outcomes, [needs_intervention] fires via [no_commits_push_count >= 2]. *)
 
 val combine_session_and_push :
   session:session_result -> push:Worktree.push_result -> session_result
