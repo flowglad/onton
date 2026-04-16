@@ -1619,8 +1619,12 @@ let () =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_no_commits
         in
-        (* Model full pipeline: complete deferred to caller. *)
-        let orch = Orchestrator.complete orch pid in
+        (* Exercise the production path via apply_start_outcome so any
+           future side-effects added to the Start_failed branch are
+           observed by this test. *)
+        let orch =
+          Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+        in
         let a = Orchestrator.agent orch pid in
         if a.Patch_agent.busy then
           failwith "agent still busy after Session_no_commits + complete";
@@ -2137,6 +2141,59 @@ let () =
   QCheck2.Test.check_exn prop_cv3;
   Stdlib.print_endline "CV-3 passed"
 
+(** CV-3b: Same as CV-3, but with a pre-existing [llm_session_id] so the first
+    iteration takes the Resume→Fresh escalation path ([Session_failed
+    {is_fresh=false}]) rather than Fresh-first.  [mk_bootstrapped] leaves
+    [llm_session_id = None], so CV-3 only exercises [Fresh fail → Given_up];
+    this variant covers the full [Resume fail → Tried_fresh → Fresh fail →
+    Given_up] chain, which is the typical runtime ordering after a resumable
+    session has been established. *)
+let () =
+  let prop_cv3b =
+    QCheck2.Test.make
+      ~name:
+        "CV-3b: persistent failure starting from Resume path converges within \
+         4 iterations"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let orch =
+          Orchestrator.set_llm_session_id orch pid (Some "cv-3b-session")
+        in
+        (* Sanity: the first failure should be a Resume failure. *)
+        let a0 = Orchestrator.agent orch pid in
+        let first = session_failure_for_state a0 in
+        let is_resume_failure =
+          Orchestrator.equal_session_result first
+            (Orchestrator.Session_failed { is_fresh = false })
+        in
+        if not is_resume_failure then
+          QCheck2.Test.fail_reportf
+            "CV-3b: expected first failure on Resume path, got %s"
+            (Orchestrator.show_session_result first);
+        let max_iter = 4 in
+        let rec loop orch iter =
+          if converged orch pid then true
+          else if iter >= max_iter then
+            QCheck2.Test.fail_reportf
+              "CV-3b: not converged after %d iterations (session_fallback=%s)"
+              max_iter
+              (Patch_agent.show_session_fallback
+                 (Orchestrator.agent orch pid).Patch_agent.session_fallback)
+          else
+            let a = Orchestrator.agent orch pid in
+            let result = session_failure_for_state a in
+            match try_respond_human_pipeline orch pid result with
+            | None -> converged orch pid
+            | Some orch -> loop orch (iter + 1)
+        in
+        loop orch 0)
+  in
+  QCheck2.Test.check_exn prop_cv3b;
+  Stdlib.print_endline "CV-3b passed"
+
 (** CV-4: Session_give_up with inflight Human messages converges. The Give_up
     handler's complete_failed restores messages and re-enqueues Human, but
     needs_intervention now overrides the Human exemption for Given_up agents, so
@@ -2260,12 +2317,17 @@ let () =
             | None ->
                 if converged orch pid then true
                 else
+                  let queue =
+                    (Orchestrator.agent orch pid).Patch_agent.queue
+                  in
                   QCheck2.Test.fail_reportf
-                    "CV-5: stuck — can't fire and not converged (iter %d, \
-                     template %s, actual %s)"
+                    "CV-5: stuck — Human not fireable and not converged \
+                     (iter %d, template %s, actual %s, queue=[%s])"
                     iter
                     (Orchestrator.show_session_result result_template)
                     (Orchestrator.show_session_result result)
+                    (String.concat ~sep:","
+                       (List.map queue ~f:Operation_kind.show))
             | Some orch -> loop orch (iter + 1)
         in
         loop orch 0)
