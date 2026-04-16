@@ -1506,7 +1506,12 @@ let () =
            maps Session_push_failed to Respond_retry_push which calls plain
            [complete] — this does NOT restore inflight messages, preventing
            the infinite loop that occurred when complete_failed re-enqueued
-           Human on every push failure. *)
+           Human on every push failure.
+
+           Note: this models a *Pr_body* session ending in push-failure —
+           the kind passed here is [Pr_body], not [Human]. The Human-session
+           push-failure path (where the human message is inflight rather
+           than pending) is covered by CV-1. *)
         let orch =
           Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
             Orchestrator.Respond_retry_push
@@ -1985,7 +1990,14 @@ let converged orch pid =
 
 (** Map a session_result to the respond_outcome the runner would produce. This
     mirrors the mapping in bin/main.ml (run_claude_and_handle →
-    combine_session_and_push → respond_outcome). *)
+    combine_session_and_push → respond_outcome).
+
+    [Session_worktree_missing] only arises on the Start path in production (the
+    worktree is created before Respond actions fire), and is handled by
+    [apply_start_outcome Start_failed], never by [apply_respond_outcome].
+    Mapping it to [Respond_failed] here is a conservative over-approximation
+    used only for convergence testing on the Respond path — the termination
+    property is the same. *)
 let respond_outcome_of session_result =
   match session_result with
   | Orchestrator.Session_ok -> Orchestrator.Respond_ok

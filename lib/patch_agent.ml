@@ -55,14 +55,19 @@ let needs_intervention t =
      immediately fails at the Give_up check and complete_failed re-enqueues
      Human — creating an infinite loop.  Override the exemption so the
      reconciler stops scheduling actions and the agent surfaces for
-     manual intervention. *)
+     manual intervention.
+
+     [merged] is terminal — a merged agent never needs intervention, so
+     short-circuit on it to keep the predicate self-consistent even for
+     callers that don't pre-filter by [merged]. *)
   let given_up = equal_session_fallback t.session_fallback Given_up in
-  given_up
-  || (not human_in_queue)
-     && (t.ci_failure_count >= 3
-        || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
-        || t.conflict_noop_count >= 2
-        || t.no_commits_push_count >= 2)
+  (not t.merged)
+  && (given_up
+     || (not human_in_queue)
+        && (t.ci_failure_count >= 3
+           || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
+           || t.conflict_noop_count >= 2
+           || t.no_commits_push_count >= 2))
 
 let create ~branch patch_id =
   {
