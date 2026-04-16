@@ -579,21 +579,28 @@ let apply_session_result t patch_id result =
       complete_failed t patch_id
   | Session_push_failed ->
       (* The LLM session itself ran cleanly — clear its fallback state so we
-         resume the same session next iteration. The push failure is treated
-         as a soft failure: complete_failed clears busy and re-enqueues any
-         inflight human messages so the next iteration retries. *)
-      let t = clear_session_fallback t patch_id in
-      complete_failed t patch_id
+         resume the same session next iteration. The push failure does NOT
+         use [complete_failed]: the session succeeded, so any inflight human
+         messages were already delivered to the LLM and must not be restored
+         to the inbox.  Completion is deferred to [apply_respond_outcome]
+         which calls plain [complete] via [Respond_retry_push].  Using
+         [complete_failed] here caused an infinite loop: messages were
+         re-enqueued, the Human operation re-dispatched, the session
+         re-delivered the same messages, the push failed again, ad
+         infinitum — with [clear_session_fallback] preventing escalation
+         and the Human-in-queue exemption in [needs_intervention]
+         preventing the circuit breaker from firing. *)
+      clear_session_fallback t patch_id
   | Session_no_commits ->
       (* The LLM session ran cleanly but left no commits on the branch (HEAD
          == base), so the supervisor skipped the push. Clear session fallback
          (the LLM itself was healthy), bump the no-commits counter (which
-         feeds [needs_intervention] at >= 2), and retry via complete_failed. *)
+         feeds [needs_intervention] at >= 2).  Like [Session_push_failed],
+         do NOT call [complete_failed] — the session succeeded and any
+         inflight human messages were delivered.  Completion is handled by
+         [apply_respond_outcome] via [Respond_retry_push]. *)
       let t = clear_session_fallback t patch_id in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
-      in
-      complete_failed t patch_id
+      update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
 
 let combine_session_and_push ~(session : session_result)
     ~(push : Worktree.push_result) : session_result =
