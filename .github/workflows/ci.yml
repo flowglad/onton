@@ -10,19 +10,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Pinned opam version — setup-ocaml resolves the *latest* opam release
-# from GitHub and fails when that release has no pre-built binaries
-# (e.g. opam 2.5.1 shipped source-only on 2026-04-15).  Installing
-# opam manually lets us pin a known-good version with binaries.
-# TODO: revert to setup-ocaml once it gains an opam-version input or
-#       opam 2.5.1 publishes binaries.
-env:
-  OPAM_VERSION: "2.5.0"
-  OPAM_SHA256: "7aae51da01a66666c8733130852c2c00546eff486effb0999b78145cb75aee74"
-  OCAML_VERSION: "5.4.0"
-  OPAMYES: "1"
-  OPAMCONFIRMLEVEL: "unsafe-yes"
-
 jobs:
   build-and-test:
     name: Build & Test
@@ -30,28 +17,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install opam
-        run: |
-          sudo curl -fsSL "https://github.com/ocaml/opam/releases/download/${OPAM_VERSION}/opam-${OPAM_VERSION}-x86_64-linux" \
-            -o /usr/local/bin/opam
-          echo "${OPAM_SHA256}  /usr/local/bin/opam" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/opam
-
-      - name: Cache opam root
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+      - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
         with:
-          path: ~/.opam
-          key: opam-${{ env.OPAM_VERSION }}-${{ env.OCAML_VERSION }}-${{ hashFiles('*.opam') }}
-          restore-keys: |
-            opam-${{ env.OPAM_VERSION }}-${{ env.OCAML_VERSION }}-
-
-      - name: Setup OCaml
-        run: |
-          opam init --auto-setup --bare --disable-sandboxing
-          if ! opam switch list 2>/dev/null | grep -q default; then
-            opam switch create default "ocaml-base-compiler.${OCAML_VERSION}"
-          fi
-          eval $(opam env)
+          ocaml-compiler: '5.4.0'
+          dune-cache: true
 
       - name: Install dependencies
         run: opam install . --deps-only --with-test -y
@@ -101,28 +70,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install opam
-        run: |
-          sudo curl -fsSL "https://github.com/ocaml/opam/releases/download/${OPAM_VERSION}/opam-${OPAM_VERSION}-x86_64-linux" \
-            -o /usr/local/bin/opam
-          echo "${OPAM_SHA256}  /usr/local/bin/opam" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/opam
-
-      - name: Cache opam root
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+      - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
         with:
-          path: ~/.opam
-          key: opam-${{ env.OPAM_VERSION }}-${{ env.OCAML_VERSION }}-${{ hashFiles('*.opam') }}
-          restore-keys: |
-            opam-${{ env.OPAM_VERSION }}-${{ env.OCAML_VERSION }}-
-
-      - name: Setup OCaml
-        run: |
-          opam init --auto-setup --bare --disable-sandboxing
-          if ! opam switch list 2>/dev/null | grep -q default; then
-            opam switch create default "ocaml-base-compiler.${OCAML_VERSION}"
-          fi
-          eval $(opam env)
+          ocaml-compiler: '5.4.0'
+          dune-cache: true
 
       - name: Install dependencies
         run: opam install . --deps-only --with-test -y
@@ -149,33 +100,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install opam
-        run: |
-          sudo curl -fsSL "https://github.com/ocaml/opam/releases/download/${OPAM_VERSION}/opam-${OPAM_VERSION}-x86_64-linux" \
-            -o /usr/local/bin/opam
-          echo "${OPAM_SHA256}  /usr/local/bin/opam" | sha256sum -c -
-          sudo chmod +x /usr/local/bin/opam
-
-      - name: Cache opam root (fmt)
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+      - uses: ocaml/setup-ocaml@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
         with:
-          path: ~/.opam
-          key: opam-fmt-${{ env.OPAM_VERSION }}-${{ env.OCAML_VERSION }}-${{ hashFiles('.ocamlformat') }}
-          restore-keys: |
-            opam-fmt-${{ env.OPAM_VERSION }}-${{ env.OCAML_VERSION }}-
+          ocaml-compiler: '5.4.0'
 
-      - name: Setup OCaml
-        run: |
-          opam init --auto-setup --bare --disable-sandboxing
-          if ! opam switch list 2>/dev/null | grep -q default; then
-            opam switch create default "ocaml-base-compiler.${OCAML_VERSION}"
-          fi
-          eval $(opam env)
-
-      - name: Install ocamlformat and dune
-        run: |
-          OCAMLFORMAT_VERSION=$(sed -n 's/^version *= *//p' .ocamlformat)
-          opam install "ocamlformat=${OCAMLFORMAT_VERSION}" dune -y
-
-      - name: Check formatting
-        run: opam exec -- dune build @fmt
+      - uses: ocaml/setup-ocaml/lint-fmt@dec6499fef64fc5d7ed43d43a87251b7b1c306f5 # v3
