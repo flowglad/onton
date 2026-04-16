@@ -1553,8 +1553,11 @@ let () =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_no_commits
         in
-        (* Completion deferred — call complete to model apply_start_outcome. *)
-        let orch = Orchestrator.complete orch pid in
+        (* Completion is deferred by apply_session_result for Session_no_commits
+           — exercise the real production path via apply_start_outcome. *)
+        let orch =
+          Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+        in
         let a1 = Orchestrator.agent orch pid in
         if a1.Patch_agent.busy then
           failwith "agent still busy after first Session_no_commits + complete";
@@ -1577,7 +1580,9 @@ let () =
           Orchestrator.apply_session_result orch pid
             Orchestrator.Session_no_commits
         in
-        let orch = Orchestrator.complete orch pid in
+        let orch =
+          Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+        in
         let a2 = Orchestrator.agent orch pid in
         if not (Int.equal a2.Patch_agent.no_commits_push_count 2) then
           failwith "counter not incremented to 2 after second no-commits";
@@ -1631,6 +1636,56 @@ let () =
   in
   QCheck2.Test.check_exn prop_pi14b;
   Stdlib.print_endline "PI-14b passed"
+
+(** PI-14c: Session_no_commits on the Respond(Human) path increments
+    [no_commits_push_count] and preserves the pending human message content.
+    The Start-path coverage in PI-14/PI-14b exercises the counter increment and
+    message survival separately; this variant exercises both on the Respond path
+    where [respond] moves [human_messages] into [inflight_human_messages] and
+    the success path consumes them via plain [complete]. *)
+let () =
+  let prop_pi14c =
+    QCheck2.Test.make
+      ~name:
+        "PI-14c: Session_no_commits on Respond(Human) increments counter and \
+         drains inflight"
+      ~count:200
+      (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+      (fun msg ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch = Orchestrator.send_human_message orch pid msg in
+        let orch =
+          Orchestrator.fire orch
+            (Orchestrator.Respond (pid, Operation_kind.Human))
+        in
+        let pre = Orchestrator.agent orch pid in
+        if List.is_empty pre.Patch_agent.inflight_human_messages then
+          failwith "PI-14c: message should be inflight after fire(Human)";
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            Orchestrator.Session_no_commits
+        in
+        let orch =
+          Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+            Orchestrator.Respond_retry_push
+        in
+        let post = Orchestrator.agent orch pid in
+        if post.Patch_agent.busy then
+          failwith "PI-14c: agent still busy after Respond_retry_push";
+        if not (Int.equal post.Patch_agent.no_commits_push_count 1) then
+          failwith "PI-14c: no_commits_push_count not incremented to 1";
+        (* The delivered message is consumed — not restored to the inbox.
+           This is the invariant that prevents the infinite loop. *)
+        if not (List.is_empty post.Patch_agent.inflight_human_messages) then
+          failwith "PI-14c: inflight_human_messages not drained";
+        if not (List.is_empty post.Patch_agent.human_messages) then
+          failwith "PI-14c: delivered message incorrectly restored to inbox";
+        (* Fallback preserved — LLM itself was healthy. *)
+        Patch_agent.equal_session_fallback post.Patch_agent.session_fallback
+          Patch_agent.Fresh_available)
+  in
+  QCheck2.Test.check_exn prop_pi14c;
+  Stdlib.print_endline "PI-14c passed"
 
 (** PI-15: Session_ok after a Session_no_commits cleanly resets the counter and
     intervention state — the agent recovers on its next healthy session and

@@ -57,11 +57,12 @@ let needs_intervention t =
      reconciler stops scheduling actions and the agent surfaces for
      manual intervention. *)
   let given_up = equal_session_fallback t.session_fallback Given_up in
-  ((not human_in_queue) || given_up)
-  && (t.ci_failure_count >= 3 || given_up
-     || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
-     || t.conflict_noop_count >= 2
-     || t.no_commits_push_count >= 2)
+  given_up
+  || ((not human_in_queue)
+     && (t.ci_failure_count >= 3
+        || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
+        || t.conflict_noop_count >= 2
+        || t.no_commits_push_count >= 2))
 
 let create ~branch patch_id =
   {
