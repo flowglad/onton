@@ -2303,15 +2303,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
           (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
     execute_github_effects ~runtime ~net ~github lifecycle_effects;
-    (* Fire automerge reconciliation and execution on a background fiber so a
-       slow merge call does not stall the runner tick — the next tick's
-       polling, rebase dispatch, and action spawn shouldn't wait on GitHub's
-       PUT /merge round-trip. [reconcile_automerge] marks [automerge_inflight]
-       atomically before returning decisions, so a follow-up tick that fires
-       before this fiber resolves will see the inflight flag and skip. *)
-    Eio.Fiber.fork_daemon ~sw (fun () ->
-        reconcile_and_execute_automerge ~runtime ~net ~github;
-        `Stop_daemon);
     (* Log dispatched actions to event log *)
     Base.List.iter messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         let action = Orchestrator.message_action msg in
@@ -3124,7 +3115,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
     Eio.Time.sleep clock 1.0;
     loop sw
   in
-  Eio.Switch.run @@ fun sw -> loop sw
+  Eio.Switch.run @@ fun sw ->
+  (* Single long-lived automerge fiber. Spawning fork_daemon once before the
+     loop (rather than per-tick from inside [loop]) keeps at most one automerge
+     fiber alive on the switch — per-tick forking would let brief no-op fibers
+     accumulate during a slow GitHub call even though [automerge_inflight]
+     guards the real merge. The fiber paces itself with its own 1s sleep,
+     independent of the runner tick. *)
+  Eio.Fiber.fork_daemon ~sw (fun () ->
+      let rec amloop () =
+        reconcile_and_execute_automerge ~runtime ~net ~github;
+        Eio.Time.sleep clock 1.0;
+        amloop ()
+      in
+      amloop ());
+  loop sw
 
 (** {1 Persistence fiber} *)
 
