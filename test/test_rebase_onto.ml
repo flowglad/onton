@@ -39,8 +39,14 @@ let () =
         | Result.Error _ -> false)
   in
   let prop_trailing_whitespace =
-    Test.make ~name:"oldest_non_ancestor_commit: trailing whitespace stripped"
-      ~count:1 Gen.unit (fun () ->
+    (* Trailing spaces on the subject side don't bleed into the SHA —
+       [lsplit2 ~on:' '] splits at the first space, so the SHA is always
+       the leading non-space run regardless of what follows the first
+       separator. The second all-whitespace line must also be skipped. *)
+    Test.make
+      ~name:
+        "oldest_non_ancestor_commit: trailing whitespace on subject doesn't \
+         corrupt SHA" ~count:1 Gen.unit (fun () ->
         match oldest "abc123 subj  \n  " with
         | Result.Ok sha -> String.equal sha "abc123"
         | Result.Error _ -> false)

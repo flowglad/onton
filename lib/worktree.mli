@@ -114,7 +114,9 @@ val rebase_onto :
     against [[<project_name>] Patch N:] for every [N] in [ancestor_ids] — the
     fallback is load-bearing when [target] is a squash-merging trunk like
     [main], because squash-merged ancestor commits carry a fresh patch-id that
-    cherry-pick cannot equate with the original feature-branch commits. *)
+    cherry-pick cannot equate with the original feature-branch commits. Pass
+    [~project_name:""] or [~ancestor_ids:[]] to opt out of the subject filter
+    entirely; cherry-pick deduplication still applies. *)
 
 val parse_push_porcelain : string -> char option
 (** Pure: extract the status flag character from [git push --porcelain] stdout.

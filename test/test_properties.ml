@@ -162,7 +162,17 @@ let () =
    let anc_a = sort (Graph.transitive_ancestors g a) in
    let anc_b = sort (Graph.transitive_ancestors g b) in
    assert (List.equal Types.Patch_id.equal anc_a (sort [ b ]));
-   assert (List.equal Types.Patch_id.equal anc_b (sort [ a ])));
+   assert (List.equal Types.Patch_id.equal anc_b (sort [ a ]));
+   (* Three-node cycle A→B→C→A: exercises the non-adjacent back-edge path
+      through the [seen]-set guard. When visiting from B we reach C, then
+      C's dep A triggers the termination guard ([A] is already in [seen]). *)
+   let c = Types.Patch_id.of_string "C" in
+   let g3 =
+     Graph.of_patches
+       [ make_patch a [ b ]; make_patch b [ c ]; make_patch c [ a ] ]
+   in
+   let anc3_a = sort (Graph.transitive_ancestors g3 a) in
+   assert (List.equal Types.Patch_id.equal anc3_a (sort [ b; c ])));
 
   let prop_initial_base_all_merged_returns_main =
     Test.make ~name:"graph: initial_base returns main when all deps merged"
