@@ -2725,14 +2725,14 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                   with_busy_guard ~patch_id (fun () ->
                       let result =
                         match ci_skip_reason with
-                        | Some reason when is_ci ->
+                        | Some reason ->
                             (* Fast path: skip decision already made. Don't
                                consume a Claude slot for a no-op — that
                                slot can go to another agent. *)
                             log_event runtime ~patch_id
                               (Printf.sprintf "Skipped ci delivery — %s" reason);
                             `Skip_empty
-                        | _ ->
+                        | None ->
                             with_claude_slot (fun () ->
                                 (* Write fresh ci_checks under the busy guard
                                    so the write can't race with the poller or
