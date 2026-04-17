@@ -350,13 +350,31 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
               match
                 Github.merge_pr ~net github ~pr_number ~merge_method:`Squash
               with
-              | Ok () ->
+              | Ok Github.Merge_succeeded ->
                   inflight_cleared := true;
                   Runtime.update_orchestrator runtime (fun orch ->
                       Patch_controller.apply_automerge_success orch patch_id);
                   log_event runtime ~patch_id
                     (Printf.sprintf "Automerge complete — PR #%d merged"
                        (Pr_number.to_int pr_number))
+              | Ok (Github.Merge_queued msg) ->
+                  (* GitHub accepted the request into its native auto-merge
+                     queue. Not a failure — don't bump the counter. Clear
+                     inflight so the next reconcile can observe the eventual
+                     merge via the poller. *)
+                  clear_inflight_if_needed ();
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Automerge queued by GitHub — awaiting checks (%s)" msg)
+              | Ok Github.Merge_unconfirmed ->
+                  (* 2xx response with an unexpected shape. Not authoritative
+                     either way — let the poller confirm via PR state rather
+                     than guess. Don't count as failure. *)
+                  clear_inflight_if_needed ();
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "%s accepted but merge not confirmed — awaiting poll"
+                       label)
               | Error err ->
                   inflight_cleared := true;
                   Runtime.update_orchestrator runtime (fun orch ->
