@@ -814,6 +814,10 @@ let%test "reconcile_automerge skips when inflight is true" =
 let%test "reconcile_automerge skips when failure cap is hit" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = make_approved_agent t in
+  (* Arm a deadline before hitting the cap so the (false, Some _) branch
+     actually fires and we verify the deadline gets cleared — otherwise the
+     test passes trivially via (false, None). *)
+  let t = Orchestrator.set_automerge_deadline t pid 1.0 in
   let t =
     Fn.apply_n_times ~n:automerge_max_failures
       (fun t -> Orchestrator.increment_automerge_failure_count t pid)
