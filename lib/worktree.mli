@@ -105,7 +105,7 @@ val rebase_onto :
   project_name:string ->
   ancestor_ids:Types.Patch_id.t list ->
   rebase_result
-(** Rebase HEAD onto [target]. Uses [git rev-list --cherry-pick] to detect
+(** Rebase HEAD onto [target]. Uses [git log --cherry-pick] to detect
     already-applied commits, and supplements that with subject-pattern matching
     against [[<project_name>] Patch N:] for every [N] in [ancestor_ids] — the
     fallback is load-bearing when [target] is a squash-merging trunk like

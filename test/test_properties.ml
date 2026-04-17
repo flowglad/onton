@@ -158,10 +158,11 @@ let () =
    let a = Types.Patch_id.of_string "A" in
    let b = Types.Patch_id.of_string "B" in
    let g = Graph.of_patches [ make_patch a [ b ]; make_patch b [ a ] ] in
-   let anc_a = Graph.transitive_ancestors g a in
-   let anc_b = Graph.transitive_ancestors g b in
-   assert (List.equal Types.Patch_id.equal anc_a [ b ]);
-   assert (List.equal Types.Patch_id.equal anc_b [ a ]));
+   let sort = List.sort ~compare:Types.Patch_id.compare in
+   let anc_a = sort (Graph.transitive_ancestors g a) in
+   let anc_b = sort (Graph.transitive_ancestors g b) in
+   assert (List.equal Types.Patch_id.equal anc_a (sort [ b ]));
+   assert (List.equal Types.Patch_id.equal anc_b (sort [ a ])));
 
   let prop_initial_base_all_merged_returns_main =
     Test.make ~name:"graph: initial_base returns main when all deps merged"
