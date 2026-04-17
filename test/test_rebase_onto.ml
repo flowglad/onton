@@ -155,6 +155,32 @@ let () =
         | Result.Ok sha -> String.equal sha "older222"
         | Result.Error _ -> false)
   in
+  let prop_empty_subject_preserved =
+    (* Regression: %H %s for an empty-subject commit emits "<sha> ", and the
+       oldest line may have no content after the space. Stripping the full
+       input would erase that separator and drop the SHA. *)
+    Test.make
+      ~name:"oldest_non_ancestor_commit: oldest with empty subject is kept"
+      ~count:1 Gen.unit (fun () ->
+        let no_filter =
+          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
+            ~ancestor_ids:[]
+        in
+        match no_filter "newer111 subj A\nolder222 \n" with
+        | Result.Ok sha -> String.equal sha "older222"
+        | Result.Error _ -> false)
+  in
+  let prop_empty_project_never_matches =
+    (* Regression: empty project_name would otherwise produce the prefix
+       "[] Patch " and match any subject that starts that way. *)
+    Test.make
+      ~name:"is_ancestor_patch_subject: empty project_name never matches"
+      ~count:1 Gen.unit (fun () ->
+        not
+          (Worktree.is_ancestor_patch_subject ~project_name:""
+             ~ancestor_ids:[ pid "1" ]
+             "[] Patch 1: boom"))
+  in
   let suite =
     [
       prop_matches_bare;
@@ -166,6 +192,8 @@ let () =
       prop_filter_drops_ancestors;
       prop_filter_empty_when_all_ancestors;
       prop_filter_passthrough_no_ancestors;
+      prop_empty_subject_preserved;
+      prop_empty_project_never_matches;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

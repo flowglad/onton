@@ -357,49 +357,56 @@ let run_git_exit_code ~process_mgr args =
 
 (** Pure: does [subject] match the conventional "[<project>] Patch <N>:"
     commit-subject format for some [N] in [ancestor_ids]? The patch-id segment
-    is terminated by the first character that is not alphanumeric, '-', or '_'
-    (or end of string). We compare literally against [Patch_id.to_string], which
-    is the same form rendered into PR titles at commit time. *)
+    is terminated by the first whitespace or ':' (or end of string), so any
+    [Patch_id.to_string] value that doesn't itself contain whitespace or ':'
+    round-trips correctly. Empty [project_name] or [ancestor_ids] always returns
+    false: callers must supply the real project name for this match to be
+    meaningful. *)
 let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
-  let prefix = Printf.sprintf "[%s] Patch " project_name in
-  match String.chop_prefix subject ~prefix with
-  | None -> false
-  | Some rest ->
-      let id_end =
-        String.lfindi rest ~f:(fun _ c ->
-            not (Char.is_alphanum c || Char.equal c '-' || Char.equal c '_'))
-      in
-      let id_str =
-        match id_end with
-        | None -> rest
-        | Some i -> String.sub rest ~pos:0 ~len:i
-      in
-      (not (String.is_empty id_str))
-      && List.mem ancestor_ids
-           (Types.Patch_id.of_string id_str)
-           ~equal:Types.Patch_id.equal
+  if String.is_empty project_name || List.is_empty ancestor_ids then false
+  else
+    let prefix = Printf.sprintf "[%s] Patch " project_name in
+    match String.chop_prefix subject ~prefix with
+    | None -> false
+    | Some rest ->
+        let id_end =
+          String.lfindi rest ~f:(fun _ c ->
+              Char.is_whitespace c || Char.equal c ':')
+        in
+        let id_str =
+          match id_end with
+          | None -> rest
+          | Some i -> String.sub rest ~pos:0 ~len:i
+        in
+        (not (String.is_empty id_str))
+        && List.mem ancestor_ids
+             (Types.Patch_id.of_string id_str)
+             ~equal:Types.Patch_id.equal
 
 (** Pure: parse [git log --format=%H %s] output into (sha, subject) pairs, then
     drop those whose subject matches an ancestor patch. Returns the oldest
     remaining SHA, or [Error] when the filtered list is empty. Split out so the
-    subject-pattern fallback to [--cherry-pick] can be property-tested. *)
+    subject-pattern fallback to [--cherry-pick] can be property-tested. Does not
+    [String.strip] the input: a commit with an empty subject still emits "<sha>
+    " (trailing space) from [%H %s], so stripping would erase the separator and
+    cause the SHA to be dropped. Blank lines (all whitespace) are ignored
+    explicitly. *)
 let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
-  let trimmed = String.strip log_output in
-  if String.is_empty trimmed then Result.Error "no unique commits found"
-  else
-    let lines = String.split_lines trimmed in
-    let kept =
-      List.filter_map lines ~f:(fun line ->
+  let lines = String.split_lines log_output in
+  let kept =
+    List.filter_map lines ~f:(fun line ->
+        if String.is_empty (String.strip line) then None
+        else
           match String.lsplit2 line ~on:' ' with
           | None -> None
           | Some (sha, subject) ->
               if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
               then None
               else Some sha)
-    in
-    match List.last kept with
-    | Some sha -> Result.Ok sha
-    | None -> Result.Error "no unique commits found"
+  in
+  match List.last kept with
+  | Some sha -> Result.Ok sha
+  | None -> Result.Error "no unique commits found"
 
 (** Find the old base commit for [--onto] rebase by identifying which commits on
     our branch are unique (not in target). Uses patch-id matching via

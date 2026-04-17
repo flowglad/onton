@@ -37,13 +37,16 @@ let depends_on t patch_id ~dep =
   List.mem (deps t patch_id) dep ~equal:Patch_id.equal
 
 (** All patches reachable by walking [deps] transitively from [patch_id],
-    excluding [patch_id] itself. Missing IDs in [deps_map] act as leaves. *)
+    excluding [patch_id] itself. Missing IDs in [deps_map] act as leaves.
+    Dependency cycles that point back to [patch_id] do not re-add it. *)
 let transitive_ancestors t patch_id =
   let rec visit seen pid =
     List.fold (deps t pid) ~init:seen ~f:(fun seen dep ->
         if Set.mem seen dep then seen else visit (Set.add seen dep) dep)
   in
-  visit (Set.empty (module Patch_id)) patch_id |> Set.to_list
+  visit (Set.singleton (module Patch_id) patch_id) patch_id
+  |> Fn.flip Set.remove patch_id
+  |> Set.to_list
 
 let open_pr_deps t patch_id ~has_merged =
   deps t patch_id |> List.filter ~f:(fun d -> not (has_merged d))
