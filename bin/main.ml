@@ -360,10 +360,14 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
           if not still_candidate then (
             log_event runtime ~patch_id
               (Printf.sprintf "%s skipped — no longer a candidate" label);
-            (* Clear inflight explicitly (don't rely on the finaliser's
-               not-yet-cleared fallback) and leave the deadline alone — the
-               next reconcile inspects current state and either clears the
-               deadline (feedback arrived / candidate lost) or re-arms. *)
+            (* Clear inflight here explicitly (rather than relying on the
+               [Fun.protect] finaliser) and deliberately leave the deadline in
+               place — the next [reconcile_automerge] tick will clear it via
+               the [(false, Some _)] branch if candidacy is genuinely lost,
+               or re-arm it if the patch became a candidate again. Keeping
+               deadline-clearing centralised in reconcile avoids a redundant
+               write here and the divergence risk of two call sites managing
+               the same invariant. *)
             clear_inflight_if_needed ())
           else
             try
@@ -2286,7 +2290,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
           (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
     execute_github_effects ~runtime ~net ~github lifecycle_effects;
-    reconcile_and_execute_automerge ~runtime ~net ~github;
+    (* Fire automerge reconciliation and execution on a background fiber so a
+       slow merge call does not stall the runner tick — the next tick's
+       polling, rebase dispatch, and action spawn shouldn't wait on GitHub's
+       PUT /merge round-trip. [reconcile_automerge] marks [automerge_inflight]
+       atomically before returning decisions, so a follow-up tick that fires
+       before this fiber resolves will see the inflight flag and skip. *)
+    Eio.Fiber.fork_daemon ~sw (fun () ->
+        reconcile_and_execute_automerge ~runtime ~net ~github;
+        `Stop_daemon);
     (* Log dispatched actions to event log *)
     Base.List.iter messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         let action = Orchestrator.message_action msg in

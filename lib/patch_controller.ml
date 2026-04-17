@@ -790,13 +790,20 @@ let%test "reconcile_automerge clears inflight on merged agent" =
   List.is_empty decisions
   && not (Orchestrator.agent t pid).Patch_agent.automerge_inflight
 
-let%test "reconcile_automerge skips when checks_passing is false" =
+let%test "reconcile_automerge (false, None) is a stable no-op" =
+  (* Complement to the (false, Some _) clearing test below: when the patch is
+     not a candidate AND has no deadline, reconcile must not arm one or emit a
+     decision. [make_approved_agent] enables automerge but does not set a
+     deadline, so disabling checks_passing lands us on the no-op branch. *)
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = make_approved_agent t in
   let t = Orchestrator.set_checks_passing t pid false in
+  let t_before = t in
   let t, decisions = reconcile_automerge t ~now:1000.0 in
   List.is_empty decisions
-  && Option.is_none (Orchestrator.agent t pid).Patch_agent.automerge_deadline
+  && Patch_agent.equal
+       (Orchestrator.agent t_before pid)
+       (Orchestrator.agent t pid)
 
 let%test "reconcile_automerge clears deadline when checks_passing flips false" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

@@ -1206,7 +1206,12 @@ let render_manage_overlay ~width ~height ~automerge_enabled =
     [detail_info_rows] so the two cannot drift. Width only affects truncation,
     not line count, and [~now] only affects the automerge countdown text (every
     possible value fits on one line — "fires in Ns", "firing...", "enabled
-    (...)", "disabled"), so fixed dummy values here are safe. *)
+    (...)", "disabled"), so fixed dummy values here are safe.
+
+    Invariant: automerge status strings must stay well under 70 chars so they
+    cannot wrap at the dummy [~width:80] used here. If a future string is long
+    enough to wrap, thread [~now] and the real terminal width through
+    [detail_info_height] instead of passing placeholders. *)
 let detail_info_height (pv : patch_view) =
   List.length (detail_info_rows pv ~width:80 ~now:0.0)
 

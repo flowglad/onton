@@ -240,7 +240,11 @@ let patch_agent_of_yojson ~gameplan json =
                 rather than raise — [reconcile_automerge] will re-arm a fresh
                 idle window on the next tick once the patch is a candidate. *)
              Float.of_string_opt s
-         | _ -> None)
+         | _ ->
+             (* Unexpected JSON shape (e.g. [`String], [`Bool], [`List]) — the
+                snapshot is corrupted or was written by an incompatible version.
+                Treat as absent; reconcile re-arms on the next tick. *)
+             None)
        ~automerge_inflight:
          (* Reset inflight on restore: any inflight flag persisted across a
             supervisor restart refers to a merge call that cannot still be
