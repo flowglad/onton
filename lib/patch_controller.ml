@@ -857,8 +857,10 @@ let%test "reconcile_automerge skips when failure cap is hit" =
       t
   in
   let t, decisions = reconcile_automerge t ~now:1000.0 in
+  let a = Orchestrator.agent t pid in
   List.is_empty decisions
-  && Option.is_none (Orchestrator.agent t pid).Patch_agent.automerge_deadline
+  && Option.is_none a.Patch_agent.automerge_deadline
+  && not a.Patch_agent.automerge_inflight
 
 let%test "apply_automerge_success clears inflight and resets failures" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

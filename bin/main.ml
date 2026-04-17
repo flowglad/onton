@@ -294,10 +294,18 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
     Runtime.update_orchestrator_returning runtime (fun orch ->
         Patch_controller.reconcile_automerge orch ~now)
   in
-  (* Dispatch concurrently so a slow merge call does not stall the runner
-     tick — each call can take up to GitHub's request timeout, and serial
-     iteration would block PR polling, rebase dispatch, and every other
-     lifecycle step for that duration. *)
+  (* Dispatch concurrently with a bounded fiber pool. A slow merge call can
+     take up to GitHub's request timeout (~30s), so serial iteration would
+     compound that over [N] decisions.
+
+     This call still blocks the enclosing [amloop] fiber until all in-flight
+     merges return, which means under simultaneous slow responses the 1s
+     automerge cadence can degrade to one-per-timeout. That trade-off is
+     intentional: bounded concurrency avoids a thundering herd against GitHub
+     rate limits and keeps exactly one automerge fiber alive on the switch
+     (the runner loop is already decoupled — it does not wait on this). The
+     1s cadence is not load-bearing either: deadlines fire on 5-minute idle
+     windows, and [automerge_inflight] already prevents double-claiming. *)
   Eio.Fiber.List.iter ~max_fibers:4
     (fun Patch_controller.
            { merge_patch_id = patch_id; merge_pr_number = pr_number } ->
