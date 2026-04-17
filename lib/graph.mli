@@ -22,9 +22,9 @@ val depends_on : t -> Types.Patch_id.t -> dep:Types.Patch_id.t -> bool
 
 val transitive_ancestors : t -> Types.Patch_id.t -> Types.Patch_id.t list
 (** [transitive_ancestors t p] returns every patch reachable by walking [deps]
-    from [p], excluding [p] itself. The list is sorted by [Patch_id.compare] and
-    has no duplicates. Cycle-safe: back-edges to [p] are silently ignored, and
-    any other cycle terminates via a [seen]-set guard. *)
+    from [p], excluding [p] itself. The list is sorted in ascending order by
+    [Patch_id.compare] and has no duplicates. Cycle-safe: back-edges to [p] are
+    silently ignored, and any other cycle terminates via a [seen]-set guard. *)
 
 val open_pr_deps :
   t ->

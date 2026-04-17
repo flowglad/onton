@@ -791,7 +791,11 @@ let () =
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
    (* Sanity: the cherry-pick filter alone keeps the drifted Patch 1 commit,
       so the positive end-state assertion below is specifically exercising
-      the subject-filter code path. *)
+      the subject-filter code path. We verify both that the log contains
+      both commits (not just Patch 7) *and* that the oldest kept SHA is
+      Patch 1, so a future git version that patch-id-equates the drift with
+      the squash surfaces as a line-count mismatch rather than a confusing
+      SHA mismatch. *)
    let raw_log =
      git ~process_mgr ~dir
        [
@@ -804,6 +808,12 @@ let () =
          "main...HEAD";
        ]
    in
+   let log_lines =
+     List.filter (String.split_lines raw_log) ~f:(fun l ->
+         not (String.is_empty (String.strip l)))
+   in
+   assert_eq "test10: cherry-pick log has 2 commits (sanity)" "2"
+     (Int.to_string (List.length log_lines));
    (match
       Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids:[]
         raw_log
