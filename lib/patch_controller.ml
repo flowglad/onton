@@ -452,17 +452,24 @@ let automerge_idle_timeout = 300.0
 let automerge_max_failures = 3
 
 (** Pure predicate: a patch is a candidate for automerge merging when it is
-    approved, passing CI, has no queued work, has no merge call in flight, and
-    has not exceeded [automerge_max_failures] consecutive failures. New feedback
+    approved, passing CI, has no queued work, and has not exceeded
+    [automerge_max_failures] consecutive failures. New feedback
     (Review_comments, Human, Ci, Merge_conflict, Pr_body) enqueues an operation,
     which fails this check and so resets the deadline. [checks_passing] is
     derived separately from [merge_ready] and captures CI conclusions that
-    GitHub's [mergeStateStatus] may consider optional. *)
+    GitHub's [mergeStateStatus] may consider optional.
+
+    [automerge_inflight] is intentionally NOT checked here: that flag protects
+    the reconciler from double-claiming a decision, not the predicate's
+    definition of candidacy. Callers that must reject a concurrent claim (i.e.
+    [reconcile_automerge]) add the [not inflight] guard themselves; the executor
+    re-check in [reconcile_and_execute_automerge] runs while [inflight = true]
+    and relies on this predicate returning [true] so long as the underlying
+    candidacy still holds. *)
 let is_automerge_candidate (agent : Patch_agent.t) ~main_branch =
   Patch_agent.is_approved agent ~main_branch
   && agent.Patch_agent.checks_passing
   && List.is_empty agent.Patch_agent.queue
-  && (not agent.Patch_agent.automerge_inflight)
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
 
 type automerge_decision = {
@@ -480,6 +487,8 @@ type automerge_decision = {
       merged outside [apply_automerge_success] (manual merge, replacement PR,
       etc.) must not keep a leftover timer in persisted state or the UI.
     - If [automerge_enabled = false], nothing to do.
+    - If [automerge_inflight = true], no-op. The executor owns the deadline and
+      inflight transitions while a merge call is in progress.
     - If the patch is a candidate and has no deadline, set one at
       [now +. automerge_idle_timeout].
     - If the patch is not a candidate and has a deadline, clear it — any
@@ -508,10 +517,19 @@ let reconcile_automerge t ~now =
         in
         (t, decisions)
       else if not agent.Patch_agent.automerge_enabled then (t, decisions)
+      else if agent.Patch_agent.automerge_inflight then
+        (* A merge is already in flight for this patch. Don't touch the
+           deadline or issue a second decision — the caller clears the
+           inflight flag and advances state via apply_automerge_success /
+           apply_automerge_failure on resolution. *)
+        (t, decisions)
       else
         let candidate = is_automerge_candidate agent ~main_branch in
         match (candidate, agent.Patch_agent.automerge_deadline) with
         | false, Some _ ->
+            (* Feedback arrived, lost approval, CI flipped, or failure cap
+               hit: drop the deadline so the next reconcile re-arms a fresh
+               idle window once the patch becomes a candidate again. *)
             (Orchestrator.clear_automerge_deadline t patch_id, decisions)
         | false, None -> (t, decisions)
         | true, None ->
@@ -774,8 +792,12 @@ let%test "reconcile_automerge skips when inflight is true" =
   let t = Orchestrator.set_automerge_deadline t pid 1.0 in
   let t = Orchestrator.set_automerge_inflight t pid true in
   let t, decisions = reconcile_automerge t ~now:100.0 in
-  List.is_empty decisions
-  && Option.is_none (Orchestrator.agent t pid).Patch_agent.automerge_deadline
+  let a = Orchestrator.agent t pid in
+  (* No new decision while a merge is in flight, and reconcile leaves the
+     inflight flag and deadline alone — the caller owns both via
+     apply_automerge_success / apply_automerge_failure. *)
+  List.is_empty decisions && a.Patch_agent.automerge_inflight
+  && Option.is_some a.Patch_agent.automerge_deadline
 
 let%test "reconcile_automerge skips when failure cap is hit" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

@@ -96,7 +96,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("automerge_enabled", `Bool a.automerge_enabled);
       ( "automerge_deadline",
         match a.automerge_deadline with None -> `Null | Some f -> `Float f );
-      ("automerge_inflight", `Bool a.automerge_inflight);
+      (* [automerge_inflight] is intentionally not persisted: it guards an
+         in-flight GitHub call, which cannot still be running across a
+         supervisor restart. Deserialization hard-codes [false] to match. *)
       ("automerge_failure_count", `Int a.automerge_failure_count);
     ]
 

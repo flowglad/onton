@@ -149,6 +149,7 @@ val render_frame :
   project_name:string ->
   show_help:bool ->
   show_manage:bool ->
+  now:float ->
   ?transcript:string ->
   ?status_msg:status_msg ->
   ?prompt_line:prompt_info ->

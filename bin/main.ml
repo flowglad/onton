@@ -318,7 +318,10 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
              decision came from an earlier orchestrator snapshot; between then
              and now the patch may have been merged, lost [merge_ready], gone
              busy again, or had its failure cap hit (via a parallel tick). Any
-             of these make the call both unnecessary and noisy (GitHub 405). *)
+             of these make the call both unnecessary and noisy (GitHub 405).
+             [is_automerge_candidate] does not gate on [automerge_inflight],
+             so the flag we set when claiming this decision is transparent
+             here. *)
           let still_candidate =
             Runtime.read runtime (fun snap ->
                 match
@@ -331,11 +334,8 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                     in
                     (not agent.Patch_agent.merged)
                     && agent.Patch_agent.automerge_enabled
-                    && Patch_agent.is_approved agent ~main_branch
-                    && agent.Patch_agent.checks_passing
-                    && Base.List.is_empty agent.Patch_agent.queue
-                    && agent.Patch_agent.automerge_failure_count
-                       < Patch_controller.automerge_max_failures)
+                    && Patch_controller.is_automerge_candidate agent
+                         ~main_branch)
           in
           if not still_candidate then (
             log_event runtime ~patch_id
@@ -1038,7 +1038,8 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
         ~show_help:!show_help
         ~show_manage:
           (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
-        ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line views
+        ~now:(Unix.gettimeofday ()) ~transcript ?status_msg:!status_msg
+        ?prompt_line:!prompt_line views
     in
     (* Write back the clamped scroll offset so delta-based input in
        input_fiber works from a real value, not a sentinel like max_value.

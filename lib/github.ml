@@ -587,6 +587,34 @@ let set_draft ~net t ~pr_number ~draft =
           )
       | Error _ as e -> e)
 
+(** Interpret a 2xx body from [PUT /pulls/:n/merge]. A 2xx does not guarantee
+    the merge completed: GitHub returns 200 with
+    [{"merged": false, "message": "..."}] when the request is queued (native
+    auto-merge queue waiting on required checks). Treating that as [Ok ()] would
+    cause callers to mark the patch merged prematurely.
+    - Valid JSON with [merged = true] → [Ok ()].
+    - Valid JSON with [merged = false] → [Error (Http_error ...)] carrying
+      GitHub's [message].
+    - Missing [merged] field → default to [true] (matches historical behavior
+      for shapes we don't recognize).
+    - Non-JSON or malformed body → [Ok ()] (treat 2xx without a useful body as
+      success). *)
+let interpret_merge_response ~path body =
+  try
+    let json = Yojson.Safe.from_string body in
+    let merged =
+      Yojson.Safe.Util.(member "merged" json |> to_bool_option)
+      |> Option.value ~default:true
+    in
+    if merged then Ok ()
+    else
+      let msg =
+        Yojson.Safe.Util.(member "message" json |> to_string_option)
+        |> Option.value ~default:"merged=false"
+      in
+      Error (Http_error { meth = "PUT"; path; status = 200; body = msg })
+  with Yojson.Json_error _ | Yojson.Safe.Util.Type_error _ -> Ok ()
+
 (** Merge a pull request via the REST API. Maps to
     [PUT /repos/:owner/:repo/pulls/:number/merge]. *)
 let merge_pr ~net t ~pr_number ~merge_method =
@@ -604,7 +632,7 @@ let merge_pr ~net t ~pr_number ~merge_method =
     `Assoc [ ("merge_method", `String method_str) ] |> Yojson.Safe.to_string
   in
   match request ~net t ~meth:`PUT ~path ~body:req_body () with
-  | Ok _ -> Ok ()
+  | Ok body -> interpret_merge_response ~path body
   | Error _ as e -> e
 
 let owner t = t.owner
@@ -649,6 +677,36 @@ let%test "parse_rest_pr_list mixed" =
 
 let%test "parse_rest_pr_list invalid json" =
   match parse_rest_pr_list "not json" with Error _ -> true | Ok _ -> false
+
+let%test "interpret_merge_response merged=true -> Ok" =
+  match
+    interpret_merge_response ~path:"/x"
+      {|{"sha":"abc","merged":true,"message":"Pull Request successfully merged"}|}
+  with
+  | Ok () -> true
+  | Error _ -> false
+
+let%test "interpret_merge_response merged=false -> Error with message" =
+  match
+    interpret_merge_response ~path:"/x"
+      {|{"merged":false,"message":"Required status check did not succeed"}|}
+  with
+  | Error (Http_error { status = 200; body; _ }) ->
+      String.equal body "Required status check did not succeed"
+  | Error
+      (Http_error _ | Json_parse_error _ | Graphql_error _ | Transport_error _)
+  | Ok () ->
+      false
+
+let%test "interpret_merge_response missing merged field -> Ok" =
+  match interpret_merge_response ~path:"/x" {|{"sha":"abc"}|} with
+  | Ok () -> true
+  | Error _ -> false
+
+let%test "interpret_merge_response non-json body -> Ok" =
+  match interpret_merge_response ~path:"/x" "" with
+  | Ok () -> true
+  | Error _ -> false
 
 let%expect_test "show_error includes endpoint + permission hint on 403" =
   let err =

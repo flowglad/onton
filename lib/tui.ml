@@ -795,8 +795,10 @@ let render_activity (entries : activity_entry list) =
     header :: lines
 
 (** Build the info rows for a detail view. Shared between [render_detail] and
-    [detail_info_height] to keep them in sync. *)
-let detail_info_rows (pv : patch_view) ~width =
+    [detail_info_height] to keep them in sync. [~now] is the wall-clock time the
+    frame is rendered against — threaded in rather than read from
+    [Unix.gettimeofday] so the function stays pure and testable. *)
+let detail_info_rows (pv : patch_view) ~width ~now =
   let fit_value prefix value =
     prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
   in
@@ -841,7 +843,7 @@ let detail_info_rows (pv : patch_view) ~width =
            match pv.automerge_deadline with
            | None -> "enabled (waiting for approval)"
            | Some d ->
-               let remaining = d -. Unix.gettimeofday () in
+               let remaining = d -. now in
                if Float.( > ) remaining 0.0 then
                  Printf.sprintf "fires in %.0fs" remaining
                else "firing...");
@@ -932,8 +934,8 @@ let detail_info_rows (pv : patch_view) ~width =
   in
   lines @ op_line @ intervention @ ci_section
 
-let render_detail (pv : patch_view) ~width ~scroll ?(transcript = "") () =
-  let info = detail_info_rows pv ~width in
+let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
+  let info = detail_info_rows pv ~width ~now in
   let transcript_content =
     if String.is_empty transcript then []
     else
@@ -1176,10 +1178,17 @@ let render_manage_overlay ~width ~height ~automerge_enabled =
     Printf.sprintf "    a   %s automerge (5-minute idle timer after approval)"
       (if automerge_enabled then "Disable" else "Enable")
   in
+  let automerge_item =
+    (* Highlight in green when automerge is currently on so the user can tell
+       at a glance, not just by reading the verb. *)
+    if automerge_enabled then
+      Term.styled [ Term.Sgr.bold; Term.Sgr.fg_green ] automerge_label
+    else Term.styled [ Term.Sgr.dim ] automerge_label
+  in
   let items =
     [
       Term.styled [ Term.Sgr.dim ] "    m   Force mark as merged (break glass)";
-      Term.styled [ Term.Sgr.dim ] automerge_label;
+      automerge_item;
     ]
   in
   let content = title :: "" :: items in
@@ -1190,9 +1199,10 @@ let render_manage_overlay ~width ~height ~automerge_enabled =
 
 (** Number of info lines render_detail produces for a patch. Derived from
     [detail_info_rows] so the two cannot drift. Width only affects truncation,
-    not line count, so we pass a dummy value. *)
+    not line count, and [~now] only affects the automerge countdown text, so we
+    pass fixed values here. *)
 let detail_info_height (pv : patch_view) =
-  List.length (detail_info_rows pv ~width:80)
+  List.length (detail_info_rows pv ~width:80 ~now:0.0)
 
 (** {1 Public API} *)
 
@@ -1249,7 +1259,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
-    ~(activity : activity_entry list) ~project_name ~show_help ~show_manage
+    ~(activity : activity_entry list) ~project_name ~show_help ~show_manage ~now
     ?(transcript = "") ?status_msg ?prompt_line (views : patch_view list) =
   let no_patches =
     {
@@ -1301,7 +1311,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               { offset = scroll_offset; total = 0; visible = max_section }
             in
             let info, transcript_section, at_bottom, clamped_offset =
-              render_detail pv ~width ~scroll ~transcript ()
+              render_detail pv ~width ~scroll ~now ~transcript ()
             in
             let lines =
               header @ [ "" ] @ summary @ [ "" ] @ info @ transcript_section

@@ -124,9 +124,12 @@ type automerge_decision = {
 
 val is_automerge_candidate : Patch_agent.t -> main_branch:Branch.t -> bool
 (** A patch is a candidate for automerge when it is approved, passing CI, has no
-    queued work, is not currently inflight, and has not exceeded
-    [automerge_max_failures]. Any queued feedback (Review_comments, Human, Ci,
-    Merge_conflict, Pr_body) resets the deadline. *)
+    queued work, and has not exceeded [automerge_max_failures]. Any queued
+    feedback (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets the
+    deadline. [automerge_inflight] is deliberately out of scope: callers that
+    need to reject concurrent claims (i.e. [reconcile_automerge]) add the
+    inflight guard themselves; the executor re-check needs the predicate to
+    return [true] while holding the flag. *)
 
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
@@ -134,9 +137,11 @@ val reconcile_automerge :
     merge. For each agent:
     - merged → clear any stale deadline/inflight flag (no decision).
     - not [automerge_enabled] → no-op.
+    - [automerge_inflight] → no-op; the executor owns the deadline and inflight
+      transitions via [apply_automerge_success] / [apply_automerge_failure].
     - candidate + no deadline → set deadline at [now +. automerge_idle_timeout].
     - not candidate + deadline → clear deadline (feedback arrived, CI flipped,
-      inflight, or failure cap hit).
+      or failure cap hit).
     - candidate + deadline elapsed → atomically mark the agent
       [automerge_inflight = true] and include in decisions list. The caller MUST
       clear the inflight flag on every exit path, and call either
