@@ -846,7 +846,7 @@ let detail_info_rows (pv : patch_view) ~width ~now =
          then "enabled (failure cap reached — toggle off/on to retry)"
          else
            match pv.automerge_deadline with
-           | None -> "enabled"
+           | None -> "enabled (waiting: needs approval and passing CI)"
            | Some d ->
                let remaining = d -. now in
                if Float.( > ) remaining 0.0 then
