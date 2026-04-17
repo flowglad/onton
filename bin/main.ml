@@ -371,7 +371,14 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                        still open) or 405 and bump [automerge_failure_count]
                        for no reason. [is_automerge_candidate] already gates on
                        everything else: not merged, automerge enabled,
-                       approval, CI, empty queue, and the failure cap. *)
+                       approval, CI, empty queue, and the failure cap.
+
+                       [automerge_inflight] is intentionally NOT checked here:
+                       the executor set it to [true] when claiming this
+                       decision, and by design [is_automerge_candidate] returns
+                       [true] while inflight so this re-check can confirm the
+                       merge should still proceed. Adding [not inflight] would
+                       short-circuit every merge call. *)
                     (match agent.Patch_agent.pr_number with
                       | Some current -> Pr_number.equal current pr_number
                       | None -> false)
@@ -3132,7 +3139,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
      independent of the runner tick. *)
   Eio.Fiber.fork_daemon ~sw (fun () ->
       let rec amloop () =
-        reconcile_and_execute_automerge ~runtime ~net ~github;
+        (* Top-level guard: [reconcile_and_execute_automerge] catches
+           exceptions per-decision, but [Eio.Fiber.List.iter] (or a future
+           refactor) could still let one escape. Re-raise [Cancelled] so
+           switch teardown propagates normally; swallow any other exception
+           to the activity log so a single bad tick can't kill the fiber
+           permanently and leave automerge silently disabled. *)
+        (try reconcile_and_execute_automerge ~runtime ~net ~github with
+        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | exn ->
+            log_event runtime
+              (Printf.sprintf "automerge fiber error — %s"
+                 (Printexc.to_string exn)));
         Eio.Time.sleep clock 1.0;
         amloop ()
       in
