@@ -476,6 +476,13 @@ let automerge_max_failures = 3
 let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
     ~main_branch =
   (ignore_inflight || not agent.Patch_agent.automerge_inflight)
+  (* [not merged] looks redundant with [reconcile_automerge]'s early-return
+     on [agent.merged], but it is specifically load-bearing for the executor
+     re-check in [reconcile_and_execute_automerge], which uses
+     [~ignore_inflight:true] and runs on a later snapshot — a concurrent
+     poller can mark the agent merged between reconcile and execute. Do not
+     remove this guard; [reconcile_automerge]'s early-return is not
+     sufficient on its own. *)
   && (not agent.Patch_agent.merged)
   && agent.Patch_agent.automerge_enabled
   && Patch_agent.is_approved agent ~main_branch
@@ -928,9 +935,16 @@ let%test "apply_automerge_failure does not re-arm when automerge is disabled" =
   let t = Orchestrator.set_automerge_enabled t pid false in
   let t = apply_automerge_failure t ~now:1000.0 pid in
   let a = Orchestrator.agent t pid in
+  (* The counter IS incremented (0 → 1) by [apply_automerge_failure] even
+     though automerge is now disabled — the implementation bumps the counter
+     unconditionally and only skips the deadline re-arm when disabled.
+     [set_automerge_enabled true] on a later re-enable resets the counter,
+     so this increment is invisible across a disable/enable cycle. The key
+     invariant the test guards is that no deadline is re-armed. *)
   (not a.Patch_agent.automerge_enabled)
   && (not a.Patch_agent.automerge_inflight)
   && Option.is_none a.Patch_agent.automerge_deadline
+  && a.Patch_agent.automerge_failure_count = 1
 
 let%test "toggling automerge resets failure count and inflight" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
