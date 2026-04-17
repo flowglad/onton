@@ -350,9 +350,10 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
              and now the patch may have been merged, lost [merge_ready], gone
              busy again, or had its failure cap hit (via a parallel tick). Any
              of these make the call both unnecessary and noisy (GitHub 405).
-             [is_automerge_candidate] does not gate on [automerge_inflight],
-             so the flag we set when claiming this decision is transparent
-             here. *)
+             We call [is_automerge_candidate] with [~ignore_inflight:true]
+             because we ourselves set the inflight flag when claiming this
+             decision — the default [ignore_inflight:false] would see our own
+             flag and short-circuit every merge. *)
           let still_candidate =
             Runtime.read runtime (fun snap ->
                 match
@@ -364,26 +365,23 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                       Orchestrator.main_branch snap.Runtime.orchestrator
                     in
                     (* Verify the agent's current PR still matches the one this
-                       decision was emitted for. If the poller has remapped the
-                       patch to a replacement PR between reconcile and execute,
-                       hitting GitHub with the stale [pr_number] would either
-                       merge the wrong PR (on the rare chance the old PR is
-                       still open) or 405 and bump [automerge_failure_count]
-                       for no reason. [is_automerge_candidate] already gates on
-                       everything else: not merged, automerge enabled,
-                       approval, CI, empty queue, and the failure cap.
-
-                       [automerge_inflight] is intentionally NOT checked here:
-                       the executor set it to [true] when claiming this
-                       decision, and by design [is_automerge_candidate] returns
-                       [true] while inflight so this re-check can confirm the
-                       merge should still proceed. Adding [not inflight] would
-                       short-circuit every merge call. *)
+                       decision was emitted for. If the poller has remapped
+                       the patch to a replacement PR between reconcile and
+                       execute, hitting GitHub with the stale [pr_number]
+                       would either merge the wrong PR (on the rare chance
+                       the old PR is still open) or 405 and bump
+                       [automerge_failure_count] for no reason.
+                       [is_automerge_candidate] gates on everything else (not
+                       merged, automerge enabled, approval, CI, empty queue,
+                       failure cap) and [~ignore_inflight:true] opts out of
+                       the inflight short-circuit that the predicate applies
+                       by default — necessary here because this re-check runs
+                       while we hold the flag. *)
                     (match agent.Patch_agent.pr_number with
                       | Some current -> Pr_number.equal current pr_number
                       | None -> false)
-                    && Patch_controller.is_automerge_candidate agent
-                         ~main_branch)
+                    && Patch_controller.is_automerge_candidate
+                         ~ignore_inflight:true agent ~main_branch)
           in
           if not still_candidate then (
             log_event runtime ~patch_id
@@ -3151,6 +3149,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
             log_event runtime
               (Printf.sprintf "automerge fiber error — %s"
                  (Printexc.to_string exn)));
+        (* [Eio.Time.sleep] is the only yield point outside the guard above.
+           If the switch is being torn down it raises [Eio.Cancel.Cancelled],
+           which propagates out of [amloop] and exits the [fork_daemon]
+           callback. Cancellation is the expected teardown path for daemon
+           fibers — Eio does not treat it as a fiber failure — so no
+           additional catch is needed here. *)
         Eio.Time.sleep clock 1.0;
         amloop ()
       in

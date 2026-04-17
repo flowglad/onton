@@ -451,29 +451,32 @@ let apply_github_effect_success t = function
 let automerge_idle_timeout = 300.0
 let automerge_max_failures = 3
 
-(** Pure predicate: a patch is a candidate for automerge merging when it is not
-    already merged, automerge is enabled, the PR is approved, CI is passing, the
-    queue is empty, and the consecutive failure count is under
-    [automerge_max_failures]. New feedback (Review_comments, Human, Ci,
-    Merge_conflict, Pr_body) enqueues an operation, which fails this check and
-    so resets the deadline. [checks_passing] is derived separately from
-    [merge_ready] and captures CI conclusions that GitHub's [mergeStateStatus]
-    may consider optional.
+(** Pure predicate: a patch is a candidate to START a new automerge call when it
+    is not already merged, no merge is currently in flight, automerge is
+    enabled, the PR is approved, CI is passing, the queue is empty, and the
+    consecutive failure count is under [automerge_max_failures]. New feedback
+    (Review_comments, Human, Ci, Merge_conflict, Pr_body) enqueues an operation,
+    which fails this check and so resets the deadline. [checks_passing] is
+    derived separately from [merge_ready] and captures CI conclusions that
+    GitHub's [mergeStateStatus] may consider optional.
 
     The [not merged] guard is included here because a merged PR can retain a
     stale [merge_ready = true] in the orchestrator snapshot (e.g. the poller
     hasn't yet observed the merge or the PR was merged out-of-band); without
     this guard such a PR would re-qualify as a candidate.
 
-    [automerge_inflight] is intentionally NOT checked here: that flag protects
-    the reconciler from double-claiming a decision, not the predicate's
-    definition of candidacy. Callers that must reject a concurrent claim (i.e.
-    [reconcile_automerge]) add the [not inflight] guard themselves; the executor
-    re-check in [reconcile_and_execute_automerge] runs while [inflight = true]
-    and relies on this predicate returning [true] so long as the underlying
-    candidacy still holds. *)
-let is_automerge_candidate (agent : Patch_agent.t) ~main_branch =
-  (not agent.Patch_agent.merged)
+    [?ignore_inflight] defaults to [false]: the safe default answers "is this
+    patch eligible to start a new merge call?". The only legitimate caller that
+    passes [~ignore_inflight:true] is the executor re-check in
+    [reconcile_and_execute_automerge], which runs while holding
+    [automerge_inflight = true] and needs the predicate to return [true] so long
+    as the underlying candidacy still holds (otherwise every merge call would be
+    short-circuited by its own inflight flag). Making the safe option the
+    default prevents a future caller from forgetting the inflight guard. *)
+let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
+    ~main_branch =
+  (ignore_inflight || not agent.Patch_agent.automerge_inflight)
+  && (not agent.Patch_agent.merged)
   && agent.Patch_agent.automerge_enabled
   && Patch_agent.is_approved agent ~main_branch
   && agent.Patch_agent.checks_passing

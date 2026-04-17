@@ -122,20 +122,22 @@ type automerge_decision = {
 }
 [@@deriving show, eq, sexp_of]
 
-val is_automerge_candidate : Patch_agent.t -> main_branch:Branch.t -> bool
-(** A patch is a candidate for automerge when it is not already merged,
-    automerge is enabled, the PR is approved, CI is passing, the queue is empty,
-    and the consecutive failure count is under [automerge_max_failures]. Any
-    queued feedback (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets
-    the deadline.
+val is_automerge_candidate :
+  ?ignore_inflight:bool -> Patch_agent.t -> main_branch:Branch.t -> bool
+(** A patch is a candidate to START a new automerge call when it is not already
+    merged, no merge is currently in flight, automerge is enabled, the PR is
+    approved, CI is passing, the queue is empty, and the consecutive failure
+    count is under [automerge_max_failures]. Any queued feedback
+    (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets the deadline.
 
-    Warning: [automerge_inflight] is deliberately out of scope. Callers that
-    must guard against concurrent merge calls (e.g. [reconcile_automerge]) must
-    explicitly check [not agent.Patch_agent.automerge_inflight] themselves
-    before consulting this predicate — omitting that guard will issue
-    overlapping merge calls. The executor re-check in
-    [reconcile_and_execute_automerge] relies on the predicate returning [true]
-    while holding the flag, so the guard cannot live inside the predicate. *)
+    [?ignore_inflight] defaults to [false]; the default answers the
+    concurrency-safe question ("is this patch eligible to start a new merge
+    call?"). The only legitimate use of [~ignore_inflight:true] is the executor
+    re-check in [reconcile_and_execute_automerge], which runs while holding
+    [automerge_inflight = true] and needs the predicate to return [true] so long
+    as the underlying candidacy still holds. Do not pass [~ignore_inflight:true]
+    from any other caller — doing so opens the door to overlapping merge calls.
+*)
 
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
