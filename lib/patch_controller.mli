@@ -123,26 +123,30 @@ type automerge_decision = {
 [@@deriving show, eq, sexp_of]
 
 val is_automerge_candidate : Patch_agent.t -> main_branch:Branch.t -> bool
-(** A patch is a candidate for automerge when automerge is enabled, the PR is
-    approved, CI is passing, the queue is empty, and the consecutive failure
-    count is under [automerge_max_failures]. Any queued feedback
-    (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets the deadline.
-    [automerge_inflight] is deliberately out of scope: callers that need to
-    reject concurrent claims (i.e. [reconcile_automerge]) add the inflight guard
-    themselves; the executor re-check needs the predicate to return [true] while
-    holding the flag. *)
+(** A patch is a candidate for automerge when it is not already merged,
+    automerge is enabled, the PR is approved, CI is passing, the queue is empty,
+    and the consecutive failure count is under [automerge_max_failures]. Any
+    queued feedback (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets
+    the deadline.
+
+    Warning: [automerge_inflight] is deliberately out of scope. Callers that
+    must guard against concurrent merge calls (e.g. [reconcile_automerge]) must
+    explicitly check [not agent.Patch_agent.automerge_inflight] themselves
+    before consulting this predicate — omitting that guard will issue
+    overlapping merge calls. The executor re-check in
+    [reconcile_and_execute_automerge] relies on the predicate returning [true]
+    while holding the flag, so the guard cannot live inside the predicate. *)
 
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
 (** Reconcile the automerge deadline for every agent and return decisions to
     merge. For each agent:
     - merged → clear any stale deadline/inflight flag (no decision).
-    - not [automerge_enabled] → no-op.
     - [automerge_inflight] → no-op; the executor owns the deadline and inflight
       transitions via [apply_automerge_success] / [apply_automerge_failure].
     - candidate + no deadline → set deadline at [now +. automerge_idle_timeout].
     - not candidate + deadline → clear deadline (feedback arrived, CI flipped,
-      or failure cap hit).
+      automerge disabled, or failure cap hit).
     - candidate + deadline elapsed → atomically mark the agent
       [automerge_inflight = true] and include in decisions list. The caller MUST
       clear the inflight flag on every exit path, and call either

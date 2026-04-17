@@ -316,17 +316,25 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
               Orchestrator.set_automerge_inflight orch patch_id false))
       in
       (* Push the deadline out by one idle window after a non-terminal response
-         (GitHub queued the merge or responded with an unrecognised shape). The
-         deadline that fired this decision is already in the past, and merely
-         clearing [inflight] would make the patch eligible again on the very
-         next reconcile tick — producing a tight loop of PUT /merge calls
-         until the poller observes a terminal state. A fresh idle window gives
-         the poller time to catch up. *)
-      let push_deadline_out () =
-        let now_ts = Unix.gettimeofday () in
-        Runtime.update_orchestrator runtime (fun orch ->
-            Orchestrator.set_automerge_deadline orch patch_id
-              (now_ts +. Patch_controller.automerge_idle_timeout))
+         (GitHub queued the merge or responded with an unrecognised shape) and
+         clear [inflight] in the same orchestrator update. The deadline that
+         fired this decision is already in the past, and merely clearing
+         [inflight] would make the patch eligible again on the very next
+         reconcile tick — producing a tight loop of PUT /merge calls until the
+         poller observes a terminal state. A fresh idle window gives the
+         poller time to catch up. Doing both writes atomically avoids a brief
+         window where a concurrent read sees the pushed-out deadline with
+         [inflight = true]. *)
+      let push_deadline_and_clear_inflight () =
+        if not !inflight_cleared then (
+          inflight_cleared := true;
+          let now_ts = Unix.gettimeofday () in
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch =
+                Orchestrator.set_automerge_inflight orch patch_id false
+              in
+              Orchestrator.set_automerge_deadline orch patch_id
+                (now_ts +. Patch_controller.automerge_idle_timeout)))
       in
       Fun.protect ~finally:clear_inflight_if_needed (fun () ->
           (* Re-read the patch just before hitting GitHub. The original
@@ -347,13 +355,18 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                     let main_branch =
                       Orchestrator.main_branch snap.Runtime.orchestrator
                     in
-                    (* [is_automerge_candidate] checks [automerge_enabled],
-                       approval, CI, empty queue, and the failure-count cap.
-                       [not merged] is still required here because the
-                       predicate doesn't gate on it directly — a merged PR
-                       with stale [merge_ready = true] would otherwise
-                       requalify. *)
-                    (not agent.Patch_agent.merged)
+                    (* Verify the agent's current PR still matches the one this
+                       decision was emitted for. If the poller has remapped the
+                       patch to a replacement PR between reconcile and execute,
+                       hitting GitHub with the stale [pr_number] would either
+                       merge the wrong PR (on the rare chance the old PR is
+                       still open) or 405 and bump [automerge_failure_count]
+                       for no reason. [is_automerge_candidate] already gates on
+                       everything else: not merged, automerge enabled,
+                       approval, CI, empty queue, and the failure cap. *)
+                    (match agent.Patch_agent.pr_number with
+                      | Some current -> Pr_number.equal current pr_number
+                      | None -> false)
                     && Patch_controller.is_automerge_candidate agent
                          ~main_branch)
           in
@@ -384,10 +397,10 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
               | Ok (Github.Merge_queued msg) ->
                   (* GitHub accepted the request into its native auto-merge
                      queue. Not a failure — don't bump the counter. Push the
-                     deadline forward so we don't re-fire before the poller
-                     observes the eventual merge. *)
-                  push_deadline_out ();
-                  clear_inflight_if_needed ();
+                     deadline forward (atomically with clearing [inflight]) so
+                     we don't re-fire before the poller observes the eventual
+                     merge. *)
+                  push_deadline_and_clear_inflight ();
                   log_event runtime ~patch_id
                     (Printf.sprintf
                        "Automerge queued by GitHub — awaiting checks (%s)" msg)
@@ -395,9 +408,9 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                   (* 2xx response with an unexpected shape. Not authoritative
                      either way — let the poller confirm via PR state rather
                      than guess. Don't count as failure, but push the
-                     deadline forward so we don't retry every tick. *)
-                  push_deadline_out ();
-                  clear_inflight_if_needed ();
+                     deadline forward (atomic with clearing [inflight]) so we
+                     don't retry every tick. *)
+                  push_deadline_and_clear_inflight ();
                   log_event runtime ~patch_id
                     (Printf.sprintf
                        "%s accepted but merge not confirmed — awaiting poll"
