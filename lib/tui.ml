@@ -505,6 +505,7 @@ type patch_view = {
   intervention_reason : string option;
   automerge_enabled : bool;
   automerge_deadline : float option;
+  automerge_failure_count : int;
 }
 [@@warning "-69"]
 
@@ -603,6 +604,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     intervention_reason = None;
     automerge_enabled = agent.automerge_enabled;
     automerge_deadline = agent.automerge_deadline;
+    automerge_failure_count = agent.automerge_failure_count;
   }
 
 (** {1 Render helpers} *)
@@ -839,9 +841,12 @@ let detail_info_rows (pv : patch_view) ~width ~now =
       Printf.sprintf "  Messages:    %d queued" pv.human_messages;
       Printf.sprintf "  Automerge:   %s"
         (if not pv.automerge_enabled then "disabled"
+         else if
+           pv.automerge_failure_count >= Patch_controller.automerge_max_failures
+         then "enabled (failure cap reached — toggle off/on to retry)"
          else
            match pv.automerge_deadline with
-           | None -> "enabled (waiting for approval)"
+           | None -> "enabled"
            | Some d ->
                let remaining = d -. now in
                if Float.( > ) remaining 0.0 then

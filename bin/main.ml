@@ -340,9 +340,11 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
           if not still_candidate then (
             log_event runtime ~patch_id
               (Printf.sprintf "%s skipped — no longer a candidate" label);
-            (* Clear inflight via the finaliser; leave deadline as-is so the
-               next reconcile sees current state (clear + re-arm or no-op). *)
-            ())
+            (* Clear inflight explicitly (don't rely on the finaliser's
+               not-yet-cleared fallback) and leave the deadline alone — the
+               next reconcile inspects current state and either clears the
+               deadline (feedback arrived / candidate lost) or re-arms. *)
+            clear_inflight_if_needed ())
           else
             try
               match

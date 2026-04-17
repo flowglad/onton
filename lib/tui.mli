@@ -98,6 +98,7 @@ type patch_view = {
   intervention_reason : string option;
   automerge_enabled : bool;
   automerge_deadline : float option;
+  automerge_failure_count : int;
 }
 
 (** {2 Frame rendering} *)

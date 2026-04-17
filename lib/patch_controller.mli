@@ -157,11 +157,11 @@ val apply_automerge_success : Orchestrator.t -> Patch_id.t -> Orchestrator.t
 
 val apply_automerge_failure :
   Orchestrator.t -> now:float -> Patch_id.t -> Orchestrator.t
-(** Record a failed merge call: clear the inflight flag, increment the
-    consecutive failure counter, and push the deadline out to
+(** Record a failed merge call: clear the inflight flag and increment the
+    consecutive failure counter. Push the deadline out to
     [now +. automerge_idle_timeout] so the retry is at least one idle window
-    away. Without this explicit push-out, a persistent GitHub failure could
-    generate a burst of merge calls within a single poll cycle since the runner
-    re-reconciles every tick. If the failure cap is now hit the predicate skips
-    the patch regardless and the next reconcile clears the deadline via the
-    normal non-candidate path. *)
+    away (without this bound, a persistent GitHub failure could burst many merge
+    calls per poll cycle since the runner re-reconciles every tick). The
+    deadline is NOT re-armed when either (a) the failure cap has now been
+    reached (reconciliation will no longer issue merge calls for this patch), or
+    (b) the user disabled automerge while the call was in flight. *)
