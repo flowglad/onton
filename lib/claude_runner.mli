@@ -6,10 +6,10 @@ open Base
     one Claude process (one fiber). The runner uses [--resume <session_id>] to
     resume a specific session by its ID.
 
-    Unlike [--print] mode, we use [-p] which runs Claude in session-saving mode.
-    This requires a PTY (allocated via [script -q /dev/null]) but enables
-    session persistence. The session ID is captured from the [system/init]
-    streaming event and stored for subsequent [--resume] calls.
+    Unlike [--print] mode, we use [-p] which runs Claude in session-saving mode
+    so [--resume <session_id>] can rehydrate a prior turn. The session ID is
+    captured from the [system/init] streaming event and stored for subsequent
+    [--resume] calls.
 
     Design decision: one fiber per Claude process for natural backpressure —
     busy patches don't get new work. *)
@@ -53,11 +53,8 @@ val parse_stream_event : string -> Types.Stream_event.t option
 *)
 
 val strip_ansi : string -> string
-(** Strip ANSI escape sequences from PTY output. Exposed for testing. *)
-
-val pty_wrap : string list -> string list
-(** Wrap a command in [script -q /dev/null] for PTY allocation. Exposed for
-    testing. *)
+(** Strip ANSI escape sequences and stray control characters from a line.
+    Exposed for testing. *)
 
 val build_args : prompt:string -> resume_session:string option -> string list
 (** Build the CLI argument list for the Claude process. Exposed for testing. *)

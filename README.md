@@ -95,7 +95,6 @@ of these must be installed and configured before onton can run.
 | `git` | Worktree CRUD, branch detection, rebase | `brew install git` (or system package manager) |
 | `gh` (GitHub CLI) | Token resolution, PR discovery (`gh pr list`), and the main vehicle agents use to interact with GitHub (`gh pr create`, `gh pr edit`, `gh pr view`, `gh api`, `gh api graphql`) | `brew install gh`, then `gh auth login` |
 | Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode`, `pi`. Selected via `--backend` (default `claude`) and must be on `PATH` | See each tool's docs |
-| `/usr/bin/script` | Used to allocate a pseudo-TTY around the Claude CLI so `-p` streaming works. Ships with macOS and most Linux distros — no install needed | — |
 
 Onton is built and tested on macOS (ARM64 and x86_64). Linux should work but is
 not part of the release pipeline.
@@ -304,11 +303,9 @@ gameplan.md ──> Gameplan_parser ──> Graph + Patches
 
 Claude is invoked via `-p` (prompt mode, not `--print`) which saves sessions,
 enabling `--continue` to resume the most recent session in a worktree. This
-enables session resumption across restarts.
-
-Since `-p` mode requires a TTY for streaming output, each Claude process is
-wrapped in `/usr/bin/script -q /dev/null` to allocate a pseudo-TTY. ANSI
-escapes from the PTY are stripped before JSON parsing.
+enables session resumption across restarts. Claude is spawned directly against
+pipes — no PTY wrapper — and any stray control characters in the stream are
+stripped defensively before JSON parsing.
 
 The session fallback chain: `--continue` (resume worktree session) -> fresh
 session (no `--continue`) -> give up (needs intervention). If `--continue`
@@ -356,7 +353,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `opencode_backend` | OpenCode backend implementation |
 | `pi_backend` | Pi coding agent backend implementation |
 | `claude_process` | Claude CLI session state machine (No_session -> Has_session) |
-| `claude_runner` | Claude subprocess spawning with PTY wrapping, NDJSON streaming, ANSI stripping, `got_events` resume-failure detection |
+| `claude_runner` | Claude subprocess spawning, NDJSON streaming, defensive control-char stripping, `got_events` resume-failure detection |
 | `spawn_logic` | Pure spawn/scheduling logic: which patches to run next |
 | `orchestrator` | Durable patch state plus primitive transitions, including the patch-agent outbox |
 | `reconciler` | Pure merge detection, rebase cascading, stale base detection, liveness enforcement |
