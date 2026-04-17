@@ -27,7 +27,12 @@ val run :
     [--resume <id>]. Otherwise a new session is created.
 
     Returns a {!Llm_backend.result} with exit code and captured stdout/stderr.
-*)
+
+    {b Warning: no timeout.} This function blocks until the child exits or its
+    enclosing switch is cancelled. There is no internal deadline, so callers
+    must impose their own bound (e.g. wrap in {!Eio.Time.with_timeout} or run
+    inside a switch they will release on a timer). The streaming counterpart
+    {!run_streaming} carries [~clock] and [~timeout] for this purpose. *)
 
 val run_streaming :
   process_mgr:_ Eio.Process.mgr ->
