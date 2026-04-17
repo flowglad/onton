@@ -100,7 +100,10 @@ val respond_delivery :
 (** Pure pre-session decision for Respond actions. Determines whether the
     delivery should proceed, be skipped (empty payload), or is stale.
 
-    When [pre_fire_agent] is [Some pfa], human messages and CI checks are read
-    from [pfa] (the snapshot before fire moved messages to inflight). When
-    [None], falls back to [agent]. Review comments come from
-    [prefetched_comments] (fetched from GitHub before the decision). *)
+    When [pre_fire_agent] is [Some pfa], human messages are read from [pfa] (the
+    snapshot before fire moved messages to inflight); when [None], falls back to
+    [agent]. Review comments come from [prefetched_comments] (fetched from
+    GitHub before the decision). CI checks are read from [agent] — the caller
+    re-polls GitHub before delivery and writes the fresh list into
+    [agent.ci_checks] via [Orchestrator.set_ci_checks], then skips the call
+    entirely if no failures remain. *)

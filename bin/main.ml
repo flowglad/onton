@@ -2656,423 +2656,516 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
               in
               Some
                 (fun () ->
-                  (* For Review_comments, fetch fresh unaddressed comments
-                     from GitHub before acquiring a Claude slot to avoid
-                     blocking concurrency on GitHub API I/O. *)
+                  (* For Review_comments and Ci, fetch fresh state from
+                     GitHub before acquiring a Claude slot to avoid blocking
+                     concurrency on GitHub API I/O. The Ci fetch is the
+                     freshness gate against delivering a failure that's
+                     already been superseded by a newer run. *)
                   let is_review =
                     Operation_kind.equal kind Operation_kind.Review_comments
                   in
-                  let prefetched_comments =
-                    if is_review then
-                      match
-                        Runtime.read runtime (fun snap ->
-                            (Orchestrator.agent snap.Runtime.orchestrator
-                               patch_id)
-                              .Patch_agent.pr_number)
-                      with
+                  let is_ci = Operation_kind.equal kind Operation_kind.Ci in
+                  let pr_number =
+                    Runtime.read runtime (fun snap ->
+                        (Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                          .Patch_agent.pr_number)
+                  in
+                  let fresh_pr_state =
+                    if is_review || is_ci then (
+                      match pr_number with
                       | Some pr_num -> (
                           log_event runtime ~patch_id
-                            "Fetching fresh review comments from GitHub";
+                            (if is_ci then "Fetching fresh CI state from GitHub"
+                             else "Fetching fresh review comments from GitHub");
                           match Github.pr_state ~net github pr_num with
-                          | Ok pr_state -> pr_state.Pr_state.comments
+                          | Ok pr_state -> Some pr_state
                           | Error _err ->
                               log_event runtime ~patch_id
-                                "Failed to fetch fresh review comments";
-                              [])
+                                (if is_ci then "Failed to fetch fresh CI state"
+                                 else "Failed to fetch fresh review comments");
+                              None)
+                      | None ->
+                          if is_ci then
+                            log_event runtime ~patch_id
+                              "No PR number yet — skipping CI state fetch";
+                          None)
+                    else None
+                  in
+                  let prefetched_comments =
+                    if is_review then
+                      match fresh_pr_state with
+                      | Some pr_state -> pr_state.Pr_state.comments
                       | None -> []
                     else []
                   in
+                  (* Ci freshness gate: if we have no PR number, couldn't
+                     fetch, or the fetched state shows no current failures,
+                     skip the delivery — don't wake the agent for a failure
+                     that's already been superseded. The [set_ci_checks]
+                     write is deferred to inside [with_busy_guard] so it
+                     can't corrupt state on a stale/cancelled delivery nor
+                     race with the poller. *)
+                  let ci_skip_reason =
+                    if is_ci then
+                      match (pr_number, fresh_pr_state) with
+                      | None, _ -> Some "no PR number"
+                      | Some _, None -> Some "fetch failed"
+                      | Some _, Some pr_state ->
+                          if
+                            Base.List.exists pr_state.Pr_state.ci_checks
+                              ~f:Ci_check.is_failure
+                          then None
+                          else (
+                            log_event runtime ~patch_id
+                              "Fresh CI state shows no failures — skipping CI \
+                               delivery";
+                            Some "no current failures")
+                    else None
+                  in
                   with_busy_guard ~patch_id (fun () ->
                       let result =
-                        with_claude_slot (fun () ->
-                            let agent =
-                              Runtime.read runtime (fun snap ->
-                                  Orchestrator.agent snap.Runtime.orchestrator
-                                    patch_id)
-                            in
-                            let delivery =
-                              Patch_decision.respond_delivery ~agent ~kind
-                                ~pre_fire_agent ~prefetched_comments
-                                ~main_branch:(Branch.to_string main)
-                            in
-                            let render_base_changed_prefix base_change =
-                              match base_change with
-                              | Some bc ->
-                                  log_event runtime ~patch_id
-                                    (Printf.sprintf
-                                       "Base branch changed from %s to %s — \
-                                        notifying agent"
-                                       bc.Patch_decision.old_base
-                                       bc.Patch_decision.new_base);
-                                  Prompt.render_base_branch_changed
-                                    ~old_base:bc.Patch_decision.old_base
-                                    ~new_base:bc.Patch_decision.new_base
-                              | None -> ""
-                            in
-                            match delivery with
-                            | Patch_decision.Respond_stale ->
-                                log_event runtime ~patch_id
-                                  "Skipping action — became stale during \
-                                   semaphore wait";
-                                `Stale
-                            | Patch_decision.Skip_empty ->
-                                log_event runtime ~patch_id
-                                  (Printf.sprintf
-                                     "Skipped %s — nothing to deliver"
-                                     (Operation_kind.to_label kind));
-                                `Skip_empty
-                            | Patch_decision.Deliver
-                                {
-                                  payload =
-                                    Patch_decision.Merge_conflict_payload;
-                                  base_change;
-                                } -> (
-                                let base =
-                                  Base.Option.value_map
-                                    agent.Patch_agent.base_branch
-                                    ~default:(Branch.to_string main)
-                                    ~f:Branch.to_string
+                        match ci_skip_reason with
+                        | Some reason ->
+                            (* Fast path: skip decision already made. Don't
+                               consume a Claude slot for a no-op — that
+                               slot can go to another agent. *)
+                            log_event runtime ~patch_id
+                              (Printf.sprintf "Skipped ci delivery — %s" reason);
+                            `Skip_empty
+                        | None ->
+                            with_claude_slot (fun () ->
+                                (* Write fresh ci_checks under the busy guard
+                                   so the write can't race with the poller or
+                                   land after a concurrent complete/merge.
+                                   Must happen before the agent re-read so
+                                   [agent.ci_checks] reflects the fresh
+                                   list. *)
+                                (match (is_ci, fresh_pr_state) with
+                                | true, Some pr_state ->
+                                    Runtime.update_orchestrator runtime
+                                      (fun orch ->
+                                        Orchestrator.set_ci_checks orch patch_id
+                                          pr_state.Pr_state.ci_checks)
+                                | _ -> ());
+                                let agent =
+                                  Runtime.read runtime (fun snap ->
+                                      Orchestrator.agent
+                                        snap.Runtime.orchestrator patch_id)
                                 in
-                                let base_changed_prefix =
-                                  render_base_changed_prefix base_change
+                                let delivery =
+                                  Patch_decision.respond_delivery ~agent ~kind
+                                    ~pre_fire_agent ~prefetched_comments
+                                    ~main_branch:(Branch.to_string main)
                                 in
-                                let wt_path_opt =
-                                  ensure_worktree ~runtime ~process_mgr ~fs
-                                    ~repo_root:config.repo_root ~project_name
-                                    ~patch_id ~agent
-                                    ~user_config:config.user_config
-                                    ~worktree_mutex ()
+                                let render_base_changed_prefix base_change =
+                                  match base_change with
+                                  | Some bc ->
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "Base branch changed from %s to %s \
+                                            — notifying agent"
+                                           bc.Patch_decision.old_base
+                                           bc.Patch_decision.new_base);
+                                      Prompt.render_base_branch_changed
+                                        ~old_base:bc.Patch_decision.old_base
+                                        ~new_base:bc.Patch_decision.new_base
+                                  | None -> ""
                                 in
-                                let wt_path =
-                                  match wt_path_opt with
-                                  | Some p -> p
-                                  | None ->
-                                      Worktree.worktree_dir ~project_name
-                                        ~patch_id
-                                in
-                                (* Helper: capture git context and deliver
-                                   an enriched prompt to the agent. *)
-                                let deliver_to_agent () =
-                                  let pr_number = agent.Patch_agent.pr_number in
-                                  let rebase_still_in_progress =
-                                    Worktree.rebase_in_progress ~process_mgr
-                                      ~path:wt_path
-                                  in
-                                  let git_status =
-                                    Worktree.git_status ~process_mgr
-                                      ~path:wt_path
-                                  in
-                                  let git_diff =
-                                    Worktree.conflict_diff ~process_mgr
-                                      ~path:wt_path
-                                  in
-                                  Event_log.log_conflict_delivery event_log
-                                    ~patch_id ~path:wt_path
-                                    ~rebase_in_progress:rebase_still_in_progress
-                                    ~git_status ~git_diff;
-                                  let patch =
-                                    Base.List.find gameplan.Gameplan.patches
-                                      ~f:(fun (p : Patch.t) ->
-                                        Patch_id.equal p.Patch.id patch_id)
-                                  in
-                                  let prompt =
-                                    let raw =
-                                      Prompt.render_merge_conflict_prompt
-                                        ~project_name ?pr_number ?patch
-                                        ~gameplan ~base_branch:base ~git_status
-                                        ~git_diff ()
+                                match delivery with
+                                | Patch_decision.Respond_stale ->
+                                    log_event runtime ~patch_id
+                                      "Skipping action — became stale during \
+                                       semaphore wait";
+                                    `Stale
+                                | Patch_decision.Skip_empty ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf
+                                         "Skipped %s — nothing to deliver"
+                                         (Operation_kind.to_label kind));
+                                    `Skip_empty
+                                | Patch_decision.Deliver
+                                    {
+                                      payload =
+                                        Patch_decision.Merge_conflict_payload;
+                                      base_change;
+                                    } -> (
+                                    let base =
+                                      Base.Option.value_map
+                                        agent.Patch_agent.base_branch
+                                        ~default:(Branch.to_string main)
+                                        ~f:Branch.to_string
                                     in
-                                    if String.equal base_changed_prefix "" then
-                                      raw
-                                    else base_changed_prefix ^ "\n" ^ raw
-                                  in
-                                  let on_pr_detected _pr_number = () in
-                                  let result =
-                                    run_claude_and_handle ~runtime ~process_mgr
-                                      ~fs ~project_name ~patch_id
-                                      ~repo_root:config.repo_root ~prompt ~agent
-                                      ~owner:config.github_owner
-                                      ~repo:config.github_repo ~on_pr_detected
-                                      ~transcripts
-                                      ~user_config:config.user_config
-                                      ~worktree_mutex ~backend ~event_log
-                                  in
-                                  (match result with
-                                  | `Ok
-                                    when not
-                                           (String.equal base_changed_prefix "")
-                                    ->
-                                      Runtime.update_orchestrator runtime
-                                        (fun orch ->
-                                          Orchestrator.set_notified_base_branch
-                                            orch patch_id
-                                            (Branch.of_string base))
-                                  | _ -> ());
-                                  result
-                                in
-                                if
-                                  Worktree.rebase_in_progress ~process_mgr
-                                    ~path:wt_path
-                                then (
-                                  log_event runtime ~patch_id
-                                    "Delivering merge-conflict — rebase \
-                                     already in progress";
-                                  deliver_to_agent ())
-                                else
-                                  (* Plan-driven: the planner guarantees
+                                    let base_changed_prefix =
+                                      render_base_changed_prefix base_change
+                                    in
+                                    let wt_path_opt =
+                                      ensure_worktree ~runtime ~process_mgr ~fs
+                                        ~repo_root:config.repo_root
+                                        ~project_name ~patch_id ~agent
+                                        ~user_config:config.user_config
+                                        ~worktree_mutex ()
+                                    in
+                                    let wt_path =
+                                      match wt_path_opt with
+                                      | Some p -> p
+                                      | None ->
+                                          Worktree.worktree_dir ~project_name
+                                            ~patch_id
+                                    in
+                                    (* Helper: capture git context and deliver
+                                   an enriched prompt to the agent. *)
+                                    let deliver_to_agent () =
+                                      let pr_number =
+                                        agent.Patch_agent.pr_number
+                                      in
+                                      let rebase_still_in_progress =
+                                        Worktree.rebase_in_progress ~process_mgr
+                                          ~path:wt_path
+                                      in
+                                      let git_status =
+                                        Worktree.git_status ~process_mgr
+                                          ~path:wt_path
+                                      in
+                                      let git_diff =
+                                        Worktree.conflict_diff ~process_mgr
+                                          ~path:wt_path
+                                      in
+                                      Event_log.log_conflict_delivery event_log
+                                        ~patch_id ~path:wt_path
+                                        ~rebase_in_progress:
+                                          rebase_still_in_progress ~git_status
+                                        ~git_diff;
+                                      let patch =
+                                        Base.List.find gameplan.Gameplan.patches
+                                          ~f:(fun (p : Patch.t) ->
+                                            Patch_id.equal p.Patch.id patch_id)
+                                      in
+                                      let prompt =
+                                        let raw =
+                                          Prompt.render_merge_conflict_prompt
+                                            ~project_name ?pr_number ?patch
+                                            ~gameplan ~base_branch:base
+                                            ~git_status ~git_diff ()
+                                        in
+                                        if String.equal base_changed_prefix ""
+                                        then raw
+                                        else base_changed_prefix ^ "\n" ^ raw
+                                      in
+                                      let on_pr_detected _pr_number = () in
+                                      let result =
+                                        run_claude_and_handle ~runtime
+                                          ~process_mgr ~fs ~project_name
+                                          ~patch_id ~repo_root:config.repo_root
+                                          ~prompt ~agent
+                                          ~owner:config.github_owner
+                                          ~repo:config.github_repo
+                                          ~on_pr_detected ~transcripts
+                                          ~user_config:config.user_config
+                                          ~worktree_mutex ~backend ~event_log
+                                      in
+                                      (match result with
+                                      | `Ok
+                                        when not
+                                               (String.equal base_changed_prefix
+                                                  "") ->
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .set_notified_base_branch orch
+                                                patch_id (Branch.of_string base))
+                                      | _ -> ());
+                                      result
+                                    in
+                                    if
+                                      Worktree.rebase_in_progress ~process_mgr
+                                        ~path:wt_path
+                                    then (
+                                      log_event runtime ~patch_id
+                                        "Delivering merge-conflict — rebase \
+                                         already in progress";
+                                      deliver_to_agent ())
+                                    else
+                                      (* Plan-driven: the planner guarantees
                                      Ensure_worktree precedes Fetch_origin
                                      and Rebase_onto. The executor short-
                                      circuits on the first failure. Plans
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
-                                  let rebase_result, _wt_path =
-                                    execute_worktree_plan ~runtime ~process_mgr
-                                      ~fs ~repo_root:config.repo_root
-                                      ~project_name ~patch_id ~agent
-                                      ~user_config:config.user_config
-                                      ~worktree_mutex ~fetch_lock:fetch_mutex
-                                      ~fail_label:"merge-conflict rebase"
-                                      (Worktree_plan.for_merge_conflict
-                                         ~base:(Types.Branch.of_string base))
-                                  in
-                                  (match rebase_result with
-                                  | Worktree.Ok ->
-                                      log_event runtime ~patch_id
-                                        (Printf.sprintf
-                                           "Conflict rebase onto %s succeeded"
-                                           base)
-                                  | Worktree.Noop ->
-                                      log_event runtime ~patch_id
-                                        "Conflict rebase noop — local already \
-                                         up-to-date, will push"
-                                  | Worktree.Conflict ->
-                                      log_event runtime ~patch_id
-                                        "Conflict rebase hit conflicts — \
-                                         delivering to agent"
-                                  | Worktree.Error msg ->
-                                      log_event runtime ~patch_id
-                                        (Printf.sprintf
-                                           "Conflict rebase failed — %s" msg));
-                                  let ( decision,
-                                        agent_before,
-                                        agent_after,
-                                        effects ) =
-                                    Runtime.update_orchestrator_returning
-                                      runtime (fun orch ->
-                                        let agent_before =
-                                          Orchestrator.agent orch patch_id
-                                        in
-                                        let orch, decision, effects =
-                                          Orchestrator
-                                          .apply_conflict_rebase_result orch
-                                            patch_id rebase_result
-                                            (Types.Branch.of_string base)
-                                        in
-                                        let agent_after =
-                                          Orchestrator.agent orch patch_id
-                                        in
-                                        ( orch,
-                                          ( decision,
+                                      let rebase_result, _wt_path =
+                                        execute_worktree_plan ~runtime
+                                          ~process_mgr ~fs
+                                          ~repo_root:config.repo_root
+                                          ~project_name ~patch_id ~agent
+                                          ~user_config:config.user_config
+                                          ~worktree_mutex
+                                          ~fetch_lock:fetch_mutex
+                                          ~fail_label:"merge-conflict rebase"
+                                          (Worktree_plan.for_merge_conflict
+                                             ~base:(Types.Branch.of_string base))
+                                      in
+                                      (match rebase_result with
+                                      | Worktree.Ok ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "Conflict rebase onto %s \
+                                                succeeded"
+                                               base)
+                                      | Worktree.Noop ->
+                                          log_event runtime ~patch_id
+                                            "Conflict rebase noop — local \
+                                             already up-to-date, will push"
+                                      | Worktree.Conflict ->
+                                          log_event runtime ~patch_id
+                                            "Conflict rebase hit conflicts — \
+                                             delivering to agent"
+                                      | Worktree.Error msg ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "Conflict rebase failed — %s" msg));
+                                      let ( decision,
                                             agent_before,
                                             agent_after,
-                                            effects ) ))
-                                  in
-                                  Event_log.log_conflict_rebase event_log
-                                    ~patch_id ~result:rebase_result ~decision
-                                    ~agent_before ~agent_after;
-                                  let push_outcome =
-                                    Base.List.find_map effects
-                                      ~f:(fun Orchestrator.Push_branch ->
-                                        let branch = agent.Patch_agent.branch in
-                                        let result =
-                                          Worktree.force_push_with_lease
-                                            ~process_mgr ~path:wt_path ~branch
-                                            ~base:(Types.Branch.of_string base)
-                                        in
-                                        (match result with
-                                        | Worktree.Push_ok ->
-                                            log_event runtime ~patch_id
-                                              "Force-pushed to resolve conflict"
-                                        | Worktree.Push_up_to_date ->
-                                            log_event runtime ~patch_id
-                                              "Conflict push noop — already \
-                                               up-to-date"
-                                        | Worktree.Push_no_commits ->
-                                            log_event runtime ~patch_id
-                                              "Conflict force-push skipped — \
-                                               branch has no commits ahead of \
-                                               base"
-                                        | Worktree.Push_rejected ->
-                                            log_event runtime ~patch_id
-                                              "Conflict force-push rejected — \
-                                               lease violated"
-                                        | Worktree.Push_error msg ->
-                                            log_event runtime ~patch_id
-                                              (Printf.sprintf
-                                                 "Conflict force-push failed — \
-                                                  %s"
-                                                 msg));
-                                        Some result)
-                                  in
-                                  let resolution =
-                                    Runtime.update_orchestrator_returning
-                                      runtime (fun orch ->
-                                        let orch, resolution =
-                                          Orchestrator
-                                          .apply_conflict_push_result orch
-                                            patch_id decision push_outcome
-                                        in
-                                        (orch, resolution))
-                                  in
-                                  match resolution with
-                                  | Orchestrator.Conflict_done -> `Ok
-                                  | Orchestrator.Conflict_retry_push ->
-                                      log_event runtime ~patch_id
-                                        "Re-enqueued conflict resolution after \
-                                         push failure";
-                                      `Retry_push
-                                  | Orchestrator.Conflict_needs_agent ->
-                                      deliver_to_agent ()
-                                  | Orchestrator.Conflict_give_up -> `Failed)
-                            | Patch_decision.Deliver
-                                {
-                                  payload =
-                                    ( Patch_decision.Human_payload _
-                                    | Patch_decision.Ci_payload _
-                                    | Patch_decision.Review_payload _
-                                    | Patch_decision.Pr_body_payload ) as
-                                    payload;
-                                  base_change;
-                                } ->
-                                let pr_number = agent.Patch_agent.pr_number in
-                                let base_changed_prefix =
-                                  render_base_changed_prefix base_change
-                                in
-                                log_event runtime ~patch_id
-                                  (match payload with
-                                  | Patch_decision.Review_payload { comments }
-                                    ->
-                                      Printf.sprintf "Delivering %s (%s)"
-                                        (Operation_kind.to_label kind)
-                                        (pluralize
-                                           (Base.List.length comments)
-                                           "comment")
-                                  | Patch_decision.Human_payload { messages } ->
-                                      Printf.sprintf "Delivering %s (%s)"
-                                        (Operation_kind.to_label kind)
-                                        (pluralize
-                                           (Base.List.length messages)
-                                           "message")
-                                  | Patch_decision.Ci_payload _
-                                  | Patch_decision.Pr_body_payload
-                                  | Patch_decision.Merge_conflict_payload ->
-                                      Printf.sprintf "Delivering %s"
-                                        (Operation_kind.to_label kind));
-                                let prompt =
-                                  match payload with
-                                  | Patch_decision.Ci_payload { failed_checks }
-                                    ->
-                                      if Base.List.is_empty failed_checks then
-                                        Prompt.render_ci_failure_unknown_prompt
-                                          ~project_name ?pr_number ()
-                                      else
-                                        Prompt.render_ci_failure_prompt
-                                          ~project_name ?pr_number failed_checks
-                                  | Patch_decision.Review_payload { comments }
-                                    ->
-                                      Prompt.render_review_prompt ~project_name
-                                        ?pr_number comments
-                                  | Patch_decision.Human_payload { messages } ->
-                                      Prompt.render_human_message_prompt
-                                        ~project_name messages
-                                  | Patch_decision.Pr_body_payload ->
-                                      let patch =
-                                        Base.List.find_exn
-                                          gameplan.Gameplan.patches
-                                          ~f:(fun (p : Patch.t) ->
-                                            Patch_id.equal p.Patch.id patch_id)
+                                            effects ) =
+                                        Runtime.update_orchestrator_returning
+                                          runtime (fun orch ->
+                                            let agent_before =
+                                              Orchestrator.agent orch patch_id
+                                            in
+                                            let orch, decision, effects =
+                                              Orchestrator
+                                              .apply_conflict_rebase_result orch
+                                                patch_id rebase_result
+                                                (Types.Branch.of_string base)
+                                            in
+                                            let agent_after =
+                                              Orchestrator.agent orch patch_id
+                                            in
+                                            ( orch,
+                                              ( decision,
+                                                agent_before,
+                                                agent_after,
+                                                effects ) ))
                                       in
-                                      let pr_body =
-                                        Prompt.render_pr_description
-                                          ~project_name patch gameplan
+                                      Event_log.log_conflict_rebase event_log
+                                        ~patch_id ~result:rebase_result
+                                        ~decision ~agent_before ~agent_after;
+                                      let push_outcome =
+                                        Base.List.find_map effects
+                                          ~f:(fun Orchestrator.Push_branch ->
+                                            let branch =
+                                              agent.Patch_agent.branch
+                                            in
+                                            let result =
+                                              Worktree.force_push_with_lease
+                                                ~process_mgr ~path:wt_path
+                                                ~branch
+                                                ~base:
+                                                  (Types.Branch.of_string base)
+                                            in
+                                            (match result with
+                                            | Worktree.Push_ok ->
+                                                log_event runtime ~patch_id
+                                                  "Force-pushed to resolve \
+                                                   conflict"
+                                            | Worktree.Push_up_to_date ->
+                                                log_event runtime ~patch_id
+                                                  "Conflict push noop — \
+                                                   already up-to-date"
+                                            | Worktree.Push_no_commits ->
+                                                log_event runtime ~patch_id
+                                                  "Conflict force-push skipped \
+                                                   — branch has no commits \
+                                                   ahead of base"
+                                            | Worktree.Push_rejected ->
+                                                log_event runtime ~patch_id
+                                                  "Conflict force-push \
+                                                   rejected — lease violated"
+                                            | Worktree.Push_error msg ->
+                                                log_event runtime ~patch_id
+                                                  (Printf.sprintf
+                                                     "Conflict force-push \
+                                                      failed — %s"
+                                                     msg));
+                                            Some result)
                                       in
-                                      let spec_suffix =
-                                        Prompt.render_spec_suffix patch gameplan
+                                      let resolution =
+                                        Runtime.update_orchestrator_returning
+                                          runtime (fun orch ->
+                                            let orch, resolution =
+                                              Orchestrator
+                                              .apply_conflict_push_result orch
+                                                patch_id decision push_outcome
+                                            in
+                                            (orch, resolution))
                                       in
-                                      let artifact_path =
-                                        Project_store.pr_body_artifact_path
-                                          ~project_name ~patch_id
-                                      in
-                                      Project_store.ensure_dir
-                                        (Stdlib.Filename.dirname artifact_path);
-                                      Prompt.render_pr_body_prompt ~project_name
-                                        ~pr_number:
-                                          (Base.Option.value_exn pr_number)
-                                        ~pr_body ~spec_suffix ~artifact_path
-                                  | Patch_decision.Merge_conflict_payload ->
-                                      (* Invariant: Merge_conflict is handled
+                                      match resolution with
+                                      | Orchestrator.Conflict_done -> `Ok
+                                      | Orchestrator.Conflict_retry_push ->
+                                          log_event runtime ~patch_id
+                                            "Re-enqueued conflict resolution \
+                                             after push failure";
+                                          `Retry_push
+                                      | Orchestrator.Conflict_needs_agent ->
+                                          deliver_to_agent ()
+                                      | Orchestrator.Conflict_give_up -> `Failed
+                                    )
+                                | Patch_decision.Deliver
+                                    {
+                                      payload =
+                                        ( Patch_decision.Human_payload _
+                                        | Patch_decision.Ci_payload _
+                                        | Patch_decision.Review_payload _
+                                        | Patch_decision.Pr_body_payload ) as
+                                        payload;
+                                      base_change;
+                                    } ->
+                                    let pr_number =
+                                      agent.Patch_agent.pr_number
+                                    in
+                                    let base_changed_prefix =
+                                      render_base_changed_prefix base_change
+                                    in
+                                    log_event runtime ~patch_id
+                                      (match payload with
+                                      | Patch_decision.Review_payload
+                                          { comments } ->
+                                          Printf.sprintf "Delivering %s (%s)"
+                                            (Operation_kind.to_label kind)
+                                            (pluralize
+                                               (Base.List.length comments)
+                                               "comment")
+                                      | Patch_decision.Human_payload
+                                          { messages } ->
+                                          Printf.sprintf "Delivering %s (%s)"
+                                            (Operation_kind.to_label kind)
+                                            (pluralize
+                                               (Base.List.length messages)
+                                               "message")
+                                      | Patch_decision.Ci_payload _
+                                      | Patch_decision.Pr_body_payload
+                                      | Patch_decision.Merge_conflict_payload ->
+                                          Printf.sprintf "Delivering %s"
+                                            (Operation_kind.to_label kind));
+                                    let prompt =
+                                      match payload with
+                                      | Patch_decision.Ci_payload
+                                          { failed_checks } ->
+                                          if Base.List.is_empty failed_checks
+                                          then
+                                            Prompt
+                                            .render_ci_failure_unknown_prompt
+                                              ~project_name ?pr_number ()
+                                          else
+                                            Prompt.render_ci_failure_prompt
+                                              ~project_name ?pr_number
+                                              failed_checks
+                                      | Patch_decision.Review_payload
+                                          { comments } ->
+                                          Prompt.render_review_prompt
+                                            ~project_name ?pr_number comments
+                                      | Patch_decision.Human_payload
+                                          { messages } ->
+                                          Prompt.render_human_message_prompt
+                                            ~project_name messages
+                                      | Patch_decision.Pr_body_payload ->
+                                          let patch =
+                                            Base.List.find_exn
+                                              gameplan.Gameplan.patches
+                                              ~f:(fun (p : Patch.t) ->
+                                                Patch_id.equal p.Patch.id
+                                                  patch_id)
+                                          in
+                                          let pr_body =
+                                            Prompt.render_pr_description
+                                              ~project_name patch gameplan
+                                          in
+                                          let spec_suffix =
+                                            Prompt.render_spec_suffix patch
+                                              gameplan
+                                          in
+                                          let artifact_path =
+                                            Project_store.pr_body_artifact_path
+                                              ~project_name ~patch_id
+                                          in
+                                          Project_store.ensure_dir
+                                            (Stdlib.Filename.dirname
+                                               artifact_path);
+                                          Prompt.render_pr_body_prompt
+                                            ~project_name
+                                            ~pr_number:
+                                              (Base.Option.value_exn pr_number)
+                                            ~pr_body ~spec_suffix ~artifact_path
+                                      | Patch_decision.Merge_conflict_payload ->
+                                          (* Invariant: Merge_conflict is handled
                                          in the dedicated match arm above *)
-                                      assert false
-                                in
-                                let prompt =
-                                  if String.equal base_changed_prefix "" then
-                                    prompt
-                                  else base_changed_prefix ^ "\n" ^ prompt
-                                in
-                                let on_pr_detected _pr_number = () in
-                                let base =
-                                  Base.Option.value_map
-                                    agent.Patch_agent.base_branch
-                                    ~default:(Branch.to_string main)
-                                    ~f:Branch.to_string
-                                in
-                                let result =
-                                  run_claude_and_handle ~runtime ~process_mgr
-                                    ~fs ~project_name ~patch_id
-                                    ~repo_root:config.repo_root ~prompt ~agent
-                                    ~owner:config.github_owner
-                                    ~repo:config.github_repo ~on_pr_detected
-                                    ~transcripts ~user_config:config.user_config
-                                    ~worktree_mutex ~backend ~event_log
-                                in
-                                (match result with
-                                | `Ok when Base.Option.is_some base_change ->
-                                    Runtime.update_orchestrator runtime
-                                      (fun orch ->
-                                        Orchestrator.set_notified_base_branch
-                                          orch patch_id (Branch.of_string base))
-                                | _ -> ());
-                                (* Artifact-driven phase (Pr_body): read
+                                          assert false
+                                    in
+                                    let prompt =
+                                      if String.equal base_changed_prefix ""
+                                      then prompt
+                                      else base_changed_prefix ^ "\n" ^ prompt
+                                    in
+                                    let on_pr_detected _pr_number = () in
+                                    let base =
+                                      Base.Option.value_map
+                                        agent.Patch_agent.base_branch
+                                        ~default:(Branch.to_string main)
+                                        ~f:Branch.to_string
+                                    in
+                                    let result =
+                                      run_claude_and_handle ~runtime
+                                        ~process_mgr ~fs ~project_name ~patch_id
+                                        ~repo_root:config.repo_root ~prompt
+                                        ~agent ~owner:config.github_owner
+                                        ~repo:config.github_repo ~on_pr_detected
+                                        ~transcripts
+                                        ~user_config:config.user_config
+                                        ~worktree_mutex ~backend ~event_log
+                                    in
+                                    (match result with
+                                    | `Ok when Base.Option.is_some base_change
+                                      ->
+                                        Runtime.update_orchestrator runtime
+                                          (fun orch ->
+                                            Orchestrator
+                                            .set_notified_base_branch orch
+                                              patch_id (Branch.of_string base))
+                                    | _ -> ());
+                                    (* Artifact-driven phase (Pr_body): read
                                    the agent's artifact and PATCH the PR body.
                                    Falls back gracefully if the artifact is
                                    missing — pr_body_delivered flips true via
                                    apply_respond_outcome on Respond_ok
                                    regardless, so we don't loop. *)
-                                let session_ok =
-                                  match result with `Ok -> true | _ -> false
-                                in
-                                (if session_ok then
-                                   match payload with
-                                   | Patch_decision.Pr_body_payload ->
-                                       let pr =
-                                         Base.Option.value_exn pr_number
-                                       in
-                                       let patch =
-                                         Base.List.find_exn
-                                           gameplan.Gameplan.patches
-                                           ~f:(fun (p : Patch.t) ->
-                                             Patch_id.equal p.Patch.id patch_id)
-                                       in
-                                       apply_pr_body_artifact ~runtime ~net
-                                         ~github ~project_name ~patch_id
-                                         ~pr_number:pr ~patch ~gameplan
-                                   | Patch_decision.Human_payload _
-                                   | Patch_decision.Ci_payload _
-                                   | Patch_decision.Review_payload _
-                                   | Patch_decision.Merge_conflict_payload ->
-                                       ());
-                                result)
+                                    let session_ok =
+                                      match result with
+                                      | `Ok -> true
+                                      | _ -> false
+                                    in
+                                    (if session_ok then
+                                       match payload with
+                                       | Patch_decision.Pr_body_payload ->
+                                           let pr =
+                                             Base.Option.value_exn pr_number
+                                           in
+                                           let patch =
+                                             Base.List.find_exn
+                                               gameplan.Gameplan.patches
+                                               ~f:(fun (p : Patch.t) ->
+                                                 Patch_id.equal p.Patch.id
+                                                   patch_id)
+                                           in
+                                           apply_pr_body_artifact ~runtime ~net
+                                             ~github ~project_name ~patch_id
+                                             ~pr_number:pr ~patch ~gameplan
+                                       | Patch_decision.Human_payload _
+                                       | Patch_decision.Ci_payload _
+                                       | Patch_decision.Review_payload _
+                                       | Patch_decision.Merge_conflict_payload
+                                         ->
+                                           ());
+                                    result)
                       in
                       let respond_outcome =
                         match result with

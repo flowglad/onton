@@ -285,7 +285,11 @@ let () =
     Stdlib.print_endline "RD-2a passed"
   in
 
-  (* RD-2b: CI with no failure conclusions → Skip_empty *)
+  (* RD-2b: Ci with no failure conclusions in [agent.ci_checks] → Skip_empty.
+     The runner's freshness gate is the primary defense, but this
+     belt-and-suspenders guard keeps [respond_delivery] correct in
+     isolation so a future caller that forgets the pre-fetch can't emit
+     an empty Ci_payload. *)
   let () =
     let pid = Patch_id.of_string "rd2b" in
     let br = Branch.of_string "b" in
