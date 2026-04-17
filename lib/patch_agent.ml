@@ -37,6 +37,11 @@ type t = {
   worktree_path : string option;
   branch_blocked : bool;
   llm_session_id : string option;
+  automerge_enabled : bool;
+  automerge_deadline : float option;
+      (** Unix timestamp at which the supervisor should merge the PR if the
+          patch is still approved. [None] when automerge is disabled or the
+          patch has not yet been observed in the approved state. *)
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -102,6 +107,8 @@ let create ~branch patch_id =
     worktree_path = None;
     branch_blocked = false;
     llm_session_id = None;
+    automerge_enabled = false;
+    automerge_deadline = None;
   }
 
 let create_adhoc ~patch_id ~branch ~pr_number =
@@ -137,6 +144,8 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     worktree_path = None;
     branch_blocked = false;
     llm_session_id = None;
+    automerge_enabled = false;
+    automerge_deadline = None;
   }
 
 let highest_priority t =
@@ -244,6 +253,17 @@ let set_current_message_id t current_message_id = { t with current_message_id }
 let bump_generation t = { t with generation = t.generation + 1 }
 let set_llm_session_id t llm_session_id = { t with llm_session_id }
 
+let set_automerge_enabled t v =
+  if Bool.equal t.automerge_enabled v then t
+  else
+    let automerge_deadline = if v then t.automerge_deadline else None in
+    { t with automerge_enabled = v; automerge_deadline }
+
+let set_automerge_deadline t deadline =
+  { t with automerge_deadline = Some deadline }
+
+let clear_automerge_deadline t = { t with automerge_deadline = None }
+
 let resume_current_message t ~op =
   { t with busy = true; has_session = true; current_op = op }
 
@@ -265,7 +285,8 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~branch_rebased_onto ~checks_passing ~current_op ~current_message_id
-    ~generation ~worktree_path ~branch_blocked ~llm_session_id =
+    ~generation ~worktree_path ~branch_blocked ~llm_session_id
+    ~automerge_enabled ~automerge_deadline =
   {
     patch_id;
     branch;
@@ -298,6 +319,8 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     worktree_path;
     branch_blocked;
     llm_session_id;
+    automerge_enabled;
+    automerge_deadline;
   }
 
 let set_pr_number t pr_number =

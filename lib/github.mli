@@ -95,5 +95,17 @@ val set_draft :
 (** [set_draft ~net t ~pr_number ~draft] sets draft status via GraphQL mutation.
     REST API does not support changing the draft field. *)
 
+val merge_pr :
+  net:_ Eio.Net.t ->
+  t ->
+  pr_number:Types.Pr_number.t ->
+  merge_method:[ `Merge | `Squash | `Rebase ] ->
+  (unit, error) Result.t
+(** [merge_pr ~net t ~pr_number ~merge_method] merges a PR via
+    [PUT /repos/:owner/:repo/pulls/:number/merge]. Returns [Ok ()] on success
+    (HTTP 2xx). The caller is responsible for ensuring the PR is actually
+    mergeable — the REST API returns 405 "Pull Request is not mergeable"
+    otherwise. *)
+
 val owner : t -> string
 (** [owner t] returns the repository owner. *)

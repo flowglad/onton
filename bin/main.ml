@@ -281,6 +281,41 @@ let log_event runtime ?patch_id msg =
         (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
            msg))
 
+(** Reconcile per-patch automerge deadlines. For each deadline that has elapsed,
+    merge the PR on GitHub and mark the patch merged on success. On failure the
+    deadline is left in place; the next tick will either re-fire (if still a
+    candidate) or clear it (if feedback arrived). *)
+let reconcile_and_execute_automerge ~runtime ~net ~github =
+  let now = Unix.gettimeofday () in
+  let decisions =
+    Runtime.update_orchestrator_returning runtime (fun orch ->
+        Patch_controller.reconcile_automerge orch ~now)
+  in
+  Base.List.iter decisions
+    ~f:(fun
+        Patch_controller.
+          { merge_patch_id = patch_id; merge_pr_number = pr_number }
+      ->
+      let label =
+        Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
+      in
+      try
+        match Github.merge_pr ~net github ~pr_number ~merge_method:`Squash with
+        | Ok () ->
+            Runtime.update_orchestrator runtime (fun orch ->
+                Patch_controller.apply_automerge_success orch patch_id);
+            log_event runtime ~patch_id
+              (Printf.sprintf "Automerge complete — PR #%d merged"
+                 (Pr_number.to_int pr_number))
+        | Error err ->
+            log_event runtime ~patch_id
+              (Printf.sprintf "Automerge failed — %s" (Github.show_error err))
+      with
+      | Eio.Cancel.Cancelled _ as exn -> raise exn
+      | exn ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "%s crashed — %s" label (Printexc.to_string exn)))
+
 (** Read an artifact file. Returns [Some contents] if the file exists and is
     readable, [None] otherwise. *)
 let read_artifact_file path =
@@ -1058,6 +1093,27 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                     Runtime.update_orchestrator runtime (fun orch ->
                         Orchestrator.mark_merged orch patch_id);
                     log_event runtime ~patch_id "Force-marked as merged")
+              | Tui.List_view | Tui.Timeline_view -> ())
+          | Term.Key.Char 'a' -> (
+              input_mode := Tui_input.Normal;
+              match !view_mode with
+              | Tui.Detail_view patch_id -> (
+                  let enabled_after =
+                    Runtime.update_orchestrator_returning runtime (fun orch ->
+                        match Orchestrator.find_agent orch patch_id with
+                        | None -> (orch, None)
+                        | Some agent ->
+                            let v = not agent.Patch_agent.automerge_enabled in
+                            let orch =
+                              Orchestrator.set_automerge_enabled orch patch_id v
+                            in
+                            (orch, Some v))
+                  in
+                  match enabled_after with
+                  | Some true -> log_event runtime ~patch_id "Automerge enabled"
+                  | Some false ->
+                      log_event runtime ~patch_id "Automerge disabled"
+                  | None -> ())
               | Tui.List_view | Tui.Timeline_view -> ())
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
           | Term.Key.Backspace | Term.Key.Up | Term.Key.Down | Term.Key.Left
@@ -2127,6 +2183,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
           (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
     execute_github_effects ~runtime ~net ~github lifecycle_effects;
+    reconcile_and_execute_automerge ~runtime ~net ~github;
     (* Log dispatched actions to event log *)
     Base.List.iter messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         let action = Orchestrator.message_action msg in

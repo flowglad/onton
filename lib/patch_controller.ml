@@ -448,6 +448,67 @@ let apply_github_effect_success t = function
   | Set_pr_base { patch_id; base; _ } ->
       Orchestrator.set_base_branch t patch_id base
 
+let automerge_idle_timeout = 300.0
+
+(** Pure predicate: a patch is a candidate for automerge merging when it is
+    approved AND has no queued work. New feedback (Review_comments, Human, Ci,
+    Merge_conflict, Pr_body) enqueues an operation, which fails this check and
+    so resets the deadline. *)
+let is_automerge_candidate (agent : Patch_agent.t) ~main_branch =
+  Patch_agent.is_approved agent ~main_branch && List.is_empty agent.queue
+
+type automerge_decision = {
+  merge_patch_id : Patch_id.t;
+  merge_pr_number : Pr_number.t;
+}
+[@@deriving show, eq, sexp_of]
+
+(** Reconcile the automerge deadline for every agent. Returns the updated
+    orchestrator and the list of patches whose deadline has now elapsed (the
+    caller is responsible for invoking the GitHub merge API for each).
+
+    For each agent with [automerge_enabled = true]:
+    - If the patch is a candidate and has no deadline, set one at
+      [now +. automerge_idle_timeout].
+    - If the patch is not a candidate and has a deadline, clear it — any
+      feedback resets the timer, so enabling again must wait out a fresh
+      5-minute window.
+    - If the patch is a candidate and the deadline has elapsed, include it in
+      the returned decision list. The deadline is left in place; clearing it is
+      the caller's responsibility after the merge side-effect completes (either
+      via [apply_automerge_success] on success or by re-reconciling on failure).
+*)
+let reconcile_automerge t ~now =
+  let agents = Orchestrator.all_agents t in
+  let main_branch = Orchestrator.main_branch t in
+  List.fold agents ~init:(t, []) ~f:(fun (t, decisions) agent ->
+      if agent.Patch_agent.merged || not agent.Patch_agent.automerge_enabled
+      then (t, decisions)
+      else
+        let candidate = is_automerge_candidate agent ~main_branch in
+        let patch_id = agent.Patch_agent.patch_id in
+        match (candidate, agent.Patch_agent.automerge_deadline) with
+        | false, Some _ ->
+            (Orchestrator.clear_automerge_deadline t patch_id, decisions)
+        | false, None -> (t, decisions)
+        | true, None ->
+            let deadline = now +. automerge_idle_timeout in
+            (Orchestrator.set_automerge_deadline t patch_id deadline, decisions)
+        | true, Some deadline ->
+            if Float.( >= ) now deadline then
+              match agent.Patch_agent.pr_number with
+              | Some pr_number ->
+                  ( t,
+                    { merge_patch_id = patch_id; merge_pr_number = pr_number }
+                    :: decisions )
+              | None -> (t, decisions)
+            else (t, decisions))
+  |> fun (t, decisions) -> (t, List.rev decisions)
+
+let apply_automerge_success t patch_id =
+  let t = Orchestrator.mark_merged t patch_id in
+  Orchestrator.clear_automerge_deadline t patch_id
+
 let make_orchestrator ~patch_id ~main_branch =
   let patch =
     {

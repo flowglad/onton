@@ -361,6 +361,7 @@ let meth_to_string = function
   | `GET -> "GET"
   | `POST -> "POST"
   | `PATCH -> "PATCH"
+  | `PUT -> "PUT"
 
 let request ~net t ~meth ~path ?(query = []) ?body () =
   let meth_s = meth_to_string meth in
@@ -401,6 +402,11 @@ let request ~net t ~meth ~path ?(query = []) ?body () =
                 Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
               in
               Cohttp_eio.Client.patch client ~sw ~headers ~body uri
+          | `PUT ->
+              let body =
+                Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
+              in
+              Cohttp_eio.Client.put client ~sw ~headers ~body uri
         in
         let status = Http.Response.status resp |> Http.Status.to_int in
         let resp_str =
@@ -580,6 +586,26 @@ let set_draft ~net t ~pr_number ~draft =
           | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
           )
       | Error _ as e -> e)
+
+(** Merge a pull request via the REST API. Maps to
+    [PUT /repos/:owner/:repo/pulls/:number/merge]. *)
+let merge_pr ~net t ~pr_number ~merge_method =
+  let path =
+    Printf.sprintf "/repos/%s/%s/pulls/%d/merge" t.owner t.repo
+      (Types.Pr_number.to_int pr_number)
+  in
+  let method_str =
+    match merge_method with
+    | `Merge -> "merge"
+    | `Squash -> "squash"
+    | `Rebase -> "rebase"
+  in
+  let req_body =
+    `Assoc [ ("merge_method", `String method_str) ] |> Yojson.Safe.to_string
+  in
+  match request ~net t ~meth:`PUT ~path ~body:req_body () with
+  | Ok _ -> Ok ()
+  | Error _ as e -> e
 
 let owner t = t.owner
 

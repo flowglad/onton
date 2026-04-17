@@ -105,3 +105,30 @@ val tick :
 val apply_github_effect_success :
   Orchestrator.t -> github_effect -> Orchestrator.t
 (** Apply the durable state changes that follow a successful GitHub effect. *)
+
+val automerge_idle_timeout : float
+(** Seconds of idle time after approval before automerge fires. *)
+
+type automerge_decision = {
+  merge_patch_id : Patch_id.t;
+  merge_pr_number : Pr_number.t;
+}
+[@@deriving show, eq, sexp_of]
+
+val is_automerge_candidate : Patch_agent.t -> main_branch:Branch.t -> bool
+(** A patch is a candidate for automerge when it is approved AND has no queued
+    work. Any queued feedback (Review_comments, Human, Ci, Merge_conflict,
+    Pr_body) resets the deadline. *)
+
+val reconcile_automerge :
+  Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
+(** Reconcile the automerge deadline for every agent and return decisions to
+    merge. For each agent with [automerge_enabled = true]:
+    - candidate + no deadline → set deadline at [now +. automerge_idle_timeout]
+    - not candidate + deadline → clear deadline (feedback arrived)
+    - candidate + deadline elapsed → include in decisions list. Deadline stays
+      in place; the caller clears it via [apply_automerge_success] on success,
+      or re-reconciles next tick on failure. *)
+
+val apply_automerge_success : Orchestrator.t -> Patch_id.t -> Orchestrator.t
+(** Mark the patch as merged and clear its automerge deadline. *)

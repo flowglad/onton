@@ -93,6 +93,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("branch_blocked", `Bool a.branch_blocked);
       ( "llm_session_id",
         match a.llm_session_id with None -> `Null | Some s -> `String s );
+      ("automerge_enabled", `Bool a.automerge_enabled);
+      ( "automerge_deadline",
+        match a.automerge_deadline with None -> `Null | Some f -> `Float f );
     ]
 
 let patch_agent_of_yojson ~gameplan json =
@@ -215,7 +218,17 @@ let patch_agent_of_yojson ~gameplan json =
        ~generation:(int_member "generation" json)
        ~worktree_path:(string_member_opt "worktree_path" json)
        ~branch_blocked:(bool_member "branch_blocked" json)
-       ~llm_session_id:(string_member_opt "llm_session_id" json))
+       ~llm_session_id:(string_member_opt "llm_session_id" json)
+       ~automerge_enabled:
+         (Option.value
+            (bool_member_opt "automerge_enabled" json)
+            ~default:false)
+       ~automerge_deadline:
+         (match Yojson.Safe.Util.member "automerge_deadline" json with
+         | `Null -> None
+         | `Float f -> Some f
+         | `Int i -> Some (Float.of_int i)
+         | _ -> None))
 
 (* ---------- Activity_log ---------- *)
 

@@ -100,6 +100,9 @@ val clear_branch_blocked : t -> Patch_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
 val set_worktree_path : t -> Patch_id.t -> string -> t
 val set_llm_session_id : t -> Patch_id.t -> string option -> t
+val set_automerge_enabled : t -> Patch_id.t -> bool -> t
+val set_automerge_deadline : t -> Patch_id.t -> float -> t
+val clear_automerge_deadline : t -> Patch_id.t -> t
 
 (** {2 Queries} *)
 

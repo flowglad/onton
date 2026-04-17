@@ -41,6 +41,8 @@ type t = private {
   worktree_path : string option;
   branch_blocked : bool;
   llm_session_id : string option;
+  automerge_enabled : bool;
+  automerge_deadline : float option;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -247,6 +249,17 @@ val set_llm_session_id : t -> string option -> t
     after intervention. Cleared on start-path fresh-failure reset (clean retry)
     and when the session is known dead (no-resume, give-up). *)
 
+val set_automerge_enabled : t -> bool -> t
+(** Enable or disable automerge for this patch. Disabling clears any pending
+    deadline so the next enable starts a fresh timer. *)
+
+val set_automerge_deadline : t -> float -> t
+(** Record the Unix timestamp at which the supervisor should merge this patch if
+    it is still approved. *)
+
+val clear_automerge_deadline : t -> t
+(** Clear a pending automerge deadline without disabling automerge. *)
+
 val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its
     queue-consuming state transition. [~op] restores [current_op] from the
@@ -299,6 +312,8 @@ val restore :
   worktree_path:string option ->
   branch_blocked:bool ->
   llm_session_id:string option ->
+  automerge_enabled:bool ->
+  automerge_deadline:float option ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

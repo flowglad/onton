@@ -503,6 +503,8 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  automerge_enabled : bool;
+  automerge_deadline : float option;
 }
 [@@warning "-69"]
 
@@ -599,6 +601,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
     intervention_reason = None;
+    automerge_enabled = agent.automerge_enabled;
+    automerge_deadline = agent.automerge_deadline;
   }
 
 (** {1 Render helpers} *)
@@ -1151,16 +1155,21 @@ let render_help_overlay ~width ~height =
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
 
-let render_manage_overlay ~width ~height =
+let render_manage_overlay ~width ~height ~automerge_enabled =
   let dismiss = Term.styled [ Term.Sgr.dim ] "(esc to cancel)" in
   let title =
     Term.styled
       [ Term.Sgr.bold; Term.Sgr.fg_yellow ]
       (Printf.sprintf " Manage Patch  %s" dismiss)
   in
+  let automerge_label =
+    Printf.sprintf "    a   %s automerge (5-minute idle timer after approval)"
+      (if automerge_enabled then "Disable" else "Enable")
+  in
   let items =
     [
       Term.styled [ Term.Sgr.dim ] "    m   Force mark as merged (break glass)";
+      Term.styled [ Term.Sgr.dim ] automerge_label;
     ]
   in
   let content = title :: "" :: items in
@@ -1247,7 +1256,14 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     let overlay = render_help_overlay ~width ~height in
     { no_patches with lines = overlay }
   else if show_manage then
-    let overlay = render_manage_overlay ~width ~height in
+    let automerge_enabled =
+      match view_mode with
+      | Detail_view patch_id ->
+          List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
+          |> Option.value_map ~default:false ~f:(fun pv -> pv.automerge_enabled)
+      | List_view | Timeline_view -> false
+    in
+    let overlay = render_manage_overlay ~width ~height ~automerge_enabled in
     { no_patches with lines = overlay; detail_scroll_offset = scroll_offset }
   else
     let header = render_header ~project_name ~width in
