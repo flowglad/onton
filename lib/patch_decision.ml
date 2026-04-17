@@ -124,12 +124,15 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
       match kind with
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
       | Operation_kind.Human -> List.is_empty source.human_messages
-      | Operation_kind.Ci | Operation_kind.Merge_conflict
-      | Operation_kind.Pr_body | Operation_kind.Rebase ->
-          (* Ci freshness is the caller's responsibility: it re-polls GitHub
-             and skips delivery before calling us when the failure is already
-             resolved. Here we just read [agent.ci_checks] — which the caller
-             updates with the fresh result — and build the payload. *)
+      | Operation_kind.Ci ->
+          (* Freshness is the caller's responsibility: it re-polls GitHub
+             and skips delivery before calling us when the failure is
+             already resolved. This is a belt-and-suspenders guard so the
+             pure function never emits an empty [Ci_payload] in isolation
+             (e.g. if a future caller forgets the freshness hop). *)
+          not (List.exists agent.ci_checks ~f:Ci_check.is_failure)
+      | Operation_kind.Merge_conflict | Operation_kind.Pr_body
+      | Operation_kind.Rebase ->
           false
     in
     if is_empty then Skip_empty

@@ -2697,9 +2697,9 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                   (* Ci freshness gate: if we couldn't fetch, or the fetched
                      state shows no current failures, skip the delivery —
                      don't wake the agent for a failure that's already been
-                     superseded. When we do proceed, write the fresh list
-                     into orchestrator state so [respond_delivery] reads
-                     current [agent.ci_checks]. *)
+                     superseded. The [set_ci_checks] write is deferred to
+                     inside [with_busy_guard] so it can't corrupt state on a
+                     stale/cancelled delivery nor race with the poller. *)
                   let ci_skip_reason =
                     if is_ci then
                       match fresh_pr_state with
@@ -2710,11 +2710,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                           if
                             Base.List.exists pr_state.Pr_state.ci_checks
                               ~f:Ci_check.is_failure
-                          then (
-                            Runtime.update_orchestrator runtime (fun orch ->
-                                Orchestrator.set_ci_checks orch patch_id
-                                  pr_state.Pr_state.ci_checks);
-                            None)
+                          then None
                           else (
                             log_event runtime ~patch_id
                               "Fresh CI state shows no failures — skipping CI \
@@ -2725,6 +2721,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                   with_busy_guard ~patch_id (fun () ->
                       let result =
                         with_claude_slot (fun () ->
+                            (* Write fresh ci_checks under the busy guard so
+                               the write can't race with the poller or land
+                               after a concurrent complete/merge. Must happen
+                               before the agent re-read so [agent.ci_checks]
+                               reflects the fresh list. *)
+                            (match (is_ci, ci_skip_reason, fresh_pr_state) with
+                            | true, None, Some pr_state ->
+                                Runtime.update_orchestrator runtime (fun orch ->
+                                    Orchestrator.set_ci_checks orch patch_id
+                                      pr_state.Pr_state.ci_checks)
+                            | _ -> ());
                             let agent =
                               Runtime.read runtime (fun snap ->
                                   Orchestrator.agent snap.Runtime.orchestrator
@@ -2759,10 +2766,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                    semaphore wait";
                                 `Stale
                             | Patch_decision.Skip_empty ->
-                                log_event runtime ~patch_id
-                                  (Printf.sprintf
-                                     "Skipped %s — nothing to deliver"
-                                     (Operation_kind.to_label kind));
+                                (match ci_skip_reason with
+                                | Some reason when is_ci ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf "Skipped ci delivery — %s"
+                                         reason)
+                                | _ ->
+                                    log_event runtime ~patch_id
+                                      (Printf.sprintf
+                                         "Skipped %s — nothing to deliver"
+                                         (Operation_kind.to_label kind)));
                                 `Skip_empty
                             | Patch_decision.Deliver
                                 {
