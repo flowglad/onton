@@ -688,7 +688,7 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
     for follow-on effects like [Worktree.force_push_with_lease]. *)
 let execute_worktree_plan ~runtime ~process_mgr ~fs ~repo_root ~project_name
     ~patch_id ~(agent : Patch_agent.t) ~user_config ~worktree_mutex ~fetch_lock
-    ~fail_label (plan : Worktree_plan.t) =
+    ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
   let default_path = Worktree.worktree_dir ~project_name ~patch_id in
   let rec loop ~path = function
     | [] -> (Worktree.Ok, path)
@@ -716,7 +716,10 @@ let execute_worktree_plan ~runtime ~process_mgr ~fs ~repo_root ~project_name
                 (Printf.sprintf "fetch before rebase failed: %s" msg),
               path ))
     | Worktree_plan.Rebase_onto target :: rest -> (
-        match Worktree.rebase_onto ~process_mgr ~path ~target with
+        match
+          Worktree.rebase_onto ~process_mgr ~path ~target ~project_name
+            ~ancestor_ids
+        with
         | Worktree.Ok -> loop ~path rest
         | (Worktree.Noop | Worktree.Conflict | Worktree.Error _) as r ->
             (r, path))
@@ -2564,11 +2567,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             Orchestrator.agent snap.Runtime.orchestrator
                               patch_id)
                       in
+                      let ancestor_ids =
+                        Runtime.read runtime (fun snap ->
+                            Graph.transitive_ancestors
+                              (Orchestrator.graph snap.Runtime.orchestrator)
+                              patch_id)
+                      in
                       let rebase_result, wt_path =
                         execute_worktree_plan ~runtime ~process_mgr ~fs
                           ~repo_root:config.repo_root ~project_name ~patch_id
                           ~agent ~user_config:config.user_config ~worktree_mutex
                           ~fetch_lock:fetch_mutex ~fail_label:"rebase"
+                          ~ancestor_ids
                           (Worktree_plan.for_rebase ~new_base)
                       in
                       (match rebase_result with
@@ -2892,6 +2902,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
+                                      let ancestor_ids =
+                                        Runtime.read runtime (fun snap ->
+                                            Graph.transitive_ancestors
+                                              (Orchestrator.graph
+                                                 snap.Runtime.orchestrator)
+                                              patch_id)
+                                      in
                                       let rebase_result, _wt_path =
                                         execute_worktree_plan ~runtime
                                           ~process_mgr ~fs
@@ -2901,6 +2918,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           ~worktree_mutex
                                           ~fetch_lock:fetch_mutex
                                           ~fail_label:"merge-conflict rebase"
+                                          ~ancestor_ids
                                           (Worktree_plan.for_merge_conflict
                                              ~base:(Types.Branch.of_string base))
                                       in

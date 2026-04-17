@@ -355,40 +355,104 @@ let run_git_exit_code ~process_mgr args =
   in
   (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
 
-(** Pure: extract the oldest unique commit SHA from [rev-list --cherry-pick]
-    output. Returns [Error] when the output is empty (all commits already in
-    target). The output is newest-first, so the last line is the oldest. *)
-let oldest_unique_commit rev_list_output =
-  let trimmed = String.strip rev_list_output in
-  if String.is_empty trimmed then Result.Error "no unique commits found"
+(** Pure: does [subject] match the conventional "[<project>] Patch <N>:"
+    commit-subject format for some [N] in [ancestor_ids]? The patch-id segment
+    is terminated by the first character that satisfies [Char.is_whitespace] or
+    equals [':'] (or end of string), so any [Patch_id.to_string] value that
+    doesn't itself contain such a character round-trips correctly. Empty
+    [project_name] or [ancestor_ids] always returns false: callers must supply
+    the real project name for this match to be meaningful. *)
+let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
+  if String.is_empty project_name || List.is_empty ancestor_ids then false
   else
-    let lines = String.split_lines trimmed in
-    Result.Ok (List.last_exn lines)
+    let prefix = Printf.sprintf "[%s] Patch " project_name in
+    match String.chop_prefix subject ~prefix with
+    | None -> false
+    | Some rest ->
+        let id_end =
+          String.lfindi rest ~f:(fun _ c ->
+              Char.is_whitespace c || Char.equal c ':')
+        in
+        let id_str =
+          match id_end with
+          | None -> rest
+          | Some i -> String.sub rest ~pos:0 ~len:i
+        in
+        (not (String.is_empty id_str))
+        && List.mem ancestor_ids
+             (Types.Patch_id.of_string id_str)
+             ~equal:Types.Patch_id.equal
+
+(** Pure: parse [git log --format=%H %s] output into (sha, subject) pairs, then
+    drop those whose subject matches an ancestor patch. Returns the oldest
+    remaining SHA, or [Error] when the filtered list is empty. Split out so the
+    subject-pattern fallback to [--cherry-pick] can be property-tested. Does not
+    [String.strip] the input: a commit with an empty subject still emits "<sha>
+    " (trailing space) from [%H %s], so stripping would erase the separator and
+    cause the SHA to be dropped. Blank lines (all whitespace) are ignored
+    explicitly. *)
+let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
+  let lines = String.split_lines log_output in
+  let kept =
+    List.filter_map lines ~f:(fun line ->
+        (* [rstrip ~drop:\r] removes only trailing [\r] (CRLF); the full
+           [String.strip] gate below handles lines that are only spaces (e.g.
+           blank separator lines that some git configs emit). Both are needed:
+           a bare "\r" becomes "" after rstrip and is skipped; "  \r" becomes
+           "  " and is skipped by the strip gate; "<sha> " (empty subject)
+           survives rstrip and the gate because the trailing space is a
+           content-bearing separator. *)
+        let line = String.rstrip line ~drop:(Char.equal '\r') in
+        if String.is_empty (String.strip line) then None
+        else
+          match String.lsplit2 line ~on:' ' with
+          | None -> None
+          | Some ("", _) ->
+              (* Leading space: no sha at start of line. Cannot arise from
+                 [git log --format=%H %s] but guard in case of wrapper
+                 indentation so we don't pass [""] to [git rev-parse]. *)
+              None
+          | Some (sha, subject) ->
+              if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
+              then None
+              else Some sha)
+  in
+  match List.last kept with
+  | Some sha -> Result.Ok sha
+  | None -> Result.Error "no unique commits found"
 
 (** Find the old base commit for [--onto] rebase by identifying which commits on
-    our branch are unique (not in target by patch-id). Returns the parent of the
-    oldest unique commit — i.e., the last dependency commit in our branch's
-    history. *)
-let find_old_base ~process_mgr ~path ~target =
+    our branch are unique (not in target). Uses patch-id matching via
+    [git log --cherry-pick], and additionally strips commits whose subject
+    matches [[<project>] Patch N:] for any transitive ancestor N. The subject
+    fallback handles squash-merged ancestors whose patch-ids no longer match
+    (squash collapses multiple commits into one with a fresh patch-id). Returns
+    the parent of the oldest commit that survives both filters. *)
+let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
   let code, stdout, stderr =
     run_git_exit_code ~process_mgr
       [
         "git";
         "-C";
         path;
-        "rev-list";
+        "log";
         "--cherry-pick";
         "--right-only";
         "--no-merges";
+        (* Defeat log.showSignature=true in the user's gitconfig — otherwise
+           [gpg: Signature made ...] lines would appear in the output and be
+           misinterpreted by [oldest_non_ancestor_commit] as SHAs. *)
+        "--no-show-signature";
+        "--format=%H %s";
         Printf.sprintf "%s...HEAD" target;
       ]
   in
   if code <> 0 then
     Result.Error
-      (Printf.sprintf "rev-list cherry-pick failed (exit %d): %s" code
+      (Printf.sprintf "log cherry-pick failed (exit %d): %s" code
          (String.strip stderr))
   else
-    match oldest_unique_commit stdout with
+    match oldest_non_ancestor_commit ~project_name ~ancestor_ids stdout with
     | Result.Error _ as e -> e
     | Result.Ok oldest_sha ->
         let code, stdout, stderr =
@@ -448,7 +512,7 @@ let conflict_diff ~process_mgr ~path =
     (* Truncate to avoid blowing up the prompt *)
     if String.length s > 4000 then String.prefix s 4000 ^ "\n[truncated]" else s
 
-let rebase_onto ~process_mgr ~path ~target =
+let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
   let target = Types.Branch.to_string target in
   let ancestor_code, _, ancestor_stderr =
     run_git_exit_code ~process_mgr
@@ -462,7 +526,9 @@ let rebase_onto ~process_mgr ~path ~target =
          ancestor_code
          (String.strip ancestor_stderr))
   else
-    match find_old_base ~process_mgr ~path ~target with
+    match
+      find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
+    with
     | Result.Error msg ->
         (* If we can't find unique commits, fall back to plain rebase *)
         let rebase_code, _, rebase_stderr =

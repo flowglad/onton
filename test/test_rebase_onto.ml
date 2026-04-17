@@ -2,44 +2,62 @@ open Base
 open Onton
 
 (* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.oldest_unique_commit]
+   Pure tests for [Worktree.oldest_non_ancestor_commit] with no ancestors
+   (subsumes the behaviour of the former [oldest_unique_commit]).
    ─────────────────────────────────────────────────────────────────────── *)
 
 let () =
   let open QCheck2 in
+  let oldest =
+    Worktree.oldest_non_ancestor_commit ~project_name:"" ~ancestor_ids:[]
+  in
   let prop_empty =
-    Test.make ~name:"oldest_unique_commit: empty -> Error" ~count:1 Gen.unit
-      (fun () ->
-        match Worktree.oldest_unique_commit "" with
-        | Result.Error _ -> true
-        | Result.Ok _ -> false)
+    Test.make ~name:"oldest_non_ancestor_commit: empty -> Error" ~count:1
+      Gen.unit (fun () ->
+        match oldest "" with Result.Error _ -> true | Result.Ok _ -> false)
   in
   let prop_whitespace_only =
-    Test.make ~name:"oldest_unique_commit: whitespace-only -> Error" ~count:1
-      Gen.unit (fun () ->
-        match Worktree.oldest_unique_commit "  \n  \n" with
+    Test.make ~name:"oldest_non_ancestor_commit: whitespace-only -> Error"
+      ~count:1 Gen.unit (fun () ->
+        match oldest "  \n  \n" with
         | Result.Error _ -> true
         | Result.Ok _ -> false)
   in
   let prop_single_sha =
-    Test.make ~name:"oldest_unique_commit: single SHA -> that SHA" ~count:1
-      Gen.unit (fun () ->
-        match Worktree.oldest_unique_commit "abc123\n" with
+    Test.make ~name:"oldest_non_ancestor_commit: single line -> that SHA"
+      ~count:1 Gen.unit (fun () ->
+        match oldest "abc123 subj\n" with
         | Result.Ok sha -> String.equal sha "abc123"
         | Result.Error _ -> false)
   in
   let prop_multiple_shas =
-    Test.make ~name:"oldest_unique_commit: multiple -> last line (oldest)"
+    Test.make ~name:"oldest_non_ancestor_commit: multiple -> last line (oldest)"
       ~count:1 Gen.unit (fun () ->
-        let output = "newest111\nmiddle222\noldest333\n" in
-        match Worktree.oldest_unique_commit output with
+        let output = "newest111 a\nmiddle222 b\noldest333 c\n" in
+        match oldest output with
         | Result.Ok sha -> String.equal sha "oldest333"
         | Result.Error _ -> false)
   in
   let prop_trailing_whitespace =
-    Test.make ~name:"oldest_unique_commit: trailing whitespace stripped"
+    (* Trailing spaces on the subject side don't bleed into the SHA —
+       [lsplit2 ~on:' '] splits at the first space, so the SHA is always
+       the leading non-space run regardless of what follows the first
+       separator. The second all-whitespace line must also be skipped. *)
+    Test.make
+      ~name:
+        "oldest_non_ancestor_commit: trailing whitespace on subject doesn't \
+         corrupt SHA" ~count:1 Gen.unit (fun () ->
+        match oldest "abc123 subj  \n  " with
+        | Result.Ok sha -> String.equal sha "abc123"
+        | Result.Error _ -> false)
+  in
+  let prop_single_line_empty_subject =
+    (* %H %s for an empty-subject commit emits "<sha> " — lsplit2 must
+       still parse sha and subject separately (the trailing space is a
+       content-bearing separator, not stripable whitespace). *)
+    Test.make ~name:"oldest_non_ancestor_commit: single empty-subject line kept"
       ~count:1 Gen.unit (fun () ->
-        match Worktree.oldest_unique_commit "abc123  \n  " with
+        match oldest "abc123 \n" with
         | Result.Ok sha -> String.equal sha "abc123"
         | Result.Error _ -> false)
   in
@@ -48,12 +66,16 @@ let () =
     Gen.string_size ~gen:(Gen.char_range 'a' 'f') (Gen.int_range 6 40)
   in
   let prop_always_last =
-    Test.make ~name:"oldest_unique_commit: always returns last line" ~count:200
+    Test.make ~name:"oldest_non_ancestor_commit: always returns last line"
+      ~count:200
       Gen.(list_size (int_range 1 20) sha_gen)
       (fun shas ->
         try
-          let output = String.concat ~sep:"\n" shas ^ "\n" in
-          match Worktree.oldest_unique_commit output with
+          let output =
+            String.concat ~sep:"\n" (List.map shas ~f:(fun s -> s ^ " subj"))
+            ^ "\n"
+          in
+          match oldest output with
           | Result.Ok sha -> String.equal sha (List.last_exn shas)
           | Result.Error _ -> false
         with _ -> false)
@@ -65,7 +87,145 @@ let () =
       prop_single_sha;
       prop_multiple_shas;
       prop_trailing_whitespace;
+      prop_single_line_empty_subject;
       prop_always_last;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.is_ancestor_patch_subject] and
+   [Worktree.oldest_non_ancestor_commit]
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let pid = Types.Patch_id.of_string in
+  let ancestor_ids = [ pid "1"; pid "2"; pid "6" ] in
+  let matches s =
+    Worktree.is_ancestor_patch_subject ~project_name:"proj" ~ancestor_ids s
+  in
+  let prop_matches_bare =
+    Test.make ~name:"is_ancestor_patch_subject: matches '[proj] Patch 1: title'"
+      ~count:1 Gen.unit (fun () -> matches "[proj] Patch 1: add foo")
+  in
+  let prop_matches_squash =
+    Test.make
+      ~name:
+        "is_ancestor_patch_subject: matches squash suffix '[proj] Patch 2: … \
+         (#42)'" ~count:1 Gen.unit (fun () ->
+        matches "[proj] Patch 2: bar (#42)")
+  in
+  let prop_current_not_matched =
+    Test.make
+      ~name:"is_ancestor_patch_subject: current patch id not in ancestors"
+      ~count:1 Gen.unit (fun () -> not (matches "[proj] Patch 7: impl"))
+  in
+  let prop_wrong_project =
+    Test.make
+      ~name:"is_ancestor_patch_subject: wrong project tag does not match"
+      ~count:1 Gen.unit (fun () -> not (matches "[other] Patch 1: add foo"))
+  in
+  let prop_non_convention =
+    Test.make ~name:"is_ancestor_patch_subject: agent's ad-hoc subject is safe"
+      ~count:1 Gen.unit (fun () -> not (matches "docs: fix typo"))
+  in
+  let prop_missing_colon =
+    Test.make ~name:"is_ancestor_patch_subject: missing colon still parses id"
+      ~count:1 Gen.unit (fun () -> matches "[proj] Patch 6 (HEAD -> main)")
+  in
+  let oldest =
+    Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids
+  in
+  let prop_filter_drops_ancestors =
+    Test.make ~name:"oldest_non_ancestor_commit: drops ancestor-subject commits"
+      ~count:1 Gen.unit (fun () ->
+        let input =
+          "feat01 [proj] Patch 7: the real work\n\
+           anc002 [proj] Patch 2: drop duplicate migration\n\
+           anc001 [proj] Patch 1: add schema\n"
+        in
+        match oldest input with
+        | Result.Ok sha -> String.equal sha "feat01"
+        | Result.Error _ -> false)
+  in
+  let prop_filter_empty_when_all_ancestors =
+    Test.make
+      ~name:"oldest_non_ancestor_commit: Error when every commit is ancestor"
+      ~count:1 Gen.unit (fun () ->
+        let input =
+          "anc002 [proj] Patch 2: bar\nanc001 [proj] Patch 1: foo\n"
+        in
+        match oldest input with Result.Error _ -> true | Result.Ok _ -> false)
+  in
+  let prop_filter_passthrough_no_ancestors =
+    Test.make
+      ~name:"oldest_non_ancestor_commit: empty ancestor list -> oldest as-is"
+      ~count:1 Gen.unit (fun () ->
+        let no_filter =
+          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
+            ~ancestor_ids:[]
+        in
+        let input = "newer111 subj A\nolder222 subj B\n" in
+        match no_filter input with
+        | Result.Ok sha -> String.equal sha "older222"
+        | Result.Error _ -> false)
+  in
+  let prop_empty_subject_preserved =
+    (* Regression: %H %s for an empty-subject commit emits "<sha> ", and the
+       oldest line may have no content after the space. Stripping the full
+       input would erase that separator and drop the SHA. *)
+    Test.make
+      ~name:"oldest_non_ancestor_commit: oldest with empty subject is kept"
+      ~count:1 Gen.unit (fun () ->
+        let no_filter =
+          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
+            ~ancestor_ids:[]
+        in
+        match no_filter "newer111 subj A\nolder222 \n" with
+        | Result.Ok sha -> String.equal sha "older222"
+        | Result.Error _ -> false)
+  in
+  let prop_empty_project_never_matches =
+    (* Regression: empty project_name would otherwise produce the prefix
+       "[] Patch " and match any subject that starts that way. *)
+    Test.make
+      ~name:"is_ancestor_patch_subject: empty project_name never matches"
+      ~count:1 Gen.unit (fun () ->
+        not
+          (Worktree.is_ancestor_patch_subject ~project_name:""
+             ~ancestor_ids:[ pid "1" ]
+             "[] Patch 1: boom"))
+  in
+  let prop_crlf_line_endings =
+    (* Regression: CRLF (core.autocrlf=true on Windows) leaves a trailing
+       \r on each split line. The sha must not carry the \r, or the
+       downstream rev-parse would fail. *)
+    Test.make ~name:"oldest_non_ancestor_commit: CRLF trailing \\r stripped"
+      ~count:1 Gen.unit (fun () ->
+        let no_filter =
+          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
+            ~ancestor_ids:[]
+        in
+        match no_filter "newer111 subj A\r\nolder222 subj B\r\n" with
+        | Result.Ok sha -> String.equal sha "older222"
+        | Result.Error _ -> false)
+  in
+  let suite =
+    [
+      prop_matches_bare;
+      prop_matches_squash;
+      prop_current_not_matched;
+      prop_wrong_project;
+      prop_non_convention;
+      prop_missing_colon;
+      prop_filter_drops_ancestors;
+      prop_filter_empty_when_all_ancestors;
+      prop_filter_passthrough_no_ancestors;
+      prop_empty_subject_preserved;
+      prop_empty_project_never_matches;
+      prop_crlf_line_endings;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
@@ -331,6 +491,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test1: simple rebase" result;
    (* C should now be on top of B *)
@@ -371,6 +532,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test2: onto after squash" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -409,6 +571,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test3: multi-commit" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -430,6 +593,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_noop "test4: already up-to-date" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -455,6 +619,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_conflict "test5: conflict" result;
    (* Rebase should be left in progress for the agent to resolve *)
@@ -490,6 +655,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "dep2")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_noop "test6: dep2 already ancestor" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -516,6 +682,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    (* With a real merge, D1 is in main's history so cherry-pick should
       identify only F1 as unique. Result should be Ok or Noop depending
@@ -547,6 +714,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    (* find_old_base returns Error "no unique commits found" so we fall
       back to plain rebase. Plain rebase should produce Ok or conflict
@@ -577,6 +745,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test9: modify dep file" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -587,6 +756,96 @@ let () =
    (* x.txt should contain feat's version *)
    let content = read_file ~dir ~filename:"x.txt" in
    assert_eq "test9: x.txt content" "v2" content;
+   Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
+
+  (* ── Test 10: ancestor-subject filter strips drifted dep commits ─── *)
+  (* Regression for the trigger-only-execution / patch-7 case. A dep's
+     commit survives on our branch with the conventional
+     [<project>] Patch N: prefix but with *modified* content — so
+     git log --cherry-pick cannot equate it with the squash on main by
+     patch-id. Without the ancestor_ids fallback, the old dep commit
+     would be replayed onto main; with ancestor_ids=["1"] find_old_base
+     picks a newer old_base and only our own commit survives. *)
+  (let dir = init_repo ~process_mgr in
+   commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"dep.txt" ~content:"dep-v1"
+     ~msg:"[proj] Patch 1: add dep.txt"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
+   (* Simulate the drift: rewrite dep.txt with content-level differences
+      (not just whitespace — git patch-id normalizes trailing whitespace)
+      so the patch-id of feat's amended dep commit ≠ the patch-id of
+      main's squash. Amend the Patch 1 commit with different content. *)
+   let dep_path = Stdlib.Filename.concat dir "dep.txt" in
+   let oc = Stdlib.open_out dep_path in
+   Stdlib.output_string oc "dep-v1-drift";
+   Stdlib.close_out oc;
+   git ~process_mgr ~dir [ "add"; "dep.txt" ] |> ignore;
+   git ~process_mgr ~dir [ "commit"; "--amend"; "--no-edit" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"mine.txt" ~content:"mine"
+     ~msg:"[proj] Patch 7: add mine.txt"
+   |> ignore;
+   squash_merge ~process_mgr ~dir ~branch:"dep";
+   git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
+   (* Sanity: the cherry-pick filter alone keeps the drifted Patch 1 commit,
+      so the positive end-state assertion below is specifically exercising
+      the subject-filter code path. We verify both that the log contains
+      both commits (not just Patch 7) *and* that the oldest kept SHA is
+      Patch 1, so a future git version that patch-id-equates the drift with
+      the squash surfaces as a line-count mismatch rather than a confusing
+      SHA mismatch. *)
+   let raw_log =
+     git ~process_mgr ~dir
+       [
+         "log";
+         "--cherry-pick";
+         "--right-only";
+         "--no-merges";
+         "--no-show-signature";
+         "--format=%H %s";
+         "main...HEAD";
+       ]
+   in
+   let log_lines =
+     List.filter (String.split_lines raw_log) ~f:(fun l ->
+         not (String.is_empty (String.strip l)))
+   in
+   assert_eq "test10: cherry-pick log has 2 commits (sanity)" "2"
+     (Int.to_string (List.length log_lines));
+   (match
+      Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids:[]
+        raw_log
+    with
+   | Result.Ok sha ->
+       (* With [~ancestor_ids:[]] the subject filter is inactive, so both
+          log lines survive; [oldest_non_ancestor_commit] returns the last
+          line (oldest = Patch 1 = HEAD~1). [git] above already strips its
+          subprocess output, so [patch1_sha] is the bare 40-char SHA. *)
+       let patch1_sha = git ~process_mgr ~dir [ "rev-parse"; "HEAD~1" ] in
+       assert_eq "test10: cherry-pick alone keeps drifted Patch 1" patch1_sha
+         sha
+   | Result.Error msg ->
+       failwith
+         (Printf.sprintf
+            "test10: cherry-pick-only unexpectedly filtered all commits: %s" msg));
+   let result =
+     Worktree.rebase_onto ~process_mgr ~path:dir
+       ~target:(Types.Branch.of_string "main")
+       ~project_name:"proj"
+       ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
+   in
+   assert_rebase_ok "test10: subject-filter strips drifted dep" result;
+   let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
+   let lines = String.split_lines log in
+   (* Only our Patch 7 commit should sit on top of main's squash. *)
+   assert_eq "test10: head is Patch 7" "[proj] Patch 7: add mine.txt"
+     (List.hd_exn lines);
+   assert_eq "test10: parent is squash" "squash-merge dep"
+     (List.nth_exn lines 1);
+   assert_eq "test10: grandparent is A" "A" (List.nth_exn lines 2);
+   assert_eq "test10: exactly 3 commits" "3" (Int.to_string (List.length lines));
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   Stdlib.print_endline "All rebase_onto integration tests passed."

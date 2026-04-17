@@ -80,6 +80,47 @@ let () =
                   Graph.depends_on g p.id ~dep))
         with _ -> false)
   in
+  let prop_transitive_ancestors_excludes_self =
+    Test.make ~name:"graph: transitive_ancestors excludes the patch itself"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              not
+                (List.mem
+                   (Graph.transitive_ancestors g p.id)
+                   p.id ~equal:Types.Patch_id.equal))
+        with _ -> false)
+  in
+  let prop_transitive_ancestors_includes_direct_deps =
+    Test.make
+      ~name:"graph: transitive_ancestors includes every direct dependency"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              let ancestors = Graph.transitive_ancestors g p.id in
+              List.for_all (Graph.deps g p.id) ~f:(fun dep ->
+                  List.mem ancestors dep ~equal:Types.Patch_id.equal))
+        with _ -> false)
+  in
+  let prop_transitive_ancestors_transitive =
+    Test.make
+      ~name:
+        "graph: transitive_ancestors is closed under deps (grand-deps included)"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              let ancestors = Graph.transitive_ancestors g p.id in
+              List.for_all ancestors ~f:(fun anc ->
+                  List.for_all (Graph.deps g anc) ~f:(fun grand ->
+                      (* A back-edge to the root is permitted: the root
+                         is deliberately excluded from its own ancestors. *)
+                      Types.Patch_id.equal grand p.id
+                      || List.mem ancestors grand ~equal:Types.Patch_id.equal)))
+        with _ -> false)
+  in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
@@ -88,7 +129,50 @@ let () =
       prop_dependents_inverse;
       prop_no_dep_satisfiable;
       prop_depends_on_consistent;
+      prop_transitive_ancestors_excludes_self;
+      prop_transitive_ancestors_includes_direct_deps;
+      prop_transitive_ancestors_transitive;
     ];
+
+  (* Hand-crafted cycle test: gen_patch_dag only produces DAGs, so the
+     [Set.mem seen] termination guard in [transitive_ancestors] is never
+     exercised by the property tests above. Build A ↔ B directly and
+     confirm the walk terminates and excludes the root. *)
+  (let make_patch pid deps =
+     Types.Patch.
+       {
+         id = pid;
+         title = "";
+         description = "";
+         branch = Types.Branch.of_string ("b-" ^ Types.Patch_id.to_string pid);
+         dependencies = deps;
+         spec = "";
+         acceptance_criteria = [];
+         files = [];
+         classification = "";
+         changes = [];
+         test_stubs_introduced = [];
+         test_stubs_implemented = [];
+       }
+   in
+   let a = Types.Patch_id.of_string "A" in
+   let b = Types.Patch_id.of_string "B" in
+   let g = Graph.of_patches [ make_patch a [ b ]; make_patch b [ a ] ] in
+   let sort = List.sort ~compare:Types.Patch_id.compare in
+   let anc_a = sort (Graph.transitive_ancestors g a) in
+   let anc_b = sort (Graph.transitive_ancestors g b) in
+   assert (List.equal Types.Patch_id.equal anc_a (sort [ b ]));
+   assert (List.equal Types.Patch_id.equal anc_b (sort [ a ]));
+   (* Three-node cycle A→B→C→A: exercises the non-adjacent back-edge path
+      through the [seen]-set guard. When visiting from B we reach C, then
+      C's dep A triggers the termination guard ([A] is already in [seen]). *)
+   let c = Types.Patch_id.of_string "C" in
+   let g3 =
+     Graph.of_patches
+       [ make_patch a [ b ]; make_patch b [ c ]; make_patch c [ a ] ]
+   in
+   let anc3_a = sort (Graph.transitive_ancestors g3 a) in
+   assert (List.equal Types.Patch_id.equal anc3_a (sort [ b; c ])));
 
   let prop_initial_base_all_merged_returns_main =
     Test.make ~name:"graph: initial_base returns main when all deps merged"
