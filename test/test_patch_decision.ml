@@ -285,32 +285,9 @@ let () =
     Stdlib.print_endline "RD-2a passed"
   in
 
-  (* RD-2b: CI with no failure conclusions → Skip_empty *)
-  let () =
-    let pid = Patch_id.of_string "rd2b" in
-    let br = Branch.of_string "b" in
-    let pre_fire =
-      with_pr pid br |> fun a ->
-      set_ci_checks a
-        [
-          {
-            Ci_check.name = "build";
-            conclusion = "success";
-            details_url = None;
-            description = None;
-            started_at = None;
-          };
-        ]
-    in
-    let a = enqueue pre_fire Operation_kind.Ci in
-    let a = respond a Operation_kind.Ci in
-    assert (
-      equal_respond_delivery
-        (respond_delivery ~agent:a ~kind:Operation_kind.Ci
-           ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch)
-        Skip_empty);
-    Stdlib.print_endline "RD-2b passed"
-  in
+  (* RD-2b removed: Ci with no failures no longer returns Skip_empty from
+     [respond_delivery] — the freshness gate in the runner skips before
+     calling us. See [bin/main.ml]'s Respond arm for the guard. *)
 
   (* RD-2c: Review with no comments → Skip_empty *)
   let () =

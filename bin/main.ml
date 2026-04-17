@@ -2656,14 +2656,17 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
               in
               Some
                 (fun () ->
-                  (* For Review_comments, fetch fresh unaddressed comments
-                     from GitHub before acquiring a Claude slot to avoid
-                     blocking concurrency on GitHub API I/O. *)
+                  (* For Review_comments and Ci, fetch fresh state from
+                     GitHub before acquiring a Claude slot to avoid blocking
+                     concurrency on GitHub API I/O. The Ci fetch is the
+                     freshness gate against delivering a failure that's
+                     already been superseded by a newer run. *)
                   let is_review =
                     Operation_kind.equal kind Operation_kind.Review_comments
                   in
-                  let prefetched_comments =
-                    if is_review then
+                  let is_ci = Operation_kind.equal kind Operation_kind.Ci in
+                  let fresh_pr_state =
+                    if is_review || is_ci then
                       match
                         Runtime.read runtime (fun snap ->
                             (Orchestrator.agent snap.Runtime.orchestrator
@@ -2672,15 +2675,52 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       with
                       | Some pr_num -> (
                           log_event runtime ~patch_id
-                            "Fetching fresh review comments from GitHub";
+                            (if is_ci then "Fetching fresh CI state from GitHub"
+                             else "Fetching fresh review comments from GitHub");
                           match Github.pr_state ~net github pr_num with
-                          | Ok pr_state -> pr_state.Pr_state.comments
+                          | Ok pr_state -> Some pr_state
                           | Error _err ->
                               log_event runtime ~patch_id
-                                "Failed to fetch fresh review comments";
-                              [])
+                                (if is_ci then "Failed to fetch fresh CI state"
+                                 else "Failed to fetch fresh review comments");
+                              None)
+                      | None -> None
+                    else None
+                  in
+                  let prefetched_comments =
+                    if is_review then
+                      match fresh_pr_state with
+                      | Some pr_state -> pr_state.Pr_state.comments
                       | None -> []
                     else []
+                  in
+                  (* Ci freshness gate: if we couldn't fetch, or the fetched
+                     state shows no current failures, skip the delivery —
+                     don't wake the agent for a failure that's already been
+                     superseded. When we do proceed, write the fresh list
+                     into orchestrator state so [respond_delivery] reads
+                     current [agent.ci_checks]. *)
+                  let ci_skip_reason =
+                    if is_ci then
+                      match fresh_pr_state with
+                      | None ->
+                          (* Log already emitted by the fetch branch. *)
+                          Some "fetch failed"
+                      | Some pr_state ->
+                          if
+                            Base.List.exists pr_state.Pr_state.ci_checks
+                              ~f:Ci_check.is_failure
+                          then (
+                            Runtime.update_orchestrator runtime (fun orch ->
+                                Orchestrator.set_ci_checks orch patch_id
+                                  pr_state.Pr_state.ci_checks);
+                            None)
+                          else (
+                            log_event runtime ~patch_id
+                              "Fresh CI state shows no failures — skipping CI \
+                               delivery";
+                            Some "no current failures")
+                    else None
                   in
                   with_busy_guard ~patch_id (fun () ->
                       let result =
@@ -2691,9 +2731,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     patch_id)
                             in
                             let delivery =
-                              Patch_decision.respond_delivery ~agent ~kind
-                                ~pre_fire_agent ~prefetched_comments
-                                ~main_branch:(Branch.to_string main)
+                              match ci_skip_reason with
+                              | Some _ -> Patch_decision.Skip_empty
+                              | None ->
+                                  Patch_decision.respond_delivery ~agent ~kind
+                                    ~pre_fire_agent ~prefetched_comments
+                                    ~main_branch:(Branch.to_string main)
                             in
                             let render_base_changed_prefix base_change =
                               match base_change with
