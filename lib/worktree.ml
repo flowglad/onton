@@ -433,7 +433,7 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
         (* Defeat log.showSignature=true in the user's gitconfig — otherwise
            [gpg: Signature made ...] lines would appear in the output and be
            misinterpreted by [oldest_non_ancestor_commit] as SHAs. *)
-        "--no-signature";
+        "--no-show-signature";
         "--format=%H %s";
         Printf.sprintf "%s...HEAD" target;
       ]
