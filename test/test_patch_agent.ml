@@ -680,7 +680,9 @@ let () =
               ~no_commits_push_count:0 ~branch_rebased_onto:None
               ~checks_passing:false ~current_op:None ~current_message_id:None
               ~generation:0 ~worktree_path:None ~branch_blocked:false
-              ~llm_session_id:None
+              ~llm_session_id:None ~automerge_enabled:false
+              ~automerge_deadline:None ~automerge_inflight:false
+              ~automerge_failure_count:0
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -756,7 +758,9 @@ let () =
               ~no_commits_push_count:0 ~branch_rebased_onto:None
               ~checks_passing:false ~current_op:None ~current_message_id:None
               ~generation:0 ~worktree_path:None ~branch_blocked:false
-              ~llm_session_id:None
+              ~llm_session_id:None ~automerge_enabled:false
+              ~automerge_deadline:None ~automerge_inflight:false
+              ~automerge_failure_count:0
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in

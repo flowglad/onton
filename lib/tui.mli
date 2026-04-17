@@ -96,6 +96,9 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  automerge_enabled : bool;
+  automerge_deadline : float option;
+  automerge_failure_count : int;
 }
 
 (** {2 Frame rendering} *)
@@ -131,7 +134,9 @@ val views_of_orchestrator :
   patch_view list
 
 val render_help_overlay : width:int -> height:int -> string list
-val render_manage_overlay : width:int -> height:int -> string list
+
+val render_manage_overlay :
+  width:int -> height:int -> automerge_enabled:bool -> string list
 
 type prompt_info = { prompt_text : string; cursor_col : int }
 
@@ -145,6 +150,7 @@ val render_frame :
   project_name:string ->
   show_help:bool ->
   show_manage:bool ->
+  now:float ->
   ?transcript:string ->
   ?status_msg:status_msg ->
   ?prompt_line:prompt_info ->

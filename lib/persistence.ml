@@ -93,6 +93,13 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("branch_blocked", `Bool a.branch_blocked);
       ( "llm_session_id",
         match a.llm_session_id with None -> `Null | Some s -> `String s );
+      ("automerge_enabled", `Bool a.automerge_enabled);
+      ( "automerge_deadline",
+        match a.automerge_deadline with None -> `Null | Some f -> `Float f );
+      (* [automerge_inflight] is intentionally not persisted: it guards an
+         in-flight GitHub call, which cannot still be running across a
+         supervisor restart. Deserialization hard-codes [false] to match. *)
+      ("automerge_failure_count", `Int a.automerge_failure_count);
     ]
 
 let patch_agent_of_yojson ~gameplan json =
@@ -215,7 +222,38 @@ let patch_agent_of_yojson ~gameplan json =
        ~generation:(int_member "generation" json)
        ~worktree_path:(string_member_opt "worktree_path" json)
        ~branch_blocked:(bool_member "branch_blocked" json)
-       ~llm_session_id:(string_member_opt "llm_session_id" json))
+       ~llm_session_id:(string_member_opt "llm_session_id" json)
+       ~automerge_enabled:
+         (Option.value
+            (bool_member_opt "automerge_enabled" json)
+            ~default:false)
+       ~automerge_deadline:
+         (match Yojson.Safe.Util.member "automerge_deadline" json with
+         | `Null -> None
+         | `Float f -> Some f
+         | `Int i -> Some (Float.of_int i)
+         | `Intlit s ->
+             (* Yojson emits [`Intlit] for integers that don't fit in an OCaml
+                int. Unix timestamps fit in a [float] on all supported
+                platforms, so conversion effectively always succeeds. If the
+                literal is malformed (corrupted snapshot), drop the deadline
+                rather than raise — [reconcile_automerge] will re-arm a fresh
+                idle window on the next tick once the patch is a candidate. *)
+             Float.of_string_opt s
+         | _ ->
+             (* Unexpected JSON shape (e.g. [`String], [`Bool], [`List]) — the
+                snapshot is corrupted or was written by an incompatible version.
+                Treat as absent; reconcile re-arms on the next tick. *)
+             None)
+       ~automerge_inflight:
+         (* Reset inflight on restore: any inflight flag persisted across a
+            supervisor restart refers to a merge call that cannot still be
+            running. Assuming [false] is the safe recovery default. *)
+         false
+       ~automerge_failure_count:
+         (Option.value
+            (int_member_opt "automerge_failure_count" json)
+            ~default:0))
 
 (* ---------- Activity_log ---------- *)
 

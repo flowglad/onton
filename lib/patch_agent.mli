@@ -41,6 +41,10 @@ type t = private {
   worktree_path : string option;
   branch_blocked : bool;
   llm_session_id : string option;
+  automerge_enabled : bool;
+  automerge_deadline : float option;
+  automerge_inflight : bool;
+  automerge_failure_count : int;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -247,6 +251,37 @@ val set_llm_session_id : t -> string option -> t
     after intervention. Cleared on start-path fresh-failure reset (clean retry)
     and when the session is known dead (no-resume, give-up). *)
 
+val set_automerge_enabled : t -> bool -> t
+(** Enable or disable automerge for this patch. When the value actually changes,
+    the inflight flag is cleared and [automerge_failure_count] is reset;
+    disabling additionally clears any pending deadline so the next enable starts
+    a fresh timer. Calling with the current value is a no-op — the failure
+    count, inflight flag, and [automerge_deadline] are NOT reset in that case.
+    If the preserved deadline has already elapsed, the next reconcile tick will
+    fire immediately rather than waiting [automerge_idle_timeout]; callers that
+    need a fresh timer must call [clear_automerge_deadline] explicitly after
+    this function. *)
+
+val set_automerge_deadline : t -> float -> t
+(** Record the Unix timestamp at which the supervisor should merge this patch if
+    it is still approved. *)
+
+val clear_automerge_deadline : t -> t
+(** Clear a pending automerge deadline without disabling automerge. *)
+
+val set_automerge_inflight : t -> bool -> t
+(** Set the [automerge_inflight] flag. The reconciler sets it [true] when it
+    claims a merge decision; the caller clears it on every exit path (success,
+    failure, exception). *)
+
+val increment_automerge_failure_count : t -> t
+(** Record a failed automerge call. After [automerge_max_failures] consecutive
+    failures the patch is no longer an automerge candidate. *)
+
+val reset_automerge_failure_count : t -> t
+(** Reset the consecutive-failure counter to zero. Called on a successful merge
+    and whenever automerge is re-toggled. *)
+
 val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its
     queue-consuming state transition. [~op] restores [current_op] from the
@@ -299,6 +334,10 @@ val restore :
   worktree_path:string option ->
   branch_blocked:bool ->
   llm_session_id:string option ->
+  automerge_enabled:bool ->
+  automerge_deadline:float option ->
+  automerge_inflight:bool ->
+  automerge_failure_count:int ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

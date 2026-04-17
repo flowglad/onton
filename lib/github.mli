@@ -95,5 +95,31 @@ val set_draft :
 (** [set_draft ~net t ~pr_number ~draft] sets draft status via GraphQL mutation.
     REST API does not support changing the draft field. *)
 
+type merge_result =
+  | Merge_succeeded
+      (** Response body confirmed [merged = true]; the PR is merged. *)
+  | Merge_queued of string
+      (** Response body had [merged = false]; GitHub accepted the request
+          (typically into its auto-merge queue waiting for required checks) but
+          has not yet merged. Carries GitHub's [message] for logs. *)
+  | Merge_unconfirmed
+      (** Response was 2xx but did not include a parseable [merged] field. Treat
+          as non-authoritative: don't mark merged, don't count as failure — the
+          poller will observe the real PR state next cycle. *)
+
+val merge_pr :
+  net:_ Eio.Net.t ->
+  t ->
+  pr_number:Types.Pr_number.t ->
+  merge_method:[ `Merge | `Squash | `Rebase ] ->
+  (merge_result, error) Result.t
+(** [merge_pr ~net t ~pr_number ~merge_method] merges a PR via
+    [PUT /repos/:owner/:repo/pulls/:number/merge]. A 2xx HTTP status does NOT
+    imply the merge completed: the caller must inspect the returned
+    [merge_result] to distinguish an actual merge from a queued request or an
+    unconfirmed response. Transport errors and 4xx/5xx statuses return an
+    [error]; the REST API returns 405 "Pull Request is not mergeable" when the
+    PR is not in a mergeable state. *)
+
 val owner : t -> string
 (** [owner t] returns the repository owner. *)

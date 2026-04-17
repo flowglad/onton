@@ -370,6 +370,25 @@ let set_llm_session_id t patch_id session_id =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_llm_session_id a session_id)
 
+let set_automerge_enabled t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_automerge_enabled a v)
+
+let set_automerge_deadline t patch_id deadline =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_automerge_deadline a deadline)
+
+let clear_automerge_deadline t patch_id =
+  update_agent t patch_id ~f:Patch_agent.clear_automerge_deadline
+
+let set_automerge_inflight t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_automerge_inflight a v)
+
+let increment_automerge_failure_count t patch_id =
+  update_agent t patch_id ~f:Patch_agent.increment_automerge_failure_count
+
+let reset_automerge_failure_count t patch_id =
+  update_agent t patch_id ~f:Patch_agent.reset_automerge_failure_count
+
 (** {2 Queries} *)
 
 let all_agents t = Map.data t.agents

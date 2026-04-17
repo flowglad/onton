@@ -53,6 +53,8 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None
     ~checks_passing:false ~current_op:None ~current_message_id:None
     ~generation:0 ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
+    ~automerge_enabled:false ~automerge_deadline:None ~automerge_inflight:false
+    ~automerge_failure_count:0
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -347,7 +349,9 @@ let () =
             ~no_commits_push_count:0 ~branch_rebased_onto:None
             ~checks_passing:false ~current_op:None ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0
         in
         let orch = make_orch patch agent in
         (* Apply effects in a loop until convergence (max 5 rounds). *)
@@ -478,7 +482,9 @@ let () =
             ~no_commits_push_count:0 ~branch_rebased_onto:None
             ~checks_passing:false ~current_op:None ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0
         in
         let orch = make_orch patch agent in
         let poll =
@@ -614,7 +620,9 @@ let () =
             ~no_commits_push_count:0 ~branch_rebased_onto:None
             ~checks_passing:false ~current_op:None ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0
         in
         let orch = make_orch patch agent in
         begin try
@@ -814,7 +822,9 @@ let () =
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0
         in
         let orch =
           Orchestrator.restore
@@ -852,7 +862,9 @@ let () =
             ~no_commits_push_count:0 ~branch_rebased_onto:None
             ~checks_passing:false ~current_op:None ~current_message_id:None
             ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0
         in
         let orch =
           Orchestrator.restore

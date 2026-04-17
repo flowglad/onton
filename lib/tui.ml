@@ -503,6 +503,9 @@ type patch_view = {
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
+  automerge_enabled : bool;
+  automerge_deadline : float option;
+  automerge_failure_count : int;
 }
 [@@warning "-69"]
 
@@ -599,6 +602,9 @@ let patch_view_of_agent (agent : Patch_agent.t)
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
     intervention_reason = None;
+    automerge_enabled = agent.automerge_enabled;
+    automerge_deadline = agent.automerge_deadline;
+    automerge_failure_count = agent.automerge_failure_count;
   }
 
 (** {1 Render helpers} *)
@@ -791,8 +797,10 @@ let render_activity (entries : activity_entry list) =
     header :: lines
 
 (** Build the info rows for a detail view. Shared between [render_detail] and
-    [detail_info_height] to keep them in sync. *)
-let detail_info_rows (pv : patch_view) ~width =
+    [detail_info_height] to keep them in sync. [~now] is the wall-clock time the
+    frame is rendered against — threaded in rather than read from
+    [Unix.gettimeofday] so the function stays pure and testable. *)
+let detail_info_rows (pv : patch_view) ~width ~now =
   let fit_value prefix value =
     prefix ^ Term.fit_width (Int.max 1 (width - String.length prefix)) value
   in
@@ -831,6 +839,23 @@ let detail_info_rows (pv : patch_view) ~width =
       Printf.sprintf "  Conflict:    %s"
         (if pv.has_conflict then "yes" else "no");
       Printf.sprintf "  Messages:    %d queued" pv.human_messages;
+      Printf.sprintf "  Automerge:   %s"
+        (if not pv.automerge_enabled then "disabled"
+         else if
+           pv.automerge_failure_count >= Patch_controller.automerge_max_failures
+         then "enabled (failure cap reached — toggle off/on to retry)"
+         else
+           match pv.automerge_deadline with
+           | None ->
+               if pv.queue_len > 0 then "enabled (waiting: queue must drain)"
+               else "enabled (waiting: needs approval and passing CI)"
+           | Some d ->
+               let remaining = d -. now in
+               if Float.( > ) remaining 0.0 then
+                 (* Floor at 1s so sub-second remainders don't render as
+                    "fires in 0s" — transient but cosmetically odd. *)
+                 Printf.sprintf "fires in %.0fs" (Float.max 1.0 remaining)
+               else "firing...");
     ]
   in
   let op_line =
@@ -918,8 +943,8 @@ let detail_info_rows (pv : patch_view) ~width =
   in
   lines @ op_line @ intervention @ ci_section
 
-let render_detail (pv : patch_view) ~width ~scroll ?(transcript = "") () =
-  let info = detail_info_rows pv ~width in
+let render_detail (pv : patch_view) ~width ~scroll ~now ?(transcript = "") () =
+  let info = detail_info_rows pv ~width ~now in
   let transcript_content =
     if String.is_empty transcript then []
     else
@@ -1151,16 +1176,28 @@ let render_help_overlay ~width ~height =
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
 
-let render_manage_overlay ~width ~height =
+let render_manage_overlay ~width ~height ~automerge_enabled =
   let dismiss = Term.styled [ Term.Sgr.dim ] "(esc to cancel)" in
   let title =
     Term.styled
       [ Term.Sgr.bold; Term.Sgr.fg_yellow ]
       (Printf.sprintf " Manage Patch  %s" dismiss)
   in
+  let automerge_label =
+    Printf.sprintf "    a   %s automerge (5-minute idle timer after approval)"
+      (if automerge_enabled then "Disable" else "Enable")
+  in
+  let automerge_item =
+    (* Highlight in green when automerge is currently on so the user can tell
+       at a glance, not just by reading the verb. *)
+    if automerge_enabled then
+      Term.styled [ Term.Sgr.bold; Term.Sgr.fg_green ] automerge_label
+    else Term.styled [ Term.Sgr.dim ] automerge_label
+  in
   let items =
     [
       Term.styled [ Term.Sgr.dim ] "    m   Force mark as merged (break glass)";
+      automerge_item;
     ]
   in
   let content = title :: "" :: items in
@@ -1171,9 +1208,16 @@ let render_manage_overlay ~width ~height =
 
 (** Number of info lines render_detail produces for a patch. Derived from
     [detail_info_rows] so the two cannot drift. Width only affects truncation,
-    not line count, so we pass a dummy value. *)
+    not line count, and [~now] only affects the automerge countdown text (every
+    possible value fits on one line — "fires in Ns", "firing...", "enabled
+    (...)", "disabled"), so fixed dummy values here are safe.
+
+    Invariant: automerge status strings must stay well under 70 chars so they
+    cannot wrap at the dummy [~width:80] used here. If a future string is long
+    enough to wrap, thread [~now] and the real terminal width through
+    [detail_info_height] instead of passing placeholders. *)
 let detail_info_height (pv : patch_view) =
-  List.length (detail_info_rows pv ~width:80)
+  List.length (detail_info_rows pv ~width:80 ~now:0.0)
 
 (** {1 Public API} *)
 
@@ -1230,7 +1274,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
-    ~(activity : activity_entry list) ~project_name ~show_help ~show_manage
+    ~(activity : activity_entry list) ~project_name ~show_help ~show_manage ~now
     ?(transcript = "") ?status_msg ?prompt_line (views : patch_view list) =
   let no_patches =
     {
@@ -1247,7 +1291,14 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     let overlay = render_help_overlay ~width ~height in
     { no_patches with lines = overlay }
   else if show_manage then
-    let overlay = render_manage_overlay ~width ~height in
+    let automerge_enabled =
+      match view_mode with
+      | Detail_view patch_id ->
+          List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
+          |> Option.value_map ~default:false ~f:(fun pv -> pv.automerge_enabled)
+      | List_view | Timeline_view -> false
+    in
+    let overlay = render_manage_overlay ~width ~height ~automerge_enabled in
     { no_patches with lines = overlay; detail_scroll_offset = scroll_offset }
   else
     let header = render_header ~project_name ~width in
@@ -1275,7 +1326,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               { offset = scroll_offset; total = 0; visible = max_section }
             in
             let info, transcript_section, at_bottom, clamped_offset =
-              render_detail pv ~width ~scroll ~transcript ()
+              render_detail pv ~width ~scroll ~now ~transcript ()
             in
             let lines =
               header @ [ "" ] @ summary @ [ "" ] @ info @ transcript_section

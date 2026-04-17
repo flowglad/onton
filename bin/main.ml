@@ -281,6 +281,173 @@ let log_event runtime ?patch_id msg =
         (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
            msg))
 
+(** Reconcile per-patch automerge deadlines. For each deadline that has elapsed,
+    merge the PR on GitHub and mark the patch merged on success. On failure the
+    failure counter is incremented and the deadline pushed out by a fresh idle
+    window, so the retry is at least 5 minutes out regardless of how often the
+    runner tick fires. Retries continue until the consecutive failure cap is
+    reached, at which point reconciliation stops issuing merge calls until the
+    user toggles automerge off/on. *)
+let reconcile_and_execute_automerge ~runtime ~net ~github =
+  let now = Unix.gettimeofday () in
+  let decisions =
+    Runtime.update_orchestrator_returning runtime (fun orch ->
+        Patch_controller.reconcile_automerge orch ~now)
+  in
+  (* Dispatch concurrently with a bounded fiber pool. A slow merge call can
+     take up to GitHub's request timeout (~30s), so serial iteration would
+     compound that over [N] decisions.
+
+     This call still blocks the enclosing [amloop] fiber until all in-flight
+     merges return, which means under simultaneous slow responses the 1s
+     automerge cadence can degrade to one-per-timeout. That trade-off is
+     intentional: bounded concurrency avoids a thundering herd against GitHub
+     rate limits and keeps exactly one automerge fiber alive on the switch
+     (the runner loop is already decoupled — it does not wait on this). The
+     1s cadence is not load-bearing either: deadlines fire on 5-minute idle
+     windows, and [automerge_inflight] already prevents double-claiming. *)
+  Eio.Fiber.List.iter ~max_fibers:4
+    (fun Patch_controller.
+           { merge_patch_id = patch_id; merge_pr_number = pr_number } ->
+      let label =
+        Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
+      in
+      (* [reconcile_automerge] set [automerge_inflight = true] when it emitted
+         this decision. Every exit path below must either call
+         [apply_automerge_success]/[apply_automerge_failure] (both of which
+         clear the inflight flag) or run the [Fun.protect] finaliser. *)
+      let inflight_cleared = ref false in
+      let clear_inflight_if_needed () =
+        if not !inflight_cleared then (
+          inflight_cleared := true;
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.set_automerge_inflight orch patch_id false))
+      in
+      (* Push the deadline out by one idle window after a non-terminal response
+         (GitHub queued the merge or responded with an unrecognised shape) and
+         clear [inflight] in the same orchestrator update. The deadline that
+         fired this decision is already in the past, and merely clearing
+         [inflight] would make the patch eligible again on the very next
+         reconcile tick — producing a tight loop of PUT /merge calls until the
+         poller observes a terminal state. A fresh idle window gives the
+         poller time to catch up. Doing both writes atomically avoids a brief
+         window where a concurrent read sees the pushed-out deadline with
+         [inflight = true]. *)
+      let push_deadline_and_clear_inflight () =
+        if not !inflight_cleared then (
+          inflight_cleared := true;
+          let now_ts = Unix.gettimeofday () in
+          Runtime.update_orchestrator runtime (fun orch ->
+              let orch =
+                Orchestrator.set_automerge_inflight orch patch_id false
+              in
+              Orchestrator.set_automerge_deadline orch patch_id
+                (now_ts +. Patch_controller.automerge_idle_timeout)))
+      in
+      Fun.protect ~finally:clear_inflight_if_needed (fun () ->
+          (* Re-read the patch just before hitting GitHub. The original
+             decision came from an earlier orchestrator snapshot; between then
+             and now the patch may have been merged, lost [merge_ready], gone
+             busy again, or had its failure cap hit (via a parallel tick). Any
+             of these make the call both unnecessary and noisy (GitHub 405).
+             We call [is_automerge_candidate] with [~ignore_inflight:true]
+             because we ourselves set the inflight flag when claiming this
+             decision — the default [ignore_inflight:false] would see our own
+             flag and short-circuit every merge. *)
+          let still_candidate =
+            Runtime.read runtime (fun snap ->
+                match
+                  Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+                with
+                | None -> false
+                | Some agent ->
+                    let main_branch =
+                      Orchestrator.main_branch snap.Runtime.orchestrator
+                    in
+                    (* Verify the agent's current PR still matches the one this
+                       decision was emitted for. If the poller has remapped
+                       the patch to a replacement PR between reconcile and
+                       execute, hitting GitHub with the stale [pr_number]
+                       would either merge the wrong PR (on the rare chance
+                       the old PR is still open) or 405 and bump
+                       [automerge_failure_count] for no reason.
+                       [is_automerge_candidate] gates on everything else (not
+                       merged, automerge enabled, approval, CI, empty queue,
+                       failure cap) and [~ignore_inflight:true] opts out of
+                       the inflight short-circuit that the predicate applies
+                       by default — necessary here because this re-check runs
+                       while we hold the flag. *)
+                    (match agent.Patch_agent.pr_number with
+                      | Some current -> Pr_number.equal current pr_number
+                      | None -> false)
+                    && Patch_controller.is_automerge_candidate
+                         ~ignore_inflight:true agent ~main_branch)
+          in
+          if not still_candidate then (
+            log_event runtime ~patch_id
+              (Printf.sprintf "%s skipped — no longer a candidate" label);
+            (* Clear inflight here explicitly (rather than relying on the
+               [Fun.protect] finaliser) and deliberately leave the deadline in
+               place — the next [reconcile_automerge] tick will clear it via
+               the [(false, Some _)] branch if candidacy is genuinely lost,
+               or re-arm it if the patch became a candidate again. Keeping
+               deadline-clearing centralised in reconcile avoids a redundant
+               write here and the divergence risk of two call sites managing
+               the same invariant. *)
+            clear_inflight_if_needed ())
+          else
+            try
+              match
+                Github.merge_pr ~net github ~pr_number ~merge_method:`Squash
+              with
+              | Ok Github.Merge_succeeded ->
+                  inflight_cleared := true;
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_automerge_success orch patch_id);
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Automerge complete — PR #%d merged"
+                       (Pr_number.to_int pr_number))
+              | Ok (Github.Merge_queued msg) ->
+                  (* GitHub accepted the request into its native auto-merge
+                     queue. Not a failure — don't bump the counter. Push the
+                     deadline forward (atomically with clearing [inflight]) so
+                     we don't re-fire before the poller observes the eventual
+                     merge. *)
+                  push_deadline_and_clear_inflight ();
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Automerge queued by GitHub — awaiting checks (%s)" msg)
+              | Ok Github.Merge_unconfirmed ->
+                  (* 2xx response with an unexpected shape. Not authoritative
+                     either way — let the poller confirm via PR state rather
+                     than guess. Don't count as failure, but push the
+                     deadline forward (atomic with clearing [inflight]) so we
+                     don't retry every tick. *)
+                  push_deadline_and_clear_inflight ();
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "%s accepted but merge not confirmed — awaiting poll"
+                       label)
+              | Error err ->
+                  inflight_cleared := true;
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_automerge_failure orch
+                        ~now:(Unix.gettimeofday ()) patch_id);
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Automerge failed — %s"
+                       (Github.show_error err))
+            with
+            | Eio.Cancel.Cancelled _ as exn -> raise exn
+            | exn ->
+                inflight_cleared := true;
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Patch_controller.apply_automerge_failure orch
+                      ~now:(Unix.gettimeofday ()) patch_id);
+                log_event runtime ~patch_id
+                  (Printf.sprintf "%s crashed — %s" label
+                     (Printexc.to_string exn))))
+    decisions
+
 (** Read an artifact file. Returns [Some contents] if the file exists and is
     readable, [None] otherwise. *)
 let read_artifact_file path =
@@ -945,7 +1112,8 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
         ~show_help:!show_help
         ~show_manage:
           (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
-        ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line views
+        ~now:(Unix.gettimeofday ()) ~transcript ?status_msg:!status_msg
+        ?prompt_line:!prompt_line views
     in
     (* Write back the clamped scroll offset so delta-based input in
        input_fiber works from a real value, not a sentinel like max_value.
@@ -1058,6 +1226,27 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                     Runtime.update_orchestrator runtime (fun orch ->
                         Orchestrator.mark_merged orch patch_id);
                     log_event runtime ~patch_id "Force-marked as merged")
+              | Tui.List_view | Tui.Timeline_view -> ())
+          | Term.Key.Char 'a' -> (
+              match !view_mode with
+              | Tui.Detail_view patch_id -> (
+                  input_mode := Tui_input.Normal;
+                  let enabled_after =
+                    Runtime.update_orchestrator_returning runtime (fun orch ->
+                        match Orchestrator.find_agent orch patch_id with
+                        | None -> (orch, None)
+                        | Some agent ->
+                            let v = not agent.Patch_agent.automerge_enabled in
+                            let orch =
+                              Orchestrator.set_automerge_enabled orch patch_id v
+                            in
+                            (orch, Some v))
+                  in
+                  match enabled_after with
+                  | Some true -> log_event runtime ~patch_id "Automerge enabled"
+                  | Some false ->
+                      log_event runtime ~patch_id "Automerge disabled"
+                  | None -> ())
               | Tui.List_view | Tui.Timeline_view -> ())
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
           | Term.Key.Backspace | Term.Key.Up | Term.Key.Down | Term.Key.Left
@@ -2939,7 +3128,41 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
     Eio.Time.sleep clock 1.0;
     loop sw
   in
-  Eio.Switch.run @@ fun sw -> loop sw
+  Eio.Switch.run @@ fun sw ->
+  (* Single long-lived automerge fiber. Spawning fork_daemon once before the
+     loop (rather than per-tick from inside [loop]) keeps at most one automerge
+     fiber alive on the switch — per-tick forking would let brief no-op fibers
+     accumulate during a slow GitHub call even though [automerge_inflight]
+     guards the real merge. The fiber paces itself with its own 1s sleep,
+     independent of the runner tick. *)
+  Eio.Fiber.fork_daemon ~sw (fun () ->
+      let rec amloop () =
+        (* Top-level guard: [reconcile_and_execute_automerge] catches
+           exceptions per-decision, but [Eio.Fiber.List.iter] (or a future
+           refactor) could still let one escape. Re-raise [Cancelled] so
+           switch teardown propagates normally; swallow any other exception
+           to the activity log so a single bad tick can't kill the fiber
+           permanently and leave automerge silently disabled. *)
+        (try reconcile_and_execute_automerge ~runtime ~net ~github with
+        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | exn ->
+            log_event runtime
+              (Printf.sprintf "automerge fiber error — %s"
+                 (Printexc.to_string exn)));
+        (* [Eio.Time.sleep] is the only yield point outside the guard above.
+           On switch teardown it raises [Cancelled]; catching it here and
+           returning [`Stop_daemon] gives the [fork_daemon] contract a clean
+           voluntary-exit signal (matching the other [fork_daemon] callers
+           in this file) rather than exiting by exception. *)
+        match
+          try Ok (Eio.Time.sleep clock 1.0)
+          with Eio.Cancel.Cancelled _ -> Error `Cancelled
+        with
+        | Error `Cancelled -> `Stop_daemon
+        | Ok () -> amloop ()
+      in
+      amloop ());
+  loop sw
 
 (** {1 Persistence fiber} *)
 
