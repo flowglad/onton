@@ -115,7 +115,10 @@ let () =
               let ancestors = Graph.transitive_ancestors g p.id in
               List.for_all ancestors ~f:(fun anc ->
                   List.for_all (Graph.deps g anc) ~f:(fun grand ->
-                      List.mem ancestors grand ~equal:Types.Patch_id.equal)))
+                      (* A back-edge to the root is permitted: the root
+                         is deliberately excluded from its own ancestors. *)
+                      Types.Patch_id.equal grand p.id
+                      || List.mem ancestors grand ~equal:Types.Patch_id.equal)))
         with _ -> false)
   in
   List.iter

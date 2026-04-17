@@ -395,6 +395,10 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
   let lines = String.split_lines log_output in
   let kept =
     List.filter_map lines ~f:(fun line ->
+        (* Strip only trailing [\r] so CRLF line endings don't leak into the
+           sha; a legitimate trailing space on empty-subject lines ([<sha> ])
+           must survive intact. *)
+        let line = String.rstrip line ~drop:(Char.equal '\r') in
         if String.is_empty (String.strip line) then None
         else
           match String.lsplit2 line ~on:' ' with
