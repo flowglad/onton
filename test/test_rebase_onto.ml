@@ -45,6 +45,16 @@ let () =
         | Result.Ok sha -> String.equal sha "abc123"
         | Result.Error _ -> false)
   in
+  let prop_single_line_empty_subject =
+    (* %H %s for an empty-subject commit emits "<sha> " — lsplit2 must
+       still parse sha and subject separately (the trailing space is a
+       content-bearing separator, not stripable whitespace). *)
+    Test.make ~name:"oldest_non_ancestor_commit: single empty-subject line kept"
+      ~count:1 Gen.unit (fun () ->
+        match oldest "abc123 \n" with
+        | Result.Ok sha -> String.equal sha "abc123"
+        | Result.Error _ -> false)
+  in
   (* Property: for any non-empty list of SHAs, returns the last one *)
   let sha_gen =
     Gen.string_size ~gen:(Gen.char_range 'a' 'f') (Gen.int_range 6 40)
@@ -71,6 +81,7 @@ let () =
       prop_single_sha;
       prop_multiple_shas;
       prop_trailing_whitespace;
+      prop_single_line_empty_subject;
       prop_always_last;
     ]
   in

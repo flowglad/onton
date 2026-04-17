@@ -395,9 +395,13 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
   let lines = String.split_lines log_output in
   let kept =
     List.filter_map lines ~f:(fun line ->
-        (* Strip only trailing [\r] so CRLF line endings don't leak into the
-           sha; a legitimate trailing space on empty-subject lines ([<sha> ])
-           must survive intact. *)
+        (* [rstrip ~drop:\r] removes only trailing [\r] (CRLF); the full
+           [String.strip] gate below handles lines that are only spaces (e.g.
+           blank separator lines that some git configs emit). Both are needed:
+           a bare "\r" becomes "" after rstrip and is skipped; "  \r" becomes
+           "  " and is skipped by the strip gate; "<sha> " (empty subject)
+           survives rstrip and the gate because the trailing space is a
+           content-bearing separator. *)
         let line = String.rstrip line ~drop:(Char.equal '\r') in
         if String.is_empty (String.strip line) then None
         else
