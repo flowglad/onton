@@ -49,11 +49,6 @@ val list_with_branches :
   repo_root:string ->
   (string * Types.Branch.t) list
 
-val oldest_unique_commit : string -> (string, string) Result.t
-(** Pure: extract the oldest unique commit SHA from
-    [git rev-list --cherry-pick --right-only] output (newest-first). Returns
-    [Error] when the output is empty (all commits already in target). *)
-
 val is_ancestor_patch_subject :
   project_name:string -> ancestor_ids:Types.Patch_id.t list -> string -> bool
 (** Pure: does a commit subject match the convention

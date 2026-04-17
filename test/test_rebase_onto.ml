@@ -2,44 +2,46 @@ open Base
 open Onton
 
 (* ───────────────────────────────────────────────────────────────────────
-   Pure tests for [Worktree.oldest_unique_commit]
+   Pure tests for [Worktree.oldest_non_ancestor_commit] with no ancestors
+   (subsumes the behaviour of the former [oldest_unique_commit]).
    ─────────────────────────────────────────────────────────────────────── *)
 
 let () =
   let open QCheck2 in
+  let oldest =
+    Worktree.oldest_non_ancestor_commit ~project_name:"" ~ancestor_ids:[]
+  in
   let prop_empty =
-    Test.make ~name:"oldest_unique_commit: empty -> Error" ~count:1 Gen.unit
-      (fun () ->
-        match Worktree.oldest_unique_commit "" with
-        | Result.Error _ -> true
-        | Result.Ok _ -> false)
+    Test.make ~name:"oldest_non_ancestor_commit: empty -> Error" ~count:1
+      Gen.unit (fun () ->
+        match oldest "" with Result.Error _ -> true | Result.Ok _ -> false)
   in
   let prop_whitespace_only =
-    Test.make ~name:"oldest_unique_commit: whitespace-only -> Error" ~count:1
-      Gen.unit (fun () ->
-        match Worktree.oldest_unique_commit "  \n  \n" with
+    Test.make ~name:"oldest_non_ancestor_commit: whitespace-only -> Error"
+      ~count:1 Gen.unit (fun () ->
+        match oldest "  \n  \n" with
         | Result.Error _ -> true
         | Result.Ok _ -> false)
   in
   let prop_single_sha =
-    Test.make ~name:"oldest_unique_commit: single SHA -> that SHA" ~count:1
-      Gen.unit (fun () ->
-        match Worktree.oldest_unique_commit "abc123\n" with
+    Test.make ~name:"oldest_non_ancestor_commit: single line -> that SHA"
+      ~count:1 Gen.unit (fun () ->
+        match oldest "abc123 subj\n" with
         | Result.Ok sha -> String.equal sha "abc123"
         | Result.Error _ -> false)
   in
   let prop_multiple_shas =
-    Test.make ~name:"oldest_unique_commit: multiple -> last line (oldest)"
+    Test.make ~name:"oldest_non_ancestor_commit: multiple -> last line (oldest)"
       ~count:1 Gen.unit (fun () ->
-        let output = "newest111\nmiddle222\noldest333\n" in
-        match Worktree.oldest_unique_commit output with
+        let output = "newest111 a\nmiddle222 b\noldest333 c\n" in
+        match oldest output with
         | Result.Ok sha -> String.equal sha "oldest333"
         | Result.Error _ -> false)
   in
   let prop_trailing_whitespace =
-    Test.make ~name:"oldest_unique_commit: trailing whitespace stripped"
+    Test.make ~name:"oldest_non_ancestor_commit: trailing whitespace stripped"
       ~count:1 Gen.unit (fun () ->
-        match Worktree.oldest_unique_commit "abc123  \n  " with
+        match oldest "abc123 subj  \n  " with
         | Result.Ok sha -> String.equal sha "abc123"
         | Result.Error _ -> false)
   in
@@ -48,12 +50,16 @@ let () =
     Gen.string_size ~gen:(Gen.char_range 'a' 'f') (Gen.int_range 6 40)
   in
   let prop_always_last =
-    Test.make ~name:"oldest_unique_commit: always returns last line" ~count:200
+    Test.make ~name:"oldest_non_ancestor_commit: always returns last line"
+      ~count:200
       Gen.(list_size (int_range 1 20) sha_gen)
       (fun shas ->
         try
-          let output = String.concat ~sep:"\n" shas ^ "\n" in
-          match Worktree.oldest_unique_commit output with
+          let output =
+            String.concat ~sep:"\n" (List.map shas ~f:(fun s -> s ^ " subj"))
+            ^ "\n"
+          in
+          match oldest output with
           | Result.Ok sha -> String.equal sha (List.last_exn shas)
           | Result.Error _ -> false
         with _ -> false)

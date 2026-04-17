@@ -355,21 +355,11 @@ let run_git_exit_code ~process_mgr args =
   in
   (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
 
-(** Pure: extract the oldest unique commit SHA from [rev-list --cherry-pick]
-    output. Returns [Error] when the output is empty (all commits already in
-    target). The output is newest-first, so the last line is the oldest. *)
-let oldest_unique_commit rev_list_output =
-  let trimmed = String.strip rev_list_output in
-  if String.is_empty trimmed then Result.Error "no unique commits found"
-  else
-    let lines = String.split_lines trimmed in
-    Result.Ok (List.last_exn lines)
-
 (** Pure: does [subject] match the conventional "[<project>] Patch <N>:"
-    commit-subject format for some [N] in [ancestor_ids]? The patch id segment
-    is everything between "Patch " and the first non-id character (':', ' ', or
-    end of string). We compare literally against [Patch_id.to_string], which is
-    the same form rendered into PR titles at commit time. *)
+    commit-subject format for some [N] in [ancestor_ids]? The patch-id segment
+    is terminated by the first character that is not alphanumeric, '-', or '_'
+    (or end of string). We compare literally against [Patch_id.to_string], which
+    is the same form rendered into PR titles at commit time. *)
 let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
   let prefix = Printf.sprintf "[%s] Patch " project_name in
   match String.chop_prefix subject ~prefix with
@@ -401,7 +391,7 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
     let kept =
       List.filter_map lines ~f:(fun line ->
           match String.lsplit2 line ~on:' ' with
-          | None -> if String.is_empty line then None else Some line
+          | None -> None
           | Some (sha, subject) ->
               if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
               then None
