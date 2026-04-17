@@ -123,13 +123,14 @@ type automerge_decision = {
 [@@deriving show, eq, sexp_of]
 
 val is_automerge_candidate : Patch_agent.t -> main_branch:Branch.t -> bool
-(** A patch is a candidate for automerge when it is approved, passing CI, has no
-    queued work, and has not exceeded [automerge_max_failures]. Any queued
-    feedback (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets the
-    deadline. [automerge_inflight] is deliberately out of scope: callers that
-    need to reject concurrent claims (i.e. [reconcile_automerge]) add the
-    inflight guard themselves; the executor re-check needs the predicate to
-    return [true] while holding the flag. *)
+(** A patch is a candidate for automerge when automerge is enabled, the PR is
+    approved, CI is passing, the queue is empty, and the consecutive failure
+    count is under [automerge_max_failures]. Any queued feedback
+    (Review_comments, Human, Ci, Merge_conflict, Pr_body) resets the deadline.
+    [automerge_inflight] is deliberately out of scope: callers that need to
+    reject concurrent claims (i.e. [reconcile_automerge]) add the inflight guard
+    themselves; the executor re-check needs the predicate to return [true] while
+    holding the flag. *)
 
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list

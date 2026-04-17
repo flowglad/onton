@@ -1204,8 +1204,9 @@ let render_manage_overlay ~width ~height ~automerge_enabled =
 
 (** Number of info lines render_detail produces for a patch. Derived from
     [detail_info_rows] so the two cannot drift. Width only affects truncation,
-    not line count, and [~now] only affects the automerge countdown text, so we
-    pass fixed values here. *)
+    not line count, and [~now] only affects the automerge countdown text (every
+    possible value fits on one line — "fires in Ns", "firing...", "enabled
+    (...)", "disabled"), so fixed dummy values here are safe. *)
 let detail_info_height (pv : patch_view) =
   List.length (detail_info_rows pv ~width:80 ~now:0.0)
 

@@ -232,7 +232,14 @@ let patch_agent_of_yojson ~gameplan json =
          | `Null -> None
          | `Float f -> Some f
          | `Int i -> Some (Float.of_int i)
-         | `Intlit s -> Float.of_string_opt s
+         | `Intlit s ->
+             (* Yojson emits [`Intlit] for integers that don't fit in an OCaml
+                int. Unix timestamps fit in a [float] on all supported
+                platforms, so conversion effectively always succeeds. If the
+                literal is malformed (corrupted snapshot), drop the deadline
+                rather than raise — [reconcile_automerge] will re-arm a fresh
+                idle window on the next tick once the patch is a candidate. *)
+             Float.of_string_opt s
          | _ -> None)
        ~automerge_inflight:
          (* Reset inflight on restore: any inflight flag persisted across a

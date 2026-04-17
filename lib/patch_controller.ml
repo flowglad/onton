@@ -451,9 +451,9 @@ let apply_github_effect_success t = function
 let automerge_idle_timeout = 300.0
 let automerge_max_failures = 3
 
-(** Pure predicate: a patch is a candidate for automerge merging when it is
-    approved, passing CI, has no queued work, and has not exceeded
-    [automerge_max_failures] consecutive failures. New feedback
+(** Pure predicate: a patch is a candidate for automerge merging when automerge
+    is enabled, the PR is approved, CI is passing, the queue is empty, and the
+    consecutive failure count is under [automerge_max_failures]. New feedback
     (Review_comments, Human, Ci, Merge_conflict, Pr_body) enqueues an operation,
     which fails this check and so resets the deadline. [checks_passing] is
     derived separately from [merge_ready] and captures CI conclusions that
@@ -467,7 +467,8 @@ let automerge_max_failures = 3
     and relies on this predicate returning [true] so long as the underlying
     candidacy still holds. *)
 let is_automerge_candidate (agent : Patch_agent.t) ~main_branch =
-  Patch_agent.is_approved agent ~main_branch
+  agent.Patch_agent.automerge_enabled
+  && Patch_agent.is_approved agent ~main_branch
   && agent.Patch_agent.checks_passing
   && List.is_empty agent.Patch_agent.queue
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
@@ -486,9 +487,11 @@ type automerge_decision = {
     - If the patch is [merged], clear any stale deadline/inflight flag — PRs
       merged outside [apply_automerge_success] (manual merge, replacement PR,
       etc.) must not keep a leftover timer in persisted state or the UI.
-    - If [automerge_enabled = false], nothing to do.
     - If [automerge_inflight = true], no-op. The executor owns the deadline and
       inflight transitions while a merge call is in progress.
+    - If [automerge_enabled = false], [is_automerge_candidate] returns false,
+      which funnels into the non-candidate branches below (clearing any stale
+      deadline). No separate early-return is needed.
     - If the patch is a candidate and has no deadline, set one at
       [now +. automerge_idle_timeout].
     - If the patch is not a candidate and has a deadline, clear it — any
@@ -516,7 +519,6 @@ let reconcile_automerge t ~now =
           else t
         in
         (t, decisions)
-      else if not agent.Patch_agent.automerge_enabled then (t, decisions)
       else if agent.Patch_agent.automerge_inflight then
         (* A merge is already in flight for this patch. Don't touch the
            deadline or issue a second decision — the caller clears the
@@ -791,6 +793,17 @@ let%test "reconcile_automerge clears inflight on merged agent" =
 let%test "reconcile_automerge skips when checks_passing is false" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = make_approved_agent t in
+  let t = Orchestrator.set_checks_passing t pid false in
+  let t, decisions = reconcile_automerge t ~now:1000.0 in
+  List.is_empty decisions
+  && Option.is_none (Orchestrator.agent t pid).Patch_agent.automerge_deadline
+
+let%test "reconcile_automerge clears deadline when checks_passing flips false" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = make_approved_agent t in
+  (* Pre-arm a deadline so the (false, Some _) clearing branch actually
+     fires. Without this the test passes trivially via (false, None). *)
+  let t = Orchestrator.set_automerge_deadline t pid 1300.0 in
   let t = Orchestrator.set_checks_passing t pid false in
   let t, decisions = reconcile_automerge t ~now:1000.0 in
   List.is_empty decisions

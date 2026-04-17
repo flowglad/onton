@@ -294,11 +294,13 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
     Runtime.update_orchestrator_returning runtime (fun orch ->
         Patch_controller.reconcile_automerge orch ~now)
   in
-  Base.List.iter decisions
-    ~f:(fun
-        Patch_controller.
-          { merge_patch_id = patch_id; merge_pr_number = pr_number }
-      ->
+  (* Dispatch concurrently so a slow merge call does not stall the runner
+     tick — each call can take up to GitHub's request timeout, and serial
+     iteration would block PR polling, rebase dispatch, and every other
+     lifecycle step for that duration. *)
+  Eio.Fiber.List.iter ~max_fibers:4
+    (fun Patch_controller.
+           { merge_patch_id = patch_id; merge_pr_number = pr_number } ->
       let label =
         Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
       in
@@ -312,6 +314,19 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
           inflight_cleared := true;
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.set_automerge_inflight orch patch_id false))
+      in
+      (* Push the deadline out by one idle window after a non-terminal response
+         (GitHub queued the merge or responded with an unrecognised shape). The
+         deadline that fired this decision is already in the past, and merely
+         clearing [inflight] would make the patch eligible again on the very
+         next reconcile tick — producing a tight loop of PUT /merge calls
+         until the poller observes a terminal state. A fresh idle window gives
+         the poller time to catch up. *)
+      let push_deadline_out () =
+        let now_ts = Unix.gettimeofday () in
+        Runtime.update_orchestrator runtime (fun orch ->
+            Orchestrator.set_automerge_deadline orch patch_id
+              (now_ts +. Patch_controller.automerge_idle_timeout))
       in
       Fun.protect ~finally:clear_inflight_if_needed (fun () ->
           (* Re-read the patch just before hitting GitHub. The original
@@ -332,8 +347,13 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                     let main_branch =
                       Orchestrator.main_branch snap.Runtime.orchestrator
                     in
+                    (* [is_automerge_candidate] checks [automerge_enabled],
+                       approval, CI, empty queue, and the failure-count cap.
+                       [not merged] is still required here because the
+                       predicate doesn't gate on it directly — a merged PR
+                       with stale [merge_ready = true] would otherwise
+                       requalify. *)
                     (not agent.Patch_agent.merged)
-                    && agent.Patch_agent.automerge_enabled
                     && Patch_controller.is_automerge_candidate agent
                          ~main_branch)
           in
@@ -359,9 +379,10 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                        (Pr_number.to_int pr_number))
               | Ok (Github.Merge_queued msg) ->
                   (* GitHub accepted the request into its native auto-merge
-                     queue. Not a failure — don't bump the counter. Clear
-                     inflight so the next reconcile can observe the eventual
-                     merge via the poller. *)
+                     queue. Not a failure — don't bump the counter. Push the
+                     deadline forward so we don't re-fire before the poller
+                     observes the eventual merge. *)
+                  push_deadline_out ();
                   clear_inflight_if_needed ();
                   log_event runtime ~patch_id
                     (Printf.sprintf
@@ -369,7 +390,9 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
               | Ok Github.Merge_unconfirmed ->
                   (* 2xx response with an unexpected shape. Not authoritative
                      either way — let the poller confirm via PR state rather
-                     than guess. Don't count as failure. *)
+                     than guess. Don't count as failure, but push the
+                     deadline forward so we don't retry every tick. *)
+                  push_deadline_out ();
                   clear_inflight_if_needed ();
                   log_event runtime ~patch_id
                     (Printf.sprintf
@@ -393,6 +416,7 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                 log_event runtime ~patch_id
                   (Printf.sprintf "%s crashed — %s" label
                      (Printexc.to_string exn))))
+    decisions
 
 (** Read an artifact file. Returns [Some contents] if the file exists and is
     readable, [None] otherwise. *)

@@ -252,9 +252,11 @@ val set_llm_session_id : t -> string option -> t
     and when the session is known dead (no-resume, give-up). *)
 
 val set_automerge_enabled : t -> bool -> t
-(** Enable or disable automerge for this patch. Toggling clears any inflight
-    flag and resets [automerge_failure_count]; disabling additionally clears any
-    pending deadline so the next enable starts a fresh timer. *)
+(** Enable or disable automerge for this patch. When the value actually changes,
+    the inflight flag is cleared and [automerge_failure_count] is reset;
+    disabling additionally clears any pending deadline so the next enable starts
+    a fresh timer. Calling with the current value is a no-op — the failure count
+    and inflight flag are not reset in that case. *)
 
 val set_automerge_deadline : t -> float -> t
 (** Record the Unix timestamp at which the supervisor should merge this patch if
