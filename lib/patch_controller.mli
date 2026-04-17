@@ -109,6 +109,13 @@ val apply_github_effect_success :
 val automerge_idle_timeout : float
 (** Seconds of idle time after approval before automerge fires. *)
 
+val automerge_max_failures : int
+(** Hard cap on consecutive automerge call failures per patch. Once a patch hits
+    this count it is no longer a candidate and reconciliation stops retrying
+    until automerge is toggled off/on (or a successful merge resets the count —
+    which cannot happen once the cap is hit, so the toggle is the only
+    recovery). *)
+
 type automerge_decision = {
   merge_patch_id : Patch_id.t;
   merge_pr_number : Pr_number.t;
@@ -116,19 +123,35 @@ type automerge_decision = {
 [@@deriving show, eq, sexp_of]
 
 val is_automerge_candidate : Patch_agent.t -> main_branch:Branch.t -> bool
-(** A patch is a candidate for automerge when it is approved AND has no queued
-    work. Any queued feedback (Review_comments, Human, Ci, Merge_conflict,
-    Pr_body) resets the deadline. *)
+(** A patch is a candidate for automerge when it is approved, passing CI, has no
+    queued work, is not currently inflight, and has not exceeded
+    [automerge_max_failures]. Any queued feedback (Review_comments, Human, Ci,
+    Merge_conflict, Pr_body) resets the deadline. *)
 
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
 (** Reconcile the automerge deadline for every agent and return decisions to
-    merge. For each agent with [automerge_enabled = true]:
-    - candidate + no deadline → set deadline at [now +. automerge_idle_timeout]
-    - not candidate + deadline → clear deadline (feedback arrived)
-    - candidate + deadline elapsed → include in decisions list. Deadline stays
-      in place; the caller clears it via [apply_automerge_success] on success,
-      or re-reconciles next tick on failure. *)
+    merge. For each agent:
+    - merged → clear any stale deadline/inflight flag (no decision).
+    - not [automerge_enabled] → no-op.
+    - candidate + no deadline → set deadline at [now +. automerge_idle_timeout].
+    - not candidate + deadline → clear deadline (feedback arrived, CI flipped,
+      inflight, or failure cap hit).
+    - candidate + deadline elapsed → atomically mark the agent
+      [automerge_inflight = true] and include in decisions list. The caller MUST
+      clear the inflight flag on every exit path, and call either
+      [apply_automerge_success] (success) or [apply_automerge_failure]
+      (failure). A persistent-failure PR retries once per idle window until the
+      failure counter reaches [automerge_max_failures], after which
+      reconciliation stops issuing merge calls until the user disables and
+      re-enables automerge. *)
 
 val apply_automerge_success : Orchestrator.t -> Patch_id.t -> Orchestrator.t
-(** Mark the patch as merged and clear its automerge deadline. *)
+(** Mark the patch as merged, clear the automerge deadline, clear the inflight
+    flag, and reset the failure counter. *)
+
+val apply_automerge_failure : Orchestrator.t -> Patch_id.t -> Orchestrator.t
+(** Record a failed merge call: clear the inflight flag, increment the
+    consecutive failure counter, and drop the deadline so the next reconcile
+    starts a fresh idle window (unless the failure cap is now hit, in which case
+    reconciliation will keep the deadline cleared). *)

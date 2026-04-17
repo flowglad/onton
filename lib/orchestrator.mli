@@ -103,6 +103,9 @@ val set_llm_session_id : t -> Patch_id.t -> string option -> t
 val set_automerge_enabled : t -> Patch_id.t -> bool -> t
 val set_automerge_deadline : t -> Patch_id.t -> float -> t
 val clear_automerge_deadline : t -> Patch_id.t -> t
+val set_automerge_inflight : t -> Patch_id.t -> bool -> t
+val increment_automerge_failure_count : t -> Patch_id.t -> t
+val reset_automerge_failure_count : t -> Patch_id.t -> t
 
 (** {2 Queries} *)
 

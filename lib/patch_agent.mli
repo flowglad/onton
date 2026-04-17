@@ -43,6 +43,8 @@ type t = private {
   llm_session_id : string option;
   automerge_enabled : bool;
   automerge_deadline : float option;
+  automerge_inflight : bool;
+  automerge_failure_count : int;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -250,8 +252,9 @@ val set_llm_session_id : t -> string option -> t
     and when the session is known dead (no-resume, give-up). *)
 
 val set_automerge_enabled : t -> bool -> t
-(** Enable or disable automerge for this patch. Disabling clears any pending
-    deadline so the next enable starts a fresh timer. *)
+(** Enable or disable automerge for this patch. Toggling clears any inflight
+    flag and resets [automerge_failure_count]; disabling additionally clears any
+    pending deadline so the next enable starts a fresh timer. *)
 
 val set_automerge_deadline : t -> float -> t
 (** Record the Unix timestamp at which the supervisor should merge this patch if
@@ -259,6 +262,19 @@ val set_automerge_deadline : t -> float -> t
 
 val clear_automerge_deadline : t -> t
 (** Clear a pending automerge deadline without disabling automerge. *)
+
+val set_automerge_inflight : t -> bool -> t
+(** Set the [automerge_inflight] flag. The reconciler sets it [true] when it
+    claims a merge decision; the caller clears it on every exit path (success,
+    failure, exception). *)
+
+val increment_automerge_failure_count : t -> t
+(** Record a failed automerge call. After [automerge_max_failures] consecutive
+    failures the patch is no longer an automerge candidate. *)
+
+val reset_automerge_failure_count : t -> t
+(** Reset the consecutive-failure counter to zero. Called on a successful merge
+    and whenever automerge is re-toggled. *)
 
 val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its
@@ -314,6 +330,8 @@ val restore :
   llm_session_id:string option ->
   automerge_enabled:bool ->
   automerge_deadline:float option ->
+  automerge_inflight:bool ->
+  automerge_failure_count:int ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

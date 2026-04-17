@@ -96,6 +96,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("automerge_enabled", `Bool a.automerge_enabled);
       ( "automerge_deadline",
         match a.automerge_deadline with None -> `Null | Some f -> `Float f );
+      ("automerge_inflight", `Bool a.automerge_inflight);
+      ("automerge_failure_count", `Int a.automerge_failure_count);
     ]
 
 let patch_agent_of_yojson ~gameplan json =
@@ -228,7 +230,17 @@ let patch_agent_of_yojson ~gameplan json =
          | `Null -> None
          | `Float f -> Some f
          | `Int i -> Some (Float.of_int i)
-         | _ -> None))
+         | `Intlit s -> Float.of_string_opt s
+         | _ -> None)
+       ~automerge_inflight:
+         (* Reset inflight on restore: any inflight flag persisted across a
+            supervisor restart refers to a merge call that cannot still be
+            running. Assuming [false] is the safe recovery default. *)
+         false
+       ~automerge_failure_count:
+         (Option.value
+            (int_member_opt "automerge_failure_count" json)
+            ~default:0))
 
 (* ---------- Activity_log ---------- *)
 

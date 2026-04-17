@@ -283,8 +283,10 @@ let log_event runtime ?patch_id msg =
 
 (** Reconcile per-patch automerge deadlines. For each deadline that has elapsed,
     merge the PR on GitHub and mark the patch merged on success. On failure the
-    deadline is left in place; the next tick will either re-fire (if still a
-    candidate) or clear it (if feedback arrived). *)
+    failure counter is incremented and the deadline cleared; the next tick will
+    re-arm a fresh 5-minute window and retry until the consecutive failure cap
+    is reached, at which point reconciliation stops issuing merge calls until
+    the user toggles automerge off/on. *)
 let reconcile_and_execute_automerge ~runtime ~net ~github =
   let now = Unix.gettimeofday () in
   let decisions =
@@ -299,22 +301,75 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
       let label =
         Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
       in
-      try
-        match Github.merge_pr ~net github ~pr_number ~merge_method:`Squash with
-        | Ok () ->
-            Runtime.update_orchestrator runtime (fun orch ->
-                Patch_controller.apply_automerge_success orch patch_id);
+      (* [reconcile_automerge] set [automerge_inflight = true] when it emitted
+         this decision. Every exit path below must either call
+         [apply_automerge_success]/[apply_automerge_failure] (both of which
+         clear the inflight flag) or run the [Fun.protect] finaliser. *)
+      let inflight_cleared = ref false in
+      let clear_inflight_if_needed () =
+        if not !inflight_cleared then (
+          inflight_cleared := true;
+          Runtime.update_orchestrator runtime (fun orch ->
+              Orchestrator.set_automerge_inflight orch patch_id false))
+      in
+      Fun.protect ~finally:clear_inflight_if_needed (fun () ->
+          (* Re-read the patch just before hitting GitHub. The original
+             decision came from an earlier orchestrator snapshot; between then
+             and now the patch may have been merged, lost [merge_ready], gone
+             busy again, or had its failure cap hit (via a parallel tick). Any
+             of these make the call both unnecessary and noisy (GitHub 405). *)
+          let still_candidate =
+            Runtime.read runtime (fun snap ->
+                match
+                  Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+                with
+                | None -> false
+                | Some agent ->
+                    let main_branch =
+                      Orchestrator.main_branch snap.Runtime.orchestrator
+                    in
+                    (not agent.Patch_agent.merged)
+                    && agent.Patch_agent.automerge_enabled
+                    && Patch_agent.is_approved agent ~main_branch
+                    && agent.Patch_agent.checks_passing
+                    && Base.List.is_empty agent.Patch_agent.queue
+                    && agent.Patch_agent.automerge_failure_count
+                       < Patch_controller.automerge_max_failures)
+          in
+          if not still_candidate then (
             log_event runtime ~patch_id
-              (Printf.sprintf "Automerge complete — PR #%d merged"
-                 (Pr_number.to_int pr_number))
-        | Error err ->
-            log_event runtime ~patch_id
-              (Printf.sprintf "Automerge failed — %s" (Github.show_error err))
-      with
-      | Eio.Cancel.Cancelled _ as exn -> raise exn
-      | exn ->
-          log_event runtime ~patch_id
-            (Printf.sprintf "%s crashed — %s" label (Printexc.to_string exn)))
+              (Printf.sprintf "%s skipped — no longer a candidate" label);
+            (* Clear inflight via the finaliser; leave deadline as-is so the
+               next reconcile sees current state (clear + re-arm or no-op). *)
+            ())
+          else
+            try
+              match
+                Github.merge_pr ~net github ~pr_number ~merge_method:`Squash
+              with
+              | Ok () ->
+                  inflight_cleared := true;
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_automerge_success orch patch_id);
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Automerge complete — PR #%d merged"
+                       (Pr_number.to_int pr_number))
+              | Error err ->
+                  inflight_cleared := true;
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_automerge_failure orch patch_id);
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Automerge failed — %s"
+                       (Github.show_error err))
+            with
+            | Eio.Cancel.Cancelled _ as exn -> raise exn
+            | exn ->
+                inflight_cleared := true;
+                Runtime.update_orchestrator runtime (fun orch ->
+                    Patch_controller.apply_automerge_failure orch patch_id);
+                log_event runtime ~patch_id
+                  (Printf.sprintf "%s crashed — %s" label
+                     (Printexc.to_string exn))))
 
 (** Read an artifact file. Returns [Some contents] if the file exists and is
     readable, [None] otherwise. *)

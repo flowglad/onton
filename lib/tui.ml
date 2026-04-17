@@ -835,6 +835,16 @@ let detail_info_rows (pv : patch_view) ~width =
       Printf.sprintf "  Conflict:    %s"
         (if pv.has_conflict then "yes" else "no");
       Printf.sprintf "  Messages:    %d queued" pv.human_messages;
+      Printf.sprintf "  Automerge:   %s"
+        (if not pv.automerge_enabled then "disabled"
+         else
+           match pv.automerge_deadline with
+           | None -> "enabled (waiting for approval)"
+           | Some d ->
+               let remaining = d -. Unix.gettimeofday () in
+               if Float.( > ) remaining 0.0 then
+                 Printf.sprintf "fires in %.0fs" remaining
+               else "firing...");
     ]
   in
   let op_line =
