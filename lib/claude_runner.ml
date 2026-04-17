@@ -206,16 +206,34 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
       Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
         ~stderr:stderr_w args
     in
+    Eio.Switch.on_release sw (fun () ->
+        try Eio.Process.signal child Stdlib.Sys.sigterm with _ -> ());
     Eio.Flow.close stdin_r;
     Eio.Flow.close stdin_w;
     Eio.Flow.close stdout_w;
     Eio.Flow.close stderr_w;
     let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
     let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
+    let drain flow =
+      let buf = Bytes.create 4096 in
+      try
+        while true do
+          ignore (Eio.Flow.single_read flow (Cstruct.of_bytes buf))
+        done
+      with End_of_file -> ()
+    in
     let out, err =
       Eio.Fiber.pair
-        (fun () -> Eio.Buf_read.take_all stdout_buf)
-        (fun () -> Eio.Buf_read.take_all stderr_buf)
+        (fun () ->
+          try Eio.Buf_read.take_all stdout_buf
+          with Eio.Buf_read.Buffer_limit_exceeded ->
+            drain stdout_r;
+            "<stdout exceeded 1MB limit, truncated>")
+        (fun () ->
+          try Eio.Buf_read.take_all stderr_buf
+          with Eio.Buf_read.Buffer_limit_exceeded ->
+            drain stderr_r;
+            "<stderr exceeded 1MB limit, truncated>")
     in
     let status = Eio.Process.await child in
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
