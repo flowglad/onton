@@ -134,6 +134,35 @@ let () =
       prop_transitive_ancestors_transitive;
     ];
 
+  (* Hand-crafted cycle test: gen_patch_dag only produces DAGs, so the
+     [Set.mem seen] termination guard in [transitive_ancestors] is never
+     exercised by the property tests above. Build A ↔ B directly and
+     confirm the walk terminates and excludes the root. *)
+  (let make_patch pid deps =
+     Types.Patch.
+       {
+         id = pid;
+         title = "";
+         description = "";
+         branch = Types.Branch.of_string ("b-" ^ Types.Patch_id.to_string pid);
+         dependencies = deps;
+         spec = "";
+         acceptance_criteria = [];
+         files = [];
+         classification = "";
+         changes = [];
+         test_stubs_introduced = [];
+         test_stubs_implemented = [];
+       }
+   in
+   let a = Types.Patch_id.of_string "A" in
+   let b = Types.Patch_id.of_string "B" in
+   let g = Graph.of_patches [ make_patch a [ b ]; make_patch b [ a ] ] in
+   let anc_a = Graph.transitive_ancestors g a in
+   let anc_b = Graph.transitive_ancestors g b in
+   assert (List.equal Types.Patch_id.equal anc_a [ b ]);
+   assert (List.equal Types.Patch_id.equal anc_b [ a ]));
+
   let prop_initial_base_all_merged_returns_main =
     Test.make ~name:"graph: initial_base returns main when all deps merged"
       Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->

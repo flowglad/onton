@@ -357,11 +357,11 @@ let run_git_exit_code ~process_mgr args =
 
 (** Pure: does [subject] match the conventional "[<project>] Patch <N>:"
     commit-subject format for some [N] in [ancestor_ids]? The patch-id segment
-    is terminated by the first whitespace or ':' (or end of string), so any
-    [Patch_id.to_string] value that doesn't itself contain whitespace or ':'
-    round-trips correctly. Empty [project_name] or [ancestor_ids] always returns
-    false: callers must supply the real project name for this match to be
-    meaningful. *)
+    is terminated by the first character that satisfies [Char.is_whitespace] or
+    equals [':'] (or end of string), so any [Patch_id.to_string] value that
+    doesn't itself contain such a character round-trips correctly. Empty
+    [project_name] or [ancestor_ids] always returns false: callers must supply
+    the real project name for this match to be meaningful. *)
 let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
   if String.is_empty project_name || List.is_empty ancestor_ids then false
   else
@@ -430,6 +430,10 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
         "--cherry-pick";
         "--right-only";
         "--no-merges";
+        (* Defeat log.showSignature=true in the user's gitconfig — otherwise
+           [gpg: Signature made ...] lines would appear in the output and be
+           misinterpreted by [oldest_non_ancestor_commit] as SHAs. *)
+        "--no-signature";
         "--format=%H %s";
         Printf.sprintf "%s...HEAD" target;
       ]
