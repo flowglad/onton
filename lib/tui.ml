@@ -852,7 +852,9 @@ let detail_info_rows (pv : patch_view) ~width ~now =
            | Some d ->
                let remaining = d -. now in
                if Float.( > ) remaining 0.0 then
-                 Printf.sprintf "fires in %.0fs" remaining
+                 (* Floor at 1s so sub-second remainders don't render as
+                    "fires in 0s" — transient but cosmetically odd. *)
+                 Printf.sprintf "fires in %.0fs" (Float.max 1.0 remaining)
                else "firing...");
     ]
   in

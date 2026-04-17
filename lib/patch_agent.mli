@@ -255,8 +255,12 @@ val set_automerge_enabled : t -> bool -> t
 (** Enable or disable automerge for this patch. When the value actually changes,
     the inflight flag is cleared and [automerge_failure_count] is reset;
     disabling additionally clears any pending deadline so the next enable starts
-    a fresh timer. Calling with the current value is a no-op — the failure count
-    and inflight flag are not reset in that case. *)
+    a fresh timer. Calling with the current value is a no-op — the failure
+    count, inflight flag, and [automerge_deadline] are NOT reset in that case.
+    If the preserved deadline has already elapsed, the next reconcile tick will
+    fire immediately rather than waiting [automerge_idle_timeout]; callers that
+    need a fresh timer must call [clear_automerge_deadline] explicitly after
+    this function. *)
 
 val set_automerge_deadline : t -> float -> t
 (** Record the Unix timestamp at which the supervisor should merge this patch if

@@ -533,7 +533,13 @@ let reconcile_automerge t ~now =
         (* A merge is already in flight for this patch. Don't touch the
            deadline or issue a second decision — the caller clears the
            inflight flag and advances state via apply_automerge_success /
-           apply_automerge_failure on resolution. *)
+           apply_automerge_failure on resolution.
+
+           Belt-and-suspenders: [is_automerge_candidate] with its default
+           [~ignore_inflight:false] also rejects inflight agents below. This
+           explicit short-circuit is load-bearing for deadline preservation
+           (the [(false, Some _)] branch would otherwise clear the deadline),
+           so both guards must stay in sync. *)
         (t, decisions)
       else
         let candidate = is_automerge_candidate agent ~main_branch in

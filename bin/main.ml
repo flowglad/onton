@@ -1228,9 +1228,9 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                     log_event runtime ~patch_id "Force-marked as merged")
               | Tui.List_view | Tui.Timeline_view -> ())
           | Term.Key.Char 'a' -> (
-              input_mode := Tui_input.Normal;
               match !view_mode with
               | Tui.Detail_view patch_id -> (
+                  input_mode := Tui_input.Normal;
                   let enabled_after =
                     Runtime.update_orchestrator_returning runtime (fun orch ->
                         match Orchestrator.find_agent orch patch_id with
@@ -3150,13 +3150,16 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
               (Printf.sprintf "automerge fiber error — %s"
                  (Printexc.to_string exn)));
         (* [Eio.Time.sleep] is the only yield point outside the guard above.
-           If the switch is being torn down it raises [Eio.Cancel.Cancelled],
-           which propagates out of [amloop] and exits the [fork_daemon]
-           callback. Cancellation is the expected teardown path for daemon
-           fibers — Eio does not treat it as a fiber failure — so no
-           additional catch is needed here. *)
-        Eio.Time.sleep clock 1.0;
-        amloop ()
+           On switch teardown it raises [Cancelled]; catching it here and
+           returning [`Stop_daemon] gives the [fork_daemon] contract a clean
+           voluntary-exit signal (matching the other [fork_daemon] callers
+           in this file) rather than exiting by exception. *)
+        match
+          try Ok (Eio.Time.sleep clock 1.0)
+          with Eio.Cancel.Cancelled _ -> Error `Cancelled
+        with
+        | Error `Cancelled -> `Stop_daemon
+        | Ok () -> amloop ()
       in
       amloop ());
   loop sw
