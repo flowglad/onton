@@ -221,10 +221,11 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
     let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
     (out, err, code)
   in
-  let got_events = not (String.is_empty (String.strip stdout_content)) in
+  let cleaned_stdout = strip_ansi stdout_content in
+  let got_events = not (String.is_empty (String.strip cleaned_stdout)) in
   {
     Llm_backend.exit_code;
-    stdout = strip_ansi stdout_content;
+    stdout = cleaned_stdout;
     stderr = stderr_content;
     got_events;
     timed_out = false;
