@@ -403,6 +403,11 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
         else
           match String.lsplit2 line ~on:' ' with
           | None -> None
+          | Some ("", _) ->
+              (* Leading space: no sha at start of line. Cannot arise from
+                 [git log --format=%H %s] but guard in case of wrapper
+                 indentation so we don't pass [""] to [git rev-parse]. *)
+              None
           | Some (sha, subject) ->
               if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
               then None

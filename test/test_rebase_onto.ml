@@ -744,11 +744,11 @@ let () =
   (* ── Test 10: ancestor-subject filter strips drifted dep commits ─── *)
   (* Regression for the trigger-only-execution / patch-7 case. A dep's
      commit survives on our branch with the conventional
-     [<project>] Patch N: prefix but with *modified* content (a trailing
-     whitespace edit) — so git rev-list --cherry-pick cannot equate it with
-     the squash on main by patch-id. Without the ancestor_ids fallback, the
-     old dep commit would be replayed onto main; with ancestor_ids=["1"]
-     find_old_base picks a newer old_base and only our own commit survives. *)
+     [<project>] Patch N: prefix but with *modified* content — so
+     git log --cherry-pick cannot equate it with the squash on main by
+     patch-id. Without the ancestor_ids fallback, the old dep commit
+     would be replayed onto main; with ancestor_ids=["1"] find_old_base
+     picks a newer old_base and only our own commit survives. *)
   (let dir = init_repo ~process_mgr in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
@@ -757,14 +757,13 @@ let () =
      ~msg:"[proj] Patch 1: add dep.txt"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
-   (* Simulate the drift: rewrite dep.txt identically but with a trailing
-      newline difference so patch-id on feat's dep-commit ≠ patch-id on
-      main's squash. The simplest way is to amend the Patch 1 commit on
-      feat with slightly different content. *)
+   (* Simulate the drift: rewrite dep.txt with content-level differences
+      (not just whitespace — git patch-id normalizes trailing whitespace)
+      so the patch-id of feat's amended dep commit ≠ the patch-id of
+      main's squash. Amend the Patch 1 commit with different content. *)
    let dep_path = Stdlib.Filename.concat dir "dep.txt" in
    let oc = Stdlib.open_out dep_path in
-   Stdlib.output_string oc "dep-v1\n";
-   (* note trailing newline *)
+   Stdlib.output_string oc "dep-v1-drift";
    Stdlib.close_out oc;
    git ~process_mgr ~dir [ "add"; "dep.txt" ] |> ignore;
    git ~process_mgr ~dir [ "commit"; "--amend"; "--no-edit" ] |> ignore;
@@ -773,6 +772,33 @@ let () =
    |> ignore;
    squash_merge ~process_mgr ~dir ~branch:"dep";
    git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
+   (* Sanity: the cherry-pick filter alone keeps the drifted Patch 1 commit,
+      so the positive end-state assertion below is specifically exercising
+      the subject-filter code path. *)
+   let raw_log =
+     git ~process_mgr ~dir
+       [
+         "log";
+         "--cherry-pick";
+         "--right-only";
+         "--no-merges";
+         "--no-show-signature";
+         "--format=%H %s";
+         "main...HEAD";
+       ]
+   in
+   (match
+      Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids:[]
+        raw_log
+    with
+   | Result.Ok sha ->
+       let patch1_sha = git ~process_mgr ~dir [ "rev-parse"; "HEAD~1" ] in
+       assert_eq "test10: cherry-pick alone keeps drifted Patch 1" patch1_sha
+         sha
+   | Result.Error msg ->
+       failwith
+         (Printf.sprintf
+            "test10: cherry-pick-only unexpectedly filtered all commits: %s" msg));
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")

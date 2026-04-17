@@ -61,9 +61,13 @@ val oldest_non_ancestor_commit :
   ancestor_ids:Types.Patch_id.t list ->
   string ->
   (string, string) Result.t
-(** Pure: parse [git log --cherry-pick --right-only --format=%H %s] output and
-    return the oldest SHA whose subject is not [is_ancestor_patch_subject].
-    Returns [Error] when the filtered list is empty. *)
+(** Pure: parse
+    [git log --cherry-pick --right-only --no-merges --no-show-signature
+     --format=%H %s] output and return the oldest SHA whose subject is not
+    [is_ancestor_patch_subject]. Returns [Error] when the filtered list is
+    empty. [--no-merges] keeps merge-commit lines out of the input; callers
+    emitting raw [git log] should also pass [--no-show-signature] so GPG
+    annotation lines aren't mistaken for SHAs. *)
 
 val git_status : process_mgr:_ Eio.Process.mgr -> path:string -> string
 (** Run [git status] in the worktree and return its output. Returns empty string
