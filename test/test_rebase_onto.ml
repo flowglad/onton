@@ -72,6 +72,100 @@ let () =
   if errcode <> 0 then Stdlib.exit errcode
 
 (* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.is_ancestor_patch_subject] and
+   [Worktree.oldest_non_ancestor_commit]
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let pid = Types.Patch_id.of_string in
+  let ancestor_ids = [ pid "1"; pid "2"; pid "6" ] in
+  let matches s =
+    Worktree.is_ancestor_patch_subject ~project_name:"proj" ~ancestor_ids s
+  in
+  let prop_matches_bare =
+    Test.make ~name:"is_ancestor_patch_subject: matches '[proj] Patch 1: title'"
+      ~count:1 Gen.unit (fun () -> matches "[proj] Patch 1: add foo")
+  in
+  let prop_matches_squash =
+    Test.make
+      ~name:
+        "is_ancestor_patch_subject: matches squash suffix '[proj] Patch 2: … \
+         (#42)'" ~count:1 Gen.unit (fun () ->
+        matches "[proj] Patch 2: bar (#42)")
+  in
+  let prop_current_not_matched =
+    Test.make
+      ~name:"is_ancestor_patch_subject: current patch id not in ancestors"
+      ~count:1 Gen.unit (fun () -> not (matches "[proj] Patch 7: impl"))
+  in
+  let prop_wrong_project =
+    Test.make
+      ~name:"is_ancestor_patch_subject: wrong project tag does not match"
+      ~count:1 Gen.unit (fun () -> not (matches "[other] Patch 1: add foo"))
+  in
+  let prop_non_convention =
+    Test.make ~name:"is_ancestor_patch_subject: agent's ad-hoc subject is safe"
+      ~count:1 Gen.unit (fun () -> not (matches "docs: fix typo"))
+  in
+  let prop_missing_colon =
+    Test.make ~name:"is_ancestor_patch_subject: missing colon still parses id"
+      ~count:1 Gen.unit (fun () -> matches "[proj] Patch 6 (HEAD -> main)")
+  in
+  let oldest =
+    Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids
+  in
+  let prop_filter_drops_ancestors =
+    Test.make ~name:"oldest_non_ancestor_commit: drops ancestor-subject commits"
+      ~count:1 Gen.unit (fun () ->
+        let input =
+          "feat01 [proj] Patch 7: the real work\n\
+           anc002 [proj] Patch 2: drop duplicate migration\n\
+           anc001 [proj] Patch 1: add schema\n"
+        in
+        match oldest input with
+        | Result.Ok sha -> String.equal sha "feat01"
+        | Result.Error _ -> false)
+  in
+  let prop_filter_empty_when_all_ancestors =
+    Test.make
+      ~name:"oldest_non_ancestor_commit: Error when every commit is ancestor"
+      ~count:1 Gen.unit (fun () ->
+        let input =
+          "anc002 [proj] Patch 2: bar\nanc001 [proj] Patch 1: foo\n"
+        in
+        match oldest input with Result.Error _ -> true | Result.Ok _ -> false)
+  in
+  let prop_filter_passthrough_no_ancestors =
+    Test.make
+      ~name:"oldest_non_ancestor_commit: empty ancestor list -> oldest as-is"
+      ~count:1 Gen.unit (fun () ->
+        let no_filter =
+          Worktree.oldest_non_ancestor_commit ~project_name:"proj"
+            ~ancestor_ids:[]
+        in
+        let input = "newer111 subj A\nolder222 subj B\n" in
+        match no_filter input with
+        | Result.Ok sha -> String.equal sha "older222"
+        | Result.Error _ -> false)
+  in
+  let suite =
+    [
+      prop_matches_bare;
+      prop_matches_squash;
+      prop_current_not_matched;
+      prop_wrong_project;
+      prop_non_convention;
+      prop_missing_colon;
+      prop_filter_drops_ancestors;
+      prop_filter_empty_when_all_ancestors;
+      prop_filter_passthrough_no_ancestors;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
    Pure tests for [Worktree.parse_push_porcelain]
    ─────────────────────────────────────────────────────────────────────── *)
 
@@ -331,6 +425,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test1: simple rebase" result;
    (* C should now be on top of B *)
@@ -371,6 +466,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test2: onto after squash" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -409,6 +505,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test3: multi-commit" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -430,6 +527,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_noop "test4: already up-to-date" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -455,6 +553,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_conflict "test5: conflict" result;
    (* Rebase should be left in progress for the agent to resolve *)
@@ -490,6 +589,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "dep2")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_noop "test6: dep2 already ancestor" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -516,6 +616,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    (* With a real merge, D1 is in main's history so cherry-pick should
       identify only F1 as unique. Result should be Ok or Noop depending
@@ -547,6 +648,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    (* find_old_base returns Error "no unique commits found" so we fall
       back to plain rebase. Plain rebase should produce Ok or conflict
@@ -577,6 +679,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
+       ~project_name:"" ~ancestor_ids:[]
    in
    assert_rebase_ok "test9: modify dep file" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -587,6 +690,56 @@ let () =
    (* x.txt should contain feat's version *)
    let content = read_file ~dir ~filename:"x.txt" in
    assert_eq "test9: x.txt content" "v2" content;
+   Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
+
+  (* ── Test 10: ancestor-subject filter strips drifted dep commits ─── *)
+  (* Regression for the trigger-only-execution / patch-7 case. A dep's
+     commit survives on our branch with the conventional
+     [<project>] Patch N: prefix but with *modified* content (a trailing
+     whitespace edit) — so git rev-list --cherry-pick cannot equate it with
+     the squash on main by patch-id. Without the ancestor_ids fallback, the
+     old dep commit would be replayed onto main; with ancestor_ids=["1"]
+     find_old_base picks a newer old_base and only our own commit survives. *)
+  (let dir = init_repo ~process_mgr in
+   commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"dep.txt" ~content:"dep-v1"
+     ~msg:"[proj] Patch 1: add dep.txt"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
+   (* Simulate the drift: rewrite dep.txt identically but with a trailing
+      newline difference so patch-id on feat's dep-commit ≠ patch-id on
+      main's squash. The simplest way is to amend the Patch 1 commit on
+      feat with slightly different content. *)
+   let dep_path = Stdlib.Filename.concat dir "dep.txt" in
+   let oc = Stdlib.open_out dep_path in
+   Stdlib.output_string oc "dep-v1\n";
+   (* note trailing newline *)
+   Stdlib.close_out oc;
+   git ~process_mgr ~dir [ "add"; "dep.txt" ] |> ignore;
+   git ~process_mgr ~dir [ "commit"; "--amend"; "--no-edit" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"mine.txt" ~content:"mine"
+     ~msg:"[proj] Patch 7: add mine.txt"
+   |> ignore;
+   squash_merge ~process_mgr ~dir ~branch:"dep";
+   git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
+   let result =
+     Worktree.rebase_onto ~process_mgr ~path:dir
+       ~target:(Types.Branch.of_string "main")
+       ~project_name:"proj"
+       ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
+   in
+   assert_rebase_ok "test10: subject-filter strips drifted dep" result;
+   let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
+   let lines = String.split_lines log in
+   (* Only our Patch 7 commit should sit on top of main's squash. *)
+   assert_eq "test10: head is Patch 7" "[proj] Patch 7: add mine.txt"
+     (List.hd_exn lines);
+   assert_eq "test10: parent is squash" "squash-merge dep"
+     (List.nth_exn lines 1);
+   assert_eq "test10: grandparent is A" "A" (List.nth_exn lines 2);
+   assert_eq "test10: exactly 3 commits" "3" (Int.to_string (List.length lines));
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   Stdlib.print_endline "All rebase_onto integration tests passed."

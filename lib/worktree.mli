@@ -54,6 +54,22 @@ val oldest_unique_commit : string -> (string, string) Result.t
     [git rev-list --cherry-pick --right-only] output (newest-first). Returns
     [Error] when the output is empty (all commits already in target). *)
 
+val is_ancestor_patch_subject :
+  project_name:string -> ancestor_ids:Types.Patch_id.t list -> string -> bool
+(** Pure: does a commit subject match the convention
+    [[<project_name>] Patch <N>:] for some [N] in [ancestor_ids]? Used to strip
+    squash-merged ancestor commits whose patch-ids no longer match any commit on
+    [main]. *)
+
+val oldest_non_ancestor_commit :
+  project_name:string ->
+  ancestor_ids:Types.Patch_id.t list ->
+  string ->
+  (string, string) Result.t
+(** Pure: parse [git log --cherry-pick --right-only --format=%H %s] output and
+    return the oldest SHA whose subject is not [is_ancestor_patch_subject].
+    Returns [Error] when the filtered list is empty. *)
+
 val git_status : process_mgr:_ Eio.Process.mgr -> path:string -> string
 (** Run [git status] in the worktree and return its output. Returns empty string
     on failure. *)
@@ -91,7 +107,15 @@ val rebase_onto :
   process_mgr:_ Eio.Process.mgr ->
   path:string ->
   target:Types.Branch.t ->
+  project_name:string ->
+  ancestor_ids:Types.Patch_id.t list ->
   rebase_result
+(** Rebase HEAD onto [target]. Uses [git rev-list --cherry-pick] to detect
+    already-applied commits, and supplements that with subject-pattern matching
+    against [[<project_name>] Patch N:] for every [N] in [ancestor_ids] — the
+    fallback is load-bearing when [target] is a squash-merging trunk like
+    [main], because squash-merged ancestor commits carry a fresh patch-id that
+    cherry-pick cannot equate with the original feature-branch commits. *)
 
 val parse_push_porcelain : string -> char option
 (** Pure: extract the status flag character from [git push --porcelain] stdout.

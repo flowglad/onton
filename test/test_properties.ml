@@ -80,6 +80,44 @@ let () =
                   Graph.depends_on g p.id ~dep))
         with _ -> false)
   in
+  let prop_transitive_ancestors_excludes_self =
+    Test.make ~name:"graph: transitive_ancestors excludes the patch itself"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              not
+                (List.mem
+                   (Graph.transitive_ancestors g p.id)
+                   p.id ~equal:Types.Patch_id.equal))
+        with _ -> false)
+  in
+  let prop_transitive_ancestors_includes_direct_deps =
+    Test.make
+      ~name:"graph: transitive_ancestors includes every direct dependency"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              let ancestors = Graph.transitive_ancestors g p.id in
+              List.for_all (Graph.deps g p.id) ~f:(fun dep ->
+                  List.mem ancestors dep ~equal:Types.Patch_id.equal))
+        with _ -> false)
+  in
+  let prop_transitive_ancestors_transitive =
+    Test.make
+      ~name:
+        "graph: transitive_ancestors is closed under deps (grand-deps included)"
+      Onton_test_support.Test_generators.gen_patch_list_unique (fun patches ->
+        try
+          let g = Graph.of_patches patches in
+          List.for_all patches ~f:(fun (p : Types.Patch.t) ->
+              let ancestors = Graph.transitive_ancestors g p.id in
+              List.for_all ancestors ~f:(fun anc ->
+                  List.for_all (Graph.deps g anc) ~f:(fun grand ->
+                      List.mem ancestors grand ~equal:Types.Patch_id.equal)))
+        with _ -> false)
+  in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
@@ -88,6 +126,9 @@ let () =
       prop_dependents_inverse;
       prop_no_dep_satisfiable;
       prop_depends_on_consistent;
+      prop_transitive_ancestors_excludes_self;
+      prop_transitive_ancestors_includes_direct_deps;
+      prop_transitive_ancestors_transitive;
     ];
 
   let prop_initial_base_all_merged_returns_main =
