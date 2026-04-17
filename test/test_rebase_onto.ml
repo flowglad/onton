@@ -819,6 +819,10 @@ let () =
         raw_log
     with
    | Result.Ok sha ->
+       (* With [~ancestor_ids:[]] the subject filter is inactive, so both
+          log lines survive; [oldest_non_ancestor_commit] returns the last
+          line (oldest = Patch 1 = HEAD~1). [git] above already strips its
+          subprocess output, so [patch1_sha] is the bare 40-char SHA. *)
        let patch1_sha = git ~process_mgr ~dir [ "rev-parse"; "HEAD~1" ] in
        assert_eq "test10: cherry-pick alone keeps drifted Patch 1" patch1_sha
          sha

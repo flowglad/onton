@@ -65,9 +65,12 @@ val oldest_non_ancestor_commit :
     [git log --cherry-pick --right-only --no-merges --no-show-signature
      --format=%H %s] output and return the oldest SHA whose subject is not
     [is_ancestor_patch_subject]. Returns [Error] when the filtered list is
-    empty. [--no-merges] keeps merge-commit lines out of the input; callers
-    emitting raw [git log] should also pass [--no-show-signature] so GPG
-    annotation lines aren't mistaken for SHAs. *)
+    empty. Both [--no-merges] and [--no-show-signature] are load-bearing for
+    callers who build their own [git log] invocation: [--no-merges] prevents a
+    merge-commit line like [<sha> Merge branch 'x'] from being picked as the
+    oldest SHA (its [~1] parent is the wrong side of the merge), and
+    [--no-show-signature] keeps GPG annotation lines from being mistaken for
+    SHAs. *)
 
 val git_status : process_mgr:_ Eio.Process.mgr -> path:string -> string
 (** Run [git status] in the worktree and return its output. Returns empty string
