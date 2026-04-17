@@ -283,10 +283,11 @@ let log_event runtime ?patch_id msg =
 
 (** Reconcile per-patch automerge deadlines. For each deadline that has elapsed,
     merge the PR on GitHub and mark the patch merged on success. On failure the
-    failure counter is incremented and the deadline cleared; the next tick will
-    re-arm a fresh 5-minute window and retry until the consecutive failure cap
-    is reached, at which point reconciliation stops issuing merge calls until
-    the user toggles automerge off/on. *)
+    failure counter is incremented and the deadline pushed out by a fresh idle
+    window, so the retry is at least 5 minutes out regardless of how often the
+    runner tick fires. Retries continue until the consecutive failure cap is
+    reached, at which point reconciliation stops issuing merge calls until the
+    user toggles automerge off/on. *)
 let reconcile_and_execute_automerge ~runtime ~net ~github =
   let now = Unix.gettimeofday () in
   let decisions =
@@ -357,7 +358,8 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
               | Error err ->
                   inflight_cleared := true;
                   Runtime.update_orchestrator runtime (fun orch ->
-                      Patch_controller.apply_automerge_failure orch patch_id);
+                      Patch_controller.apply_automerge_failure orch
+                        ~now:(Unix.gettimeofday ()) patch_id);
                   log_event runtime ~patch_id
                     (Printf.sprintf "Automerge failed — %s"
                        (Github.show_error err))
@@ -366,7 +368,8 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
             | exn ->
                 inflight_cleared := true;
                 Runtime.update_orchestrator runtime (fun orch ->
-                    Patch_controller.apply_automerge_failure orch patch_id);
+                    Patch_controller.apply_automerge_failure orch
+                      ~now:(Unix.gettimeofday ()) patch_id);
                 log_event runtime ~patch_id
                   (Printf.sprintf "%s crashed — %s" label
                      (Printexc.to_string exn))))

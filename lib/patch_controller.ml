@@ -525,7 +525,13 @@ let reconcile_automerge t ~now =
                   ( t,
                     { merge_patch_id = patch_id; merge_pr_number = pr_number }
                     :: decisions )
-              | None -> (t, decisions)
+              | None ->
+                  (* Unreachable today because [is_automerge_candidate]
+                     requires [is_approved] which requires [has_pr]. Defensive
+                     clear so a future predicate change can't leave a patch
+                     with a permanently-elapsed deadline that fires every
+                     tick. *)
+                  (Orchestrator.clear_automerge_deadline t patch_id, decisions)
             else (t, decisions))
   |> fun (t, decisions) -> (t, List.rev decisions)
 
@@ -536,13 +542,18 @@ let apply_automerge_success t patch_id =
   Orchestrator.reset_automerge_failure_count t patch_id
 
 (** Apply the durable state change that follows a failed merge call. Clears the
-    inflight flag, increments the failure counter, and drops the deadline so the
-    next reconcile either retries after a fresh idle window (if still a
-    candidate and under the cap) or no-ops (if the cap is hit). *)
-let apply_automerge_failure t patch_id =
+    inflight flag, increments the failure counter, and pushes the deadline out
+    by [automerge_idle_timeout] so the retry is at least one idle window away.
+    This bound matters because the runner may call
+    [reconcile_and_execute_ automerge] every tick (~1s) — without an explicit
+    push-out, a persistent GitHub failure could produce a burst of merge calls
+    within a single poll cycle. If the cap has been hit the predicate flips
+    [is_automerge_candidate] to [false] and the next reconcile clears the
+    deadline via the normal non-candidate path. *)
+let apply_automerge_failure t ~now patch_id =
   let t = Orchestrator.set_automerge_inflight t patch_id false in
   let t = Orchestrator.increment_automerge_failure_count t patch_id in
-  Orchestrator.clear_automerge_deadline t patch_id
+  Orchestrator.set_automerge_deadline t patch_id (now +. automerge_idle_timeout)
 
 let make_orchestrator ~patch_id ~main_branch =
   let patch =
@@ -790,16 +801,20 @@ let%test "apply_automerge_success clears inflight and resets failures" =
   && a.Patch_agent.automerge_failure_count = 0
   && Option.is_none a.Patch_agent.automerge_deadline
 
-let%test "apply_automerge_failure clears deadline and bumps count" =
+let%test "apply_automerge_failure bumps deadline one idle window out" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = make_approved_agent t in
   let t = Orchestrator.set_automerge_deadline t pid 1.0 in
   let t = Orchestrator.set_automerge_inflight t pid true in
-  let t = apply_automerge_failure t pid in
+  let now = 1000.0 in
+  let t = apply_automerge_failure t ~now pid in
   let a = Orchestrator.agent t pid in
   a.Patch_agent.automerge_failure_count = 1
   && (not a.Patch_agent.automerge_inflight)
-  && Option.is_none a.Patch_agent.automerge_deadline
+  &&
+  match a.Patch_agent.automerge_deadline with
+  | Some d -> Float.( = ) d (now +. automerge_idle_timeout)
+  | None -> false
 
 let%test "toggling automerge resets failure count and inflight" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
