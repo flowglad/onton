@@ -152,9 +152,9 @@
         }
       ],
       "changes": [
-        "Implement disposition: merged -> Skip, busy -> Queue, else -> Deliver",
-        "Implement on_ci_failure: merged -> Reject, ci_failure_count >= 3 -> Cap_reached, busy -> Queue, else -> Deliver",
-        "Implement on_merge_conflict: merged -> Noop, busy -> Queue, else -> Deliver",
+        "Implement disposition: merged -> skip, busy -> queue, else -> deliver",
+        "Implement on_ci_failure: merged -> reject, ci_failure_count >= 3 -> cap_reached, busy -> queue, else -> deliver",
+        "Implement on_merge_conflict: merged -> noop, busy -> queue, else -> deliver",
         "Enable all QCheck2 tests from Patch 2"
       ],
       "testStubsIntroduced": null,
