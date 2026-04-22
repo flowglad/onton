@@ -9,12 +9,44 @@ let build_args ~cwd_path ~prompt ~resume_session =
   in
   base @ resume_args @ [ prompt ]
 
+(* OpenCode emits lowercase tool names and camelCase input keys, while the
+   downstream summary extractor in [bin/main.ml] expects the PascalCase names
+   and snake_case keys used by Claude Code. Normalize here so tool-use details
+   (file paths, commands, patterns) render consistently across backends. *)
+let normalize_tool_name = function
+  | "read" -> "Read"
+  | "write" -> "Write"
+  | "edit" -> "Edit"
+  | "bash" -> "Bash"
+  | "grep" -> "Grep"
+  | "glob" -> "Glob"
+  | "webfetch" -> "WebFetch"
+  | "list" -> "List"
+  | "task" -> "Task"
+  | "todowrite" -> "TodoWrite"
+  | "todoread" -> "TodoRead"
+  | other -> other
+
+let normalize_input_json ~tool (json : Yojson.Safe.t) : Yojson.Safe.t =
+  match (tool, json) with
+  | ("read" | "write" | "edit"), `Assoc fields ->
+      `Assoc
+        (List.map fields ~f:(fun (k, v) ->
+             let k' = if String.equal k "filePath" then "file_path" else k in
+             (k', v)))
+  | _ -> json
+
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
   | json -> (
       let open Yojson.Safe.Util in
       let typ = member "type" json |> to_string_option in
       match typ with
+      | Some "step_start" -> (
+          match member "sessionID" json |> to_string_option with
+          | Some id when not (String.is_empty id) ->
+              [ Types.Stream_event.Session_init { session_id = id } ]
+          | _ -> [])
       | Some "text" ->
           let part = member "part" json in
           let text =
@@ -24,16 +56,19 @@ let parse_event (line : string) : Types.Stream_event.t list =
           else [ Types.Stream_event.Text_delta text ]
       | Some "tool_use" ->
           let part = member "part" json in
-          let tool =
+          let raw_tool =
             member "tool" part |> to_string_option |> Option.value ~default:""
           in
           let state = member "state" part in
           let input =
             match member "input" state with
             | `Null -> ""
-            | v -> Yojson.Safe.to_string v
+            | v -> Yojson.Safe.to_string (normalize_input_json ~tool:raw_tool v)
           in
-          [ Types.Stream_event.Tool_use { name = tool; input } ]
+          [
+            Types.Stream_event.Tool_use
+              { name = normalize_tool_name raw_tool; input };
+          ]
       | Some "step_finish" -> (
           let part = member "part" json in
           let reason =
@@ -107,15 +142,58 @@ let%test "parse_event text" =
   List.equal Types.Stream_event.equal (parse_event line)
     [ Types.Stream_event.Text_delta "hello" ]
 
-let%test "parse_event tool_use" =
+let%test "parse_event tool_use bash normalizes name" =
   let line =
     {|{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"ls -la"}}}}|}
   in
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Tool_use
-        { name = "bash"; input = {|{"command":"ls -la"}|} };
+        { name = "Bash"; input = {|{"command":"ls -la"}|} };
     ]
+
+let%test "parse_event tool_use read normalizes name and filePath key" =
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"read","state":{"status":"completed","input":{"filePath":"/tmp/foo.txt"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        { name = "Read"; input = {|{"file_path":"/tmp/foo.txt"}|} };
+    ]
+
+let%test "parse_event tool_use edit normalizes filePath, leaves other keys" =
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"edit","state":{"status":"completed","input":{"filePath":"/tmp/a","oldString":"x","newString":"y"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        {
+          name = "Edit";
+          input = {|{"file_path":"/tmp/a","oldString":"x","newString":"y"}|};
+        };
+    ]
+
+let%test "parse_event tool_use write normalizes filePath key" =
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"write","state":{"status":"completed","input":{"filePath":"/tmp/b.txt","content":"hello"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        {
+          name = "Write";
+          input = {|{"file_path":"/tmp/b.txt","content":"hello"}|};
+        };
+    ]
+
+let%test "parse_event step_start emits session_init" =
+  let line =
+    {|{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [ Types.Stream_event.Session_init { session_id = "ses_abc" } ]
 
 let%test "parse_event step_finish stop" =
   let line =
@@ -133,7 +211,7 @@ let%test "parse_event step_finish tool-calls is ignored" =
   in
   List.is_empty (parse_event line)
 
-let%test "parse_event step_start is ignored" =
+let%test "parse_event step_start without sessionID is ignored" =
   let line = {|{"type":"step_start","part":{"type":"step-start"}}|} in
   List.is_empty (parse_event line)
 
