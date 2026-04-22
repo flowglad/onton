@@ -182,9 +182,15 @@ The `spec` and `finalStateSpec` fields contain source code in a formal specifica
 We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for writing formal specifications with domains, rules, and invariants organized into progressive-disclosure chapters.
 
 - **Language reference**: `https://raw.githubusercontent.com/subsetpark/pantagruel/refs/heads/master/REFERENCE.md` — fetch this for syntax details
-- **Validation**: extract spec strings to `.pant` files and run `pant --check <file.pant>`. If `pant` is not installed, run `opam install pantagruel`
+- **Validation (parse + type-check)**: extract spec strings to `.pant` files and run `pant <file.pant>`. Bare `pant` type-checks; exit code 0 means the spec is well-formed. On pant 0.22, success produces no output. If `pant` is not installed, install via Homebrew: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`
+- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver
 - **Module naming**: final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_DECISION`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
-- **Style**: use progressive disclosure (top-down chapter structure), keep per-patch specs self-contained (redeclare referenced domains/rules rather than importing)
+- **Style**:
+  - Progressive disclosure (top-down chapter structure); keep per-patch specs self-contained (redeclare referenced domains/rules rather than importing)
+  - **Uppercase** identifiers are domains/types (`Patch`, `Disposition`); **lowercase** identifiers are rules/values (`disposition`, `skip`), optionally suffixed with `?` or `!`
+  - Enum-like values are best modelled as nullary lowercase rules returning the domain: `skip => Disposition.` (not `Skip => Disposition.` — uppercase rule names will not parse)
+  - Rules with multiple parameters use **comma-separated typed params**, not arrows: `inline-decisions rf: RunnerFiber, p: Patch => Nat0.` (not `rf: RunnerFiber -> Patch => Nat0.`)
+  - Every chapter needs at least one declaration in its head before the `---` separator; if a patch introduces no new invariants, redeclare the prior chapter's domains/rules so the module is self-contained
 
 ### Using a different spec language
 
