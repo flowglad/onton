@@ -12,13 +12,15 @@ let eprintf fmt = Stdlib.Printf.eprintf fmt
 
 (** Read a file to string, returning [None] if it doesn't exist. *)
 let read_file_opt path =
-  if Stdlib.Sys.file_exists path then (
+  if Stdlib.Sys.file_exists path then
     let ic = Stdlib.open_in path in
-    let n = Stdlib.in_channel_length ic in
-    let s = Bytes.create n in
-    Stdlib.really_input ic s 0 n;
-    Stdlib.close_in ic;
-    Some (Bytes.to_string s))
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_in_noerr ic)
+      (fun () ->
+        let n = Stdlib.in_channel_length ic in
+        let s = Bytes.create n in
+        Stdlib.really_input ic s 0 n;
+        Some (Bytes.to_string s))
   else None
 
 (** Replace known GitHub token patterns with [<REDACTED>]. *)

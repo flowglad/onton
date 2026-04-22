@@ -313,21 +313,53 @@ let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
 type size = { rows : int; cols : int } [@@deriving show, eq]
 (** Terminal size as rows × cols. *)
 
-(** Query terminal size via stty. Returns None if the terminal size cannot be
-    determined. *)
-let get_size () =
+(** Cached terminal size. Cleared by the SIGWINCH handler installed via
+    {!Raw.install_suspend_handlers}, and refilled on the next {!get_size} call.
+    [Atomic.t] because the SIGWINCH handler runs in an async-signal context. *)
+let _size_cache : size option Atomic.t = Atomic.make None
+
+let invalidate_size_cache () = Atomic.set _size_cache None
+
+(** Run [stty size] and parse the result. Closes the pipe in the body so the
+    exit status can be checked; [finally] guards against the body raising before
+    the close. Returns [None] unless [stty] exits 0 with parseable output. *)
+let measure_size () =
   try
     let ic = Unix.open_process_in "stty size 2>/dev/null </dev/tty" in
-    let line = In_channel.input_line ic in
-    let _ = Unix.close_process_in ic in
-    match line with
-    | Some s -> (
-        match String.split s ~on:' ' with
-        | [ rows; cols ] ->
-            Some { rows = Int.of_string rows; cols = Int.of_string cols }
-        | _ -> None)
-    | None -> None
+    let status = ref None in
+    Stdlib.Fun.protect
+      ~finally:(fun () ->
+        if Option.is_none !status then
+          try ignore (Unix.close_process_in ic) with _ -> ())
+      (fun () ->
+        match In_channel.input_line ic with
+        | None -> None
+        | Some s -> (
+            let st = Unix.close_process_in ic in
+            status := Some st;
+            match st with
+            | Unix.WEXITED 0 -> (
+                match String.split s ~on:' ' with
+                | [ rows; cols ] -> (
+                    match (Int.of_string_opt rows, Int.of_string_opt cols) with
+                    | Some r, Some c -> Some { rows = r; cols = c }
+                    | _ -> None)
+                | _ -> None)
+            | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> None))
   with _ -> None
+
+(** Query terminal size. Returns a cached value when available, repopulating
+    from [stty] on first call and after each SIGWINCH. Returns [None] if the
+    size cannot be determined. *)
+let get_size () =
+  match Atomic.get _size_cache with
+  | Some _ as cached -> cached
+  | None ->
+      let measured = measure_size () in
+      (match measured with
+      | Some _ -> ignore (Atomic.compare_and_set _size_cache None measured)
+      | None -> ());
+      measured
 
 (** Raw mode management. Saves/restores original termios settings. *)
 module Raw = struct
@@ -362,6 +394,8 @@ module Raw = struct
   let _saved_handlers :
       (Stdlib.Sys.signal_behavior * Stdlib.Sys.signal_behavior) option ref =
     ref None
+
+  let _saved_winch_handler : Stdlib.Sys.signal_behavior option ref = ref None
 
   (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
       TUI render loop should check and clear this each iteration. *)
@@ -428,7 +462,15 @@ module Raw = struct
                  (Clear.screen ^ Cursor.move_to ~row:1 ~col:1 ^ Cursor.hide);
                Atomic.set redraw_needed true)))
     in
-    _saved_handlers := Some (prev_tstp, prev_cont)
+    _saved_handlers := Some (prev_tstp, prev_cont);
+    let prev_winch =
+      Stdlib.Sys.signal Stdlib.Sys.sigwinch
+        (Stdlib.Sys.Signal_handle
+           (fun _signum ->
+             invalidate_size_cache ();
+             Atomic.set redraw_needed true))
+    in
+    _saved_winch_handler := Some prev_winch
 
   (** Clean up suspend handlers, restoring previous handlers and clearing saved
       state. *)
@@ -439,6 +481,11 @@ module Raw = struct
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigtstp prev_tstp);
         ignore (Stdlib.Sys.signal Stdlib.Sys.sigcont prev_cont));
     _saved_handlers := None;
+    (match !_saved_winch_handler with
+    | None -> ()
+    | Some prev_winch ->
+        ignore (Stdlib.Sys.signal Stdlib.Sys.sigwinch prev_winch));
+    _saved_winch_handler := None;
     match Atomic.exchange _saved_state None with
     | Some state -> leave state
     | None -> ()
