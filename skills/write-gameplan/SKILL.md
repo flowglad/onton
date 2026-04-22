@@ -128,6 +128,20 @@ Order patches to ship non-functional changes early:
 - **Middle** (`GATED`): Business logic behind flags, new gated endpoints
 - **Late** (`BEHAVIOR`): Wire up UI/API, enable flags, remove old code
 
+### Database Migration Rules
+
+**Co-location**: Any patch that modifies a database schema must also include generating/writing the corresponding migration in that same patch. Never defer migration generation to a later patch — each patch must leave the DB schema and migration files in sync so it is independently mergeable.
+
+**Sequential execution**: Patches that include database migrations MUST be ordered sequentially in the dependency graph — they cannot be parallelized. Migration files typically have sequential numbering, and parallel branches that each generate migrations will produce numbering conflicts that cause merge failures. This negates the benefit of parallelization.
+
+**Practical guidance**: If a gameplan requires multiple schema changes, either:
+1. Bundle them into one patch (if they're related), or
+2. Chain the migration-containing patches sequentially in the dependency graph
+
+Reserve parallelization for patches that don't touch database schemas/migrations.
+
+Different projects may use different migration tools and workflows. When planning patches that involve schema changes, research how migrations work in the relevant part of the codebase and include explicit migration instructions (commands to run, files to create/generate) in those patches. The implementing agent will follow the gameplan as-written — do not assume it will discover the migration workflow on its own.
+
 ## Test-First Pattern
 
 Write test stubs with skip/pending markers BEFORE implementation:

@@ -37,6 +37,18 @@ The `skills/` directory contains Claude Code skills for the planning layers:
   test maps, and a dependency graph. Designed so it's 5-10x easier to review
   the gameplan than the code it produces.
 
+To make these skills available to Claude Code from any project on your
+machine, run:
+
+```sh
+./scripts/install-hooks.sh
+```
+
+This symlinks each skill into `~/.claude/skills/` and installs a git
+`post-checkout` hook that keeps the symlinks pointed at the current checkout
+after branch switches. Running `./scripts/sync-skills.sh` directly has the
+same effect without installing the hook.
+
 ## Onton: the orchestrator
 
 Onton parses a structured gameplan, builds a dependency graph, and spawns
