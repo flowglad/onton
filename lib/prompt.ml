@@ -493,6 +493,7 @@ Do not repeat information already in the description or specs above — add only
 Keep it concise — a few bullet points usually suffices. If you have nothing material to add (the patch is straightforward), write a single line acknowledging that.|}
         vars)
 
+(* Private helper — truncates a Git SHA to 7 chars for prompt display. *)
 let short_sha s = if String.length s <= 7 then s else String.sub s ~pos:0 ~len:7
 
 let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
@@ -569,19 +570,22 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
                          Printf.sprintf "`%s`" (short_sha s))
                     |> String.concat ~sep:", ")
             in
+            (* No trailing newline — the format-string literal supplies the
+               \n\n separator before "The following review comments". *)
             Printf.sprintf
               "\n\n\
                Review anchored at %s. Current branch HEAD is `%s`.\n\
                If a comment is marked `[outdated]` or refers to code that no \
                longer exists at HEAD, reply acknowledging it's addressed in a \
-               later commit and skip — do not re-do the change.\n"
+               later commit and skip — do not re-do the change."
               anchored (short_sha head)
         | _ -> ""
       in
       let reviewed_at_sha_var =
         match reviewed_at_shas with
         | [ sha ] -> short_sha sha
-        | _ :: _ as many -> List.map many ~f:short_sha |> String.concat ~sep:","
+        | _ :: _ as many ->
+            List.map many ~f:short_sha |> String.concat ~sep:", "
         | [] -> ""
       in
       let current_head_sha_var =
@@ -945,6 +949,10 @@ let%test "review prompt formats comments" =
   (* Back-compat: no SHAs → no preamble, no [at=…], no [outdated]. *)
   && (not (String.is_substring result ~substring:"Review anchored at"))
   && (not (String.is_substring result ~substring:"[at="))
+  (* Safe substring check: sha_anchor is empty (no current_head_sha and no
+     comment SHAs), so the preamble text — which itself references the
+     literal `[outdated]` — is never emitted. If this test later adds SHAs,
+     switch to a bullet-line-scoped assertion like the file-level test below. *)
   && not (String.is_substring result ~substring:"[outdated]")
 
 let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
@@ -973,7 +981,6 @@ let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
 
     Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
     If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
-
 
     The following review comments need to be addressed on your PR:
 
