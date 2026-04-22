@@ -657,12 +657,17 @@ type respond_outcome =
   | Respond_stale
   | Respond_skip_empty
   | Respond_pr_body_miss
-      (** Pr_body session finished cleanly but the artifact was missing/empty
-          AND we observed a Write tool_use that did not complete — evidence the
-          agent was blocked mid-call rather than choosing to skip notes. Does
-          NOT flip [pr_body_delivered]; instead increments
-          [pr_body_artifact_miss_count] and lets the reconciler re-enqueue. At
-          cap (>=2) the agent surfaces via [needs_intervention]. *)
+      (** Pr_body session finished cleanly but the PR body was not durably
+          delivered. Two cases:
+          - artifact outcome [`Missing | `Empty] AND a Write tool_use did not
+            complete — evidence the agent was blocked mid-call (e.g. OpenCode's
+            [--dir] sandbox rejecting a write outside the worktree); or
+          - artifact outcome [`Patch_failed] — the notes were written but the
+            subsequent GitHub [update_pr_body] call failed, leaving the PR
+            description stale. Does NOT flip [pr_body_delivered]; instead
+            increments [pr_body_artifact_miss_count] and lets the reconciler
+            re-enqueue. At cap (>=2) the agent surfaces via
+            [needs_intervention]. *)
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
