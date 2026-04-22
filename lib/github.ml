@@ -105,6 +105,7 @@ let graphql_query =
                 nodes {
                   ... on CheckRun {
                     __typename
+                    databaseId
                     name
                     conclusion
                     detailsUrl
@@ -176,9 +177,10 @@ let parse_check_context_node node =
           let details_url = node |> member "detailsUrl" |> to_string_option in
           let description = node |> member "text" |> to_string_option in
           let started_at = node |> member "startedAt" |> to_string_option in
+          let id = node |> member "databaseId" |> to_int_option in
           Some
             Types.Ci_check.
-              { name; conclusion; details_url; description; started_at })
+              { name; conclusion; details_url; description; started_at; id })
   | Some "StatusContext" -> (
       match node |> member "context" |> to_string_option with
       | None -> None
@@ -193,7 +195,14 @@ let parse_check_context_node node =
           let started_at = node |> member "createdAt" |> to_string_option in
           Some
             Types.Ci_check.
-              { name; conclusion; details_url; description; started_at })
+              {
+                name;
+                conclusion;
+                details_url;
+                description;
+                started_at;
+                id = None;
+              })
   | _ -> None
 
 let parse_comment_node ~thread_id node =

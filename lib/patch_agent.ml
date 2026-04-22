@@ -51,6 +51,13 @@ type t = {
       (** Consecutive merge-call failures. After [automerge_max_failures] the
           patch is no longer an automerge candidate until the user re-toggles
           automerge or a successful merge resets the counter. *)
+  delivered_ci_run_ids : int list;
+      (** CheckRun [databaseId]s that have already been delivered to the agent
+          as CI feedback. Maintained sorted and deduplicated. Used so a single
+          failing run is only delivered once, even if [generation] bumps or
+          other state changes cause the Ci payload to be recomposed with the
+          same underlying failures. Cleared on [clear_pr]. Checks without a
+          stable id (StatusContext entries) bypass this dedup. *)
 }
 [@@deriving eq, sexp_of, compare]
 
@@ -120,6 +127,7 @@ let create ~branch patch_id =
     automerge_deadline = None;
     automerge_inflight = false;
     automerge_failure_count = 0;
+    delivered_ci_run_ids = [];
   }
 
 let create_adhoc ~patch_id ~branch ~pr_number =
@@ -159,6 +167,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     automerge_deadline = None;
     automerge_inflight = false;
     automerge_failure_count = 0;
+    delivered_ci_run_ids = [];
   }
 
 let highest_priority t =
@@ -260,6 +269,17 @@ let increment_ci_failure_count t =
 
 let reset_ci_failure_count t = { t with ci_failure_count = 0 }
 let set_ci_checks t checks = { t with ci_checks = checks }
+
+let record_delivered_ci_run_ids t ids =
+  (* Maintain sorted + deduplicated list. Small enough (tens of entries per
+     patch lifetime) that a list is fine; sorting keeps equality checks stable
+     across serialization round-trips. *)
+  let combined = List.rev_append ids t.delivered_ci_run_ids in
+  let deduped =
+    List.dedup_and_sort combined ~compare:(fun a b -> Int.compare a b)
+  in
+  { t with delivered_ci_run_ids = deduped }
+
 let set_branch_blocked t = { t with branch_blocked = true }
 let clear_branch_blocked t = { t with branch_blocked = false }
 let set_current_message_id t current_message_id = { t with current_message_id }
@@ -316,7 +336,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~branch_rebased_onto ~checks_passing ~current_op ~current_message_id
     ~generation ~worktree_path ~branch_blocked ~llm_session_id
     ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ~automerge_failure_count =
+    ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -353,6 +373,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     automerge_deadline;
     automerge_inflight;
     automerge_failure_count;
+    delivered_ci_run_ids;
   }
 
 let set_pr_number t pr_number =
@@ -375,6 +396,7 @@ let clear_pr t =
     ci_failure_count = 0;
     base_branch = None;
     notified_base_branch = None;
+    delivered_ci_run_ids = [];
   }
 
 let start t ~base_branch =

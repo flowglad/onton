@@ -143,6 +143,11 @@ module Ci_check = struct
     details_url : string option;
     description : string option;
     started_at : string option;
+    id : int option; [@yojson.default None]
+        (** GitHub CheckRun [databaseId] when available, [None] for legacy
+            StatusContext entries (which have no stable numeric ID). Used as the
+            dedup key for CI feedback delivery so a single failing run is only
+            delivered once even if [generation] bumps for other reasons. *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 

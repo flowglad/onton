@@ -89,6 +89,12 @@ val set_notified_base_branch : t -> Patch_id.t -> Branch.t -> t
 val increment_ci_failure_count : t -> Patch_id.t -> t
 val reset_ci_failure_count : t -> Patch_id.t -> t
 val set_ci_checks : t -> Patch_id.t -> Ci_check.t list -> t
+
+val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
+(** Record CheckRun [databaseId]s as delivered to the agent for this patch so
+    subsequent CI deliveries do not re-deliver the same runs. See
+    {!Patch_agent.record_delivered_ci_run_ids}. *)
+
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t

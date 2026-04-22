@@ -3131,6 +3131,32 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         ~default:(Branch.to_string main)
                                         ~f:Branch.to_string
                                     in
+                                    (* Lock in CI run dedup before firing the
+                                       session. Recording pre-flight (rather
+                                       than post-) means a session that starts
+                                       but later fails still counts as
+                                       "delivered", so we don't re-nag the
+                                       agent with the same failing run on the
+                                       next tick. *)
+                                    (match payload with
+                                    | Patch_decision.Ci_payload
+                                        { failed_checks } ->
+                                        let ids =
+                                          Base.List.filter_map failed_checks
+                                            ~f:(fun (c : Ci_check.t) ->
+                                              c.Ci_check.id)
+                                        in
+                                        if not (Base.List.is_empty ids) then
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .record_delivered_ci_run_ids orch
+                                                patch_id ids)
+                                    | Patch_decision.Human_payload _
+                                    | Patch_decision.Review_payload _
+                                    | Patch_decision.Pr_body_payload
+                                    | Patch_decision.Merge_conflict_payload ->
+                                        ());
                                     let result =
                                       run_claude_and_handle ~runtime
                                         ~process_mgr ~fs ~project_name ~patch_id

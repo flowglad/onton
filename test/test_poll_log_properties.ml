@@ -52,6 +52,7 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~current_message_id:None ~generation:0 ~worktree_path ~branch_blocked
     ~llm_session_id:None ~automerge_enabled:false ~automerge_deadline:None
     ~automerge_inflight:false ~automerge_failure_count:0
+    ~delivered_ci_run_ids:[]
 
 let make_poll_observation ~branch_in_root ~worktree_path poll_result =
   Patch_controller.

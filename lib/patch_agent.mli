@@ -45,6 +45,11 @@ type t = private {
   automerge_deadline : float option;
   automerge_inflight : bool;
   automerge_failure_count : int;
+  delivered_ci_run_ids : int list;
+      (** CheckRun [databaseId]s already delivered as CI feedback. Sorted and
+          deduplicated. Drives per-run deduplication in the CI delivery path so
+          a single failing run is never delivered twice. Cleared on [clear_pr].
+      *)
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -235,6 +240,12 @@ val clear_branch_blocked : t -> t
 val set_ci_checks : t -> Types.Ci_check.t list -> t
 (** Replace the stored CI check details. *)
 
+val record_delivered_ci_run_ids : t -> int list -> t
+(** Mark the given CheckRun [databaseId]s as delivered so the CI feedback path
+    will not re-deliver them. Merges with the existing set, sorts, and dedups.
+    [ids] should contain only CheckRuns that carried an id (StatusContext
+    entries without stable numeric ids cannot be deduped). *)
+
 val reset_busy : t -> t
 (** Reset a stale [busy] flag from a crashed session. If [busy], clears it.
     [needs_intervention] is derived automatically. No-op if not busy. *)
@@ -338,6 +349,7 @@ val restore :
   automerge_deadline:float option ->
   automerge_inflight:bool ->
   automerge_failure_count:int ->
+  delivered_ci_run_ids:int list ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

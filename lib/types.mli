@@ -111,6 +111,11 @@ module Ci_check : sig
     details_url : string option;
     description : string option;
     started_at : string option;
+    id : int option;
+        (** GitHub CheckRun [databaseId] when available, [None] for legacy
+            StatusContext entries (which expose no stable numeric ID). Used as
+            the dedup key for CI feedback delivery so a single failing run is
+            only delivered once. *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 
