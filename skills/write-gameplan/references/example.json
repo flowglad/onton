@@ -125,14 +125,12 @@
       "changes": [
         "Add pending test: merged patch is always skipped (spec: merged? p -> disposition p = skip)",
         "Add pending test: busy patch is never delivered (spec: busy? p -> disposition p ~= deliver)",
-        "Add pending test: CI failure count >= 3 yields Cap_reached (spec: ci-failure-count p >= 3 -> needs-intervention? p)",
-        "Add pending test: merged patch conflict is Noop (spec: merged? p -> on-conflict p = noop)"
+        "Add pending test: CI failure count >= 3 yields Cap_reached (spec: ci-failure-count p >= 3 -> needs-intervention? p)"
       ],
       "testStubsIntroduced": [
         "Patch_decision > merged patch is always skipped",
         "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3",
-        "Patch_decision > merged patch conflict is Noop"
+        "Patch_decision > CI failure cap at 3"
       ],
       "testStubsImplemented": null,
       "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only. No new invariants are\n> declared — stubs are pending markers implemented in Patch 3.\n> Redeclare Patch 1's types here so the module is self-contained.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n"
@@ -163,8 +161,7 @@
       "testStubsImplemented": [
         "Patch_decision > merged patch is always skipped",
         "Patch_decision > busy patch is never delivered",
-        "Patch_decision > CI failure cap at 3",
-        "Patch_decision > merged patch conflict is Noop"
+        "Patch_decision > CI failure cap at 3"
       ],
       "spec": "module EXTRACT_DECISION_PATCH_3.\n\n> Patch 3 implements the pure decision logic.\n> These invariants are derived from the Pantagruel spec.\n\nPatch.\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n\nmerged? p: Patch => Bool.\nbusy? p: Patch => Bool.\nci-failure-count p: Patch => Nat0.\nneeds-intervention? p: Patch => Bool.\n\ndisposition p: Patch => Disposition.\n---\n> Merged patches are always skipped.\nall p: Patch, merged? p | disposition p = skip.\n\n> Busy patches are never delivered.\nall p: Patch, busy? p | disposition p ~= deliver.\n\n> CI failure cap triggers intervention.\nall p: Patch, ci-failure-count p >= 3 | needs-intervention? p.\n"
     },
@@ -206,12 +203,6 @@
     },
     {
       "testName": "Patch_decision > CI failure cap at 3",
-      "file": "test/test_patch_decision.ml",
-      "stubPatch": 2,
-      "implPatch": 3
-    },
-    {
-      "testName": "Patch_decision > merged patch conflict is Noop",
       "file": "test/test_patch_decision.ml",
       "stubPatch": 2,
       "implPatch": 3

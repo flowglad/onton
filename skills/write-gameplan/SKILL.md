@@ -182,7 +182,7 @@ The `spec` and `finalStateSpec` fields contain source code in a formal specifica
 We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for writing formal specifications with domains, rules, and invariants organized into progressive-disclosure chapters.
 
 - **Language reference**: `https://raw.githubusercontent.com/subsetpark/pantagruel/refs/heads/master/REFERENCE.md` — fetch this for syntax details
-- **Validation (parse + type-check)**: extract spec strings to `.pant` files and run `pant <file.pant>`. Bare `pant` type-checks; exit code 0 and empty output mean the spec is well-formed. If `pant` is not installed, install via Homebrew: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`
+- **Validation (parse + type-check)**: extract spec strings to `.pant` files and run `pant <file.pant>`. Bare `pant` type-checks; exit code 0 means the spec is well-formed (pant 0.22 is quiet on success — no stdout or stderr). If `pant` is not installed, install via Homebrew: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`
 - **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver
 - **Module naming**: final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_DECISION`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
 - **Style**:
