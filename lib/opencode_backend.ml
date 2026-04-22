@@ -175,6 +175,19 @@ let%test "parse_event tool_use edit normalizes filePath, leaves other keys" =
         };
     ]
 
+let%test "parse_event tool_use write normalizes filePath key" =
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"write","state":{"status":"completed","input":{"filePath":"/tmp/b.txt","content":"hello"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        {
+          name = "Write";
+          input = {|{"file_path":"/tmp/b.txt","content":"hello"}|};
+        };
+    ]
+
 let%test "parse_event step_start emits session_init" =
   let line =
     {|{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}|}
