@@ -505,15 +505,15 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
         | Some n -> Int.to_string (Pr_number.to_int n)
         | None -> "{pr_number}"
       in
-      (* Only claim outdated-ness when GitHub has given us a signal. If
-         [commit] and [originalCommit] differ, GitHub re-anchored the comment
-         to a later commit (line moved). If [line] is null but we do have an
-         original SHA, GitHub detached the comment from the file. With no SHA
-         info at all, say nothing — matches pre-SHA behavior. *)
+      (* Only claim outdated-ness when GitHub has given us a strong signal:
+         [commit] and [originalCommit] differ, meaning GitHub re-anchored
+         the comment to a later commit (line moved or detached). A null
+         [line] alone is ambiguous — it also covers file-level comments,
+         which are not outdated. With no SHA info, say nothing — matches
+         pre-SHA behavior. *)
       let is_outdated (c : Comment.t) =
         match (c.Comment.commit_sha, c.Comment.original_commit_sha) with
         | Some cur, Some orig when not (String.equal cur orig) -> true
-        | _, Some _ when Option.is_none c.Comment.line -> true
         | _ -> false
       in
       let formatted =
@@ -1008,3 +1008,28 @@ let%test "review prompt marks outdated comments" =
   in
   String.is_substring result ~substring:"[at=47525fd]"
   && String.is_substring result ~substring:"[outdated]"
+
+let%test "review prompt does not mark file-level comments as outdated" =
+  let comments : Comment.t list =
+    [
+      Comment.
+        {
+          id = Comment_id.of_int 1;
+          thread_id = Some "PRRT_filelevel";
+          body = "File-level feedback.";
+          path = Some "lib/foo.ml";
+          line = None;
+          (* File-level comments have null line by design, and GitHub
+             leaves commit_sha equal to original_commit_sha. *)
+          commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        };
+    ]
+  in
+  let result =
+    render_review_prompt ~project_name:"test"
+      ~current_head_sha:"47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" comments
+  in
+  (* The preamble references "[outdated]" literally; the bullet-line marker is
+     distinguished by the trailing colon before the body. *)
+  not (String.is_substring result ~substring:"[outdated]:")
