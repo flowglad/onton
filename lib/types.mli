@@ -80,6 +80,8 @@ module Comment : sig
     body : string;
     path : string option;
     line : int option;
+    commit_sha : string option; [@yojson.default None]
+    original_commit_sha : string option; [@yojson.default None]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 

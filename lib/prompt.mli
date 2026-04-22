@@ -38,7 +38,11 @@ val render_pr_body_prompt :
   string
 
 val render_review_prompt :
-  project_name:string -> ?pr_number:Pr_number.t -> Comment.t list -> string
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  ?current_head_sha:string ->
+  Comment.t list ->
+  string
 
 val render_ci_failure_prompt :
   project_name:string -> ?pr_number:Pr_number.t -> Ci_check.t list -> string

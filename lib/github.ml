@@ -93,6 +93,7 @@ let graphql_query =
       mergeable
       mergeStateStatus
       headRefName
+      headRefOid
       baseRefName
       headRepositoryOwner { login }
       commits(last: 1) {
@@ -130,12 +131,16 @@ let graphql_query =
         nodes {
           id
           isResolved
+          # [comments(first: 1)] only returns the thread opener. If a caller
+          # ever needs per-reply SHAs, raise this limit and add pagination.
           comments(first: 1) {
             nodes {
               databaseId
               body
               path
               line
+              commit { oid }
+              originalCommit { oid }
             }
           }
         }
@@ -215,7 +220,20 @@ let parse_comment_node ~thread_id node =
   let body = node |> member "body" |> to_string in
   let path = node |> member "path" |> to_string_option in
   let line = node |> member "line" |> to_int_option in
-  Types.Comment.{ id; thread_id; body; path; line }
+  (* If [field] is absent or null we return [None]; if it's present but the
+     nested [oid] is missing/non-string, [to_string_option] also returns [None].
+     That second case is a GraphQL-schema-change red flag, but there's no
+     structured logger here — callers treat a [None] SHA as "no anchor info",
+     which is the safest fallback. *)
+  let oid_of field =
+    match node |> member field with
+    | `Null -> None
+    | obj -> obj |> member "oid" |> to_string_option
+  in
+  let commit_sha = oid_of "commit" in
+  let original_commit_sha = oid_of "originalCommit" in
+  Types.Comment.
+    { id; thread_id; body; path; line; commit_sha; original_commit_sha }
 
 let parse_response_json ~owner json =
   let open Yojson.Safe.Util in
@@ -307,6 +325,7 @@ let parse_response_json ~owner json =
               pr |> member "headRefName" |> to_string_option
               |> Option.map ~f:Types.Branch.of_string
             in
+            let head_oid = pr |> member "headRefOid" |> to_string_option in
             let base_branch =
               pr |> member "baseRefName" |> to_string_option
               |> Option.map ~f:Types.Branch.of_string
@@ -332,6 +351,7 @@ let parse_response_json ~owner json =
                 comments;
                 unresolved_comment_count;
                 head_branch;
+                head_oid;
                 base_branch;
                 is_fork;
               })
