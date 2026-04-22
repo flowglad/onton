@@ -209,6 +209,11 @@ let parse_comment_node ~thread_id node =
   let body = node |> member "body" |> to_string in
   let path = node |> member "path" |> to_string_option in
   let line = node |> member "line" |> to_int_option in
+  (* If [field] is absent or null we return [None]; if it's present but the
+     nested [oid] is missing/non-string, [to_string_option] also returns [None].
+     That second case is a GraphQL-schema-change red flag, but there's no
+     structured logger here — callers treat a [None] SHA as "no anchor info",
+     which is the safest fallback. *)
   let oid_of field =
     match node |> member field with
     | `Null -> None

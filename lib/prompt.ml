@@ -548,6 +548,10 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
         | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
         | None -> ""
       in
+      (* Comments without [original_commit_sha] are dropped here. If the batch
+         mixes SHA-bearing and SHA-less comments, the preamble only lists the
+         SHA-bearing ones and the SHA-less entries simply omit the [at=…]
+         annotation — by design, since we'd be fabricating an anchor otherwise. *)
       let reviewed_at_shas =
         List.filter_map comments ~f:(fun (c : Comment.t) ->
             c.Comment.original_commit_sha)
@@ -1030,6 +1034,13 @@ let%test "review prompt does not mark file-level comments as outdated" =
     render_review_prompt ~project_name:"test"
       ~current_head_sha:"47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" comments
   in
-  (* The preamble references "[outdated]" literally; the bullet-line marker is
-     distinguished by the trailing colon before the body. *)
-  not (String.is_substring result ~substring:"[outdated]:")
+  (* The preamble references "[outdated]" literally, so we can't just grep the
+     whole result. Assert directly on the bullet line that contains the comment
+     body — this stays correct even if the bullet format changes. *)
+  let lines = String.split_lines result in
+  match
+    List.find lines ~f:(fun l ->
+        String.is_substring l ~substring:"File-level feedback.")
+  with
+  | None -> false
+  | Some line -> not (String.is_substring line ~substring:"[outdated]")
