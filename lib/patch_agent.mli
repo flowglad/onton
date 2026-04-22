@@ -211,10 +211,13 @@ val reset_no_commits_push_count : t -> t
     push, because the agent has demonstrated it can commit. *)
 
 val increment_pr_body_artifact_miss_count : t -> t
-(** Record a Pr_body session that ended with a missing/empty artifact AND an
-    observed non-completed Write tool call. After 2 such sessions,
-    [needs_intervention] triggers. Called from
-    [Orchestrator.apply_respond_outcome] on [Respond_pr_body_miss]. *)
+(** Record a Pr_body session that ended without durable PR body delivery. Called
+    from [Orchestrator.apply_respond_outcome] on [Respond_pr_body_miss], which
+    covers two cases: (a) missing/empty artifact AND an observed non-completed
+    Write tool call (agent blocked mid-call); (b)
+    [artifact_outcome = `Patch_failed] (notes written but the GitHub
+    [update_pr_body] call failed). After 2 such sessions, [needs_intervention]
+    triggers. *)
 
 val reset_pr_body_artifact_miss_count : t -> t
 (** Reset [pr_body_artifact_miss_count] to 0. *)
