@@ -65,9 +65,10 @@ let parse_event (line : string) : Types.Stream_event.t list =
             | `Null -> ""
             | v -> Yojson.Safe.to_string (normalize_input_json ~tool:raw_tool v)
           in
+          let status = member "status" state |> to_string_option in
           [
             Types.Stream_event.Tool_use
-              { name = normalize_tool_name raw_tool; input };
+              { name = normalize_tool_name raw_tool; input; status };
           ]
       | Some "step_finish" -> (
           let part = member "part" json in
@@ -149,7 +150,11 @@ let%test "parse_event tool_use bash normalizes name" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Tool_use
-        { name = "Bash"; input = {|{"command":"ls -la"}|} };
+        {
+          name = "Bash";
+          input = {|{"command":"ls -la"}|};
+          status = Some "completed";
+        };
     ]
 
 let%test "parse_event tool_use read normalizes name and filePath key" =
@@ -159,7 +164,11 @@ let%test "parse_event tool_use read normalizes name and filePath key" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Tool_use
-        { name = "Read"; input = {|{"file_path":"/tmp/foo.txt"}|} };
+        {
+          name = "Read";
+          input = {|{"file_path":"/tmp/foo.txt"}|};
+          status = Some "completed";
+        };
     ]
 
 let%test "parse_event tool_use edit normalizes filePath, leaves other keys" =
@@ -172,6 +181,7 @@ let%test "parse_event tool_use edit normalizes filePath, leaves other keys" =
         {
           name = "Edit";
           input = {|{"file_path":"/tmp/a","oldString":"x","newString":"y"}|};
+          status = Some "completed";
         };
     ]
 
@@ -185,7 +195,50 @@ let%test "parse_event tool_use write normalizes filePath key" =
         {
           name = "Write";
           input = {|{"file_path":"/tmp/b.txt","content":"hello"}|};
+          status = Some "completed";
         };
+    ]
+
+let%test "parse_event tool_use pending status survives parse" =
+  (* OpenCode emits tool_use events with status=pending before the tool runs
+     (e.g. while awaiting sandbox approval). We surface the status so the
+     supervisor can distinguish a tool call that completed from one that
+     was announced but never executed. *)
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"write","state":{"status":"pending","input":{"filePath":"/tmp/b.txt","content":"hello"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        {
+          name = "Write";
+          input = {|{"file_path":"/tmp/b.txt","content":"hello"}|};
+          status = Some "pending";
+        };
+    ]
+
+let%test "parse_event tool_use running status survives parse" =
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"running","input":{"command":"sleep 10"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        {
+          name = "Bash";
+          input = {|{"command":"sleep 10"}|};
+          status = Some "running";
+        };
+    ]
+
+let%test "parse_event tool_use missing status parses as None" =
+  let line =
+    {|{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"input":{"command":"ls"}}}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Tool_use
+        { name = "Bash"; input = {|{"command":"ls"}|}; status = None };
     ]
 
 let%test "parse_event step_start emits session_init" =

@@ -464,10 +464,12 @@ let read_artifact_file path =
 
 (** Apply the agent-authored notes artifact to the PR. Composes the final body
     as: gameplan description + specs + Implementation Notes (from artifact).
-    Falls back to keeping the existing PR body if the artifact is missing or
-    empty. *)
+    Returns a tag describing the outcome so the caller can correlate with
+    session-level signals (e.g. a Missing artifact alongside a failed Write tool
+    call indicates the agent was blocked mid-call, not that it chose to skip
+    notes). *)
 let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
-    ~pr_number ~patch ~gameplan =
+    ~pr_number ~patch ~gameplan : [ `Ok | `Missing | `Empty | `Patch_failed ] =
   let artifact_path =
     Project_store.pr_body_artifact_path ~project_name ~patch_id
   in
@@ -476,10 +478,12 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
       log_event runtime ~patch_id
         (Printf.sprintf
            "pr-body: artifact missing at %s; keeping initial PR body"
-           artifact_path)
+           artifact_path);
+      `Missing
   | Some notes when String.length (String.trim notes) = 0 ->
       log_event runtime ~patch_id
-        "pr-body: artifact empty; keeping initial PR body"
+        "pr-body: artifact empty; keeping initial PR body";
+      `Empty
   | Some notes -> (
       let description =
         Prompt.render_pr_description ~project_name patch gameplan
@@ -493,10 +497,12 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
       | Ok () ->
           log_event runtime ~patch_id
             (Printf.sprintf "pr-body: PATCHed PR #%d"
-               (Pr_number.to_int pr_number))
+               (Pr_number.to_int pr_number));
+          `Ok
       | Error e ->
           log_event runtime ~patch_id
-            (Printf.sprintf "pr-body: PATCH failed — %s" (Github.show_error e)))
+            (Printf.sprintf "pr-body: PATCH failed — %s" (Github.show_error e));
+          `Patch_failed)
 
 (** Terminal failure — forces [Given_up] so [complete] raises intervention. Used
     for non-retryable errors (patch not found, PR discovery failed). *)
@@ -739,7 +745,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.apply_session_result orch patch_id
             Orchestrator.Session_give_up);
-      `Failed
+      (`Failed, [])
   | (`Resume _ | `Fresh) as mode -> (
       let resume_session, is_fresh =
         match mode with `Resume id -> (Some id, false) | `Fresh -> (None, true)
@@ -752,7 +758,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.apply_session_result orch patch_id
                 Orchestrator.Session_worktree_missing);
-          `Failed
+          (`Failed, [])
       | Some worktree_path ->
           let cwd = Eio.Path.(fs / worktree_path) in
           let text_buf =
@@ -784,6 +790,13 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           in
           let error_buf = Buffer.create 256 in
           let tool_count = ref 0 in
+          (* Accumulates (tool_name, status) for Tool_use events that report a
+             non-"completed" status (OpenCode surfaces [pending]/[running] or
+             error states; other backends do not populate [status] and so never
+             contribute here). Propagated to the caller so artifact-backed
+             phases like Pr_body can tell "agent chose not to write" apart
+             from "a tool call was announced but never executed". *)
+          let tool_failures = ref [] in
           let pr_found = ref false in
           let needle_len =
             String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
@@ -819,8 +832,12 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                               (Pr_number.to_int pr_number)));
                       on_pr_detected pr_number
                   | None -> ())
-            | Types.Stream_event.Tool_use { name; input } ->
+            | Types.Stream_event.Tool_use { name; input; status } ->
                 tool_count := !tool_count + 1;
+                (match status with
+                | Some s when not (String.equal s "completed") ->
+                    tool_failures := (name, s) :: !tool_failures
+                | Some _ | None -> ());
                 let summary =
                   try
                     let json = Yojson.Safe.from_string input in
@@ -936,6 +953,22 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                      backend.Llm_backend.name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
+          (* Observability: if any tool_use events reported a non-"completed"
+             status (OpenCode's sandbox/rejection/pending states), summarize
+             them so the disconnect is visible in the activity log even when
+             the session otherwise looks healthy. *)
+          (match !tool_failures with
+          | [] -> ()
+          | failures ->
+              let rendered =
+                List.rev failures
+                |> List.map (fun (n, s) -> Printf.sprintf "%s[%s]" n s)
+                |> String.concat ", "
+              in
+              log_event runtime ~patch_id
+                (Printf.sprintf
+                   "Session ended with %d non-completed tool call(s) (%s): %s"
+                   (List.length failures) backend.Llm_backend.name rendered));
           (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
              is idempotent (Push_up_to_date when nothing new), and lease-safe
@@ -1019,7 +1052,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
           in
           Event_log.log_complete event_log ~patch_id
             ~result:final_session_result ~agent_before ~agent_after;
-          final_user_result)
+          (final_user_result, List.rev !tool_failures))
 
 (** {1 Fibers} *)
 
@@ -2404,14 +2437,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                      REST API (Github.list_prs) after Claude
                                      finishes *)
                                       let on_pr_detected _pr_number = () in
-                                      run_claude_and_handle ~runtime
-                                        ~process_mgr ~fs ~project_name ~patch_id
-                                        ~repo_root:config.repo_root ~prompt
-                                        ~agent ~owner:config.github_owner
-                                        ~repo:config.github_repo ~on_pr_detected
-                                        ~transcripts
-                                        ~user_config:config.user_config
-                                        ~worktree_mutex ~backend ~event_log)
+                                      let r, _tool_failures =
+                                        run_claude_and_handle ~runtime
+                                          ~process_mgr ~fs ~project_name
+                                          ~patch_id ~repo_root:config.repo_root
+                                          ~prompt ~agent
+                                          ~owner:config.github_owner
+                                          ~repo:config.github_repo
+                                          ~on_pr_detected ~transcripts
+                                          ~user_config:config.user_config
+                                          ~worktree_mutex ~backend ~event_log
+                                      in
+                                      r)
                           in
                           let start_outcome =
                             match result with
@@ -2862,7 +2899,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         else base_changed_prefix ^ "\n" ^ raw
                                       in
                                       let on_pr_detected _pr_number = () in
-                                      let result =
+                                      let result, _tool_failures =
                                         run_claude_and_handle ~runtime
                                           ~process_mgr ~fs ~project_name
                                           ~patch_id ~repo_root:config.repo_root
@@ -3163,7 +3200,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     | Patch_decision.Pr_body_payload
                                     | Patch_decision.Merge_conflict_payload ->
                                         ());
-                                    let result =
+                                    let result, tool_failures =
                                       run_claude_and_handle ~runtime
                                         ~process_mgr ~fs ~project_name ~patch_id
                                         ~repo_root:config.repo_root ~prompt
@@ -3184,37 +3221,56 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     | _ -> ());
                                     (* Artifact-driven phase (Pr_body): read
                                    the agent's artifact and PATCH the PR body.
-                                   Falls back gracefully if the artifact is
-                                   missing — pr_body_delivered flips true via
-                                   apply_respond_outcome on Respond_ok
-                                   regardless, so we don't loop. *)
+                                   When the artifact is missing AND we saw a
+                                   Write tool call that did not complete, the
+                                   agent was likely blocked mid-call (e.g. by
+                                   OpenCode's --dir sandbox) — signal retry
+                                   via Respond_pr_body_miss so the reconciler
+                                   re-enqueues Pr_body once before escalating
+                                   to needs_intervention. When the artifact is
+                                   missing but we saw no Write failure, the
+                                   agent legitimately chose not to add notes:
+                                   fall through to Respond_ok as before. *)
                                     let session_ok =
                                       match result with
                                       | `Ok -> true
                                       | _ -> false
                                     in
-                                    (if session_ok then
-                                       match payload with
-                                       | Patch_decision.Pr_body_payload ->
-                                           let pr =
-                                             Base.Option.value_exn pr_number
-                                           in
-                                           let patch =
-                                             Base.List.find_exn
-                                               gameplan.Gameplan.patches
-                                               ~f:(fun (p : Patch.t) ->
-                                                 Patch_id.equal p.Patch.id
-                                                   patch_id)
-                                           in
-                                           apply_pr_body_artifact ~runtime ~net
-                                             ~github ~project_name ~patch_id
-                                             ~pr_number:pr ~patch ~gameplan
-                                       | Patch_decision.Human_payload _
-                                       | Patch_decision.Ci_payload _
-                                       | Patch_decision.Review_payload _
-                                       | Patch_decision.Merge_conflict_payload
-                                         ->
-                                           ());
+                                    let result =
+                                      if session_ok then
+                                        match payload with
+                                        | Patch_decision.Pr_body_payload -> (
+                                            let pr =
+                                              Base.Option.value_exn pr_number
+                                            in
+                                            let patch =
+                                              Base.List.find_exn
+                                                gameplan.Gameplan.patches
+                                                ~f:(fun (p : Patch.t) ->
+                                                  Patch_id.equal p.Patch.id
+                                                    patch_id)
+                                            in
+                                            let artifact_outcome =
+                                              apply_pr_body_artifact ~runtime
+                                                ~net ~github ~project_name
+                                                ~patch_id ~pr_number:pr ~patch
+                                                ~gameplan
+                                            in
+                                            match
+                                              Patch_decision
+                                              .classify_pr_body_respond
+                                                ~artifact_outcome ~tool_failures
+                                            with
+                                            | `Pr_body_miss -> `Pr_body_miss
+                                            | `Ok -> result)
+                                        | Patch_decision.Human_payload _
+                                        | Patch_decision.Ci_payload _
+                                        | Patch_decision.Review_payload _
+                                        | Patch_decision.Merge_conflict_payload
+                                          ->
+                                            result
+                                      else result
+                                    in
                                     result)
                       in
                       let respond_outcome =
@@ -3223,6 +3279,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                         | `Skip_empty -> Orchestrator.Respond_skip_empty
                         | `Failed -> Orchestrator.Respond_failed
                         | `Retry_push -> Orchestrator.Respond_retry_push
+                        | `Pr_body_miss -> Orchestrator.Respond_pr_body_miss
                         | `Ok -> Orchestrator.Respond_ok
                       in
                       Runtime.update_orchestrator runtime (fun orch ->
@@ -3241,6 +3298,29 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                 (Printf.sprintf
                                    "Patch %s: session failed — human review \
                                     needed"
+                                   (Patch_id.to_string patch_id))
+                              ()
+                      | Orchestrator.Respond_pr_body_miss ->
+                          (* Blocked mid-Write (e.g. sandbox rejection). The
+                             reconciler will re-enqueue Pr_body; at cap (>=2)
+                             needs_intervention fires and the TUI surfaces the
+                             stuck patch. *)
+                          let agent =
+                            Runtime.read runtime (fun snap ->
+                                Orchestrator.agent snap.Runtime.orchestrator
+                                  patch_id)
+                          in
+                          log_event runtime ~patch_id
+                            (Printf.sprintf
+                               "pr-body: retrying — artifact missing with \
+                                observed Write failure (miss count: %d)"
+                               agent.Patch_agent.pr_body_artifact_miss_count);
+                          if Patch_agent.needs_intervention agent then
+                            set_status ~level:Tui.Error
+                              ~text:
+                                (Printf.sprintf
+                                   "Patch %s: pr-body artifact repeatedly \
+                                    missing — human review needed"
                                    (Patch_id.to_string patch_id))
                               ()
                       | Orchestrator.Respond_ok ->

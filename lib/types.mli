@@ -166,7 +166,17 @@ end
 module Stream_event : sig
   type t =
     | Text_delta of string
-    | Tool_use of { name : string; input : string }
+    | Tool_use of {
+        name : string;
+        input : string;
+        status : string option;
+            (** Tool-call lifecycle status from the backend stream, when
+                exposed. [Some "completed"] means the tool returned a result;
+                any other [Some _] (e.g. [Some "pending"], [Some "running"],
+                backend-specific error states) indicates the tool was announced
+                but did not finish normally. [None] for backends that do not
+                surface per-tool state (all non-OpenCode backends today). *)
+      }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
     | Session_init of { session_id : string }

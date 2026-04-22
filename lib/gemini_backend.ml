@@ -43,7 +43,7 @@ let parse_event (line : string) : Types.Stream_event.t list =
             | `Null -> ""
             | v -> Yojson.Safe.to_string v
           in
-          [ Types.Stream_event.Tool_use { name; input } ]
+          [ Types.Stream_event.Tool_use { name; input; status = None } ]
       | Some "result" -> (
           let status = member "status" json |> to_string_option in
           match status with
@@ -137,7 +137,7 @@ let%test "parse_event tool_use" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Tool_use
-        { name = "list_directory"; input = {|{"dir_path":"."}|} };
+        { name = "list_directory"; input = {|{"dir_path":"."}|}; status = None };
     ]
 
 let%test "parse_event tool_result is ignored" =

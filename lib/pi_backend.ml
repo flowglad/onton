@@ -39,7 +39,7 @@ let parse_event (line : string) : Types.Stream_event.t list =
                 | `Null -> ""
                 | v -> Yojson.Safe.to_string v
               in
-              [ Types.Stream_event.Tool_use { name; input } ]
+              [ Types.Stream_event.Tool_use { name; input; status = None } ]
           | _ -> [])
       | Some "agent_end" ->
           [
@@ -121,7 +121,7 @@ let%test "parse_event toolcall_end" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Tool_use
-        { name = "bash"; input = {|{"command":"ls -la"}|} };
+        { name = "bash"; input = {|{"command":"ls -la"}|}; status = None };
     ]
 
 let%test "parse_event agent_end" =

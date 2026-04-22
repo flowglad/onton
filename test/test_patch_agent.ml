@@ -626,6 +626,44 @@ let () =
           let a = rebase a ~base_branch:(Branch.of_string "new-base") in
           let a = complete a in
           not (needs_intervention a));
+      (* -- 1 pr_body miss does NOT trigger needs_intervention (boundary) -- *)
+      Test.make ~name:"1 pr_body miss no intervention (boundary)" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = increment_pr_body_artifact_miss_count a in
+          not (needs_intervention a));
+      (* -- 2 pr_body misses triggers needs_intervention -- *)
+      Test.make ~name:"2 pr_body misses triggers intervention" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = increment_pr_body_artifact_miss_count a in
+          let a = increment_pr_body_artifact_miss_count a in
+          needs_intervention a);
+      (* -- reset_intervention_state zeros the pr_body miss counter -- *)
+      Test.make
+        ~name:"reset_intervention_state clears pr_body_artifact_miss_count"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = increment_pr_body_artifact_miss_count a in
+          let a = increment_pr_body_artifact_miss_count a in
+          let triggered = needs_intervention a in
+          let a = reset_intervention_state a in
+          triggered
+          && (not (needs_intervention a))
+          && a.pr_body_artifact_miss_count = 0);
       (* -- reset_intervention_state clears derived intervention -- *)
       Test.make ~name:"reset_intervention_state clears intervention" ~count:1
         Gen.(pure (pid0, br0))
@@ -679,13 +717,14 @@ let () =
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
-              ~start_attempts_without_pr:0 ~conflict_noop_count:0
-              ~no_commits_push_count:0 ~branch_rebased_onto:None
-              ~checks_passing:false ~current_op:None ~current_message_id:None
-              ~generation:0 ~worktree_path:None ~branch_blocked:false
-              ~llm_session_id:None ~automerge_enabled:false
-              ~automerge_deadline:None ~automerge_inflight:false
-              ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+              ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+              ~conflict_noop_count:0 ~no_commits_push_count:0
+              ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+              ~current_message_id:None ~generation:0 ~worktree_path:None
+              ~branch_blocked:false ~llm_session_id:None
+              ~automerge_enabled:false ~automerge_deadline:None
+              ~automerge_inflight:false ~automerge_failure_count:0
+              ~delivered_ci_run_ids:[]
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -758,13 +797,14 @@ let () =
               ~ci_failure_count:0 ~session_fallback:Fresh_available
               ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
-              ~start_attempts_without_pr:0 ~conflict_noop_count:0
-              ~no_commits_push_count:0 ~branch_rebased_onto:None
-              ~checks_passing:false ~current_op:None ~current_message_id:None
-              ~generation:0 ~worktree_path:None ~branch_blocked:false
-              ~llm_session_id:None ~automerge_enabled:false
-              ~automerge_deadline:None ~automerge_inflight:false
-              ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+              ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+              ~conflict_noop_count:0 ~no_commits_push_count:0
+              ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+              ~current_message_id:None ~generation:0 ~worktree_path:None
+              ~branch_blocked:false ~llm_session_id:None
+              ~automerge_enabled:false ~automerge_deadline:None
+              ~automerge_inflight:false ~automerge_failure_count:0
+              ~delivered_ci_run_ids:[]
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in

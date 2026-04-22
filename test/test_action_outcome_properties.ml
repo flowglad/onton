@@ -71,6 +71,7 @@ let () =
       Orchestrator.Respond_failed;
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_skip_empty;
+      Orchestrator.Respond_pr_body_miss;
     ]
   in
   let respond_kinds =
@@ -276,6 +277,7 @@ let () =
       Orchestrator.Respond_skip_empty;
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_stale;
+      Orchestrator.Respond_pr_body_miss;
     ]
   in
   let prop =
@@ -296,3 +298,30 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-9 passed"
+
+(* ========== AO-10: Respond_pr_body_miss semantics ========== *)
+
+(* Respond_pr_body_miss must: (a) clear busy so the reconciler can re-enqueue,
+   (b) leave pr_body_delivered=false so the re-enqueue actually happens,
+   (c) increment pr_body_artifact_miss_count by exactly 1 each call. This
+   encodes the retry-once-then-intervene contract. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"AO-10: Respond_pr_body_miss retry semantics"
+      (QCheck2.Gen.return ()) (fun () ->
+        let orch, patches, gameplan, pid = bootstrap_one () in
+        let orch = make_busy orch patches gameplan pid Operation_kind.Pr_body in
+        let before =
+          (Orchestrator.agent orch pid).Patch_agent.pr_body_artifact_miss_count
+        in
+        let orch =
+          Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+            Orchestrator.Respond_pr_body_miss
+        in
+        let a = Orchestrator.agent orch pid in
+        (not a.Patch_agent.busy)
+        && (not a.Patch_agent.pr_body_delivered)
+        && a.Patch_agent.pr_body_artifact_miss_count = before + 1)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-10 passed"

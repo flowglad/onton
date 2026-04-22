@@ -30,6 +30,13 @@ type t = private {
   merge_ready : bool;
   is_draft : bool;
   pr_body_delivered : bool;
+  pr_body_artifact_miss_count : int;
+      (** Consecutive Pr_body sessions that ended with a missing artifact AND
+          evidence of a non-completed Write tool call (see
+          [Orchestrator.Respond_pr_body_miss]). Contributes to
+          [needs_intervention] at [>= 2]. Zero in fresh snapshots and older
+          snapshots that didn't persist the field. Reset by
+          [reset_intervention_state]. *)
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
@@ -75,7 +82,8 @@ val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
     [ci_failure_count >= 3], [session_fallback = Given_up],
     [(not has_pr) && start_attempts_without_pr >= 2],
-    [conflict_noop_count >= 2], or [no_commits_push_count >= 2]. *)
+    [conflict_noop_count >= 2], [no_commits_push_count >= 2], or
+    [pr_body_artifact_miss_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -200,6 +208,15 @@ val increment_no_commits_push_count : t -> t
 val reset_no_commits_push_count : t -> t
 (** Reset [no_commits_push_count] to 0. Called on [Session_ok] with a successful
     push, because the agent has demonstrated it can commit. *)
+
+val increment_pr_body_artifact_miss_count : t -> t
+(** Record a Pr_body session that ended with a missing/empty artifact AND an
+    observed non-completed Write tool call. After 2 such sessions,
+    [needs_intervention] triggers. Called from
+    [Orchestrator.apply_respond_outcome] on [Respond_pr_body_miss]. *)
+
+val reset_pr_body_artifact_miss_count : t -> t
+(** Reset [pr_body_artifact_miss_count] to 0. *)
 
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
@@ -334,6 +351,7 @@ val restore :
   merge_ready:bool ->
   is_draft:bool ->
   pr_body_delivered:bool ->
+  pr_body_artifact_miss_count:int ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->

@@ -71,7 +71,10 @@ let parse_event (line : string) : Types.Stream_event.t list =
                   let input =
                     Yojson.Safe.to_string (`Assoc [ ("command", `String cmd) ])
                   in
-                  [ Types.Stream_event.Tool_use { name = "Bash"; input } ]
+                  [
+                    Types.Stream_event.Tool_use
+                      { name = "Bash"; input; status = None };
+                  ]
               | _ -> [])
           | _ -> [])
       | Some "thread.started" -> (
@@ -183,7 +186,7 @@ let%test "parse_event command_execution started encodes input as JSON" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Tool_use
-        { name = "Bash"; input = {|{"command":"ls -la"}|} };
+        { name = "Bash"; input = {|{"command":"ls -la"}|}; status = None };
     ]
 
 let%test "parse_event command_execution input survives JSON parse + extract" =
@@ -196,7 +199,10 @@ let%test "parse_event command_execution input survives JSON parse + extract" =
     Yojson.Safe.to_string (`Assoc [ ("command", `String {|echo "hi" && ls|}) ])
   in
   List.equal Types.Stream_event.equal (parse_event line)
-    [ Types.Stream_event.Tool_use { name = "Bash"; input = expected } ]
+    [
+      Types.Stream_event.Tool_use
+        { name = "Bash"; input = expected; status = None };
+    ]
 
 let%test "parse_event command_execution completed is ignored" =
   let line =
