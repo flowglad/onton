@@ -33,7 +33,12 @@ mkdir -p "$HOOKS_DIR"
 
 HOOK_PATH="$HOOKS_DIR/post-checkout"
 
-if [ -e "$HOOK_PATH" ] && ! grep -q 'sync-skills.sh' "$HOOK_PATH"; then
+# Detect onton-installed hooks via a sentinel comment so renaming sync-skills.sh
+# doesn't break re-installation, and a third-party hook that merely mentions
+# sync-skills.sh in a comment isn't mistaken for ours.
+ONTON_HOOK_SENTINEL='onton-managed-post-checkout'
+
+if [ -e "$HOOK_PATH" ] && ! grep -q "$ONTON_HOOK_SENTINEL" "$HOOK_PATH"; then
   echo "error: $HOOK_PATH already exists and is not onton's hook." >&2
   echo "       Merge the following into it manually, then re-run:" >&2
   echo "         REPO_ROOT=\"\$(git rev-parse --show-toplevel 2>/dev/null)\" || exit 0" >&2
@@ -45,6 +50,8 @@ fi
 # not baked in at install time (the repo may later be moved or cloned elsewhere).
 cat > "$HOOK_PATH" <<'HOOK'
 #!/bin/sh
+# onton-managed-post-checkout — do not edit this line; install-hooks.sh uses it
+# to detect that this hook is owned by onton and may be safely overwritten.
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -x "$REPO_ROOT/scripts/sync-skills.sh" ] && "$REPO_ROOT/scripts/sync-skills.sh"
 HOOK

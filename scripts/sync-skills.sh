@@ -41,14 +41,19 @@ for skill_path in "$SKILLS_DIR"/*/SKILL.md; do
     echo "[new] $skill_name → $skill_dir"
   elif [ -L "$target_link" ]; then
     # Resolve the stored symlink target to an absolute path before comparing.
-    # `readlink` (without -f, which isn't portable) returns the raw stored
-    # target; relative targets must be interpreted relative to the symlink's
-    # own directory.
-    link_raw="$(readlink "$target_link")"
-    case "$link_raw" in
-      /*) link_target="$link_raw" ;;
-      *)  link_target="$(cd "$TARGET_DIR" && cd "$(dirname "$link_raw")" 2>/dev/null && pwd)/$(basename "$link_raw")" ;;
-    esac
+    # Prefer `readlink -f` (macOS 12.3+ and GNU coreutils); fall back to manual
+    # resolution against the symlink's own directory ($TARGET_DIR) on older
+    # systems. The fallback would silently return a wrong path if the relative
+    # target's parent directory no longer exists, hence the `-f` preference.
+    if link_target="$(readlink -f "$target_link" 2>/dev/null)" && [ -n "$link_target" ]; then
+      :
+    else
+      link_raw="$(readlink "$target_link")"
+      case "$link_raw" in
+        /*) link_target="$link_raw" ;;
+        *)  link_target="$(cd "$TARGET_DIR/$(dirname "$link_raw")" 2>/dev/null && pwd)/$(basename "$link_raw")" ;;
+      esac
+    fi
     if [ "$link_target" = "$skill_dir" ]; then
       echo "[ok] $skill_name"
     else
