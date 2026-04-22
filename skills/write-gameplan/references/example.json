@@ -95,7 +95,7 @@
         }
       ],
       "changes": [
-        "Define type disposition = Skip | Queue | Deliver with [@@deriving show, eq]",
+        "Define type disposition = Skip | Queue | Deliver with [@@deriving show, eq] (Skip/Queue/Deliver correspond to spec rules skip/queue/deliver; OCaml requires capitalised regular-variant constructors)",
         "Add val disposition : merged:bool -> busy:bool -> disposition (placeholder)",
         "Add val needs_intervention : ci_failure_count:int -> bool (placeholder)"
       ],
