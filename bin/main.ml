@@ -3328,10 +3328,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                    (Patch_id.to_string patch_id))
                               ()
                       | Orchestrator.Respond_pr_body_miss ->
-                          (* Blocked mid-Write (e.g. sandbox rejection). The
-                             reconciler will re-enqueue Pr_body; at cap (>=2)
-                             needs_intervention fires and the TUI surfaces the
-                             stuck patch. *)
+                          (* Triggered by classify_pr_body_respond for either
+                             [`Patch_failed] (notes written, GitHub PATCH call
+                             failed) or [`Missing | `Empty] + observed Write
+                             tool failure (blocked mid-Write). The specific
+                             cause is already logged by apply_pr_body_artifact;
+                             keep this line cause-agnostic so it doesn't
+                             mislabel a [`Patch_failed] miss as a Write
+                             failure. The reconciler re-enqueues Pr_body; at
+                             cap (>=2) needs_intervention fires. *)
                           let agent =
                             Runtime.read runtime (fun snap ->
                                 Orchestrator.agent snap.Runtime.orchestrator
@@ -3339,9 +3344,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                           in
                           log_event runtime ~patch_id
                             (Printf.sprintf
-                               "pr-body: retrying — artifact missing with \
-                                observed Write failure (miss count: %d)"
-                               agent.Patch_agent.pr_body_artifact_miss_count);
+                               "pr-body: miss recorded (miss count: %d)%s"
+                               agent.Patch_agent.pr_body_artifact_miss_count
+                               (if Patch_agent.needs_intervention agent then
+                                  "; escalating to human review"
+                                else "; will re-enqueue"));
                           if Patch_agent.needs_intervention agent then
                             set_status ~level:Tui.Error
                               ~text:
