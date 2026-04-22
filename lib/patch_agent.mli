@@ -31,12 +31,13 @@ type t = private {
   is_draft : bool;
   pr_body_delivered : bool;
   pr_body_artifact_miss_count : int;
-      (** Consecutive Pr_body sessions that ended with a missing artifact AND
-          evidence of a non-completed Write tool call (see
-          [Orchestrator.Respond_pr_body_miss]). Contributes to
+      (** Consecutive Pr_body sessions that produced [Respond_pr_body_miss]:
+          either the artifact was missing/empty AND a Write tool call did not
+          complete (agent blocked mid-call), or the GitHub [update_pr_body]
+          PATCH call failed ([`Patch_failed]). Contributes to
           [needs_intervention] at [>= 2]. Zero in fresh snapshots and older
           snapshots that didn't persist the field. Reset by
-          [reset_intervention_state]. *)
+          [reset_intervention_state] and by [Respond_ok] for [Pr_body]. *)
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
