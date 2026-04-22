@@ -313,10 +313,6 @@ let%test "repeat" = String.equal (repeat 3 "ab") "ababab"
 type size = { rows : int; cols : int } [@@deriving show, eq]
 (** Terminal size as rows × cols. *)
 
-(* SIGWINCH is not exposed by [Stdlib.Sys]. The value is 28 on both Linux and
-   macOS, the only platforms this project targets. *)
-let sigwinch = 28
-
 (** Cached terminal size. Cleared by the SIGWINCH handler installed via
     {!Raw.install_suspend_handlers}, and refilled on the next {!get_size} call.
     [Atomic.t] because the SIGWINCH handler runs in an async-signal context. *)
@@ -468,7 +464,7 @@ module Raw = struct
     in
     _saved_handlers := Some (prev_tstp, prev_cont);
     let prev_winch =
-      Stdlib.Sys.signal sigwinch
+      Stdlib.Sys.signal Stdlib.Sys.sigwinch
         (Stdlib.Sys.Signal_handle
            (fun _signum ->
              invalidate_size_cache ();
@@ -487,7 +483,8 @@ module Raw = struct
     _saved_handlers := None;
     (match !_saved_winch_handler with
     | None -> ()
-    | Some prev_winch -> ignore (Stdlib.Sys.signal sigwinch prev_winch));
+    | Some prev_winch ->
+        ignore (Stdlib.Sys.signal Stdlib.Sys.sigwinch prev_winch));
     _saved_winch_handler := None;
     match Atomic.exchange _saved_state None with
     | Some state -> leave state
