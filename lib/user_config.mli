@@ -15,5 +15,7 @@ val run_hook :
   cwd:_ Eio.Path.t ->
   env:(string * string) list ->
   (unit, string) Result.t
-(** Execute a hook script in [cwd] with the given environment variables. Returns
-    [Error msg] if the script fails. *)
+(** Execute a hook script in [cwd] with the given environment variables. Both
+    stdout and stderr are captured; on failure the returned [Error msg] embeds
+    the underlying exception followed by non-empty stdout/stderr sections so the
+    caller can surface them (e.g. to the activity log). *)

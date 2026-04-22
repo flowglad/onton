@@ -121,3 +121,7 @@
 (test
  (name test_backend_smoke)
  (libraries onton eio eio_main))
+
+(test
+ (name test_user_config)
+ (libraries onton eio eio_main eio.unix unix))

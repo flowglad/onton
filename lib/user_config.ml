@@ -19,6 +19,7 @@ let load ~github_owner ~github_repo =
   { on_worktree_create }
 
 let run_hook ~process_mgr ~script ~cwd ~env =
+  let stdout_buf = Buffer.create 256 in
   let stderr_buf = Buffer.create 256 in
   try
     let env_array =
@@ -29,11 +30,21 @@ let run_hook ~process_mgr ~script ~cwd ~env =
       Array.of_list (List.append inherited (Array.to_list env_array))
     in
     Eio.Process.run process_mgr ~env:merged ~cwd
+      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
       [ script ];
     Ok ()
   with exn ->
+    let stdout = String.strip (Buffer.contents stdout_buf) in
     let stderr = String.strip (Buffer.contents stderr_buf) in
-    let msg = Stdlib.Printexc.to_string exn in
-    if String.is_empty stderr then Error msg
-    else Error (Printf.sprintf "%s\nstderr: %s" msg stderr)
+    let sections =
+      List.filter_opt
+        [
+          Some (Stdlib.Printexc.to_string exn);
+          (if String.is_empty stdout then None
+           else Some (Printf.sprintf "stdout:\n%s" stdout));
+          (if String.is_empty stderr then None
+           else Some (Printf.sprintf "stderr:\n%s" stderr));
+        ]
+    in
+    Error (String.concat ~sep:"\n" sections)
