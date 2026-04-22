@@ -604,7 +604,6 @@ let () =
      shapes. Properties assert the invariants that matter for the
      retry-once-then-intervene contract. *)
   let () =
-    let all_artifact_outcomes = [ `Ok; `Missing; `Empty; `Patch_failed ] in
     let write_failure = ("Write", "pending") in
     let non_write_failures = [ ("Bash", "pending"); ("Read", "error") ] in
 
@@ -619,10 +618,10 @@ let () =
             failwith "PB-1: artifact=Ok must not classify as Pr_body_miss");
     Stdlib.print_endline "PB-1 passed";
 
-    (* PB-2: artifact = Patch_failed → Ok regardless of tool_failures.
-       Rationale: the agent wrote the artifact successfully; only the PR
-       PATCH call failed, which is a transient network error unrelated to
-       a sandbox-blocked write. *)
+    (* PB-2: artifact = Patch_failed → Pr_body_miss regardless of
+       tool_failures. Rationale: the PR body update call failed, so the
+       description is stale; bubble out as Pr_body_miss so the reconciler
+       re-enqueues rather than marking delivery complete. *)
     List.iter
       [ []; [ write_failure ]; write_failure :: non_write_failures ]
       ~f:(fun tool_failures ->
@@ -631,9 +630,8 @@ let () =
             ~tool_failures
         in
         match r with
-        | `Ok -> ()
-        | `Pr_body_miss ->
-            failwith "PB-2: Patch_failed must not classify as Pr_body_miss");
+        | `Pr_body_miss -> ()
+        | `Ok -> failwith "PB-2: Patch_failed must classify as Pr_body_miss");
     Stdlib.print_endline "PB-2 passed";
 
     (* PB-3: artifact = Missing + Write tool_failure → Pr_body_miss. *)
@@ -704,14 +702,15 @@ let () =
     QCheck2.Test.check_exn prop;
     Stdlib.print_endline "PB-7 passed";
 
-    (* PB-8: property — all combinations of artifact_outcome × non-Write
-       failure list classify as Ok (the correlation never fires without a
-       Write failure). *)
+    (* PB-8: property — for non-failing artifact outcomes (Ok/Missing/Empty),
+       a non-Write failure list always classifies as Ok. The correlation
+       never fires without a Write failure. Patch_failed is excluded because
+       it classifies as Pr_body_miss regardless of tool_failures (see PB-2). *)
     let prop =
       QCheck2.Test.make ~name:"PB-8: no Write failure → never Pr_body_miss"
         QCheck2.Gen.(
           pair
-            (oneof_list all_artifact_outcomes)
+            (oneof_list [ `Ok; `Missing; `Empty ])
             (list_small
                (pair
                   (oneof_list [ "Bash"; "Read"; "Grep"; "Edit"; "Glob" ])

@@ -114,9 +114,13 @@ val classify_pr_body_respond :
   artifact_outcome:[ `Ok | `Missing | `Empty | `Patch_failed ] ->
   tool_failures:(string * string) list ->
   [ `Ok | `Pr_body_miss ]
-(** Pure post-session rule for Pr_body. Returns [`Pr_body_miss] iff the artifact
-    was [`Missing] or [`Empty] AND at least one [(name, status)] pair in
-    [tool_failures] has [name = "Write"]. Any other combination returns [`Ok].
+(** Pure post-session rule for Pr_body. Returns [`Pr_body_miss] when:
+    - artifact is [`Patch_failed] (GitHub [update_pr_body] call failed, PR body
+      is stale and the runner must retry rather than mark delivered); or
+    - artifact is [`Missing] or [`Empty] AND at least one [(name, status)] pair
+      in [tool_failures] has [name = "Write"] (agent blocked mid-write).
+
+    Any other combination returns [`Ok].
 
     Only invoked after a successful session — session-level failures
     (stale/failed/retry_push) short-circuit upstream in the handler and never

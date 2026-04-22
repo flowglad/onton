@@ -309,19 +309,24 @@ let () =
   let prop =
     QCheck2.Test.make ~name:"AO-10: Respond_pr_body_miss retry semantics"
       (QCheck2.Gen.return ()) (fun () ->
-        let orch, patches, gameplan, pid = bootstrap_one () in
-        let orch = make_busy orch patches gameplan pid Operation_kind.Pr_body in
-        let before =
-          (Orchestrator.agent orch pid).Patch_agent.pr_body_artifact_miss_count
-        in
-        let orch =
-          Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
-            Orchestrator.Respond_pr_body_miss
-        in
-        let a = Orchestrator.agent orch pid in
-        (not a.Patch_agent.busy)
-        && (not a.Patch_agent.pr_body_delivered)
-        && a.Patch_agent.pr_body_artifact_miss_count = before + 1)
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Pr_body
+          in
+          let before =
+            (Orchestrator.agent orch pid)
+              .Patch_agent.pr_body_artifact_miss_count
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+              Orchestrator.Respond_pr_body_miss
+          in
+          let a = Orchestrator.agent orch pid in
+          (not a.Patch_agent.busy)
+          && (not a.Patch_agent.pr_body_delivered)
+          && a.Patch_agent.pr_body_artifact_miss_count = before + 1
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-10 passed"

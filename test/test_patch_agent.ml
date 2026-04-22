@@ -630,40 +630,46 @@ let () =
       Test.make ~name:"1 pr_body miss no intervention (boundary)" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a =
-            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
-          in
-          let a = complete a in
-          let a = increment_pr_body_artifact_miss_count a in
-          not (needs_intervention a));
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = increment_pr_body_artifact_miss_count a in
+            not (needs_intervention a)
+          with _ -> false);
       (* -- 2 pr_body misses triggers needs_intervention -- *)
       Test.make ~name:"2 pr_body misses triggers intervention" ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a =
-            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
-          in
-          let a = complete a in
-          let a = increment_pr_body_artifact_miss_count a in
-          let a = increment_pr_body_artifact_miss_count a in
-          needs_intervention a);
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = increment_pr_body_artifact_miss_count a in
+            let a = increment_pr_body_artifact_miss_count a in
+            needs_intervention a
+          with _ -> false);
       (* -- reset_intervention_state zeros the pr_body miss counter -- *)
       Test.make
         ~name:"reset_intervention_state clears pr_body_artifact_miss_count"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
-          let a =
-            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
-          in
-          let a = complete a in
-          let a = increment_pr_body_artifact_miss_count a in
-          let a = increment_pr_body_artifact_miss_count a in
-          let triggered = needs_intervention a in
-          let a = reset_intervention_state a in
-          triggered
-          && (not (needs_intervention a))
-          && a.pr_body_artifact_miss_count = 0);
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = increment_pr_body_artifact_miss_count a in
+            let a = increment_pr_body_artifact_miss_count a in
+            let triggered = needs_intervention a in
+            let a = reset_intervention_state a in
+            triggered
+            && (not (needs_intervention a))
+            && a.pr_body_artifact_miss_count = 0
+          with _ -> false);
       (* -- reset_intervention_state clears derived intervention -- *)
       Test.make ~name:"reset_intervention_state clears intervention" ~count:1
         Gen.(pure (pid0, br0))

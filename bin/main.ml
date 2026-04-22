@@ -834,10 +834,24 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
                   | None -> ())
             | Types.Stream_event.Tool_use { name; input; status } ->
                 tool_count := !tool_count + 1;
+                (* OpenCode emits pending → running → completed for a single
+                   tool call. Track only the latest unresolved status per tool
+                   name: clear on completed, replace on any other status.
+                   Otherwise a normal pending → completed lifecycle would leave
+                   a stale (name, "pending") entry that
+                   [classify_pr_body_respond] would misread as a blocked Write. *)
                 (match status with
-                | Some s when not (String.equal s "completed") ->
-                    tool_failures := (name, s) :: !tool_failures
-                | Some _ | None -> ());
+                | Some s when String.equal s "completed" ->
+                    tool_failures :=
+                      Base.List.filter !tool_failures ~f:(fun (n, _) ->
+                          not (String.equal n name))
+                | Some s ->
+                    let without =
+                      Base.List.filter !tool_failures ~f:(fun (n, _) ->
+                          not (String.equal n name))
+                    in
+                    tool_failures := (name, s) :: without
+                | None -> ());
                 let summary =
                   try
                     let json = Yojson.Safe.from_string input in
