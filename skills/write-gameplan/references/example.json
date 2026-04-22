@@ -27,7 +27,7 @@
       "file": "lib/patch_decision.ml",
       "line": null,
       "description": "New module: pure decision functions for patch lifecycle",
-      "signature": "val disposition : merged:bool -> busy:bool -> [ `Skip | `Queue | `Deliver ]"
+      "signature": "val disposition : merged:bool -> busy:bool -> disposition"
     },
     {
       "file": "lib/patch_decision.mli",
