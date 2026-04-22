@@ -534,6 +534,11 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
               | Some tid -> Printf.sprintf " [thread_id=%s]" tid
               | None -> ""
             in
+            (* [at=…] displays [original_commit_sha] — the SHA at which the
+               reviewer's diff view was anchored when they wrote the comment.
+               For an outdated comment, [commit_sha] holds the later commit
+               GitHub re-anchored to, but we still show the original so the
+               agent knows which diff the reviewer was looking at. *)
             let anchor =
               match c.Comment.original_commit_sha with
               | Some sha -> Printf.sprintf " [at=%s]" (short_sha sha)
@@ -544,9 +549,15 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
               thread_ref anchor outdated c.Comment.body)
         |> String.concat ~sep:"\n\n"
       in
+      (* Both [pr_ctx] and [sha_anchor] are splatted into the
+         [Printf.sprintf "# Review Comments%s%s\n\n…"] format below. Each
+         owns its leading `\n\n` separator and no trailing newline, so
+         any subset of {pr_ctx, sha_anchor} renders with exactly one
+         blank line between each non-empty block (instead of two, which
+         is what happens if pr_ctx also ends in `\n`). *)
       let pr_ctx =
         match pr_number with
-        | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
+        | Some n -> Printf.sprintf "\n\nPR: #%d" (Pr_number.to_int n)
         | None -> ""
       in
       (* Comments without [original_commit_sha] are dropped here. If the batch
@@ -997,7 +1008,7 @@ let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
     After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
     |}]
 
-let%test "review prompt marks outdated comments" =
+let%expect_test "review prompt marks outdated comments" =
   let comments : Comment.t list =
     [
       Comment.
@@ -1017,8 +1028,76 @@ let%test "review prompt marks outdated comments" =
     render_review_prompt ~project_name:"test"
       ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
   in
-  String.is_substring result ~substring:"[at=47525fd]"
-  && String.is_substring result ~substring:"[outdated]"
+  Stdlib.print_endline result;
+  [%expect
+    {|
+    # Review Comments
+
+    Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
+    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
+
+    The following review comments need to be addressed on your PR:
+
+    - **Comment** on `lib/foo.ml` [comment_id=1] [thread_id=PRRT_outdated] [at=47525fd] [outdated]: This line moved.
+
+    For each comment:
+    1. Implement the requested change, OR explain why the current approach is correct.
+    2. Reply to the comment thread:
+       `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="your response"`
+       (`{owner}/{repo}` is resolved automatically by `gh` when run inside the repo)
+    3. Resolve the thread using the thread_id:
+       `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'`
+
+    After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
+    |}]
+
+let%expect_test
+    "review prompt with both pr_number and sha_anchor has single-blank \
+     separators" =
+  let comments : Comment.t list =
+    [
+      Comment.
+        {
+          id = Comment_id.of_int 1;
+          thread_id = Some "PRRT_thread1";
+          body = "Still relevant.";
+          path = Some "lib/foo.ml";
+          line = Some 10;
+          commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        };
+    ]
+  in
+  let result =
+    render_review_prompt ~project_name:"test" ~pr_number:(Pr_number.of_int 42)
+      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
+  in
+  Stdlib.print_endline result;
+  (* Exactly one blank line between "# Review Comments" / "PR: #42" /
+     the preamble / "The following" — not two. *)
+  [%expect
+    {|
+    # Review Comments
+
+    PR: #42
+
+    Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
+    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
+
+    The following review comments need to be addressed on your PR:
+
+    - **Comment** on `lib/foo.ml` (line 10) [comment_id=1] [thread_id=PRRT_thread1] [at=47525fd]: Still relevant.
+
+    For each comment:
+    1. Implement the requested change, OR explain why the current approach is correct.
+    2. Reply to the comment thread:
+       `gh api repos/{owner}/{repo}/pulls/42/comments/{comment_id}/replies -f body="your response"`
+       (`{owner}/{repo}` is resolved automatically by `gh` when run inside the repo)
+    3. Resolve the thread using the thread_id:
+       `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'`
+
+    After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
+    |}]
 
 let%test "review prompt does not mark file-level comments as outdated" =
   let comments : Comment.t list =

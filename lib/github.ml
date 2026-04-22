@@ -130,6 +130,8 @@ let graphql_query =
         nodes {
           id
           isResolved
+          # [comments(first: 1)] only returns the thread opener. If a caller
+          # ever needs per-reply SHAs, raise this limit and add pagination.
           comments(first: 1) {
             nodes {
               databaseId
