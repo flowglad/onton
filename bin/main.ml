@@ -3080,8 +3080,14 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                               failed_checks
                                       | Patch_decision.Review_payload
                                           { comments } ->
+                                          let current_head_sha =
+                                            Base.Option.bind fresh_pr_state
+                                              ~f:(fun ps ->
+                                                ps.Pr_state.head_oid)
+                                          in
                                           Prompt.render_review_prompt
-                                            ~project_name ?pr_number comments
+                                            ~project_name ?pr_number
+                                            ?current_head_sha comments
                                       | Patch_decision.Human_payload
                                           { messages } ->
                                           Prompt.render_human_message_prompt

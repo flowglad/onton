@@ -21,6 +21,7 @@ type t = {
   comments : Comment.t list;
   unresolved_comment_count : int;
   head_branch : Branch.t option;
+  head_oid : string option;
   base_branch : Branch.t option;
   is_fork : bool;
 }

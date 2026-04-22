@@ -493,7 +493,9 @@ Do not repeat information already in the description or specs above — add only
 Keep it concise — a few bullet points usually suffices. If you have nothing material to add (the patch is straightforward), write a single line acknowledging that.|}
         vars)
 
-let render_review_prompt ~(project_name : string) ?pr_number
+let short_sha s = if String.length s <= 7 then s else String.sub s ~pos:0 ~len:7
+
+let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
     (comments : Comment.t list) =
   match comments with
   | [] -> "No review comments to address."
@@ -502,6 +504,17 @@ let render_review_prompt ~(project_name : string) ?pr_number
         match pr_number with
         | Some n -> Int.to_string (Pr_number.to_int n)
         | None -> "{pr_number}"
+      in
+      (* Only claim outdated-ness when GitHub has given us a signal. If
+         [commit] and [originalCommit] differ, GitHub re-anchored the comment
+         to a later commit (line moved). If [line] is null but we do have an
+         original SHA, GitHub detached the comment from the file. With no SHA
+         info at all, say nothing — matches pre-SHA behavior. *)
+      let is_outdated (c : Comment.t) =
+        match (c.Comment.commit_sha, c.Comment.original_commit_sha) with
+        | Some cur, Some orig when not (String.equal cur orig) -> true
+        | _, Some _ when Option.is_none c.Comment.line -> true
+        | _ -> false
       in
       let formatted =
         List.map comments ~f:(fun (c : Comment.t) ->
@@ -520,8 +533,14 @@ let render_review_prompt ~(project_name : string) ?pr_number
               | Some tid -> Printf.sprintf " [thread_id=%s]" tid
               | None -> ""
             in
-            Printf.sprintf "- **Comment**%s%s%s: %s" location db_id thread_ref
-              c.Comment.body)
+            let anchor =
+              match c.Comment.original_commit_sha with
+              | Some sha -> Printf.sprintf " [at=%s]" (short_sha sha)
+              | None -> ""
+            in
+            let outdated = if is_outdated c then " [outdated]" else "" in
+            Printf.sprintf "- **Comment**%s%s%s%s%s: %s" location db_id
+              thread_ref anchor outdated c.Comment.body)
         |> String.concat ~sep:"\n\n"
       in
       let pr_ctx =
@@ -529,18 +548,56 @@ let render_review_prompt ~(project_name : string) ?pr_number
         | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
         | None -> ""
       in
+      let reviewed_at_shas =
+        List.filter_map comments ~f:(fun (c : Comment.t) ->
+            c.Comment.original_commit_sha)
+        |> List.dedup_and_sort ~compare:String.compare
+      in
+      let sha_anchor =
+        match (current_head_sha, reviewed_at_shas) with
+        | Some head, (_ :: _ as shas) ->
+            let anchored =
+              match shas with
+              | [ sha ] -> Printf.sprintf "commit `%s`" (short_sha sha)
+              | many ->
+                  "commits "
+                  ^ (List.map many ~f:(fun s ->
+                         Printf.sprintf "`%s`" (short_sha s))
+                    |> String.concat ~sep:", ")
+            in
+            Printf.sprintf
+              "\n\n\
+               Review anchored at %s. Current branch HEAD is `%s`.\n\
+               If a comment is marked `[outdated]` or refers to code that no \
+               longer exists at HEAD, reply acknowledging it's addressed in a \
+               later commit and skip — do not re-do the change.\n"
+              anchored (short_sha head)
+        | _ -> ""
+      in
+      let reviewed_at_sha_var =
+        match reviewed_at_shas with
+        | [ sha ] -> short_sha sha
+        | _ :: _ as many -> List.map many ~f:short_sha |> String.concat ~sep:","
+        | [] -> ""
+      in
+      let current_head_sha_var =
+        match current_head_sha with Some s -> short_sha s | None -> ""
+      in
       let vars =
         [
           ("project_name", project_name);
           ("comments", formatted);
           ("count", Int.to_string (List.length comments));
           ("pr_number", pr_num_str);
+          ("reviewed_at_sha", reviewed_at_sha_var);
+          ("current_head_sha", current_head_sha_var);
+          ("sha_anchor", sha_anchor);
         ]
       in
       render_with_override ~project_name ~name:"review" ~vars
         ~default:(fun () ->
           Printf.sprintf
-            "# Review Comments%s\n\n\
+            "# Review Comments%s%s\n\n\
              The following review comments need to be addressed on your PR:\n\n\
              %s\n\n\
              For each comment:\n\
@@ -558,7 +615,7 @@ let render_review_prompt ~(project_name : string) ?pr_number
              { isResolved } } }'`\n\n\
              After addressing all comments, commit your changes. The \
              supervisor will push them for you — do not run `git push`."
-            pr_ctx formatted pr_num_str)
+            pr_ctx sha_anchor formatted pr_num_str)
 
 let render_ci_failure_prompt ~(project_name : string) ?pr_number
     (checks : Ci_check.t list) =
@@ -857,6 +914,8 @@ let%test "review prompt formats comments" =
           body = "Fix this function.";
           path = Some "lib/foo.ml";
           line = Some 42;
+          commit_sha = None;
+          original_commit_sha = None;
         };
       Comment.
         {
@@ -865,6 +924,8 @@ let%test "review prompt formats comments" =
           body = "General feedback.";
           path = None;
           line = None;
+          commit_sha = None;
+          original_commit_sha = None;
         };
     ]
   in
@@ -877,3 +938,73 @@ let%test "review prompt formats comments" =
   && String.is_substring result ~substring:"General feedback."
   && String.is_substring result ~substring:"resolveReviewThread"
   && String.is_substring result ~substring:"gh api repos/"
+  (* Back-compat: no SHAs → no preamble, no [at=…], no [outdated]. *)
+  && (not (String.is_substring result ~substring:"Review anchored at"))
+  && (not (String.is_substring result ~substring:"[at="))
+  && not (String.is_substring result ~substring:"[outdated]")
+
+let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
+  let comments : Comment.t list =
+    [
+      Comment.
+        {
+          id = Comment_id.of_int 1;
+          thread_id = Some "PRRT_thread1";
+          body = "Still relevant.";
+          path = Some "lib/foo.ml";
+          line = Some 10;
+          commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        };
+    ]
+  in
+  let result =
+    render_review_prompt ~project_name:"test"
+      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
+  in
+  Stdlib.print_endline result;
+  [%expect
+    {|
+    # Review Comments
+
+    Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
+    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
+
+
+    The following review comments need to be addressed on your PR:
+
+    - **Comment** on `lib/foo.ml` (line 10) [comment_id=1] [thread_id=PRRT_thread1] [at=47525fd]: Still relevant.
+
+    For each comment:
+    1. Implement the requested change, OR explain why the current approach is correct.
+    2. Reply to the comment thread:
+       `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="your response"`
+       (`{owner}/{repo}` is resolved automatically by `gh` when run inside the repo)
+    3. Resolve the thread using the thread_id:
+       `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'`
+
+    After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
+    |}]
+
+let%test "review prompt marks outdated comments" =
+  let comments : Comment.t list =
+    [
+      Comment.
+        {
+          id = Comment_id.of_int 1;
+          thread_id = Some "PRRT_outdated";
+          body = "This line moved.";
+          path = Some "lib/foo.ml";
+          line = None;
+          (* GitHub returns null line when the comment is outdated *)
+          commit_sha = Some "da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+          original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        };
+    ]
+  in
+  let result =
+    render_review_prompt ~project_name:"test"
+      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
+  in
+  String.is_substring result ~substring:"[at=47525fd]"
+  && String.is_substring result ~substring:"[outdated]"

@@ -15,6 +15,7 @@ type t = {
   comments : Types.Comment.t list;
   unresolved_comment_count : int;
   head_branch : Types.Branch.t option;
+  head_oid : string option;
   base_branch : Types.Branch.t option;
   is_fork : bool;
 }
