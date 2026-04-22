@@ -109,6 +109,19 @@ type respond_delivery =
   | Respond_stale
 [@@deriving show, eq, sexp_of, compare]
 
+(** Keep only failing CI checks that haven't already been delivered to the
+    agent. Checks without a stable [id] (StatusContext entries, legacy
+    snapshots) bypass the dedup — they can't be keyed reliably, and the
+    conservative choice is to deliver rather than silently drop. *)
+let filter_undelivered_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
+  List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
+      if not (Ci_check.is_failure c) then false
+      else
+        match c.id with
+        | None -> true
+        | Some id ->
+            not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
+
 let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     ~(pre_fire_agent : Patch_agent.t option)
     ~(prefetched_comments : Comment.t list) ~(main_branch : string) :
@@ -120,6 +133,11 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
   then Respond_stale
   else
     let source = Option.value pre_fire_agent ~default:agent in
+    (* Precompute the CI failure list once so emptiness and payload agree.
+       Filtering against [delivered_ci_run_ids] is what prevents a second
+       delivery of the same underlying run after an unrelated [generation]
+       bump. *)
+    let ci_undelivered = filter_undelivered_ci_failures agent in
     let is_empty =
       match kind with
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
@@ -129,8 +147,10 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
              and skips delivery before calling us when the failure is
              already resolved. This is a belt-and-suspenders guard so the
              pure function never emits an empty [Ci_payload] in isolation
-             (e.g. if a future caller forgets the freshness hop). *)
-          not (List.exists agent.ci_checks ~f:Ci_check.is_failure)
+             (e.g. if a future caller forgets the freshness hop). Also
+             catches the case where every fresh failure has already been
+             delivered — no new information to send. *)
+          List.is_empty ci_undelivered
       | Operation_kind.Merge_conflict | Operation_kind.Pr_body
       | Operation_kind.Rebase ->
           false
@@ -154,12 +174,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
         match kind with
         | Operation_kind.Human ->
             Human_payload { messages = List.rev source.human_messages }
-        | Operation_kind.Ci ->
-            let failed =
-              List.filter agent.ci_checks ~f:(fun (c : Ci_check.t) ->
-                  List.mem failure_conclusions c.conclusion ~equal:String.equal)
-            in
-            Ci_payload { failed_checks = failed }
+        | Operation_kind.Ci -> Ci_payload { failed_checks = ci_undelivered }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }
         | Operation_kind.Pr_body -> Pr_body_payload

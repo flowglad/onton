@@ -67,6 +67,7 @@ let () =
                      details_url;
                      description;
                      started_at = None;
+                     id = None;
                    })
                (triple
                   (string_size ~gen:(char_range 'a' 'z') (int_range 3 10))

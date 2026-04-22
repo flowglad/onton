@@ -469,6 +469,7 @@ let () =
                       details_url = None;
                       description = None;
                       started_at = None;
+                      id = None;
                     })
             in
             let a = set_ci_checks a checks in
@@ -515,6 +516,7 @@ let () =
                       details_url = None;
                       description = None;
                       started_at = None;
+                      id = None;
                     })
             in
             let a = set_ci_checks a checks in
@@ -663,6 +665,7 @@ let () =
                 details_url = None;
                 description = None;
                 started_at = None;
+                id = None;
               }
           in
           let a = set_ci_checks a [ check ] in
@@ -682,7 +685,7 @@ let () =
               ~generation:0 ~worktree_path:None ~branch_blocked:false
               ~llm_session_id:None ~automerge_enabled:false
               ~automerge_deadline:None ~automerge_inflight:false
-              ~automerge_failure_count:0
+              ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
           in
           let a = start a ~base_branch:br in
           List.is_empty a.ci_checks);
@@ -699,6 +702,7 @@ let () =
                 details_url = None;
                 description = None;
                 started_at = None;
+                id = None;
               }
           in
           let a = set_ci_checks a [ check ] in
@@ -760,7 +764,7 @@ let () =
               ~generation:0 ~worktree_path:None ~branch_blocked:false
               ~llm_session_id:None ~automerge_enabled:false
               ~automerge_deadline:None ~automerge_inflight:false
-              ~automerge_failure_count:0
+              ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
           in
           let a = enqueue a Operation_kind.Rebase in
           let a = rebase a ~base_branch:new_base in

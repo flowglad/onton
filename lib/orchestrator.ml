@@ -333,6 +333,10 @@ let reset_ci_failure_count t patch_id =
 let set_ci_checks t patch_id checks =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_ci_checks a checks)
 
+let record_delivered_ci_run_ids t patch_id ids =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.record_delivered_ci_run_ids a ids)
+
 let set_checks_passing t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_checks_passing a v)
 

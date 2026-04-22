@@ -303,6 +303,7 @@ let () =
             details_url = None;
             description = None;
             started_at = None;
+            id = None;
           };
         ]
     in
@@ -431,6 +432,7 @@ let () =
                 details_url = None;
                 description = None;
                 started_at = None;
+                id = None;
               };
             ]
         in
@@ -475,6 +477,122 @@ let () =
                  (Operation_kind.to_label kind))
         | Deliver _ | Respond_stale -> ());
     Stdlib.print_endline "RD-7 passed"
+  in
+
+  (* RD-8: Ci with all failing run ids already delivered -> Skip_empty *)
+  let () =
+    let pid = Patch_id.of_string "rd8" in
+    let br = Branch.of_string "b" in
+    let failing_check id =
+      {
+        Ci_check.name = Printf.sprintf "check-%d" id;
+        conclusion = "failure";
+        details_url = None;
+        description = None;
+        started_at = None;
+        id = Some id;
+      }
+    in
+    let pre_fire =
+      with_pr pid br |> fun a ->
+      set_ci_checks a [ failing_check 101; failing_check 202 ] |> fun a ->
+      record_delivered_ci_run_ids a [ 101; 202 ]
+    in
+    let a = enqueue pre_fire Operation_kind.Ci in
+    let a = respond a Operation_kind.Ci in
+    (match
+       respond_delivery ~agent:a ~kind:Operation_kind.Ci
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+     with
+    | Skip_empty -> ()
+    | Deliver _ | Respond_stale ->
+        failwith "RD-8: expected Skip_empty when all run ids already delivered");
+    Stdlib.print_endline "RD-8 passed"
+  in
+
+  (* RD-9: Ci with one delivered and one undelivered failing run -> Deliver
+     with only the undelivered check. *)
+  let () =
+    let pid = Patch_id.of_string "rd9" in
+    let br = Branch.of_string "b" in
+    let failing_check id =
+      {
+        Ci_check.name = Printf.sprintf "check-%d" id;
+        conclusion = "failure";
+        details_url = None;
+        description = None;
+        started_at = None;
+        id = Some id;
+      }
+    in
+    let pre_fire =
+      with_pr pid br |> fun a ->
+      set_ci_checks a [ failing_check 11; failing_check 22 ] |> fun a ->
+      record_delivered_ci_run_ids a [ 11 ]
+    in
+    let a = enqueue pre_fire Operation_kind.Ci in
+    let a = respond a Operation_kind.Ci in
+    (match
+       respond_delivery ~agent:a ~kind:Operation_kind.Ci
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+     with
+    | Deliver { payload = Ci_payload { failed_checks }; _ } ->
+        let ids =
+          List.filter_map failed_checks ~f:(fun (c : Ci_check.t) ->
+              c.Ci_check.id)
+        in
+        assert (List.equal Int.equal ids [ 22 ])
+    | Deliver
+        {
+          payload =
+            ( Human_payload _ | Review_payload _ | Pr_body_payload
+            | Merge_conflict_payload );
+          _;
+        }
+    | Skip_empty | Respond_stale ->
+        failwith "RD-9: expected Deliver with only id=22");
+    Stdlib.print_endline "RD-9 passed"
+  in
+
+  (* RD-10: checks with id=None (StatusContext) bypass dedup and always
+     deliver. *)
+  let () =
+    let pid = Patch_id.of_string "rd10" in
+    let br = Branch.of_string "b" in
+    let no_id_check =
+      {
+        Ci_check.name = "legacy-status";
+        conclusion = "failure";
+        details_url = None;
+        description = None;
+        started_at = None;
+        id = None;
+      }
+    in
+    let pre_fire =
+      with_pr pid br |> fun a ->
+      set_ci_checks a [ no_id_check ]
+      (* recording unrelated ids does not suppress an id=None check *)
+      |> fun a -> record_delivered_ci_run_ids a [ 999 ]
+    in
+    let a = enqueue pre_fire Operation_kind.Ci in
+    let a = respond a Operation_kind.Ci in
+    (match
+       respond_delivery ~agent:a ~kind:Operation_kind.Ci
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+     with
+    | Deliver { payload = Ci_payload { failed_checks }; _ } ->
+        assert (List.length failed_checks = 1)
+    | Deliver
+        {
+          payload =
+            ( Human_payload _ | Review_payload _ | Pr_body_payload
+            | Merge_conflict_payload );
+          _;
+        }
+    | Skip_empty | Respond_stale ->
+        failwith "RD-10: expected Deliver for id=None check");
+    Stdlib.print_endline "RD-10 passed"
   in
 
   ignore main_branch

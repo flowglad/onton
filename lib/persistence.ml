@@ -100,6 +100,8 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
          in-flight GitHub call, which cannot still be running across a
          supervisor restart. Deserialization hard-codes [false] to match. *)
       ("automerge_failure_count", `Int a.automerge_failure_count);
+      ( "delivered_ci_run_ids",
+        `List (List.map a.delivered_ci_run_ids ~f:(fun i -> `Int i)) );
     ]
 
 let patch_agent_of_yojson ~gameplan json =
@@ -253,7 +255,14 @@ let patch_agent_of_yojson ~gameplan json =
        ~automerge_failure_count:
          (Option.value
             (int_member_opt "automerge_failure_count" json)
-            ~default:0))
+            ~default:0)
+       ~delivered_ci_run_ids:
+         (match Yojson.Safe.Util.member "delivered_ci_run_ids" json with
+         | `List items ->
+             List.filter_map items ~f:(fun j ->
+                 Yojson.Safe.Util.to_int_option j)
+             |> List.dedup_and_sort ~compare:Int.compare
+         | _ -> []))
 
 (* ---------- Activity_log ---------- *)
 

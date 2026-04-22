@@ -54,7 +54,7 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~checks_passing:false ~current_op:None ~current_message_id:None
     ~generation:0 ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
     ~automerge_enabled:false ~automerge_deadline:None ~automerge_inflight:false
-    ~automerge_failure_count:0
+    ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -351,7 +351,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
         let orch = make_orch patch agent in
         (* Apply effects in a loop until convergence (max 5 rounds). *)
@@ -484,7 +484,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
         let orch = make_orch patch agent in
         let poll =
@@ -622,7 +622,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
         let orch = make_orch patch agent in
         begin try
@@ -824,7 +824,7 @@ let () =
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
         let orch =
           Orchestrator.restore
@@ -864,7 +864,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
         let orch =
           Orchestrator.restore
