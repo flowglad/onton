@@ -53,17 +53,31 @@ let infer_github_token () =
   | _ -> (
       let buf = Buffer.create 128 in
       try
-        let ic = Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |] in
-        (try
-           while true do
-             Buffer.add_char buf (input_char ic)
-           done
-         with End_of_file -> ());
-        (match Unix.close_process_in ic with
-        | Unix.WEXITED 0 -> ()
-        | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> raise Exit);
-        let t = Base.String.strip (Buffer.contents buf) in
-        if Base.String.is_empty t then "" else t
+        (* Redirect stderr to /dev/null so gh's "no oauth token" message
+           does not leak to the user's terminal. *)
+        let dev_null = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 in
+        let saved_stderr = Unix.dup Unix.stderr in
+        Fun.protect
+          ~finally:(fun () ->
+            Unix.dup2 saved_stderr Unix.stderr;
+            Unix.close saved_stderr;
+            Unix.close dev_null)
+          (fun () ->
+            Unix.dup2 dev_null Unix.stderr;
+            let ic =
+              Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |]
+            in
+            (try
+               while true do
+                 Buffer.add_char buf (input_char ic)
+               done
+             with End_of_file -> ());
+            (match Unix.close_process_in ic with
+            | Unix.WEXITED 0 -> ()
+            | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ ->
+                raise Exit);
+            let t = Base.String.strip (Buffer.contents buf) in
+            if Base.String.is_empty t then "" else t)
       with _ -> "")
 
 (** Detect the default branch of a git repository. Tries: 1.
@@ -115,7 +129,8 @@ let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
             (String.concat ", " known_backends)
             backend );
         ( Base.String.is_empty (Base.String.strip github_token),
-          "--token / GITHUB_TOKEN is required" );
+          "--token / GITHUB_TOKEN is required (set GITHUB_TOKEN or run `gh \
+           auth login`)" );
         ( Base.String.is_empty (Base.String.strip github_owner),
           "--owner / GITHUB_OWNER is required" );
         ( Base.String.is_empty (Base.String.strip github_repo),
