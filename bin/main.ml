@@ -3166,6 +3166,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           Project_store.ensure_dir
                                             (Stdlib.Filename.dirname
                                                artifact_path);
+                                          (* Clear any stale artifact from a
+                                             prior Pr_body session. The path
+                                             is stable per-patch, so without
+                                             this the classifier could read
+                                             outdated notes when the current
+                                             session doesn't write (blocked,
+                                             no-op, or legitimately chose not
+                                             to). *)
+                                          (try Unix.unlink artifact_path
+                                           with
+                                           | Unix.Unix_error (Unix.ENOENT, _, _)
+                                           ->
+                                             ());
                                           Prompt.render_pr_body_prompt
                                             ~project_name
                                             ~pr_number:
