@@ -692,5 +692,6 @@ let apply_respond_outcome t patch_id kind outcome =
         else t
       in
       if Operation_kind.equal kind Operation_kind.Pr_body then
-        set_pr_body_delivered t patch_id true
+        let t = set_pr_body_delivered t patch_id true in
+        update_agent t patch_id ~f:Patch_agent.reset_pr_body_artifact_miss_count
       else t

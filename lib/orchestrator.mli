@@ -201,10 +201,11 @@ val apply_respond_outcome :
   t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
     kind-specific transitions (Merge_conflict -> clear_has_conflict +
-    reset_conflict_noop_count; Pr_body -> set_pr_body_delivered).
-    [Respond_failed] -> complete_failed (restores inflight human messages).
-    [Respond_skip_empty] -> complete. [Respond_retry_push] -> complete.
-    [Respond_stale] -> identity. [Respond_pr_body_miss] -> complete +
+    reset_conflict_noop_count; Pr_body -> set_pr_body_delivered +
+    reset_pr_body_artifact_miss_count so the cap counts only consecutive
+    misses). [Respond_failed] -> complete_failed (restores inflight human
+    messages). [Respond_skip_empty] -> complete. [Respond_retry_push] ->
+    complete. [Respond_stale] -> identity. [Respond_pr_body_miss] -> complete +
     increment_pr_body_artifact_miss_count (does NOT set_pr_body_delivered — the
     reconciler re-enqueues Pr_body naturally). *)
 

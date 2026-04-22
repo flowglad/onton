@@ -330,3 +330,40 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-10 passed"
+
+(* ========== AO-11: Respond_ok + Pr_body resets miss count ========== *)
+
+(* The cap [pr_body_artifact_miss_count >= 2] must count consecutive misses,
+   not lifetime misses. A successful delivery resets the counter so a stale
+   miss from earlier in the patch's lifecycle cannot combine with a later
+   single miss to trigger intervention. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"AO-11: Respond_ok + Pr_body resets miss count"
+      (QCheck2.Gen.return ()) (fun () ->
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Pr_body
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+              Orchestrator.Respond_pr_body_miss
+          in
+          assert (
+            (Orchestrator.agent orch pid)
+              .Patch_agent.pr_body_artifact_miss_count = 1);
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Pr_body
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+              Orchestrator.Respond_ok
+          in
+          let a = Orchestrator.agent orch pid in
+          a.Patch_agent.pr_body_delivered
+          && a.Patch_agent.pr_body_artifact_miss_count = 0
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-11 passed"
