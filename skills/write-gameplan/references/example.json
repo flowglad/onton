@@ -101,7 +101,7 @@
       ],
       "testStubsIntroduced": null,
       "testStubsImplemented": null,
-      "spec": "module EXTRACT_DECISION_PATCH_1.\n\n> Patch 1 introduces type declarations only.\n> No behavioral invariants — the contribution is the type structure itself.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\n"
+      "spec": "module EXTRACT_DECISION_PATCH_1.\n\n> Patch 1 introduces type declarations only.\n> No behavioral invariants — the contribution is the type structure itself.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n"
     },
     {
       "number": 2,
