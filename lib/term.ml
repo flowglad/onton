@@ -324,23 +324,32 @@ let _size_cache : size option Atomic.t = Atomic.make None
 
 let invalidate_size_cache () = Atomic.set _size_cache None
 
-(** Run [stty size] and parse the result. Always closes the pipe, even if the
-    intermediate reads raise. *)
+(** Run [stty size] and parse the result. Closes the pipe in the body so the
+    exit status can be checked; [finally] guards against the body raising before
+    the close. Returns [None] unless [stty] exits 0 with parseable output. *)
 let measure_size () =
   try
     let ic = Unix.open_process_in "stty size 2>/dev/null </dev/tty" in
+    let status = ref None in
     Stdlib.Fun.protect
-      ~finally:(fun () -> try ignore (Unix.close_process_in ic) with _ -> ())
+      ~finally:(fun () ->
+        if Option.is_none !status then
+          try ignore (Unix.close_process_in ic) with _ -> ())
       (fun () ->
         match In_channel.input_line ic with
+        | None -> None
         | Some s -> (
-            match String.split s ~on:' ' with
-            | [ rows; cols ] -> (
-                match (Int.of_string_opt rows, Int.of_string_opt cols) with
-                | Some r, Some c -> Some { rows = r; cols = c }
+            let st = Unix.close_process_in ic in
+            status := Some st;
+            match st with
+            | Unix.WEXITED 0 -> (
+                match String.split s ~on:' ' with
+                | [ rows; cols ] -> (
+                    match (Int.of_string_opt rows, Int.of_string_opt cols) with
+                    | Some r, Some c -> Some { rows = r; cols = c }
+                    | _ -> None)
                 | _ -> None)
-            | _ -> None)
-        | None -> None)
+            | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> None))
   with _ -> None
 
 (** Query terminal size. Returns a cached value when available, repopulating
