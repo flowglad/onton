@@ -335,8 +335,10 @@ let measure_size () =
         match In_channel.input_line ic with
         | Some s -> (
             match String.split s ~on:' ' with
-            | [ rows; cols ] ->
-                Some { rows = Int.of_string rows; cols = Int.of_string cols }
+            | [ rows; cols ] -> (
+                match (Int.of_string_opt rows, Int.of_string_opt cols) with
+                | Some r, Some c -> Some { rows = r; cols = c }
+                | _ -> None)
             | _ -> None)
         | None -> None)
   with _ -> None
@@ -350,7 +352,7 @@ let get_size () =
   | None ->
       let measured = measure_size () in
       (match measured with
-      | Some _ -> Atomic.set _size_cache measured
+      | Some _ -> ignore (Atomic.compare_and_set _size_cache None measured)
       | None -> ());
       measured
 

@@ -24,10 +24,10 @@ let read_process_capture open_ic =
   match open_ic () with
   | exception _ -> None
   | ic ->
-      let closed = ref false in
+      let status = ref None in
       Stdlib.Fun.protect
         ~finally:(fun () ->
-          if not !closed then
+          if Option.is_none !status then
             try ignore (Unix.close_process_in ic) with _ -> ())
         (fun () ->
           let buf = Buffer.create 128 in
@@ -36,9 +36,9 @@ let read_process_capture open_ic =
                Buffer.add_char buf (input_char ic)
              done
            with End_of_file -> ());
-          let status = Unix.close_process_in ic in
-          closed := true;
-          Some (status, Buffer.contents buf))
+          let s = Unix.close_process_in ic in
+          status := Some s;
+          Some (s, Buffer.contents buf))
 
 (** Infer GitHub owner/repo from [git remote get-url origin] in [repo_root].
     Parses both HTTPS and SSH remote URLs. Uses argv (no shell). *)
