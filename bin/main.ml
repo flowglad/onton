@@ -17,31 +17,52 @@ type config = {
   user_config : User_config.t;
 }
 
+(** Run a subprocess, capture stdout, and guarantee the pipe is closed on any
+    exception path. Returns the exit status and captured output, or [None] if
+    opening the pipe itself raised. *)
+let read_process_capture open_ic =
+  match open_ic () with
+  | exception _ -> None
+  | ic ->
+      let closed = ref false in
+      Stdlib.Fun.protect
+        ~finally:(fun () ->
+          if not !closed then
+            try ignore (Unix.close_process_in ic) with _ -> ())
+        (fun () ->
+          let buf = Buffer.create 128 in
+          (try
+             while true do
+               Buffer.add_char buf (input_char ic)
+             done
+           with End_of_file -> ());
+          let status = Unix.close_process_in ic in
+          closed := true;
+          Some (status, Buffer.contents buf))
+
 (** Infer GitHub owner/repo from [git remote get-url origin] in [repo_root].
     Parses both HTTPS and SSH remote URLs. Uses argv (no shell). *)
 let infer_owner_repo ~repo_root =
-  let buf = Buffer.create 128 in
   try
-    let ic =
-      Unix.open_process_args_in "git"
-        [| "git"; "-C"; repo_root; "remote"; "get-url"; "origin" |]
-    in
-    (try
-       while true do
-         Buffer.add_char buf (input_char ic)
-       done
-     with End_of_file -> ());
-    (match Unix.close_process_in ic with
-    | Unix.WEXITED 0 -> ()
-    | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> raise Exit);
-    let url = Base.String.strip (Buffer.contents buf) in
-    let re =
-      Re.Pcre.re {|github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?/?$|}
-      |> Re.compile
-    in
-    match Re.exec_opt re url with
-    | Some g -> Some (Re.Group.get g 1, Re.Group.get g 2)
-    | None -> None
+    match
+      read_process_capture (fun () ->
+          Unix.open_process_args_in "git"
+            [| "git"; "-C"; repo_root; "remote"; "get-url"; "origin" |])
+    with
+    | Some (Unix.WEXITED 0, out) -> (
+        let url = Base.String.strip out in
+        let re =
+          Re.Pcre.re {|github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?/?$|}
+          |> Re.compile
+        in
+        match Re.exec_opt re url with
+        | Some g -> Some (Re.Group.get g 1, Re.Group.get g 2)
+        | None -> None)
+    | Some (Unix.WEXITED _, _)
+    | Some (Unix.WSIGNALED _, _)
+    | Some (Unix.WSTOPPED _, _)
+    | None ->
+        None
   with _ -> None
 
 (** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].
@@ -51,19 +72,19 @@ let infer_github_token () =
   | Some t when not (Base.String.is_empty (Base.String.strip t)) ->
       Base.String.strip t
   | _ -> (
-      let buf = Buffer.create 128 in
       try
-        let ic = Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |] in
-        (try
-           while true do
-             Buffer.add_char buf (input_char ic)
-           done
-         with End_of_file -> ());
-        (match Unix.close_process_in ic with
-        | Unix.WEXITED 0 -> ()
-        | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> raise Exit);
-        let t = Base.String.strip (Buffer.contents buf) in
-        if Base.String.is_empty t then "" else t
+        match
+          read_process_capture (fun () ->
+              Unix.open_process_args_in "gh" [| "gh"; "auth"; "token" |])
+        with
+        | Some (Unix.WEXITED 0, out) ->
+            let t = Base.String.strip out in
+            if Base.String.is_empty t then "" else t
+        | Some (Unix.WEXITED _, _)
+        | Some (Unix.WSIGNALED _, _)
+        | Some (Unix.WSTOPPED _, _)
+        | None ->
+            ""
       with _ -> "")
 
 (** Detect the default branch of a git repository. Tries: 1.
@@ -72,21 +93,19 @@ let infer_github_token () =
     [git rev-parse --verify refs/heads/master] → "master" 4. Fallback: "main" *)
 let infer_default_branch ~repo_root =
   let run_git cmd =
-    let buf = Buffer.create 128 in
     try
-      let ic =
-        Unix.open_process_in
-          (Printf.sprintf "git -C %s %s 2>/dev/null" (Filename.quote repo_root)
-             cmd)
-      in
-      (try
-         while true do
-           Buffer.add_char buf (input_char ic)
-         done
-       with End_of_file -> ());
-      match Unix.close_process_in ic with
-      | Unix.WEXITED 0 -> Some (Base.String.strip (Buffer.contents buf))
-      | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> None
+      match
+        read_process_capture (fun () ->
+            Unix.open_process_in
+              (Printf.sprintf "git -C %s %s 2>/dev/null"
+                 (Filename.quote repo_root) cmd))
+      with
+      | Some (Unix.WEXITED 0, out) -> Some (Base.String.strip out)
+      | Some (Unix.WEXITED _, _)
+      | Some (Unix.WSIGNALED _, _)
+      | Some (Unix.WSTOPPED _, _)
+      | None ->
+          None
     with _ -> None
   in
   match run_git "symbolic-ref refs/remotes/origin/HEAD" with
@@ -452,13 +471,15 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
     readable, [None] otherwise. *)
 let read_artifact_file path =
   try
-    if Stdlib.Sys.file_exists path then (
+    if Stdlib.Sys.file_exists path then
       let ic = Stdlib.open_in path in
-      let len = Stdlib.in_channel_length ic in
-      let s = Bytes.create len in
-      Stdlib.really_input ic s 0 len;
-      Stdlib.close_in ic;
-      Some (Bytes.to_string s))
+      Stdlib.Fun.protect
+        ~finally:(fun () -> Stdlib.close_in_noerr ic)
+        (fun () ->
+          let len = Stdlib.in_channel_length ic in
+          let s = Bytes.create len in
+          Stdlib.really_input ic s 0 len;
+          Some (Bytes.to_string s))
     else None
   with _ -> None
 
