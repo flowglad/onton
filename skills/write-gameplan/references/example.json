@@ -12,7 +12,7 @@
 
   "problemStatement": "Decision logic for patch lifecycle (should we deliver an operation? skip it? queue it?) is tangled with I/O in main.ml's 1500-line runner_fiber. This makes it impossible to property-test the decision rules that the formal spec defines. The decision logic should be extracted into a pure module.",
 
-  "solutionSummary": "Extract a pure Patch_decision module with functions like `disposition`, `on_review_comments`, `on_ci_failure`, and `on_merge_conflict`. Each function takes the patch's current state and returns an algebraic type describing the action. Wire main.ml to call these functions instead of inlining the logic. Add QCheck2 property tests derived from the formal spec's preconditions and postconditions.",
+  "solutionSummary": "Extract a pure Patch_decision module with functions like `disposition` (algebraic return) and `needs_intervention` (predicate). Each mirrors how the spec models its invariant: actions as domains, cap conditions as predicates. Wire main.ml to call these functions instead of inlining the logic. Add QCheck2 property tests derived from the formal spec's preconditions and postconditions.",
 
   "mergabilityStrategy": {
     "featureFlagStrategy": "No feature flag needed. This is a refactoring of internal decision logic. External behavior is unchanged — the same decisions are made, just in a different module.",
@@ -96,11 +96,8 @@
       ],
       "changes": [
         "Define type disposition = Skip | Queue | Deliver with [@@deriving show, eq]",
-        "Define type ci_action = Queue | Deliver | Cap_reached | Reject with [@@deriving show, eq]",
-        "Define type conflict_action = Queue | Deliver | Noop with [@@deriving show, eq]",
         "Add val disposition : merged:bool -> busy:bool -> disposition (placeholder)",
-        "Add val on_ci_failure : merged:bool -> busy:bool -> ci_failure_count:int -> ci_action (placeholder)",
-        "Add val on_merge_conflict : merged:bool -> busy:bool -> conflict_action (placeholder)"
+        "Add val needs_intervention : ci_failure_count:int -> bool (placeholder)"
       ],
       "testStubsIntroduced": null,
       "testStubsImplemented": null,
@@ -125,7 +122,7 @@
       "changes": [
         "Add pending test: merged patch is always skipped (spec: merged? p -> disposition p = skip)",
         "Add pending test: busy patch is never delivered (spec: busy? p -> disposition p ~= deliver)",
-        "Add pending test: CI failure count >= 3 yields Cap_reached (spec: ci-failure-count p >= 3 -> needs-intervention? p)"
+        "Add pending test: CI failure count >= 3 requires intervention (spec: ci-failure-count p >= 3 -> needs-intervention? p)"
       ],
       "testStubsIntroduced": [
         "Patch_decision > merged patch is always skipped",
@@ -153,8 +150,7 @@
       ],
       "changes": [
         "Implement disposition: merged -> skip, busy -> queue, else -> deliver",
-        "Implement on_ci_failure: merged -> reject, ci_failure_count >= 3 -> cap_reached, busy -> queue, else -> deliver",
-        "Implement on_merge_conflict: merged -> noop, busy -> queue, else -> deliver",
+        "Implement needs_intervention: ci_failure_count >= 3 -> true, else -> false",
         "Enable all QCheck2 tests from Patch 2"
       ],
       "testStubsIntroduced": null,
@@ -178,8 +174,7 @@
       ],
       "changes": [
         "In runner_fiber poll handler (~line 960): replace inline merged/busy checks with Patch_decision.disposition",
-        "In CI failure handler (~line 1050): replace inline ci_failure_count check with Patch_decision.on_ci_failure",
-        "In merge conflict handler (~line 1110): replace inline logic with Patch_decision.on_merge_conflict",
+        "In CI failure handler (~line 1050): replace inline ci_failure_count >= 3 check with Patch_decision.needs_intervention",
         "Remove now-dead local helper functions that duplicated decision logic"
       ],
       "testStubsIntroduced": null,
