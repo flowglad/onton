@@ -4,7 +4,7 @@ let build_args ~cwd_path ~prompt ~resume_session =
   let base = [ "opencode"; "run"; "--format"; "json"; "--dir"; cwd_path ] in
   let resume_args =
     match resume_session with
-    | Some session_id -> [ "--resume"; session_id ]
+    | Some session_id -> [ "--session"; session_id ]
     | None -> []
   in
   base @ resume_args @ [ prompt ]
@@ -132,7 +132,7 @@ let%test "build_args with continue" =
       "json";
       "--dir";
       "/tmp/work";
-      "--resume";
+      "--session";
       "x";
       "do stuff";
     ]
