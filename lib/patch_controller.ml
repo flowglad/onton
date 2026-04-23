@@ -68,7 +68,14 @@ let discovery_intents orch =
       else None)
 
 let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
-  if (not (Patch_agent.has_pr agent)) || agent.merged || agent.pr_body_delivered
+  (* [needs_intervention] guard: without it, after two Respond_pr_body_miss
+     outcomes push [pr_body_artifact_miss_count] to the cap, the reconciler
+     would re-enqueue Pr_body on every tick and immediately override the
+     escalation — defeating the retry-once-then-intervene contract. *)
+  if
+    (not (Patch_agent.has_pr agent))
+    || agent.merged || agent.pr_body_delivered
+    || Patch_agent.needs_intervention agent
   then t
   else
     let already_queued =

@@ -595,4 +595,160 @@ let () =
     Stdlib.print_endline "RD-10 passed"
   in
 
-  ignore main_branch
+  ignore main_branch;
+
+  (* ========== classify_pr_body_respond property tests ==========
+
+     The correlation rule is small enough to exhaustively enumerate over the
+     4 artifact_outcomes × {Write-present, no-Write} × sample tool_failure
+     shapes. Properties assert the invariants that matter for the
+     retry-once-then-intervene contract. *)
+  let () =
+    let write_failure = ("Write", "pending") in
+    let non_write_failures = [ ("Bash", "pending"); ("Read", "error") ] in
+
+    (* PB-1: artifact = Ok → Ok regardless of tool_failures. *)
+    List.iter
+      [ []; [ write_failure ]; write_failure :: non_write_failures ]
+      ~f:(fun tool_failures ->
+        let r = classify_pr_body_respond ~artifact_outcome:`Ok ~tool_failures in
+        match r with
+        | `Ok -> ()
+        | `Pr_body_miss ->
+            failwith "PB-1: artifact=Ok must not classify as Pr_body_miss");
+    Stdlib.print_endline "PB-1 passed";
+
+    (* PB-2: artifact = Patch_failed → Pr_body_miss regardless of
+       tool_failures. Rationale: the PR body update call failed, so the
+       description is stale; bubble out as Pr_body_miss so the reconciler
+       re-enqueues rather than marking delivery complete. *)
+    List.iter
+      [ []; [ write_failure ]; write_failure :: non_write_failures ]
+      ~f:(fun tool_failures ->
+        let r =
+          classify_pr_body_respond ~artifact_outcome:`Patch_failed
+            ~tool_failures
+        in
+        match r with
+        | `Pr_body_miss -> ()
+        | `Ok -> failwith "PB-2: Patch_failed must classify as Pr_body_miss");
+    Stdlib.print_endline "PB-2 passed";
+
+    (* PB-3: artifact = Missing + Write tool_failure → Pr_body_miss. *)
+    let r =
+      classify_pr_body_respond ~artifact_outcome:`Missing
+        ~tool_failures:[ write_failure ]
+    in
+    (match r with
+    | `Pr_body_miss -> ()
+    | `Ok -> failwith "PB-3: Missing + Write failure must be Pr_body_miss");
+    Stdlib.print_endline "PB-3 passed";
+
+    (* PB-4: artifact = Empty + Write tool_failure → Pr_body_miss. *)
+    let r =
+      classify_pr_body_respond ~artifact_outcome:`Empty
+        ~tool_failures:[ write_failure ]
+    in
+    (match r with
+    | `Pr_body_miss -> ()
+    | `Ok -> failwith "PB-4: Empty + Write failure must be Pr_body_miss");
+    Stdlib.print_endline "PB-4 passed";
+
+    (* PB-5: artifact = Missing|Empty + no Write tool_failure → Ok.
+       Agent legitimately chose not to add notes. *)
+    List.iter [ `Missing; `Empty ] ~f:(fun artifact_outcome ->
+        List.iter [ []; non_write_failures ] ~f:(fun tool_failures ->
+            match classify_pr_body_respond ~artifact_outcome ~tool_failures with
+            | `Ok -> ()
+            | `Pr_body_miss ->
+                failwith "PB-5: Missing|Empty with no Write failure must be Ok"));
+    Stdlib.print_endline "PB-5 passed";
+
+    (* PB-6: case-sensitive match on "Write" — lowercase "write" does NOT
+       trigger, because OpenCode's normalize_tool_name converts to PascalCase
+       upstream and the correlation rule matches only the canonical form.
+       Regression guard for future backends that surface status without
+       normalizing. *)
+    let r =
+      classify_pr_body_respond ~artifact_outcome:`Missing
+        ~tool_failures:[ ("write", "pending") ]
+    in
+    (match r with
+    | `Ok -> ()
+    | `Pr_body_miss ->
+        failwith "PB-6: lowercase 'write' must not trigger Pr_body_miss");
+    Stdlib.print_endline "PB-6 passed";
+
+    (* PB-7: property — Write failure mixed with any number of non-Write
+       failures still classifies as Pr_body_miss when artifact is
+       Missing|Empty. *)
+    let prop =
+      QCheck2.Test.make ~name:"PB-7: Write+noise in failures still Pr_body_miss"
+        QCheck2.Gen.(
+          pair
+            (oneof_list [ `Missing; `Empty ])
+            (list_small
+               (pair
+                  (oneof_list [ "Bash"; "Read"; "Grep"; "Edit"; "Glob" ])
+                  (oneof_list [ "pending"; "running"; "error" ]))))
+        (fun (artifact_outcome, noise) ->
+          try
+            let tool_failures = write_failure :: noise in
+            match classify_pr_body_respond ~artifact_outcome ~tool_failures with
+            | `Pr_body_miss -> true
+            | `Ok -> false
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "PB-7 passed";
+
+    (* PB-8: property — for non-failing artifact outcomes (Ok/Missing/Empty),
+       a non-Write failure list always classifies as Ok. The correlation
+       never fires without a Write failure. Patch_failed is excluded because
+       it classifies as Pr_body_miss regardless of tool_failures (see PB-2). *)
+    let prop =
+      QCheck2.Test.make ~name:"PB-8: no Write failure → never Pr_body_miss"
+        QCheck2.Gen.(
+          pair
+            (oneof_list [ `Ok; `Missing; `Empty ])
+            (list_small
+               (pair
+                  (oneof_list [ "Bash"; "Read"; "Grep"; "Edit"; "Glob" ])
+                  (oneof_list [ "pending"; "running"; "error" ]))))
+        (fun (artifact_outcome, non_write) ->
+          try
+            match
+              classify_pr_body_respond ~artifact_outcome
+                ~tool_failures:non_write
+            with
+            | `Ok -> true
+            | `Pr_body_miss -> false
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "PB-8 passed";
+
+    (* PB-9: property — Write failure anywhere in the list (not just head)
+       triggers Pr_body_miss when artifact is Missing|Empty. Guards against
+       a regression that only checks the head of the list. *)
+    let prop =
+      QCheck2.Test.make ~name:"PB-9: Write failure position independence"
+        QCheck2.Gen.(
+          pair
+            (oneof_list [ `Missing; `Empty ])
+            (list_small
+               (pair
+                  (oneof_list [ "Bash"; "Read"; "Grep"; "Edit"; "Glob" ])
+                  (oneof_list [ "pending"; "running"; "error" ]))))
+        (fun (artifact_outcome, prefix) ->
+          try
+            let tool_failures = prefix @ [ write_failure ] in
+            match classify_pr_body_respond ~artifact_outcome ~tool_failures with
+            | `Pr_body_miss -> true
+            | `Ok -> false
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "PB-9 passed"
+  in
+  ()

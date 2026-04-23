@@ -49,7 +49,8 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-    ~merge_ready:false ~is_draft ~pr_body_delivered ~start_attempts_without_pr
+    ~merge_ready:false ~is_draft ~pr_body_delivered
+    ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None
     ~checks_passing:false ~current_op:None ~current_message_id:None
     ~generation:0 ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
@@ -345,11 +346,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
-            ~no_commits_push_count:0 ~branch_rebased_onto:None
-            ~checks_passing:false ~current_op:None ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -478,11 +479,11 @@ let () =
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
-            ~no_commits_push_count:0 ~branch_rebased_onto:None
-            ~checks_passing:false ~current_op:None ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -616,11 +617,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
-            ~no_commits_push_count:0 ~branch_rebased_onto:None
-            ~checks_passing:false ~current_op:None ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -818,7 +819,8 @@ let () =
             ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -858,11 +860,11 @@ let () =
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
-            ~start_attempts_without_pr:0 ~conflict_noop_count:0
-            ~no_commits_push_count:0 ~branch_rebased_onto:None
-            ~checks_passing:false ~current_op:None ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in

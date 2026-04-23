@@ -218,7 +218,7 @@ end
 module Stream_event = struct
   type t =
     | Text_delta of string
-    | Tool_use of { name : string; input : string }
+    | Tool_use of { name : string; input : string; status : string option }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
     | Session_init of { session_id : string }

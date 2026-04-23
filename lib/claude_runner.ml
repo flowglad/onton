@@ -90,7 +90,9 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
                 member "name" content_block
                 |> to_string_option |> Option.value ~default:""
               in
-              [ Types.Stream_event.Tool_use { name; input = "" } ]
+              [
+                Types.Stream_event.Tool_use { name; input = ""; status = None };
+              ]
           | _ -> [])
       | Some "assistant" ->
           (* --verbose format: assistant event contains message.content array *)
@@ -112,7 +114,8 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
                     | `Null -> ""
                     | v -> Yojson.Safe.to_string v
                   in
-                  Some (Types.Stream_event.Tool_use { name; input })
+                  Some
+                    (Types.Stream_event.Tool_use { name; input; status = None })
               | Some "text" ->
                   let text =
                     member "text" block |> to_string_option
@@ -348,7 +351,9 @@ let%test "parse_stream_event tool_use" =
     {|{"type":"content_block_start","content_block":{"type":"tool_use","name":"write_file"}}|}
   in
   Option.equal Types.Stream_event.equal (parse_stream_event line)
-    (Some (Types.Stream_event.Tool_use { name = "write_file"; input = "" }))
+    (Some
+       (Types.Stream_event.Tool_use
+          { name = "write_file"; input = ""; status = None }))
 
 let%test "parse_stream_event error" =
   let line = {|{"type":"error","error":{"message":"rate limited"}}|} in

@@ -124,6 +124,30 @@ let () =
         Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn };
       ];
+  (* --- OpenCode: tool_use status survives the full subprocess pipeline.
+     Regression guard for the silent-disconnect bug where a pending Write was
+     mistaken for a completed one because the parser discarded state.status. *)
+  let result, got =
+    smoke ~process_mgr ~clock ~cwd
+      ~ndjson:
+        [
+          {|{"type":"tool_use","part":{"type":"tool","tool":"write","state":{"status":"pending","input":{"filePath":"/tmp/x","content":"y"}}}}|};
+          {|{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}|};
+        ]
+      ~process_line:(process_line_strip Opencode_backend.parse_event)
+  in
+  assert_smoke ~name:"opencode tool_use pending" ~result ~got
+    ~expected:
+      [
+        Types.Stream_event.Tool_use
+          {
+            name = "Write";
+            input = {|{"file_path":"/tmp/x","content":"y"}|};
+            status = Some "pending";
+          };
+        Types.Stream_event.Final_result
+          { text = ""; stop_reason = Types.Stop_reason.End_turn };
+      ];
   if !failures > 0 then (
     Stdio.printf "%d backend smoke test(s) failed\n" !failures;
     Stdlib.exit 1)

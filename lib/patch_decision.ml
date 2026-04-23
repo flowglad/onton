@@ -184,3 +184,43 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
             assert false
       in
       Deliver { payload; base_change }
+
+(** Post-session classification for a successful Pr_body session.
+
+    Pure. Inputs are the three observations produced upstream by the session
+    runner and the artifact PATCHer:
+    - [artifact_outcome]: result of reading the agent-authored notes file and
+      PATCHing the PR body (from [apply_pr_body_artifact]).
+    - [tool_failures]: [(name, status)] pairs for every Tool_use event whose
+      status was not ["completed"] (OpenCode's pending/running/error states;
+      other backends do not populate status and so contribute nothing).
+
+    Correlation rules that produce [`Pr_body_miss]:
+    - artifact outcome in [`Missing | `Empty] with at least one Write-named
+      tool_use that did not complete — evidence the agent was blocked mid-call
+      (e.g. OpenCode's [--dir] sandbox rejecting a write to a path outside the
+      worktree);
+    - artifact outcome [`Patch_failed] — the notes were authored but the
+      subsequent [Github.update_pr_body] call failed, so the PR body is stale.
+      Returning [`Pr_body_miss] lets the reconciler re-enqueue Pr_body; at cap
+      ([>=2]) the agent surfaces via [needs_intervention] so a persistent
+      delivery failure does not silently leave the PR description wrong.
+
+    Everything else → [`Ok]: a missing/empty artifact with no Write tool_failure
+    is the agent's deliberate choice not to add notes, and [`Ok] means delivery
+    succeeded.
+
+    Tool name match is case-sensitive on ["Write"]. OpenCode's [parse_event]
+    normalizes lowercase tool names to Claude-style PascalCase before emitting,
+    and other backends already emit PascalCase — so by the time a Tool_use
+    reaches this function, "Write" is the canonical form. *)
+let classify_pr_body_respond
+    ~(artifact_outcome : [ `Ok | `Missing | `Empty | `Patch_failed ])
+    ~(tool_failures : (string * string) list) : [ `Ok | `Pr_body_miss ] =
+  let observed_write_failure =
+    List.exists tool_failures ~f:(fun (name, _) -> String.equal name "Write")
+  in
+  match (artifact_outcome, observed_write_failure) with
+  | `Patch_failed, _ -> `Pr_body_miss
+  | (`Missing | `Empty), true -> `Pr_body_miss
+  | (`Ok | `Missing | `Empty), _ -> `Ok

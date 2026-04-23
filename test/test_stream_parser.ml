@@ -63,7 +63,7 @@ let gen_tool_use_pair =
             {|{"type":"content_block_start","content_block":{"type":"tool_use","name":"%s"}}|}
             name
         in
-        (json, Stream_event.Tool_use { name; input = "" }))
+        (json, Stream_event.Tool_use { name; input = ""; status = None }))
       gen_tool_name)
 
 let gen_result_pair =

@@ -27,6 +27,13 @@ jobs:
           ocaml-compiler: '5.4.0'
           dune-cache: true
 
+      - name: Use opam.ocaml.org archive cache
+        if: steps.cache-opam.outputs.cache-hit != 'true'
+        # erratique.ch (upstream for cmdliner, mtime, fpath, logs, uutf, ...)
+        # is frequently flaky; the community cache mirrors opam-repository
+        # archives behind a CDN, so opam only falls back to upstream on a miss.
+        run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
+
       - name: Install dependencies
         if: steps.cache-opam.outputs.cache-hit != 'true'
         run: opam install . --deps-only --with-test -y

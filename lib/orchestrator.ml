@@ -656,6 +656,18 @@ type respond_outcome =
   | Respond_retry_push
   | Respond_stale
   | Respond_skip_empty
+  | Respond_pr_body_miss
+      (** Pr_body session finished cleanly but the PR body was not durably
+          delivered. Two cases:
+          - artifact outcome [`Missing | `Empty] AND a Write tool_use did not
+            complete — evidence the agent was blocked mid-call (e.g. OpenCode's
+            [--dir] sandbox rejecting a write outside the worktree); or
+          - artifact outcome [`Patch_failed] — the notes were written but the
+            subsequent GitHub [update_pr_body] call failed, leaving the PR
+            description stale. Does NOT flip [pr_body_delivered]; instead
+            increments [pr_body_artifact_miss_count] and lets the reconciler
+            re-enqueue. At cap (>=2) the agent surfaces via
+            [needs_intervention]. *)
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
@@ -664,6 +676,10 @@ let apply_respond_outcome t patch_id kind outcome =
   | Respond_failed -> complete_failed t patch_id
   | Respond_retry_push -> complete t patch_id
   | Respond_skip_empty -> complete t patch_id
+  | Respond_pr_body_miss ->
+      let t = complete t patch_id in
+      update_agent t patch_id
+        ~f:Patch_agent.increment_pr_body_artifact_miss_count
   | Respond_ok ->
       let t = complete t patch_id in
       (* Only count CI fix attempts that actually delivered a payload with
@@ -681,5 +697,6 @@ let apply_respond_outcome t patch_id kind outcome =
         else t
       in
       if Operation_kind.equal kind Operation_kind.Pr_body then
-        set_pr_body_delivered t patch_id true
+        let t = set_pr_body_delivered t patch_id true in
+        update_agent t patch_id ~f:Patch_agent.reset_pr_body_artifact_miss_count
       else t

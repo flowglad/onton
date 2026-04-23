@@ -26,6 +26,11 @@ type t = {
   merge_ready : bool;
   is_draft : bool;
   pr_body_delivered : bool;
+  pr_body_artifact_miss_count : int;
+      (** Consecutive Pr_body sessions that ended with evidence the agent was
+          blocked mid-write (see [Orchestrator.Respond_pr_body_miss]). At >=2
+          contributes to [needs_intervention]. Reset by
+          [reset_intervention_state]. *)
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
@@ -88,7 +93,8 @@ let needs_intervention t =
         && (t.ci_failure_count >= 3
            || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
            || t.conflict_noop_count >= 2
-           || t.no_commits_push_count >= 2))
+           || t.no_commits_push_count >= 2
+           || t.pr_body_artifact_miss_count >= 2))
 
 let create ~branch patch_id =
   {
@@ -112,6 +118,7 @@ let create ~branch patch_id =
     merge_ready = false;
     is_draft = false;
     pr_body_delivered = false;
+    pr_body_artifact_miss_count = 0;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
@@ -152,6 +159,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     merge_ready = false;
     is_draft = false;
     pr_body_delivered = true;
+    pr_body_artifact_miss_count = 0;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
@@ -221,6 +229,12 @@ let increment_no_commits_push_count t =
   { t with no_commits_push_count = t.no_commits_push_count + 1 }
 
 let reset_no_commits_push_count t = { t with no_commits_push_count = 0 }
+
+let increment_pr_body_artifact_miss_count t =
+  { t with pr_body_artifact_miss_count = t.pr_body_artifact_miss_count + 1 }
+
+let reset_pr_body_artifact_miss_count t =
+  { t with pr_body_artifact_miss_count = 0 }
 
 let set_base_branch t branch =
   let notified =
@@ -324,6 +338,7 @@ let reset_intervention_state t =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    pr_body_artifact_miss_count = 0;
   }
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
@@ -332,10 +347,10 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
-    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~branch_rebased_onto ~checks_passing ~current_op ~current_message_id
-    ~generation ~worktree_path ~branch_blocked ~llm_session_id
-    ~automerge_enabled ~automerge_deadline ~automerge_inflight
+    ~pr_body_artifact_miss_count ~start_attempts_without_pr ~conflict_noop_count
+    ~no_commits_push_count ~branch_rebased_onto ~checks_passing ~current_op
+    ~current_message_id ~generation ~worktree_path ~branch_blocked
+    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
     ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
@@ -358,6 +373,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     merge_ready;
     is_draft;
     pr_body_delivered;
+    pr_body_artifact_miss_count;
     start_attempts_without_pr;
     conflict_noop_count;
     no_commits_push_count;
