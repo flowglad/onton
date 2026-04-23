@@ -124,10 +124,24 @@ val set_main_branch : t -> Branch.t -> t
 val agents_map : t -> Patch_agent.t Map.M(Patch_id).t
 
 val add_agent :
-  t -> patch_id:Patch_id.t -> branch:Branch.t -> pr_number:Pr_number.t -> t
+  t ->
+  patch_id:Patch_id.t ->
+  branch:Branch.t ->
+  base_branch:Branch.t ->
+  pr_number:Pr_number.t ->
+  t
 (** Add an ad-hoc agent for a PR not in the gameplan. No-op if the patch_id
-    already exists. The agent starts with [has_pr = true] and no dependencies.
-    Corresponds to the spec's Add action. *)
+    already exists. The agent starts with [has_pr = true] and no deps by
+    default.
+
+    [base_branch] is inspected only for dependency-edge inference: if it matches
+    the [branch] of another unmerged tracked patch, a graph edge from the new
+    patch to that patch is recorded so the existing rebase machinery
+    (detect_rebases, initial_base) treats the stacked ad-hoc PR like any other
+    stacked patch. If [base_branch] is the main branch, an unknown branch, or a
+    merged patch's branch, no edge is inferred. The agent's own [base_branch]
+    field is populated by the poller on the next tick. Corresponds to the spec's
+    Add action. *)
 
 (** {2 Persistence support} *)
 

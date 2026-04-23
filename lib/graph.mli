@@ -73,9 +73,28 @@ val all_patch_ids : t -> Types.Patch_id.t list
 
 val add_patch : t -> Types.Patch_id.t -> t
 (** [add_patch t pid] registers an ad-hoc patch with no dependencies. No-op if
-    [pid] is already in the graph. Per spec: "Added patches have no deps." *)
+    [pid] is already in the graph. Equivalent to
+    [add_patch_with_deps t pid ~deps:[]]. *)
+
+val add_patch_with_deps :
+  t -> Types.Patch_id.t -> deps:Types.Patch_id.t list -> t
+(** [add_patch_with_deps t pid ~deps] registers an ad-hoc patch with inferred
+    dependency edges. Deps not already present in [t] are silently dropped
+    (defensive — unknown ids cannot introduce dangling edges). Self-edges are
+    dropped. No-op if [pid] is already in the graph.
+
+    Used when an ad-hoc patch's PR base branch matches an already-tracked
+    patch's branch: the observed stacking is recorded as a real graph edge so
+    the existing rebase machinery (detect_rebases, initial_base, …) treats the
+    patch like any other stacked patch. *)
+
+val add_dependency : t -> Types.Patch_id.t -> dep:Types.Patch_id.t -> t
+(** [add_dependency t pid ~dep] adds an edge [pid -> dep] to the graph. No-op if
+    either endpoint is absent, if [pid = dep], or if the edge already exists.
+    Intended for snapshot restore, where ad-hoc patches are first added as bare
+    nodes and then linked once all nodes are present. *)
 
 val remove_patch : t -> Types.Patch_id.t -> t
-(** [remove_patch t pid] removes an ad-hoc patch from the graph. The patch must
-    have no dependents — removing a patch that others depend on is not
-    supported. *)
+(** [remove_patch t pid] removes an ad-hoc patch from the graph. Any edges
+    pointing at [pid] from its dependents are also dropped, so the resulting
+    graph is consistent (no dangling edges to a removed patch). *)

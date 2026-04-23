@@ -73,19 +73,71 @@ let dependents t patch_id =
 
 let all_patch_ids t = t.all_ids
 
-let add_patch t patch_id =
+let add_patch_with_deps t patch_id ~deps =
   if Map.mem t.deps_map patch_id then t
   else
+    let deps =
+      List.filter deps ~f:(Map.mem t.deps_map)
+      |> dedup_deps
+      |> List.filter ~f:(fun d -> not (Patch_id.equal d patch_id))
+    in
+    let dependents_map =
+      List.fold deps ~init:t.dependents_map ~f:(fun acc dep_id ->
+          Map.update acc dep_id ~f:(fun existing ->
+              patch_id :: Option.value existing ~default:[]))
+    in
     {
-      deps_map = Map.set t.deps_map ~key:patch_id ~data:[];
-      dependents_map = t.dependents_map;
+      deps_map = Map.set t.deps_map ~key:patch_id ~data:deps;
+      dependents_map;
       all_ids = t.all_ids @ [ patch_id ];
     }
 
+let add_patch t patch_id = add_patch_with_deps t patch_id ~deps:[]
+
+let add_dependency t patch_id ~dep =
+  if Patch_id.equal patch_id dep then t
+  else if not (Map.mem t.deps_map patch_id) then t
+  else if not (Map.mem t.deps_map dep) then t
+  else
+    let existing = Map.find t.deps_map patch_id |> Option.value ~default:[] in
+    if List.mem existing dep ~equal:Patch_id.equal then t
+    else
+      {
+        deps_map = Map.set t.deps_map ~key:patch_id ~data:(dep :: existing);
+        dependents_map =
+          Map.update t.dependents_map dep ~f:(fun existing ->
+              patch_id :: Option.value existing ~default:[]);
+        all_ids = t.all_ids;
+      }
+
 let remove_patch t patch_id =
+  let deps = Map.find t.deps_map patch_id |> Option.value ~default:[] in
+  let dependents =
+    Map.find t.dependents_map patch_id |> Option.value ~default:[]
+  in
+  let dependents_map =
+    List.fold deps ~init:t.dependents_map ~f:(fun acc dep_id ->
+        Map.change acc dep_id ~f:(function
+          | None -> None
+          | Some lst ->
+              let lst' =
+                List.filter lst ~f:(fun d -> not (Patch_id.equal d patch_id))
+              in
+              if List.is_empty lst' then None else Some lst'))
+  in
+  let deps_map =
+    List.fold dependents ~init:t.deps_map ~f:(fun acc dependent_id ->
+        Map.change acc dependent_id ~f:(function
+          | None -> None
+          | Some lst ->
+              let lst' =
+                List.filter lst ~f:(fun d -> not (Patch_id.equal d patch_id))
+              in
+              Some lst'))
+  in
   {
-    deps_map = Map.remove t.deps_map patch_id;
-    dependents_map = Map.remove t.dependents_map patch_id;
+    deps_map = Map.remove deps_map patch_id;
+    dependents_map = Map.remove dependents_map patch_id;
     all_ids =
       List.filter t.all_ids ~f:(fun id -> not (Patch_id.equal id patch_id));
   }
