@@ -44,7 +44,14 @@ let resolve_main_working_tree path =
       | Some (Unix.WEXITED 0) ->
           let common_dir = String.strip (Buffer.contents buf) in
           if String.is_empty common_dir then None
-          else Some (Stdlib.Filename.dirname common_dir)
+          else
+            let parent = Stdlib.Filename.dirname common_dir in
+            (* [--path-format=absolute] requires git >= 2.31; older git
+               silently ignores the flag and returns a path relative to the
+               worktree's CWD. Treat that as failure rather than resolving
+               against the worktree and re-introducing the very bug this
+               module is meant to fix. *)
+            if Stdlib.Filename.is_relative parent then None else Some parent
       | Some (Unix.WEXITED _)
       | Some (Unix.WSIGNALED _)
       | Some (Unix.WSTOPPED _)

@@ -49,14 +49,18 @@ let build_error ~status_msg stdout_buf stderr_buf =
 (** Wrap the user's script in a [/bin/sh -c "ulimit -n N; exec SCRIPT"]
     invocation. [ulimit -n] lowers the child's [RLIMIT_NOFILE] before the script
     runs, so runaway subtree fan-out (npm install spawning node, dune spawning
-    ocamlc, etc.) can't exhaust the shared file-descriptor table on the host.
-    The [2>/dev/null] suppresses a noisy error if the current hard limit is
-    below the target — we still want [exec] to run either way. *)
+    ocamlc, etc.) can't exhaust the shared file-descriptor table on the host. We
+    clamp the requested limit against the current hard cap at runtime —
+    otherwise on shells like dash where [ulimit -n N] fails when [N] exceeds the
+    hard limit, the builtin error leaks into the captured stderr even with
+    [2>/dev/null]. *)
 let wrap_with_ulimit ~fd_limit script =
   [
     "/bin/sh";
     "-c";
-    Printf.sprintf "ulimit -n %d 2>/dev/null; exec %s" fd_limit
+    Printf.sprintf
+      {|limit=$(ulimit -Hn); target=%d; if [ "$limit" = unlimited ] || [ "$target" -lt "$limit" ]; then ulimit -n "$target"; else ulimit -n "$limit"; fi; exec %s|}
+      fd_limit
       (Stdlib.Filename.quote script);
   ]
 
@@ -104,6 +108,11 @@ let run_hook ~process_mgr ~clock ~script ~cwd ~env ?(timeout : float option)
                *our* blocking on the hook, which is the property the
                orchestrator needs. *)
             (try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ());
+            (* Await the child synchronously before returning — otherwise
+               the caller's [hook_mutex] is released while the kernel is
+               still finishing SIGKILL delivery, and a second hook can
+               start running concurrently with the dying first one. *)
+            (try ignore (Eio.Process.await child) with _ -> ());
             build_error
               ~status_msg:
                 (Printf.sprintf
