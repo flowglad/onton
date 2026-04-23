@@ -50,16 +50,16 @@ let build_error ~status_msg stdout_buf stderr_buf =
     invocation. [ulimit -n] lowers the child's [RLIMIT_NOFILE] before the script
     runs, so runaway subtree fan-out (npm install spawning node, dune spawning
     ocamlc, etc.) can't exhaust the shared file-descriptor table on the host. We
-    clamp the requested limit against the current hard cap at runtime —
-    otherwise on shells like dash where [ulimit -n N] fails when [N] exceeds the
-    hard limit, the builtin error leaks into the captured stderr even with
-    [2>/dev/null]. *)
+    clamp the requested target against both the hard and soft caps — the hard
+    cap prevents shells like dash from printing an error when the target exceeds
+    it, and the soft cap prevents us from accidentally *raising* a parent who
+    already ran [ulimit -n] to something below our default. *)
 let wrap_with_ulimit ~fd_limit script =
   [
     "/bin/sh";
     "-c";
     Printf.sprintf
-      {|limit=$(ulimit -Hn); target=%d; if [ "$limit" = unlimited ] || [ "$target" -lt "$limit" ]; then ulimit -n "$target"; else ulimit -n "$limit"; fi; exec %s|}
+      {|hlimit=$(ulimit -Hn); slimit=$(ulimit -Sn); target=%d; [ "$hlimit" != unlimited ] && [ "$target" -gt "$hlimit" ] && target=$hlimit; [ "$slimit" != unlimited ] && [ "$target" -gt "$slimit" ] && target=$slimit; ulimit -n "$target"; exec %s|}
       fd_limit
       (Stdlib.Filename.quote script);
   ]
