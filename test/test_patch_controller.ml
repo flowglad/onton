@@ -350,7 +350,8 @@ let () =
             ~notified_base_branch:(Some branch) ~ci_failure_count:3
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -389,7 +390,8 @@ let () =
             ~notified_base_branch:(Some branch) ~ci_failure_count:3
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
             ~current_message_id:None ~generation:0 ~worktree_path:None
