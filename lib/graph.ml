@@ -94,6 +94,22 @@ let add_patch_with_deps t patch_id ~deps =
 
 let add_patch t patch_id = add_patch_with_deps t patch_id ~deps:[]
 
+let add_dependency t patch_id ~dep =
+  if Patch_id.equal patch_id dep then t
+  else if not (Map.mem t.deps_map patch_id) then t
+  else if not (Map.mem t.deps_map dep) then t
+  else
+    let existing = Map.find t.deps_map patch_id |> Option.value ~default:[] in
+    if List.mem existing dep ~equal:Patch_id.equal then t
+    else
+      {
+        deps_map = Map.set t.deps_map ~key:patch_id ~data:(dep :: existing);
+        dependents_map =
+          Map.update t.dependents_map dep ~f:(fun existing ->
+              patch_id :: Option.value existing ~default:[]);
+        all_ids = t.all_ids;
+      }
+
 let remove_patch t patch_id =
   {
     deps_map = Map.remove t.deps_map patch_id;

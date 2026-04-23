@@ -458,10 +458,35 @@ let orchestrator_of_yojson ~gameplan json =
         if not (Set.is_empty missing_agent_pids) then
           Error "snapshot missing agent state for one or more gameplan patches"
         else
+          let adhoc_pids = Set.diff agent_pids graph_pids in
+          let graph = Set.fold adhoc_pids ~init:graph ~f:Graph.add_patch in
+          (* Infer stacking edges for ad-hoc patches whose persisted
+             base_branch matches another tracked unmerged agent's branch.
+             Mirrors the inference in [Orchestrator.add_agent] so a snapshot
+             restored after a stacked ad-hoc PR was added retains the edge
+             that drives detect_rebases on the dep's merge. *)
+          let find_by_branch br =
+            Map.to_alist agents_map
+            |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch br)
+            |> Option.map ~f:fst
+          in
           let graph =
-            Set.fold
-              (Set.diff agent_pids graph_pids)
-              ~init:graph ~f:Graph.add_patch
+            Set.fold adhoc_pids ~init:graph ~f:(fun g pid ->
+                match Map.find agents_map pid with
+                | None -> g
+                | Some ag -> (
+                    match ag.Patch_agent.base_branch with
+                    | None -> g
+                    | Some base when Branch.equal base main_branch -> g
+                    | Some base -> (
+                        match find_by_branch base with
+                        | None -> g
+                        | Some dep_pid when Patch_id.equal dep_pid pid -> g
+                        | Some dep_pid -> (
+                            match Map.find agents_map dep_pid with
+                            | Some dep_ag when not dep_ag.Patch_agent.merged ->
+                                Graph.add_dependency g pid ~dep:dep_pid
+                            | _ -> g))))
           in
           Ok
             (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))

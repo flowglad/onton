@@ -88,6 +88,12 @@ val add_patch_with_deps :
     the existing rebase machinery (detect_rebases, initial_base, …) treats the
     patch like any other stacked patch. *)
 
+val add_dependency : t -> Types.Patch_id.t -> dep:Types.Patch_id.t -> t
+(** [add_dependency t pid ~dep] adds an edge [pid -> dep] to the graph. No-op if
+    either endpoint is absent, if [pid = dep], or if the edge already exists.
+    Intended for snapshot restore, where ad-hoc patches are first added as bare
+    nodes and then linked once all nodes are present. *)
+
 val remove_patch : t -> Types.Patch_id.t -> t
 (** [remove_patch t pid] removes an ad-hoc patch from the graph. The patch must
     have no dependents — removing a patch that others depend on is not

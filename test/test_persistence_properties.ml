@@ -282,6 +282,72 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  (* Restore of a snapshot whose ad-hoc agents encode a stack (B's
+     base_branch = A's branch) must re-infer the dep edge B→A so
+     detect_rebases can fire on A's merge post-restart. Mirrors the
+     real subsetpark-pantagruel PRs 118-on-119 case. *)
+  let adhoc_stack_restore_infers_edge =
+    QCheck2.Test.make ~name:"restore re-infers ad-hoc stack edge" ~count:1
+      (QCheck2.Gen.return ()) (fun () ->
+        try
+          let gameplan =
+            Gameplan.
+              {
+                project_name = "adhoc-stack";
+                problem_statement = "";
+                solution_summary = "";
+                final_state_spec = "";
+                patches = [];
+                current_state_analysis = "";
+                explicit_opinions = "";
+                acceptance_criteria = [];
+                open_questions = [];
+              }
+          in
+          let main_branch = Branch.of_string "main" in
+          let orch = Onton.Orchestrator.create ~patches:[] ~main_branch in
+          (* Add A first (base = main, no edge) *)
+          let pid_a = Patch_id.of_string "a" in
+          let branch_a = Branch.of_string "feature-a" in
+          let orch =
+            Onton.Orchestrator.add_agent orch ~patch_id:pid_a ~branch:branch_a
+              ~base_branch:main_branch ~pr_number:(Pr_number.of_int 100)
+          in
+          (* Seed A's persisted base_branch to main so it survives the
+             round-trip. Without this A.base_branch stays None and the
+             restore has no signal that A is a valid dep target. *)
+          let orch =
+            Onton.Orchestrator.set_base_branch orch pid_a main_branch
+          in
+          (* Add B stacked on A *)
+          let pid_b = Patch_id.of_string "b" in
+          let branch_b = Branch.of_string "feature-b" in
+          let orch =
+            Onton.Orchestrator.add_agent orch ~patch_id:pid_b ~branch:branch_b
+              ~base_branch:branch_a ~pr_number:(Pr_number.of_int 101)
+          in
+          (* Seed B's persisted base_branch — this is what the poller would
+             have done; without it the restore has no basis to infer. *)
+          let orch = Onton.Orchestrator.set_base_branch orch pid_b branch_a in
+          let snap =
+            {
+              Onton.Runtime.orchestrator = orch;
+              activity_log = Onton.Activity_log.empty;
+              gameplan;
+              transcripts = Base.Hashtbl.create (module Patch_id);
+            }
+          in
+          let json = Onton.Persistence.snapshot_to_yojson snap in
+          match Onton.Persistence.snapshot_of_yojson json with
+          | Error _ -> false
+          | Ok snap' ->
+              let g = Onton.Orchestrator.graph snap'.orchestrator in
+              let deps_b = Onton.Graph.deps g pid_b in
+              let dependents_a = Onton.Graph.dependents g pid_a in
+              List.mem deps_b pid_a ~equal:Patch_id.equal
+              && List.mem dependents_a pid_b ~equal:Patch_id.equal
+        with _ -> false)
+  in
   let exit_code =
     QCheck_base_runner.run_tests
       [
@@ -294,6 +360,7 @@ let () =
         missing_pr_number_defaults_none;
         missing_branch_falls_back_to_gameplan;
         adhoc_snapshot_roundtrip;
+        adhoc_stack_restore_infers_edge;
       ]
   in
   if exit_code <> 0 then Stdlib.exit exit_code
