@@ -117,17 +117,32 @@ let () =
   (* ── FD cap: the [ulimit -n N] prefix must reach the child so a runaway
         hook can't exhaust the shared FD table. The hook echoes its own
         [ulimit -n] then exits non-zero so the captured stdout surfaces via
-        the Error message. ────────────────────────────────────────────── *)
+        the Error message.
+
+        [wrap_with_ulimit] clamps the requested limit against the test
+        runner's own soft cap, so if the CI runner is already at [ulimit -Sn]
+        < 128 (exactly the scenario this PR is meant to help with), the child
+        sees the clamped value, not 128. Expect [min fd_limit parent_soft]. *)
   (let dir, script =
      make_script
        "#!/bin/sh\nlimit=$(ulimit -n)\necho \"limit=$limit\"\nexit 1\n"
    in
    let cwd = Eio.Path.(fs / dir) in
+   let parent_soft =
+     let ic = Unix.open_process_in "ulimit -Sn" in
+     let s = String.strip (Stdlib.input_line ic) in
+     ignore (Unix.close_process_in ic);
+     if String.equal s "unlimited" then Int.max_value else Int.of_string s
+   in
+   let fd_limit = 128 in
+   let expected = min fd_limit parent_soft in
    match
-     User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env:[] ~fd_limit:128
-       ()
+     User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env:[] ~fd_limit ()
    with
    | Ok () -> failwith "expected Error (exit 1)"
-   | Error msg -> assert_contains ~label:"fd-cap" ~needle:"limit=128" msg);
+   | Error msg ->
+       assert_contains ~label:"fd-cap"
+         ~needle:(Printf.sprintf "limit=%d" expected)
+         msg);
 
   Stdlib.print_endline "test_user_config: OK"
