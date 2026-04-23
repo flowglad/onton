@@ -38,12 +38,18 @@ CAMLprim value caml_onton_getrlimit_nofile(value unit) {
   CAMLreturn(pair);
 }
 
-/* Sets the soft and hard limits. Raises Failure on error. */
-CAMLprim value caml_onton_setrlimit_nofile(value v_soft, value v_hard) {
-  CAMLparam2(v_soft, v_hard);
+/* Raises only the soft RLIMIT_NOFILE to [v_soft]; re-reads the kernel's
+ * current hard limit so we preserve RLIM_INFINITY instead of sending back
+ * the Max_long-clamped value from the getter (which setrlimit would treat
+ * as a hard-limit lowering, rejected EPERM on some platforms).
+ * Raises Failure on error. */
+CAMLprim value caml_onton_setrlimit_nofile_soft(value v_soft) {
+  CAMLparam1(v_soft);
   struct rlimit rl;
+  if (getrlimit(RLIMIT_NOFILE, &rl) != 0) {
+    caml_failwith(strerror(errno));
+  }
   rl.rlim_cur = (rlim_t)Long_val(v_soft);
-  rl.rlim_max = (rlim_t)Long_val(v_hard);
   if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
     caml_failwith(strerror(errno));
   }
