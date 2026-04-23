@@ -326,6 +326,91 @@ let () =
                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
   in
 
+  (* Dual of prop_reconcile_all_blocks_restart_after_intervention: the
+     Respond/Start arms of [plan_action_for_patch] gate on
+     [needs_intervention], but the Rebase arm does not — Rebase is
+     orchestrator-executed and must continue tracking the base branch even
+     for patches latched into needs-help. Regression guard: this held even
+     before the fix if Human was in the queue (exemption inside
+     [needs_intervention]), so the property explicitly keeps Human out to
+     exercise the needs-intervention-true path. *)
+  let prop_rebase_not_blocked_by_needs_intervention =
+    Test.make ~name:"patch_controller: needs_intervention does not block Rebase"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:true ~busy:false ~merged:false
+            ~queue:[ Operation_kind.Rebase ] ~satisfies:false ~changed:false
+            ~has_conflict:false ~base_branch:(Some branch)
+            ~notified_base_branch:(Some branch) ~ci_failure_count:3
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+        in
+        let orch = make_orch patch agent in
+        let actions =
+          Patch_controller.plan_actions orch ~patches:gameplan.patches
+        in
+        Patch_agent.needs_intervention (Orchestrator.agent orch pid)
+        && List.exists actions ~f:(function
+          | Orchestrator.Rebase (action_pid, _) -> Patch_id.equal action_pid pid
+          | Orchestrator.Start _ | Orchestrator.Respond _ -> false))
+  in
+
+  (* Complement of the above: Respond must still be blocked under
+     needs_intervention. Identical agent except the queue holds a
+     non-Rebase feedback op, so the Rebase arm of [plan_action_for_patch]
+     doesn't apply and the Respond arm's [needs_intervention] guard is
+     what matters. *)
+  let prop_respond_still_blocked_by_needs_intervention =
+    Test.make ~name:"patch_controller: needs_intervention still blocks Respond"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:true ~busy:false ~merged:false
+            ~queue:[ Operation_kind.Ci ] ~satisfies:false ~changed:false
+            ~has_conflict:false ~base_branch:(Some branch)
+            ~notified_base_branch:(Some branch) ~ci_failure_count:3
+            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+            ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+        in
+        let orch = make_orch patch agent in
+        let actions =
+          Patch_controller.plan_actions orch ~patches:gameplan.patches
+        in
+        Patch_agent.needs_intervention (Orchestrator.agent orch pid)
+        && not
+             (List.exists actions ~f:(function
+               | Orchestrator.Respond (action_pid, _) ->
+                   Patch_id.equal action_pid pid
+               | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)))
+  in
+
   let prop_reconcile_all_converges_after_acknowledged_effects =
     Test.make
       ~name:
@@ -887,6 +972,8 @@ let () =
       prop_intervention_stable_after_threshold;
       prop_reconcile_all_exposes_pr_body_as_next_action;
       prop_reconcile_all_blocks_restart_after_intervention;
+      prop_rebase_not_blocked_by_needs_intervention;
+      prop_respond_still_blocked_by_needs_intervention;
       prop_reconcile_all_converges_after_acknowledged_effects;
       prop_poll_to_controller_promotes_ready_after_pr_body;
       prop_poll_ci_failure_never_erases_pr_body_followup;

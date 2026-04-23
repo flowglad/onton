@@ -318,10 +318,16 @@ let plan_action_for_patch t ~branch_map patch_id =
     in
     Some (Orchestrator.Start (patch_id, base))
   else if
+    (* Rebase is exempt from [needs_intervention] because it is
+       orchestrator-executed (no LLM session) and does not mutate the
+       counters that triggered intervention. Otherwise a [needs-help] patch
+       would sit on a stale base until a human message happened to land and
+       flip the Human exemption inside [Patch_agent.needs_intervention]. A
+       conflict outcome still enqueues [Merge_conflict], which keeps the
+       patch blocked until an LLM session can run. *)
     Patch_agent.has_pr agent
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
-    && (not (Patch_agent.needs_intervention agent))
     && (not agent.Patch_agent.branch_blocked)
     && List.mem agent.Patch_agent.queue Operation_kind.Rebase
          ~equal:Operation_kind.equal
