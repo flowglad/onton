@@ -506,17 +506,13 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
         | Some n -> Int.to_string (Pr_number.to_int n)
         | None -> "{pr_number}"
       in
-      (* Only claim outdated-ness when GitHub has given us a strong signal:
-         [commit] and [originalCommit] differ, meaning GitHub re-anchored
-         the comment to a later commit (line moved or detached). A null
-         [line] alone is ambiguous — it also covers file-level comments,
-         which are not outdated. With no SHA info, say nothing — matches
-         pre-SHA behavior. *)
-      let is_outdated (c : Comment.t) =
-        match (c.Comment.commit_sha, c.Comment.original_commit_sha) with
-        | Some cur, Some orig when not (String.equal cur orig) -> true
-        | _ -> false
-      in
+      (* [outdated] is GitHub's own [isOutdated] on the thread — the line
+         the comment anchors to was changed by a later commit (or the file
+         was deleted). Do not infer from [commit] vs [originalCommit]:
+         GitHub advances [commit] to any later commit that still contains
+         the anchored line, including commits that touched unrelated
+         files, so that comparison produces false positives. *)
+      let is_outdated (c : Comment.t) = c.Comment.outdated in
       let formatted =
         List.map comments ~f:(fun (c : Comment.t) ->
             let location =
@@ -935,6 +931,7 @@ let%test "review prompt formats comments" =
           line = Some 42;
           commit_sha = None;
           original_commit_sha = None;
+          outdated = false;
         };
       Comment.
         {
@@ -945,6 +942,7 @@ let%test "review prompt formats comments" =
           line = None;
           commit_sha = None;
           original_commit_sha = None;
+          outdated = false;
         };
     ]
   in
@@ -978,6 +976,7 @@ let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
           line = Some 10;
           commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          outdated = false;
         };
     ]
   in
@@ -1018,9 +1017,12 @@ let%expect_test "review prompt marks outdated comments" =
           body = "This line moved.";
           path = Some "lib/foo.ml";
           line = None;
-          (* GitHub returns null line when the comment is outdated *)
+          (* GitHub returns null line when the comment is outdated.
+             [commit_sha] may or may not equal [original_commit_sha] —
+             what matters is the authoritative [outdated] flag. *)
           commit_sha = Some "da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          outdated = true;
         };
     ]
   in
@@ -1065,6 +1067,7 @@ let%expect_test
           line = Some 10;
           commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          outdated = false;
         };
     ]
   in
@@ -1109,10 +1112,11 @@ let%test "review prompt does not mark file-level comments as outdated" =
           body = "File-level feedback.";
           path = Some "lib/foo.ml";
           line = None;
-          (* File-level comments have null line by design, and GitHub
-             leaves commit_sha equal to original_commit_sha. *)
+          (* File-level comments have null line by design, and the
+             thread's isOutdated is false because the file still exists. *)
           commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+          outdated = false;
         };
     ]
   in

@@ -56,6 +56,7 @@ let gen_comment =
             line;
             commit_sha = None;
             original_commit_sha = None;
+            outdated = false;
           })
       (* Use only synthetic (negative) IDs so content-based dedup governs in
          property tests, matching production behavior where real IDs are unique
