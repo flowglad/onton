@@ -71,7 +71,17 @@ let run_hook ~process_mgr ~clock ~script ~cwd ~env ?(timeout : float option)
   let stdout_buf = Buffer.create 256 in
   let stderr_buf = Buffer.create 256 in
   let env_array =
+    (* Overlay keys must override inherited ones. [execve] accepts duplicate
+       keys but [getenv] returns the first match on glibc, so we filter
+       inherited entries whose key is in [overlay] before appending. *)
     let inherited = Unix.environment () |> Array.to_list in
+    let override_keys = Set.of_list (module String) (List.map env ~f:fst) in
+    let inherited =
+      List.filter inherited ~f:(fun binding ->
+          match String.lsplit2 binding ~on:'=' with
+          | Some (k, _) -> not (Set.mem override_keys k)
+          | None -> true)
+    in
     let overlay = List.map env ~f:(fun (k, v) -> Printf.sprintf "%s=%s" k v) in
     Array.of_list (List.append inherited overlay)
   in
@@ -118,7 +128,12 @@ let run_hook ~process_mgr ~clock ~script ~cwd ~env ?(timeout : float option)
                 (Printf.sprintf
                    "hook timed out after %.1fs (ONTON_HOOK_TIMEOUT)" timeout)
               stdout_buf stderr_buf)
-  with exn ->
-    build_error
-      ~status_msg:(Stdlib.Printexc.to_string exn)
-      stdout_buf stderr_buf
+  with
+  | Eio.Cancel.Cancelled _ as exn ->
+      (* Cancellation must propagate to the caller — never format it as a
+         hook failure. See Eio.Cancel docs. *)
+      raise exn
+  | exn ->
+      build_error
+        ~status_msg:(Stdlib.Printexc.to_string exn)
+        stdout_buf stderr_buf
