@@ -467,13 +467,20 @@ let orchestrator_of_yojson ~gameplan json =
              that drives detect_rebases on the dep's merge. *)
           let branch_to_pid =
             Map.fold agents_map
-              ~init:(Hashtbl.create (module String))
+              ~init:(Ok (Hashtbl.create (module String)))
               ~f:(fun ~key:pid ~data:ag acc ->
-                Hashtbl.set acc
-                  ~key:(Branch.to_string ag.Patch_agent.branch)
-                  ~data:pid;
-                acc)
+                match acc with
+                | Error _ as e -> e
+                | Ok tbl -> (
+                    let key = Branch.to_string ag.Patch_agent.branch in
+                    match Hashtbl.add tbl ~key ~data:pid with
+                    | `Ok -> Ok tbl
+                    | `Duplicate ->
+                        Error
+                          (Printf.sprintf "duplicate branch %s across agents"
+                             key)))
           in
+          let* branch_to_pid = branch_to_pid in
           let find_by_branch br =
             Hashtbl.find branch_to_pid (Branch.to_string br)
           in
