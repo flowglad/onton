@@ -95,6 +95,6 @@ val add_dependency : t -> Types.Patch_id.t -> dep:Types.Patch_id.t -> t
     nodes and then linked once all nodes are present. *)
 
 val remove_patch : t -> Types.Patch_id.t -> t
-(** [remove_patch t pid] removes an ad-hoc patch from the graph. The patch must
-    have no dependents — removing a patch that others depend on is not
-    supported. *)
+(** [remove_patch t pid] removes an ad-hoc patch from the graph. Any edges
+    pointing at [pid] from its dependents are also dropped, so the resulting
+    graph is consistent (no dangling edges to a removed patch). *)

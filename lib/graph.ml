@@ -112,6 +112,9 @@ let add_dependency t patch_id ~dep =
 
 let remove_patch t patch_id =
   let deps = Map.find t.deps_map patch_id |> Option.value ~default:[] in
+  let dependents =
+    Map.find t.dependents_map patch_id |> Option.value ~default:[]
+  in
   let dependents_map =
     List.fold deps ~init:t.dependents_map ~f:(fun acc dep_id ->
         Map.change acc dep_id ~f:(function
@@ -122,8 +125,18 @@ let remove_patch t patch_id =
               in
               if List.is_empty lst' then None else Some lst'))
   in
+  let deps_map =
+    List.fold dependents ~init:t.deps_map ~f:(fun acc dependent_id ->
+        Map.change acc dependent_id ~f:(function
+          | None -> None
+          | Some lst ->
+              let lst' =
+                List.filter lst ~f:(fun d -> not (Patch_id.equal d patch_id))
+              in
+              Some lst'))
+  in
   {
-    deps_map = Map.remove t.deps_map patch_id;
+    deps_map = Map.remove deps_map patch_id;
     dependents_map = Map.remove dependents_map patch_id;
     all_ids =
       List.filter t.all_ids ~f:(fun id -> not (Patch_id.equal id patch_id));
