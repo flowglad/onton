@@ -15,10 +15,12 @@ let test_get_returns_sane_limits () =
     (Printf.sprintf "hard=%d must be ≥ soft=%d" lim.hard lim.soft)
 
 let test_try_raise_is_capped_at_hard () =
-  (* Ask for something far beyond the hard cap. Must not raise, and must
-     return a soft that does not exceed hard. *)
-  let before = get_nofile () in
-  let after = try_raise_nofile_soft ~target:((before.hard * 2) + 1_000_000) in
+  (* Ask for something far beyond any plausible hard cap. Using [max_int]
+     avoids overflow when the kernel hard cap is [RLIM_INFINITY] and the C
+     getter has clamped it to [Max_long] — [hard * 2 + N] would wrap to a
+     negative value, short-circuit the raise, and make the assertion
+     trivially true. *)
+  let after = try_raise_nofile_soft ~target:Int.max_int in
   fail_if (after.soft > after.hard)
     (Printf.sprintf "soft=%d must be ≤ hard=%d after raise" after.soft
        after.hard)
