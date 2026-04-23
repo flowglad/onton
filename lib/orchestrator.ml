@@ -418,6 +418,10 @@ type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
 let apply_rebase_result t patch_id rebase_result new_base =
   match rebase_result with
   | Worktree.Ok ->
+      (* TODO: consider calling [reset_intervention_state] on a successful
+         rebase — a fresh base may well have resolved the CI failure, noop
+         cycle, or other condition that latched [needs_intervention]. Left
+         conservative for now: rebase only clears conflict-specific state. *)
       let t = set_base_branch t patch_id new_base in
       let t =
         update_agent t patch_id ~f:(fun a ->
