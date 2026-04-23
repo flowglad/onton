@@ -406,11 +406,29 @@ let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }
 let agents_map t = t.agents
 
-let add_agent t ~patch_id ~branch ~pr_number =
+let find_patch_by_branch t branch =
+  Map.to_alist t.agents
+  |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch branch)
+  |> Option.map ~f:fst
+
+let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
   if Map.mem t.agents patch_id then t
   else
+    let deps =
+      if Branch.equal base_branch t.main_branch then []
+      else
+        match find_patch_by_branch t base_branch with
+        | Some dep_pid -> (
+            match find_agent t dep_pid with
+            | Some a when not a.Patch_agent.merged -> [ dep_pid ]
+            | _ -> [])
+        | None -> []
+    in
+    (* Do not seed agent.base_branch: persistence infers branch_rebased_onto
+       from base_branch when the former is absent, which would fabricate a
+       stale-rebase state on round-trip. The poller populates it next tick. *)
     let agent = Patch_agent.create_adhoc ~patch_id ~branch ~pr_number in
-    let graph = Graph.add_patch t.graph patch_id in
+    let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
     { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
 
 type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]

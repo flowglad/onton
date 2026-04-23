@@ -485,7 +485,7 @@ let rec apply_command orch patches cmd =
       with Invalid_argument _ -> orch)
   | Add_adhoc i ->
       Orchestrator.add_agent orch ~patch_id:(adhoc_pid i)
-        ~branch:(adhoc_branch i) ~pr_number:(adhoc_pr i)
+        ~branch:(adhoc_branch i) ~base_branch:main ~pr_number:(adhoc_pr i)
   | Remove_adhoc i -> Orchestrator.remove_agent orch (adhoc_pid i)
   | Discover_pr patch_idx -> (
       let pid = resolve_pid patches patch_idx in
@@ -1333,7 +1333,7 @@ let () =
         let pid = adhoc_pid 0 in
         let orch =
           Orchestrator.add_agent orch ~patch_id:pid ~branch:(adhoc_branch 0)
-            ~pr_number:(adhoc_pr 0)
+            ~base_branch:main ~pr_number:(adhoc_pr 0)
         in
         (* Poll conflict to enqueue Merge_conflict on the ad-hoc patch *)
         let poll_result =
@@ -2351,3 +2351,170 @@ let () =
   in
   QCheck2.Test.check_exn prop_cv5;
   Stdlib.print_endline "CV-5 passed"
+
+(** PI-AH-1..5: Ad-hoc stacking inference.
+
+    When an ad-hoc patch B is added with [base_branch] matching an already-
+    tracked, unmerged patch A's branch, the graph must record a B→A dep edge so
+    the existing rebase machinery fires on A's merge. base = main, an unknown
+    branch, or an already-merged patch's branch must NOT create an edge. *)
+
+let reconcile_views_of orch =
+  let agents = Orchestrator.all_agents orch in
+  List.map agents ~f:(fun (ag : Patch_agent.t) ->
+      Reconciler.
+        {
+          id = ag.Patch_agent.patch_id;
+          has_pr = Patch_agent.has_pr ag;
+          merged = ag.Patch_agent.merged;
+          busy = ag.Patch_agent.busy;
+          needs_intervention = Patch_agent.needs_intervention ag;
+          branch_blocked = ag.Patch_agent.branch_blocked;
+          queue = ag.Patch_agent.queue;
+          base_branch = Option.value ag.Patch_agent.base_branch ~default:main;
+          branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+        })
+
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-1: ad-hoc stacked on gameplan patch rebases on merge"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let orch = bootstrap patches in
+        let pid_a = pid_of_idx patches 0 in
+        let a = Orchestrator.agent orch pid_a in
+        let pid_b = adhoc_pid 0 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid_b ~branch:(adhoc_branch 0)
+            ~base_branch:a.Patch_agent.branch ~pr_number:(adhoc_pr 0)
+        in
+        let graph = Orchestrator.graph orch in
+        if not (List.mem (Graph.deps graph pid_b) pid_a ~equal:Patch_id.equal)
+        then failwith "expected inferred dep B->A";
+        if
+          not
+            (List.mem
+               (Graph.dependents graph pid_a)
+               pid_b ~equal:Patch_id.equal)
+        then failwith "expected reverse dependent A->B";
+        (* Poller observes A's PR merged: pass pid_a in merged_pr_patches
+           while agent is still unmerged so detect_merges fires Mark_merged
+           and detect_rebases sees newly_merged=[A]. *)
+        let branch_of pid =
+          match Orchestrator.find_agent orch pid with
+          | Some ag -> ag.Patch_agent.branch
+          | None -> main
+        in
+        let views = reconcile_views_of orch in
+        let actions =
+          Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+            ~merged_pr_patches:[ pid_a ] ~branch_of views
+        in
+        List.exists actions ~f:(function
+          | Reconciler.Enqueue_rebase p -> Patch_id.equal p pid_b
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-1 passed"
+
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"PI-AH-2: ad-hoc stacked on ad-hoc rebases on merge"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let orch = bootstrap patches in
+        (* Add ad-hoc A on main *)
+        let pid_a_ah = adhoc_pid 0 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid_a_ah
+            ~branch:(adhoc_branch 0) ~base_branch:main ~pr_number:(adhoc_pr 0)
+        in
+        (* Add ad-hoc B on A's branch *)
+        let pid_b_ah = adhoc_pid 1 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid_b_ah
+            ~branch:(adhoc_branch 1) ~base_branch:(adhoc_branch 0)
+            ~pr_number:(adhoc_pr 1)
+        in
+        let graph = Orchestrator.graph orch in
+        if
+          not
+            (List.mem
+               (Graph.deps graph pid_b_ah)
+               pid_a_ah ~equal:Patch_id.equal)
+        then failwith "expected inferred dep B->A(ad-hoc)";
+        (* Poller observes ad-hoc A's PR merged. *)
+        let branch_of pid =
+          match Orchestrator.find_agent orch pid with
+          | Some ag -> ag.Patch_agent.branch
+          | None -> main
+        in
+        let views = reconcile_views_of orch in
+        let actions =
+          Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
+            ~merged_pr_patches:[ pid_a_ah ] ~branch_of views
+        in
+        List.exists actions ~f:(function
+          | Reconciler.Enqueue_rebase p -> Patch_id.equal p pid_b_ah
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-2 passed"
+
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"PI-AH-3: ad-hoc on main has no inferred dep"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let orch = bootstrap patches in
+        let pid_b = adhoc_pid 0 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid_b ~branch:(adhoc_branch 0)
+            ~base_branch:main ~pr_number:(adhoc_pr 0)
+        in
+        let graph = Orchestrator.graph orch in
+        List.is_empty (Graph.deps graph pid_b))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-3 passed"
+
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-4: ad-hoc on unknown external branch has no inferred dep"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let orch = bootstrap patches in
+        let pid_b = adhoc_pid 0 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid_b ~branch:(adhoc_branch 0)
+            ~base_branch:(Branch.of_string "some-external-branch")
+            ~pr_number:(adhoc_pr 0)
+        in
+        let graph = Orchestrator.graph orch in
+        List.is_empty (Graph.deps graph pid_b))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-4 passed"
+
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-5: ad-hoc based on already-merged patch has no inferred dep"
+      ~count:1 (QCheck2.Gen.return ()) (fun () ->
+        let patches = mk_patches 1 in
+        let orch = bootstrap patches in
+        let pid_a = pid_of_idx patches 0 in
+        let a = Orchestrator.agent orch pid_a in
+        let orch = Orchestrator.mark_merged orch pid_a in
+        let pid_b = adhoc_pid 0 in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid_b ~branch:(adhoc_branch 0)
+            ~base_branch:a.Patch_agent.branch ~pr_number:(adhoc_pr 0)
+        in
+        let graph = Orchestrator.graph orch in
+        List.is_empty (Graph.deps graph pid_b))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-5 passed"

@@ -73,14 +73,26 @@ let dependents t patch_id =
 
 let all_patch_ids t = t.all_ids
 
-let add_patch t patch_id =
+let add_patch_with_deps t patch_id ~deps =
   if Map.mem t.deps_map patch_id then t
   else
+    let deps =
+      List.filter deps ~f:(Map.mem t.deps_map)
+      |> dedup_deps
+      |> List.filter ~f:(fun d -> not (Patch_id.equal d patch_id))
+    in
+    let dependents_map =
+      List.fold deps ~init:t.dependents_map ~f:(fun acc dep_id ->
+          Map.update acc dep_id ~f:(fun existing ->
+              patch_id :: Option.value existing ~default:[]))
+    in
     {
-      deps_map = Map.set t.deps_map ~key:patch_id ~data:[];
-      dependents_map = t.dependents_map;
+      deps_map = Map.set t.deps_map ~key:patch_id ~data:deps;
+      dependents_map;
       all_ids = t.all_ids @ [ patch_id ];
     }
+
+let add_patch t patch_id = add_patch_with_deps t patch_id ~deps:[]
 
 let remove_patch t patch_id =
   {

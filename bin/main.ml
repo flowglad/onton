@@ -1450,8 +1450,12 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                                 Pr_registry.register pr_registry ~patch_id
                                   ~pr_number;
                                 Runtime.update_orchestrator runtime (fun orch ->
+                                    let base_branch =
+                                      Option.value pr_state.Pr_state.base_branch
+                                        ~default:(Orchestrator.main_branch orch)
+                                    in
                                     Orchestrator.add_agent orch ~patch_id
-                                      ~branch ~pr_number);
+                                      ~branch ~base_branch ~pr_number);
                                 log_event runtime ~patch_id
                                   (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
                                      (Branch.to_string branch))))
