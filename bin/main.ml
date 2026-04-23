@@ -618,9 +618,9 @@ let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
     existing worktrees for the branch, creates one if needed, and persists the
     path. Returns [Some path] on success or [None] if the branch is unknown and
     no worktree can be created yet. *)
-let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
-    ~(agent : Patch_agent.t) ~(user_config : User_config.t) ~worktree_mutex
-    ?branch ?base_ref () =
+let ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root ~project_name
+    ~patch_id ~(agent : Patch_agent.t) ~(user_config : User_config.t)
+    ~worktree_mutex ~hook_mutex ?branch ?base_ref () =
   let path =
     resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id ~agent
       ?branch ()
@@ -686,7 +686,15 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
                   ]
                 in
                 let cwd = Eio.Path.(fs / path) in
-                match User_config.run_hook ~process_mgr ~script ~cwd ~env with
+                (* [hook_mutex] serializes hook invocations across patch
+                   fibers — npm/dune/bun aren't parallelism-safe across
+                   shared caches, and per-hook fan-out is the dominant
+                   subprocess multiplier (see issue #209). *)
+                match
+                  Eio.Mutex.use_ro hook_mutex (fun () ->
+                      User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env
+                        ())
+                with
                 | Ok () ->
                     log_event runtime ~patch_id "Ran on_worktree_create hook"
                 | Error msg ->
@@ -713,16 +721,18 @@ let ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name ~patch_id
 
     Returns the final result paired with the worktree path so callers can use it
     for follow-on effects like [Worktree.force_push_with_lease]. *)
-let execute_worktree_plan ~runtime ~process_mgr ~fs ~repo_root ~project_name
-    ~patch_id ~(agent : Patch_agent.t) ~user_config ~worktree_mutex ~fetch_lock
-    ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
+let execute_worktree_plan ~runtime ~process_mgr ~clock ~fs ~repo_root
+    ~project_name ~patch_id ~(agent : Patch_agent.t) ~user_config
+    ~worktree_mutex ~hook_mutex ~fetch_lock ~fail_label ~ancestor_ids
+    (plan : Worktree_plan.t) =
   let default_path = Worktree.worktree_dir ~project_name ~patch_id in
   let rec loop ~path = function
     | [] -> (Worktree.Ok, path)
     | Worktree_plan.Ensure_worktree :: rest -> (
         match
-          ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name
-            ~patch_id ~agent ~user_config ~worktree_mutex ()
+          ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root
+            ~project_name ~patch_id ~agent ~user_config ~worktree_mutex
+            ~hook_mutex ()
         with
         | Some p -> loop ~path:p rest
         | None ->
@@ -755,9 +765,10 @@ let execute_worktree_plan ~runtime ~process_mgr ~fs ~repo_root ~project_name
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
-let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
-    ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
-    ~transcripts ~user_config ~worktree_mutex ~backend ~event_log =
+let run_claude_and_handle ~runtime ~process_mgr ~clock ~fs ~project_name
+    ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo
+    ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
+    ~backend ~event_log =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -772,8 +783,9 @@ let run_claude_and_handle ~runtime ~process_mgr ~fs ~project_name ~patch_id
         match mode with `Resume id -> (Some id, false) | `Fresh -> (None, true)
       in
       match
-        ensure_worktree ~runtime ~process_mgr ~fs ~repo_root ~project_name
-          ~patch_id ~agent ~user_config ~worktree_mutex ()
+        ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root
+          ~project_name ~patch_id ~agent ~user_config ~worktree_mutex
+          ~hook_mutex ()
       with
       | None ->
           Runtime.update_orchestrator runtime (fun orch ->
@@ -2308,6 +2320,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
   (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
      the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
   let fetch_mutex = Eio.Mutex.create () in
+  (* Serializes [on_worktree_create] invocations across patch fibers. The
+     hook runs user build commands ([npm install], [dune build], …) which
+     aren't parallelism-safe across shared caches AND fan out into dozens
+     of short-lived children. Running 10 hooks in parallel is how issue
+     #209 blew through the system FD table. *)
+  let hook_mutex = Eio.Mutex.create () in
   let with_busy_guard ~patch_id f =
     Fun.protect
       ~finally:(fun () ->
@@ -2447,11 +2465,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                   `Stale)
                                 else
                                   match
-                                    ensure_worktree ~runtime ~process_mgr ~fs
-                                      ~repo_root:config.repo_root ~project_name
-                                      ~patch_id ~agent
+                                    ensure_worktree ~runtime ~process_mgr ~clock
+                                      ~fs ~repo_root:config.repo_root
+                                      ~project_name ~patch_id ~agent
                                       ~user_config:config.user_config
-                                      ~worktree_mutex ~branch:patch.Patch.branch
+                                      ~worktree_mutex ~hook_mutex
+                                      ~branch:patch.Patch.branch
                                       ~base_ref:(Branch.to_string base_branch)
                                       ()
                                   with
@@ -2478,14 +2497,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       let on_pr_detected _pr_number = () in
                                       let r, _tool_failures =
                                         run_claude_and_handle ~runtime
-                                          ~process_mgr ~fs ~project_name
+                                          ~process_mgr ~clock ~fs ~project_name
                                           ~patch_id ~repo_root:config.repo_root
                                           ~prompt ~agent
                                           ~owner:config.github_owner
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
-                                          ~worktree_mutex ~backend ~event_log
+                                          ~worktree_mutex ~hook_mutex ~backend
+                                          ~event_log
                                       in
                                       r)
                           in
@@ -2650,11 +2670,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                               patch_id)
                       in
                       let rebase_result, wt_path =
-                        execute_worktree_plan ~runtime ~process_mgr ~fs
+                        execute_worktree_plan ~runtime ~process_mgr ~clock ~fs
                           ~repo_root:config.repo_root ~project_name ~patch_id
                           ~agent ~user_config:config.user_config ~worktree_mutex
-                          ~fetch_lock:fetch_mutex ~fail_label:"rebase"
-                          ~ancestor_ids
+                          ~hook_mutex ~fetch_lock:fetch_mutex
+                          ~fail_label:"rebase" ~ancestor_ids
                           (Worktree_plan.for_rebase ~new_base)
                       in
                       (match rebase_result with
@@ -2885,11 +2905,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       render_base_changed_prefix base_change
                                     in
                                     let wt_path_opt =
-                                      ensure_worktree ~runtime ~process_mgr ~fs
-                                        ~repo_root:config.repo_root
+                                      ensure_worktree ~runtime ~process_mgr
+                                        ~clock ~fs ~repo_root:config.repo_root
                                         ~project_name ~patch_id ~agent
                                         ~user_config:config.user_config
-                                        ~worktree_mutex ()
+                                        ~worktree_mutex ~hook_mutex ()
                                     in
                                     let wt_path =
                                       match wt_path_opt with
@@ -2940,14 +2960,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       let on_pr_detected _pr_number = () in
                                       let result, _tool_failures =
                                         run_claude_and_handle ~runtime
-                                          ~process_mgr ~fs ~project_name
+                                          ~process_mgr ~clock ~fs ~project_name
                                           ~patch_id ~repo_root:config.repo_root
                                           ~prompt ~agent
                                           ~owner:config.github_owner
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
-                                          ~worktree_mutex ~backend ~event_log
+                                          ~worktree_mutex ~hook_mutex ~backend
+                                          ~event_log
                                       in
                                       (match result with
                                       | `Ok
@@ -2987,11 +3008,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       in
                                       let rebase_result, _wt_path =
                                         execute_worktree_plan ~runtime
-                                          ~process_mgr ~fs
+                                          ~process_mgr ~clock ~fs
                                           ~repo_root:config.repo_root
                                           ~project_name ~patch_id ~agent
                                           ~user_config:config.user_config
-                                          ~worktree_mutex
+                                          ~worktree_mutex ~hook_mutex
                                           ~fetch_lock:fetch_mutex
                                           ~fail_label:"merge-conflict rebase"
                                           ~ancestor_ids
@@ -3254,13 +3275,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                         ());
                                     let result, tool_failures =
                                       run_claude_and_handle ~runtime
-                                        ~process_mgr ~fs ~project_name ~patch_id
-                                        ~repo_root:config.repo_root ~prompt
-                                        ~agent ~owner:config.github_owner
+                                        ~process_mgr ~clock ~fs ~project_name
+                                        ~patch_id ~repo_root:config.repo_root
+                                        ~prompt ~agent
+                                        ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
                                         ~user_config:config.user_config
-                                        ~worktree_mutex ~backend ~event_log
+                                        ~worktree_mutex ~hook_mutex ~backend
+                                        ~event_log
                                     in
                                     (match result with
                                     | `Ok when Base.Option.is_some base_change
@@ -3510,14 +3533,10 @@ let with_snapshot_load ~project_name config gameplan =
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
-let normalize_repo_root rr =
-  if Filename.is_relative rr then Filename.concat (Stdlib.Sys.getcwd ()) rr
-  else rr
-
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
     ~poll_interval ~(repo_root : string option) ~max_concurrency ~headless =
   let repo_root_for_fresh =
-    normalize_repo_root (Base.Option.value repo_root ~default:".")
+    Repo_root.normalize (Base.Option.value repo_root ~default:".")
   in
   let resolve_branch ~repo_root mb_opt =
     match mb_opt with
@@ -3648,10 +3667,13 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                     merge_cli_stored github_token
                       stored.Project_store.github_token
                   in
+                  (* Always route through [Repo_root.normalize] — including
+                     the stored value — so legacy configs that persisted a
+                     worktree path (or a trailing [/.]) self-heal on load. *)
                   let repo_root =
                     match repo_root with
-                    | Some rr -> normalize_repo_root rr
-                    | None -> stored.Project_store.repo_root
+                    | Some rr -> Repo_root.normalize rr
+                    | None -> Repo_root.normalize stored.Project_store.repo_root
                   in
                   let token, inferred_owner, inferred_repo =
                     resolve_github_credentials ~github_token:token_from_stored
@@ -3699,7 +3721,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                   in
                   with_snapshot_load ~project_name:proj config gameplan))
 
-let run_with_config (config : config) gameplan existing_snapshot =
+let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
   let project_name =
     match config.project with Some p -> p | None -> assert false
   in
@@ -3714,6 +3736,53 @@ let run_with_config (config : config) gameplan existing_snapshot =
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok () ->
+      (* Preflight: ensure RLIMIT_NOFILE is high enough for [max_concurrency]
+         long-lived Claude subprocesses (each holding 3 pipes = 6 FDs),
+         parallel git subprocesses, HTTPS connections, the activity log,
+         snapshot files, and the project lock. Budget 256 FDs/slot plus 512
+         headroom. Auto-raise the soft limit to the hard cap silently; fail
+         fast with an actionable [ulimit -n] message only if the effective
+         limit is still insufficient. See issue #209. *)
+      let () =
+        let open Onton.Rlimit in
+        let required = (config.max_concurrency * 256) + 512 in
+        let cur = get_nofile () in
+        if cur.soft < required then begin
+          let after = try_raise_nofile_soft ~target:required in
+          if after.soft < required then begin
+            Printf.eprintf
+              "onton: soft FD limit %d is below the required %d (hard cap %d).\n\
+              \       Raise it with: ulimit -n %d\n\
+              \       macOS system ceiling: sudo launchctl limit maxfiles \
+               <soft> <hard>.\n\
+               %!"
+              after.soft required after.hard required;
+            Stdlib.exit 1
+          end
+        end
+      in
+      let lock =
+        if no_lock then None
+        else
+          let project_dir = Project_store.project_dir project_name in
+          match
+            Project_lock.acquire ~project_dir ~on_stale:(fun stale_pid ->
+                if stale_pid > 0 then
+                  Printf.eprintf "onton: reclaiming stale lock from pid %d\n%!"
+                    stale_pid)
+          with
+          | Ok l -> Some l
+          | Error e ->
+              Printf.eprintf "onton: %s\n"
+                (Format.asprintf "%a" Project_lock.pp_error e);
+              Printf.eprintf
+                "       pass --no-lock (or set ONTON_NO_LOCK=1) to bypass.\n%!";
+              (* 75 = EX_TEMPFAIL from sysexits(3): transient, try again. *)
+              Stdlib.exit 75
+      in
+      Stdlib.Fun.protect ~finally:(fun () ->
+          Base.Option.iter lock ~f:Project_lock.release)
+      @@ fun () ->
       Eio_main.run @@ fun env ->
       if config.headless then
         Sys.set_signal Sys.sigint
@@ -3898,7 +3967,7 @@ let run_with_config (config : config) gameplan existing_snapshot =
 
 let run ~project ~gameplan_path ~github_token ~backend
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless =
+    ~max_concurrency ~headless ~no_lock =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
       ~poll_interval ~repo_root ~max_concurrency ~headless
@@ -3907,7 +3976,7 @@ let run ~project ~gameplan_path ~github_token ~backend
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
-      run_with_config config gameplan existing_snapshot
+      run_with_config ~no_lock config gameplan existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
 
@@ -3988,10 +4057,20 @@ let upload_debug_arg =
           "Upload project debug state for troubleshooting. Requires a project \
            name.")
 
+let no_lock_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "no-lock" ]
+        ~doc:
+          "Bypass the per-project advisory lock. Only use when a stale lock \
+           cannot be reclaimed automatically."
+        ~env:(Cmd.Env.info "ONTON_NO_LOCK"))
+
 let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend main_branch
-      poll_interval repo_root max_concurrency headless upload_debug =
+      poll_interval repo_root max_concurrency headless upload_debug no_lock =
     if upload_debug then (
       match project with
       | None ->
@@ -4016,12 +4095,13 @@ let main_cmd =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
+        ~no_lock
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ headless_arg $ upload_debug_arg)
+      $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

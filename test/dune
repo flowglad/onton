@@ -125,3 +125,15 @@
 (test
  (name test_user_config)
  (libraries onton eio eio_main eio.unix unix))
+
+(test
+ (name test_repo_root)
+ (libraries onton unix))
+
+(test
+ (name test_project_lock)
+ (libraries onton unix))
+
+(test
+ (name test_rlimit)
+ (libraries onton))
