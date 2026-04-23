@@ -18,18 +18,30 @@ let load ~github_owner ~github_repo =
   in
   { on_worktree_create }
 
-let env_float name default =
+(* Positive-only parsers: zero/negative/NaN/infinity in these env vars would
+   either break the hook (ulimit -n 0 makes the child unable to open anything)
+   or weaken containment (negative timeout, infinite timeout). Fall back to
+   the default rather than propagating a footgun. *)
+let env_positive_float name default =
   match Stdlib.Sys.getenv_opt name with
-  | Some s -> ( try Float.of_string s with _ -> default)
+  | Some s -> (
+      try
+        let v = Float.of_string s in
+        if Float.is_finite v && Float.(v > 0.) then v else default
+      with _ -> default)
   | None -> default
 
-let env_int name default =
+let env_positive_int name default =
   match Stdlib.Sys.getenv_opt name with
-  | Some s -> ( try Int.of_string s with _ -> default)
+  | Some s -> (
+      try
+        let v = Int.of_string s in
+        if v > 0 then v else default
+      with _ -> default)
   | None -> default
 
-let default_timeout () = env_float "ONTON_HOOK_TIMEOUT" 600.0
-let default_fd_limit () = env_int "ONTON_HOOK_FD_LIMIT" 256
+let default_timeout () = env_positive_float "ONTON_HOOK_TIMEOUT" 600.0
+let default_fd_limit () = env_positive_int "ONTON_HOOK_FD_LIMIT" 256
 
 let build_error ~status_msg stdout_buf stderr_buf =
   let stdout = String.strip (Buffer.contents stdout_buf) in
@@ -59,7 +71,7 @@ let wrap_with_ulimit ~fd_limit script =
     "/bin/sh";
     "-c";
     Printf.sprintf
-      {|hlimit=$(ulimit -Hn); slimit=$(ulimit -Sn); target=%d; [ "$hlimit" != unlimited ] && [ "$target" -gt "$hlimit" ] && target=$hlimit; [ "$slimit" != unlimited ] && [ "$target" -gt "$slimit" ] && target=$slimit; ulimit -n "$target"; exec %s|}
+      {|hlimit=$(ulimit -Hn); slimit=$(ulimit -Sn); target=%d; [ "$hlimit" != unlimited ] && [ "$target" -gt "$hlimit" ] && target=$hlimit; [ "$slimit" != unlimited ] && [ "$target" -gt "$slimit" ] && target=$slimit; ulimit -n "$target" && exec %s|}
       fd_limit
       (Stdlib.Filename.quote script);
   ]
