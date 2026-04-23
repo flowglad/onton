@@ -72,18 +72,22 @@ let test_release_is_idempotent () =
       in
       Project_lock.release lock2)
 
-(** Fork a child that acquires the lock and pauses. Wait until the PID file is
-    populated, then the parent attempts to acquire and must see
-    [Held_by child_pid]. *)
+(** Fork a child that acquires the lock and pauses. The child signals readiness
+    over a pipe *after* [acquire] has finished its ftruncate+write, so the
+    parent never observes the file mid-write. Then the parent attempts to
+    acquire and must see [Held_by child_pid]. *)
 let test_contention () =
   let dir = mktempdir "onton-lock-contention" in
   Fun.protect
     ~finally:(fun () -> rm_rf dir)
     (fun () ->
-      let sync_fd, child_resume = Unix.pipe () in
+      (* Pipe A: child → parent "ready". Pipe B: parent → child "resume". *)
+      let ready_r, ready_w = Unix.pipe () in
+      let resume_r, resume_w = Unix.pipe () in
       match Unix.fork () with
       | 0 ->
-          Unix.close child_resume;
+          Unix.close ready_r;
+          Unix.close resume_w;
           let lock =
             match
               Project_lock.acquire ~project_dir:dir ~on_stale:on_stale_noop
@@ -91,39 +95,21 @@ let test_contention () =
             | Ok l -> l
             | Error _ -> exit 2
           in
-          (* Signal ready by writing the PID file (acquire already did).
-             Block until parent closes [child_resume]. *)
+          (* Signal readiness *after* acquire's ftruncate+write is done. *)
+          let _ = Unix.write ready_w (Bytes.create 1) 0 1 in
+          Unix.close ready_w;
+          (* Block until parent closes [resume_w] (EOF on read). *)
           let buf = Bytes.create 1 in
-          (try
-             let _ = Unix.read sync_fd buf 0 1 in
-             ()
-           with _ -> ());
+          (try ignore (Unix.read resume_r buf 0 1) with _ -> ());
           Project_lock.release lock;
           exit 0
       | child_pid ->
-          Unix.close sync_fd;
-          (* Wait for child's lock file to appear with a non-empty PID. *)
-          let lock_path = dir // "onton.lock" in
-          let deadline = Unix.gettimeofday () +. 5.0 in
-          let rec wait () =
-            let populated =
-              Sys.file_exists lock_path
-              &&
-                try
-                  let ic = open_in lock_path in
-                  let s = In_channel.input_all ic in
-                  close_in ic;
-                  String.length (String.trim s) > 0
-                with _ -> false
-            in
-            if populated then ()
-            else if Unix.gettimeofday () > deadline then
-              failwith "child never populated lock file"
-            else (
-              ignore (Unix.select [] [] [] 0.01);
-              wait ())
-          in
-          wait ();
+          Unix.close ready_w;
+          Unix.close resume_r;
+          (* Deterministic wait: blocks until child writes one byte. *)
+          let buf = Bytes.create 1 in
+          let _ = Unix.read ready_r buf 0 1 in
+          Unix.close ready_r;
           let held_pid =
             must_held_by
               (Project_lock.acquire ~project_dir:dir ~on_stale:on_stale_noop)
@@ -132,7 +118,7 @@ let test_contention () =
             (Printf.sprintf "held-by pid mismatch: %d vs child %d" held_pid
                child_pid);
           (* Release child. *)
-          Unix.close child_resume;
+          Unix.close resume_w;
           let _, _ = Unix.waitpid [] child_pid in
           (* Now the parent can acquire. *)
           let lock =
@@ -153,8 +139,10 @@ let test_crash_recovery () =
   Fun.protect
     ~finally:(fun () -> rm_rf dir)
     (fun () ->
+      let ready_r, ready_w = Unix.pipe () in
       match Unix.fork () with
       | 0 ->
+          Unix.close ready_r;
           let _ =
             match
               Project_lock.acquire ~project_dir:dir ~on_stale:on_stale_noop
@@ -162,6 +150,8 @@ let test_crash_recovery () =
             | Ok l -> l
             | Error _ -> exit 2
           in
+          let _ = Unix.write ready_w (Bytes.create 1) 0 1 in
+          Unix.close ready_w;
           (* Hang until parent kills us; never release. *)
           let rec spin () =
             ignore (Unix.select [] [] [] 10.0);
@@ -169,27 +159,10 @@ let test_crash_recovery () =
           in
           spin ()
       | child_pid ->
-          let lock_path = dir // "onton.lock" in
-          let deadline = Unix.gettimeofday () +. 5.0 in
-          let rec wait () =
-            let populated =
-              Sys.file_exists lock_path
-              &&
-                try
-                  let ic = open_in lock_path in
-                  let s = In_channel.input_all ic in
-                  close_in ic;
-                  String.length (String.trim s) > 0
-                with _ -> false
-            in
-            if populated then ()
-            else if Unix.gettimeofday () > deadline then
-              failwith "child never populated lock file"
-            else (
-              ignore (Unix.select [] [] [] 0.01);
-              wait ())
-          in
-          wait ();
+          Unix.close ready_w;
+          let buf = Bytes.create 1 in
+          let _ = Unix.read ready_r buf 0 1 in
+          Unix.close ready_r;
           (* Simulate crash: SIGKILL. Kernel releases the lock when the FD
              is auto-closed on process death. *)
           Unix.kill child_pid Sys.sigkill;

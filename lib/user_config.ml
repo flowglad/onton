@@ -94,40 +94,39 @@ let run_hook ~process_mgr ~clock ~script ~cwd ~env ?(timeout : float option)
             ~stderr:(Eio.Flow.buffer_sink stderr_buf)
             cmd
         in
-        match
-          Eio.Time.with_timeout clock timeout (fun () ->
-              Ok (Eio.Process.await child))
-        with
-        | Ok (`Exited 0) -> Ok ()
-        | Ok (`Exited code) ->
-            build_error
-              ~status_msg:(Printf.sprintf "hook exited with code %d" code)
-              stdout_buf stderr_buf
-        | Ok (`Signaled signal) ->
-            build_error
-              ~status_msg:(Printf.sprintf "hook killed by signal %d" signal)
-              stdout_buf stderr_buf
-        | Error `Timeout ->
-            (* SIGKILL reaches the direct child (our [/bin/sh -c]). If the
-               hook forked grandchildren (e.g. [npm install] spawning node
-               subprocesses), those orphans may keep running past the
-               timeout until they notice their parent is gone. Killing the
-               whole process tree requires [setpgid] (not in OCaml's
-               Stdlib.Unix) or a fork-action pre-exec hook (Eio private
-               API); both are out of scope here. The timeout still bounds
-               *our* blocking on the hook, which is the property the
-               orchestrator needs. *)
+        (* [Fun.protect] guarantees SIGKILL + await run on *every* exit path,
+           including cancellation from the outer fiber while we're blocked in
+           [Eio.Process.await] on the normal-exit branch. Signalling an
+           already-exited child is harmless (ESRCH), and [Eio.Process.await]
+           is idempotent, so the cleanup is safe even when the timeout arm
+           already handled things. SIGKILL only reaches the direct child
+           ([/bin/sh -c]); grandchildren from [npm install]/etc may outlive
+           the hook — killing the whole process tree needs [setpgid] or an
+           Eio fork-action pre-exec, both out of scope here. *)
+        Stdlib.Fun.protect
+          ~finally:(fun () ->
             (try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ());
-            (* Await the child synchronously before returning — otherwise
-               the caller's [hook_mutex] is released while the kernel is
-               still finishing SIGKILL delivery, and a second hook can
-               start running concurrently with the dying first one. *)
-            (try ignore (Eio.Process.await child) with _ -> ());
-            build_error
-              ~status_msg:
-                (Printf.sprintf
-                   "hook timed out after %.1fs (ONTON_HOOK_TIMEOUT)" timeout)
-              stdout_buf stderr_buf)
+            try ignore (Eio.Process.await child) with _ -> ())
+          (fun () ->
+            match
+              Eio.Time.with_timeout clock timeout (fun () ->
+                  Ok (Eio.Process.await child))
+            with
+            | Ok (`Exited 0) -> Ok ()
+            | Ok (`Exited code) ->
+                build_error
+                  ~status_msg:(Printf.sprintf "hook exited with code %d" code)
+                  stdout_buf stderr_buf
+            | Ok (`Signaled signal) ->
+                build_error
+                  ~status_msg:(Printf.sprintf "hook killed by signal %d" signal)
+                  stdout_buf stderr_buf
+            | Error `Timeout ->
+                build_error
+                  ~status_msg:
+                    (Printf.sprintf
+                       "hook timed out after %.1fs (ONTON_HOOK_TIMEOUT)" timeout)
+                  stdout_buf stderr_buf))
   with
   | Eio.Cancel.Cancelled _ as exn ->
       (* Cancellation must propagate to the caller — never format it as a
