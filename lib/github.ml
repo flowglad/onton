@@ -131,6 +131,7 @@ let graphql_query =
         nodes {
           id
           isResolved
+          isOutdated
           # [comments(first: 1)] only returns the thread opener. If a caller
           # ever needs per-reply SHAs, raise this limit and add pagination.
           comments(first: 1) {
@@ -210,7 +211,7 @@ let parse_check_context_node node =
               })
   | _ -> None
 
-let parse_comment_node ~thread_id node =
+let parse_comment_node ~thread_id ~outdated node =
   let open Yojson.Safe.Util in
   let id =
     match node |> member "databaseId" |> to_int_option with
@@ -233,7 +234,16 @@ let parse_comment_node ~thread_id node =
   let commit_sha = oid_of "commit" in
   let original_commit_sha = oid_of "originalCommit" in
   Types.Comment.
-    { id; thread_id; body; path; line; commit_sha; original_commit_sha }
+    {
+      id;
+      thread_id;
+      body;
+      path;
+      line;
+      commit_sha;
+      original_commit_sha;
+      outdated;
+    }
 
 let parse_response_json ~owner json =
   let open Yojson.Safe.Util in
@@ -314,8 +324,20 @@ let parse_response_json ~owner json =
                   if thread |> member "isResolved" |> to_bool then []
                   else
                     let thread_id = thread |> member "id" |> to_string_option in
+                    (* [isOutdated] is the authoritative signal from GitHub:
+                       the thread's anchored lines were changed by a later
+                       commit (or the file was deleted). Do not infer this
+                       from [commit] vs [originalCommit] — GitHub advances
+                       [commit] to whatever commit still contains the line,
+                       including commits that touched unrelated files, so
+                       that comparison flags false positives. *)
+                    let outdated =
+                      match thread |> member "isOutdated" with
+                      | `Bool b -> b
+                      | _ -> false
+                    in
                     thread |> member "comments" |> member "nodes" |> to_list
-                    |> List.map ~f:(parse_comment_node ~thread_id))
+                    |> List.map ~f:(parse_comment_node ~thread_id ~outdated))
             in
             let unresolved_comment_count =
               List.count review_threads ~f:(fun thread ->

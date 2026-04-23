@@ -45,24 +45,27 @@ let gen_comment =
       option (string_size ~gen:(char_range 'a' 'z') (int_range 3 30))
     in
     let gen_line = option (int_range 1 500) in
-    map4
-      (fun id body path line ->
-        Comment.
-          {
-            id;
-            thread_id = None;
-            body;
-            path;
-            line;
-            commit_sha = None;
-            original_commit_sha = None;
-          })
-      (* Use only synthetic (negative) IDs so content-based dedup governs in
-         property tests, matching production behavior where real IDs are unique
-         per GitHub comment. Real-ID duplicates with different content can't
-         arise in production but would bypass content-match dedup. *)
-      (map Comment_id.of_int (int_range (-1_000_000) (-1)))
-      gen_body gen_path gen_line)
+    (* Use only synthetic (negative) IDs so content-based dedup governs in
+       property tests, matching production behavior where real IDs are unique
+       per GitHub comment. Real-ID duplicates with different content can't
+       arise in production but would bypass content-match dedup. *)
+    let* id = map Comment_id.of_int (int_range (-1_000_000) (-1)) in
+    let* body = gen_body in
+    let* path = gen_path in
+    let* line = gen_line in
+    let* outdated = bool in
+    return
+      Comment.
+        {
+          id;
+          thread_id = None;
+          body;
+          path;
+          line;
+          commit_sha = None;
+          original_commit_sha = None;
+          outdated;
+        })
 
 let gen_patch =
   QCheck2.Gen.(

@@ -82,6 +82,7 @@ module Comment : sig
     line : int option;
     commit_sha : string option; [@yojson.default None]
     original_commit_sha : string option; [@yojson.default None]
+    outdated : bool; [@yojson.default false]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 
