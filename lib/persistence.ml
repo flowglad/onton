@@ -465,10 +465,17 @@ let orchestrator_of_yojson ~gameplan json =
              Mirrors the inference in [Orchestrator.add_agent] so a snapshot
              restored after a stacked ad-hoc PR was added retains the edge
              that drives detect_rebases on the dep's merge. *)
+          let branch_to_pid =
+            Map.fold agents_map
+              ~init:(Hashtbl.create (module String))
+              ~f:(fun ~key:pid ~data:ag acc ->
+                Hashtbl.set acc
+                  ~key:(Branch.to_string ag.Patch_agent.branch)
+                  ~data:pid;
+                acc)
+          in
           let find_by_branch br =
-            Map.to_alist agents_map
-            |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch br)
-            |> Option.map ~f:fst
+            Hashtbl.find branch_to_pid (Branch.to_string br)
           in
           let graph =
             Set.fold adhoc_pids ~init:graph ~f:(fun g pid ->
