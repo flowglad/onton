@@ -661,12 +661,6 @@ let render_patch_row ~width ~selected (pv : patch_view) =
     | Some n -> Printf.sprintf "#%-5d" (Pr_number.to_int n)
     | None -> "  --  "
   in
-  let op_suffix =
-    match pv.current_op with
-    | Some op ->
-        Term.styled [ Term.Sgr.dim ] (Printf.sprintf " [%s]" (short_op_name op))
-    | None -> ""
-  in
   let ci_info =
     if pv.ci_failures >= 3 then
       Term.styled [ Term.Sgr.fg_red ] (Printf.sprintf " CI×%d" pv.ci_failures)
@@ -687,8 +681,8 @@ let render_patch_row ~width ~selected (pv : patch_view) =
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s %s %s  %s%s%s%s" cursor patch_label pr_label badge
-         pv.title op_suffix ci_info dep_info)
+      (Printf.sprintf "%s%s %s %s  %s%s%s" cursor patch_label pr_label badge
+         pv.title ci_info dep_info)
   in
   if selected then Term.styled [ Term.Sgr.bold ] row else row
 
