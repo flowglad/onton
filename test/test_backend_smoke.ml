@@ -27,11 +27,15 @@ let assert_smoke ~name ~result ~got ~expected =
   (* Accept either a clean exit or any status when Final_result was seen:
      after [saw_final_result] we SIGTERM the child, so a short-lived process
      like [printf] may race and exit 143 instead of 0. Both are successful
-     runs from onton's perspective. *)
-  let exit_ok = result.exit_code = 0 || result.saw_final_result in
+     runs from onton's perspective. [timed_out] must always be false: a
+     run that also tripped the outer timeout is never a pass, even if we
+     managed to observe Final_result along the way. *)
+  let exit_ok =
+    (not result.timed_out) && (result.exit_code = 0 || result.saw_final_result)
+  in
   if not exit_ok then (
-    Stdio.printf "FAIL: %s exit_code=%d saw_final_result=%b\n" name
-      result.exit_code result.saw_final_result;
+    Stdio.printf "FAIL: %s timed_out=%b exit_code=%d saw_final_result=%b\n" name
+      result.timed_out result.exit_code result.saw_final_result;
     Int.incr failures)
   else if not result.got_events then (
     Stdio.printf "FAIL: %s got_events=false\n" name;
