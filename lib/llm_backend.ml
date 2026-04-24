@@ -5,12 +5,14 @@ type result = {
   stdout : string;
   stderr : string;
   got_events : bool;
+  saw_final_result : bool;
   timed_out : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
 
 let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
     ~(process_line : string -> Types.Stream_event.t list) ~on_event =
+  let saw_final_result_ref = ref false in
   let run () =
     let stderr_content, exit_code, got_events =
       Eio.Switch.run @@ fun sw ->
@@ -39,22 +41,53 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
                 let events = process_line line in
                 if not (List.is_empty events) then got_events_ref := true;
                 List.iter events ~f:on_event;
-                read_lines ()
+                let saw_final =
+                  List.exists events ~f:(function
+                    | Types.Stream_event.Final_result _ -> true
+                    | Types.Stream_event.Text_delta _
+                    | Types.Stream_event.Tool_use _ | Types.Stream_event.Error _
+                    | Types.Stream_event.Session_init _ ->
+                        false)
+                in
+                if saw_final then saw_final_result_ref := true
+                else read_lines ()
             | exception End_of_file -> ()
           in
-          read_lines ())
+          read_lines ();
+          if !saw_final_result_ref then (
+            (* Tear down immediately: the model's turn is over. Descendants
+               of the child (e.g. Bash-tool zsh processes) may keep the
+               inherited stderr write-end open indefinitely, which would
+               leave the sibling [take_all] fiber blocked on EOF. Signal
+               the child and close our read end so the fiber unblocks. *)
+            (try Eio.Process.signal child Stdlib.Sys.sigterm with _ -> ());
+            try Eio.Flow.close stderr_r with _ -> ()))
         (fun () ->
-          try err_ref := Eio.Buf_read.take_all stderr_buf
-          with Eio.Buf_read.Buffer_limit_exceeded -> (
-            err_ref := "<stderr exceeded 1MB limit, truncated>";
-            let drain_buf = Bytes.create 4096 in
-            try
-              while true do
-                ignore
-                  (Eio.Flow.single_read stderr_r (Cstruct.of_bytes drain_buf))
-              done
-            with End_of_file -> ()));
-      let status = Eio.Process.await child in
+          try err_ref := Eio.Buf_read.take_all stderr_buf with
+          | Eio.Buf_read.Buffer_limit_exceeded -> (
+              err_ref := "<stderr exceeded 1MB limit, truncated>";
+              let drain_buf = Bytes.create 4096 in
+              try
+                while true do
+                  ignore
+                    (Eio.Flow.single_read stderr_r (Cstruct.of_bytes drain_buf))
+                done
+              with _ -> ())
+          | _ -> ());
+      let status =
+        if !saw_final_result_ref then (
+          (* SIGTERM was just delivered; cap the await so a child that
+             ignores it doesn't stall us, then escalate to SIGKILL. *)
+          match
+            Eio.Time.with_timeout clock 2.0 (fun () ->
+                Ok (Eio.Process.await child))
+          with
+          | Ok status -> status
+          | Error `Timeout ->
+              (try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ());
+              Eio.Process.await child)
+        else Eio.Process.await child
+      in
       let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
       (!err_ref, code, !got_events_ref)
     in
@@ -64,6 +97,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
         stdout = "";
         stderr = stderr_content;
         got_events;
+        saw_final_result = !saw_final_result_ref;
         timed_out = false;
       }
   in
@@ -75,6 +109,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
         stdout = "";
         stderr = "process timed out";
         got_events = false;
+        saw_final_result = !saw_final_result_ref;
         timed_out = true;
       }
 

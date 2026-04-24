@@ -586,10 +586,19 @@ let gen_run_outcome =
     let open Onton.Run_classification in
     let* exit_code = int_range (-1) 255 in
     let* got_events = bool in
+    let* saw_final_result = bool in
     let* stderr = string_size ~gen:printable (int_range 0 80) in
     let* stream_errors = string_size ~gen:printable (int_range 0 80) in
     let* timed_out = bool in
-    return { exit_code; got_events; stderr; stream_errors; timed_out })
+    return
+      {
+        exit_code;
+        got_events;
+        saw_final_result;
+        stderr;
+        stream_errors;
+        timed_out;
+      })
 
 let gen_porcelain_entry =
   QCheck2.Gen.(

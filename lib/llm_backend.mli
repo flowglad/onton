@@ -11,6 +11,7 @@ type result = {
   stdout : string;
   stderr : string;
   got_events : bool;
+  saw_final_result : bool;
   timed_out : bool;
 }
 [@@deriving show, eq, sexp_of, compare]

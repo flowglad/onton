@@ -249,6 +249,7 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
     stdout = cleaned_stdout;
     stderr = stderr_content;
     got_events;
+    saw_final_result = false;
     timed_out = false;
   }
 

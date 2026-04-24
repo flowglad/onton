@@ -148,6 +148,60 @@ let () =
         Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn };
       ];
+  (* --- Early exit on Final_result: the subprocess emits a terminal event
+     and then sleeps. spawn_and_stream must return without waiting the full
+     sleep, [saw_final_result] must be true, and [timed_out] must be false. *)
+  let early_exit_test () =
+    let payload =
+      {|{"type":"result","result":"done","stop_reason":"end_turn"}|}
+    in
+    let events = ref [] in
+    let on_event ev = events := ev :: !events in
+    let args =
+      [ "sh"; "-c"; Printf.sprintf "printf '%s\\n'; sleep 30" payload ]
+    in
+    let started = Unix.gettimeofday () in
+    let result =
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd ~args
+        ~process_line:process_line_claude ~on_event
+    in
+    let elapsed = Unix.gettimeofday () -. started in
+    if not result.Llm_backend.saw_final_result then (
+      Stdio.printf "FAIL: early-exit saw_final_result=false\n";
+      Int.incr failures)
+    else if result.Llm_backend.timed_out then (
+      Stdio.printf "FAIL: early-exit timed_out=true\n";
+      Int.incr failures)
+    else if Float.(elapsed > 5.0) then (
+      Stdio.printf "FAIL: early-exit took %.2fs (expected < 5s)\n" elapsed;
+      Int.incr failures)
+    else Stdio.printf "early exit on Final_result: passed (%.2fs)\n" elapsed
+  in
+  early_exit_test ();
+  (* --- Timeout regression: a subprocess that never emits Final_result
+     still times out on schedule. *)
+  let timeout_test () =
+    let events = ref [] in
+    let on_event ev = events := ev :: !events in
+    let args = [ "sh"; "-c"; "sleep 30" ] in
+    let started = Unix.gettimeofday () in
+    let result =
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:1.0 ~cwd ~args
+        ~process_line:process_line_claude ~on_event
+    in
+    let elapsed = Unix.gettimeofday () -. started in
+    if not result.Llm_backend.timed_out then (
+      Stdio.printf "FAIL: timeout test timed_out=false\n";
+      Int.incr failures)
+    else if result.Llm_backend.saw_final_result then (
+      Stdio.printf "FAIL: timeout test saw_final_result=true\n";
+      Int.incr failures)
+    else if Float.(elapsed > 5.0) then (
+      Stdio.printf "FAIL: timeout test took %.2fs (expected < 5s)\n" elapsed;
+      Int.incr failures)
+    else Stdio.printf "timeout regression: passed (%.2fs)\n" elapsed
+  in
+  timeout_test ();
   if !failures > 0 then (
     Stdio.printf "%d backend smoke test(s) failed\n" !failures;
     Stdlib.exit 1)

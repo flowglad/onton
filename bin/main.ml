@@ -951,6 +951,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~clock ~fs ~project_name
                 {
                   exit_code = r.Llm_backend.exit_code;
                   got_events = r.Llm_backend.got_events;
+                  saw_final_result = r.Llm_backend.saw_final_result;
                   stderr = r.Llm_backend.stderr;
                   stream_errors = String.trim (Buffer.contents error_buf);
                   timed_out = r.Llm_backend.timed_out;

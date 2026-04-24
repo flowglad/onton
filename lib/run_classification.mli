@@ -8,6 +8,7 @@ open Base
 type run_outcome = {
   exit_code : int;
   got_events : bool;
+  saw_final_result : bool;
   stderr : string;
   stream_errors : string;
   timed_out : bool;

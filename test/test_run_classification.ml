@@ -54,12 +54,18 @@ let () =
             false)
   in
 
-  (* Non-zero exit code -> Session_failed *)
+  (* Non-zero exit code -> Session_failed (when saw_final_result=false) *)
   let prop_nonzero_session_failed =
     Test.make ~name:"classify: non-zero exit -> Session_failed" ~count:500
       gen_run_outcome (fun r ->
         let r =
-          { r with exit_code = 1; got_events = true; timed_out = false }
+          {
+            r with
+            exit_code = 1;
+            got_events = true;
+            saw_final_result = false;
+            timed_out = false;
+          }
         in
         match classify ~is_resume:false (Ok r) with
         | Session_failed _ -> true
@@ -72,11 +78,52 @@ let () =
     Test.make ~name:"classify: detail string bounded" ~count:500 gen_run_outcome
       (fun r ->
         let r =
-          { r with exit_code = 1; got_events = true; timed_out = false }
+          {
+            r with
+            exit_code = 1;
+            got_events = true;
+            saw_final_result = false;
+            timed_out = false;
+          }
         in
         match classify ~is_resume:false (Ok r) with
         | Session_failed { detail; _ } -> String.length detail <= 503
         | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
+            false)
+  in
+
+  (* saw_final_result=true promotes non-zero exit codes to Success:
+     a child we SIGTERM'd after the model ended its turn exits 143,
+     but the run was successful from onton's perspective. *)
+  let prop_saw_final_is_success =
+    Test.make
+      ~name:"classify: saw_final_result=true -> Success regardless of exit"
+      ~count:500 gen_run_outcome (fun r ->
+        let r =
+          {
+            r with
+            exit_code = 143;
+            got_events = true;
+            saw_final_result = true;
+            timed_out = false;
+          }
+        in
+        match classify ~is_resume:false (Ok r) with
+        | Success _ -> true
+        | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
+          ->
+            false)
+  in
+
+  (* Timeout still wins over saw_final_result. *)
+  let prop_timeout_beats_saw_final =
+    Test.make ~name:"classify: timed_out overrides saw_final_result" ~count:500
+      gen_run_outcome (fun r ->
+        let r = { r with saw_final_result = true; timed_out = true } in
+        match classify ~is_resume:false (Ok r) with
+        | Timed_out -> true
+        | Process_error _ | No_session_to_resume | Success _ | Session_failed _
+          ->
             false)
   in
 
@@ -98,6 +145,8 @@ let () =
       prop_exit_zero_success;
       prop_nonzero_session_failed;
       prop_detail_bounded;
+      prop_saw_final_is_success;
+      prop_timeout_beats_saw_final;
       prop_no_continue_uses_exit_code;
     ]
   in
