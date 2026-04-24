@@ -167,8 +167,12 @@ let () =
     in
     let events = ref [] in
     let on_event ev = events := ev :: !events in
+    (* exec replaces sh with sleep, so the signal lands directly on
+       sleep rather than on a shell waiting for its child. Otherwise
+       SIGTERM would target sh and leave sleep orphaned until kernel
+       reparenting, which slows teardown on loaded machines. *)
     let args =
-      [ "sh"; "-c"; Printf.sprintf "printf '%s\\n'; sleep 30" payload ]
+      [ "sh"; "-c"; Printf.sprintf "printf '%s\\n'; exec sleep 30" payload ]
     in
     let started = Unix.gettimeofday () in
     let result =

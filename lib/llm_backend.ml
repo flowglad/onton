@@ -86,6 +86,12 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
             signal_tree Stdlib.Sys.sigterm;
             try Eio.Flow.close stderr_r with _ -> ()))
         (fun () ->
+          (* Only swallow the expected teardown exceptions: Eio.Buf_read
+             raises when the buffer fills up; End_of_file and Eio.Exn.Io
+             fire when the stdout fiber closes stderr_r out from under us
+             after saw_final_result. Letting anything else propagate — in
+             particular Eio.Cancel.Cancelled — is required so this fiber
+             can honour cancellation and release Eio.Fiber.both. *)
           try err_ref := Eio.Buf_read.take_all stderr_buf with
           | Eio.Buf_read.Buffer_limit_exceeded -> (
               err_ref := "<stderr exceeded 1MB limit, truncated>";
@@ -95,8 +101,11 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
                   ignore
                     (Eio.Flow.single_read stderr_r (Cstruct.of_bytes drain_buf))
                 done
-              with _ -> ())
-          | _ -> ());
+              with
+              | End_of_file -> ()
+              | Eio.Exn.Io _ -> ())
+          | End_of_file -> ()
+          | Eio.Exn.Io _ -> ());
       let status =
         if !saw_final_result_ref then
           (* SIGTERM was just delivered; cap the await so a child that
