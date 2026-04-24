@@ -249,19 +249,20 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
     stdout = cleaned_stdout;
     stderr = stderr_content;
     got_events;
+    saw_final_result = false;
     timed_out = false;
   }
 
-let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
-    ~resume_session ~on_event =
+let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
+    ~prompt ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
   let args = build_stream_args ~prompt ~resume_session in
   let process_line line =
     let trimmed = strip_ansi (String.strip line) in
     if String.is_empty trimmed then [] else parse_stream_events trimmed
   in
-  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
-    ~process_line ~on_event
+  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
+    ~args ~process_line ~on_event
 
 let%test "build_args fresh (no resume)" =
   let args = build_args ~prompt:"do stuff" ~resume_session:None in

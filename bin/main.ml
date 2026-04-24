@@ -951,6 +951,7 @@ let run_claude_and_handle ~runtime ~process_mgr ~clock ~fs ~project_name
                 {
                   exit_code = r.Llm_backend.exit_code;
                   got_events = r.Llm_backend.got_events;
+                  saw_final_result = r.Llm_backend.saw_final_result;
                   stderr = r.Llm_backend.stderr;
                   stream_errors = String.trim (Buffer.contents error_buf);
                   timed_out = r.Llm_backend.timed_out;
@@ -2290,17 +2291,51 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
     1800.0
     (* 30 minutes *)
   in
+  (* Locate the [onton-setsid-exec] shim so subprocesses can run in their
+     own process group; without it, tool-call grandchildren reparent to
+     PID 1 on exit and leak. We probe [$ONTON_SETSID_EXEC] first (for
+     tests that want direct spawn to compare behavior), then fall back
+     to a sibling of our own executable. A missing shim is not fatal —
+     we log and run without group isolation (Phase A early-exit still
+     ends the stall; only grandchild reaping is lost). *)
+  let setsid_exec =
+    let candidate =
+      match Sys.getenv_opt "ONTON_SETSID_EXEC" with
+      | Some "" -> None
+      | Some p -> Some p
+      | None ->
+          Some
+            (Filename.concat
+               (Filename.dirname Sys.executable_name)
+               "onton-setsid-exec")
+    in
+    match candidate with
+    | Some p when Sys.file_exists p -> Some p
+    | Some p ->
+        Eio.traceln
+          "onton-setsid-exec not found at %s; grandchildren will reparent to \
+           PID 1 on teardown"
+          p;
+        None
+    | None -> None
+  in
   let backend =
     match config.backend with
     | "claude" ->
         Claude_backend.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
     | "codex" ->
         Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
     | "opencode" ->
         Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
-    | "pi" -> Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
+    | "pi" ->
+        Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
     | "gemini" ->
         Gemini_backend.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
     | other ->
         invalid_arg
           (Printf.sprintf "Unsupported --backend=%S (expected %s)" other

@@ -11,6 +11,7 @@ type result = {
   stdout : string;
   stderr : string;
   got_events : bool;
+  saw_final_result : bool;
   timed_out : bool;
 }
 [@@deriving show, eq, sexp_of, compare]
@@ -20,6 +21,7 @@ val spawn_and_stream :
   clock:_ Eio.Time.clock ->
   timeout:float ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
+  setsid_exec:string option ->
   args:string list ->
   process_line:(string -> Types.Stream_event.t list) ->
   on_event:(Types.Stream_event.t -> unit) ->
@@ -27,7 +29,13 @@ val spawn_and_stream :
 (** Spawn a subprocess, read NDJSON lines from stdout, and stream parsed events.
     Each stdout line is passed to [process_line] which returns events to forward
     to [on_event]. Handles pipe setup, stdin EOF, stderr capture, and exit code
-    extraction. The process is killed after [timeout] seconds. *)
+    extraction. The process is killed after [timeout] seconds.
+
+    When [setsid_exec] is supplied, [args] is prefixed with that path (a tiny
+    OCaml shim that calls [setsid(2)] before exec'ing). The child then leads its
+    own process group, and teardown sends [kill(2)] to the whole group so
+    tool-call grandchildren (e.g. Bash-spawned shells) are reaped rather than
+    reparented to PID 1. *)
 
 type t = {
   name : string;

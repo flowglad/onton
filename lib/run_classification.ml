@@ -8,6 +8,7 @@ open Base
 type run_outcome = {
   exit_code : int;
   got_events : bool;
+  saw_final_result : bool;
   stderr : string;
   stream_errors : string;
   timed_out : bool;
@@ -28,6 +29,7 @@ let classify ~is_resume result =
   match result with
   | Error msg -> Process_error msg
   | Ok r when r.timed_out -> Timed_out
+  | Ok r when r.saw_final_result -> Success { stream_errors = r.stream_errors }
   | Ok r when (not r.got_events) && is_resume -> No_session_to_resume
   | Ok r when r.exit_code = 0 -> Success { stream_errors = r.stream_errors }
   | Ok r ->
