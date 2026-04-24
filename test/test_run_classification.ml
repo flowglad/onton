@@ -30,11 +30,20 @@ let () =
             false)
   in
 
-  (* Ok with no events + continue -> No_session_to_resume *)
+  (* Ok with no events + continue -> No_session_to_resume
+     (saw_final_result=false is required: a confirmed Final_result is
+     definitive success and short-circuits the no-events heuristic.) *)
   let prop_no_events_continue =
     Test.make ~name:"classify: no events + continue -> No_session_to_resume"
       ~count:500 gen_run_outcome (fun r ->
-        let r = { r with got_events = false; timed_out = false } in
+        let r =
+          {
+            r with
+            got_events = false;
+            saw_final_result = false;
+            timed_out = false;
+          }
+        in
         match classify ~is_resume:true (Ok r) with
         | No_session_to_resume -> true
         | Process_error _ | Timed_out | Success _ | Session_failed _ -> false)
@@ -92,23 +101,18 @@ let () =
             false)
   in
 
-  (* saw_final_result=true promotes non-zero exit codes to Success:
-     a child we SIGTERM'd after the model ended its turn exits 143,
-     but the run was successful from onton's perspective. *)
+  (* saw_final_result=true is definitive success: it short-circuits every
+     subsequent heuristic, including the no-events resume check and the
+     exit-code check. A child we SIGTERM'd after the model ended its turn
+     may exit 143, but the run was successful from onton's perspective. *)
   let prop_saw_final_is_success =
     Test.make
       ~name:"classify: saw_final_result=true -> Success regardless of exit"
-      ~count:500 gen_run_outcome (fun r ->
-        let r =
-          {
-            r with
-            exit_code = 143;
-            got_events = true;
-            saw_final_result = true;
-            timed_out = false;
-          }
-        in
-        match classify ~is_resume:false (Ok r) with
+      ~count:500
+      Gen.(pair gen_run_outcome bool)
+      (fun (r, is_resume) ->
+        let r = { r with saw_final_result = true; timed_out = false } in
+        match classify ~is_resume (Ok r) with
         | Success _ -> true
         | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
           ->

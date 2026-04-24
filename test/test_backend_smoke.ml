@@ -24,8 +24,14 @@ let failures = ref 0
 
 let assert_smoke ~name ~result ~got ~expected =
   let open Llm_backend in
-  if result.exit_code <> 0 then (
-    Stdio.printf "FAIL: %s exit_code=%d\n" name result.exit_code;
+  (* Accept either a clean exit or any status when Final_result was seen:
+     after [saw_final_result] we SIGTERM the child, so a short-lived process
+     like [printf] may race and exit 143 instead of 0. Both are successful
+     runs from onton's perspective. *)
+  let exit_ok = result.exit_code = 0 || result.saw_final_result in
+  if not exit_ok then (
+    Stdio.printf "FAIL: %s exit_code=%d saw_final_result=%b\n" name
+      result.exit_code result.saw_final_result;
     Int.incr failures)
   else if not result.got_events then (
     Stdio.printf "FAIL: %s got_events=false\n" name;

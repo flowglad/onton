@@ -25,8 +25,9 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
     match setsid_exec with Some path -> path :: args | None -> args
   in
   let saw_final_result_ref = ref false in
+  let got_events_ref = ref false in
   let run () =
-    let stderr_content, exit_code, got_events =
+    let stderr_content, exit_code =
       Eio.Switch.run @@ fun sw ->
       let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
       let stdout_r, stdout_w = Eio.Process.pipe ~sw process_mgr in
@@ -54,7 +55,6 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
       let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
       let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
       let err_ref = ref "" in
-      let got_events_ref = ref false in
       Eio.Fiber.both
         (fun () ->
           let rec read_lines () =
@@ -98,7 +98,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
               with _ -> ())
           | _ -> ());
       let status =
-        if !saw_final_result_ref then (
+        if !saw_final_result_ref then
           (* SIGTERM was just delivered; cap the await so a child that
              ignores it doesn't stall us, then escalate to SIGKILL. *)
           match
@@ -106,20 +106,29 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
                 Ok (Eio.Process.await child))
           with
           | Ok status -> status
-          | Error `Timeout ->
+          | Error `Timeout -> (
               signal_tree Stdlib.Sys.sigkill;
-              Eio.Process.await child)
+              (* SIGKILL is unconditional; 1s is more than enough for the
+                 kernel to deliver it. The outer session timeout is a final
+                 backstop, but it can be very long (e.g. 1800s), so we cap
+                 locally to keep the guarantee tight here. *)
+              match
+                Eio.Time.with_timeout clock 1.0 (fun () ->
+                    Ok (Eio.Process.await child))
+              with
+              | Ok status -> status
+              | Error `Timeout -> `Signaled 9)
         else Eio.Process.await child
       in
       let code = match status with `Exited c -> c | `Signaled s -> 128 + s in
-      (!err_ref, code, !got_events_ref)
+      (!err_ref, code)
     in
     Ok
       {
         exit_code;
         stdout = "";
         stderr = stderr_content;
-        got_events;
+        got_events = !got_events_ref;
         saw_final_result = !saw_final_result_ref;
         timed_out = false;
       }
@@ -131,7 +140,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
         exit_code = 128 + 9 (* SIGKILL — sent via on_release hook *);
         stdout = "";
         stderr = "process timed out";
-        got_events = false;
+        got_events = !got_events_ref;
         saw_final_result = !saw_final_result_ref;
         timed_out = true;
       }
