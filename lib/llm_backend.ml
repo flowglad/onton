@@ -10,8 +10,20 @@ type result = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
+(* Signal the whole process group led by [pid]. Requires the child to have
+   called [setsid()] at exec-time; otherwise [-pid] refers to onton's own
+   group and we'd signal ourselves, so we only call this when we spawned
+   through the setsid shim. ESRCH/EPERM are swallowed — they mean the group
+   is already gone or we lost the race. *)
+let kill_group ~pid ~signal =
+  try Unix.kill (-pid) signal
+  with Unix.Unix_error ((ESRCH | EPERM), _, _) -> ()
+
+let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
     ~(process_line : string -> Types.Stream_event.t list) ~on_event =
+  let args =
+    match setsid_exec with Some path -> path :: args | None -> args
+  in
   let saw_final_result_ref = ref false in
   let run () =
     let stderr_content, exit_code, got_events =
@@ -23,8 +35,18 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
         Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
           ~stderr:stderr_w args
       in
+      let pid = Eio.Process.pid child in
+      let have_group = Option.is_some setsid_exec in
+      let signal_tree signal =
+        if have_group then kill_group ~pid ~signal
+        else try Eio.Process.signal child signal with _ -> ()
+      in
       Eio.Switch.on_release sw (fun () ->
-          try Eio.Process.signal child Stdlib.Sys.sigterm with _ -> ());
+          (* Release path fires on timeout / cancellation / exception. Be
+             firm: SIGKILL the whole group (or just the direct child in the
+             no-shim fallback) rather than SIGTERM, since by this point
+             we've already given up on graceful exit. *)
+          signal_tree Stdlib.Sys.sigkill);
       Eio.Flow.close stdin_r;
       Eio.Flow.close stdin_w;
       Eio.Flow.close stdout_w;
@@ -59,8 +81,9 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
                of the child (e.g. Bash-tool zsh processes) may keep the
                inherited stderr write-end open indefinitely, which would
                leave the sibling [take_all] fiber blocked on EOF. Signal
-               the child and close our read end so the fiber unblocks. *)
-            (try Eio.Process.signal child Stdlib.Sys.sigterm with _ -> ());
+               the whole group (when available) and close our read end so
+               the fiber unblocks. *)
+            signal_tree Stdlib.Sys.sigterm;
             try Eio.Flow.close stderr_r with _ -> ()))
         (fun () ->
           try err_ref := Eio.Buf_read.take_all stderr_buf with
@@ -84,7 +107,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
           with
           | Ok status -> status
           | Error `Timeout ->
-              (try Eio.Process.signal child Stdlib.Sys.sigkill with _ -> ());
+              signal_tree Stdlib.Sys.sigkill;
               Eio.Process.await child)
         else Eio.Process.await child
       in
@@ -105,7 +128,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
   | Ok result -> result
   | Error `Timeout ->
       {
-        exit_code = 128 + 15 (* SIGTERM — sent via on_release hook *);
+        exit_code = 128 + 9 (* SIGKILL — sent via on_release hook *);
         stdout = "";
         stderr = "process timed out";
         got_events = false;

@@ -92,8 +92,8 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
-let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
-    ~resume_session ~on_event =
+let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
+    ~prompt ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
   let cwd_path = snd cwd in
   let args = build_args ~cwd_path ~prompt ~resume_session in
@@ -101,16 +101,16 @@ let run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
     let trimmed = String.strip line in
     if String.is_empty trimmed then [] else parse_event trimmed
   in
-  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~args
-    ~process_line ~on_event
+  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
+    ~args ~process_line ~on_event
 
-let create ~process_mgr ~clock ~timeout : Llm_backend.t =
+let create ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "OpenCode";
     run_streaming =
       (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
-        run_streaming ~process_mgr ~clock ~timeout ~cwd ~patch_id ~prompt
-          ~resume_session ~on_event);
+        run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
+          ~prompt ~resume_session ~on_event);
   }
 
 let%test "build_args without continue" =
