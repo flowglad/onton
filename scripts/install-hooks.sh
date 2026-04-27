@@ -78,13 +78,13 @@ PROJECT_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir
 eval "$(opam env --switch="$PROJECT_ROOT" --set-switch)"
 
 echo "==> dune build"
-dune build 2>&1
+dune build
 
 echo "==> dune runtest"
-dune runtest 2>&1
+dune runtest
 
 echo "==> format check"
-dune build @fmt 2>&1
+dune build @fmt
 HOOK
 
 "$SCRIPT_DIR/sync-skills.sh"
