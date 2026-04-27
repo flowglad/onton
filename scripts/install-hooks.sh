@@ -74,7 +74,7 @@ set -e
 # Activate the project's local opam switch (5.4.0) rather than whatever the
 # user's default switch happens to be. git-common-dir resolves to the main
 # repo's .git from any worktree; its parent is the project root that holds _opam.
-PROJECT_ROOT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+PROJECT_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 eval "$(opam env --switch="$PROJECT_ROOT" --set-switch)"
 
 echo "==> dune build"
