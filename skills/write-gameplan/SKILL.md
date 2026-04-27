@@ -173,6 +173,30 @@ After writing the gameplan JSON, verify:
 4. All test stubs have corresponding implementations
 5. The mergability checklist passes
 
+## Resolving Open Questions
+
+After the gameplan is written and verified, automatically proceed to this step without waiting for an additional prompt — work through the `openQuestions` array with the programmer **one question at a time** until the array is empty.
+
+Why this step is mandatory:
+
+- **Gating**: onton will refuse to begin executing a gameplan whose `openQuestions` array is non-empty. Leaving questions unresolved blocks the entire plan.
+- **Control**: this dialogue ensures the programmer understands and has direct authority over the most consequential and thorny design decisions before any code is written.
+
+For each open question, in order:
+
+1. **Present the question** with the context needed to decide it: which patches it affects, the entities/invariants it touches, and any constraints from the spec file or workstream that bear on it.
+2. **Propose 2-4 candidate resolutions** with brief tradeoffs. State your own recommendation and why; do not hide behind false neutrality. If you genuinely have no preference, say so.
+3. **Wait for the programmer's decision** before moving on. If they ask for deeper analysis, provide it. If they pick an option you didn't list, accept it. If their resolution conflicts with the spec file or workstream constraints, flag the conflict explicitly and offer to regenerate the gameplan with updated assumptions before proceeding.
+4. **Record the resolution** by:
+   - Editing the gameplan to reflect the chosen path — update affected patches (`changes`, `spec`, `files`, signatures), `acceptanceCriteria`, `finalStateSpec`, `dependencyGraph`, and any other fields the decision touches.
+   - Appending an entry to `explicitOpinions` — an object with non-empty `opinion` (the chosen resolution) and `rationale` (why it was chosen) keys — so the reasoning is preserved in the gameplan itself.
+   - Removing the question from `openQuestions`.
+5. **Move to the next question.** Do not batch — questions are presented sequentially because later questions often depend on earlier answers, and batching prevents the programmer from reasoning about each decision in isolation.
+
+After the last question is resolved, **re-run verification** (schema validation and spec parsing) since edits made during this dialogue may have introduced regressions.
+
+The end state is a gameplan with `openQuestions: []` and an `explicitOpinions` array that captures every decision made during the dialogue.
+
 ## Specification Language
 
 The `spec` and `finalStateSpec` fields contain source code in a formal specification language. The language is a project-level choice — the gameplan structure is the same regardless of which language you use.
