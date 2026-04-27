@@ -33,22 +33,35 @@ esac
 
 mkdir -p "$HOOKS_DIR"
 
-# install_hook <hook_name> <sentinel> reads the hook body from stdin.
-# Detects onton-installed hooks via the sentinel so renaming the body
-# doesn't break re-installation, and a third-party hook that merely
-# mentions onton in a comment isn't mistaken for ours.
-install_hook() {
+# Detect onton-installed hooks via a sentinel so renaming the body doesn't
+# break re-installation, and a third-party hook that merely mentions onton
+# in a comment isn't mistaken for ours.
+check_hook_writable() {
   hook_name="$1"
   sentinel="$2"
   hook_path="$HOOKS_DIR/$hook_name"
 
   if [ -e "$hook_path" ] && ! grep -q "$sentinel" "$hook_path"; then
     echo "error: $hook_path already exists and is not onton's hook." >&2
-    echo "       Back it up and remove it, then re-run install-hooks.sh." >&2
-    echo "       The desired body is inlined in scripts/install-hooks.sh." >&2
-    exit 1
+    return 1
   fi
+}
 
+# Validate all hook paths up front so a conflict on the second hook doesn't
+# leave the first one already written to disk in a partial-install state.
+conflicts=0
+check_hook_writable post-checkout 'onton-managed-post-checkout' || conflicts=1
+check_hook_writable pre-commit 'onton-managed-pre-commit' || conflicts=1
+if [ "$conflicts" -ne 0 ]; then
+  echo "       Back up the conflicting file(s) and remove them, then re-run install-hooks.sh." >&2
+  echo "       The desired hook bodies are inlined in scripts/install-hooks.sh." >&2
+  exit 1
+fi
+
+# install_hook <hook_name> reads the hook body from stdin.
+install_hook() {
+  hook_name="$1"
+  hook_path="$HOOKS_DIR/$hook_name"
   cat > "$hook_path"
   chmod +x "$hook_path"
   echo "[installed] $hook_name hook at $hook_path"
@@ -57,7 +70,7 @@ install_hook() {
 # Single-quoted heredoc delimiters so $vars are resolved at hook runtime,
 # not baked in at install time (the repo may later be moved or cloned elsewhere).
 
-install_hook post-checkout 'onton-managed-post-checkout' <<'HOOK'
+install_hook post-checkout <<'HOOK'
 #!/bin/sh
 # onton-managed-post-checkout — do not edit this line; install-hooks.sh uses it
 # to detect that this hook is owned by onton and may be safely overwritten.
@@ -65,7 +78,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 [ -x "$REPO_ROOT/scripts/sync-skills.sh" ] && "$REPO_ROOT/scripts/sync-skills.sh"
 HOOK
 
-install_hook pre-commit 'onton-managed-pre-commit' <<'HOOK'
+install_hook pre-commit <<'HOOK'
 #!/bin/sh
 # onton-managed-pre-commit — do not edit this line; install-hooks.sh uses it
 # to detect that this hook is owned by onton and may be safely overwritten.
