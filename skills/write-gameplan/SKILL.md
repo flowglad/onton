@@ -175,7 +175,7 @@ After writing the gameplan JSON, verify:
 
 ## Resolving Open Questions
 
-After the gameplan is written and verified, work through the `openQuestions` array with the programmer **one question at a time** until the array is empty.
+After the gameplan is written and verified, automatically proceed to this step without waiting for an additional prompt — work through the `openQuestions` array with the programmer **one question at a time** until the array is empty.
 
 Why this step is mandatory:
 
@@ -186,7 +186,7 @@ For each open question, in order:
 
 1. **Present the question** with the context needed to decide it: which patches it affects, the entities/invariants it touches, and any constraints from the spec file or workstream that bear on it.
 2. **Propose 2-4 candidate resolutions** with brief tradeoffs. State your own recommendation and why; do not hide behind false neutrality. If you genuinely have no preference, say so.
-3. **Wait for the programmer's decision** before moving on. If they ask for deeper analysis, provide it. If they pick an option you didn't list, accept it.
+3. **Wait for the programmer's decision** before moving on. If they ask for deeper analysis, provide it. If they pick an option you didn't list, accept it. If their resolution conflicts with the spec file or workstream constraints, flag the conflict explicitly and offer to regenerate the gameplan with updated assumptions before proceeding.
 4. **Record the resolution** by:
    - Editing the gameplan to reflect the chosen path — update affected patches (`changes`, `spec`, `files`, signatures), `acceptanceCriteria`, `finalStateSpec`, `dependencyGraph`, and any other fields the decision touches.
    - Appending an entry to `explicitOpinions` capturing the decision and the rationale, so the reasoning is preserved in the gameplan itself.

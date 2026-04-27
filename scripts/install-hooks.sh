@@ -75,7 +75,7 @@ set -e
 # user's default switch happens to be. git-common-dir resolves to the main
 # repo's .git from any worktree; its parent is the project root that holds _opam.
 PROJECT_ROOT=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
-eval $(opam env --switch="$PROJECT_ROOT" --set-switch)
+eval "$(opam env --switch="$PROJECT_ROOT" --set-switch)"
 
 echo "==> dune build"
 dune build 2>&1
@@ -84,7 +84,7 @@ echo "==> dune runtest"
 dune runtest 2>&1
 
 echo "==> format check"
-dune fmt 2>&1
+dune build @fmt 2>&1
 HOOK
 
 "$SCRIPT_DIR/sync-skills.sh"
