@@ -189,7 +189,7 @@ For each open question, in order:
 3. **Wait for the programmer's decision** before moving on. If they ask for deeper analysis, provide it. If they pick an option you didn't list, accept it. If their resolution conflicts with the spec file or workstream constraints, flag the conflict explicitly and offer to regenerate the gameplan with updated assumptions before proceeding.
 4. **Record the resolution** by:
    - Editing the gameplan to reflect the chosen path — update affected patches (`changes`, `spec`, `files`, signatures), `acceptanceCriteria`, `finalStateSpec`, `dependencyGraph`, and any other fields the decision touches.
-   - Appending an entry to `explicitOpinions` capturing the decision and the rationale, so the reasoning is preserved in the gameplan itself.
+   - Appending an entry to `explicitOpinions` — an object with non-empty `opinion` (the chosen resolution) and `rationale` (why it was chosen) keys — so the reasoning is preserved in the gameplan itself.
    - Removing the question from `openQuestions`.
 5. **Move to the next question.** Do not batch — questions are presented sequentially because later questions often depend on earlier answers, and batching prevents the programmer from reasoning about each decision in isolation.
 
