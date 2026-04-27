@@ -765,10 +765,10 @@ let execute_worktree_plan ~runtime ~process_mgr ~clock ~fs ~repo_root
 
 let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
 
-let run_claude_and_handle ~runtime ~process_mgr ~clock ~fs ~project_name
-    ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner ~repo
-    ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend ~event_log =
+let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
+    ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
+    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
+    ~user_config ~worktree_mutex ~hook_mutex ~backend ~event_log =
   match session_mode agent with
   | `Give_up ->
       log_event runtime ~patch_id
@@ -1057,10 +1057,40 @@ let run_claude_and_handle ~runtime ~process_mgr ~clock ~fs ~project_name
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:
              same Ok/Failed disposition unless the combination promoted us
-             to Session_push_failed (which is always Failed). *)
+             to Session_push_failed (which is always Failed).
+
+             Special case: when the agent is responding to a human message,
+             the human may have asked a question or made a request that
+             requires no code changes. Absence of new commits is therefore
+             not a failure — override Session_no_commits to Session_ok so
+             the no_commits_push_count counter does not march toward
+             needs_intervention and the operation completes cleanly. *)
+          let no_commits_is_ok =
+            match kind with
+            | Some Operation_kind.Human -> true
+            | Some Operation_kind.Ci
+            | Some Operation_kind.Review_comments
+            | Some Operation_kind.Pr_body
+            | Some Operation_kind.Merge_conflict
+            | Some Operation_kind.Rebase
+            | None ->
+                false
+          in
           let final_session_result =
-            Orchestrator.combine_session_and_push ~session:session_result
-              ~push:push_outcome
+            let combined =
+              Orchestrator.combine_session_and_push ~session:session_result
+                ~push:push_outcome
+            in
+            match combined with
+            | Orchestrator.Session_no_commits when no_commits_is_ok ->
+                Orchestrator.Session_ok
+            | Orchestrator.Session_ok | Orchestrator.Session_no_commits
+            | Orchestrator.Session_process_error _
+            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
+            | Orchestrator.Session_give_up
+            | Orchestrator.Session_worktree_missing
+            | Orchestrator.Session_push_failed ->
+                combined
           in
           let final_user_result =
             match final_session_result with
@@ -2531,11 +2561,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                      finishes *)
                                       let on_pr_detected _pr_number = () in
                                       let r, _tool_failures =
-                                        run_claude_and_handle ~runtime
-                                          ~process_mgr ~clock ~fs ~project_name
-                                          ~patch_id ~repo_root:config.repo_root
-                                          ~prompt ~agent
-                                          ~owner:config.github_owner
+                                        run_claude_and_handle ~kind:None
+                                          ~runtime ~process_mgr ~clock ~fs
+                                          ~project_name ~patch_id
+                                          ~repo_root:config.repo_root ~prompt
+                                          ~agent ~owner:config.github_owner
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
@@ -2994,11 +3024,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       in
                                       let on_pr_detected _pr_number = () in
                                       let result, _tool_failures =
-                                        run_claude_and_handle ~runtime
-                                          ~process_mgr ~clock ~fs ~project_name
-                                          ~patch_id ~repo_root:config.repo_root
-                                          ~prompt ~agent
-                                          ~owner:config.github_owner
+                                        run_claude_and_handle
+                                          ~kind:
+                                            (Some Operation_kind.Merge_conflict)
+                                          ~runtime ~process_mgr ~clock ~fs
+                                          ~project_name ~patch_id
+                                          ~repo_root:config.repo_root ~prompt
+                                          ~agent ~owner:config.github_owner
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
@@ -3309,11 +3341,11 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     | Patch_decision.Merge_conflict_payload ->
                                         ());
                                     let result, tool_failures =
-                                      run_claude_and_handle ~runtime
-                                        ~process_mgr ~clock ~fs ~project_name
-                                        ~patch_id ~repo_root:config.repo_root
-                                        ~prompt ~agent
-                                        ~owner:config.github_owner
+                                      run_claude_and_handle ~kind:(Some kind)
+                                        ~runtime ~process_mgr ~clock ~fs
+                                        ~project_name ~patch_id
+                                        ~repo_root:config.repo_root ~prompt
+                                        ~agent ~owner:config.github_owner
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
                                         ~user_config:config.user_config
