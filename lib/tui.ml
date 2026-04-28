@@ -431,7 +431,8 @@ let%test "render_status_msg Error contains red ANSI" =
     render_status_msg ~width:80
       (Some { level = Error; text = "oops"; expires_at = None })
   in
-  String.is_substring s ~substring:"\027[31m"
+  (not (Lazy.force Term.color_enabled))
+  || String.is_substring s ~substring:"\027[31m"
   || String.is_substring s ~substring:"\027[1;31m"
   || String.is_substring s ~substring:"\027[31;1m"
 
@@ -449,7 +450,8 @@ let%test "render_status_msg Info is styled dim" =
       (Some { level = Info; text = "hello"; expires_at = None })
   in
   String.is_substring s ~substring:"hello"
-  && String.is_substring s ~substring:"\027[2m"
+  && ((not (Lazy.force Term.color_enabled))
+     || String.is_substring s ~substring:"\027[2m")
 
 let%test "msg_expired true when past" =
   msg_expired ~now:100.0 { level = Info; text = "x"; expires_at = Some 50.0 }

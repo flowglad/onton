@@ -25,5 +25,5 @@ type classification =
 
 val classify :
   is_resume:bool -> (run_outcome, string) Result.t -> classification
-(** Classify a Claude runner result into a pure decision value. [is_resume]
+(** Classify an LLM runner result into a pure decision value. [is_resume]
     indicates whether this was a --resume session (explicit session ID). *)
