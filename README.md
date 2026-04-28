@@ -106,7 +106,7 @@ of these must be installed and configured before onton can run.
 |------|---------|---------|
 | `git` | Worktree CRUD, branch detection, rebase | `brew install git` (or system package manager) |
 | `gh` (GitHub CLI) | Token resolution, PR discovery (`gh pr list`), and the main vehicle agents use to interact with GitHub (`gh pr create`, `gh pr edit`, `gh pr view`, `gh api`, `gh api graphql`) | `brew install gh`, then `gh auth login` |
-| Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode`, `pi`. Selected via `--backend` (default `claude`) and must be on `PATH` | See each tool's docs |
+| Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code); selected as `claude-opus` or `claude-sonnet` via `--backend`), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode`, `pi`, `gemini`. Selected via `--backend` (default `claude-opus`) and must be on `PATH` | See each tool's docs |
 
 Onton is built and tested on macOS (ARM64 and x86_64). Linux should work but is
 not part of the release pipeline.
@@ -423,12 +423,15 @@ GitHub Actions runs on every push and PR:
 
 Backend selection uses `--backend`:
 
-- `onton --backend claude`
+- `onton --backend claude-opus`
+- `onton --backend claude-sonnet`
 - `onton --backend codex`
 - `onton --backend opencode`
 - `onton --backend pi`
+- `onton --backend gemini`
 
-If omitted for a new project, `claude` is the default. The selected backend is
+If omitted for a new project, `claude-opus` is the default. Existing stored
+`claude` configs are migrated to `claude-opus`. The selected backend is
 persisted in project config and reused on resume unless you pass `--backend`
 again to override it.
 

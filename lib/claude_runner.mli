@@ -15,6 +15,7 @@ open Base
     busy patches don't get new work. *)
 
 val run :
+  model:string ->
   process_mgr:_ Eio.Process.mgr ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
   patch_id:Types.Patch_id.t ->
@@ -35,6 +36,7 @@ val run :
     {!run_streaming} carries [~clock] and [~timeout] for this purpose. *)
 
 val run_streaming :
+  model:string ->
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
   timeout:float ->
@@ -62,10 +64,11 @@ val strip_ansi : string -> string
 (** Strip ANSI escape sequences and stray control characters from a line.
     Exposed for testing. *)
 
-val build_args : prompt:string -> resume_session:string option -> string list
+val build_args :
+  model:string -> prompt:string -> resume_session:string option -> string list
 (** Build the CLI argument list for the Claude process. Exposed for testing. *)
 
 val build_stream_args :
-  prompt:string -> resume_session:string option -> string list
+  model:string -> prompt:string -> resume_session:string option -> string list
 (** Build the CLI argument list for stream-json output mode. Exposed for
     testing. *)
