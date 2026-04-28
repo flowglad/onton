@@ -39,17 +39,28 @@ let ansi_re =
 (** Strip ANSI escape sequences and stray control characters. *)
 let strip_ansi s = Re.replace_string ansi_re ~by:"" s
 
-let build_args ~prompt ~resume_session =
-  let base = [ "claude"; "-p"; prompt; "--output-format"; "text" ] in
+let build_args ~model ~prompt ~resume_session =
+  let base =
+    [ "claude"; "--model"; model; "-p"; prompt; "--output-format"; "text" ]
+  in
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
   in
   let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
   base @ session_args @ flags
 
-let build_stream_args ~prompt ~resume_session =
+let build_stream_args ~model ~prompt ~resume_session =
   let base =
-    [ "claude"; "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
+    [
+      "claude";
+      "--model";
+      model;
+      "-p";
+      prompt;
+      "--output-format";
+      "stream-json";
+      "--verbose";
+    ]
   in
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
@@ -197,9 +208,9 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
 let parse_stream_event (line : string) : Types.Stream_event.t option =
   match parse_stream_events line with [] -> None | e :: _ -> Some e
 
-let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
+let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_args ~prompt ~resume_session in
+  let args = build_args ~model ~prompt ~resume_session in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
@@ -253,10 +264,10 @@ let run ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
     timed_out = false;
   }
 
-let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-    ~prompt ~resume_session ~on_event =
+let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+    ~patch_id ~prompt ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_stream_args ~prompt ~resume_session in
+  let args = build_stream_args ~model ~prompt ~resume_session in
   let process_line line =
     let trimmed = strip_ansi (String.strip line) in
     if String.is_empty trimmed then [] else parse_stream_events trimmed
@@ -265,10 +276,14 @@ let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
     ~args ~process_line ~on_event
 
 let%test "build_args fresh (no resume)" =
-  let args = build_args ~prompt:"do stuff" ~resume_session:None in
+  let args =
+    build_args ~model:"sonnet" ~prompt:"do stuff" ~resume_session:None
+  in
   List.equal String.equal args
     [
       "claude";
+      "--model";
+      "sonnet";
       "-p";
       "do stuff";
       "--output-format";
@@ -279,10 +294,14 @@ let%test "build_args fresh (no resume)" =
     ]
 
 let%test "build_args with resume session" =
-  let args = build_args ~prompt:"do stuff" ~resume_session:(Some "abc-123") in
+  let args =
+    build_args ~model:"opus" ~prompt:"do stuff" ~resume_session:(Some "abc-123")
+  in
   List.equal String.equal args
     [
       "claude";
+      "--model";
+      "opus";
       "-p";
       "do stuff";
       "--output-format";
@@ -295,10 +314,14 @@ let%test "build_args with resume session" =
     ]
 
 let%test "build_stream_args fresh (no resume)" =
-  let args = build_stream_args ~prompt:"do stuff" ~resume_session:None in
+  let args =
+    build_stream_args ~model:"sonnet" ~prompt:"do stuff" ~resume_session:None
+  in
   List.equal String.equal args
     [
       "claude";
+      "--model";
+      "sonnet";
       "-p";
       "do stuff";
       "--output-format";
@@ -311,11 +334,14 @@ let%test "build_stream_args fresh (no resume)" =
 
 let%test "build_stream_args with resume session" =
   let args =
-    build_stream_args ~prompt:"do stuff" ~resume_session:(Some "abc-123")
+    build_stream_args ~model:"opus" ~prompt:"do stuff"
+      ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
       "claude";
+      "--model";
+      "opus";
       "-p";
       "do stuff";
       "--output-format";

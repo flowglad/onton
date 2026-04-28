@@ -108,7 +108,7 @@ let load_config ~project_name =
     | `Assoc fields ->
         let fields =
           if List.Assoc.mem fields "backend" ~equal:String.equal then fields
-          else ("backend", `String "claude") :: fields
+          else ("backend", `String "claude-opus") :: fields
         in
         Ok (stored_config_of_yojson (`Assoc fields))
     | _ -> Ok (stored_config_of_yojson json)

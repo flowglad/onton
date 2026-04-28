@@ -122,10 +122,17 @@ let infer_default_branch ~repo_root =
           | Some _ -> "master"
           | None -> "main"))
 
-let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
+let default_backend = "claude-opus"
+
+let normalize_backend backend =
+  match backend with "claude" -> default_backend | other -> other
+
+let known_backends =
+  [ "claude-sonnet"; "claude-opus"; "codex"; "opencode"; "pi"; "gemini" ]
 
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
+  let backend = normalize_backend backend in
   let errors =
     Base.List.filter_map
       [
@@ -2350,10 +2357,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
     | None -> None
   in
   let backend =
-    match config.backend with
-    | "claude" ->
-        Claude_backend.create ~process_mgr ~clock ~timeout:session_timeout
-          ~setsid_exec
+    match normalize_backend config.backend with
+    | "claude-sonnet" ->
+        Claude_backend.create ~name:"Claude Sonnet" ~model:"sonnet" ~process_mgr
+          ~clock ~timeout:session_timeout ~setsid_exec
+    | "claude-opus" ->
+        Claude_backend.create ~name:"Claude Opus" ~model:"opus" ~process_mgr
+          ~clock ~timeout:session_timeout ~setsid_exec
     | "codex" ->
         Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
           ~setsid_exec
@@ -3635,7 +3645,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
           }
       in
       let backend =
-        if Base.String.is_empty backend then "claude" else backend
+        if Base.String.is_empty backend then default_backend
+        else backend |> normalize_backend
       in
       let main_branch = resolve_branch ~repo_root main_branch in
       Project_store.save_config ~project_name ~github_token:token
@@ -3673,7 +3684,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
             resolve_github_credentials ~github_token ~repo_root
           in
           let backend =
-            if Base.String.is_empty backend then "claude" else backend
+            if Base.String.is_empty backend then default_backend
+            else backend |> normalize_backend
           in
           let main_branch = resolve_branch ~repo_root main_branch in
           Project_store.save_config ~project_name ~github_token:token
@@ -3729,6 +3741,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                   in
                   let backend =
                     merge_cli_stored backend stored.Project_store.backend
+                    |> normalize_backend
                   in
                   let token_from_stored =
                     merge_cli_stored github_token
@@ -4076,7 +4089,9 @@ let backend_arg =
   Arg.(
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
-        ~doc:"LLM backend to use: claude, codex, opencode, pi, or gemini.")
+        ~doc:
+          "LLM backend to use: claude-sonnet, claude-opus, codex, opencode, \
+           pi, or gemini.")
 
 let repo_arg =
   let open Cmdliner in

@@ -1,4 +1,6 @@
 val create :
+  name:string ->
+  model:string ->
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
   timeout:float ->
