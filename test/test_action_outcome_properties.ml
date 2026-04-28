@@ -103,13 +103,22 @@ let () =
 (* ========== AO-2b: delivered Human messages are not replayed ========== *)
 
 let () =
+  let human_message_gen =
+    QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80)
+  in
+  let distinct_human_messages_gen =
+    QCheck2.Gen.map2
+      (fun first_msg second_msg ->
+        if String.equal first_msg second_msg then
+          (first_msg, second_msg ^ " (next)")
+        else (first_msg, second_msg))
+      human_message_gen human_message_gen
+  in
   let prop =
     QCheck2.Test.make
       ~name:
         "AO-2b: delivered Human message is cleared before next Human delivery"
-      (QCheck2.Gen.pair
-         (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
-         (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80)))
+      distinct_human_messages_gen
       (fun (first_msg, second_msg) ->
         try
           let orch, _patches, _gameplan, pid = bootstrap_one () in
