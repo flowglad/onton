@@ -134,10 +134,7 @@ let () =
   let perl_available =
     match Unix.system "perl -e 1 >/dev/null 2>&1" with
     | Unix.WEXITED 0 -> true
-    | Unix.WEXITED _
-    | Unix.WSIGNALED _
-    | Unix.WSTOPPED _ ->
-        false
+    | Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> false
   in
   if perl_available then large_codex_line_test ()
   else Stdio.printf "codex large stdout line: skipped (perl not found)\n";

@@ -118,8 +118,7 @@ let () =
     QCheck2.Test.make
       ~name:
         "AO-2b: delivered Human message is cleared before next Human delivery"
-      distinct_human_messages_gen
-      (fun (first_msg, second_msg) ->
+      distinct_human_messages_gen (fun (first_msg, second_msg) ->
         try
           let orch, _patches, _gameplan, pid = bootstrap_one () in
           let orch = Orchestrator.send_human_message orch pid first_msg in
