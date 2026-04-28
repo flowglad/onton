@@ -166,7 +166,9 @@ let () =
           | Patch_decision.Skip_empty | Patch_decision.Respond_stale -> false
         with
         | QCheck2.Test.Test_fail _ as e -> raise e
-        | _ -> false)
+        | exn ->
+            QCheck2.Test.fail_reportf "unexpected exception: %s"
+              (Exn.to_string exn))
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-2b passed"
@@ -297,7 +299,7 @@ let () =
                   && not
                        (List.mem after.Patch_agent.queue Operation_kind.Human
                           ~equal:Operation_kind.equal))
-          with _ -> Ok false
+          with exn -> Error (Exn.to_string exn)
         with
         | Ok passed -> passed
         | Error msg -> QCheck2.Test.fail_reportf "%s" msg)
