@@ -133,7 +133,16 @@ let () =
         result.Llm_backend.saw_final_result (List.length got);
       Int.incr failures)
   in
-  large_codex_line_test ();
+  let perl_available =
+    match Unix.system "perl -e 1 >/dev/null 2>&1" with
+    | Unix.WEXITED 0 -> true
+    | Unix.WEXITED _
+    | Unix.WSIGNALED _
+    | Unix.WSTOPPED _ ->
+        false
+  in
+  if perl_available then large_codex_line_test ()
+  else Stdio.printf "codex large stdout line: skipped (perl not found)\n";
   (* --- Claude --- *)
   let result, got =
     smoke ~process_mgr ~clock ~cwd

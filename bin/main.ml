@@ -864,6 +864,8 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
           in
           let on_event (event : Types.Stream_event.t) =
             match event with
+            (* Turn_started is the preferred signal; the arms below are
+               fallbacks for backends that do not emit it. *)
             | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
             | Types.Stream_event.Text_delta text -> (
                 mark_backend_accepted_turn ();

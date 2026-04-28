@@ -262,13 +262,15 @@ let () =
           let orch = make_busy orch patches gameplan pid Operation_kind.Human in
           let before = Orchestrator.agent orch pid in
           if List.is_empty before.Patch_agent.inflight_human_messages then
-            failwith "expected inflight Human messages";
+            QCheck2.Test.fail_reportf "expected inflight Human messages";
           let orch =
             Orchestrator.mark_inflight_human_messages_delivered orch pid
           in
           let accepted = Orchestrator.agent orch pid in
           if not (List.is_empty accepted.Patch_agent.inflight_human_messages)
-          then failwith "accepted Human messages should be drained";
+          then
+            QCheck2.Test.fail_reportf
+              "accepted Human messages should be drained";
           let orch = Orchestrator.apply_session_result orch pid result in
           let after = Orchestrator.agent orch pid in
           List.is_empty after.Patch_agent.human_messages
@@ -276,7 +278,13 @@ let () =
           && not
                (List.mem after.Patch_agent.queue Operation_kind.Human
                   ~equal:Operation_kind.equal)
-        with _ -> false)
+        with
+        | e
+          when String.equal
+                 (Stdlib.Printexc.exn_slot_name e)
+                 "QCheck2.Test.User_fail" ->
+            raise e
+        | _ -> false)
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-6b passed"
