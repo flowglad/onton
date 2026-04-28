@@ -100,6 +100,66 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-2 passed"
 
+(* ========== AO-2b: delivered Human messages are not replayed ========== *)
+
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:
+        "AO-2b: delivered Human message is cleared before next Human delivery"
+      (QCheck2.Gen.pair
+         (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80))
+         (QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80)))
+      (fun (first_msg, second_msg) ->
+        try
+          let orch, _patches, _gameplan, pid = bootstrap_one () in
+          let orch = Orchestrator.send_human_message orch pid first_msg in
+          let first_pre = Orchestrator.agent orch pid in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Respond (pid, Operation_kind.Human))
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+              Orchestrator.Respond_ok
+          in
+          let after_first = Orchestrator.agent orch pid in
+          if not (List.is_empty after_first.Patch_agent.human_messages) then
+            failwith "first message remained in inbox";
+          if
+            not
+              (List.is_empty after_first.Patch_agent.inflight_human_messages)
+          then failwith "first message remained inflight";
+          let orch = Orchestrator.send_human_message orch pid second_msg in
+          let second_pre = Orchestrator.agent orch pid in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Respond (pid, Operation_kind.Human))
+          in
+          let agent = Orchestrator.agent orch pid in
+          match
+            Patch_decision.respond_delivery ~agent ~kind:Operation_kind.Human
+              ~pre_fire_agent:(Some second_pre) ~prefetched_comments:[]
+              ~main_branch:(Branch.to_string main)
+          with
+          | Patch_decision.Deliver { payload; _ } -> (
+              match payload with
+              | Patch_decision.Human_payload { messages } ->
+                  List.equal String.equal messages [ second_msg ]
+                  && not (List.mem messages first_msg ~equal:String.equal)
+                  && List.mem first_pre.Patch_agent.human_messages first_msg
+                       ~equal:String.equal
+              | Patch_decision.Ci_payload _
+              | Patch_decision.Review_payload _
+              | Patch_decision.Pr_body_payload
+              | Patch_decision.Merge_conflict_payload ->
+                  false)
+          | Patch_decision.Skip_empty | Patch_decision.Respond_stale -> false
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-2b passed"
+
 (* ========== AO-3: Respond_ok + Merge_conflict clears has_conflict ========== *)
 
 let () =

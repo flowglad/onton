@@ -84,6 +84,56 @@ let () =
         Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn };
       ];
+  (* Codex can emit very large single-line JSON events. This used to exceed
+     the shared 1 MiB stdout line buffer, bubble out as
+     [Eio__Buf_read.Buffer_limit_exceeded], and make the orchestrator restore
+     inflight Human messages as though delivery had failed. *)
+  let large_codex_line_test () =
+    let large_text = String.make ((1024 * 1024) + 1024) 'x' in
+    let events = ref [] in
+    let on_event ev = events := ev :: !events in
+    let args =
+      [
+        "sh";
+        "-c";
+        Printf.sprintf
+          "perl -e 'print q!%s!; print q!x! x %d; print q!%s!;'"
+          {|{"type":"item.completed","item":{"type":"agent_message","text":"|}
+          (String.length large_text)
+          {|"}}
+{"type":"turn.completed"}
+|};
+      ]
+    in
+    let result =
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
+        ~setsid_exec:None ~args
+        ~process_line:(process_line_strip Codex_backend.parse_event)
+        ~on_event
+    in
+    let got = List.rev !events in
+    let expected =
+      [
+        Types.Stream_event.Text_delta large_text;
+        Types.Stream_event.Final_result
+          { text = ""; stop_reason = Types.Stop_reason.End_turn };
+      ]
+    in
+    let event_ok = List.equal Types.Stream_event.equal got expected in
+    if
+      event_ok
+      && (not result.Llm_backend.timed_out)
+      && result.Llm_backend.got_events && result.Llm_backend.saw_final_result
+    then Stdio.printf "codex large stdout line: passed\n"
+    else (
+        Stdio.printf
+          "FAIL: codex large stdout line timed_out=%b got_events=%b \
+           saw_final_result=%b events=%d\n"
+          result.Llm_backend.timed_out result.Llm_backend.got_events
+          result.Llm_backend.saw_final_result (List.length got);
+        Int.incr failures)
+  in
+  large_codex_line_test ();
   (* --- Claude --- *)
   let result, got =
     smoke ~process_mgr ~clock ~cwd

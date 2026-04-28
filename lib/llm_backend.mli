@@ -29,7 +29,9 @@ val spawn_and_stream :
 (** Spawn a subprocess, read NDJSON lines from stdout, and stream parsed events.
     Each stdout line is passed to [process_line] which returns events to forward
     to [on_event]. Handles pipe setup, stdin EOF, stderr capture, and exit code
-    extraction. The process is killed after [timeout] seconds.
+    extraction. Stdout allows large single-line JSON events from CLIs such as
+    Codex; stderr is capped and truncated. The process is killed after
+    [timeout] seconds.
 
     When [setsid_exec] is supplied, [args] is prefixed with that path (a tiny
     OCaml shim that calls [setsid(2)] before exec'ing). The child then leads its

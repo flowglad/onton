@@ -24,6 +24,8 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
   let args =
     match setsid_exec with Some path -> path :: args | None -> args
   in
+  let stdout_max_size = 64 * 1024 * 1024 in
+  let stderr_max_size = 1024 * 1024 in
   let saw_final_result_ref = ref false in
   let got_events_ref = ref false in
   let run () =
@@ -52,8 +54,8 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
       Eio.Flow.close stdin_w;
       Eio.Flow.close stdout_w;
       Eio.Flow.close stderr_w;
-      let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
-      let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
+      let stdout_buf = Eio.Buf_read.of_flow ~max_size:stdout_max_size stdout_r in
+      let stderr_buf = Eio.Buf_read.of_flow ~max_size:stderr_max_size stderr_r in
       let err_ref = ref "" in
       Eio.Fiber.both
         (fun () ->
@@ -105,7 +107,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
               | End_of_file -> ()
               | Eio.Exn.Io _ -> ())
           | End_of_file -> ()
-          | Eio.Exn.Io _ -> ());
+          | Eio.Exn.Io _ | Invalid_argument _ -> ());
       let status =
         if !saw_final_result_ref then
           (* SIGTERM was just delivered; cap the await so a child that
