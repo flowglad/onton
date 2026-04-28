@@ -98,11 +98,9 @@ let () =
       [
         "sh";
         "-c";
-        Printf.sprintf "perl -e 'print q!%s!; print q!x! x %d; print q!%s!;'"
+        Printf.sprintf "perl -e 'print q!%s!; print q!x! x %d; print qq!%s!;'"
           {|{"type":"item.completed","item":{"type":"agent_message","text":"|}
-          (String.length large_text) {|"}}
-{"type":"turn.completed"}
-|};
+          (String.length large_text) {|"}}\n{"type":"turn.completed"}\n|};
       ]
     in
     let result =
