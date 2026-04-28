@@ -100,6 +100,82 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-2 passed"
 
+(* ========== AO-2b: delivered Human messages are not replayed ========== *)
+
+let () =
+  let human_message_gen =
+    QCheck2.Gen.string_size (QCheck2.Gen.int_range 1 80)
+  in
+  let distinct_human_messages_gen =
+    QCheck2.Gen.map2
+      (fun first_msg second_msg ->
+        if String.equal first_msg second_msg then
+          (first_msg, second_msg ^ " (next)")
+        else (first_msg, second_msg))
+      human_message_gen human_message_gen
+  in
+  let prop =
+    QCheck2.Test.make
+      ~name:
+        "AO-2b: delivered Human message is cleared before next Human delivery"
+      distinct_human_messages_gen (fun (first_msg, second_msg) ->
+        try
+          let orch, _patches, _gameplan, pid = bootstrap_one () in
+          let orch = Orchestrator.send_human_message orch pid first_msg in
+          let first_pre = Orchestrator.agent orch pid in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Respond (pid, Operation_kind.Human))
+          in
+          let orch =
+            Orchestrator.mark_inflight_human_messages_delivered orch pid
+          in
+          let mid = Orchestrator.agent orch pid in
+          if not (List.is_empty mid.Patch_agent.inflight_human_messages) then
+            QCheck2.Test.fail_reportf
+              "mark_inflight did not clear inflight slot";
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+              Orchestrator.Respond_ok
+          in
+          let after_first = Orchestrator.agent orch pid in
+          if not (List.is_empty after_first.Patch_agent.human_messages) then
+            QCheck2.Test.fail_reportf "first message remained in inbox";
+          if not (List.is_empty after_first.Patch_agent.inflight_human_messages)
+          then QCheck2.Test.fail_reportf "first message remained inflight";
+          let orch = Orchestrator.send_human_message orch pid second_msg in
+          let second_pre = Orchestrator.agent orch pid in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Respond (pid, Operation_kind.Human))
+          in
+          let agent = Orchestrator.agent orch pid in
+          match
+            Patch_decision.respond_delivery ~agent ~kind:Operation_kind.Human
+              ~pre_fire_agent:(Some second_pre) ~prefetched_comments:[]
+              ~main_branch:(Branch.to_string main)
+          with
+          | Patch_decision.Deliver { payload; _ } -> (
+              match payload with
+              | Patch_decision.Human_payload { messages } ->
+                  List.equal String.equal messages [ second_msg ]
+                  && (not (List.mem messages first_msg ~equal:String.equal))
+                  && List.mem first_pre.Patch_agent.human_messages first_msg
+                       ~equal:String.equal
+              | Patch_decision.Ci_payload _ | Patch_decision.Review_payload _
+              | Patch_decision.Pr_body_payload
+              | Patch_decision.Merge_conflict_payload ->
+                  false)
+          | Patch_decision.Skip_empty | Patch_decision.Respond_stale -> false
+        with
+        | QCheck2.Test.Test_fail _ as e -> raise e
+        | exn ->
+            QCheck2.Test.fail_reportf "unexpected exception: %s"
+              (Exn.to_string exn))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-2b passed"
+
 (* ========== AO-3: Respond_ok + Merge_conflict clears has_conflict ========== *)
 
 let () =
@@ -180,6 +256,59 @@ let () =
   assert (List.is_empty agent.Patch_agent.inflight_human_messages);
   assert (not agent.Patch_agent.busy);
   Stdlib.print_endline "AO-6 passed"
+
+(* ========== AO-6b: accepted Human delivery is not restored on failure ========== *)
+
+let () =
+  let failed_results =
+    [
+      Orchestrator.Session_process_error { is_fresh = false };
+      Orchestrator.Session_process_error { is_fresh = true };
+      Orchestrator.Session_no_resume;
+      Orchestrator.Session_failed { is_fresh = false };
+      Orchestrator.Session_failed { is_fresh = true };
+      Orchestrator.Session_give_up;
+    ]
+  in
+  let prop =
+    QCheck2.Test.make
+      ~name:
+        "AO-6b: backend-accepted Human delivery is not restored on session \
+         failure" (QCheck2.Gen.oneof_list failed_results) (fun result ->
+        match
+          try
+            let orch, patches, gameplan, pid = bootstrap_one () in
+            let orch = Orchestrator.send_human_message orch pid "fix this" in
+            let orch =
+              make_busy orch patches gameplan pid Operation_kind.Human
+            in
+            let before = Orchestrator.agent orch pid in
+            if List.is_empty before.Patch_agent.inflight_human_messages then
+              Error "expected inflight Human messages"
+            else
+              let orch =
+                Orchestrator.mark_inflight_human_messages_delivered orch pid
+              in
+              let accepted = Orchestrator.agent orch pid in
+              if
+                not (List.is_empty accepted.Patch_agent.inflight_human_messages)
+              then Error "accepted Human messages should be drained"
+              else
+                let orch = Orchestrator.apply_session_result orch pid result in
+                let after = Orchestrator.agent orch pid in
+                Ok
+                  (List.is_empty after.Patch_agent.human_messages
+                  && List.is_empty after.Patch_agent.inflight_human_messages
+                  && not
+                       (List.mem after.Patch_agent.queue Operation_kind.Human
+                          ~equal:Operation_kind.equal))
+          with exn -> Error (Exn.to_string exn)
+        with
+        | Ok passed -> passed
+        | Error msg -> QCheck2.Test.fail_reportf "%s" msg)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-6b passed"
 
 (* ========== AO-7: Ci respond counter is bumped only on Respond_ok ========== *)
 

@@ -24,6 +24,8 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
   let args =
     match setsid_exec with Some path -> path :: args | None -> args
   in
+  let stdout_max_size = 64 * 1024 * 1024 in
+  let stderr_max_size = 1024 * 1024 in
   let saw_final_result_ref = ref false in
   let got_events_ref = ref false in
   let run () =
@@ -52,8 +54,12 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
       Eio.Flow.close stdin_w;
       Eio.Flow.close stdout_w;
       Eio.Flow.close stderr_w;
-      let stdout_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stdout_r in
-      let stderr_buf = Eio.Buf_read.of_flow ~max_size:(1024 * 1024) stderr_r in
+      let stdout_buf =
+        Eio.Buf_read.of_flow ~max_size:stdout_max_size stdout_r
+      in
+      let stderr_buf =
+        Eio.Buf_read.of_flow ~max_size:stderr_max_size stderr_r
+      in
       let err_ref = ref "" in
       Eio.Fiber.both
         (fun () ->
@@ -66,6 +72,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
                 let saw_final =
                   List.exists events ~f:(function
                     | Types.Stream_event.Final_result _ -> true
+                    | Types.Stream_event.Turn_started
                     | Types.Stream_event.Text_delta _
                     | Types.Stream_event.Tool_use _ | Types.Stream_event.Error _
                     | Types.Stream_event.Session_init _ ->
@@ -103,7 +110,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
                 done
               with
               | End_of_file -> ()
-              | Eio.Exn.Io _ -> ())
+              | Eio.Exn.Io _ | Invalid_argument _ -> ())
           | End_of_file -> ()
           | Eio.Exn.Io _ -> ());
       let status =

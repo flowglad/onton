@@ -852,9 +852,30 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
               sync_transcript ())
           in
           let captured_session_id = ref None in
+          let backend_accepted_turn = ref false in
+          let mark_backend_accepted_turn () =
+            if not !backend_accepted_turn then (
+              backend_accepted_turn := true;
+              match kind with
+              | Some Operation_kind.Human ->
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.mark_inflight_human_messages_delivered orch
+                        patch_id)
+              | Some Operation_kind.Ci
+              | Some Operation_kind.Review_comments
+              | Some Operation_kind.Pr_body
+              | Some Operation_kind.Merge_conflict
+              | Some Operation_kind.Rebase
+              | None ->
+                  ())
+          in
           let on_event (event : Types.Stream_event.t) =
             match event with
+            (* Turn_started is the preferred signal; the arms below are
+               fallbacks for backends that do not emit it. *)
+            | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
             | Types.Stream_event.Text_delta text -> (
+                mark_backend_accepted_turn ();
                 let prev_len = Buffer.length text_buf in
                 Buffer.add_string text_buf text;
                 maybe_sync_transcript ();
@@ -873,6 +894,7 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
                       on_pr_detected pr_number
                   | None -> ())
             | Types.Stream_event.Tool_use { name; input; status } ->
+                mark_backend_accepted_turn ();
                 tool_count := !tool_count + 1;
                 (* OpenCode emits pending → running → completed for a single
                    tool call. Track only the latest unresolved status per tool
@@ -931,6 +953,7 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Tool_use (name, summary))
             | Types.Stream_event.Final_result { stop_reason; _ } ->
+                mark_backend_accepted_turn ();
                 sync_transcript ();
                 let reason = Types.Stop_reason.to_display stop_reason in
                 log_stream_entry runtime ~patch_id

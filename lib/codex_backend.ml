@@ -82,6 +82,7 @@ let parse_event (line : string) : Types.Stream_event.t list =
           | Some id when not (String.is_empty id) ->
               [ Types.Stream_event.Session_init { session_id = id } ]
           | _ -> [])
+      | Some "turn.started" -> [ Types.Stream_event.Turn_started ]
       | Some "turn.completed" ->
           [
             Types.Stream_event.Final_result
@@ -164,6 +165,11 @@ let%test "parse_event thread.started emits Session_init" =
 let%test "parse_event thread.started without thread_id is ignored" =
   let line = {|{"type":"thread.started"}|} in
   List.is_empty (parse_event line)
+
+let%test "parse_event turn.started emits Turn_started" =
+  let line = {|{"type":"turn.started"}|} in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [ Types.Stream_event.Turn_started ]
 
 let%test "parse_event agent_message (content-array schema)" =
   let line =

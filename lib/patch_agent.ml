@@ -300,6 +300,11 @@ let set_current_message_id t current_message_id = { t with current_message_id }
 let bump_generation t = { t with generation = t.generation + 1 }
 let set_llm_session_id t llm_session_id = { t with llm_session_id }
 
+let mark_inflight_human_messages_delivered t =
+  if Option.equal Operation_kind.equal t.current_op (Some Operation_kind.Human)
+  then { t with inflight_human_messages = [] }
+  else t
+
 let set_automerge_enabled t v =
   if Bool.equal t.automerge_enabled v then t
   else
