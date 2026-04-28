@@ -126,9 +126,7 @@ let () =
           let after_first = Orchestrator.agent orch pid in
           if not (List.is_empty after_first.Patch_agent.human_messages) then
             failwith "first message remained in inbox";
-          if
-            not
-              (List.is_empty after_first.Patch_agent.inflight_human_messages)
+          if not (List.is_empty after_first.Patch_agent.inflight_human_messages)
           then failwith "first message remained inflight";
           let orch = Orchestrator.send_human_message orch pid second_msg in
           let second_pre = Orchestrator.agent orch pid in
@@ -146,11 +144,10 @@ let () =
               match payload with
               | Patch_decision.Human_payload { messages } ->
                   List.equal String.equal messages [ second_msg ]
-                  && not (List.mem messages first_msg ~equal:String.equal)
+                  && (not (List.mem messages first_msg ~equal:String.equal))
                   && List.mem first_pre.Patch_agent.human_messages first_msg
                        ~equal:String.equal
-              | Patch_decision.Ci_payload _
-              | Patch_decision.Review_payload _
+              | Patch_decision.Ci_payload _ | Patch_decision.Review_payload _
               | Patch_decision.Pr_body_payload
               | Patch_decision.Merge_conflict_payload ->
                   false)
@@ -240,6 +237,49 @@ let () =
   assert (List.is_empty agent.Patch_agent.inflight_human_messages);
   assert (not agent.Patch_agent.busy);
   Stdlib.print_endline "AO-6 passed"
+
+(* ========== AO-6b: accepted Human delivery is not restored on failure ========== *)
+
+let () =
+  let failed_results =
+    [
+      Orchestrator.Session_process_error { is_fresh = false };
+      Orchestrator.Session_process_error { is_fresh = true };
+      Orchestrator.Session_no_resume;
+      Orchestrator.Session_failed { is_fresh = false };
+      Orchestrator.Session_failed { is_fresh = true };
+      Orchestrator.Session_give_up;
+    ]
+  in
+  let prop =
+    QCheck2.Test.make
+      ~name:
+        "AO-6b: backend-accepted Human delivery is not restored on session \
+         failure" (QCheck2.Gen.oneof_list failed_results) (fun result ->
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch = Orchestrator.send_human_message orch pid "fix this" in
+          let orch = make_busy orch patches gameplan pid Operation_kind.Human in
+          let before = Orchestrator.agent orch pid in
+          if List.is_empty before.Patch_agent.inflight_human_messages then
+            failwith "expected inflight Human messages";
+          let orch =
+            Orchestrator.mark_inflight_human_messages_delivered orch pid
+          in
+          let accepted = Orchestrator.agent orch pid in
+          if not (List.is_empty accepted.Patch_agent.inflight_human_messages)
+          then failwith "accepted Human messages should be drained";
+          let orch = Orchestrator.apply_session_result orch pid result in
+          let after = Orchestrator.agent orch pid in
+          List.is_empty after.Patch_agent.human_messages
+          && List.is_empty after.Patch_agent.inflight_human_messages
+          && not
+               (List.mem after.Patch_agent.queue Operation_kind.Human
+                  ~equal:Operation_kind.equal)
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-6b passed"
 
 (* ========== AO-7: Ci respond counter is bumped only on Respond_ok ========== *)
 

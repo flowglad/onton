@@ -45,7 +45,10 @@ let parse_event (line : string) : Types.Stream_event.t list =
       | Some "step_start" -> (
           match member "sessionID" json |> to_string_option with
           | Some id when not (String.is_empty id) ->
-              [ Types.Stream_event.Session_init { session_id = id } ]
+              [
+                Types.Stream_event.Turn_started;
+                Types.Stream_event.Session_init { session_id = id };
+              ]
           | _ -> [])
       | Some "text" ->
           let part = member "part" json in
@@ -246,7 +249,10 @@ let%test "parse_event step_start emits session_init" =
     {|{"type":"step_start","sessionID":"ses_abc","part":{"type":"step-start"}}|}
   in
   List.equal Types.Stream_event.equal (parse_event line)
-    [ Types.Stream_event.Session_init { session_id = "ses_abc" } ]
+    [
+      Types.Stream_event.Turn_started;
+      Types.Stream_event.Session_init { session_id = "ses_abc" };
+    ]
 
 let%test "parse_event step_finish stop" =
   let line =

@@ -54,8 +54,12 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
       Eio.Flow.close stdin_w;
       Eio.Flow.close stdout_w;
       Eio.Flow.close stderr_w;
-      let stdout_buf = Eio.Buf_read.of_flow ~max_size:stdout_max_size stdout_r in
-      let stderr_buf = Eio.Buf_read.of_flow ~max_size:stderr_max_size stderr_r in
+      let stdout_buf =
+        Eio.Buf_read.of_flow ~max_size:stdout_max_size stdout_r
+      in
+      let stderr_buf =
+        Eio.Buf_read.of_flow ~max_size:stderr_max_size stderr_r
+      in
       let err_ref = ref "" in
       Eio.Fiber.both
         (fun () ->
@@ -68,6 +72,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
                 let saw_final =
                   List.exists events ~f:(function
                     | Types.Stream_event.Final_result _ -> true
+                    | Types.Stream_event.Turn_started
                     | Types.Stream_event.Text_delta _
                     | Types.Stream_event.Tool_use _ | Types.Stream_event.Error _
                     | Types.Stream_event.Session_init _ ->

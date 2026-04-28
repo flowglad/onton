@@ -166,6 +166,11 @@ end
     the raw Anthropic streaming API. *)
 module Stream_event : sig
   type t =
+    | Turn_started
+        (** Backend emitted an event indicating it accepted/started processing
+            the current turn. This is stronger than session initialization:
+            session IDs can be created or resumed without proving that the
+            prompt was processed. *)
     | Text_delta of string
     | Tool_use of {
         name : string;

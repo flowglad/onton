@@ -374,6 +374,9 @@ let set_llm_session_id t patch_id session_id =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_llm_session_id a session_id)
 
+let mark_inflight_human_messages_delivered t patch_id =
+  update_agent t patch_id ~f:Patch_agent.mark_inflight_human_messages_delivered
+
 let set_automerge_enabled t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_automerge_enabled a v)
 
@@ -572,10 +575,10 @@ type session_result =
   | Session_no_commits
 [@@deriving show, eq, sexp_of]
 
-(** Complete a failed session, restoring inflight human messages to the inbox.
-    On failure the messages were NOT delivered, so we prepend
-    [inflight_human_messages] back to [human_messages] before [complete] clears
-    the inflight slot. *)
+(** Complete a failed session, restoring only still-inflight human messages to
+    the inbox. Human messages are cleared from the inflight slot as soon as the
+    backend accepts the turn, so anything remaining here was not delivered and
+    should be retried. *)
 let complete_failed t patch_id =
   let a = agent t patch_id in
   let inflight = a.Patch_agent.inflight_human_messages in

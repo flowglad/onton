@@ -218,6 +218,7 @@ end
    (--output-format stream-json), not the raw Anthropic streaming API. *)
 module Stream_event = struct
   type t =
+    | Turn_started
     | Text_delta of string
     | Tool_use of { name : string; input : string; status : string option }
     | Final_result of { text : string; stop_reason : Stop_reason.t }

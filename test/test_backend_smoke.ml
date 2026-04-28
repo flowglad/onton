@@ -71,6 +71,7 @@ let () =
     smoke ~process_mgr ~clock ~cwd
       ~ndjson:
         [
+          {|{"type":"turn.started"}|};
           {|{"type":"item.completed","item":{"type":"agent_message","content":[{"type":"output_text","text":"hello"}]}}|};
           {|{"type":"turn.completed"}|};
         ]
@@ -80,6 +81,7 @@ let () =
   assert_smoke ~name:"codex" ~result ~got
     ~expected:
       [
+        Types.Stream_event.Turn_started;
         Types.Stream_event.Text_delta "hello";
         Types.Stream_event.Final_result
           { text = ""; stop_reason = Types.Stop_reason.End_turn };
@@ -96,11 +98,9 @@ let () =
       [
         "sh";
         "-c";
-        Printf.sprintf
-          "perl -e 'print q!%s!; print q!x! x %d; print q!%s!;'"
+        Printf.sprintf "perl -e 'print q!%s!; print q!x! x %d; print q!%s!;'"
           {|{"type":"item.completed","item":{"type":"agent_message","text":"|}
-          (String.length large_text)
-          {|"}}
+          (String.length large_text) {|"}}
 {"type":"turn.completed"}
 |};
       ]
@@ -126,12 +126,12 @@ let () =
       && result.Llm_backend.got_events && result.Llm_backend.saw_final_result
     then Stdio.printf "codex large stdout line: passed\n"
     else (
-        Stdio.printf
-          "FAIL: codex large stdout line timed_out=%b got_events=%b \
-           saw_final_result=%b events=%d\n"
-          result.Llm_backend.timed_out result.Llm_backend.got_events
-          result.Llm_backend.saw_final_result (List.length got);
-        Int.incr failures)
+      Stdio.printf
+        "FAIL: codex large stdout line timed_out=%b got_events=%b \
+         saw_final_result=%b events=%d\n"
+        result.Llm_backend.timed_out result.Llm_backend.got_events
+        result.Llm_backend.saw_final_result (List.length got);
+      Int.incr failures)
   in
   large_codex_line_test ();
   (* --- Claude --- *)
@@ -292,7 +292,8 @@ let () =
                   | None -> ())
               | None -> ())
           | Types.Stream_event.Tool_use _ | Types.Stream_event.Final_result _
-          | Types.Stream_event.Error _ | Types.Stream_event.Session_init _ ->
+          | Types.Stream_event.Error _ | Types.Stream_event.Session_init _
+          | Types.Stream_event.Turn_started ->
               ()
         in
         let script =

@@ -283,6 +283,11 @@ val set_llm_session_id : t -> string option -> t
     after intervention. Cleared on start-path fresh-failure reset (clean retry)
     and when the session is known dead (no-resume, give-up). *)
 
+val mark_inflight_human_messages_delivered : t -> t
+(** Clear [inflight_human_messages] for an active Human response once the
+    backend has emitted evidence that it accepted the turn. Does not complete
+    the session or change fallback state. No-op for non-Human operations. *)
+
 val set_automerge_enabled : t -> bool -> t
 (** Enable or disable automerge for this patch. When the value actually changes,
     the inflight flag is cleared and [automerge_failure_count] is reset;
