@@ -129,11 +129,15 @@ let () =
               (Orchestrator.Respond (pid, Operation_kind.Human))
           in
           let orch =
+            Orchestrator.mark_inflight_human_messages_delivered orch pid
+          in
+          let mid = Orchestrator.agent orch pid in
+          if not (List.is_empty mid.Patch_agent.inflight_human_messages) then
+            QCheck2.Test.fail_reportf
+              "mark_inflight did not clear inflight slot";
+          let orch =
             Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
               Orchestrator.Respond_ok
-          in
-          let orch =
-            Orchestrator.mark_inflight_human_messages_delivered orch pid
           in
           let after_first = Orchestrator.agent orch pid in
           if not (List.is_empty after_first.Patch_agent.human_messages) then
