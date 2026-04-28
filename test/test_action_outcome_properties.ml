@@ -265,35 +265,37 @@ let () =
       ~name:
         "AO-6b: backend-accepted Human delivery is not restored on session \
          failure" (QCheck2.Gen.oneof_list failed_results) (fun result ->
-        try
-          let orch, patches, gameplan, pid = bootstrap_one () in
-          let orch = Orchestrator.send_human_message orch pid "fix this" in
-          let orch = make_busy orch patches gameplan pid Operation_kind.Human in
-          let before = Orchestrator.agent orch pid in
-          if List.is_empty before.Patch_agent.inflight_human_messages then
-            QCheck2.Test.fail_reportf "expected inflight Human messages";
-          let orch =
-            Orchestrator.mark_inflight_human_messages_delivered orch pid
-          in
-          let accepted = Orchestrator.agent orch pid in
-          if not (List.is_empty accepted.Patch_agent.inflight_human_messages)
-          then
-            QCheck2.Test.fail_reportf
-              "accepted Human messages should be drained";
-          let orch = Orchestrator.apply_session_result orch pid result in
-          let after = Orchestrator.agent orch pid in
-          List.is_empty after.Patch_agent.human_messages
-          && List.is_empty after.Patch_agent.inflight_human_messages
-          && not
-               (List.mem after.Patch_agent.queue Operation_kind.Human
-                  ~equal:Operation_kind.equal)
+        match
+          try
+            let orch, patches, gameplan, pid = bootstrap_one () in
+            let orch = Orchestrator.send_human_message orch pid "fix this" in
+            let orch =
+              make_busy orch patches gameplan pid Operation_kind.Human
+            in
+            let before = Orchestrator.agent orch pid in
+            if List.is_empty before.Patch_agent.inflight_human_messages then
+              Error "expected inflight Human messages"
+            else
+              let orch =
+                Orchestrator.mark_inflight_human_messages_delivered orch pid
+              in
+              let accepted = Orchestrator.agent orch pid in
+              if
+                not (List.is_empty accepted.Patch_agent.inflight_human_messages)
+              then Error "accepted Human messages should be drained"
+              else
+                let orch = Orchestrator.apply_session_result orch pid result in
+                let after = Orchestrator.agent orch pid in
+                Ok
+                  (List.is_empty after.Patch_agent.human_messages
+                  && List.is_empty after.Patch_agent.inflight_human_messages
+                  && not
+                       (List.mem after.Patch_agent.queue Operation_kind.Human
+                          ~equal:Operation_kind.equal))
+          with _ -> Ok false
         with
-        | e
-          when String.equal
-                 (Stdlib.Printexc.exn_slot_name e)
-                 "QCheck2.Test.User_fail" ->
-            raise e
-        | _ -> false)
+        | Ok passed -> passed
+        | Error msg -> QCheck2.Test.fail_reportf "%s" msg)
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-6b passed"
