@@ -110,9 +110,9 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
                 done
               with
               | End_of_file -> ()
-              | Eio.Exn.Io _ -> ())
+              | Eio.Exn.Io _ | Invalid_argument _ -> ())
           | End_of_file -> ()
-          | Eio.Exn.Io _ | Invalid_argument _ -> ());
+          | Eio.Exn.Io _ -> ());
       let status =
         if !saw_final_result_ref then
           (* SIGTERM was just delivered; cap the await so a child that
