@@ -9,6 +9,9 @@ open Base
 type result = {
   exit_code : int;
   stdout : string;
+      (** Bounded raw stdout capture from streaming backends. This is retained
+          for diagnostics when a backend exits cleanly without parseable events;
+          it may be truncated. *)
   stderr : string;
   got_events : bool;
   saw_final_result : bool;

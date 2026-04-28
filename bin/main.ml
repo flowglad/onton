@@ -1008,6 +1008,24 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
                      backend.Llm_backend.name);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
             | Success { stream_errors } ->
+                (match (resume_session, result) with
+                | Some _, Ok r when not r.Llm_backend.got_events ->
+                    let stdout = String.trim r.Llm_backend.stdout in
+                    let stderr = String.trim r.Llm_backend.stderr in
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "Resume exited 0 (%s) with no parsed stream events — \
+                          stdout=%s stderr=%s"
+                         backend.Llm_backend.name
+                         (if String.equal stdout "" then "empty"
+                          else
+                            Printf.sprintf "%d chars: %s" (String.length stdout)
+                              (truncate stdout 500))
+                         (if String.equal stderr "" then "empty"
+                          else
+                            Printf.sprintf "%d chars: %s" (String.length stderr)
+                              (truncate stderr 500)))
+                | Some _, (Ok _ | Error _) | None, _ -> ());
                 if String.length stream_errors > 0 then
                   log_event runtime ~patch_id
                     (Printf.sprintf
