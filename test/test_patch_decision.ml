@@ -751,4 +751,262 @@ let () =
     QCheck2.Test.check_exn prop;
     Stdlib.print_endline "PB-9 passed"
   in
+
+  (* ========== Opportunistic artifact-sync property tests ==========
+
+     These cover the three pure functions added for issue #215:
+     [pr_body_artifact_changed], [plan_artifact_sync], and
+     [classify_artifact_sync_outcome]. Each is small enough that we both
+     enumerate the meaningful boundary cases and add property-based tests for
+     contract-level invariants. *)
+  let () =
+    (* AS-1: (None, None) → false. *)
+    assert (not (pr_body_artifact_changed ~pre:None ~post:None));
+    Stdlib.print_endline "AS-1 passed";
+
+    (* AS-2: equal non-empty content → false. *)
+    assert (not (pr_body_artifact_changed ~pre:(Some "x") ~post:(Some "x")));
+    Stdlib.print_endline "AS-2 passed";
+
+    (* AS-3: distinct non-empty content → true. *)
+    assert (pr_body_artifact_changed ~pre:(Some "x") ~post:(Some "y"));
+    Stdlib.print_endline "AS-3 passed";
+
+    (* AS-4: empty/whitespace collapse — empty and whitespace-only contents
+       are treated as None on both sides. Truncating real content to empty
+       (Some "x" → Some "") is intentionally classified as a change; the
+       downstream apply_pr_body_artifact returns [`Empty] and skips the
+       GitHub PATCH, so no spurious call is issued. *)
+    assert (not (pr_body_artifact_changed ~pre:None ~post:(Some "")));
+    assert (not (pr_body_artifact_changed ~pre:(Some "  \n") ~post:None));
+    assert (not (pr_body_artifact_changed ~pre:(Some "") ~post:(Some "  ")));
+    assert (pr_body_artifact_changed ~pre:(Some "x") ~post:(Some ""));
+    Stdlib.print_endline "AS-4 passed";
+
+    (* AS-5: asymmetric add — new non-empty content from None → true. *)
+    assert (pr_body_artifact_changed ~pre:None ~post:(Some "y"));
+    Stdlib.print_endline "AS-5 passed";
+
+    (* AS-P1 (reflexivity): for any [s], changed pre:s post:s = false. *)
+    let gen_artifact =
+      QCheck2.Gen.(
+        oneof
+          [
+            return None;
+            map (fun s -> Some s) (string_size (int_range 0 8));
+            return (Some "");
+            return (Some "   ");
+            return (Some "\n\t ");
+          ])
+    in
+    let prop =
+      QCheck2.Test.make ~name:"AS-P1: reflexivity" gen_artifact (fun s ->
+          try not (pr_body_artifact_changed ~pre:s ~post:s) with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "AS-P1 passed";
+
+    (* AS-P2 (whitespace-only content collapses to None): any whitespace-only
+       string is indistinguishable from None for the change predicate. *)
+    let gen_whitespace =
+      QCheck2.Gen.(
+        map
+          (fun n ->
+            String.init n ~f:(fun i ->
+                match Stdlib.( mod ) i 4 with
+                | 0 -> ' '
+                | 1 -> '\t'
+                | 2 -> '\n'
+                | _ -> ' '))
+          (int_range 0 6))
+    in
+    let prop =
+      QCheck2.Test.make ~name:"AS-P2: whitespace-only collapse" gen_whitespace
+        (fun w ->
+          try
+            (not (pr_body_artifact_changed ~pre:None ~post:(Some w)))
+            && not (pr_body_artifact_changed ~pre:(Some w) ~post:None)
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "AS-P2 passed";
+
+    (* AS-P3 (symmetry): changed (a, b) = changed (b, a). The predicate is a
+       boolean over equality of normalized contents, so it must be
+       symmetric — guards against any future implementation that
+       distinguishes pre/post direction. *)
+    let prop =
+      QCheck2.Test.make ~name:"AS-P3: symmetry"
+        QCheck2.Gen.(pair gen_artifact gen_artifact)
+        (fun (a, b) ->
+          try
+            Bool.equal
+              (pr_body_artifact_changed ~pre:a ~post:b)
+              (pr_body_artifact_changed ~pre:b ~post:a)
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "AS-P3 passed";
+
+    (* Helpers for plan_artifact_sync enumeration. *)
+    let all_kinds : Operation_kind.t list =
+      Operation_kind.
+        [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+    in
+    let non_pr_body_kinds : Operation_kind.t list =
+      Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments ]
+    in
+
+    (* AS-10: session_ok=false → Sync_skip for any kind, any pre/post. *)
+    List.iter all_kinds ~f:(fun kind ->
+        List.iter
+          [
+            (None, None);
+            (Some "x", Some "x");
+            (Some "x", Some "y");
+            (None, Some "y");
+          ]
+          ~f:(fun (pre, post) ->
+            let plan = plan_artifact_sync ~kind ~session_ok:false ~pre ~post in
+            assert (equal_artifact_sync_plan plan Sync_skip)));
+    Stdlib.print_endline "AS-10 passed";
+
+    (* AS-11: kind=Pr_body, session_ok=true → Sync_skip regardless of
+       changed. The Pr_body delivery path is owned by
+       classify_pr_body_respond. *)
+    List.iter
+      [
+        (None, None);
+        (Some "x", Some "x");
+        (None, Some "y");
+        (Some "x", Some "y");
+      ]
+      ~f:(fun (pre, post) ->
+        let plan =
+          plan_artifact_sync ~kind:Operation_kind.Pr_body ~session_ok:true ~pre
+            ~post
+        in
+        assert (equal_artifact_sync_plan plan Sync_skip));
+    Stdlib.print_endline "AS-11 passed";
+
+    (* AS-12: non-Pr_body kind, session_ok=true, changed=true →
+       Sync_attempt_pr_body. *)
+    List.iter non_pr_body_kinds ~f:(fun kind ->
+        let plan =
+          plan_artifact_sync ~kind ~session_ok:true ~pre:None
+            ~post:(Some "notes")
+        in
+        assert (equal_artifact_sync_plan plan Sync_attempt_pr_body));
+    Stdlib.print_endline "AS-12 passed";
+
+    (* AS-13: non-Pr_body kind, session_ok=true, changed=false → Sync_skip. *)
+    List.iter non_pr_body_kinds ~f:(fun kind ->
+        List.iter
+          [ (None, None); (Some "x", Some "x"); (Some "  ", Some "") ]
+          ~f:(fun (pre, post) ->
+            let plan = plan_artifact_sync ~kind ~session_ok:true ~pre ~post in
+            assert (equal_artifact_sync_plan plan Sync_skip)));
+    Stdlib.print_endline "AS-13 passed";
+
+    (* AS-P4: plan_artifact_sync returns Sync_attempt_pr_body if and only if
+       session_ok ∧ kind ≠ Pr_body ∧ changed. The contract says no
+       opportunistic PATCH for Pr_body, no PATCH on failed sessions, no
+       PATCH on unchanged content. *)
+    let gen_kind = QCheck2.Gen.oneof_list all_kinds in
+    let prop =
+      QCheck2.Test.make ~name:"AS-P4: plan_artifact_sync contract"
+        QCheck2.Gen.(quad gen_kind bool gen_artifact gen_artifact)
+        (fun (kind, session_ok, pre, post) ->
+          try
+            let plan = plan_artifact_sync ~kind ~session_ok ~pre ~post in
+            let attempt = equal_artifact_sync_plan plan Sync_attempt_pr_body in
+            let expected =
+              session_ok
+              && (not (Operation_kind.equal kind Operation_kind.Pr_body))
+              && pr_body_artifact_changed ~pre ~post
+            in
+            Bool.equal attempt expected
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "AS-P4 passed";
+
+    (* Helpers for classify_artifact_sync_outcome enumeration. *)
+    let all_patch_results :
+        [ `Ok | `Missing | `Empty | `Patch_failed ] option list =
+      [ None; Some `Ok; Some `Missing; Some `Empty; Some `Patch_failed ]
+    in
+
+    (* AS-20: plan=Sync_skip → Sync_no_op for every patch_result. *)
+    List.iter all_patch_results ~f:(fun patch_result ->
+        let outcome =
+          classify_artifact_sync_outcome ~plan:Sync_skip ~patch_result
+        in
+        assert (equal_artifact_sync_outcome outcome Sync_no_op));
+    Stdlib.print_endline "AS-20 passed";
+
+    (* AS-21: plan=Sync_attempt_pr_body, patch_result=Some `Ok → Sync_delivered. *)
+    let outcome =
+      classify_artifact_sync_outcome ~plan:Sync_attempt_pr_body
+        ~patch_result:(Some `Ok)
+    in
+    assert (equal_artifact_sync_outcome outcome Sync_delivered);
+    Stdlib.print_endline "AS-21 passed";
+
+    (* AS-22: plan=Sync_attempt_pr_body, Some `Patch_failed → Sync_patch_failed. *)
+    let outcome =
+      classify_artifact_sync_outcome ~plan:Sync_attempt_pr_body
+        ~patch_result:(Some `Patch_failed)
+    in
+    assert (equal_artifact_sync_outcome outcome Sync_patch_failed);
+    Stdlib.print_endline "AS-22 passed";
+
+    (* AS-23: plan=Sync_attempt_pr_body, Some (`Missing | `Empty) → Sync_no_op.
+       Both arms are reachable: [`Empty] fires when the file goes from
+       non-empty to empty (normalize_artifact and apply_pr_body_artifact's
+       String.trim use independent emptiness checks); [`Missing] fires if the
+       file is deleted between the runner's post-snapshot and the
+       apply_pr_body_artifact call. *)
+    List.iter [ `Missing; `Empty ] ~f:(fun pr ->
+        let outcome =
+          classify_artifact_sync_outcome ~plan:Sync_attempt_pr_body
+            ~patch_result:(Some pr)
+        in
+        assert (equal_artifact_sync_outcome outcome Sync_no_op));
+    Stdlib.print_endline "AS-23 passed";
+
+    (* AS-24: plan=Sync_attempt_pr_body, patch_result=None → Sync_no_op
+       (defensive — caller skipped PATCH despite plan). *)
+    let outcome =
+      classify_artifact_sync_outcome ~plan:Sync_attempt_pr_body
+        ~patch_result:None
+    in
+    assert (equal_artifact_sync_outcome outcome Sync_no_op);
+    Stdlib.print_endline "AS-24 passed";
+
+    (* AS-P5: Sync_delivered is returned only when both plan =
+       Sync_attempt_pr_body AND patch_result = Some `Ok. The contract for
+       state mutation: pr_body_delivered is flipped only when a real PATCH
+       succeeded. *)
+    let gen_plan = QCheck2.Gen.oneof_list [ Sync_skip; Sync_attempt_pr_body ] in
+    let gen_patch_result = QCheck2.Gen.oneof_list all_patch_results in
+    let prop =
+      QCheck2.Test.make ~name:"AS-P5: Sync_delivered ⇔ attempt ∧ Ok"
+        QCheck2.Gen.(pair gen_plan gen_patch_result)
+        (fun (plan, patch_result) ->
+          try
+            let outcome = classify_artifact_sync_outcome ~plan ~patch_result in
+            let delivered =
+              equal_artifact_sync_outcome outcome Sync_delivered
+            in
+            let expected =
+              equal_artifact_sync_plan plan Sync_attempt_pr_body
+              && match patch_result with Some `Ok -> true | _ -> false
+            in
+            Bool.equal delivered expected
+          with _ -> false)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "AS-P5 passed"
+  in
   ()

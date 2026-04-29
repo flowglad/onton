@@ -224,3 +224,51 @@ let classify_pr_body_respond
   | `Patch_failed, _ -> `Pr_body_miss
   | (`Missing | `Empty), true -> `Pr_body_miss
   | (`Ok | `Missing | `Empty), _ -> `Ok
+
+(** {2 Opportunistic pr-body artifact sync from any session} *)
+
+(* Treat empty and whitespace-only contents as "no artifact present" so a
+   blank post is equivalent to None. A truncation from non-empty to empty
+   (Some "x" -> Some "") still differs from pre after normalization (post' =
+   None vs pre' = Some "x"), so plan_artifact_sync will return
+   Sync_attempt_pr_body. apply_pr_body_artifact then returns `Empty (keeps
+   the initial PR body), and classify_artifact_sync_outcome maps that to
+   Sync_no_op — defensive handling rather than silent skip. *)
+let normalize_artifact = function
+  | None -> None
+  | Some s when String.is_empty (String.strip s) -> None
+  | Some _ as x -> x
+
+let pr_body_artifact_changed ~(pre : string option) ~(post : string option) :
+    bool =
+  let pre' = normalize_artifact pre in
+  let post' = normalize_artifact post in
+  not (Option.equal String.equal pre' post')
+
+type artifact_sync_plan = Sync_skip | Sync_attempt_pr_body
+[@@deriving show, eq, sexp_of, compare]
+
+let plan_artifact_sync ~(kind : Operation_kind.t) ~(session_ok : bool)
+    ~(pre : string option) ~(post : string option) : artifact_sync_plan =
+  if not session_ok then Sync_skip
+  else
+    match kind with
+    | Operation_kind.Pr_body -> Sync_skip
+    | Operation_kind.Rebase | Operation_kind.Human
+    | Operation_kind.Merge_conflict | Operation_kind.Ci
+    | Operation_kind.Review_comments ->
+        if pr_body_artifact_changed ~pre ~post then Sync_attempt_pr_body
+        else Sync_skip
+
+type artifact_sync_outcome = Sync_no_op | Sync_delivered | Sync_patch_failed
+[@@deriving show, eq, sexp_of, compare]
+
+let classify_artifact_sync_outcome ~(plan : artifact_sync_plan)
+    ~(patch_result : [ `Ok | `Missing | `Empty | `Patch_failed ] option) :
+    artifact_sync_outcome =
+  match (plan, patch_result) with
+  | Sync_skip, _ -> Sync_no_op
+  | Sync_attempt_pr_body, Some `Ok -> Sync_delivered
+  | Sync_attempt_pr_body, Some `Patch_failed -> Sync_patch_failed
+  | Sync_attempt_pr_body, Some (`Missing | `Empty) -> Sync_no_op
+  | Sync_attempt_pr_body, None -> Sync_no_op
