@@ -80,6 +80,18 @@ let log_complete t ~patch_id ~result ~agent_before ~agent_after =
          ("agent_after", agent_json agent_after);
        ])
 
+let log_force_complete t ~patch_id ~reason ~agent_before ~agent_after =
+  write_entry t
+    (`Assoc
+       [
+         ("ts", `String (timestamp ()));
+         ("kind", `String "force_complete");
+         ("patch_id", patch_id_json patch_id);
+         ("reason", `String (Orchestrator.show_force_complete_reason reason));
+         ("agent_before", agent_json agent_before);
+         ("agent_after", agent_json agent_after);
+       ])
+
 let log_conflict_rebase t ~patch_id ~result ~decision ~agent_before ~agent_after
     =
   write_entry t

@@ -600,6 +600,41 @@ let complete_failed t patch_id =
   in
   if has_messages then enqueue t patch_id Operation_kind.Human else t
 
+type force_complete_reason = Cancelled | Unexpected_exception
+[@@deriving show, eq, sexp_of]
+
+(** Pure applicator for runner fibers that exited abnormally while the agent was
+    [busy]. Single source of truth for the two effectful sites in [bin/main.ml]
+    that previously called [complete] directly and silently dropped
+    [inflight_human_messages]:
+    - [with_busy_guard]'s [Fun.protect] finally
+    - [mark_session_failed]
+
+    The reason that a fiber bailed is carried as data so the same pure function
+    can serve both cancellation (clean teardown) and unexpected exception
+    (poisoned session) paths. *)
+let apply_force_complete t patch_id reason =
+  match find_agent t patch_id with
+  | None -> t
+  | Some _ ->
+      let t =
+        match reason with
+        | Cancelled -> t
+        | Unexpected_exception ->
+            let t = set_session_failed t patch_id in
+            set_tried_fresh t patch_id
+      in
+      (* Re-read the agent post-transition so the busy/inflight routing
+         decision reflects any state mutated by the [reason] branch. Today
+         [set_session_failed]/[set_tried_fresh] don't touch [busy] or
+         [inflight_human_messages], but reading the stale snapshot would
+         silently break if a future helper ever cleared inflight. *)
+      let a = agent t patch_id in
+      if not a.Patch_agent.busy then t
+      else if List.is_empty a.Patch_agent.inflight_human_messages then
+        complete t patch_id
+      else complete_failed t patch_id
+
 let apply_session_result t patch_id result =
   match result with
   | Session_ok ->

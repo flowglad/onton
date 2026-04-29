@@ -37,6 +37,19 @@ val log_complete :
   unit
 (** Log a session completion with before/after state. *)
 
+val log_force_complete :
+  t ->
+  patch_id:Patch_id.t ->
+  reason:Orchestrator.force_complete_reason ->
+  agent_before:Patch_agent.t ->
+  agent_after:Patch_agent.t ->
+  unit
+(** Log a forced completion triggered by an abnormally-exiting runner fiber
+    (cancellation or unexpected exception). Distinct from [log_complete]: the
+    LLM session itself produced no [session_result]. Emitted by both the
+    [with_busy_guard] finally and [mark_session_failed] so every dispatched
+    [Orchestrator.Respond] action has a matching close in the event log. *)
+
 val log_conflict_rebase :
   t ->
   patch_id:Patch_id.t ->

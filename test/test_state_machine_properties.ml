@@ -446,4 +446,261 @@ let () =
   QCheck2.Test.check_exn prop_p8;
   Stdlib.print_endline "P8 passed"
 
+(* ========== Force-complete properties (P9–P14) ==========
+
+   Cover [Orchestrator.apply_force_complete], the pure decision invoked when
+   a runner fiber exits abnormally (cancellation or unhandled exception)
+   while [busy]. The decision must:
+   - never silently drop [inflight_human_messages] (regression: a delivered
+     human instruction was lost in the id-brands run on 2026-04-29)
+   - re-enqueue [Operation_kind.Human] iff the inflight slot was non-empty
+   - clear [busy], [current_op], [current_message_id], and the inflight slot
+   - advance [session_fallback] iff [reason = Unexpected_exception] *)
+
+let gen_force_complete_reason =
+  QCheck2.Gen.oneof_list Orchestrator.[ Cancelled; Unexpected_exception ]
+
+(** Build an orchestrator + patch_id where the agent is busy with the given
+    operation kind, optionally carrying inflight human messages (only when
+    [kind = Human]; messages are ignored for other kinds since they would
+    enqueue Human, contaminating the queue with a higher-priority operation and
+    breaking [Patch_agent.respond]'s "k == highest_priority" precondition).
+    Mirrors the live [accept_message → fire(Respond k)] code path so the
+    inflight slot is populated by the same [Patch_agent.respond] used in
+    production.
+
+    The setup deliberately skips [tick_all] reconciliation: those passes enqueue
+    arbitrary higher-priority operations (e.g. Rebase) that would similarly fail
+    the highest-priority precondition. We construct the minimal idle-with-PR
+    state by hand and enqueue only the kind under test, so [fire] always
+    satisfies its preconditions and the property runs on every input rather than
+    vacuously passing on setup failures. *)
+let make_busy_orch ~patches ~kind ~messages =
+  match patches with
+  | [] -> None
+  | first :: _ ->
+      let pid = first.Patch.id in
+      let orch = Orchestrator.create ~patches ~main_branch:main in
+      let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
+      let orch = Orchestrator.set_pr_body_delivered orch pid true in
+      let orch =
+        match kind with
+        | Operation_kind.Human ->
+            (* [send_human_message] both appends to [human_messages] and
+               enqueues [Human], so no separate [enqueue] is needed. *)
+            List.fold messages ~init:orch ~f:(fun acc msg ->
+                Orchestrator.send_human_message acc pid msg)
+        | Operation_kind.Rebase | Operation_kind.Merge_conflict
+        | Operation_kind.Ci | Operation_kind.Review_comments
+        | Operation_kind.Pr_body ->
+            Orchestrator.enqueue orch pid kind
+      in
+      let orch =
+        if
+          Operation_kind.equal kind Operation_kind.Human
+          && List.is_empty messages
+        then Orchestrator.enqueue orch pid Operation_kind.Human
+        else orch
+      in
+      Some (Orchestrator.fire orch (Orchestrator.Respond (pid, kind)), pid)
+
+let count_messages (a : Patch_agent.t) =
+  List.length a.human_messages + List.length a.inflight_human_messages
+
+(** P9: message preservation — for any busy agent and any reason, the total of
+    [human_messages + inflight_human_messages] never decreases. Strengthens the
+    existing I-14 (Human messages never lost) at the unit level. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"P9: force_complete preserves human messages"
+      ~count:500
+      QCheck2.Gen.(
+        triple Onton_test_support.Test_generators.gen_patch_list_unique
+          Onton_test_support.Test_generators.gen_feedback_kind
+          (let* msgs =
+             list_size (int_range 0 4)
+               (string_size ~gen:printable (int_range 1 40))
+           in
+           pair (return msgs) gen_force_complete_reason))
+      (fun (patches, kind, (messages, reason)) ->
+        safe (fun () ->
+            (* Inflight is only populated when fire(Human) consumes
+               [human_messages]. For non-Human kinds the messages remain in
+               [human_messages] and the property is trivial; we still exercise
+               the path to confirm no field is mishandled. *)
+            match make_busy_orch ~patches ~kind ~messages with
+            | None -> true
+            | Some (orch, pid) ->
+                let before = Orchestrator.agent orch pid in
+                let orch' = Orchestrator.apply_force_complete orch pid reason in
+                let after = Orchestrator.agent orch' pid in
+                count_messages after >= count_messages before))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "P9 passed"
+
+(** P10: post-state idle — when the agent was busy before, it is no longer busy
+    after, [current_op] and [current_message_id] are cleared, and the inflight
+    slot is empty (its contents have been moved to [human_messages] when
+    non-empty). *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"P10: force_complete clears busy state" ~count:300
+      QCheck2.Gen.(
+        triple Onton_test_support.Test_generators.gen_patch_list_unique
+          Onton_test_support.Test_generators.gen_feedback_kind
+          gen_force_complete_reason)
+      (fun (patches, kind, reason) ->
+        safe (fun () ->
+            match make_busy_orch ~patches ~kind ~messages:[ "msg" ] with
+            | None -> true
+            | Some (orch, pid) ->
+                let orch' = Orchestrator.apply_force_complete orch pid reason in
+                let after = Orchestrator.agent orch' pid in
+                (not after.busy)
+                && Option.is_none after.current_op
+                && Option.is_none after.current_message_id
+                && List.is_empty after.inflight_human_messages))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "P10 passed"
+
+(** P11: Human re-enqueue iff inflight was non-empty. After force-complete,
+    [Operation_kind.Human] is in the queue iff there was at least one inflight
+    message at fire time. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"P11: force_complete re-enqueues Human iff inflight"
+      ~count:500
+      QCheck2.Gen.(
+        triple Onton_test_support.Test_generators.gen_patch_list_unique
+          (let* msgs =
+             list_size (int_range 0 3)
+               (string_size ~gen:printable (int_range 1 40))
+           in
+           return msgs)
+          gen_force_complete_reason)
+      (fun (patches, messages, reason) ->
+        safe (fun () ->
+            (* Use Human as the kind so messages move into [inflight] on fire. *)
+            match
+              make_busy_orch ~patches ~kind:Operation_kind.Human ~messages
+            with
+            | None -> true
+            | Some (orch, pid) ->
+                let before = Orchestrator.agent orch pid in
+                let orch' = Orchestrator.apply_force_complete orch pid reason in
+                let after = Orchestrator.agent orch' pid in
+                let had_inflight =
+                  not (List.is_empty before.inflight_human_messages)
+                in
+                let human_in_queue =
+                  List.mem after.queue Operation_kind.Human
+                    ~equal:Operation_kind.equal
+                in
+                Bool.equal had_inflight human_in_queue))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "P11 passed"
+
+(** P12: session_fallback advances iff reason is Unexpected_exception. The
+    [Cancelled] path leaves [session_fallback] unchanged; clean shutdown must
+    not poison the fallback chain. [Unexpected_exception] runs both
+    [set_session_failed] and [set_tried_fresh], pushing the agent two steps
+    along the chain (Fresh_available → Tried_fresh → Given_up). *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"P12: session_fallback advances iff Unexpected"
+      ~count:300
+      QCheck2.Gen.(
+        triple Onton_test_support.Test_generators.gen_patch_list_unique
+          Onton_test_support.Test_generators.gen_feedback_kind
+          gen_force_complete_reason)
+      (fun (patches, kind, reason) ->
+        safe (fun () ->
+            match make_busy_orch ~patches ~kind ~messages:[] with
+            | None -> true
+            | Some (orch, pid) -> (
+                let before = Orchestrator.agent orch pid in
+                let orch' = Orchestrator.apply_force_complete orch pid reason in
+                let after = Orchestrator.agent orch' pid in
+                match reason with
+                | Orchestrator.Cancelled ->
+                    Patch_agent.equal_session_fallback before.session_fallback
+                      after.session_fallback
+                | Orchestrator.Unexpected_exception ->
+                    let expected =
+                      Patch_agent.set_tried_fresh
+                        (Patch_agent.set_session_failed before)
+                    in
+                    Patch_agent.equal_session_fallback expected.session_fallback
+                      after.session_fallback)))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "P12 passed"
+
+(** P13: applying force_complete twice in a row is the same as applying it once.
+    After the first call the agent is idle and (for [Unexpected_exception])
+    [session_fallback] has already advanced, so a second call must be the
+    identity. Exercises both the [complete] path (inflight empty) and the
+    [complete_failed] path (inflight non-empty) so a non-idempotence in either
+    branch fails the property. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"P13: force_complete on idle agent is identity"
+      ~count:300
+      QCheck2.Gen.(
+        quad Onton_test_support.Test_generators.gen_patch_list_unique
+          Onton_test_support.Test_generators.gen_feedback_kind
+          gen_force_complete_reason
+          (oneof_list [ []; [ "msg" ] ]))
+      (fun (patches, kind, reason, messages) ->
+        safe (fun () ->
+            match make_busy_orch ~patches ~kind ~messages with
+            | None -> true
+            | Some (orch, pid) ->
+                let orch1 = Orchestrator.apply_force_complete orch pid reason in
+                let after1 = Orchestrator.agent orch1 pid in
+                if after1.busy then false
+                else
+                  let orch2 =
+                    Orchestrator.apply_force_complete orch1 pid reason
+                  in
+                  let after2 = Orchestrator.agent orch2 pid in
+                  Patch_agent.equal after1 after2))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "P13 passed"
+
+(** P14: unknown patch is identity. [apply_force_complete] on a [patch_id] not
+    present in the orchestrator must not raise and must leave the state
+    untouched. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"P14: force_complete on unknown patch is identity"
+      ~count:200
+      QCheck2.Gen.(
+        triple Onton_test_support.Test_generators.gen_patch_list_unique
+          Onton_test_support.Test_generators.gen_patch_id
+          gen_force_complete_reason)
+      (fun (patches, missing_pid, reason) ->
+        safe (fun () ->
+            (* Skip when the random pid happens to clash with one of the
+               generated patches. *)
+            if
+              List.exists patches ~f:(fun (p : Patch.t) ->
+                  Patch_id.equal p.Patch.id missing_pid)
+            then true
+            else
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch' =
+                Orchestrator.apply_force_complete orch missing_pid reason
+              in
+              List.equal Patch_agent.equal
+                (Orchestrator.all_agents orch)
+                (Orchestrator.all_agents orch')))
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "P14 passed"
+
 let () = Stdlib.print_endline "all state machine properties passed"

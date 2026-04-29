@@ -236,6 +236,29 @@ val apply_respond_outcome :
     increment_pr_body_artifact_miss_count (does NOT set_pr_body_delivered — the
     reconciler re-enqueues Pr_body naturally). *)
 
+type force_complete_reason = Cancelled | Unexpected_exception
+[@@deriving show, eq, sexp_of]
+
+val apply_force_complete : t -> Patch_id.t -> force_complete_reason -> t
+(** Pure applicator for runner fibers that exited abnormally while the agent was
+    [busy]. The single source of truth for the [bin/main.ml] [with_busy_guard]
+    finally and [mark_session_failed] sites that previously called [complete]
+    directly — and so silently dropped [inflight_human_messages].
+
+    Semantics:
+    - Unknown patch: identity.
+    - [Unexpected_exception]: always advances [session_fallback] via
+      [set_session_failed] then [set_tried_fresh] (preserving the prior
+      [mark_session_failed] semantics, which pushed [Fresh_available] all the
+      way to [Given_up]). This still runs even when the agent is not busy.
+    - [Cancelled]: leaves [session_fallback] alone — a clean cancel should not
+      poison the fallback chain.
+    - If [busy] AND [inflight_human_messages <> []]: routes through
+      [complete_failed], which restores inflight back to [human_messages] and
+      re-enqueues [Operation_kind.Human].
+    - If [busy] AND inflight is empty: routes through plain [complete].
+    - If not [busy]: skip the complete step. *)
+
 (** Side effects emitted by rebase result application. The runner is responsible
     for executing these (e.g. force-pushing the branch to the remote). Modeled
     as data so property tests can assert on effect presence. *)
