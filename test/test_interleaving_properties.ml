@@ -916,10 +916,10 @@ let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
       match outcome with
       | Sync_delivered_k -> (
           (* INV-A: the targeted agent ends with pr_body_delivered=true
-             AND miss_count=0 after a Sync_delivered_k command. Scoped to
-             the targeted agent so a bystander left in delivered=true with
-             miss_count>0 by an earlier command in the sequence is not
-             miscredited as an INV-A violation. *)
+             AND miss_count=0 after a Sync_delivered_k command. Both halves
+             are asserted unconditionally so a regression where the runner
+             silently fails to set pr_body_delivered (e.g. find_agent
+             returns None) does not pass vacuously via short-circuit. *)
           let targeted_pid = resolve_pid patches patch_idx in
           match Map.find prev_agents targeted_pid with
           | None -> ()
@@ -927,14 +927,17 @@ let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
               match Orchestrator.find_agent curr_orch targeted_pid with
               | None -> ()
               | Some (a : Patch_agent.t) ->
-                  if
-                    a.Patch_agent.pr_body_delivered
-                    && a.Patch_agent.pr_body_artifact_miss_count <> 0
-                  then
+                  if not a.Patch_agent.pr_body_delivered then
                     failwith
                       (Printf.sprintf
-                         "INV-A sync_delivered_resets_miss_count violated for \
-                          %s: pr_body_delivered=true but miss_count = %d"
+                         "INV-A Sync_delivered_k did not set \
+                          pr_body_delivered=true for %s"
+                         (Patch_id.to_string a.Patch_agent.patch_id));
+                  if a.Patch_agent.pr_body_artifact_miss_count <> 0 then
+                    failwith
+                      (Printf.sprintf
+                         "INV-A Sync_delivered_k did not reset miss_count=0 \
+                          for %s: miss_count = %d"
                          (Patch_id.to_string a.Patch_agent.patch_id)
                          a.Patch_agent.pr_body_artifact_miss_count)))
       | Sync_no_op_k | Sync_patch_failed_k ->
