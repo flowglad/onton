@@ -533,12 +533,29 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
           `Patch_failed)
 
 (** Terminal failure — forces [Given_up] so [complete] raises intervention. Used
-    for non-retryable errors (patch not found, PR discovery failed). *)
-let mark_session_failed runtime patch_id =
+    for non-retryable errors (patch not found, PR discovery failed).
+
+    Routes through the pure [Orchestrator.apply_force_complete] decision so any
+    inflight human messages are restored to the inbox rather than silently
+    dropped, and emits a [log_force_complete] audit event so a dispatched
+    [Respond] action always has a matching close in the JSONL log. *)
+let mark_session_failed event_log runtime patch_id =
+  let snapshot = ref None in
   Runtime.update_orchestrator runtime (fun orch ->
-      let orch = Orchestrator.set_session_failed orch patch_id in
-      let orch = Orchestrator.set_tried_fresh orch patch_id in
-      Orchestrator.complete orch patch_id)
+      match Orchestrator.find_agent orch patch_id with
+      | None -> orch
+      | Some before ->
+          let orch' =
+            Orchestrator.apply_force_complete orch patch_id
+              Orchestrator.Unexpected_exception
+          in
+          let after = Orchestrator.agent orch' patch_id in
+          snapshot := Some (before, after);
+          orch');
+  Base.Option.iter !snapshot ~f:(fun (before, after) ->
+      Event_log.log_force_complete event_log ~patch_id
+        ~reason:Orchestrator.Unexpected_exception ~agent_before:before
+        ~agent_after:after)
 
 (** Compute the session mode for the fallback chain.
 
@@ -2443,30 +2460,51 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
      #209 blew through the system FD table. *)
   let hook_mutex = Eio.Mutex.create () in
   let with_busy_guard ~patch_id f =
+    let cancelled = ref false in
     Fun.protect
       ~finally:(fun () ->
-        (* Check-and-complete must be atomic to avoid racing with another
-           fiber that completes the same patch between read and update. *)
-        let was_busy =
-          Runtime.update_orchestrator_returning runtime (fun orch ->
-              match Orchestrator.find_agent orch patch_id with
-              | None -> (orch, false)
-              | Some agent ->
-                  if agent.Patch_agent.busy then
-                    (Orchestrator.complete orch patch_id, true)
-                  else (orch, false))
+        let reason =
+          if !cancelled then Orchestrator.Cancelled
+          else Orchestrator.Unexpected_exception
         in
-        if was_busy then
-          log_event runtime ~patch_id
-            "Forced complete — runner fiber exited with busy=true")
+        (* Check-and-complete must be atomic to avoid racing with another
+           fiber that completes the same patch between read and update.
+           Routes through the pure [apply_force_complete] decision so any
+           inflight human messages are restored to the inbox rather than
+           silently dropped — a regression that previously cost a delivered
+           Brand.refined instruction in the id-brands run. *)
+        let snapshot = ref None in
+        Runtime.update_orchestrator runtime (fun orch ->
+            match Orchestrator.find_agent orch patch_id with
+            | None -> orch
+            | Some before ->
+                if before.Patch_agent.busy then (
+                  let orch' =
+                    Orchestrator.apply_force_complete orch patch_id reason
+                  in
+                  let after = Orchestrator.agent orch' patch_id in
+                  snapshot := Some (before, after);
+                  orch')
+                else orch);
+        Base.Option.iter !snapshot ~f:(fun (before, after) ->
+            Event_log.log_force_complete event_log ~patch_id ~reason
+              ~agent_before:before ~agent_after:after;
+            log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Forced complete (%s) — runner fiber exited with busy=true"
+                 (Orchestrator.show_force_complete_reason reason))))
       (fun () ->
         try f () with
-        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | Eio.Cancel.Cancelled _ as exn ->
+            cancelled := true;
+            raise exn
         | exn ->
             log_event runtime ~patch_id
               (Printf.sprintf "Unexpected action exception — %s"
-                 (Printexc.to_string exn));
-            mark_session_failed runtime patch_id)
+                 (Printexc.to_string exn))
+        (* Do not call [mark_session_failed] here — the [finally] block
+           routes through [apply_force_complete ~reason:Unexpected_exception]
+           which subsumes its effect. *))
   in
   let rec loop sw =
     let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
@@ -2556,7 +2594,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
               | None ->
                   log_event runtime ~patch_id
                     "Skipping start — patch not found in gameplan";
-                  mark_session_failed runtime patch_id;
+                  mark_session_failed event_log runtime patch_id;
                   None
               | Some patch ->
                   Some

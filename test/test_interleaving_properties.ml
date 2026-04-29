@@ -81,6 +81,8 @@ type push_result_kind =
    [gen_sync_outcome_command] below. *)
 type sync_outcome_kind = Sync_no_op_k | Sync_delivered_k | Sync_patch_failed_k
 
+type force_reason_kind = Cancelled_k | Unexpected_k
+
 type command =
   | Apply_poll of { patch_idx : int; poll_kind : poll_kind }
   | Reconcile
@@ -104,6 +106,11 @@ type command =
       kind : Operation_kind.t;
       outcome : sync_outcome_kind;
     }
+  | Force_complete of { patch_idx : int; reason : force_reason_kind }
+      (** Models a runner fiber exiting abnormally while the agent is busy:
+          either a clean cancellation ([Cancelled_k]) or an unhandled exception
+          ([Unexpected_k]). Routes through [Orchestrator.apply_force_complete]
+          so I-14 (human messages never lost) covers this transition. *)
 
 let show_poll_kind = function
   | Poll_normal -> "Normal"
@@ -170,6 +177,13 @@ let show_command = function
       Printf.sprintf "Apply_sync_outcome(%d, %s, %s)" patch_idx
         (Operation_kind.to_label kind)
         (show_sync_outcome_kind outcome)
+  | Force_complete { patch_idx; reason } ->
+      let r =
+        match reason with
+        | Cancelled_k -> "Cancelled"
+        | Unexpected_k -> "Unexpected"
+      in
+      Printf.sprintf "Force_complete(%d, %s)" patch_idx r
 
 (* -- Ad-hoc patch helpers -- *)
 
@@ -255,6 +269,12 @@ let gen_sync_outcome_command ~gen_idx =
     let* outcome = gen_outcome_for kind in
     return (Apply_sync_outcome { patch_idx; kind; outcome }))
 
+let gen_force_reason_kind = QCheck2.Gen.oneof_list [ Cancelled_k; Unexpected_k ]
+
+let to_force_complete_reason = function
+  | Cancelled_k -> Orchestrator.Cancelled
+  | Unexpected_k -> Orchestrator.Unexpected_exception
+
 let gen_command ~n =
   let total = n + max_adhoc in
   QCheck2.Gen.(
@@ -286,6 +306,9 @@ let gen_command ~n =
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Discover_pr i) gen_idx;
         gen_sync_outcome_command ~gen_idx;
+        map2
+          (fun i r -> Force_complete { patch_idx = i; reason = r })
+          gen_idx gen_force_reason_kind;
       ])
 
 let gen_command_seq ~n ~len =
@@ -322,6 +345,9 @@ let gen_atomic_command ~n =
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Discover_pr i) gen_idx;
         gen_sync_outcome_command ~gen_idx;
+        map2
+          (fun i r -> Force_complete { patch_idx = i; reason = r })
+          gen_idx gen_force_reason_kind;
       ])
 
 let gen_atomic_command_seq ~n ~len =
@@ -569,6 +595,10 @@ let rec apply_command orch patches cmd =
           | Sync_delivered_k ->
               let orch = Orchestrator.set_pr_body_delivered orch pid true in
               Orchestrator.reset_pr_body_artifact_miss_count orch pid))
+  | Force_complete { patch_idx; reason } ->
+      let pid = resolve_pid patches patch_idx in
+      Orchestrator.apply_force_complete orch pid
+        (to_force_complete_reason reason)
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
@@ -620,7 +650,7 @@ let rec apply_command_with_logs orch patches cmd =
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Add_adhoc _
-  | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ ->
+  | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ | Force_complete _ ->
       (apply_command orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
@@ -969,7 +999,8 @@ let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
   | Apply_poll _ | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _ ->
+  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
+  | Force_complete _ ->
       ()
 
 (* ========== Combined check ========== *)
@@ -1022,7 +1053,7 @@ let delivered_pid_of_cmd cmd patches =
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
   | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
-  | Apply_sync_outcome _ ->
+  | Apply_sync_outcome _ | Force_complete _ ->
       None
 
 let removed_pids_of_cmd cmd prev_removed =
@@ -1032,7 +1063,7 @@ let removed_pids_of_cmd cmd prev_removed =
   | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
   | Reset_intervention _ | Atomic_poll_reconcile _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Discover_pr _
-  | Apply_sync_outcome _ ->
+  | Apply_sync_outcome _ | Force_complete _ ->
       prev_removed
 
 let run_sequence ?(debug = false) orch patches cmds =
@@ -1057,7 +1088,8 @@ let run_sequence ?(debug = false) orch patches cmds =
           | Apply_session_result _ | Apply_rebase_result _
           | Send_human_message _ | Reset_intervention _
           | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-          | Apply_rebase_push_result _ | Discover_pr _ | Apply_sync_outcome _ ->
+          | Apply_rebase_push_result _ | Discover_pr _ | Apply_sync_outcome _
+          | Force_complete _ ->
               merged_logged
         in
         let curr_merged = merged_set_of o in
