@@ -117,3 +117,76 @@ jobs:
         run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
 
       - uses: ocaml/setup-ocaml/lint-fmt@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
+
+  shell-lint:
+    name: Shell Lint & Format
+    runs-on: ubuntu-latest
+    env:
+      SHFMT_VERSION: v3.13.1
+      # 2-space indent + case-item indent matches the existing scripts/ style.
+      SHFMT_FLAGS: "-i 2 -ci"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Discover shell scripts
+        id: discover
+        # Match by extension *and* by shebang so files like git hooks or
+        # scripts without a `.sh` suffix still get checked. `git ls-files -z`
+        # respects .gitignore and avoids globbing surprises.
+        run: |
+          set -euo pipefail
+          # `if … fi` (not `&&`) so a non-matching grep doesn't fail the
+          # subshell under `set -e` and abort the whole pipeline.
+          {
+            git ls-files -z '*.sh' '*.bash'
+            git ls-files -z | while IFS= read -r -d '' f; do
+              [ -f "$f" ] || continue
+              case "$f" in *.sh|*.bash) continue ;; esac
+              # Only read the first line; skip binaries and large files cheaply.
+              if head -c 128 -- "$f" 2>/dev/null | head -n 1 \
+                  | grep -Eq '^#![[:space:]]*((/usr/bin/env[[:space:]]+)?|/usr/bin/|/bin/)(bash|dash|ksh|sh)([[:space:]]|$)'; then
+                printf '%s\0' "$f"
+              fi
+            done
+          } | sort -zu | tee "$RUNNER_TEMP/shell-files.nul" >/dev/null
+          count=$(tr -cd '\0' < "$RUNNER_TEMP/shell-files.nul" | wc -c | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Discovered $count shell script(s):"
+          tr '\0' '\n' < "$RUNNER_TEMP/shell-files.nul"
+
+      - name: Install shfmt
+        if: steps.discover.outputs.count != '0'
+        # Checksums pin the exact binary for SHFMT_VERSION; bumping the version
+        # requires regenerating both. Computed via:
+        #   sha256sum shfmt_v3.13.1_linux_{amd64,arm64}
+        env:
+          SHFMT_SHA256_LINUX_AMD64: fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+          SHFMT_SHA256_LINUX_ARM64: 32d92acaa5cd8abb29fc49dac123dc412442d5713967819d8af2c29f1b3857c7
+        run: |
+          set -euo pipefail
+          arch=$(uname -m)
+          case "$arch" in
+            x86_64)  shfmt_arch="linux_amd64"; expected_sha="$SHFMT_SHA256_LINUX_AMD64" ;;
+            aarch64) shfmt_arch="linux_arm64"; expected_sha="$SHFMT_SHA256_LINUX_ARM64" ;;
+            *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
+          esac
+          curl -fsSL -o "$RUNNER_TEMP/shfmt" \
+            "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_${shfmt_arch}"
+          echo "${expected_sha}  ${RUNNER_TEMP}/shfmt" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/shfmt"
+          sudo mv "$RUNNER_TEMP/shfmt" /usr/local/bin/shfmt
+          shfmt --version
+
+      - name: shellcheck
+        if: steps.discover.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          xargs -0 shellcheck < "$RUNNER_TEMP/shell-files.nul"
+
+      - name: shfmt --diff
+        if: steps.discover.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # SHFMT_FLAGS intentionally word-splits
+          xargs -0 shfmt $SHFMT_FLAGS -d < "$RUNNER_TEMP/shell-files.nul"

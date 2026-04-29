@@ -51,7 +51,7 @@ for skill_path in "$SKILLS_DIR"/*/SKILL.md; do
       link_raw="$(readlink "$target_link")"
       case "$link_raw" in
         /*) link_target="$link_raw" ;;
-        *)  link_target="$(cd "$TARGET_DIR/$(dirname "$link_raw")" 2>/dev/null && pwd)/$(basename "$link_raw")" ;;
+        *) link_target="$(cd "$TARGET_DIR/$(dirname "$link_raw")" 2>/dev/null && pwd)/$(basename "$link_raw")" ;;
       esac
     fi
     if [ "$link_target" = "$skill_dir" ]; then
