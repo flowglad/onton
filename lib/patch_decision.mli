@@ -142,9 +142,12 @@ val classify_pr_body_respond :
 val pr_body_artifact_changed : pre:string option -> post:string option -> bool
 (** Pure: did the effective body change between the pre- and post-session
     snapshots? Whitespace-only and empty strings collapse to [None] before
-    comparison, so truncation and whitespace-only writes are not "changes" —
-    matching the existing "Empty → keep initial PR body" branch in
-    [apply_pr_body_artifact]. *)
+    comparison, so a whitespace-only post is equivalent to no artifact at all.
+    Truncation from non-empty content to empty (e.g. [Some "x" -> Some ""])
+    collapses post to [None] but pre stays [Some "x"], so it is treated as a
+    change and is later mapped to [Sync_no_op] by
+    [classify_artifact_sync_outcome] (since [apply_pr_body_artifact] returns
+    [`Empty] and keeps the initial PR body). *)
 
 type artifact_sync_plan =
   | Sync_skip

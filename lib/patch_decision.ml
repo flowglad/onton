@@ -228,9 +228,12 @@ let classify_pr_body_respond
 (** {2 Opportunistic pr-body artifact sync from any session} *)
 
 (* Treat empty and whitespace-only contents as "no artifact present" so a
-   truncating write is not classified as a "change". Mirrors the existing
-   apply_pr_body_artifact rule that returns [`Empty] for blank artifacts and
-   keeps the initial PR body. *)
+   blank post is equivalent to None. A truncation from non-empty to empty
+   (Some "x" -> Some "") still differs from pre after normalization (post' =
+   None vs pre' = Some "x"), so plan_artifact_sync will return
+   Sync_attempt_pr_body. apply_pr_body_artifact then returns `Empty (keeps
+   the initial PR body), and classify_artifact_sync_outcome maps that to
+   Sync_no_op — defensive handling rather than silent skip. *)
 let normalize_artifact = function
   | None -> None
   | Some s when String.is_empty (String.strip s) -> None

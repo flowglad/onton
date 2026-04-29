@@ -3506,7 +3506,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     let patch_result =
                                       match plan with
                                       | Patch_decision.Sync_skip -> None
-                                      | Patch_decision.Sync_attempt_pr_body ->
+                                      | Patch_decision.Sync_attempt_pr_body -> (
                                           let pr =
                                             match pr_number with
                                             | Some n -> n
@@ -3524,30 +3524,35 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                                      (Patch_id.to_string
                                                         patch_id))
                                           in
-                                          let patch =
-                                            match
-                                              Base.List.find
-                                                gameplan.Gameplan.patches
-                                                ~f:(fun (p : Patch.t) ->
-                                                  Patch_id.equal p.Patch.id
-                                                    patch_id)
-                                            with
-                                            | Some p -> p
-                                            | None ->
-                                                failwith
-                                                  (Printf.sprintf
-                                                     "BUG: \
-                                                      Sync_attempt_pr_body: \
-                                                      patch %s not found in \
-                                                      gameplan"
-                                                     (Patch_id.to_string
-                                                        patch_id))
-                                          in
-                                          Some
-                                            (apply_pr_body_artifact ~runtime
-                                               ~net ~github ~project_name
-                                               ~patch_id ~pr_number:pr ~patch
-                                               ~gameplan)
+                                          (* Ad-hoc agents (added via
+                                             Orchestrator.add_agent) have a
+                                             pr_number but no gameplan entry,
+                                             so a missing patch here is not a
+                                             bug — skip the opportunistic
+                                             sync and let
+                                             classify_artifact_sync_outcome
+                                             map patch_result=None to
+                                             Sync_no_op. *)
+                                          match
+                                            Base.List.find
+                                              gameplan.Gameplan.patches
+                                              ~f:(fun (p : Patch.t) ->
+                                                Patch_id.equal p.Patch.id
+                                                  patch_id)
+                                          with
+                                          | Some patch ->
+                                              Some
+                                                (apply_pr_body_artifact ~runtime
+                                                   ~net ~github ~project_name
+                                                   ~patch_id ~pr_number:pr
+                                                   ~patch ~gameplan)
+                                          | None ->
+                                              log_event runtime ~patch_id
+                                                "pr-body: skipping \
+                                                 opportunistic sync — patch \
+                                                 has no gameplan entry (likely \
+                                                 ad-hoc)";
+                                              None)
                                     in
                                     (match
                                        Patch_decision
