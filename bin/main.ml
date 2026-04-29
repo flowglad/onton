@@ -3484,6 +3484,15 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                        owned by classify_pr_body_respond),
                                        so this block is a no-op for that
                                        kind and never double-PATCHes. *)
+                                    (* Re-derive session_ok from the (possibly
+                                       rebound) result so the planner sees the
+                                       final outcome — the Pr_body_payload arm
+                                       above can flip result to Pr_body_miss. *)
+                                    let session_ok =
+                                      match result with
+                                      | `Ok -> true
+                                      | _ -> false
+                                    in
                                     let pr_body_post_snapshot =
                                       read_artifact_file
                                         (Project_store.pr_body_artifact_path
