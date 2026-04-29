@@ -461,45 +461,48 @@ let gen_force_complete_reason =
   QCheck2.Gen.oneof_list Orchestrator.[ Cancelled; Unexpected_exception ]
 
 (** Build an orchestrator + patch_id where the agent is busy with the given
-    operation kind, optionally carrying inflight human messages (when
-    [kind = Human] AND messages were enqueued before fire). Mirrors the live
-    [accept_message → fire(Respond k)] code path so the inflight slot is
-    populated by the same [Patch_agent.respond] used in production. *)
+    operation kind, optionally carrying inflight human messages (only when
+    [kind = Human]; messages are ignored for other kinds since they would
+    enqueue Human, contaminating the queue with a higher-priority operation and
+    breaking [Patch_agent.respond]'s "k == highest_priority" precondition).
+    Mirrors the live [accept_message → fire(Respond k)] code path so the
+    inflight slot is populated by the same [Patch_agent.respond] used in
+    production.
+
+    The setup deliberately skips [tick_all] reconciliation: those passes enqueue
+    arbitrary higher-priority operations (e.g. Rebase) that would similarly fail
+    the highest-priority precondition. We construct the minimal idle-with-PR
+    state by hand and enqueue only the kind under test, so [fire] always
+    satisfies its preconditions and the property runs on every input rather than
+    vacuously passing on setup failures. *)
 let make_busy_orch ~patches ~kind ~messages =
   match patches with
   | [] -> None
-  | first :: _ -> (
+  | first :: _ ->
       let pid = first.Patch.id in
       let orch = Orchestrator.create ~patches ~main_branch:main in
-      let rec tick_all o n =
-        if n = 0 then o
-        else
-          let o, _effects, _actions =
-            Patch_controller.tick o ~project_name:"test-project"
-              ~gameplan:(make_gameplan patches)
-          in
-          tick_all o (n - 1)
-      in
-      let orch = tick_all orch (List.length patches + 1) in
       let orch = Orchestrator.set_pr_number orch pid (Pr_number.of_int 1) in
       let orch = Orchestrator.set_pr_body_delivered orch pid true in
-      let orch = Orchestrator.complete orch pid in
-      let orch =
-        List.fold messages ~init:orch ~f:(fun acc msg ->
-            Orchestrator.send_human_message acc pid msg)
-      in
       let orch =
         match kind with
         | Operation_kind.Human ->
-            (* [send_human_message] above already enqueues Human. *)
-            orch
+            (* [send_human_message] both appends to [human_messages] and
+               enqueues [Human], so no separate [enqueue] is needed. *)
+            List.fold messages ~init:orch ~f:(fun acc msg ->
+                Orchestrator.send_human_message acc pid msg)
         | Operation_kind.Rebase | Operation_kind.Merge_conflict
         | Operation_kind.Ci | Operation_kind.Review_comments
         | Operation_kind.Pr_body ->
             Orchestrator.enqueue orch pid kind
       in
-      try Some (Orchestrator.fire orch (Orchestrator.Respond (pid, kind)), pid)
-      with Invalid_argument _ -> None)
+      let orch =
+        if
+          Operation_kind.equal kind Operation_kind.Human
+          && List.is_empty messages
+        then Orchestrator.enqueue orch pid Operation_kind.Human
+        else orch
+      in
+      Some (Orchestrator.fire orch (Orchestrator.Respond (pid, kind)), pid)
 
 let count_messages (a : Patch_agent.t) =
   List.length a.human_messages + List.length a.inflight_human_messages
