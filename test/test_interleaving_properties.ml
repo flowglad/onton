@@ -74,6 +74,13 @@ type push_result_kind =
   | Push_rejected_k
   | Push_error_k
 
+(* Outcome of an opportunistic pr-body artifact sync, mirroring
+   Patch_decision.artifact_sync_outcome. The runner produces these only for
+   non-Pr_body kinds (kind=Pr_body always yields Sync_no_op_k via the
+   planner). The interleaving generator preserves that contract — see
+   [gen_sync_outcome_command] below. *)
+type sync_outcome_kind = Sync_no_op_k | Sync_delivered_k | Sync_patch_failed_k
+
 type command =
   | Apply_poll of { patch_idx : int; poll_kind : poll_kind }
   | Reconcile
@@ -92,6 +99,11 @@ type command =
   | Add_adhoc of int
   | Remove_adhoc of int
   | Discover_pr of int
+  | Apply_sync_outcome of {
+      patch_idx : int;
+      kind : Operation_kind.t;
+      outcome : sync_outcome_kind;
+    }
 
 let show_poll_kind = function
   | Poll_normal -> "Normal"
@@ -123,6 +135,11 @@ let show_push_result_kind = function
   | Push_rejected_k -> "Push_rejected"
   | Push_error_k -> "Push_error"
 
+let show_sync_outcome_kind = function
+  | Sync_no_op_k -> "No_op"
+  | Sync_delivered_k -> "Delivered"
+  | Sync_patch_failed_k -> "Patch_failed"
+
 let show_command = function
   | Apply_poll { patch_idx; poll_kind } ->
       Printf.sprintf "Apply_poll(%d, %s)" patch_idx (show_poll_kind poll_kind)
@@ -149,6 +166,10 @@ let show_command = function
   | Add_adhoc i -> Printf.sprintf "Add_adhoc(%d)" i
   | Remove_adhoc i -> Printf.sprintf "Remove_adhoc(%d)" i
   | Discover_pr i -> Printf.sprintf "Discover_pr(%d)" i
+  | Apply_sync_outcome { patch_idx; kind; outcome } ->
+      Printf.sprintf "Apply_sync_outcome(%d, %s, %s)" patch_idx
+        (Operation_kind.to_label kind)
+        (show_sync_outcome_kind outcome)
 
 (* -- Ad-hoc patch helpers -- *)
 
@@ -213,6 +234,27 @@ let gen_push_result_kind =
   QCheck2.Gen.oneof_list
     [ Push_ok_k; Push_up_to_date_k; Push_rejected_k; Push_error_k ]
 
+(** Generate an [Apply_sync_outcome] command. Honors INV-C: when [kind] is
+    [Pr_body], the outcome is forced to [Sync_no_op_k] because the runner's
+    planner returns [Sync_skip] for that kind, so [Sync_delivered_k] or
+    [Sync_patch_failed_k] for [Pr_body] would be unreachable in practice. *)
+let gen_sync_outcome_command ~gen_idx =
+  QCheck2.Gen.(
+    let gen_kind =
+      oneof_list
+        Operation_kind.
+          [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+    in
+    let gen_outcome_for kind =
+      if Operation_kind.equal kind Operation_kind.Pr_body then
+        return Sync_no_op_k
+      else oneof_list [ Sync_no_op_k; Sync_delivered_k; Sync_patch_failed_k ]
+    in
+    let* patch_idx = gen_idx in
+    let* kind = gen_kind in
+    let* outcome = gen_outcome_for kind in
+    return (Apply_sync_outcome { patch_idx; kind; outcome }))
+
 let gen_command ~n =
   let total = n + max_adhoc in
   QCheck2.Gen.(
@@ -243,6 +285,7 @@ let gen_command ~n =
         map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Discover_pr i) gen_idx;
+        gen_sync_outcome_command ~gen_idx;
       ])
 
 let gen_command_seq ~n ~len =
@@ -278,6 +321,7 @@ let gen_atomic_command ~n =
         map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Discover_pr i) gen_idx;
+        gen_sync_outcome_command ~gen_idx;
       ])
 
 let gen_atomic_command_seq ~n ~len =
@@ -510,6 +554,21 @@ let rec apply_command orch patches cmd =
           let orch = Orchestrator.set_pr_number orch pid pr in
           Orchestrator.set_base_branch orch pid base
       | _ -> orch)
+  | Apply_sync_outcome { patch_idx; kind = _; outcome } -> (
+      (* Mirror the runner's state transition on Patch_decision outcomes from
+         the opportunistic pr-body sync. Sync_no_op_k and Sync_patch_failed_k
+         are pure no-ops (the runner only logs); Sync_delivered_k flips
+         pr_body_delivered=true and resets the miss counter, exactly as
+         bin/main.ml does on Sync_delivered. *)
+      let pid = resolve_pid patches patch_idx in
+      match Orchestrator.find_agent orch pid with
+      | None -> orch
+      | Some _ -> (
+          match outcome with
+          | Sync_no_op_k | Sync_patch_failed_k -> orch
+          | Sync_delivered_k ->
+              let orch = Orchestrator.set_pr_body_delivered orch pid true in
+              Orchestrator.reset_pr_body_artifact_miss_count orch pid))
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
@@ -561,7 +620,7 @@ let rec apply_command_with_logs orch patches cmd =
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Add_adhoc _
-  | Remove_adhoc _ | Discover_pr _ ->
+  | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ ->
       (apply_command orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
@@ -829,6 +888,83 @@ let check_human_messages_preserved ~(prev : Patch_agent.t)
          (Patch_id.to_string curr.patch_id)
          prev_total curr_total)
 
+(** INV-A: After [Apply_sync_outcome { outcome = Sync_delivered_k; _ }], the
+    affected agent has [pr_body_delivered = true] AND
+    [pr_body_artifact_miss_count = 0]. Holds across arbitrary interleavings —
+    e.g. a prior [Respond_pr_body_miss] sequence that pushed the miss count just
+    below the cap is rescued by an opportunistic sync.
+
+    INV-B: After
+    [Apply_sync_outcome { outcome = Sync_no_op_k | Sync_patch_failed_k; _ }],
+    the affected agent's [pr_body_delivered] and [pr_body_artifact_miss_count]
+    are unchanged from before the command. The runner only logs in those
+    branches; no state mutation. *)
+let check_sync_outcome_invariants ~prev_agents ~curr_orch cmd =
+  match cmd with
+  | Apply_sync_outcome { patch_idx = _; kind; outcome } ->
+      (* INV-C is enforced by the generator: kind=Pr_body always gets
+         Sync_no_op_k. Cross-check here so a regression in the generator
+         surfaces as a test failure rather than silently exercising
+         unreachable runner state. *)
+      (if Operation_kind.equal kind Operation_kind.Pr_body then
+         match outcome with
+         | Sync_no_op_k -> ()
+         | Sync_delivered_k | Sync_patch_failed_k ->
+             failwith
+               "INV-C generator contract violated: Apply_sync_outcome with \
+                kind=Pr_body must yield Sync_no_op_k");
+      List.iter (Orchestrator.all_agents curr_orch)
+        ~f:(fun (a : Patch_agent.t) ->
+          match Map.find prev_agents a.Patch_agent.patch_id with
+          | None ->
+              () (* agent appeared this step — not an Apply_sync_outcome *)
+          | Some (prev : Patch_agent.t) -> (
+              match outcome with
+              | Sync_delivered_k ->
+                  (* INV-A only applies to the targeted agent. We can't
+                     identify "the targeted agent" precisely here without
+                     plumbing the patch_idx, but every agent's pr_body
+                     fields must remain coherent: if the post-state has
+                     pr_body_delivered but prev didn't, the miss count must
+                     be 0 (since the sync resets it). For untouched
+                     agents, both fields are unchanged (Sync_delivered_k
+                     mutates only the targeted pid). *)
+                  if
+                    a.Patch_agent.pr_body_delivered
+                    && (not prev.Patch_agent.pr_body_delivered)
+                    && a.Patch_agent.pr_body_artifact_miss_count <> 0
+                  then
+                    failwith
+                      (Printf.sprintf
+                         "INV-A sync_delivered_resets_miss_count violated for \
+                          %s: pr_body_delivered flipped true but miss_count = \
+                          %d"
+                         (Patch_id.to_string a.Patch_agent.patch_id)
+                         a.Patch_agent.pr_body_artifact_miss_count)
+              | Sync_no_op_k | Sync_patch_failed_k ->
+                  (* INV-B: no mutation. *)
+                  if
+                    Bool.( <> ) a.Patch_agent.pr_body_delivered
+                      prev.Patch_agent.pr_body_delivered
+                    || a.Patch_agent.pr_body_artifact_miss_count
+                       <> prev.Patch_agent.pr_body_artifact_miss_count
+                  then
+                    failwith
+                      (Printf.sprintf
+                         "INV-B sync_no_mutation violated for %s on %s: \
+                          delivered %b -> %b, miss_count %d -> %d"
+                         (Patch_id.to_string a.Patch_agent.patch_id)
+                         (show_sync_outcome_kind outcome)
+                         prev.Patch_agent.pr_body_delivered
+                         a.Patch_agent.pr_body_delivered
+                         prev.Patch_agent.pr_body_artifact_miss_count
+                         a.Patch_agent.pr_body_artifact_miss_count)))
+  | Apply_poll _ | Reconcile | Runner_tick | Complete _ | Apply_session_result _
+  | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
+  | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
+  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _ ->
+      ()
+
 (* ========== Combined check ========== *)
 
 let merged_set_of orch =
@@ -878,7 +1014,8 @@ let delivered_pid_of_cmd cmd patches =
   | Apply_poll _ | Reconcile | Runner_tick | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _ ->
+  | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
+  | Apply_sync_outcome _ ->
       None
 
 let removed_pids_of_cmd cmd prev_removed =
@@ -888,7 +1025,7 @@ let removed_pids_of_cmd cmd prev_removed =
   | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
   | Reset_intervention _ | Atomic_poll_reconcile _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Discover_pr _
-    ->
+  | Apply_sync_outcome _ ->
       prev_removed
 
 let run_sequence ?(debug = false) orch patches cmds =
@@ -913,7 +1050,7 @@ let run_sequence ?(debug = false) orch patches cmds =
           | Apply_session_result _ | Apply_rebase_result _
           | Send_human_message _ | Reset_intervention _
           | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
-          | Apply_rebase_push_result _ | Discover_pr _ ->
+          | Apply_rebase_push_result _ | Discover_pr _ | Apply_sync_outcome _ ->
               merged_logged
         in
         let curr_merged = merged_set_of o in
@@ -931,6 +1068,7 @@ let run_sequence ?(debug = false) orch patches cmds =
         let delivered_pid = delivered_pid_of_cmd cmd patches in
         check_all_invariants o patches ~prev_agents ~prev_merged ~curr_merged
           ~removed_pids ~delivered_pid;
+        check_sync_outcome_invariants ~prev_agents ~curr_orch:o cmd;
         let merged_logged =
           match log_info with
           | Some info -> check_log_invariants info ~merged_logged

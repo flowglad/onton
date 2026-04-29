@@ -3391,6 +3391,18 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     | Patch_decision.Pr_body_payload
                                     | Patch_decision.Merge_conflict_payload ->
                                         ());
+                                    (* Snapshot the pr-body artifact before
+                                       the session so the post-session sync
+                                       step (after run_claude_and_handle) can
+                                       detect content changes from any kind
+                                       of session, not only Pr_body. For
+                                       Pr_body the artifact was just unlinked
+                                       above, so the snapshot is None. *)
+                                    let pr_body_pre_snapshot =
+                                      read_artifact_file
+                                        (Project_store.pr_body_artifact_path
+                                           ~project_name ~patch_id)
+                                    in
                                     let result, tool_failures =
                                       run_claude_and_handle ~kind:(Some kind)
                                         ~runtime ~process_mgr ~clock ~fs
@@ -3464,6 +3476,71 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                             result
                                       else result
                                     in
+                                    (* Opportunistic pr-body sync. If the
+                                       agent updated the artifact during a
+                                       non-Pr_body session, PATCH the PR.
+                                       Pure planner returns Sync_skip for
+                                       kind=Pr_body (its delivery path is
+                                       owned by classify_pr_body_respond),
+                                       so this block is a no-op for that
+                                       kind and never double-PATCHes. *)
+                                    let pr_body_post_snapshot =
+                                      read_artifact_file
+                                        (Project_store.pr_body_artifact_path
+                                           ~project_name ~patch_id)
+                                    in
+                                    let plan =
+                                      Patch_decision.plan_artifact_sync ~kind
+                                        ~session_ok ~pre:pr_body_pre_snapshot
+                                        ~post:pr_body_post_snapshot
+                                    in
+                                    let patch_result =
+                                      match plan with
+                                      | Patch_decision.Sync_skip -> None
+                                      | Patch_decision.Sync_attempt_pr_body ->
+                                          let pr =
+                                            Base.Option.value_exn pr_number
+                                          in
+                                          let patch =
+                                            Base.List.find_exn
+                                              gameplan.Gameplan.patches
+                                              ~f:(fun (p : Patch.t) ->
+                                                Patch_id.equal p.Patch.id
+                                                  patch_id)
+                                          in
+                                          Some
+                                            (apply_pr_body_artifact ~runtime
+                                               ~net ~github ~project_name
+                                               ~patch_id ~pr_number:pr ~patch
+                                               ~gameplan)
+                                    in
+                                    (match
+                                       Patch_decision
+                                       .classify_artifact_sync_outcome ~plan
+                                         ~patch_result
+                                     with
+                                    | Patch_decision.Sync_no_op -> ()
+                                    | Patch_decision.Sync_delivered ->
+                                        log_event runtime ~patch_id
+                                          (Printf.sprintf
+                                             "pr-body: synced \
+                                              opportunistically from %s \
+                                              session"
+                                             (Operation_kind.to_label kind));
+                                        Runtime.update_orchestrator runtime
+                                          (fun orch ->
+                                            let orch =
+                                              Orchestrator.set_pr_body_delivered
+                                                orch patch_id true
+                                            in
+                                            Orchestrator
+                                            .reset_pr_body_artifact_miss_count
+                                              orch patch_id)
+                                    | Patch_decision.Sync_patch_failed ->
+                                        log_event runtime ~patch_id
+                                          "pr-body: opportunistic sync PATCH \
+                                           failed; leaving state — next \
+                                           Pr_body cycle will retry");
                                     result)
                       in
                       let respond_outcome =

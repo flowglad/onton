@@ -1,125 +1,150 @@
 (test
  (name test_onton)
+ (modules test_onton)
  (libraries onton))
 
 (test
  (name test_patch_agent)
+ (modules test_patch_agent)
  (libraries onton qcheck-core))
 
 (test
  (name test_properties)
+ (modules test_properties)
  (libraries onton onton_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_reconciler_properties)
+ (modules test_reconciler_properties)
  (libraries onton onton_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_orchestrator_properties)
+ (modules test_orchestrator_properties)
  (libraries onton onton_test_support qcheck-core))
 
 (test
  (name test_state_machine_properties)
+ (modules test_state_machine_properties)
  (libraries onton onton_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_tui_input)
+ (modules test_tui_input)
  (libraries onton))
 
 (test
  (name test_stream_parser)
+ (modules test_stream_parser)
  (libraries onton qcheck-core))
 
 (test
  (name test_persistence_properties)
+ (modules test_persistence_properties)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner yojson)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_runtime_create)
+ (modules test_runtime_create)
  (libraries onton))
 
 (test
  (name test_poller_properties)
+ (modules test_poller_properties)
  (libraries onton onton_test_support qcheck-core))
 
 (test
  (name test_tui_scheduling)
+ (modules test_tui_scheduling)
  (libraries onton eio eio_main eio.unix unix))
 
 (test
  (name test_patch_decision)
+ (modules test_patch_decision)
  (libraries onton qcheck-core))
 
 (test
  (name test_worktree_plan)
+ (modules test_worktree_plan)
  (libraries onton qcheck-core))
 
 (test
  (name test_spawn_logic)
+ (modules test_spawn_logic)
  (libraries onton onton_test_support qcheck-core))
 
 (test
  (name test_worktree_parser)
+ (modules test_worktree_parser)
  (libraries onton qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_rebase_onto)
+ (modules test_rebase_onto)
  (libraries onton qcheck-core qcheck-core.runner eio eio_main eio.unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_run_classification)
+ (modules test_run_classification)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_patch_controller)
+ (modules test_patch_controller)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_patch_controller_state_machine)
+ (modules test_patch_controller_state_machine)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_poll_log_properties)
+ (modules test_poll_log_properties)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_interleaving_properties)
+ (modules test_interleaving_properties)
  (libraries onton onton_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_misc_pure_properties)
+ (modules test_misc_pure_properties)
  (libraries onton onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_action_outcome_properties)
+ (modules test_action_outcome_properties)
  (libraries onton onton_test_support qcheck-core))
 
 (test
  (name test_backend_smoke)
+ (modules test_backend_smoke)
  (libraries onton eio eio_main)
  (deps (package onton))
  (action
@@ -129,16 +154,20 @@
 
 (test
  (name test_user_config)
+ (modules test_user_config)
  (libraries onton eio eio_main eio.unix unix))
 
 (test
  (name test_repo_root)
+ (modules test_repo_root)
  (libraries onton unix))
 
 (test
  (name test_project_lock)
+ (modules test_project_lock)
  (libraries onton unix))
 
 (test
  (name test_rlimit)
+ (modules test_rlimit)
  (libraries onton))

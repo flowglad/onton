@@ -125,3 +125,71 @@ val classify_pr_body_respond :
     Only invoked after a successful session — session-level failures
     (stale/failed/retry_push) short-circuit upstream in the handler and never
     reach this function. *)
+
+(** {2 Opportunistic pr-body artifact sync from any session}
+
+    The patch agent can in principle update [pr-body.md] during any session (CI,
+    Review_comments, Human, Merge_conflict, Rebase) — not only [Pr_body]. The
+    runner takes a content snapshot before launching the agent and another after
+    the session, then asks these pure functions whether to PATCH the PR and what
+    state changes to apply.
+
+    [Pr_body] sessions are deliberately excluded here: their delivery path is
+    owned by [classify_pr_body_respond] (with its own miss-counter and
+    intervention semantics). [plan_artifact_sync] returns [Sync_skip] for
+    [Pr_body] so the opportunistic block is a no-op for that kind. *)
+
+val pr_body_artifact_changed : pre:string option -> post:string option -> bool
+(** Pure: did the effective body change between the pre- and post-session
+    snapshots? Whitespace-only and empty strings collapse to [None] before
+    comparison, so truncation and whitespace-only writes are not "changes" —
+    matching the existing "Empty → keep initial PR body" branch in
+    [apply_pr_body_artifact]. *)
+
+type artifact_sync_plan =
+  | Sync_skip
+      (** No PATCH attempt; no state change. Used when (a) the session failed,
+          (b) [kind = Pr_body] (which has its own classify path), or (c) the
+          artifact was unchanged. *)
+  | Sync_attempt_pr_body
+      (** Caller should run [apply_pr_body_artifact] and feed the result into
+          [classify_artifact_sync_outcome]. *)
+[@@deriving show, eq, sexp_of, compare]
+
+val plan_artifact_sync :
+  kind:Operation_kind.t ->
+  session_ok:bool ->
+  pre:string option ->
+  post:string option ->
+  artifact_sync_plan
+(** Pure pre-PATCH planner. Returns [Sync_attempt_pr_body] only when the session
+    succeeded, the operation kind is not [Pr_body], and the artifact actually
+    changed. Otherwise [Sync_skip]. *)
+
+type artifact_sync_outcome =
+  | Sync_no_op
+  | Sync_delivered
+      (** PATCH succeeded — caller should set [pr_body_delivered = true] and
+          reset [pr_body_artifact_miss_count] to 0. *)
+  | Sync_patch_failed
+      (** PATCH failed — caller should log only; do NOT mutate
+          [pr_body_delivered] or the miss count. The next [Pr_body] cycle will
+          retry through the regular classifier path. *)
+[@@deriving show, eq, sexp_of, compare]
+
+val classify_artifact_sync_outcome :
+  plan:artifact_sync_plan ->
+  patch_result:[ `Ok | `Missing | `Empty | `Patch_failed ] option ->
+  artifact_sync_outcome
+(** Pure post-PATCH classifier. Total over every (plan, patch_result)
+    combination so it is safe to apply over arbitrary generators in property
+    tests, even on inputs the runner never produces.
+
+    - [plan = Sync_skip] → [Sync_no_op] regardless of [patch_result].
+    - [plan = Sync_attempt_pr_body], [patch_result = Some `Ok] →
+      [Sync_delivered].
+    - [plan = Sync_attempt_pr_body], [patch_result = Some `Patch_failed] →
+      [Sync_patch_failed].
+    - [plan = Sync_attempt_pr_body], [patch_result = Some (`Missing | `Empty)]
+      or [None] → [Sync_no_op] (defensive — unreachable when the planner gates
+      on [pr_body_artifact_changed]). *)
