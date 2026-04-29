@@ -28,7 +28,7 @@ fi
 # `--git-path` may return a path relative to REPO_ROOT; anchor it.
 case "$HOOKS_DIR" in
   /*) ;;
-  *)  HOOKS_DIR="$REPO_ROOT/$HOOKS_DIR" ;;
+  *) HOOKS_DIR="$REPO_ROOT/$HOOKS_DIR" ;;
 esac
 
 mkdir -p "$HOOKS_DIR"
@@ -62,7 +62,7 @@ fi
 install_hook() {
   hook_name="$1"
   hook_path="$HOOKS_DIR/$hook_name"
-  cat > "$hook_path"
+  cat >"$hook_path"
   chmod +x "$hook_path"
   echo "[installed] $hook_name hook at $hook_path"
 }

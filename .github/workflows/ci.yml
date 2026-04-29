@@ -117,3 +117,63 @@ jobs:
         run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
 
       - uses: ocaml/setup-ocaml/lint-fmt@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
+
+  shell-lint:
+    name: Shell Lint & Format
+    runs-on: ubuntu-latest
+    env:
+      SHFMT_VERSION: v3.13.1
+      # 2-space indent + case-item indent matches the existing scripts/ style.
+      SHFMT_FLAGS: "-i 2 -ci"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Discover shell scripts
+        id: discover
+        # Match by extension *and* by shebang so files like git hooks or
+        # scripts without a `.sh` suffix still get checked. `git ls-files -z`
+        # respects .gitignore and avoids globbing surprises.
+        run: |
+          set -euo pipefail
+          # `if … fi` (not `&&`) so a non-matching grep doesn't fail the
+          # subshell under `set -e` and abort the whole pipeline.
+          {
+            git ls-files -z '*.sh' '*.bash'
+            git ls-files -z | while IFS= read -r -d '' f; do
+              [ -f "$f" ] || continue
+              case "$f" in *.sh|*.bash) continue ;; esac
+              # Only read the first line; skip binaries and large files cheaply.
+              if head -c 128 -- "$f" 2>/dev/null | head -n 1 \
+                  | grep -Eq '^#![[:space:]]*(/usr/bin/env[[:space:]]+)?(bash|dash|ksh|sh)([[:space:]]|$)'; then
+                printf '%s\0' "$f"
+              fi
+            done
+          } | sort -zu | tee /tmp/shell-files.nul >/dev/null
+          count=$(tr -cd '\0' < /tmp/shell-files.nul | wc -c | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Discovered $count shell script(s):"
+          tr '\0' '\n' < /tmp/shell-files.nul
+
+      - name: Install shfmt
+        if: steps.discover.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/shfmt \
+            "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_linux_amd64"
+          chmod +x /tmp/shfmt
+          sudo mv /tmp/shfmt /usr/local/bin/shfmt
+          shfmt --version
+
+      - name: shellcheck
+        if: steps.discover.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          xargs -0 shellcheck < /tmp/shell-files.nul
+
+      - name: shfmt --diff
+        if: steps.discover.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # SHFMT_FLAGS intentionally word-splits
+          xargs -0 shfmt $SHFMT_FLAGS -d < /tmp/shell-files.nul
