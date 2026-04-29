@@ -2564,8 +2564,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       with_busy_guard ~patch_id (fun () ->
                           let result =
                             with_claude_slot (fun () ->
-                                Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.mark_running orch patch_id);
                                 let agent =
                                   Runtime.read runtime (fun snap ->
                                       Orchestrator.agent
@@ -2581,7 +2579,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     "Skipping action — became stale during \
                                      semaphore wait";
                                   `Stale)
-                                else
+                                else (
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.mark_running orch patch_id);
                                   match
                                     ensure_worktree ~runtime ~process_mgr ~clock
                                       ~fs ~repo_root:config.repo_root
@@ -2625,7 +2626,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           ~worktree_mutex ~hook_mutex ~backend
                                           ~event_log
                                       in
-                                      r)
+                                      r))
                           in
                           let start_outcome =
                             match result with

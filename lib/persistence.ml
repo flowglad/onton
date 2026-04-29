@@ -225,11 +225,14 @@ let patch_agent_of_yojson ~gameplan json =
              | Ok op -> Some op
              | Error _ -> None))
        ~current_op_state:
-         (* Default to [Queued] for snapshots written before this field
-            existed. A live agent will be re-promoted to [Running] when its
-            fiber resumes after restart. *)
          (match Yojson.Safe.Util.member "current_op_state" json with
-         | `Null -> Patch_agent.Queued
+         | `Null ->
+             (* Field absent in snapshots predating this feature (missing key
+                returns [`Null]) — default to [Queued]. A live agent will be
+                re-promoted to [Running] when its fiber resumes after restart.
+                An explicit JSON [null] would also land here and is treated
+                the same way. *)
+             Patch_agent.Queued
          | v -> (
              match try_of_yojson Patch_agent.op_state_of_yojson v with
              | Ok s -> s
