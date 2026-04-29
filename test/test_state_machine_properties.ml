@@ -639,18 +639,21 @@ let () =
 (** P13: applying force_complete twice in a row is the same as applying it once.
     After the first call the agent is idle and (for [Unexpected_exception])
     [session_fallback] has already advanced, so a second call must be the
-    identity. *)
+    identity. Exercises both the [complete] path (inflight empty) and the
+    [complete_failed] path (inflight non-empty) so a non-idempotence in either
+    branch fails the property. *)
 let () =
   let prop =
     QCheck2.Test.make ~name:"P13: force_complete on idle agent is identity"
       ~count:300
       QCheck2.Gen.(
-        triple Onton_test_support.Test_generators.gen_patch_list_unique
+        quad Onton_test_support.Test_generators.gen_patch_list_unique
           Onton_test_support.Test_generators.gen_feedback_kind
-          gen_force_complete_reason)
-      (fun (patches, kind, reason) ->
+          gen_force_complete_reason
+          (oneof_list [ []; [ "msg" ] ]))
+      (fun (patches, kind, reason, messages) ->
         safe (fun () ->
-            match make_busy_orch ~patches ~kind ~messages:[ "msg" ] with
+            match make_busy_orch ~patches ~kind ~messages with
             | None -> true
             | Some (orch, pid) ->
                 let orch1 = Orchestrator.apply_force_complete orch pid reason in

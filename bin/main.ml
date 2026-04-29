@@ -2461,11 +2461,22 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
   let hook_mutex = Eio.Mutex.create () in
   let with_busy_guard ~patch_id f =
     let cancelled = ref false in
+    let exception_raised = ref false in
     Fun.protect
       ~finally:(fun () ->
+        (* Three exit modes:
+           - cancelled: f raised [Eio.Cancel.Cancelled]; clean teardown.
+           - exception_raised: f raised any other exception; session
+             fallback must advance.
+           - neither: f returned normally (already called [complete]
+             itself, so the busy=false guard below skips the rest). The
+             reason value is unused in that case, but [Cancelled] is the
+             safe default — it leaves [session_fallback] untouched if a
+             future code path in [f] ever exits normally with [busy=true]. *)
         let reason =
           if !cancelled then Orchestrator.Cancelled
-          else Orchestrator.Unexpected_exception
+          else if !exception_raised then Orchestrator.Unexpected_exception
+          else Orchestrator.Cancelled
         in
         (* Check-and-complete must be atomic to avoid racing with another
            fiber that completes the same patch between read and update.
@@ -2499,6 +2510,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
             cancelled := true;
             raise exn
         | exn ->
+            exception_raised := true;
             log_event runtime ~patch_id
               (Printf.sprintf "Unexpected action exception — %s"
                  (Printexc.to_string exn))

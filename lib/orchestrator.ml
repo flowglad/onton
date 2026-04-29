@@ -616,7 +616,7 @@ type force_complete_reason = Cancelled | Unexpected_exception
 let apply_force_complete t patch_id reason =
   match find_agent t patch_id with
   | None -> t
-  | Some a ->
+  | Some _ ->
       let t =
         match reason with
         | Cancelled -> t
@@ -624,6 +624,12 @@ let apply_force_complete t patch_id reason =
             let t = set_session_failed t patch_id in
             set_tried_fresh t patch_id
       in
+      (* Re-read the agent post-transition so the busy/inflight routing
+         decision reflects any state mutated by the [reason] branch. Today
+         [set_session_failed]/[set_tried_fresh] don't touch [busy] or
+         [inflight_human_messages], but reading the stale snapshot would
+         silently break if a future helper ever cleared inflight. *)
+      let a = agent t patch_id in
       if not a.Patch_agent.busy then t
       else if List.is_empty a.Patch_agent.inflight_human_messages then
         complete t patch_id

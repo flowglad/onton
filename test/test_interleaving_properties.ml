@@ -80,7 +80,6 @@ type push_result_kind =
    planner). The interleaving generator preserves that contract — see
    [gen_sync_outcome_command] below. *)
 type sync_outcome_kind = Sync_no_op_k | Sync_delivered_k | Sync_patch_failed_k
-
 type force_reason_kind = Cancelled_k | Unexpected_k
 
 type command =
