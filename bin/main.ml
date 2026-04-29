@@ -553,9 +553,15 @@ let mark_session_failed event_log runtime patch_id =
           snapshot := Some (before, after);
           orch');
   Base.Option.iter !snapshot ~f:(fun (before, after) ->
-      Event_log.log_force_complete event_log ~patch_id
-        ~reason:Orchestrator.Unexpected_exception ~agent_before:before
-        ~agent_after:after)
+      (* Only emit a force-complete audit event if the agent was actually
+         busy. The "patch not found in gameplan" call site at the Start
+         dispatch fires this before [with_busy_guard] runs, so no Respond
+         was ever dispatched — logging a force-complete close in that case
+         would falsely claim a Respond/close pair. *)
+      if before.Patch_agent.busy then
+        Event_log.log_force_complete event_log ~patch_id
+          ~reason:Orchestrator.Unexpected_exception ~agent_before:before
+          ~agent_after:after)
 
 (** Compute the session mode for the fallback chain.
 
