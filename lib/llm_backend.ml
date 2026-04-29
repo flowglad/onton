@@ -26,8 +26,28 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
   in
   let stdout_max_size = 64 * 1024 * 1024 in
   let stderr_max_size = 1024 * 1024 in
+  let stdout_capture_max_size = 64 * 1024 in
   let saw_final_result_ref = ref false in
   let got_events_ref = ref false in
+  let stdout_capture = Buffer.create 4096 in
+  let stdout_capture_truncated = ref false in
+  let capture_stdout_line line =
+    let remaining = stdout_capture_max_size - Buffer.length stdout_capture in
+    if remaining <= 0 then stdout_capture_truncated := true
+    else
+      let text = line ^ "\n" in
+      let len = String.length text in
+      if len <= remaining then Buffer.add_string stdout_capture text
+      else (
+        Buffer.add_substring stdout_capture text ~pos:0 ~len:remaining;
+        stdout_capture_truncated := true)
+  in
+  let captured_stdout () =
+    let s = Buffer.contents stdout_capture in
+    if !stdout_capture_truncated then
+      s ^ "\n<stdout exceeded 64KB capture limit, truncated>"
+    else s
+  in
   let run () =
     let stderr_content, exit_code =
       Eio.Switch.run @@ fun sw ->
@@ -66,6 +86,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
           let rec read_lines () =
             match Eio.Buf_read.line stdout_buf with
             | line ->
+                capture_stdout_line line;
                 let events = process_line line in
                 if not (List.is_empty events) then got_events_ref := true;
                 List.iter events ~f:on_event;
@@ -142,7 +163,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
     Ok
       {
         exit_code;
-        stdout = "";
+        stdout = captured_stdout ();
         stderr = stderr_content;
         got_events = !got_events_ref;
         saw_final_result = !saw_final_result_ref;
@@ -154,7 +175,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
   | Error `Timeout ->
       {
         exit_code = 128 + 9 (* SIGKILL — sent via on_release hook *);
-        stdout = "";
+        stdout = captured_stdout ();
         stderr = "process timed out";
         got_events = !got_events_ref;
         saw_final_result = !saw_final_result_ref;

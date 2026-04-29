@@ -30,15 +30,19 @@ let () =
             false)
   in
 
-  (* Ok with no events + continue -> No_session_to_resume
+  (* Ok with no events + resume + nonzero exit -> No_session_to_resume
      (saw_final_result=false is required: a confirmed Final_result is
-     definitive success and short-circuits the no-events heuristic.) *)
-  let prop_no_events_continue =
-    Test.make ~name:"classify: no events + continue -> No_session_to_resume"
+     definitive success and short-circuits the no-events heuristic. A clean
+     exit is also success: some backends can produce an empty successful
+     resumed turn, and retrying fresh would duplicate the delivered prompt.) *)
+  let prop_no_events_resume_nonzero =
+    Test.make
+      ~name:"classify: no events + resume + nonzero -> No_session_to_resume"
       ~count:500 gen_run_outcome (fun r ->
         let r =
           {
             r with
+            exit_code = 1;
             got_events = false;
             saw_final_result = false;
             timed_out = false;
@@ -47,6 +51,26 @@ let () =
         match classify ~is_resume:true (Ok r) with
         | No_session_to_resume -> true
         | Process_error _ | Timed_out | Success _ | Session_failed _ -> false)
+  in
+
+  (* Ok with no events + resume + exit_code=0 -> Success *)
+  let prop_no_events_resume_zero_success =
+    Test.make ~name:"classify: no events + resume + exit_code=0 -> Success"
+      ~count:500 gen_run_outcome (fun r ->
+        let r =
+          {
+            r with
+            exit_code = 0;
+            got_events = false;
+            saw_final_result = false;
+            timed_out = false;
+          }
+        in
+        match classify ~is_resume:true (Ok r) with
+        | Success _ -> true
+        | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
+          ->
+            false)
   in
 
   (* Ok with exit_code=0 -> Success *)
@@ -145,7 +169,8 @@ let () =
     [
       prop_error_is_process_error;
       prop_timed_out;
-      prop_no_events_continue;
+      prop_no_events_resume_nonzero;
+      prop_no_events_resume_zero_success;
       prop_exit_zero_success;
       prop_nonzero_session_failed;
       prop_detail_bounded;

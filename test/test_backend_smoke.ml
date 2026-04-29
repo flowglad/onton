@@ -138,6 +138,28 @@ let () =
   in
   if perl_available then large_codex_line_test ()
   else Stdio.printf "codex large stdout line: skipped (perl not found)\n";
+  let stdout_capture_test () =
+    let events = ref [] in
+    let on_event ev = events := ev :: !events in
+    let result =
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
+        ~setsid_exec:None
+        ~args:[ "printf"; "%s"; "not-json\n" ]
+        ~process_line:(fun _ -> [])
+        ~on_event
+    in
+    if
+      result.Llm_backend.exit_code = 0
+      && (not result.Llm_backend.got_events)
+      && String.equal result.Llm_backend.stdout "not-json\n"
+    then Stdio.printf "stdout capture: passed\n"
+    else (
+      Stdio.printf "FAIL: stdout capture exit=%d got_events=%b stdout=%S\n"
+        result.Llm_backend.exit_code result.Llm_backend.got_events
+        result.Llm_backend.stdout;
+      Int.incr failures)
+  in
+  stdout_capture_test ();
   (* --- Claude --- *)
   let result, got =
     smoke ~process_mgr ~clock ~cwd
