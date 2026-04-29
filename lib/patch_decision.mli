@@ -194,5 +194,10 @@ val classify_artifact_sync_outcome :
     - [plan = Sync_attempt_pr_body], [patch_result = Some `Patch_failed] →
       [Sync_patch_failed].
     - [plan = Sync_attempt_pr_body], [patch_result = Some (`Missing | `Empty)]
-      or [None] → [Sync_no_op] (defensive — unreachable when the planner gates
-      on [pr_body_artifact_changed]). *)
+      or [None] → [Sync_no_op]. The [`Empty] arm is reachable when a file
+      changes from non-empty to empty: [normalize_artifact] (planner) and
+      [apply_pr_body_artifact]'s [String.trim] check are independent, so both
+      can fire on the same content change. [`Missing] is reachable if the file
+      is deleted between the post-snapshot and the [apply_pr_body_artifact]
+      call. [None] is reachable when the caller skips the PATCH despite the plan
+      (e.g. an ad-hoc patch with no gameplan entry). *)

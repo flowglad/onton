@@ -956,8 +956,12 @@ let () =
     assert (equal_artifact_sync_outcome outcome Sync_patch_failed);
     Stdlib.print_endline "AS-22 passed";
 
-    (* AS-23: plan=Sync_attempt_pr_body, Some (`Missing | `Empty) → Sync_no_op
-       (defensive — unreachable when planner gates on changed). *)
+    (* AS-23: plan=Sync_attempt_pr_body, Some (`Missing | `Empty) → Sync_no_op.
+       Both arms are reachable: [`Empty] fires when the file goes from
+       non-empty to empty (normalize_artifact and apply_pr_body_artifact's
+       String.trim use independent emptiness checks); [`Missing] fires if the
+       file is deleted between the runner's post-snapshot and the
+       apply_pr_body_artifact call. *)
     List.iter [ `Missing; `Empty ] ~f:(fun pr ->
         let outcome =
           classify_artifact_sync_outcome ~plan:Sync_attempt_pr_body
