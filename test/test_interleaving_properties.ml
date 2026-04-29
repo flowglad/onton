@@ -899,9 +899,9 @@ let check_human_messages_preserved ~(prev : Patch_agent.t)
     the affected agent's [pr_body_delivered] and [pr_body_artifact_miss_count]
     are unchanged from before the command. The runner only logs in those
     branches; no state mutation. *)
-let check_sync_outcome_invariants ~prev_agents ~curr_orch cmd =
+let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
   match cmd with
-  | Apply_sync_outcome { patch_idx = _; kind; outcome } ->
+  | Apply_sync_outcome { patch_idx; kind; outcome } -> (
       (* INV-C is enforced by the generator: kind=Pr_body always gets
          Sync_no_op_k. Cross-check here so a regression in the generator
          surfaces as a test failure rather than silently exercising
@@ -913,22 +913,20 @@ let check_sync_outcome_invariants ~prev_agents ~curr_orch cmd =
              failwith
                "INV-C generator contract violated: Apply_sync_outcome with \
                 kind=Pr_body must yield Sync_no_op_k");
-      List.iter (Orchestrator.all_agents curr_orch)
-        ~f:(fun (a : Patch_agent.t) ->
-          match Map.find prev_agents a.Patch_agent.patch_id with
-          | None ->
-              () (* agent appeared this step — not an Apply_sync_outcome *)
-          | Some (prev : Patch_agent.t) -> (
-              match outcome with
-              | Sync_delivered_k ->
-                  (* INV-A: any agent with pr_body_delivered=true after a
-                     Sync_delivered_k command must have miss_count=0. The
-                     targeted agent has both set by the sync; untouched agents
-                     are unchanged, so this also asserts they were already
-                     coherent. Checking the post-state alone (rather than
-                     guarding on a false→true transition) catches the case
-                     where the targeted agent was already delivered. *)
-                  ignore prev;
+      match outcome with
+      | Sync_delivered_k -> (
+          (* INV-A: the targeted agent ends with pr_body_delivered=true
+             AND miss_count=0 after a Sync_delivered_k command. Scoped to
+             the targeted agent so a bystander left in delivered=true with
+             miss_count>0 by an earlier command in the sequence is not
+             miscredited as an INV-A violation. *)
+          let targeted_pid = resolve_pid patches patch_idx in
+          match Map.find prev_agents targeted_pid with
+          | None -> ()
+          | Some _ -> (
+              match Orchestrator.find_agent curr_orch targeted_pid with
+              | None -> ()
+              | Some (a : Patch_agent.t) ->
                   if
                     a.Patch_agent.pr_body_delivered
                     && a.Patch_agent.pr_body_artifact_miss_count <> 0
@@ -938,9 +936,17 @@ let check_sync_outcome_invariants ~prev_agents ~curr_orch cmd =
                          "INV-A sync_delivered_resets_miss_count violated for \
                           %s: pr_body_delivered=true but miss_count = %d"
                          (Patch_id.to_string a.Patch_agent.patch_id)
-                         a.Patch_agent.pr_body_artifact_miss_count)
-              | Sync_no_op_k | Sync_patch_failed_k ->
-                  (* INV-B: no mutation. *)
+                         a.Patch_agent.pr_body_artifact_miss_count)))
+      | Sync_no_op_k | Sync_patch_failed_k ->
+          (* INV-B: no mutation of pr_body fields for any agent. The runner
+             only logs in those branches, so iterating over every agent
+             asserts that the operation is purely local (no cross-agent
+             side effects either). *)
+          List.iter (Orchestrator.all_agents curr_orch)
+            ~f:(fun (a : Patch_agent.t) ->
+              match Map.find prev_agents a.Patch_agent.patch_id with
+              | None -> ()
+              | Some (prev : Patch_agent.t) ->
                   if
                     Bool.( <> ) a.Patch_agent.pr_body_delivered
                       prev.Patch_agent.pr_body_delivered
@@ -1066,7 +1072,7 @@ let run_sequence ?(debug = false) orch patches cmds =
         let delivered_pid = delivered_pid_of_cmd cmd patches in
         check_all_invariants o patches ~prev_agents ~prev_merged ~curr_merged
           ~removed_pids ~delivered_pid;
-        check_sync_outcome_invariants ~prev_agents ~curr_orch:o cmd;
+        check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch:o cmd;
         let merged_logged =
           match log_info with
           | Some info -> check_log_invariants info ~merged_logged

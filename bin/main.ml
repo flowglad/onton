@@ -3516,11 +3516,23 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                                         patch_id))
                                           in
                                           let patch =
-                                            Base.List.find_exn
-                                              gameplan.Gameplan.patches
-                                              ~f:(fun (p : Patch.t) ->
-                                                Patch_id.equal p.Patch.id
-                                                  patch_id)
+                                            match
+                                              Base.List.find
+                                                gameplan.Gameplan.patches
+                                                ~f:(fun (p : Patch.t) ->
+                                                  Patch_id.equal p.Patch.id
+                                                    patch_id)
+                                            with
+                                            | Some p -> p
+                                            | None ->
+                                                failwith
+                                                  (Printf.sprintf
+                                                     "BUG: \
+                                                      Sync_attempt_pr_body: \
+                                                      patch %s not found in \
+                                                      gameplan"
+                                                     (Patch_id.to_string
+                                                        patch_id))
                                           in
                                           Some
                                             (apply_pr_body_artifact ~runtime
