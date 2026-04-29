@@ -875,7 +875,12 @@ let () =
        changed. The Pr_body delivery path is owned by
        classify_pr_body_respond. *)
     List.iter
-      [ (None, None); (Some "x", Some "x"); (None, Some "y") ]
+      [
+        (None, None);
+        (Some "x", Some "x");
+        (None, Some "y");
+        (Some "x", Some "y");
+      ]
       ~f:(fun (pre, post) ->
         let plan =
           plan_artifact_sync ~kind:Operation_kind.Pr_body ~session_ok:true ~pre
