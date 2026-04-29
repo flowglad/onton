@@ -493,6 +493,10 @@ type patch_view = {
   status : display_status;
   queue_len : int;
   current_op : Operation_kind.t option;
+  current_op_state : Patch_agent.op_state;
+      (** Carries the agent's queued/running sub-state for the current op. Used
+          to render a "(queued)" suffix on busy statuses so a saturated Claude
+          semaphore can be told apart from an actively running session. *)
   ci_failures : int;
   dep_ids : (Patch_id.t * display_status) list;
   has_pr : bool;
@@ -592,6 +596,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     status;
     queue_len = List.length agent.queue;
     current_op;
+    current_op_state = agent.Patch_agent.current_op_state;
     ci_failures = agent.ci_failure_count;
     dep_ids;
     has_pr = Patch_agent.has_pr agent;
@@ -613,10 +618,19 @@ let patch_view_of_agent (agent : Patch_agent.t)
 
 let styled_status status text = Term.styled (status_style status) text
 
-let render_status_badge status =
+let render_status_badge ?(queued = false) status =
   let ind = status_indicator status in
   let lbl = label status in
-  styled_status status (Printf.sprintf "%s %s" ind lbl)
+  let suffix = if queued then " (queued)" else "" in
+  styled_status status (Printf.sprintf "%s %s%s" ind lbl suffix)
+
+let is_running_status = function
+  | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
+  | Writing_pr_body | Rebasing | Starting | Updating | Approved_running ->
+      true
+  | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
+  | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending ->
+      false
 
 (** {1 Frame rendering} *)
 
@@ -648,8 +662,12 @@ let short_op_name = function
   | Operation_kind.Pr_body -> "pr-body"
   | Operation_kind.Rebase -> "rebase"
 
+let pv_queued (pv : patch_view) =
+  is_running_status pv.status
+  && Patch_agent.equal_op_state pv.current_op_state Patch_agent.Queued
+
 let render_patch_row ~width ~selected (pv : patch_view) =
-  let badge = render_status_badge pv.status in
+  let badge = render_status_badge ~queued:(pv_queued pv) pv.status in
   let patch_label =
     let id_str = Patch_id.to_string pv.patch_id in
     let id_short =
@@ -744,21 +762,18 @@ let render_summary (views : patch_view list) =
   in
   let total = List.length views in
   let merged = count Merged in
-  let is_running status =
-    match status with
-    | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-    | Writing_pr_body | Rebasing | Starting | Updating | Approved_running ->
-        true
-    | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
-    | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending ->
-        false
+  let busy_views = List.filter views ~f:(fun v -> is_running_status v.status) in
+  let queued =
+    List.count busy_views ~f:(fun v ->
+        Patch_agent.equal_op_state v.current_op_state Patch_agent.Queued)
   in
-  let running = List.count views ~f:(fun v -> is_running v.status) in
+  let running = List.length busy_views - queued in
   let needs_help = count Needs_help in
   let parts =
     [
       Printf.sprintf "%d/%d merged" merged total;
       (if running > 0 then Printf.sprintf "%d running" running else "");
+      (if queued > 0 then Printf.sprintf "%d queued" queued else "");
       (if needs_help > 0 then
          Term.styled [ Term.Sgr.fg_red ]
            (Printf.sprintf "%d need help" needs_help)
@@ -805,7 +820,7 @@ let detail_info_rows (pv : patch_view) ~width ~now =
       (Term.fit_width (Int.max 1 (width - 1)) (" " ^ pv.title))
   in
   let rule = Term.hrule width in
-  let badge = render_status_badge pv.status in
+  let badge = render_status_badge ~queued:(pv_queued pv) pv.status in
   let lines =
     [
       header;

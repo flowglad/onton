@@ -104,6 +104,13 @@ val reset_intervention_state : t -> Patch_id.t -> t
 val set_branch_blocked : t -> Patch_id.t -> t
 val clear_branch_blocked : t -> Patch_id.t -> t
 val reset_busy : t -> Patch_id.t -> t
+
+val mark_running : t -> Patch_id.t -> t
+(** Transition the patch's [current_op_state] from [Queued] to [Running]. Called
+    from action fibers right after the Claude semaphore has been acquired so the
+    TUI can distinguish queued (waiting on slot) from running. No-op if the
+    agent is no longer busy. *)
+
 val set_worktree_path : t -> Patch_id.t -> string -> t
 val set_llm_session_id : t -> Patch_id.t -> string option -> t
 

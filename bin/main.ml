@@ -2579,7 +2579,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     "Skipping action — became stale during \
                                      semaphore wait";
                                   `Stale)
-                                else
+                                else (
+                                  Runtime.update_orchestrator runtime
+                                    (fun orch ->
+                                      Orchestrator.mark_running orch patch_id);
                                   match
                                     ensure_worktree ~runtime ~process_mgr ~clock
                                       ~fs ~repo_root:config.repo_root
@@ -2623,7 +2626,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           ~worktree_mutex ~hook_mutex ~backend
                                           ~event_log
                                       in
-                                      r)
+                                      r))
                           in
                           let start_outcome =
                             match result with
@@ -2774,6 +2777,10 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
               Some
                 (fun () ->
                   with_busy_guard ~patch_id (fun () ->
+                      (* Rebase is orchestrator-executed (no Claude slot), so
+                         work begins immediately under the busy guard. *)
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_running orch patch_id);
                       let agent =
                         Runtime.read runtime (fun snap ->
                             Orchestrator.agent snap.Runtime.orchestrator
@@ -2956,6 +2963,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                             `Skip_empty
                         | None ->
                             with_claude_slot (fun () ->
+                                Runtime.update_orchestrator runtime (fun orch ->
+                                    Orchestrator.mark_running orch patch_id);
                                 (* Write fresh ci_checks under the busy guard
                                    so the write can't race with the poller or
                                    land after a concurrent complete/merge.

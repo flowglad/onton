@@ -84,6 +84,7 @@ type patch_view = {
   status : display_status;
   queue_len : int;
   current_op : Operation_kind.t option;
+  current_op_state : Patch_agent.op_state;
   ci_failures : int;
   dep_ids : (Patch_id.t * display_status) list;
   has_pr : bool;
