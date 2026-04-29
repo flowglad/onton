@@ -144,7 +144,7 @@ jobs:
               case "$f" in *.sh|*.bash) continue ;; esac
               # Only read the first line; skip binaries and large files cheaply.
               if head -c 128 -- "$f" 2>/dev/null | head -n 1 \
-                  | grep -Eq '^#![[:space:]]*(/usr/bin/env[[:space:]]+)?(bash|dash|ksh|sh)([[:space:]]|$)'; then
+                  | grep -Eq '^#![[:space:]]*((/usr/bin/env[[:space:]]+)?|/usr/bin/|/bin/)(bash|dash|ksh|sh)([[:space:]]|$)'; then
                 printf '%s\0' "$f"
               fi
             done
