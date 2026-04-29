@@ -156,16 +156,23 @@ jobs:
 
       - name: Install shfmt
         if: steps.discover.outputs.count != '0'
+        # Checksums pin the exact binary for SHFMT_VERSION; bumping the version
+        # requires regenerating both. Computed via:
+        #   sha256sum shfmt_v3.13.1_linux_{amd64,arm64}
+        env:
+          SHFMT_SHA256_LINUX_AMD64: fb096c5d1ac6beabbdbaa2874d025badb03ee07929f0c9ff67563ce8c75398b1
+          SHFMT_SHA256_LINUX_ARM64: 32d92acaa5cd8abb29fc49dac123dc412442d5713967819d8af2c29f1b3857c7
         run: |
           set -euo pipefail
           arch=$(uname -m)
           case "$arch" in
-            x86_64)  shfmt_arch="linux_amd64" ;;
-            aarch64) shfmt_arch="linux_arm64" ;;
+            x86_64)  shfmt_arch="linux_amd64"; expected_sha="$SHFMT_SHA256_LINUX_AMD64" ;;
+            aarch64) shfmt_arch="linux_arm64"; expected_sha="$SHFMT_SHA256_LINUX_ARM64" ;;
             *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
           esac
           curl -fsSL -o "$RUNNER_TEMP/shfmt" \
             "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_${shfmt_arch}"
+          echo "${expected_sha}  ${RUNNER_TEMP}/shfmt" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/shfmt"
           sudo mv "$RUNNER_TEMP/shfmt" /usr/local/bin/shfmt
           shfmt --version
