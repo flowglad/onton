@@ -84,6 +84,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         match a.current_op with
         | None -> `Null
         | Some op -> Operation_kind.yojson_of_t op );
+      ("current_op_state", Patch_agent.yojson_of_op_state a.current_op_state);
       ( "current_message_id",
         match a.current_message_id with
         | None -> `Null
@@ -223,6 +224,16 @@ let patch_agent_of_yojson ~gameplan json =
              match try_of_yojson Operation_kind.t_of_yojson_compat v with
              | Ok op -> Some op
              | Error _ -> None))
+       ~current_op_state:
+         (* Default to [Queued] for snapshots written before this field
+            existed. A live agent will be re-promoted to [Running] when its
+            fiber resumes after restart. *)
+         (match Yojson.Safe.Util.member "current_op_state" json with
+         | `Null -> Patch_agent.Queued
+         | v -> (
+             match try_of_yojson Patch_agent.op_state_of_yojson v with
+             | Ok s -> s
+             | Error _ -> Patch_agent.Queued))
        ~current_message_id:
          (string_member_opt "current_message_id" json
          |> Option.map ~f:Message_id.of_string)

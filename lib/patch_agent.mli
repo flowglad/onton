@@ -9,6 +9,9 @@ open Base
 type session_fallback = Fresh_available | Tried_fresh | Given_up
 [@@deriving show, eq, sexp_of, compare, yojson]
 
+type op_state = Queued | Running
+[@@deriving show, eq, sexp_of, compare, yojson]
+
 type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
@@ -44,6 +47,13 @@ type t = private {
   branch_rebased_onto : Types.Branch.t option;
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
+  current_op_state : op_state;
+      (** Sub-state of [current_op]. [Queued] when the action fiber is alive but
+          its work has not begun (typically waiting on the Claude semaphore).
+          [Running] once the work has actually started. Meaningful only when
+          [busy] is true; reset to [Queued] on [complete]. Drives the TUI
+          "(queued)" suffix so a saturated semaphore can be told apart from an
+          actively-running session. *)
   current_message_id : Types.Message_id.t option;
   generation : int;
   worktree_path : string option;
@@ -322,7 +332,14 @@ val reset_automerge_failure_count : t -> t
 val resume_current_message : t -> op:Types.Operation_kind.t option -> t
 (** Resume execution of an already accepted message without reapplying its
     queue-consuming state transition. [~op] restores [current_op] from the
-    outbox so that [complete] can clear [human_messages] correctly. *)
+    outbox so that [complete] can clear [human_messages] correctly. Resets
+    [current_op_state] to [Queued] — the resumed fiber must call [mark_running]
+    when it actually begins work. *)
+
+val mark_running : t -> t
+(** Transition [current_op_state] from [Queued] to [Running]. Called from the
+    action fiber once the Claude semaphore has been acquired and real work is
+    about to begin. No-op when [busy] is false (fiber already exited). *)
 
 (** {2 Queries} *)
 
@@ -367,6 +384,7 @@ val restore :
   branch_rebased_onto:Types.Branch.t option ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
+  current_op_state:op_state ->
   current_message_id:Types.Message_id.t option ->
   generation:int ->
   worktree_path:string option ->

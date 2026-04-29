@@ -5,6 +5,9 @@ open Operation_kind
 type session_fallback = Fresh_available | Tried_fresh | Given_up
 [@@deriving show, eq, sexp_of, compare, yojson]
 
+type op_state = Queued | Running
+[@@deriving show, eq, sexp_of, compare, yojson]
+
 type t = {
   patch_id : Patch_id.t;
   branch : Branch.t;
@@ -37,6 +40,13 @@ type t = {
   branch_rebased_onto : Branch.t option;
   checks_passing : bool;
   current_op : Operation_kind.t option;
+  current_op_state : op_state;
+      (** Sub-state of [current_op]. [Queued] when the action fiber is alive but
+          the actual work has not begun (waiting on the Claude semaphore, or in
+          pre-work setup). [Running] once the work has started. Meaningful only
+          when [busy] is true; reset to [Queued] on [complete]. Drives the TUI
+          "(queued)" suffix so a saturated semaphore is distinguishable from an
+          actively-running session. *)
   current_message_id : Message_id.t option;
   generation : int;
   worktree_path : string option;
@@ -125,6 +135,7 @@ let create ~branch patch_id =
     branch_rebased_onto = None;
     checks_passing = false;
     current_op = None;
+    current_op_state = Queued;
     current_message_id = None;
     generation = 0;
     worktree_path = None;
@@ -166,6 +177,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     branch_rebased_onto = None;
     checks_passing = false;
     current_op = None;
+    current_op_state = Queued;
     current_message_id = None;
     generation = 0;
     worktree_path = None;
@@ -333,7 +345,16 @@ let increment_automerge_failure_count t =
 let reset_automerge_failure_count t = { t with automerge_failure_count = 0 }
 
 let resume_current_message t ~op =
-  { t with busy = true; has_session = true; current_op = op }
+  {
+    t with
+    busy = true;
+    has_session = true;
+    current_op = op;
+    current_op_state = Queued;
+  }
+
+let mark_running t =
+  if not t.busy then t else { t with current_op_state = Running }
 
 let reset_intervention_state t =
   {
@@ -354,9 +375,9 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count ~start_attempts_without_pr ~conflict_noop_count
     ~no_commits_push_count ~branch_rebased_onto ~checks_passing ~current_op
-    ~current_message_id ~generation ~worktree_path ~branch_blocked
-    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ~automerge_failure_count ~delivered_ci_run_ids =
+    ~current_op_state ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
+    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -385,6 +406,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     branch_rebased_onto;
     checks_passing;
     current_op;
+    current_op_state;
     current_message_id;
     generation;
     worktree_path;
@@ -428,6 +450,7 @@ let start t ~base_branch =
     has_session = true;
     busy = true;
     current_op = None;
+    current_op_state = Queued;
     current_message_id = None;
     satisfies = true;
     base_branch = Some base_branch;
@@ -461,6 +484,7 @@ let rebase t ~base_branch =
     has_session = true;
     busy = true;
     current_op = Some Rebase;
+    current_op_state = Queued;
     current_message_id = None;
     queue;
     base_branch = Some base_branch;
@@ -507,6 +531,7 @@ let respond t k =
     has_session = true;
     busy = true;
     current_op = Some k;
+    current_op_state = Queued;
     current_message_id = None;
     queue;
     satisfies;
@@ -527,6 +552,7 @@ let complete t =
       t with
       busy = false;
       current_op = None;
+      current_op_state = Queued;
       current_message_id = None;
       inflight_human_messages = [];
     }

@@ -367,6 +367,9 @@ let clear_branch_blocked t patch_id =
 
 let reset_busy t patch_id = update_agent t patch_id ~f:Patch_agent.reset_busy
 
+let mark_running t patch_id =
+  update_agent t patch_id ~f:Patch_agent.mark_running
+
 let set_worktree_path t patch_id path =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_worktree_path a path)
 

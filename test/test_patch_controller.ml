@@ -52,9 +52,10 @@ let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
     ~merge_ready:false ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~branch_rebased_onto:None
-    ~checks_passing:false ~current_op:None ~current_message_id:None
-    ~generation:0 ~worktree_path:None ~branch_blocked:false ~llm_session_id:None
-    ~automerge_enabled:false ~automerge_deadline:None ~automerge_inflight:false
+    ~checks_passing:false ~current_op:None ~current_op_state:Patch_agent.Queued
+    ~current_message_id:None ~generation:0 ~worktree_path:None
+    ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+    ~automerge_deadline:None ~automerge_inflight:false
     ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
 
 let has_draft_effect effects =
@@ -354,8 +355,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -394,8 +396,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -434,8 +437,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -567,8 +571,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -705,8 +710,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -908,8 +914,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -948,8 +955,9 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_message_id:None ~generation:0 ~worktree_path:None
-            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
