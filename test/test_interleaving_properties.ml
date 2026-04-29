@@ -921,24 +921,22 @@ let check_sync_outcome_invariants ~prev_agents ~curr_orch cmd =
           | Some (prev : Patch_agent.t) -> (
               match outcome with
               | Sync_delivered_k ->
-                  (* INV-A only applies to the targeted agent. We can't
-                     identify "the targeted agent" precisely here without
-                     plumbing the patch_idx, but every agent's pr_body
-                     fields must remain coherent: if the post-state has
-                     pr_body_delivered but prev didn't, the miss count must
-                     be 0 (since the sync resets it). For untouched
-                     agents, both fields are unchanged (Sync_delivered_k
-                     mutates only the targeted pid). *)
+                  (* INV-A: any agent with pr_body_delivered=true after a
+                     Sync_delivered_k command must have miss_count=0. The
+                     targeted agent has both set by the sync; untouched agents
+                     are unchanged, so this also asserts they were already
+                     coherent. Checking the post-state alone (rather than
+                     guarding on a false→true transition) catches the case
+                     where the targeted agent was already delivered. *)
+                  ignore prev;
                   if
                     a.Patch_agent.pr_body_delivered
-                    && (not prev.Patch_agent.pr_body_delivered)
                     && a.Patch_agent.pr_body_artifact_miss_count <> 0
                   then
                     failwith
                       (Printf.sprintf
                          "INV-A sync_delivered_resets_miss_count violated for \
-                          %s: pr_body_delivered flipped true but miss_count = \
-                          %d"
+                          %s: pr_body_delivered=true but miss_count = %d"
                          (Patch_id.to_string a.Patch_agent.patch_id)
                          a.Patch_agent.pr_body_artifact_miss_count)
               | Sync_no_op_k | Sync_patch_failed_k ->

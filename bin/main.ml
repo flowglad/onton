@@ -3499,7 +3499,21 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       | Patch_decision.Sync_skip -> None
                                       | Patch_decision.Sync_attempt_pr_body ->
                                           let pr =
-                                            Base.Option.value_exn pr_number
+                                            match pr_number with
+                                            | Some n -> n
+                                            | None ->
+                                                (* Invariant: Sync_attempt_pr_body
+                                                   is only reachable inside the
+                                                   Deliver arm, which requires a
+                                                   PR to exist. *)
+                                                failwith
+                                                  (Printf.sprintf
+                                                     "BUG: \
+                                                      Sync_attempt_pr_body \
+                                                      reached with no \
+                                                      pr_number for %s"
+                                                     (Patch_id.to_string
+                                                        patch_id))
                                           in
                                           let patch =
                                             Base.List.find_exn
