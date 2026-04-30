@@ -716,9 +716,15 @@ let render_recovery_section ~(base_branch : string)
   (* unique_commits is git-log order (newest-first); the bullet list reads
      oldest-first so an agent reapplying with cherry-pick can scan top-to-bottom
      in commit-order. *)
-  let commits_lines =
-    List.rev ci.Worktree.unique_commits
-    |> List.map ~f:bullet |> String.concat ~sep:"\n"
+  let commits_section =
+    if List.is_empty ci.Worktree.unique_commits then ""
+    else
+      let commits_lines =
+        List.rev ci.Worktree.unique_commits
+        |> List.map ~f:bullet |> String.concat ~sep:"\n"
+      in
+      Printf.sprintf "\n\nCommits unique to this patch (oldest first):\n%s"
+        commits_lines
   in
   let orig_head_block =
     if String.is_empty ci.Worktree.orig_head then ""
@@ -749,11 +755,8 @@ First refresh remote tracking refs, then restart with the same `--onto`
 range the supervisor used:
 
     git fetch origin
-    git rebase --onto %s %s
-
-Commits unique to this patch (oldest first):
-%s%s|}
-        base_branch ci.target ci.old_base commits_lines orig_head_block
+    git rebase --onto %s %s%s%s|}
+        base_branch ci.target ci.old_base commits_section orig_head_block
   | Worktree.Plain ->
       Printf.sprintf
         {|

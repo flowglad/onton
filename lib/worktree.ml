@@ -446,18 +446,25 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
     ~f:snd
 
 (** Pure: assemble a [conflict_info] from the contents of
-    [.git/rebase-merge/onto] and [.git/rebase-merge/orig-head] together with the
+    [.git/rebase-merge/onto], [.git/rebase-merge/upstream], and
+    [.git/rebase-merge/orig-head] together with the
     [git log --format=%H %s <onto>..<orig-head>] output. Used by the
     rebase-already-in-progress recovery path so the patch-agent prompt can
     surface the same recovery command as the fresh-rebase path. Returns [None]
-    when either contents string is blank or the log produces zero kept commits
-    (we degrade to a no-recovery-section prompt rather than emit a recovery
-    block with bogus values). *)
-let parse_rebase_merge_state ~onto_contents ~orig_head_contents ~log_format_h_s
-    ~project_name ~ancestor_ids ~target =
+    when [onto] or [upstream] is blank or the log produces zero kept commits (we
+    degrade to a no-recovery-section prompt rather than emit a recovery block
+    with bogus values).
+
+    [onto_contents] is the rebase destination SHA (first positional arg of
+    [git rebase --onto X Y]); [upstream_contents] is the old-base SHA (second
+    positional arg, the limit on what gets replayed). The recovery command needs
+    the upstream as [old_base], not [onto]. *)
+let parse_rebase_merge_state ~onto_contents ~upstream_contents
+    ~orig_head_contents ~log_format_h_s ~project_name ~ancestor_ids ~target =
   let onto = String.strip onto_contents in
+  let old_base = String.strip upstream_contents in
   let orig_head = String.strip orig_head_contents in
-  if String.is_empty onto then None
+  if String.is_empty onto || String.is_empty old_base then None
   else
     match
       classify_unique_commits ~project_name ~ancestor_ids log_format_h_s
@@ -467,13 +474,14 @@ let parse_rebase_merge_state ~onto_contents ~orig_head_contents ~log_format_h_s
         (* Only [.git/rebase-merge] state is read by this function. A plain
            [git rebase] normally uses [rebase-apply], not [rebase-merge], so
            [strategy = Onto] is correct. Caveat: [rebase.backend = merge] in
-           the user's gitconfig forces [rebase-merge] for plain rebases too;
-           in that case [old_base] would be empty and the recovery command
-           would be malformed. *)
+           the user's gitconfig forces [rebase-merge] for plain rebases too,
+           in which case the recovery command would be a plain rebase wearing
+           [--onto] clothing — still functional because [onto = upstream] in
+           that case. *)
         Some
           {
             target;
-            old_base = onto;
+            old_base;
             unique_commits = commits;
             strategy = Onto;
             orig_head;
@@ -757,11 +765,11 @@ let read_file_opt path =
 
 (** Effectful: reconstruct [conflict_info] when a rebase is already in progress
     in the worktree (the orchestrator restarts mid-rebase, or a previous run
-    left state behind). Reads the [.git/rebase-merge/onto] and
-    [.git/rebase-merge/orig-head] files to recover the [--onto] anchor and the
-    pre-rebase HEAD, runs [git log --format=%H %s onto..orig-head] to enumerate
-    the commits the rebase intends to replay, then delegates to the pure
-    [parse_rebase_merge_state]. Returns [None] best-effort: any read or git
+    left state behind). Reads [.git/rebase-merge/{onto,upstream,orig-head}] to
+    recover the [--onto] destination, the upstream (old_base) limit, and the
+    pre-rebase HEAD, runs [git log --format=%H %s upstream..orig-head] to
+    enumerate the commits the rebase intends to replay, then delegates to the
+    pure [parse_rebase_merge_state]. Returns [None] best-effort: any read or git
     failure degrades to a no-recovery-section prompt rather than blocking
     delivery. Only handles [.git/rebase-merge] (the merge-style rebase used by
     [rebase_onto]); a [.git/rebase-apply] state returns [None]. *)
@@ -781,15 +789,29 @@ let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
       else git_dir
     in
     let onto_path = Stdlib.Filename.concat git_dir "rebase-merge/onto" in
+    let upstream_path =
+      Stdlib.Filename.concat git_dir "rebase-merge/upstream"
+    in
     let orig_head_path =
       Stdlib.Filename.concat git_dir "rebase-merge/orig-head"
     in
-    match (read_file_opt onto_path, read_file_opt orig_head_path) with
-    | Some onto_contents, Some orig_head_contents ->
+    match
+      ( read_file_opt onto_path,
+        read_file_opt upstream_path,
+        read_file_opt orig_head_path )
+    with
+    | Some onto_contents, Some upstream_contents, Some orig_head_contents ->
         let onto = String.strip onto_contents in
+        let upstream = String.strip upstream_contents in
         let orig_head = String.strip orig_head_contents in
-        if String.is_empty onto || String.is_empty orig_head then None
+        if
+          String.is_empty onto || String.is_empty upstream
+          || String.is_empty orig_head
+        then None
         else
+          (* Use upstream..orig-head, not onto..orig-head: the unique-commit
+             range is bounded by the upstream (the rebase's "since" anchor),
+             not by the destination. *)
           let log_code, log_stdout, _ =
             run_git_exit_code ~process_mgr
               [
@@ -800,13 +822,14 @@ let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
                 "--no-merges";
                 "--no-show-signature";
                 "--format=%H %s";
-                Printf.sprintf "%s..%s" onto orig_head;
+                Printf.sprintf "%s..%s" upstream orig_head;
               ]
           in
           if log_code <> 0 then None
           else
-            parse_rebase_merge_state ~onto_contents ~orig_head_contents
-              ~log_format_h_s:log_stdout ~project_name ~ancestor_ids ~target
+            parse_rebase_merge_state ~onto_contents ~upstream_contents
+              ~orig_head_contents ~log_format_h_s:log_stdout ~project_name
+              ~ancestor_ids ~target
     | _ -> None
 
 let find_for_branch ~process_mgr ~repo_root branch =

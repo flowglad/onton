@@ -141,6 +141,7 @@ type conflict_info = {
 
 val parse_rebase_merge_state :
   onto_contents:string ->
+  upstream_contents:string ->
   orig_head_contents:string ->
   log_format_h_s:string ->
   project_name:string ->
@@ -148,9 +149,11 @@ val parse_rebase_merge_state :
   target:string ->
   conflict_info option
 (** Pure: assemble a [conflict_info] from the contents of
-    [.git/rebase-merge/onto] and [.git/rebase-merge/orig-head] together with
-    [git log --format=%H %s <onto>..<orig-head>] output. Returns [None] when
-    [onto_contents] is blank or the log produces zero kept commits. *)
+    [.git/rebase-merge/{onto,upstream,orig-head}] together with
+    [git log --format=%H %s <upstream>..<orig-head>] output. Returns [None] when
+    [onto_contents] or [upstream_contents] is blank or the log produces zero
+    kept commits. [onto_contents] is the rebase destination SHA;
+    [upstream_contents] is the old-base SHA used as the recovery [old_base]. *)
 
 type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string
 [@@deriving show, eq, sexp_of, compare]

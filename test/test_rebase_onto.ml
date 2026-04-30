@@ -557,17 +557,19 @@ let () =
          commits"
       ~count:1 Gen.unit (fun () ->
         let onto = "abc1234567890abc1234567890abc1234567890a\n" in
+        let upstream = "111aaaa1234567890aaaa1234567890aaaa12345\n" in
         let orig_head = "fff1234567890fff1234567890fff1234567890f\n" in
         let log_body = "sha111 subj A\nsha222 subj B\nsha333 subj C\n" in
         match
           Worktree.parse_rebase_merge_state ~onto_contents:onto
-            ~orig_head_contents:orig_head ~log_format_h_s:log_body
-            ~project_name:"" ~ancestor_ids:[] ~target:"main"
+            ~upstream_contents:upstream ~orig_head_contents:orig_head
+            ~log_format_h_s:log_body ~project_name:"" ~ancestor_ids:[]
+            ~target:"main"
         with
         | Some ci ->
             String.equal ci.Worktree.target "main"
             && String.equal ci.Worktree.old_base
-                 "abc1234567890abc1234567890abc1234567890a"
+                 "111aaaa1234567890aaaa1234567890aaaa12345"
             && String.equal ci.Worktree.orig_head
                  "fff1234567890fff1234567890fff1234567890f"
             && List.length ci.Worktree.unique_commits = 3
@@ -580,12 +582,14 @@ let () =
         "parse_rebase_merge_state: orig_head stripped of trailing whitespace"
       ~count:1 Gen.unit (fun () ->
         let onto = "deadbeef\n" in
+        let upstream = "1234abcd\n" in
         let orig_head = "  cafef00d  \n" in
         let log_body = "sha111 subj\n" in
         match
           Worktree.parse_rebase_merge_state ~onto_contents:onto
-            ~orig_head_contents:orig_head ~log_format_h_s:log_body
-            ~project_name:"" ~ancestor_ids:[] ~target:"main"
+            ~upstream_contents:upstream ~orig_head_contents:orig_head
+            ~log_format_h_s:log_body ~project_name:"" ~ancestor_ids:[]
+            ~target:"main"
         with
         | Some ci -> String.equal ci.Worktree.orig_head "cafef00d"
         | None -> false)
@@ -595,8 +599,18 @@ let () =
       Gen.unit (fun () ->
         Option.is_none
           (Worktree.parse_rebase_merge_state ~onto_contents:"  \n"
-             ~orig_head_contents:"abc\n" ~log_format_h_s:"x subj\n"
-             ~project_name:"" ~ancestor_ids:[] ~target:"main"))
+             ~upstream_contents:"1234abcd\n" ~orig_head_contents:"abc\n"
+             ~log_format_h_s:"x subj\n" ~project_name:"" ~ancestor_ids:[]
+             ~target:"main"))
+  in
+  let prop_blank_upstream_none =
+    Test.make ~name:"parse_rebase_merge_state: blank upstream -> None" ~count:1
+      Gen.unit (fun () ->
+        Option.is_none
+          (Worktree.parse_rebase_merge_state ~onto_contents:"deadbeef\n"
+             ~upstream_contents:"  \n" ~orig_head_contents:"abc\n"
+             ~log_format_h_s:"x subj\n" ~project_name:"" ~ancestor_ids:[]
+             ~target:"main"))
   in
   let prop_empty_log_none =
     Test.make
@@ -604,6 +618,7 @@ let () =
       ~count:1 Gen.unit (fun () ->
         Option.is_none
           (Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
+             ~upstream_contents:"111aaaa1234567890\n"
              ~orig_head_contents:"def1234567890\n" ~log_format_h_s:""
              ~project_name:"" ~ancestor_ids:[] ~target:"main"))
   in
@@ -612,6 +627,7 @@ let () =
       prop_basic;
       prop_orig_head_stripped;
       prop_blank_onto_none;
+      prop_blank_upstream_none;
       prop_empty_log_none;
     ]
   in
