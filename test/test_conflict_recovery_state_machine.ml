@@ -265,10 +265,15 @@ let () =
         return (core, tail))
       (fun (core, tail) ->
         let prev_state, prev_err = run_sequence core in
-        if Option.is_some prev_err then false
+        (* An R-1..R-4 violation in [core] is the concern of
+           [prop_invariants_hold], not R-5; treat it as a precondition
+           failure (skip via [true]) so a shrunk R-5 counter-example always
+           points at the [tail] command, not at unrelated invariant
+           violations earlier in the sequence. Same for [final_err]. *)
+        if Option.is_some prev_err then true
         else
           let final_state, final_err = run_sequence (core @ [ tail ]) in
-          if Option.is_some final_err then false
+          if Option.is_some final_err then true
           else
             let precondition_holds =
               match prev_state with
