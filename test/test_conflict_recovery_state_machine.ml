@@ -122,16 +122,22 @@ let invariants (state : phase) =
   | Idle | Auto_rebased _ | Resolved | Terminal | Aborted_then_recovered _ ->
       Ok ()
   | Conflict_delivered { ci; prior_commits } ->
-      (* R-1: Onto strategy implies non-empty old_base AND non-empty commits. *)
+      (* R-1: Onto requires a non-empty old_base (needed to render the
+         [--onto] command). unique_commits MAY be empty — production's
+         parse_rebase_merge_state degrades to an empty list when the log is
+         empty or every commit is ancestor-filtered, and the renderer omits
+         the bullet header in that case. Plain strategy still requires both
+         to be empty (fresh-rebase Plain branch never has unique commits). *)
       let r1 =
         match ci.strategy with
-        | Worktree.Onto ->
-            (not (String.is_empty ci.old_base))
-            && not (List.is_empty ci.unique_commits)
+        | Worktree.Onto -> not (String.is_empty ci.old_base)
         | Worktree.Plain ->
             String.is_empty ci.old_base && List.is_empty ci.unique_commits
       in
-      if not r1 then Error "R-1 violated: Onto with empty old_base or commits"
+      if not r1 then
+        Error
+          "R-1 violated: Onto with empty old_base, or Plain with non-empty \
+           old_base/commits"
       else
         (* R-3 / R-4: prior_commits set is preserved across reconstruction
            (the model carries it; production reconstruction must round-trip). *)
