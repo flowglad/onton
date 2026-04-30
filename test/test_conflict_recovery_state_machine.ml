@@ -45,7 +45,7 @@ type cmd =
 let onto_fixture : Worktree.conflict_info =
   Worktree.
     {
-      target = "main";
+      target = "origin/main";
       old_base = "abc1234567890abc1234567890abc1234567890a";
       unique_commits =
         [
@@ -60,7 +60,7 @@ let onto_fixture : Worktree.conflict_info =
 let plain_fixture : Worktree.conflict_info =
   Worktree.
     {
-      target = "main";
+      target = "origin/main";
       old_base = "";
       unique_commits = [];
       strategy = Plain;

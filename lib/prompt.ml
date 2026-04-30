@@ -705,8 +705,7 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
          for you — do not run `git push`."
         pr_ctx)
 
-let render_recovery_section ~(base_branch : string)
-    (ci : Worktree.conflict_info) =
+let render_recovery_section (ci : Worktree.conflict_info) =
   let bullet (c : Worktree.unique_commit) =
     let short =
       if String.length c.sha >= 7 then String.sub c.sha ~pos:0 ~len:7 else c.sha
@@ -748,7 +747,7 @@ rebase began:
 
 If `git status` no longer shows a rebase in progress (e.g. you ran
 `git rebase --abort` or the worktree was reset), do NOT run
-`git rebase origin/%s` against your local tracking ref — it may be stale
+`git rebase %s` against your local tracking ref — it may be stale
 and would re-pick already-merged dependency commits.
 
 First refresh remote tracking refs, then restart with the same `--onto`
@@ -756,7 +755,7 @@ range the supervisor used:
 
     git fetch origin
     git rebase --onto %s %s%s%s|}
-        base_branch ci.target ci.old_base commits_section orig_head_block
+        ci.target ci.target ci.old_base commits_section orig_head_block
   | Worktree.Plain ->
       Printf.sprintf
         {|
@@ -835,7 +834,7 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
   in
   let recovery_section =
     match conflict_info with
-    | Some ci -> render_recovery_section ~base_branch ci
+    | Some ci -> render_recovery_section ci
     | None -> ""
   in
   let old_base_var =
