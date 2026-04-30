@@ -199,10 +199,12 @@ val read_in_progress_conflict_info :
     [.git/rebase-merge/{onto,upstream,orig-head}] to recover the [--onto]
     destination, the upstream (old-base limit), and the pre-rebase HEAD, then
     runs [git log upstream..orig-head] to enumerate the patch's unique commits.
-    Delegates to [parse_rebase_merge_state]. Returns [None] best-effort: any
-    read or git failure degrades to a no-recovery-section prompt rather than
-    blocking delivery. Only handles [.git/rebase-merge] rebases; a
-    [.git/rebase-apply] state returns [None]. *)
+    Delegates to [parse_rebase_merge_state]. [onto] and [upstream] are required;
+    a missing or blank [orig-head] degrades to an empty [orig_head] (the prompt
+    skips the [git reset --hard] block) and the log range falls back to
+    [upstream..HEAD]. Returns [None] best-effort when [onto]/[upstream] reads
+    fail or the [git log] call errors. Only handles [.git/rebase-merge] rebases;
+    a [.git/rebase-apply] state returns [None]. *)
 
 val parse_push_porcelain : string -> char option
 (** Pure: extract the status flag character from [git push --porcelain] stdout.

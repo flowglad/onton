@@ -801,23 +801,30 @@ let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
     let orig_head_path =
       Stdlib.Filename.concat git_dir "rebase-merge/orig-head"
     in
-    match
-      ( read_file_opt onto_path,
-        read_file_opt upstream_path,
-        read_file_opt orig_head_path )
-    with
-    | Some onto_contents, Some upstream_contents, Some orig_head_contents ->
+    match (read_file_opt onto_path, read_file_opt upstream_path) with
+    | Some onto_contents, Some upstream_contents ->
         let onto = String.strip onto_contents in
         let upstream = String.strip upstream_contents in
-        let orig_head = String.strip orig_head_contents in
-        if
-          String.is_empty onto || String.is_empty upstream
-          || String.is_empty orig_head
-        then None
+        if String.is_empty onto || String.is_empty upstream then None
         else
+          (* orig-head is best-effort: a missing or empty file degrades to
+             "" (the prompt skips the [git reset --hard] block) instead of
+             dropping the whole recovery section. The fresh-rebase path
+             already treats orig_head this way when [git rev-parse HEAD]
+             fails; mirror that here so a restarted orchestrator gives the
+             same guidance. *)
+          let orig_head_contents =
+            Option.value (read_file_opt orig_head_path) ~default:""
+          in
+          let orig_head = String.strip orig_head_contents in
           (* Use upstream..orig-head, not onto..orig-head: the unique-commit
              range is bounded by the upstream (the rebase's "since" anchor),
-             not by the destination. *)
+             not by the destination. When orig-head is empty (best-effort
+             miss), fall back to HEAD so [git log] still yields the rebase's
+             intended replay set. *)
+          let log_endpoint =
+            if String.is_empty orig_head then "HEAD" else orig_head
+          in
           let log_code, log_stdout, _ =
             run_git_exit_code ~process_mgr
               [
@@ -828,7 +835,7 @@ let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
                 "--no-merges";
                 "--no-show-signature";
                 "--format=%H %s";
-                Printf.sprintf "%s..%s" upstream orig_head;
+                Printf.sprintf "%s..%s" upstream log_endpoint;
               ]
           in
           if log_code <> 0 then None
