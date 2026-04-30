@@ -195,10 +195,12 @@ val read_in_progress_conflict_info :
   conflict_info option
 (** Effectful: reconstruct [conflict_info] when a rebase is already in progress
     in the worktree at [path] (the orchestrator restarts mid-rebase, or a
-    previous run left state behind). Reads [.git/rebase-merge/{onto,orig-head}]
-    and runs [git log onto..orig-head] to enumerate the patch's unique commits,
-    then delegates to [parse_rebase_merge_state]. Returns [None] best-effort:
-    any read or git failure degrades to a no-recovery-section prompt rather than
+    previous run left state behind). Reads
+    [.git/rebase-merge/{onto,upstream,orig-head}] to recover the [--onto]
+    destination, the upstream (old-base limit), and the pre-rebase HEAD, then
+    runs [git log upstream..orig-head] to enumerate the patch's unique commits.
+    Delegates to [parse_rebase_merge_state]. Returns [None] best-effort: any
+    read or git failure degrades to a no-recovery-section prompt rather than
     blocking delivery. Only handles [.git/rebase-merge] rebases; a
     [.git/rebase-apply] state returns [None]. *)
 
