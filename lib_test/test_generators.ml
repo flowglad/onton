@@ -652,6 +652,74 @@ let print_session_result = Onton.Orchestrator.show_session_result
 let print_patch_id = Patch_id.to_string
 let print_branch = Branch.to_string
 
+(* -- Worktree.unique_commit / conflict_info / log lines -- *)
+
+(** SHA gen consistent with the existing one in test_rebase_onto.ml: 6–40 lower-
+    case hex chars. *)
+let gen_sha =
+  QCheck2.Gen.(string_size ~gen:(char_range 'a' 'f') (int_range 6 40))
+
+(** Subject line that is guaranteed not to match the [<project>] Patch <N>:
+    convention (so the ancestor filter never drops it accidentally). *)
+let gen_non_ancestor_subject =
+  QCheck2.Gen.(
+    let* head = string_size ~gen:(char_range 'a' 'z') (int_range 3 12) in
+    let* tail = string_size ~gen:(char_range 'a' 'z') (int_range 0 30) in
+    return (head ^ ":" ^ tail))
+
+let gen_unique_commit =
+  QCheck2.Gen.(
+    let* sha = gen_sha in
+    let* subject = gen_non_ancestor_subject in
+    return Onton.Worktree.{ sha; subject })
+
+(** Generate a [git log --format=%H %s] body from a list of [unique_commit]s, in
+    git's emission order (newest-first). Trailing newline matches real git
+    output. *)
+let log_body_of_commits (commits : Onton.Worktree.unique_commit list) =
+  let line (c : Onton.Worktree.unique_commit) =
+    Printf.sprintf "%s %s" c.Onton.Worktree.sha c.Onton.Worktree.subject
+  in
+  match commits with
+  | [] -> ""
+  | _ -> String.concat ~sep:"\n" (List.map commits ~f:line) ^ "\n"
+
+let gen_log_lines = QCheck2.Gen.(list_size (int_range 1 12) gen_unique_commit)
+let gen_rebase_strategy = QCheck2.Gen.oneof_list Onton.Worktree.[ Onto; Plain ]
+
+let gen_target_branch =
+  QCheck2.Gen.(string_size ~gen:(char_range 'a' 'z') (int_range 3 10))
+
+let gen_conflict_info =
+  QCheck2.Gen.(
+    let* target = gen_target_branch in
+    let* strategy = gen_rebase_strategy in
+    match strategy with
+    | Onton.Worktree.Onto ->
+        let* commits = list_size (int_range 1 8) gen_unique_commit in
+        let* old_base = gen_sha in
+        let* orig_head = gen_sha in
+        return
+          Onton.Worktree.
+            {
+              target;
+              old_base;
+              unique_commits = commits;
+              strategy = Onto;
+              orig_head;
+            }
+    | Onton.Worktree.Plain ->
+        let* orig_head = gen_sha in
+        return
+          Onton.Worktree.
+            {
+              target;
+              old_base = "";
+              unique_commits = [];
+              strategy = Plain;
+              orig_head;
+            })
+
 (* -- Shared test helpers -- *)
 
 let mk_linear_patches n =

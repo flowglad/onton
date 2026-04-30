@@ -381,6 +381,244 @@ let () =
   if errcode <> 0 then Stdlib.exit errcode
 
 (* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.classify_unique_commits] —
+   the new decision layer that returns BOTH the per-commit list and the
+   oldest SHA. [oldest_non_ancestor_commit] is now a thin wrapper, so the
+   properties above continue to cover its slice; these properties cover
+   the additional list-shape guarantees the prompt agent depends on.
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let pid = Types.Patch_id.of_string in
+  let sha_gen =
+    Gen.string_size ~gen:(Gen.char_range 'a' 'f') (Gen.int_range 6 40)
+  in
+  let plain_subject_gen =
+    Gen.(
+      let* head = string_size ~gen:(char_range 'a' 'z') (int_range 3 10) in
+      let* tail = string_size ~gen:(char_range 'a' 'z') (int_range 0 20) in
+      return (head ^ " " ^ tail))
+  in
+  let classify =
+    Worktree.classify_unique_commits ~project_name:"" ~ancestor_ids:[]
+  in
+  let prop_classify_empty =
+    Test.make ~name:"classify_unique_commits: empty -> Error" ~count:1 Gen.unit
+      (fun () ->
+        match classify "" with Result.Error _ -> true | Result.Ok _ -> false)
+  in
+  let prop_classify_length_pairs_oldest =
+    Test.make
+      ~name:
+        "classify_unique_commits: length matches input + oldest is last commit"
+      ~count:200
+      Gen.(pair (list_size (int_range 1 12) sha_gen) plain_subject_gen)
+      (fun (shas, subject) ->
+        try
+          let lines =
+            List.map shas ~f:(fun s -> Printf.sprintf "%s %s" s subject)
+          in
+          let body = String.concat ~sep:"\n" lines ^ "\n" in
+          match classify body with
+          | Result.Ok (commits, oldest_sha) ->
+              List.length commits = List.length shas
+              && String.equal oldest_sha (List.last_exn shas)
+              &&
+              let actual_shas =
+                List.map commits ~f:(fun (c : Worktree.unique_commit) ->
+                    c.Worktree.sha)
+              in
+              List.equal String.equal actual_shas shas
+          | Result.Error _ -> false
+        with _ -> false)
+  in
+  let prop_classify_all_ancestors_error =
+    Test.make ~name:"classify_unique_commits: every line is ancestor -> Error"
+      ~count:1 Gen.unit (fun () ->
+        let input =
+          "anc002 [proj] Patch 2: bar\nanc001 [proj] Patch 1: foo\n"
+        in
+        match
+          Worktree.classify_unique_commits ~project_name:"proj"
+            ~ancestor_ids:[ pid "1"; pid "2" ]
+            input
+        with
+        | Result.Error _ -> true
+        | Result.Ok _ -> false)
+  in
+  let prop_classify_filter_invariant =
+    Test.make
+      ~name:
+        "classify_unique_commits: kept count + ancestor count = total lines, \
+         and no kept subject is_ancestor" ~count:1 Gen.unit (fun () ->
+        let input =
+          "feat03 [proj] Patch 7: head\n\
+           anc002 [proj] Patch 2: drop dup\n\
+           feat02 some other thing\n\
+           anc001 [proj] Patch 1: add schema\n\
+           feat01 my own commit\n"
+        in
+        let ancestor_ids = [ pid "1"; pid "2" ] in
+        match
+          Worktree.classify_unique_commits ~project_name:"proj" ~ancestor_ids
+            input
+        with
+        | Result.Ok (commits, _) ->
+            List.length commits = 3
+            && List.for_all commits ~f:(fun c ->
+                not
+                  (Worktree.is_ancestor_patch_subject ~project_name:"proj"
+                     ~ancestor_ids c.Worktree.subject))
+        | Result.Error _ -> false)
+  in
+  let prop_classify_subject_with_spaces =
+    Test.make
+      ~name:
+        "classify_unique_commits: subject with spaces survives lsplit2 boundary"
+      ~count:1 Gen.unit (fun () ->
+        let input = "abc123 add foo bar baz quux\n" in
+        match classify input with
+        | Result.Ok (commits, oldest) -> (
+            match commits with
+            | [ c ] ->
+                String.equal c.Worktree.sha "abc123"
+                && String.equal c.Worktree.subject "add foo bar baz quux"
+                && String.equal oldest "abc123"
+            | _ -> false)
+        | Result.Error _ -> false)
+  in
+  let prop_classify_crlf =
+    Test.make ~name:"classify_unique_commits: CRLF \\r is stripped from SHA"
+      ~count:1 Gen.unit (fun () ->
+        let input = "newer1 subj A\r\nolder2 subj B\r\n" in
+        match classify input with
+        | Result.Ok (commits, oldest) ->
+            List.length commits = 2
+            && String.equal oldest "older2"
+            && List.for_all commits ~f:(fun c ->
+                not (String.is_suffix c.Worktree.sha ~suffix:"\r"))
+        | Result.Error _ -> false)
+  in
+  let prop_back_compat_oldest_wrapper =
+    Test.make
+      ~name:
+        "oldest_non_ancestor_commit ≡ Result.map ~f:snd \
+         (classify_unique_commits …)"
+      ~count:200
+      Gen.(list_size (int_range 0 12) sha_gen)
+      (fun shas ->
+        try
+          let body =
+            match shas with
+            | [] -> ""
+            | _ ->
+                String.concat ~sep:"\n"
+                  (List.map shas ~f:(fun s -> s ^ " subj"))
+                ^ "\n"
+          in
+          let direct =
+            Worktree.oldest_non_ancestor_commit ~project_name:""
+              ~ancestor_ids:[] body
+          in
+          let derived =
+            Result.map
+              (Worktree.classify_unique_commits ~project_name:""
+                 ~ancestor_ids:[] body)
+              ~f:snd
+          in
+          Result.equal String.equal String.equal direct derived
+        with _ -> false)
+  in
+  let suite =
+    [
+      prop_classify_empty;
+      prop_classify_length_pairs_oldest;
+      prop_classify_all_ancestors_error;
+      prop_classify_filter_invariant;
+      prop_classify_subject_with_spaces;
+      prop_classify_crlf;
+      prop_back_compat_oldest_wrapper;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.parse_rebase_merge_state]
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let prop_basic =
+    Test.make
+      ~name:
+        "parse_rebase_merge_state: well-formed inputs -> Some Onto with N \
+         commits"
+      ~count:1 Gen.unit (fun () ->
+        let onto = "abc1234567890abc1234567890abc1234567890a\n" in
+        let orig_head = "fff1234567890fff1234567890fff1234567890f\n" in
+        let log_body = "sha111 subj A\nsha222 subj B\nsha333 subj C\n" in
+        match
+          Worktree.parse_rebase_merge_state ~onto_contents:onto
+            ~orig_head_contents:orig_head ~log_format_h_s:log_body
+            ~project_name:"" ~ancestor_ids:[] ~target:"main"
+        with
+        | Some ci ->
+            String.equal ci.Worktree.target "main"
+            && String.equal ci.Worktree.old_base
+                 "abc1234567890abc1234567890abc1234567890a"
+            && String.equal ci.Worktree.orig_head
+                 "fff1234567890fff1234567890fff1234567890f"
+            && List.length ci.Worktree.unique_commits = 3
+            && Worktree.equal_rebase_strategy ci.Worktree.strategy Worktree.Onto
+        | None -> false)
+  in
+  let prop_orig_head_stripped =
+    Test.make
+      ~name:
+        "parse_rebase_merge_state: orig_head stripped of trailing whitespace"
+      ~count:1 Gen.unit (fun () ->
+        let onto = "deadbeef\n" in
+        let orig_head = "  cafef00d  \n" in
+        let log_body = "sha111 subj\n" in
+        match
+          Worktree.parse_rebase_merge_state ~onto_contents:onto
+            ~orig_head_contents:orig_head ~log_format_h_s:log_body
+            ~project_name:"" ~ancestor_ids:[] ~target:"main"
+        with
+        | Some ci -> String.equal ci.Worktree.orig_head "cafef00d"
+        | None -> false)
+  in
+  let prop_blank_onto_none =
+    Test.make ~name:"parse_rebase_merge_state: blank onto -> None" ~count:1
+      Gen.unit (fun () ->
+        Option.is_none
+          (Worktree.parse_rebase_merge_state ~onto_contents:"  \n"
+             ~orig_head_contents:"abc\n" ~log_format_h_s:"x subj\n"
+             ~project_name:"" ~ancestor_ids:[] ~target:"main"))
+  in
+  let prop_empty_log_none =
+    Test.make
+      ~name:"parse_rebase_merge_state: empty log body -> None (degraded)"
+      ~count:1 Gen.unit (fun () ->
+        Option.is_none
+          (Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
+             ~orig_head_contents:"def1234567890\n" ~log_format_h_s:""
+             ~project_name:"" ~ancestor_ids:[] ~target:"main"))
+  in
+  let suite =
+    [
+      prop_basic;
+      prop_orig_head_stripped;
+      prop_blank_onto_none;
+      prop_empty_log_none;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
    Integration tests for [Worktree.rebase_onto]
 
    Each test creates a temporary git repo with a realistic branch topology,
@@ -443,16 +681,16 @@ let assert_eq label expected actual =
 
 let assert_rebase_ok label = function
   | Worktree.Ok -> ()
-  | Worktree.Noop | Worktree.Conflict | Worktree.Error _ ->
+  | Worktree.Noop | Worktree.Conflict _ | Worktree.Error _ ->
       failwith (Printf.sprintf "%s: expected Ok" label)
 
 let assert_rebase_noop label = function
   | Worktree.Noop -> ()
-  | Worktree.Ok | Worktree.Conflict | Worktree.Error _ ->
+  | Worktree.Ok | Worktree.Conflict _ | Worktree.Error _ ->
       failwith (Printf.sprintf "%s: expected Noop" label)
 
 let assert_rebase_conflict label = function
-  | Worktree.Conflict -> ()
+  | Worktree.Conflict _ -> ()
   | Worktree.Ok | Worktree.Noop | Worktree.Error _ ->
       failwith (Printf.sprintf "%s: expected Conflict" label)
 
@@ -689,7 +927,7 @@ let () =
       on whether main is already an ancestor. *)
    (match result with
    | Worktree.Ok | Worktree.Noop -> ()
-   | Worktree.Conflict | Worktree.Error _ ->
+   | Worktree.Conflict _ | Worktree.Error _ ->
        failwith "test7: expected Ok or Noop");
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
    let lines = String.split_lines log in
@@ -720,7 +958,7 @@ let () =
       back to plain rebase. Plain rebase should produce Ok or conflict
       since D1 content overlaps with squash. Either way it shouldn't crash. *)
    (match result with
-   | Worktree.Ok | Worktree.Noop | Worktree.Conflict -> ()
+   | Worktree.Ok | Worktree.Noop | Worktree.Conflict _ -> ()
    | Worktree.Error msg ->
        failwith (Printf.sprintf "test8: unexpected error: %s" msg));
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);

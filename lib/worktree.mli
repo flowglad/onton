@@ -56,21 +56,36 @@ val is_ancestor_patch_subject :
     squash-merged ancestor commits whose patch-ids no longer match any commit on
     [main]. *)
 
-val oldest_non_ancestor_commit :
+type unique_commit = { sha : string; subject : string }
+[@@deriving show, eq, sexp_of, compare]
+
+val classify_unique_commits :
   project_name:string ->
   ancestor_ids:Types.Patch_id.t list ->
   string ->
-  (string, string) Result.t
+  (unique_commit list * string, string) Result.t
 (** Pure: parse
     [git log --cherry-pick --right-only --no-merges --no-show-signature
-     --format=%H %s] output and return the oldest SHA whose subject is not
-    [is_ancestor_patch_subject]. Returns [Error] when the filtered list is
-    empty. Both [--no-merges] and [--no-show-signature] are load-bearing for
+     --format=%H %s] output into [unique_commit] records, dropping entries whose
+    subject matches an ancestor patch. Preserves git's newest-first emission
+    order. Returns the list together with the oldest SHA (the [~1] of which
+    becomes the rebase's [--onto] anchor); callers cannot accidentally request
+    one without the other and lose the recovery info needed by the conflict
+    prompt. Both [--no-merges] and [--no-show-signature] are load-bearing for
     callers who build their own [git log] invocation: [--no-merges] prevents a
     merge-commit line like [<sha> Merge branch 'x'] from being picked as the
     oldest SHA (its [~1] parent is the wrong side of the merge), and
     [--no-show-signature] keeps GPG annotation lines from being mistaken for
     SHAs. *)
+
+val oldest_non_ancestor_commit :
+  project_name:string ->
+  ancestor_ids:Types.Patch_id.t list ->
+  string ->
+  (string, string) Result.t
+(** Pure back-compat wrapper around [classify_unique_commits] that returns only
+    the oldest SHA (drops the per-commit list). New code should call
+    [classify_unique_commits] directly. *)
 
 val git_status : process_mgr:_ Eio.Process.mgr -> path:string -> string
 (** Run [git status] in the worktree and return its output. Returns empty string
@@ -102,7 +117,42 @@ val fetch_origin :
     fails with "cannot lock ref". The lock serializes fetches to prevent this.
 *)
 
-type rebase_result = Ok | Noop | Conflict | Error of string
+type rebase_strategy = Onto | Plain [@@deriving show, eq, sexp_of, compare]
+
+type conflict_info = {
+  target : string;
+  old_base : string;
+  unique_commits : unique_commit list;
+  strategy : rebase_strategy;
+  orig_head : string;
+}
+[@@deriving show, eq, sexp_of, compare]
+(** Recovery payload threaded into the conflict prompt so an agent that aborts
+    the in-progress rebase can reconstruct the correct restart command. When
+    [strategy = Onto], the supervisor ran [git rebase --onto target old_base]
+    and the agent should restart with the same arguments; [unique_commits] is
+    the full set of commits that belong to this patch (oldest-last). When
+    [strategy = Plain], the supervisor fell back to [git rebase target] because
+    no unique commits could be isolated; [old_base = ""] and
+    [unique_commits = []]. [orig_head] is the pre-rebase HEAD SHA — captured
+    before [git rebase] ran, so an agent that loses worktree state can
+    [git reset --hard <orig_head>] back to their starting point. Empty when
+    capture failed (best-effort). *)
+
+val parse_rebase_merge_state :
+  onto_contents:string ->
+  orig_head_contents:string ->
+  log_format_h_s:string ->
+  project_name:string ->
+  ancestor_ids:Types.Patch_id.t list ->
+  target:string ->
+  conflict_info option
+(** Pure: assemble a [conflict_info] from the contents of
+    [.git/rebase-merge/onto] and [.git/rebase-merge/orig-head] together with
+    [git log --format=%H %s <onto>..<orig-head>] output. Returns [None] when
+    [onto_contents] is blank or the log produces zero kept commits. *)
+
+type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
 val rebase_onto :
@@ -119,7 +169,27 @@ val rebase_onto :
     [main], because squash-merged ancestor commits carry a fresh patch-id that
     cherry-pick cannot equate with the original feature-branch commits. Pass
     [~project_name:""] or [~ancestor_ids:[]] to opt out of the subject filter
-    entirely; cherry-pick deduplication still applies. *)
+    entirely; cherry-pick deduplication still applies.
+
+    On [Conflict], the rebase is left in progress and the returned
+    [conflict_info] carries the recovery info the patch-agent prompt threads
+    through to the agent. *)
+
+val read_in_progress_conflict_info :
+  process_mgr:_ Eio.Process.mgr ->
+  path:string ->
+  target:Types.Branch.t ->
+  project_name:string ->
+  ancestor_ids:Types.Patch_id.t list ->
+  conflict_info option
+(** Effectful: reconstruct [conflict_info] when a rebase is already in progress
+    in the worktree at [path] (the orchestrator restarts mid-rebase, or a
+    previous run left state behind). Reads [.git/rebase-merge/{onto,orig-head}]
+    and runs [git log onto..orig-head] to enumerate the patch's unique commits,
+    then delegates to [parse_rebase_merge_state]. Returns [None] best-effort:
+    any read or git failure degrades to a no-recovery-section prompt rather than
+    blocking delivery. Only handles [.git/rebase-merge] rebases; a
+    [.git/rebase-apply] state returns [None]. *)
 
 val parse_push_porcelain : string -> char option
 (** Pure: extract the status flag character from [git push --porcelain] stdout.

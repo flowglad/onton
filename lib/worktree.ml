@@ -336,7 +336,24 @@ let list_with_branches ~process_mgr ~repo_root =
            repo_root (Exn.to_string exn) msg));
   parse_porcelain ~repo_root:main_root (Buffer.contents buf)
 
-type rebase_result = Ok | Noop | Conflict | Error of string
+type unique_commit = { sha : string; subject : string }
+[@@deriving show, eq, sexp_of, compare]
+
+type rebase_strategy = Onto | Plain [@@deriving show, eq, sexp_of, compare]
+
+type conflict_info = {
+  target : string;
+  old_base : string;
+  unique_commits : unique_commit list;
+  strategy : rebase_strategy;
+  orig_head : string;
+      (* Pre-rebase HEAD SHA — captured before the rebase started, so an agent
+         that loses worktree state can [git reset --hard <orig_head>] back to
+         where they began. Empty string when capture failed (best-effort). *)
+}
+[@@deriving show, eq, sexp_of, compare]
+
+type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
 let run_git_exit_code ~process_mgr args =
@@ -383,15 +400,13 @@ let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
              (Types.Patch_id.of_string id_str)
              ~equal:Types.Patch_id.equal
 
-(** Pure: parse [git log --format=%H %s] output into (sha, subject) pairs, then
-    drop those whose subject matches an ancestor patch. Returns the oldest
-    remaining SHA, or [Error] when the filtered list is empty. Split out so the
-    subject-pattern fallback to [--cherry-pick] can be property-tested. Does not
-    [String.strip] the input: a commit with an empty subject still emits "<sha>
-    " (trailing space) from [%H %s], so stripping would erase the separator and
-    cause the SHA to be dropped. Blank lines (all whitespace) are ignored
-    explicitly. *)
-let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
+(** Pure: parse [git log --format=%H %s] output into [unique_commit] records,
+    dropping entries whose subject matches an ancestor patch. Preserves git's
+    newest-first emission order. Returns both the list and the oldest SHA (the
+    [~1] of which becomes the rebase's [--onto] anchor). The list and the SHA
+    are produced together so callers cannot accidentally request one without the
+    other and lose the recovery info needed by the conflict prompt. *)
+let classify_unique_commits ~project_name ~ancestor_ids log_output =
   let lines = String.split_lines log_output in
   let kept =
     List.filter_map lines ~f:(fun line ->
@@ -415,11 +430,48 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
           | Some (sha, subject) ->
               if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
               then None
-              else Some sha)
+              else Some { sha; subject })
   in
   match List.last kept with
-  | Some sha -> Result.Ok sha
+  | Some last -> Result.Ok (kept, last.sha)
   | None -> Result.Error "no unique commits found"
+
+(** Pure: parse [git log --format=%H %s] output and return the oldest SHA whose
+    subject is not [is_ancestor_patch_subject]. Back-compat wrapper around
+    [classify_unique_commits] — preserved so existing call sites that need only
+    the SHA do not need to handle the per-commit list. *)
+let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
+  Result.map
+    (classify_unique_commits ~project_name ~ancestor_ids log_output)
+    ~f:snd
+
+(** Pure: assemble a [conflict_info] from the contents of
+    [.git/rebase-merge/onto] and [.git/rebase-merge/orig-head] together with the
+    [git log --format=%H %s <onto>..<orig-head>] output. Used by the
+    rebase-already-in-progress recovery path so the patch-agent prompt can
+    surface the same recovery command as the fresh-rebase path. Returns [None]
+    when either contents string is blank or the log produces zero kept commits
+    (we degrade to a no-recovery-section prompt rather than emit a recovery
+    block with bogus values). *)
+let parse_rebase_merge_state ~onto_contents ~orig_head_contents ~log_format_h_s
+    ~project_name ~ancestor_ids ~target =
+  let onto = String.strip onto_contents in
+  let orig_head = String.strip orig_head_contents in
+  if String.is_empty onto then None
+  else
+    match
+      classify_unique_commits ~project_name ~ancestor_ids log_format_h_s
+    with
+    | Result.Error _ -> None
+    | Result.Ok (commits, _oldest_sha) ->
+        Some
+          {
+            target;
+            old_base = onto;
+            unique_commits = commits;
+            strategy = Onto;
+            orig_head;
+          }
 
 (** Find the old base commit for [--onto] rebase by identifying which commits on
     our branch are unique (not in target). Uses patch-id matching via
@@ -441,7 +493,7 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
         "--no-merges";
         (* Defeat log.showSignature=true in the user's gitconfig — otherwise
            [gpg: Signature made ...] lines would appear in the output and be
-           misinterpreted by [oldest_non_ancestor_commit] as SHAs. *)
+           misinterpreted by [classify_unique_commits] as SHAs. *)
         "--no-show-signature";
         "--format=%H %s";
         Printf.sprintf "%s...HEAD" target;
@@ -452,9 +504,9 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
       (Printf.sprintf "log cherry-pick failed (exit %d): %s" code
          (String.strip stderr))
   else
-    match oldest_non_ancestor_commit ~project_name ~ancestor_ids stdout with
-    | Result.Error _ as e -> e
-    | Result.Ok oldest_sha ->
+    match classify_unique_commits ~project_name ~ancestor_ids stdout with
+    | Result.Error msg -> Result.Error msg
+    | Result.Ok (commits, oldest_sha) ->
         let code, stdout, stderr =
           run_git_exit_code ~process_mgr
             [ "git"; "-C"; path; "rev-parse"; Printf.sprintf "%s~1" oldest_sha ]
@@ -463,7 +515,7 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
           Result.Error
             (Printf.sprintf "rev-parse oldest~1 failed (exit %d): %s" code
                (String.strip stderr))
-        else Result.Ok (String.strip stdout)
+        else Result.Ok (String.strip stdout, commits)
 
 (** Pure: classify a [git fetch origin] invocation from its exit code and
     stderr. Split out so the mapping from raw git output to fetch outcome can be
@@ -526,6 +578,17 @@ let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
          ancestor_code
          (String.strip ancestor_stderr))
   else
+    (* Capture the pre-rebase HEAD before either find_old_base's [git rev-parse]
+       calls or the rebase itself can move it. Best-effort: an empty string is
+       a valid value for [conflict_info.orig_head] (the prompt skips emergency
+       recovery when empty). *)
+    let orig_head =
+      let code, stdout, _ =
+        run_git_exit_code ~process_mgr
+          [ "git"; "-C"; path; "rev-parse"; "HEAD" ]
+      in
+      if code = 0 then String.strip stdout else ""
+    in
     match
       find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
     with
@@ -541,9 +604,19 @@ let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
                rebase_code
                (String.strip rebase_stderr))
         else
-          (* Leave rebase in progress for agent to resolve *)
+          (* Leave rebase in progress for agent to resolve. No commit list is
+             available because [classify_unique_commits] failed; the prompt
+             renders a Plain-strategy recovery section recommending plain
+             [git rebase <target>] instead of [--onto]. *)
           Conflict
-    | Result.Ok old_base ->
+            {
+              target;
+              old_base = "";
+              unique_commits = [];
+              strategy = Plain;
+              orig_head;
+            }
+    | Result.Ok (old_base, unique_commits) ->
         let rebase_code, _, rebase_stderr =
           run_git_exit_code ~process_mgr
             [ "git"; "-C"; path; "rebase"; "--onto"; target; old_base ]
@@ -554,8 +627,11 @@ let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
             (Printf.sprintf "rebase --onto failed (exit %d): %s" rebase_code
                (String.strip rebase_stderr))
         else
-          (* Leave rebase in progress for agent to resolve *)
+          (* Leave rebase in progress for agent to resolve, with the recovery
+             info threaded through so the prompt can render the exact --onto
+             command the supervisor used. *)
           Conflict
+            { target; old_base; unique_commits; strategy = Onto; orig_head }
 
 type push_result =
   | Push_ok
@@ -660,6 +736,70 @@ let rebase_in_progress ~process_mgr ~path =
     in
     Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-merge")
     || Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-apply")
+
+let read_file_opt path =
+  try
+    let ic = Stdlib.open_in path in
+    let len = Stdlib.in_channel_length ic in
+    let buf = Bytes.create len in
+    Stdlib.really_input ic buf 0 len;
+    Stdlib.close_in ic;
+    Some (Bytes.to_string buf)
+  with _ -> None
+
+(** Effectful: reconstruct [conflict_info] when a rebase is already in progress
+    in the worktree (the orchestrator restarts mid-rebase, or a previous run
+    left state behind). Reads the [.git/rebase-merge/onto] and
+    [.git/rebase-merge/orig-head] files to recover the [--onto] anchor and the
+    pre-rebase HEAD, runs [git log --format=%H %s onto..orig-head] to enumerate
+    the commits the rebase intends to replay, then delegates to the pure
+    [parse_rebase_merge_state]. Returns [None] best-effort: any read or git
+    failure degrades to a no-recovery-section prompt rather than blocking
+    delivery. Only handles [.git/rebase-merge] (the merge-style rebase used by
+    [rebase_onto]); a [.git/rebase-apply] state returns [None]. *)
+let read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
+    ~ancestor_ids =
+  let target = Types.Branch.to_string target in
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "rev-parse"; "--git-dir" ]
+  in
+  if code <> 0 then None
+  else
+    let git_dir = String.strip stdout in
+    let git_dir =
+      if Stdlib.Filename.is_relative git_dir then
+        Stdlib.Filename.concat path git_dir
+      else git_dir
+    in
+    let onto_path = Stdlib.Filename.concat git_dir "rebase-merge/onto" in
+    let orig_head_path =
+      Stdlib.Filename.concat git_dir "rebase-merge/orig-head"
+    in
+    match (read_file_opt onto_path, read_file_opt orig_head_path) with
+    | Some onto_contents, Some orig_head_contents ->
+        let onto = String.strip onto_contents in
+        let orig_head = String.strip orig_head_contents in
+        if String.is_empty onto || String.is_empty orig_head then None
+        else
+          let log_code, log_stdout, _ =
+            run_git_exit_code ~process_mgr
+              [
+                "git";
+                "-C";
+                path;
+                "log";
+                "--no-merges";
+                "--no-show-signature";
+                "--format=%H %s";
+                Printf.sprintf "%s..%s" onto orig_head;
+              ]
+          in
+          if log_code <> 0 then None
+          else
+            parse_rebase_merge_state ~onto_contents ~orig_head_contents
+              ~log_format_h_s:log_stdout ~project_name ~ancestor_ids ~target
+    | _ -> None
 
 let find_for_branch ~process_mgr ~repo_root branch =
   let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in

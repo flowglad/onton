@@ -705,8 +705,75 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
          for you — do not run `git push`."
         pr_ctx)
 
+let render_recovery_section ~(base_branch : string)
+    (ci : Worktree.conflict_info) =
+  let bullet (c : Worktree.unique_commit) =
+    let short =
+      if String.length c.sha >= 7 then String.sub c.sha ~pos:0 ~len:7 else c.sha
+    in
+    Printf.sprintf "  %s %s" short c.subject
+  in
+  (* unique_commits is git-log order (newest-first); the bullet list reads
+     oldest-first so an agent reapplying with cherry-pick can scan top-to-bottom
+     in commit-order. *)
+  let commits_lines =
+    List.rev ci.Worktree.unique_commits
+    |> List.map ~f:bullet |> String.concat ~sep:"\n"
+  in
+  let orig_head_block =
+    if String.is_empty ci.Worktree.orig_head then ""
+    else
+      Printf.sprintf
+        {|
+
+If you need to discard your in-progress conflict resolution and start over
+from your pre-rebase state, the supervisor captured your HEAD before the
+rebase began:
+
+    git reset --hard %s|}
+        ci.Worktree.orig_head
+  in
+  match ci.Worktree.strategy with
+  | Worktree.Onto ->
+      Printf.sprintf
+        {|
+
+## Recovery (if rebase state is lost)
+
+If `git status` no longer shows a rebase in progress (e.g. you ran
+`git rebase --abort` or the worktree was reset), do NOT run
+`git rebase origin/%s` against your local tracking ref — it may be stale
+and would re-pick already-merged dependency commits.
+
+First refresh remote tracking refs, then restart with the same `--onto`
+range the supervisor used:
+
+    git fetch origin
+    git rebase --onto %s %s
+
+Commits unique to this patch (oldest first):
+%s%s|}
+        base_branch ci.target ci.old_base commits_lines orig_head_block
+  | Worktree.Plain ->
+      Printf.sprintf
+        {|
+
+## Recovery (if rebase state is lost)
+
+If `git status` no longer shows a rebase in progress, refresh remote
+tracking refs and restart with:
+
+    git fetch origin
+    git rebase %s
+
+(No per-patch commit list could be isolated — the supervisor fell back
+to a plain rebase against `%s` because no unique commits were
+identified.)%s|}
+        ci.target ci.target orig_head_block
+
 let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
-    ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "") () =
+    ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
+    ?conflict_info () =
   let pr_ctx =
     match pr_number with
     | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
@@ -763,6 +830,20 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
           gp.Gameplan.solution_summary desc_section changes_section ac_section
     | _ -> ""
   in
+  let recovery_section =
+    match conflict_info with
+    | Some ci -> render_recovery_section ~base_branch ci
+    | None -> ""
+  in
+  let old_base_var =
+    match conflict_info with Some ci -> ci.Worktree.old_base | None -> ""
+  in
+  let target_branch_var =
+    match conflict_info with Some ci -> ci.Worktree.target | None -> ""
+  in
+  let orig_head_var =
+    match conflict_info with Some ci -> ci.Worktree.orig_head | None -> ""
+  in
   let vars =
     [
       ("project_name", project_name);
@@ -774,6 +855,10 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
       ("git_status", git_status);
       ("git_diff", git_diff);
       ("task_context", task_context);
+      ("recovery_section", recovery_section);
+      ("old_base", old_base_var);
+      ("target_branch", target_branch_var);
+      ("orig_head", orig_head_var);
     ]
   in
   render_with_override ~project_name ~name:"merge_conflict" ~vars
@@ -796,8 +881,9 @@ Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
 commits that have already been stripped.
 
-After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s|}
-        pr_ctx base_branch base_branch status_section diff_section task_context)
+After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s%s|}
+        pr_ctx base_branch base_branch status_section diff_section task_context
+        recovery_section)
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
