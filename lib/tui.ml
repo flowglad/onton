@@ -666,7 +666,24 @@ let pv_queued (pv : patch_view) =
   is_running_status pv.status
   && Patch_agent.equal_op_state pv.current_op_state Patch_agent.Queued
 
-let render_patch_row ~width ~selected (pv : patch_view) =
+(** Compact automerge indicator for the overview row. Empty when automerge is
+    disabled; otherwise a short colored badge describing the wait state. The
+    longer-form prose lives in [detail_info_rows]. *)
+let automerge_inline_info ~now (pv : patch_view) =
+  if not pv.automerge_enabled then ""
+  else if pv.automerge_failure_count >= Patch_controller.automerge_max_failures
+  then Term.styled [ Term.Sgr.fg_red ] " AM✗"
+  else
+    match pv.automerge_deadline with
+    | None -> Term.styled [ Term.Sgr.dim ] " AM⋯"
+    | Some d ->
+        let remaining = d -. now in
+        if Float.( > ) remaining 0.0 then
+          Term.styled [ Term.Sgr.fg_green ]
+            (Printf.sprintf " AM %.0fs" (Float.max 1.0 remaining))
+        else Term.styled [ Term.Sgr.fg_green ] " AM↻"
+
+let render_patch_row ~width ~selected ~now (pv : patch_view) =
   let badge = render_status_badge ~queued:(pv_queued pv) pv.status in
   let patch_label =
     let id_str = Patch_id.to_string pv.patch_id in
@@ -698,11 +715,12 @@ let render_patch_row ~width ~selected (pv : patch_view) =
       | None -> ""
     else ""
   in
+  let am_info = automerge_inline_info ~now pv in
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s %s %s  %s%s%s" cursor patch_label pr_label badge
-         pv.title ci_info dep_info)
+      (Printf.sprintf "%s%s %s %s  %s%s%s%s" cursor patch_label pr_label badge
+         pv.title ci_info dep_info am_info)
   in
   if selected then Term.styled [ Term.Sgr.bold ] row else row
 
@@ -718,7 +736,8 @@ let visible_window ~selected ~total ~max_visible =
     in
     (offset, max_visible)
 
-let render_patches ~width ~selected ~max_visible (views : patch_view list) =
+let render_patches ~width ~selected ~max_visible ~now (views : patch_view list)
+    =
   let total = List.length views in
   if total = 0 then
     ( [
@@ -738,7 +757,7 @@ let render_patches ~width ~selected ~max_visible (views : patch_view list) =
     let visible = List.sub views ~pos:offset ~len:vis_count in
     let rows =
       List.mapi visible ~f:(fun i pv ->
-          render_patch_row ~width ~selected:(offset + i = selected) pv)
+          render_patch_row ~width ~selected:(offset + i = selected) ~now pv)
     in
     let s = { offset; total; visible = count } in
     let top, bottom = scroll_indicators s in
@@ -1387,7 +1406,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
         in
         let max_patch_rows = Int.max 0 (height - reserved) in
         let patches, patch_header_lines, scroll_off, visible_rows =
-          render_patches ~width ~selected ~max_visible:max_patch_rows views
+          render_patches ~width ~selected ~max_visible:max_patch_rows ~now views
         in
         let patches_start_row = 5 + patch_header_lines + 1 in
         let lines =
