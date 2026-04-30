@@ -788,7 +788,7 @@ let execute_worktree_plan ~runtime ~process_mgr ~clock ~fs ~repo_root
             ~ancestor_ids
         with
         | Worktree.Ok -> loop ~path rest
-        | (Worktree.Noop | Worktree.Conflict | Worktree.Error _) as r ->
+        | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->
             (r, path))
   in
   loop ~path:default_path plan
@@ -2864,7 +2864,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                       | Worktree.Noop ->
                           log_event runtime ~patch_id
                             "Rebase noop — already up-to-date"
-                      | Worktree.Conflict ->
+                      | Worktree.Conflict _ ->
                           log_event runtime ~patch_id
                             "Rebase conflict — enqueued merge-conflict"
                       | Worktree.Error msg ->
@@ -3101,7 +3101,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                     in
                                     (* Helper: capture git context and deliver
                                    an enriched prompt to the agent. *)
-                                    let deliver_to_agent () =
+                                    let deliver_to_agent ?conflict_info () =
                                       let pr_number =
                                         agent.Patch_agent.pr_number
                                       in
@@ -3132,7 +3132,8 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           Prompt.render_merge_conflict_prompt
                                             ~project_name ?pr_number ?patch
                                             ~gameplan ~base_branch:base
-                                            ~git_status ~git_diff ()
+                                            ~git_status ~git_diff ?conflict_info
+                                            ()
                                         in
                                         if String.equal base_changed_prefix ""
                                         then raw
@@ -3166,6 +3167,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       | _ -> ());
                                       result
                                     in
+                                    let ancestor_ids =
+                                      Runtime.read runtime (fun snap ->
+                                          Graph.transitive_ancestors
+                                            (Orchestrator.graph
+                                               snap.Runtime.orchestrator)
+                                            patch_id)
+                                    in
                                     if
                                       Worktree.rebase_in_progress ~process_mgr
                                         ~path:wt_path
@@ -3173,7 +3181,19 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                       log_event runtime ~patch_id
                                         "Delivering merge-conflict — rebase \
                                          already in progress";
-                                      deliver_to_agent ())
+                                      (* Match the fresh-rebase path: rebase
+                                         target is [origin/<base>], not the
+                                         (possibly stale) local tracking ref.
+                                         See Worktree_plan.for_merge_conflict. *)
+                                      let conflict_info =
+                                        Worktree.read_in_progress_conflict_info
+                                          ~process_mgr ~path:wt_path
+                                          ~target:
+                                            (Types.Branch.of_string
+                                               ("origin/" ^ base))
+                                          ~project_name ~ancestor_ids
+                                      in
+                                      deliver_to_agent ?conflict_info ())
                                     else
                                       (* Plan-driven: the planner guarantees
                                      Ensure_worktree precedes Fetch_origin
@@ -3182,13 +3202,6 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
-                                      let ancestor_ids =
-                                        Runtime.read runtime (fun snap ->
-                                            Graph.transitive_ancestors
-                                              (Orchestrator.graph
-                                                 snap.Runtime.orchestrator)
-                                              patch_id)
-                                      in
                                       let rebase_result, _wt_path =
                                         execute_worktree_plan ~runtime
                                           ~process_mgr ~clock ~fs
@@ -3202,6 +3215,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           (Worktree_plan.for_merge_conflict
                                              ~base:(Types.Branch.of_string base))
                                       in
+                                      let conflict_info =
+                                        match rebase_result with
+                                        | Worktree.Conflict ci -> Some ci
+                                        | Worktree.Ok | Worktree.Noop
+                                        | Worktree.Error _ ->
+                                            None
+                                      in
                                       (match rebase_result with
                                       | Worktree.Ok ->
                                           log_event runtime ~patch_id
@@ -3213,7 +3233,7 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                           log_event runtime ~patch_id
                                             "Conflict rebase noop — local \
                                              already up-to-date, will push"
-                                      | Worktree.Conflict ->
+                                      | Worktree.Conflict _ ->
                                           log_event runtime ~patch_id
                                             "Conflict rebase hit conflicts — \
                                              delivering to agent"
@@ -3305,7 +3325,13 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                              after push failure";
                                           `Retry_push
                                       | Orchestrator.Conflict_needs_agent ->
-                                          deliver_to_agent ()
+                                          (* [conflict_info] is [None] when
+                                             the rebase returned [Ok]/[Noop]
+                                             and only the push subsequently
+                                             failed; we degrade to a
+                                             no-recovery-section prompt
+                                             rather than blocking delivery. *)
+                                          deliver_to_agent ?conflict_info ()
                                       | Orchestrator.Conflict_give_up -> `Failed
                                     )
                                 | Patch_decision.Deliver

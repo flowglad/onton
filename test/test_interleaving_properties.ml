@@ -398,10 +398,19 @@ let to_session_result = function
       Orchestrator.Session_process_error { is_fresh = false }
   | Sess_no_resume -> Orchestrator.Session_no_resume
 
+let stub_conflict_info : Worktree.conflict_info =
+  {
+    target = "main";
+    old_base = "";
+    unique_commits = [];
+    strategy = Worktree.Plain;
+    orig_head = "";
+  }
+
 let to_worktree_result = function
   | Rebase_ok -> Worktree.Ok
   | Rebase_noop -> Worktree.Noop
-  | Rebase_conflict -> Worktree.Conflict
+  | Rebase_conflict -> Worktree.Conflict stub_conflict_info
   | Rebase_error -> Worktree.Error "simulated error"
 
 let to_push_result = function

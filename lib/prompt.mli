@@ -58,8 +58,14 @@ val render_merge_conflict_prompt :
   base_branch:string ->
   ?git_status:string ->
   ?git_diff:string ->
+  ?conflict_info:Worktree.conflict_info ->
   unit ->
   string
+(** Render the merge-conflict prompt. When [~conflict_info] is provided, the
+    output includes a "Recovery" section with the exact [git rebase --onto]
+    command and the patch's unique commit list, so an agent that aborts the
+    in-progress rebase can reconstruct it. When omitted, the output is
+    byte-identical to the legacy form. *)
 
 val render_human_message_prompt : project_name:string -> string list -> string
 

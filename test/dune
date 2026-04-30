@@ -138,6 +138,18 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_prompt_recovery)
+ (modules test_prompt_recovery)
+ (libraries onton))
+
+(test
+ (name test_conflict_recovery_state_machine)
+ (modules test_conflict_recovery_state_machine)
+ (libraries onton onton_test_support qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_action_outcome_properties)
  (modules test_action_outcome_properties)
  (libraries onton onton_test_support qcheck-core))

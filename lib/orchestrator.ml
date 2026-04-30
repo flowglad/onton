@@ -468,7 +468,7 @@ let apply_rebase_result t patch_id rebase_result new_base =
             Patch_agent.set_branch_rebased_onto a new_base)
       in
       (complete t patch_id, [ Push_branch ])
-  | Worktree.Conflict ->
+  | Worktree.Conflict _ ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
@@ -532,7 +532,7 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       let t = increment_conflict_noop_count t patch_id in
       let t = complete t patch_id in
       (t, Conflict_resolved, [ Push_branch ])
-  | Worktree.Conflict ->
+  | Worktree.Conflict _ ->
       let t = set_base_branch t patch_id new_base in
       let t = set_has_conflict t patch_id in
       (t, Deliver_to_agent, [])

@@ -10,6 +10,19 @@ open Onton.Types
 
 let main = Branch.of_string "main"
 
+(* Stub conflict_info: the orchestrator's Conflict arm doesn't inspect the
+   payload, so a Plain-strategy zero-info value is a sound stand-in. *)
+let stub_conflict =
+  Worktree.Conflict
+    Worktree.
+      {
+        target = "main";
+        old_base = "";
+        unique_commits = [];
+        strategy = Plain;
+        orig_head = "";
+      }
+
 let make_gameplan patches =
   Gameplan.
     {
@@ -459,7 +472,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
+              let results = [ Worktree.Ok; Worktree.Noop; stub_conflict ] in
               List.for_all results ~f:(fun r ->
                   let orch', _effects =
                     Orchestrator.apply_rebase_result orch pid r new_base
@@ -502,8 +515,7 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch', effects =
-                Orchestrator.apply_rebase_result orch pid Worktree.Conflict
-                  new_base
+                Orchestrator.apply_rebase_result orch pid stub_conflict new_base
               in
               let a = Orchestrator.agent orch' pid in
               a.Patch_agent.has_conflict
@@ -777,8 +789,8 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch', decision, effects =
-                Orchestrator.apply_conflict_rebase_result orch pid
-                  Worktree.Conflict new_base
+                Orchestrator.apply_conflict_rebase_result orch pid stub_conflict
+                  new_base
               in
               let a = Orchestrator.agent orch' pid in
               Orchestrator.equal_conflict_rebase_decision decision
@@ -811,7 +823,7 @@ let () =
                   (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
                      ~equal:Operation_kind.equal)
               in
-              check Worktree.Noop && check Worktree.Conflict
+              check Worktree.Noop && check stub_conflict
         with _ -> false)
   in
 
@@ -852,7 +864,7 @@ let () =
               let pid = first.Patch.id in
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
-              let results = [ Worktree.Ok; Worktree.Noop; Worktree.Conflict ] in
+              let results = [ Worktree.Ok; Worktree.Noop; stub_conflict ] in
               List.for_all results ~f:(fun r ->
                   let orch', _, _ =
                     Orchestrator.apply_conflict_rebase_result orch pid r
@@ -971,8 +983,8 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch, _decision, _effects =
-                Orchestrator.apply_conflict_rebase_result orch pid
-                  Worktree.Conflict new_base
+                Orchestrator.apply_conflict_rebase_result orch pid stub_conflict
+                  new_base
               in
               let _orch, resolution =
                 Orchestrator.apply_conflict_push_result orch pid
@@ -998,8 +1010,8 @@ let () =
               let orch = Orchestrator.create ~patches ~main_branch:main in
               let orch, _effects, _actions = tick orch ~patches in
               let orch, _decision, _effects =
-                Orchestrator.apply_conflict_rebase_result orch pid
-                  Worktree.Conflict new_base
+                Orchestrator.apply_conflict_rebase_result orch pid stub_conflict
+                  new_base
               in
               let _orch, resolution =
                 Orchestrator.apply_conflict_push_result orch pid
