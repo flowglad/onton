@@ -131,7 +131,12 @@ type conflict_info = {
     the in-progress rebase can reconstruct the correct restart command. When
     [strategy = Onto], the supervisor ran [git rebase --onto target old_base]
     and the agent should restart with the same arguments; [unique_commits] is
-    the full set of commits that belong to this patch (oldest-last). When
+    the set of commits that belong to this patch in git-log emission order (head
+    of the list = newest commit, last element = oldest). The prompt renderer
+    reverses the list to display oldest-first as a bullet list. May be empty
+    when reconstructed from in-progress rebase-merge state and the ancestor
+    filter excludes every commit; the recovery command is still valid because
+    [target] and [old_base] are read from the rebase-merge files. When
     [strategy = Plain], the supervisor fell back to [git rebase target] because
     no unique commits could be isolated; [old_base = ""] and
     [unique_commits = []]. [orig_head] is the pre-rebase HEAD SHA — captured
@@ -150,9 +155,12 @@ val parse_rebase_merge_state :
   conflict_info option
 (** Pure: assemble a [conflict_info] from the contents of
     [.git/rebase-merge/{onto,upstream,orig-head}] together with
-    [git log --format=%H %s <upstream>..<orig-head>] output. Returns [None] when
-    [onto_contents] or [upstream_contents] is blank or the log produces zero
-    kept commits. [onto_contents] is the rebase destination SHA;
+    [git log --format=%H %s <upstream>..<orig-head>] output. Returns [None] only
+    when [onto_contents] or [upstream_contents] is blank — both are required to
+    render the recovery command. An empty / all-filtered log degrades to an
+    empty [unique_commits] list, not to [None], so a restarted orchestrator
+    still surfaces the [git rebase --onto target old_base] command even when the
+    commits cannot be enumerated. [onto_contents] is the rebase destination SHA;
     [upstream_contents] is the old-base SHA used as the recovery [old_base]. *)
 
 type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string

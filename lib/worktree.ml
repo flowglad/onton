@@ -448,12 +448,15 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
 (** Pure: assemble a [conflict_info] from the contents of
     [.git/rebase-merge/onto], [.git/rebase-merge/upstream], and
     [.git/rebase-merge/orig-head] together with the
-    [git log --format=%H %s <onto>..<orig-head>] output. Used by the
+    [git log --format=%H %s <upstream>..<orig-head>] output. Used by the
     rebase-already-in-progress recovery path so the patch-agent prompt can
     surface the same recovery command as the fresh-rebase path. Returns [None]
-    when [onto] or [upstream] is blank or the log produces zero kept commits (we
-    degrade to a no-recovery-section prompt rather than emit a recovery block
-    with bogus values).
+    only when [onto] or [upstream] is blank — those are required to render the
+    recovery command. An empty / all-filtered log degrades to an empty
+    [unique_commits] list, NOT to [None]: the recovery command is fully
+    determined by [target] and [old_base], so a restarted orchestrator should
+    still surface it (the prompt renderer omits the commits header when the list
+    is empty).
 
     [onto_contents] is the rebase destination SHA (first positional arg of
     [git rebase --onto X Y]); [upstream_contents] is the old-base SHA (second
@@ -466,26 +469,29 @@ let parse_rebase_merge_state ~onto_contents ~upstream_contents
   let orig_head = String.strip orig_head_contents in
   if String.is_empty onto || String.is_empty old_base then None
   else
-    match
-      classify_unique_commits ~project_name ~ancestor_ids log_format_h_s
-    with
-    | Result.Error _ -> None
-    | Result.Ok (commits, _oldest_sha) ->
-        (* Only [.git/rebase-merge] state is read by this function. A plain
-           [git rebase] normally uses [rebase-apply], not [rebase-merge], so
-           [strategy = Onto] is correct. Caveat: [rebase.backend = merge] in
-           the user's gitconfig forces [rebase-merge] for plain rebases too,
-           in which case the recovery command would be a plain rebase wearing
-           [--onto] clothing — still functional because [onto = upstream] in
-           that case. *)
-        Some
-          {
-            target;
-            old_base;
-            unique_commits = commits;
-            strategy = Onto;
-            orig_head;
-          }
+    let commits =
+      match
+        classify_unique_commits ~project_name ~ancestor_ids log_format_h_s
+      with
+      | Result.Ok (commits, _oldest_sha) -> commits
+      | Result.Error _ ->
+          (* Empty log or every commit filtered as ancestor — degrade to an
+             empty list rather than [None]. The recovery command is still
+             [git rebase --onto target old_base] (we read the supervisor's
+             actual args from rebase-merge state); we just can't enumerate
+             the commits. The renderer omits the commits header when the
+             list is empty. *)
+          []
+    in
+    (* Only [.git/rebase-merge] state is read by this function. A plain
+       [git rebase] normally uses [rebase-apply], not [rebase-merge], so
+       [strategy = Onto] is correct. Caveat: [rebase.backend = merge] in
+       the user's gitconfig forces [rebase-merge] for plain rebases too,
+       in which case the recovery command would be a plain rebase wearing
+       [--onto] clothing — still functional because [onto = upstream] in
+       that case. *)
+    Some
+      { target; old_base; unique_commits = commits; strategy = Onto; orig_head }
 
 (** Find the old base commit for [--onto] rebase by identifying which commits on
     our branch are unique (not in target). Uses patch-id matching via

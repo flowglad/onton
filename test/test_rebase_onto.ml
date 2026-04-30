@@ -612,15 +612,51 @@ let () =
              ~log_format_h_s:"x subj\n" ~project_name:"" ~ancestor_ids:[]
              ~target:"main"))
   in
-  let prop_empty_log_none =
+  let prop_empty_log_keeps_command =
+    (* Regression: when classify_unique_commits returns Error (empty log or
+       every commit filtered as ancestor) but onto and upstream are valid,
+       parse_rebase_merge_state must still emit Some so the agent gets the
+       recovery command. unique_commits is empty in that case; the prompt
+       renderer omits the bullet header. *)
     Test.make
-      ~name:"parse_rebase_merge_state: empty log body -> None (degraded)"
+      ~name:
+        "parse_rebase_merge_state: empty log -> Some Onto with empty commits"
       ~count:1 Gen.unit (fun () ->
-        Option.is_none
-          (Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
-             ~upstream_contents:"111aaaa1234567890\n"
-             ~orig_head_contents:"def1234567890\n" ~log_format_h_s:""
-             ~project_name:"" ~ancestor_ids:[] ~target:"main"))
+        match
+          Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
+            ~upstream_contents:"111aaaa1234567890\n"
+            ~orig_head_contents:"def1234567890\n" ~log_format_h_s:""
+            ~project_name:"" ~ancestor_ids:[] ~target:"main"
+        with
+        | Some ci ->
+            Worktree.equal_rebase_strategy ci.Worktree.strategy Worktree.Onto
+            && String.equal ci.Worktree.old_base "111aaaa1234567890"
+            && List.is_empty ci.Worktree.unique_commits
+        | None -> false)
+  in
+  let prop_all_filtered_keeps_command =
+    (* Regression: every log line matches an ancestor subject (so
+       classify_unique_commits returns Error "no unique commits found"), but
+       the recovery command is still well-defined. Must emit Some, not None. *)
+    Test.make
+      ~name:
+        "parse_rebase_merge_state: all-ancestor log -> Some Onto with empty \
+         commits" ~count:1 Gen.unit (fun () ->
+        let pid = Types.Patch_id.of_string in
+        match
+          Worktree.parse_rebase_merge_state ~onto_contents:"abc1234567890\n"
+            ~upstream_contents:"111aaaa1234567890\n"
+            ~orig_head_contents:"def1234567890\n"
+            ~log_format_h_s:
+              "anc1 [proj] Patch 1: foo\nanc2 [proj] Patch 2: bar\n"
+            ~project_name:"proj"
+            ~ancestor_ids:[ pid "1"; pid "2" ]
+            ~target:"main"
+        with
+        | Some ci ->
+            Worktree.equal_rebase_strategy ci.Worktree.strategy Worktree.Onto
+            && List.is_empty ci.Worktree.unique_commits
+        | None -> false)
   in
   let suite =
     [
@@ -628,7 +664,8 @@ let () =
       prop_orig_head_stripped;
       prop_blank_onto_none;
       prop_blank_upstream_none;
-      prop_empty_log_none;
+      prop_empty_log_keeps_command;
+      prop_all_filtered_keeps_command;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
