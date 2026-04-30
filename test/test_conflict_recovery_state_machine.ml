@@ -236,10 +236,17 @@ let () =
         Option.is_none err)
   in
   let prop_eventually_terminal_when_finished =
+    (* R-5: when the final command's precondition holds — i.e. the prev state
+       is one in which the command CAN make a transition — the post-state
+       must be Terminal-equivalent (Resolved / Aborted_then_recovered /
+       Terminal). Splitting the precondition out of the assertion is what
+       keeps this property non-vacuous: a body that returned [true] for both
+       Terminal and Active outcomes (the previous shape) had no failing path
+       once a no-op was indistinguishable from a real termination. *)
     Test.make
       ~name:
-        "R-5: a sequence ending in Auto_resolve / Agent_recovers_* reaches \
-         Terminal or Resolved"
+        "R-5: terminating commands reach Terminal/Resolved when their \
+         precondition holds"
       ~count:500
       Gen.(
         let* core = list_size (int_range 0 8) gen_cmd in
@@ -249,21 +256,40 @@ let () =
               Auto_resolve; Agent_recovers_with_onto; Agent_recovers_with_plain;
             ]
         in
-        return (core @ [ tail ]))
-      (fun cmds ->
-        let final, err = run_sequence cmds in
-        if Option.is_some err then false
+        return (core, tail))
+      (fun (core, tail) ->
+        let prev_state, prev_err = run_sequence core in
+        if Option.is_some prev_err then false
         else
-          match is_terminal_or_active final with
-          | `Terminal -> true
-          | `Active ->
-              (* Finishing with a recovery cmd from a non-conflict state is
-                 a no-op in our model; only count cases where we actually got
-                 to a recovery-capable state. We accept Idle / Auto_rebased
-                 here as "no opportunity to recover" — the property
-                 specifically doesn't require eventual termination from
-                 those phases. *)
-              true)
+          let final_state, final_err = run_sequence (core @ [ tail ]) in
+          if Option.is_some final_err then false
+          else
+            let precondition_holds =
+              match prev_state with
+              | Auto_rebased _ -> (
+                  match tail with
+                  | Auto_resolve -> true
+                  | Attempt_rebase _ | Hit_conflict | Reconstruct_in_progress
+                  | Agent_aborts | Agent_recovers_with_onto
+                  | Agent_recovers_with_plain ->
+                      false)
+              | Conflict_delivered { ci; _ } -> (
+                  match tail with
+                  | Agent_recovers_with_onto ->
+                      Worktree.equal_rebase_strategy ci.Worktree.strategy
+                        Worktree.Onto
+                  | Agent_recovers_with_plain ->
+                      Worktree.equal_rebase_strategy ci.Worktree.strategy
+                        Worktree.Plain
+                  | Attempt_rebase _ | Auto_resolve | Hit_conflict
+                  | Reconstruct_in_progress | Agent_aborts ->
+                      false)
+              | Idle | Resolved | Aborted_then_recovered _ | Terminal -> false
+            in
+            match (is_terminal_or_active final_state, precondition_holds) with
+            | `Terminal, _ -> true
+            | `Active, false -> true
+            | `Active, true -> false)
   in
   let prop_onto_delivery_rejects_plain_recovery =
     Test.make
