@@ -464,6 +464,12 @@ let parse_rebase_merge_state ~onto_contents ~orig_head_contents ~log_format_h_s
     with
     | Result.Error _ -> None
     | Result.Ok (commits, _oldest_sha) ->
+        (* Only [.git/rebase-merge] state is read by this function. A plain
+           [git rebase] normally uses [rebase-apply], not [rebase-merge], so
+           [strategy = Onto] is correct. Caveat: [rebase.backend = merge] in
+           the user's gitconfig forces [rebase-merge] for plain rebases too;
+           in that case [old_base] would be empty and the recovery command
+           would be malformed. *)
         Some
           {
             target;
@@ -740,11 +746,13 @@ let rebase_in_progress ~process_mgr ~path =
 let read_file_opt path =
   try
     let ic = Stdlib.open_in path in
-    let len = Stdlib.in_channel_length ic in
-    let buf = Bytes.create len in
-    Stdlib.really_input ic buf 0 len;
-    Stdlib.close_in ic;
-    Some (Bytes.to_string buf)
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_in_noerr ic)
+      (fun () ->
+        let len = Stdlib.in_channel_length ic in
+        let buf = Bytes.create len in
+        Stdlib.really_input ic buf 0 len;
+        Some (Bytes.to_string buf))
   with _ -> None
 
 (** Effectful: reconstruct [conflict_info] when a rebase is already in progress

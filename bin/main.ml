@@ -3325,6 +3325,12 @@ let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
                                              after push failure";
                                           `Retry_push
                                       | Orchestrator.Conflict_needs_agent ->
+                                          (* [conflict_info] is [None] when
+                                             the rebase returned [Ok]/[Noop]
+                                             and only the push subsequently
+                                             failed; we degrade to a
+                                             no-recovery-section prompt
+                                             rather than blocking delivery. *)
                                           deliver_to_agent ?conflict_info ()
                                       | Orchestrator.Conflict_give_up -> `Failed
                                     )
