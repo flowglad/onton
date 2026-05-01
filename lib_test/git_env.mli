@@ -9,15 +9,17 @@
     spawning your own process. *)
 
 val clean_env : unit -> string array
-(** A copy of [Unix.environment ()] with the env vars that redirect git's
-    repository target stripped: [GIT_DIR], [GIT_WORK_TREE], [GIT_INDEX_FILE],
-    [GIT_COMMON_DIR], [GIT_OBJECT_DIRECTORY].
+(** A copy of [Unix.environment ()] with all [GIT_*] variables removed.
 
-    Vars like [GIT_AUTHOR_*] and [GIT_COMMITTER_*] are intentionally preserved —
-    they only override identity for new commits, they don't poison the parent's
-    config. If you want full hermeticity from the user's [~/.gitconfig] (e.g.
-    [commit.gpgsign], [init.defaultBranch]) append [GIT_CONFIG_GLOBAL=/dev/null]
-    / [GIT_CONFIG_SYSTEM=/dev/null] yourself. *)
+    This covers repository-redirecting vars ([GIT_DIR], [GIT_WORK_TREE],
+    [GIT_INDEX_FILE], [GIT_COMMON_DIR], [GIT_OBJECT_DIRECTORY]) as well as
+    identity vars ([GIT_AUTHOR_*], [GIT_COMMITTER_*]) and any others.  onton
+    spawns git only for repo queries, so stripping everything with the [GIT_]
+    prefix is safe and keeps the boundary simple.
+
+    If you need full hermeticity from [~/.gitconfig] (e.g. [commit.gpgsign],
+    [init.defaultBranch]) append [GIT_CONFIG_GLOBAL=/dev/null] /
+    [GIT_CONFIG_SYSTEM=/dev/null] yourself. *)
 
 val run_git : cwd:string -> string list -> unit
 (** Spawn [git <args>] in [cwd] with {!clean_env}. Waits for exit. Raises
