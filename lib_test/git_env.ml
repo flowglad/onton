@@ -21,20 +21,22 @@ let run_git ~cwd args =
   let env = clean_env () in
   let stderr_r, stderr_w = Unix.pipe ~cloexec:true () in
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
-  let pid =
-    Stdlib.Fun.protect
-      ~finally:(fun () ->
-        (try Unix.close stderr_w with _ -> ());
-        try Unix.close devnull with _ -> ())
-      (fun () ->
-        Unix.create_process_env "git" argv env devnull devnull stderr_w)
-  in
-  let stderr_buf =
+  let stderr_buf, status =
     Stdlib.Fun.protect
       ~finally:(fun () -> try Unix.close stderr_r with _ -> ())
-      (fun () -> read_all stderr_r)
+      (fun () ->
+        let pid =
+          Stdlib.Fun.protect
+            ~finally:(fun () ->
+              (try Unix.close stderr_w with _ -> ());
+              try Unix.close devnull with _ -> ())
+            (fun () ->
+              Unix.create_process_env "git" argv env devnull devnull stderr_w)
+        in
+        let stderr_buf = read_all stderr_r in
+        let _, status = Unix.waitpid [] pid in
+        (stderr_buf, status))
   in
-  let _, status = Unix.waitpid [] pid in
   match status with
   | Unix.WEXITED 0 -> ()
   | Unix.WEXITED n ->
