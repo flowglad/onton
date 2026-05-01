@@ -13,7 +13,7 @@ val clean_env : unit -> string array
 
     This covers repository-redirecting vars ([GIT_DIR], [GIT_WORK_TREE],
     [GIT_INDEX_FILE], [GIT_COMMON_DIR], [GIT_OBJECT_DIRECTORY]) as well as
-    identity vars ([GIT_AUTHOR_*], [GIT_COMMITTER_*]) and any others.  onton
+    identity vars ([GIT_AUTHOR_*], [GIT_COMMITTER_*]) and any others. onton
     spawns git only for repo queries, so stripping everything with the [GIT_]
     prefix is safe and keeps the boundary simple.
 
