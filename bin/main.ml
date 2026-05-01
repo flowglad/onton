@@ -1392,8 +1392,14 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
           | Term.Key.Escape -> input_mode := Tui_input.Normal
           | Term.Key.Char 'm' -> (
               input_mode := Tui_input.Normal;
-              match !view_mode with
-              | Tui.Detail_view patch_id ->
+              let target_patch_id =
+                match !view_mode with
+                | Tui.Detail_view patch_id -> Some patch_id
+                | Tui.List_view -> selected_pid ()
+                | Tui.Timeline_view -> None
+              in
+              match target_patch_id with
+              | Some patch_id ->
                   let busy, has_pr =
                     Runtime.read runtime (fun snap ->
                         let agent =
@@ -1411,11 +1417,17 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                     Runtime.update_orchestrator runtime (fun orch ->
                         Orchestrator.mark_merged orch patch_id);
                     log_event runtime ~patch_id "Force-marked as merged")
-              | Tui.List_view | Tui.Timeline_view -> ())
+              | None -> ())
           | Term.Key.Char 'a' -> (
-              match !view_mode with
-              | Tui.Detail_view patch_id -> (
-                  input_mode := Tui_input.Normal;
+              input_mode := Tui_input.Normal;
+              let target_patch_id =
+                match !view_mode with
+                | Tui.Detail_view patch_id -> Some patch_id
+                | Tui.List_view -> selected_pid ()
+                | Tui.Timeline_view -> None
+              in
+              match target_patch_id with
+              | Some patch_id -> (
                   let enabled_after =
                     Runtime.update_orchestrator_returning runtime (fun orch ->
                         match Orchestrator.find_agent orch patch_id with
@@ -1432,7 +1444,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                   | Some false ->
                       log_event runtime ~patch_id "Automerge disabled"
                   | None -> ())
-              | Tui.List_view | Tui.Timeline_view -> ())
+              | None -> ())
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
           | Term.Key.Backspace | Term.Key.Up | Term.Key.Down | Term.Key.Left
           | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
@@ -1893,7 +1905,8 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
           | Term.Key.Char 'm'
             when match !view_mode with
                  | Tui.Detail_view _ -> true
-                 | Tui.List_view | Tui.Timeline_view -> false ->
+                 | Tui.List_view -> Option.is_some (selected_pid ())
+                 | Tui.Timeline_view -> false ->
               input_mode := Tui_input.Manage_patch;
               loop ()
           | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Backspace

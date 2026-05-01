@@ -1123,7 +1123,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
         | List_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  ↑/↓:navigate  enter:detail  +:add PR  w:worktree  \
-               -:remove  o:open browser  h:help"
+               -:remove  m:manage  o:open browser  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  enter:message  m:manage  o:open \
@@ -1158,6 +1158,7 @@ let render_help_overlay ~width ~height =
           "+         Add PR (enter number)";
           "w         Register worktree (enter path)";
           "-/x       Remove selected patch";
+          "m         Manage patch";
           "o         Open PR in browser";
           "t         Toggle timeline";
           "q         Quit";
@@ -1326,7 +1327,10 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
       | Detail_view patch_id ->
           List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
           |> Option.value_map ~default:false ~f:(fun pv -> pv.automerge_enabled)
-      | List_view | Timeline_view -> false
+      | List_view ->
+          List.nth views selected
+          |> Option.value_map ~default:false ~f:(fun pv -> pv.automerge_enabled)
+      | Timeline_view -> false
     in
     let overlay = render_manage_overlay ~width ~height ~automerge_enabled in
     { no_patches with lines = overlay; detail_scroll_offset = scroll_offset }
