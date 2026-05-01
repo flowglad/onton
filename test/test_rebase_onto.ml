@@ -1,5 +1,6 @@
 open Base
 open Onton
+module Git_env = Onton_test_support.Git_env
 
 (* ───────────────────────────────────────────────────────────────────────
    Pure tests for [Worktree.oldest_non_ancestor_commit] with no ancestors
@@ -678,21 +679,15 @@ let () =
    then calls rebase_onto and checks the result.
    ─────────────────────────────────────────────────────────────────────── *)
 
-(** Strip GIT_DIR etc. so tests are not affected when run inside a git hook. *)
-let clean_git_env () =
-  Unix.environment () |> Array.to_list
-  |> List.filter ~f:(fun s ->
-      (not (String.is_prefix s ~prefix:"GIT_DIR="))
-      && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
-      && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
-  |> Array.of_list
-
-(** Run a git command in [dir], fail on non-zero exit. *)
+(** Run a git command in [dir], fail on non-zero exit. Captures stdout (used by
+    [commit_file] to read back the new commit's SHA). The env is scrubbed via
+    {!Git_env.clean_env} so tests are unaffected when run inside a git hook
+    (which would otherwise leak [GIT_DIR] / [GIT_WORK_TREE]). *)
 let git ~process_mgr ~dir args =
   Eio.Switch.run @@ fun sw ->
   let stdout_buf = Buffer.create 64 in
   let stderr_buf = Buffer.create 64 in
-  let env = clean_git_env () in
+  let env = Git_env.clean_env () in
   let child =
     Eio.Process.spawn ~sw process_mgr ~env
       ~stdout:(Eio.Flow.buffer_sink stdout_buf)
@@ -710,12 +705,11 @@ let git ~process_mgr ~dir args =
   | `Signaled s -> failwith (Printf.sprintf "git signaled %d" s));
   String.strip (Buffer.contents stdout_buf)
 
-(** Create a fresh git repo in a temp dir with an initial commit on main. *)
-let init_repo ~process_mgr =
+(** Create a fresh git repo in a temp dir. No initial commit — callers add their
+    own commits via [commit_file] to build a precise graph. *)
+let init_repo () =
   let dir = Stdlib.Filename.temp_dir "onton_rebase_test_" "" in
-  git ~process_mgr ~dir [ "init"; "-b"; "main" ] |> ignore;
-  git ~process_mgr ~dir [ "config"; "user.email"; "test@test.com" ] |> ignore;
-  git ~process_mgr ~dir [ "config"; "user.name"; "Test" ] |> ignore;
+  Git_env.init_repo dir;
   dir
 
 (** Write a file, add, commit. Returns the commit SHA. *)
@@ -771,7 +765,7 @@ let () =
   (* main: A -- B
      feat:    \-- C
      After rebase onto main: A -- B -- C *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    commit_file ~process_mgr ~dir ~filename:"b.txt" ~content:"b" ~msg:"B"
@@ -803,7 +797,7 @@ let () =
 
      rebase_onto feat onto main should produce:
      main: A -- S -- F1'            (only F1 replayed, not D1/D2) *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    (* Create dep branch with 2 commits *)
@@ -840,7 +834,7 @@ let () =
      feat: A -- D1 -- D2 -- D3 -- F1 -- F2 -- F3
      After squash-merge of dep and rebase:
      main: A -- S -- F1' -- F2' -- F3' *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
@@ -875,7 +869,7 @@ let () =
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 4: already up-to-date → Noop ──────────────────────────── *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
@@ -891,7 +885,7 @@ let () =
 
   (* ── Test 5: conflict during rebase → Conflict, working dir clean ─ *)
   (* Both main and feat modify the same file differently after dep merge *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"shared.txt" ~content:"base" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
@@ -930,7 +924,7 @@ let () =
      dep1 squash-merged into main. feat rebases onto dep2 (not main).
      dep2 still has D1 in its history so this tests rebasing onto a
      non-main target that shares commits. *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep1" ] |> ignore;
@@ -955,7 +949,7 @@ let () =
   (* Verifies --onto still works when dep is merge-committed (the dep
      commits ARE in main's history, so cherry-pick filtering should
      identify only feat's own commits). *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
@@ -992,7 +986,7 @@ let () =
   (* Edge case: feat branch = dep branch exactly. After dep squash-merge,
      rebasing feat onto main should ideally be a noop or produce an empty
      branch (all commits are duplicates). *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
@@ -1020,7 +1014,7 @@ let () =
   (* dep:  creates file X with "v1"
      feat: modifies X to "v2", adds own file
      After dep squash-merge, rebase should apply feat's changes cleanly *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
@@ -1057,7 +1051,7 @@ let () =
      patch-id. Without the ancestor_ids fallback, the old dep commit
      would be replayed onto main; with ancestor_ids=["1"] find_old_base
      picks a newer old_base and only our own commit survives. *)
-  (let dir = init_repo ~process_mgr in
+  (let dir = init_repo () in
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;

@@ -5,7 +5,7 @@ open Base
     working tree. Returns [None] if [path] is not inside a git repository or the
     command fails for any reason. *)
 let resolve_main_working_tree path =
-  let env = Unix.environment () in
+  let env = Git_env.clean_env () in
   let argv =
     [|
       "git";
