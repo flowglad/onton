@@ -1239,7 +1239,7 @@ let intervention_reasons_of_log (log : Activity_log.t)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
     ~transcripts ~sorted_patch_ids ~input_mode ~prompt_line ~patches_start_row
-    ~patches_scroll_offset ~patches_visible_count =
+    ~patches_scroll_offset ~patches_visible_count ~backend_name =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -1294,7 +1294,7 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     let frame =
       Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
         ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
-        ~show_help:!show_help
+        ~backend_name ~show_help:!show_help
         ~show_manage:
           (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
         ~now:(Unix.gettimeofday ()) ~transcript ?status_msg:!status_msg
@@ -2395,69 +2395,12 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 
 (** Runner fiber — executes orchestrator actions by spawning Claude processes
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~project_name ~pr_registry ~transcripts
-    ~github ~net ~event_log ?status_msg () =
+let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
+    ~transcripts ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
   let fs = Eio.Stdenv.fs env in
-  let session_timeout =
-    1800.0
-    (* 30 minutes *)
-  in
-  (* Locate the [onton-setsid-exec] shim so subprocesses can run in their
-     own process group; without it, tool-call grandchildren reparent to
-     PID 1 on exit and leak. We probe [$ONTON_SETSID_EXEC] first (for
-     tests that want direct spawn to compare behavior), then fall back
-     to a sibling of our own executable. A missing shim is not fatal —
-     we log and run without group isolation (Phase A early-exit still
-     ends the stall; only grandchild reaping is lost). *)
-  let setsid_exec =
-    let candidate =
-      match Sys.getenv_opt "ONTON_SETSID_EXEC" with
-      | Some "" -> None
-      | Some p -> Some p
-      | None ->
-          Some
-            (Filename.concat
-               (Filename.dirname Sys.executable_name)
-               "onton-setsid-exec")
-    in
-    match candidate with
-    | Some p when Sys.file_exists p -> Some p
-    | Some p ->
-        Eio.traceln
-          "onton-setsid-exec not found at %s; grandchildren will reparent to \
-           PID 1 on teardown"
-          p;
-        None
-    | None -> None
-  in
-  let backend =
-    match normalize_backend config.backend with
-    | "claude-sonnet" ->
-        Claude_backend.create ~name:"Claude Sonnet" ~model:"sonnet" ~process_mgr
-          ~clock ~timeout:session_timeout ~setsid_exec
-    | "claude-opus" ->
-        Claude_backend.create ~name:"Claude Opus" ~model:"opus" ~process_mgr
-          ~clock ~timeout:session_timeout ~setsid_exec
-    | "codex" ->
-        Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
-          ~setsid_exec
-    | "opencode" ->
-        Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
-          ~setsid_exec
-    | "pi" ->
-        Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
-          ~setsid_exec
-    | "gemini" ->
-        Gemini_backend.create ~process_mgr ~clock ~timeout:session_timeout
-          ~setsid_exec
-    | other ->
-        invalid_arg
-          (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
-             (String.concat ", " known_backends))
-  in
   let set_status ~level ~text ?expires_at () =
     match status_msg with
     | Some r -> r := Some { Tui.level; text; expires_at }
@@ -4161,6 +4104,53 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
       let process_mgr = Eio.Stdenv.process_mgr env in
       let clock = Eio.Stdenv.clock env in
+      let session_timeout = 1800.0 in
+      let setsid_exec =
+        let candidate =
+          match Sys.getenv_opt "ONTON_SETSID_EXEC" with
+          | Some "" -> None
+          | Some p -> Some p
+          | None ->
+              Some
+                (Filename.concat
+                   (Filename.dirname Sys.executable_name)
+                   "onton-setsid-exec")
+        in
+        match candidate with
+        | Some p when Sys.file_exists p -> Some p
+        | Some p ->
+            Eio.traceln
+              "onton-setsid-exec not found at %s; grandchildren will reparent \
+               to PID 1 on teardown"
+              p;
+            None
+        | None -> None
+      in
+      let backend =
+        match normalize_backend config.backend with
+        | "claude-sonnet" ->
+            Claude_backend.create ~name:"Claude Sonnet" ~model:"sonnet"
+              ~process_mgr ~clock ~timeout:session_timeout ~setsid_exec
+        | "claude-opus" ->
+            Claude_backend.create ~name:"Claude Opus" ~model:"opus" ~process_mgr
+              ~clock ~timeout:session_timeout ~setsid_exec
+        | "codex" ->
+            Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
+              ~setsid_exec
+        | "opencode" ->
+            Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
+              ~setsid_exec
+        | "pi" ->
+            Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
+              ~setsid_exec
+        | "gemini" ->
+            Gemini_backend.create ~process_mgr ~clock ~timeout:session_timeout
+              ~setsid_exec
+        | other ->
+            invalid_arg
+              (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
+                 (String.concat ", " known_backends))
+      in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
       (* Capture agent state and worktree list BEFORE launching concurrent
@@ -4252,8 +4242,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
-            runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-              ~transcripts ~github ~net ~event_log ())
+            runner_fiber ~runtime ~env ~config ~backend ~project_name
+              ~pr_registry ~transcripts ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -4292,7 +4282,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
                      ~input_mode ~prompt_line ~patches_start_row
-                     ~patches_scroll_offset ~patches_visible_count)
+                     ~patches_scroll_offset ~patches_visible_count
+                     ~backend_name:backend.Llm_backend.name)
                 :: (fun () ->
                   input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
                     ~detail_scroll ~detail_follow ~timeline_scroll
@@ -4302,8 +4293,9 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo)
                 :: (fun () ->
-                  runner_fiber ~runtime ~env ~config ~project_name ~pr_registry
-                    ~transcripts ~github ~net ~event_log ~status_msg ())
+                  runner_fiber ~runtime ~env ~config ~backend ~project_name
+                    ~pr_registry ~transcripts ~github ~net ~event_log
+                    ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

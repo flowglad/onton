@@ -775,7 +775,7 @@ let render_patches ~width ~selected ~max_visible ~now (views : patch_view list)
       offset,
       vis_count )
 
-let render_summary (views : patch_view list) =
+let render_summary ~backend_name (views : patch_view list) =
   let count status =
     List.count views ~f:(fun v -> equal_display_status v.status status)
   in
@@ -790,6 +790,7 @@ let render_summary (views : patch_view list) =
   let needs_help = count Needs_help in
   let parts =
     [
+      backend_name;
       Printf.sprintf "%d/%d merged" merged total;
       (if running > 0 then Printf.sprintf "%d running" running else "");
       (if queued > 0 then Printf.sprintf "%d queued" queued else "");
@@ -1305,8 +1306,9 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
-    ~(activity : activity_entry list) ~project_name ~show_help ~show_manage ~now
-    ?(transcript = "") ?status_msg ?prompt_line (views : patch_view list) =
+    ~(activity : activity_entry list) ~project_name ~backend_name ~show_help
+    ~show_manage ~now ?(transcript = "") ?status_msg ?prompt_line
+    (views : patch_view list) =
   let no_patches =
     {
       lines = [];
@@ -1336,7 +1338,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     { no_patches with lines = overlay; detail_scroll_offset = scroll_offset }
   else
     let header = render_header ~project_name ~width in
-    let summary = [ render_summary views ] in
+    let summary = [ render_summary ~backend_name views ] in
     let footer = render_footer ~width ~view_mode ?prompt_line () in
     let status_line =
       let rendered = render_status_msg ~width status_msg in
