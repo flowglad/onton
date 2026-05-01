@@ -20,7 +20,14 @@ let run_git ~cwd args =
   let argv = Array.of_list ("git" :: "-C" :: cwd :: args) in
   let env = clean_env () in
   let stderr_r, stderr_w = Unix.pipe ~cloexec:true () in
-  let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+  let devnull =
+    match Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 with
+    | fd -> fd
+    | exception exn ->
+        (try Unix.close stderr_r with _ -> ());
+        (try Unix.close stderr_w with _ -> ());
+        raise exn
+  in
   let stderr_buf, status =
     Stdlib.Fun.protect
       ~finally:(fun () -> try Unix.close stderr_r with _ -> ())
