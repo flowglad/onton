@@ -130,6 +130,16 @@ let normalize_backend backend =
 let known_backends =
   [ "claude-sonnet"; "claude-opus"; "codex"; "opencode"; "pi"; "gemini" ]
 
+let backend_display_name backend =
+  match normalize_backend backend with
+  | "claude-sonnet" -> "Claude Sonnet"
+  | "claude-opus" -> "Claude Opus"
+  | "codex" -> "Codex"
+  | "opencode" -> "OpenCode"
+  | "pi" -> "Pi"
+  | "gemini" -> "Gemini"
+  | other -> other
+
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
   let backend = normalize_backend backend in
@@ -1239,7 +1249,7 @@ let intervention_reasons_of_log (log : Activity_log.t)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
     ~transcripts ~sorted_patch_ids ~input_mode ~prompt_line ~patches_start_row
-    ~patches_scroll_offset ~patches_visible_count =
+    ~patches_scroll_offset ~patches_visible_count ~backend_name =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -1294,7 +1304,7 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     let frame =
       Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
         ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
-        ~show_help:!show_help
+        ~backend_name ~show_help:!show_help
         ~show_manage:
           (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
         ~now:(Unix.gettimeofday ()) ~transcript ?status_msg:!status_msg
@@ -4292,7 +4302,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
                      ~input_mode ~prompt_line ~patches_start_row
-                     ~patches_scroll_offset ~patches_visible_count)
+                     ~patches_scroll_offset ~patches_visible_count
+                     ~backend_name:(backend_display_name config.backend))
                 :: (fun () ->
                   input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
                     ~detail_scroll ~detail_follow ~timeline_scroll

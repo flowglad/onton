@@ -149,6 +149,7 @@ val render_frame :
   view_mode:view_mode ->
   activity:activity_entry list ->
   project_name:string ->
+  backend_name:string ->
   show_help:bool ->
   show_manage:bool ->
   now:float ->
