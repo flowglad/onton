@@ -34,7 +34,12 @@ let run_git ~cwd args =
               Unix.create_process_env "git" argv env devnull devnull stderr_w)
         in
         let stderr_buf = read_all stderr_r in
-        let _, status = Unix.waitpid [] pid in
+        let rec waitpid () =
+          match Unix.waitpid [] pid with
+          | result -> result
+          | exception Unix.Unix_error (Unix.EINTR, _, _) -> waitpid ()
+        in
+        let _, status = waitpid () in
         (stderr_buf, status))
   in
   match status with
