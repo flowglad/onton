@@ -91,7 +91,8 @@
 (test
  (name test_rebase_onto)
  (modules test_rebase_onto)
- (libraries onton qcheck-core qcheck-core.runner eio eio_main eio.unix)
+ (libraries onton onton_test_support qcheck-core qcheck-core.runner eio
+   eio_main eio.unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -172,7 +173,7 @@
 (test
  (name test_repo_root)
  (modules test_repo_root)
- (libraries onton unix))
+ (libraries onton onton_test_support unix))
 
 (test
  (name test_project_lock)

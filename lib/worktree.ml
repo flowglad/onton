@@ -38,14 +38,7 @@ let rec has_cancellation = function
       List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
   | _ -> false
 
-let clean_git_env =
-  Stdlib.Lazy.from_fun (fun () ->
-      Unix.environment () |> Array.to_list
-      |> List.filter ~f:(fun s ->
-          (not (String.is_prefix s ~prefix:"GIT_DIR="))
-          && (not (String.is_prefix s ~prefix:"GIT_WORK_TREE="))
-          && not (String.is_prefix s ~prefix:"GIT_INDEX_FILE="))
-      |> Array.of_list)
+let clean_git_env = Stdlib.Lazy.from_fun Git_env.clean_env
 
 let ref_exists ~process_mgr ~repo_root ref_path =
   let buf = Buffer.create 16 in

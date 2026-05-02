@@ -3,55 +3,24 @@
     working tree, never to a worktree path. *)
 
 open Onton
+module Git_env = Onton_test_support.Git_env
 
 let ( // ) = Filename.concat
 
-(** Create a unique temp directory. *)
-let mktempdir prefix =
-  let base = Filename.get_temp_dir_name () in
-  let rec loop n =
-    let dir = base // Printf.sprintf "%s-%d-%d" prefix (Unix.getpid ()) n in
-    try
-      Unix.mkdir dir 0o755;
-      dir
-    with Unix.Unix_error (Unix.EEXIST, _, _) -> loop (n + 1)
-  in
-  loop 0
-
-(** Remove [dir] recursively. Best-effort; swallows errors. *)
-let rm_rf dir =
-  let cmd = Printf.sprintf "rm -rf %s" (Filename.quote dir) in
-  ignore (Sys.command cmd)
-
-(** Run a command from [cwd] and assert it succeeded. *)
-let sh_at cwd cmd =
-  let full =
-    Printf.sprintf "cd %s && %s >/dev/null 2>&1" (Filename.quote cwd) cmd
-  in
-  match Sys.command full with
-  | 0 -> ()
-  | n -> failwith (Printf.sprintf "command failed (%d): %s" n cmd)
-
-(** Initialize a git repo at [dir] with a single commit. *)
-let init_repo dir =
-  sh_at dir "git init -q -b main";
-  sh_at dir "git config user.email test@example.com";
-  sh_at dir "git config user.name test";
-  sh_at dir "git commit -q --allow-empty -m init"
-
 let with_main_and_worktree f =
-  let main = mktempdir "onton-repo-root-main" in
-  let wt_parent = mktempdir "onton-repo-root-wt" in
-  let wt = wt_parent // "patch-1" in
-  Fun.protect
-    ~finally:(fun () ->
-      rm_rf main;
-      rm_rf wt_parent)
-    (fun () ->
-      init_repo main;
-      sh_at main
-        (Printf.sprintf "git worktree add -b feat %s" (Filename.quote wt));
-      f ~main ~wt)
+  Git_env.with_temp_repo (fun main ->
+      Git_env.run_git ~cwd:main
+        [ "commit"; "-q"; "--allow-empty"; "-m"; "init" ];
+      let wt_parent = Filename.temp_dir "onton-repo-root-wt-" "" in
+      let wt = wt_parent // "patch-1" in
+      Fun.protect
+        ~finally:(fun () ->
+          ignore
+            (Sys.command
+               (Printf.sprintf "rm -rf %s" (Filename.quote wt_parent))))
+        (fun () ->
+          Git_env.run_git ~cwd:main [ "worktree"; "add"; "-b"; "feat"; wt ];
+          f ~main ~wt))
 
 let with_chdir dir f =
   let saved = Sys.getcwd () in
@@ -106,9 +75,10 @@ let test_trailing_slash_stripped () =
 let test_non_repo_passthrough () =
   (* Outside any git repo: return absolute-but-unresolved, so downstream
      error paths surface the non-repo case rather than masking it. *)
-  let tmp = mktempdir "onton-repo-root-nonrepo" in
+  let tmp = Filename.temp_dir "onton-repo-root-nonrepo-" "" in
   Fun.protect
-    ~finally:(fun () -> rm_rf tmp)
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote tmp))))
     (fun () ->
       let got = Repo_root.normalize tmp in
       (* No git repo here, so the resolved path equals the input. *)
