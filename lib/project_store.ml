@@ -96,11 +96,12 @@ let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
       Stdlib.output_string oc (Yojson.Safe.pretty_to_string json);
       Stdlib.flush oc)
 
-(* Migrate legacy ["claude-sonnet"]/["claude-opus"] backend strings (and the
-   bare ["claude"] alias) into the decomposed [backend] + [model] form. The
-   [model] field was added after [backend] and is missing from older configs.
-   Splitting here means the rest of the codebase only deals with the new
-   shape. *)
+(* Migrate legacy combined backend strings (["claude-sonnet"], ["claude-opus"])
+   into the decomposed [backend] + [model] form, and ensure the [model] field
+   is always present (it was added after [backend] and is missing from older
+   configs). Only the legacy combined names inject a model; bare ["claude"]
+   stays bare and lets the runtime omit [--model] so the Claude CLI applies
+   its own default. *)
 let migrate_backend_model fields =
   let assoc = List.Assoc.find fields ~equal:String.equal in
   let stored_backend =
@@ -113,10 +114,7 @@ let migrate_backend_model fields =
     match (stored_backend, stored_model) with
     | "claude-sonnet", "" -> ("claude", "sonnet")
     | "claude-opus", "" -> ("claude", "opus")
-    | "claude-sonnet", m | "claude-opus", m -> ("claude", m)
-    | "claude", "" -> ("claude", "opus")
-    | "", _ ->
-        ("claude", if String.is_empty stored_model then "opus" else stored_model)
+    | ("claude-sonnet" | "claude-opus"), m -> ("claude", m)
     | b, m -> (b, m)
   in
   let without =

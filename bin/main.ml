@@ -124,26 +124,19 @@ let infer_default_branch ~repo_root =
           | None -> "main"))
 
 let default_backend = "claude"
-let default_claude_model = "opus"
 let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
 
 (** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
     canonical [(backend, model)] tuple used internally. Empty [backend] falls
-    back to [default_backend]; an empty [model] paired with ["claude"] is filled
-    in with [default_claude_model] so [--backend claude] alone keeps its
-    historical meaning of "opus". *)
+    back to [default_backend]. An empty [model] is preserved — the backend
+    dispatch then omits [--model] from the underlying CLI call so each
+    provider's own default applies. *)
 let resolve_backend_model ~backend ~model =
   let backend =
     if Base.String.is_empty (Base.String.strip backend) then default_backend
     else Base.String.strip backend
   in
-  let model = Base.String.strip model in
-  let model =
-    if String.equal backend "claude" && Base.String.is_empty model then
-      default_claude_model
-    else model
-  in
-  (backend, model)
+  (backend, Base.String.strip model)
 
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
@@ -4150,12 +4143,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         in
         match config.backend with
         | "claude" ->
-            let claude_model =
-              if Base.String.is_empty config.model then default_claude_model
-              else config.model
+            let display_name =
+              match model_opt with
+              | Some m -> Printf.sprintf "Claude (%s)" m
+              | None -> "Claude"
             in
-            let display_name = Printf.sprintf "Claude (%s)" claude_model in
-            Claude_backend.create ~name:display_name ~model:claude_model
+            Claude_backend.create ~name:display_name ~model:model_opt
               ~process_mgr ~clock ~timeout:session_timeout ~setsid_exec
         | "codex" ->
             Codex_backend.create ~model:model_opt ~process_mgr ~clock
@@ -4375,9 +4368,9 @@ let model_arg =
     & info [ "model" ] ~docv:"MODEL"
         ~doc:
           "Model name to pass to the selected backend (e.g. [sonnet], [opus], \
-           [sonnet-4-6] for claude; [gpt-5-mini] for codex). When omitted, the \
-           backend's own default is used (except for claude, which defaults to \
-           opus).")
+           [sonnet-4-6] for claude; [gpt-5-mini] for codex). When omitted, \
+           onton does not pass --model to the underlying CLI, so the backend's \
+           own default applies.")
 
 let repo_arg =
   let open Cmdliner in

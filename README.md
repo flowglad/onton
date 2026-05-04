@@ -221,7 +221,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
 | `--token` | `$GITHUB_TOKEN` or `gh auth token` | GitHub API token |
 | `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
-| `--model` | backend default (`opus` for `claude`) | Model name passed to the backend CLI |
+| `--model` | (backend CLI's own default) | Model name passed to the backend CLI |
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | GitHub polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
@@ -428,7 +428,8 @@ Two flags control which agent runs the patches:
 - `--backend BACKEND` — one of `claude`, `codex`, `opencode`, `pi`, `gemini`.
   Default: `claude`.
 - `--model MODEL` — model name passed through to the backend's CLI. When
-  omitted, the backend picks its own default (for `claude`, that's `opus`).
+  omitted, onton does not pass `--model` to the underlying CLI, so each
+  provider's own default applies.
 
 ```sh
 onton --backend claude --model sonnet-4-6
