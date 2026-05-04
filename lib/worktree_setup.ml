@@ -2,9 +2,13 @@ open Base
 
 let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
     ~(agent : Patch_agent.t) ?branch () =
-  match agent.Patch_agent.worktree_path with
-  | Some p -> p
-  | None ->
+  (* When the caller passes [?branch], they're asking for that branch's
+     worktree specifically — the agent's stored [worktree_path] may be from
+     a previous branch and would be stale. Only short-circuit on the stored
+     path when no [branch] is supplied. *)
+  match (branch, agent.Patch_agent.worktree_path) with
+  | None, Some p -> p
+  | _ ->
       let search_branch =
         match branch with Some b -> b | None -> agent.Patch_agent.branch
       in
@@ -63,19 +67,22 @@ let ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root ~project_name
           in
           log_event runtime ~patch_id
             (Printf.sprintf "Creating worktree at %s" path);
-          (match
-             Eio.Mutex.use_ro worktree_mutex (fun () ->
-                 ignore
-                   (Worktree.create ~process_mgr ~repo_root ~project_name
-                      ~patch_id ~branch:br ~base_ref:base))
-           with
-          | () -> ()
-          | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
-          | exception exn ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "Worktree creation failed — %s"
-                   (Stdlib.Printexc.to_string exn)));
-          if Stdlib.Sys.file_exists path then (
+          let created =
+            match
+              Eio.Mutex.use_ro worktree_mutex (fun () ->
+                  ignore
+                    (Worktree.create ~process_mgr ~repo_root ~project_name
+                       ~patch_id ~branch:br ~base_ref:base))
+            with
+            | () -> true
+            | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
+            | exception exn ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "Worktree creation failed — %s"
+                     (Stdlib.Printexc.to_string exn));
+                false
+          in
+          if created && Stdlib.Sys.file_exists path then (
             Runtime.update_orchestrator runtime (fun orch ->
                 Orchestrator.set_worktree_path orch patch_id path);
             (match user_config.User_config.on_worktree_create with

@@ -44,7 +44,17 @@ val session_mode : Patch_agent.t -> [ `Resume of string | `Fresh | `Give_up ]
     invocation should resume an existing session, start fresh, or give up. *)
 
 val extract_pr_number_from_text :
-  owner:string -> repo:string -> string -> Types.Pr_number.t option
+  ?at_end_of_stream:bool ->
+  owner:string ->
+  repo:string ->
+  string ->
+  Types.Pr_number.t option
 (** Scan [text] for a [github.com/<owner>/<repo>/pull/N] URL and return the
     first [N] found. Used to sniff PR creation from the agent's stdout stream.
-*)
+
+    A digit run terminating at the end of [text] is treated as
+    potentially-incomplete by default, so this function will return [None] for
+    [".../pull/12"] when the next stream chunk could turn it into
+    [.../pull/1234]. Pass [~at_end_of_stream:true] when calling on a complete
+    buffer (e.g. on [Final_result]) to treat end-of-buffer as a valid
+    terminator. *)

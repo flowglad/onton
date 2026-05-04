@@ -17,7 +17,7 @@ let session_mode (agent : Patch_agent.t) :
       | Some id -> `Resume id
       | None -> `Fresh)
 
-let extract_pr_number_from_text ~owner ~repo text =
+let extract_pr_number_from_text ?(at_end_of_stream = false) ~owner ~repo text =
   let needle = Printf.sprintf "github.com/%s/%s/pull/" owner repo in
   let needle_len = String.length needle in
   let text_len = String.length text in
@@ -31,7 +31,12 @@ let extract_pr_number_from_text ~owner ~repo text =
         else j
       in
       let stop = end_pos start in
-      if stop > start then
+      (* Mid-stream: a digit run that reaches the end of [text] may continue in
+         the next chunk, so committing now would truncate the PR number (e.g.
+         emit #12 when the full URL ends in #1234). Require a non-digit
+         terminator unless the caller asserts no more text is coming. *)
+      let has_terminator = stop < text_len || at_end_of_stream in
+      if stop > start && has_terminator then
         try
           Some
             (Types.Pr_number.of_int
@@ -42,6 +47,44 @@ let extract_pr_number_from_text ~owner ~repo text =
     else scan (i + 1)
   in
   scan 0
+
+let%test_module "extract_pr_number_from_text" =
+  (module struct
+    let pr n = Some (Types.Pr_number.of_int n)
+
+    let%test "complete url with terminator -> commits" =
+      Option.equal Types.Pr_number.equal
+        (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
+           "see github.com/foo/bar/pull/1234 for details")
+        (pr 1234)
+
+    let%test "digit run at end-of-buffer -> waits (None)" =
+      Option.is_none
+        (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
+           "see github.com/foo/bar/pull/12")
+
+    let%test "digit run at end-of-buffer with ~at_end_of_stream -> commits" =
+      Option.equal Types.Pr_number.equal
+        (extract_pr_number_from_text ~at_end_of_stream:true ~owner:"foo"
+           ~repo:"bar" "see github.com/foo/bar/pull/12")
+        (pr 12)
+
+    let%test "trailing newline counts as terminator" =
+      Option.equal Types.Pr_number.equal
+        (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
+           "github.com/foo/bar/pull/42\nmore text")
+        (pr 42)
+
+    let%test "no url -> None" =
+      Option.is_none
+        (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
+           "no relevant text here")
+
+    let%test "url for different owner/repo -> None" =
+      Option.is_none
+        (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
+           "github.com/other/repo/pull/12345 ")
+  end)
 
 let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
     ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
@@ -114,6 +157,26 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
           let needle_len =
             String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
           in
+          (* Lookback window for the per-chunk tail scan. We need to re-scan
+             far enough back to include both the URL prefix and the digit run
+             that may have started in a previous chunk; 32 digits covers any
+             realistic PR number even if split across many tiny chunks. *)
+          let pr_url_lookback = needle_len + 32 in
+          let try_extract_pr ?(at_end_of_stream = false) text =
+            if !pr_found then ()
+            else
+              match
+                extract_pr_number_from_text ~at_end_of_stream ~owner ~repo text
+              with
+              | Some pr_number ->
+                  pr_found := true;
+                  log_stream_entry runtime ~patch_id
+                    (Activity_log.Stream_entry.Text_chunk
+                       (Printf.sprintf "PR #%d detected"
+                          (Types.Pr_number.to_int pr_number)));
+                  on_pr_detected pr_number
+              | None -> ()
+          in
           let last_sync = ref (Unix.gettimeofday ()) in
           let sync_transcript () =
             Stdlib.Hashtbl.replace transcripts patch_id
@@ -148,26 +211,18 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             (* Turn_started is the preferred signal; the arms below are
                fallbacks for backends that do not emit it. *)
             | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
-            | Types.Stream_event.Text_delta text -> (
+            | Types.Stream_event.Text_delta text ->
                 mark_backend_accepted_turn ();
                 let prev_len = Buffer.length text_buf in
                 Buffer.add_string text_buf text;
                 maybe_sync_transcript ();
                 if not !pr_found then
-                  let offset = max 0 (prev_len - needle_len) in
+                  let offset = max 0 (prev_len - pr_url_lookback) in
                   let tail =
                     Buffer.To_string.sub text_buf ~pos:offset
                       ~len:(Buffer.length text_buf - offset)
                   in
-                  match extract_pr_number_from_text ~owner ~repo tail with
-                  | Some pr_number ->
-                      pr_found := true;
-                      log_stream_entry runtime ~patch_id
-                        (Activity_log.Stream_entry.Text_chunk
-                           (Printf.sprintf "PR #%d detected"
-                              (Types.Pr_number.to_int pr_number)));
-                      on_pr_detected pr_number
-                  | None -> ())
+                  try_extract_pr tail
             | Types.Stream_event.Tool_use { name; input; status } ->
                 mark_backend_accepted_turn ();
                 tool_count := !tool_count + 1;
@@ -232,6 +287,13 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             | Types.Stream_event.Final_result { stop_reason; _ } ->
                 mark_backend_accepted_turn ();
                 sync_transcript ();
+                (* Final pass over the full buffer with end-of-stream
+                   semantics — catches PR URLs whose digit run terminated
+                   exactly at the buffer end (no trailing newline / next
+                   chunk to provide a non-digit terminator). *)
+                if not !pr_found then
+                  try_extract_pr ~at_end_of_stream:true
+                    (Buffer.contents text_buf);
                 let reason = Types.Stop_reason.to_display stop_reason in
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Finished reason)
@@ -443,17 +505,22 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
           let agent_before, agent_after =
             Runtime.update_orchestrator_returning runtime (fun orch ->
                 let agent_before = Orchestrator.agent orch patch_id in
-                let orch =
-                  Orchestrator.apply_session_result orch patch_id
-                    final_session_result
-                in
-                (* Store the captured session_id for future --resume calls *)
+                (* Store the captured session_id BEFORE applying the session
+                   result. [apply_session_result] clears [llm_session_id] on
+                   start-path fresh failure (via [on_session_failure]) and on
+                   [Session_no_resume] / [Session_give_up]; doing the set
+                   afterwards would overwrite that reset and break the
+                   clean-retry path. *)
                 let orch =
                   match !captured_session_id with
                   | Some _ ->
                       Orchestrator.set_llm_session_id orch patch_id
                         !captured_session_id
                   | None -> orch
+                in
+                let orch =
+                  Orchestrator.apply_session_result orch patch_id
+                    final_session_result
                 in
                 let agent_after = Orchestrator.agent orch patch_id in
                 (orch, (agent_before, agent_after)))

@@ -10,31 +10,36 @@ let parse_route ~known_backends ~complexity (json : Yojson.Safe.t) :
     (route, string) Result.t =
   let open Yojson.Safe.Util in
   match json with
-  | `Assoc _ -> (
+  | `Assoc _ ->
       let backend =
         try Some (member "backend" json |> to_string) with _ -> None
       in
-      let model =
+      let model_result =
         match member "model" json with
-        | `Null -> None
-        | `String s when String.is_empty (String.strip s) -> None
-        | `String s -> Some s
-        | _ -> None
+        | `Null -> Ok None
+        | `String s when String.is_empty (String.strip s) -> Ok None
+        | `String s -> Ok (Some (String.strip s))
+        | _ ->
+            Error
+              (Printf.sprintf "routing.%d.model must be a string when present"
+                 complexity)
       in
-      match backend with
-      | None ->
-          Error
-            (Printf.sprintf
-               "routing.%d: missing required string field \"backend\""
-               complexity)
-      | Some name when not (List.mem known_backends name ~equal:String.equal) ->
-          Error
-            (Printf.sprintf
-               "routing.%d.backend = %S is not a known backend (expected one \
-                of: %s)"
-               complexity name
-               (String.concat ~sep:", " known_backends))
-      | Some name -> Ok { backend = name; model })
+      Result.bind model_result ~f:(fun model ->
+          match backend with
+          | None ->
+              Error
+                (Printf.sprintf
+                   "routing.%d: missing required string field \"backend\""
+                   complexity)
+          | Some name
+            when not (List.mem known_backends name ~equal:String.equal) ->
+              Error
+                (Printf.sprintf
+                   "routing.%d.backend = %S is not a known backend (expected \
+                    one of: %s)"
+                   complexity name
+                   (String.concat ~sep:", " known_backends))
+          | Some name -> Ok { backend = name; model })
   | _ ->
       Error
         (Printf.sprintf "routing.%d must be an object {backend, model}"
@@ -57,8 +62,15 @@ let parse_routing ~known_backends (json : Yojson.Safe.t) :
                    "routing.%d is out of range (complexity must be 1, 2, or 3)"
                    k)
           | Some k ->
-              Result.map (parse_route ~known_backends ~complexity:k value)
-                ~f:(fun route -> (k, route) :: acc))
+              if List.Assoc.mem acc k ~equal:Int.equal then
+                Error
+                  (Printf.sprintf
+                     "routing.%d is duplicated; each complexity may be \
+                      configured at most once"
+                     k)
+              else
+                Result.map (parse_route ~known_backends ~complexity:k value)
+                  ~f:(fun route -> (k, route) :: acc))
       |> Result.map ~f:List.rev
   | _ ->
       Error
@@ -176,3 +188,26 @@ let%test "route_for_complexity: None complexity -> None route" =
   match parse_string ~known_backends:[ "claude" ] raw with
   | Ok t -> Option.is_none (route_for_complexity t ~complexity:None)
   | Error _ -> false
+
+let%test "parse_string: non-string model rejected" =
+  let raw = {|{"routing":{"1":{"backend":"claude","model":123}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Error msg -> String.is_substring msg ~substring:"model must be a string"
+  | Ok _ -> false
+
+let%test "parse_string: model whitespace is trimmed" =
+  let raw = {|{"routing":{"1":{"backend":"claude","model":"  haiku\t"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t -> (
+      match route_for_complexity t ~complexity:(Some 1) with
+      | Some { backend = "claude"; model = Some "haiku" } -> true
+      | _ -> false)
+  | Error _ -> false
+
+let%test "parse_string: duplicate complexity keys rejected" =
+  let raw =
+    {|{"routing":{"1":{"backend":"claude"},"1":{"backend":"codex"}}}|}
+  in
+  match parse_string ~known_backends:[ "claude"; "codex" ] raw with
+  | Error msg -> String.is_substring msg ~substring:"duplicated"
+  | Ok _ -> false

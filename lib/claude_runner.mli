@@ -38,7 +38,8 @@ val run :
 val auto_model : complexity:int option -> string option
 (** Map a 1/2/3 complexity to a Claude model alias. [None] complexity (and any
     out-of-range value) is treated as the strongest tier — be conservative.
-    Returns [Some "haiku-4-5"] / [Some "sonnet-4-5"] / [Some "opus-4-5"]. *)
+    Returns [Some "haiku"] / [Some "sonnet"] / [Some "opus"] — Claude Code's
+    stable aliases. *)
 
 val run_streaming :
   model:string option ->
