@@ -66,7 +66,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 ### Required Patch Fields
 
-Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string).
+Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string).
 
 The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
 
@@ -102,6 +102,29 @@ Each patch includes a `classification` field:
 - `BEHAVIOR` — Changes observable behavior. Requires careful review. Should be as small as possible.
 
 **Goal**: Maximize `INFRA` and `GATED` patches. Minimize `BEHAVIOR` patches.
+
+## Patch Complexity
+
+Each patch includes a `complexity` field — an integer in `1`/`2`/`3` estimating how hard the patch is to implement correctly. This is used by orchestrators (e.g. onton's `--model auto`) to route harder patches to stronger models.
+
+- `1` — **Mechanical / shallow / well-precedented.** A rename, a single-call-site signature change, adding a field that already has an obvious default, copy-pasting a pattern that already exists nearby. Could be done by reading only the patch description and a few surrounding lines.
+- `2` — **Moderate.** Requires reading the surrounding code to understand context, designing a small abstraction, writing non-trivial tests, or coordinating two or three files. The shape of the solution is clear once you've read the relevant code, but a careless implementation would miss something.
+- `3` — **Deep.** Requires reasoning about subtle invariants, concurrency, distributed state, novel algorithms, performance trade-offs, security boundaries, or unfamiliar third-party APIs whose contracts must be researched. Implementations that "look right" can still be wrong.
+
+### Be conservative
+
+**When in doubt, choose the higher value.** Under-estimating complexity costs more than over-estimating it: a too-weak model on a complex patch silently produces broken code, while a too-strong model on a simple patch only costs extra tokens. The bias is intentional.
+
+### Read the code, then research, then decide
+
+Do not assign complexity from the patch title alone. Before scoring:
+
+1. **Read the relevant files** named in `files` and any code the patch touches transitively. If the patch modifies a function with many callers, scan the callers.
+2. **If the patch involves a third-party API or unfamiliar library**, fetch the relevant docs (e.g. `WebFetch` against the library's reference) so you know whether the integration is mechanical or has gotchas.
+3. **If the patch touches an area the codebase has historical bugs in** (concurrency primitives, migrations, auth, billing, anything safety-critical), bias up.
+4. **Score based on the worst case among the changes the patch introduces**, not the median. A patch that mostly renames things but also adds one tricky lock should be scored on the lock.
+
+If after reading you cannot tell whether something is `2` or `3`, it is `3`. If you cannot tell whether something is `1` or `2`, it is `2`.
 
 ## Mergability Strategy
 

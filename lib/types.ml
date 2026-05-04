@@ -135,6 +135,7 @@ module Patch = struct
     changes : string list; [@yojson.default []]
     test_stubs_introduced : string list; [@yojson.default []]
     test_stubs_implemented : string list; [@yojson.default []]
+    complexity : int option; [@yojson.default None]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

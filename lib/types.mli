@@ -103,6 +103,11 @@ module Patch : sig
     changes : string list; [@yojson.default []]
     test_stubs_introduced : string list; [@yojson.default []]
     test_stubs_implemented : string list; [@yojson.default []]
+    complexity : int option; [@yojson.default None]
+        (** Conservative 1/2/3 estimate from the gameplan author. Used by
+            [--model auto] to pick a stronger model for harder patches. [None]
+            for legacy gameplans missing the field; orchestrators should treat
+            that as the highest available tier (be conservative). *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

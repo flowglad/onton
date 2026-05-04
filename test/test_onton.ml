@@ -15,6 +15,7 @@ let () =
           changes = [];
           test_stubs_introduced = [];
           test_stubs_implemented = [];
+          complexity = None;
         };
     ]
   in

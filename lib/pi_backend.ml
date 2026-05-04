@@ -55,8 +55,18 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
+let auto_model ~complexity =
+  (* Pi accepts user-configured model identifiers (e.g. local Ollama tags or
+     OpenRouter routes), so there is no canonical 1/2/3 ladder we can pick
+     blindly. Returning [None] drops [--model] and lets the user's pi config
+     pick its own default. Users wanting tiered routing should pass
+     [--model <id>] explicitly instead of [--model auto]. *)
+  ignore complexity;
+  None
+
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-    ~patch_id ~prompt ~resume_session ~on_event =
+    ~patch_id ~prompt ~resume_session ~complexity ~on_event =
+  let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let cwd_path = snd cwd in
   let patch_id_str = Types.Patch_id.to_string patch_id in
   let args =
@@ -73,9 +83,9 @@ let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "Pi";
     run_streaming =
-      (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
+      (fun ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event ->
         run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-          ~patch_id ~prompt ~resume_session ~on_event);
+          ~patch_id ~prompt ~resume_session ~complexity ~on_event);
   }
 
 let%test "build_args without continue (no model)" =

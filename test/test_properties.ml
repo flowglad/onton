@@ -153,6 +153,7 @@ let () =
          changes = [];
          test_stubs_introduced = [];
          test_stubs_implemented = [];
+         complexity = None;
        }
    in
    let a = Types.Patch_id.of_string "A" in
@@ -392,6 +393,7 @@ let () =
           changes = [];
           test_stubs_introduced = [];
           test_stubs_implemented = [];
+          complexity = None;
         };
     ]
   in
@@ -451,6 +453,7 @@ let () =
         changes = [];
         test_stubs_introduced = [];
         test_stubs_implemented = [];
+        complexity = None;
       }
   in
 
@@ -561,6 +564,7 @@ let () =
           changes = [];
           test_stubs_introduced = [];
           test_stubs_implemented = [];
+          complexity = None;
         };
       Types.Patch.
         {
@@ -576,6 +580,7 @@ let () =
           changes = [];
           test_stubs_introduced = [];
           test_stubs_implemented = [];
+          complexity = None;
         };
     ]
   in
@@ -623,6 +628,7 @@ let () =
             changes = [];
             test_stubs_introduced = [];
             test_stubs_implemented = [];
+            complexity = None;
           };
       ]
     in
@@ -650,6 +656,7 @@ let () =
                 changes = [];
                 test_stubs_introduced = [];
                 test_stubs_implemented = [];
+                complexity = None;
               };
           ]
         in
@@ -755,6 +762,7 @@ let () =
             changes = [];
             test_stubs_introduced = [];
             test_stubs_implemented = [];
+            complexity = None;
           };
       ]
     in
@@ -819,6 +827,7 @@ let () =
                   changes = [];
                   test_stubs_introduced = [];
                   test_stubs_implemented = [];
+                  complexity = None;
                 };
             ]
           in
@@ -894,6 +903,7 @@ let () =
             changes = [];
             test_stubs_introduced = [];
             test_stubs_implemented = [];
+            complexity = None;
           };
       ]
     in

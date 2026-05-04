@@ -35,6 +35,11 @@ val run :
     inside a switch they will release on a timer). The streaming counterpart
     {!run_streaming} carries [~clock] and [~timeout] for this purpose. *)
 
+val auto_model : complexity:int option -> string option
+(** Map a 1/2/3 complexity to a Claude model alias. [None] complexity (and any
+    out-of-range value) is treated as the strongest tier — be conservative.
+    Returns [Some "haiku-4-5"] / [Some "sonnet-4-5"] / [Some "opus-4-5"]. *)
+
 val run_streaming :
   model:string option ->
   process_mgr:_ Eio.Process.mgr ->
@@ -45,6 +50,7 @@ val run_streaming :
   patch_id:Types.Patch_id.t ->
   prompt:string ->
   resume_session:string option ->
+  complexity:int option ->
   on_event:(Types.Stream_event.t -> unit) ->
   Llm_backend.result
 (** Like {!run} but uses [--output-format stream-json]. Each NDJSON line is
