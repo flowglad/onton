@@ -45,7 +45,7 @@ let ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root ~project_name
         Runtime.update_orchestrator runtime (fun orch ->
             Orchestrator.set_worktree_path orch patch_id existing);
         Some existing
-    | None ->
+    | None -> (
         if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br then (
           let main_root = Worktree.resolve_main_root ~process_mgr ~repo_root in
           log_event runtime ~patch_id
@@ -82,37 +82,57 @@ let ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root ~project_name
                      (Stdlib.Printexc.to_string exn));
                 false
           in
-          if created && Stdlib.Sys.file_exists path then (
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.set_worktree_path orch patch_id path);
-            (match user_config.User_config.on_worktree_create with
-            | Some script -> (
-                let env =
-                  [
-                    ("ONTON_WORKTREE_PATH", path);
-                    ("ONTON_PATCH_ID", Types.Patch_id.to_string patch_id);
-                    ("ONTON_BRANCH", Types.Branch.to_string br);
-                  ]
-                in
-                let cwd = Eio.Path.(fs / path) in
-                (* [hook_mutex] serializes hook invocations across patch
-                   fibers — npm/dune/bun aren't parallelism-safe across
-                   shared caches, and per-hook fan-out is the dominant
-                   subprocess multiplier (see issue #209). *)
-                match
-                  Eio.Mutex.use_ro hook_mutex (fun () ->
-                      User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env
-                        ())
-                with
-                | Ok () ->
-                    log_event runtime ~patch_id "Ran on_worktree_create hook"
-                | Error msg ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Hook on_worktree_create failed — %s" msg)
-                )
-            | None -> ());
-            Some path)
-          else (
-            log_event runtime ~patch_id
-              (Printf.sprintf "Worktree still missing at %s" path);
-            None)
+          match (created, Stdlib.Sys.file_exists path) with
+          | true, true ->
+              Runtime.update_orchestrator runtime (fun orch ->
+                  Orchestrator.set_worktree_path orch patch_id path);
+              (match user_config.User_config.on_worktree_create with
+              | Some script -> (
+                  let env =
+                    [
+                      ("ONTON_WORKTREE_PATH", path);
+                      ("ONTON_PATCH_ID", Types.Patch_id.to_string patch_id);
+                      ("ONTON_BRANCH", Types.Branch.to_string br);
+                    ]
+                  in
+                  let cwd = Eio.Path.(fs / path) in
+                  (* [hook_mutex] serializes hook invocations across patch
+                     fibers — npm/dune/bun aren't parallelism-safe across
+                     shared caches, and per-hook fan-out is the dominant
+                     subprocess multiplier (see issue #209). *)
+                  match
+                    Eio.Mutex.use_ro hook_mutex (fun () ->
+                        User_config.run_hook ~process_mgr ~clock ~script ~cwd
+                          ~env ())
+                  with
+                  | Ok () ->
+                      log_event runtime ~patch_id "Ran on_worktree_create hook"
+                  | Error msg ->
+                      log_event runtime ~patch_id
+                        (Printf.sprintf "Hook on_worktree_create failed — %s"
+                           msg))
+              | None -> ());
+              Some path
+          | true, false ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "Worktree still missing at %s" path);
+              None
+          | false, _ -> (
+              (* [Worktree.create] raised. A concurrent fiber may have already
+                 added a real worktree for [br] before our attempt collided.
+                 [find_for_branch] queries [git worktree list], which only
+                 reports atomically-registered worktrees — so a hit here is a
+                 genuine adoptable path, not a partially-created stub. The
+                 [on_worktree_create] hook is intentionally skipped on this
+                 branch: the winning creator is already responsible for it,
+                 mirroring the existing "Found existing worktree for branch"
+                 path above. *)
+              match Worktree.find_for_branch ~process_mgr ~repo_root br with
+              | Some existing ->
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Adopting concurrently-created worktree at %s" existing);
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.set_worktree_path orch patch_id existing);
+                  Some existing
+              | None -> None))

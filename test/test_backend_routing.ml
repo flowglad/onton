@@ -148,8 +148,10 @@ let () =
               Backend_routing.decide ~repo_config ~default_backend
                 ~cli_model:(Some auto) ~complexity
             in
+            (* The fallback canonicalises to lowercase "auto" regardless of
+               how the user typed [--model], so registry deduplication works. *)
             String.equal d.backend default_backend
-            && Option.equal String.equal d.model (Some auto))
+            && Option.equal String.equal d.model (Some "auto"))
   in
 
   let prop_auto_none_complexity_falls_back =
@@ -163,7 +165,7 @@ let () =
             ~cli_model:(Some auto) ~complexity:None
         in
         String.equal d.backend default_backend
-        && Option.equal String.equal d.model (Some auto))
+        && Option.equal String.equal d.model (Some "auto"))
   in
 
   let prop_auto_case_insensitive =
@@ -180,10 +182,11 @@ let () =
         match decisions with
         | [] -> true
         | first :: rest -> (
-            (* The model field for "auto" fallback preserves the user's exact
-               case (to avoid surprising downstream tooling), so equality is
-               taken on the backend only when the route doesn't match — but
-               when the route matches, all variants must agree fully. *)
+            (* All variants must agree on BOTH backend and model. The fallback
+               arm canonicalises model to [Some "auto"] (lowercase), so the
+               backend-only check that used to live here would have allowed
+               case-divergent model fields to slip through and fragment the
+               [Backend_registry] cache. *)
             let route =
               Repo_config.route_for_complexity repo_config ~complexity
             in
@@ -194,7 +197,8 @@ let () =
                     && Option.equal String.equal d.model r.model)
             | None ->
                 List.for_all rest ~f:(fun d ->
-                    String.equal d.backend first.backend)))
+                    String.equal d.backend first.backend
+                    && Option.equal String.equal d.model first.model)))
   in
 
   let prop_total =
