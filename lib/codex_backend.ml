@@ -6,15 +6,17 @@ let build_args ~model ~cwd_path ~prompt ~resume_session =
     | Some m when not (String.is_empty m) -> [ "-m"; m ]
     | _ -> []
   in
+  (* -C is a global codex option (codex [OPTIONS] <COMMAND>); codex exec
+     re-exposes it but codex exec resume does not, so place it before the
+     subcommand to work uniformly across both. *)
+  let global = [ "codex"; "-C"; cwd_path ] in
+  let trailing = [ "--dangerously-bypass-approvals-and-sandbox" ] in
   match resume_session with
   | Some session_id ->
-      [ "codex"; "exec"; "resume"; session_id; prompt; "--json" ]
-      @ model_args
-      @ [ "--dangerously-bypass-approvals-and-sandbox"; "-C"; cwd_path ]
-  | None ->
-      [ "codex"; "exec"; prompt; "--json" ]
-      @ model_args
-      @ [ "--dangerously-bypass-approvals-and-sandbox"; "-C"; cwd_path ]
+      global
+      @ [ "exec"; "resume"; session_id; prompt; "--json" ]
+      @ model_args @ trailing
+  | None -> global @ [ "exec"; prompt; "--json" ] @ model_args @ trailing
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -118,12 +120,12 @@ let%test "build_args fresh (no resume, no model)" =
   List.equal String.equal args
     [
       "codex";
+      "-C";
+      "/tmp/work";
       "exec";
       "do stuff";
       "--json";
       "--dangerously-bypass-approvals-and-sandbox";
-      "-C";
-      "/tmp/work";
     ]
 
 let%test "build_args fresh with model" =
@@ -134,14 +136,14 @@ let%test "build_args fresh with model" =
   List.equal String.equal args
     [
       "codex";
+      "-C";
+      "/tmp/work";
       "exec";
       "do stuff";
       "--json";
       "-m";
       "gpt-5-mini";
       "--dangerously-bypass-approvals-and-sandbox";
-      "-C";
-      "/tmp/work";
     ]
 
 let%test "build_args with resume session passes prompt and bypass flag" =
@@ -152,14 +154,14 @@ let%test "build_args with resume session passes prompt and bypass flag" =
   List.equal String.equal args
     [
       "codex";
+      "-C";
+      "/tmp/work";
       "exec";
       "resume";
       "sess-1";
       "do stuff";
       "--json";
       "--dangerously-bypass-approvals-and-sandbox";
-      "-C";
-      "/tmp/work";
     ]
 
 let%test "build_args with resume session and model" =
@@ -170,6 +172,8 @@ let%test "build_args with resume session and model" =
   List.equal String.equal args
     [
       "codex";
+      "-C";
+      "/tmp/work";
       "exec";
       "resume";
       "sess-1";
@@ -178,8 +182,6 @@ let%test "build_args with resume session and model" =
       "-m";
       "gpt-5-mini";
       "--dangerously-bypass-approvals-and-sandbox";
-      "-C";
-      "/tmp/work";
     ]
 
 let%test "parse_event thread.started emits Session_init" =
