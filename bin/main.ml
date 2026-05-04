@@ -1825,7 +1825,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 
 (** Runner fiber — executes orchestrator actions by driving backend sessions
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
+let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
     ~transcripts ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
@@ -2056,6 +2056,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                      REST API (Github.list_prs) after the
                                      backend session finishes *)
                                       let on_pr_detected _pr_number = () in
+                                      let complexity =
+                                        patch_complexity ~gameplan ~patch_id
+                                      in
                                       let r, _tool_failures =
                                         Session_driver.run ~kind:None ~runtime
                                           ~process_mgr ~clock ~fs ~project_name
@@ -2065,11 +2068,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex ~backend
-                                          ~complexity:
-                                            (patch_complexity ~gameplan
-                                               ~patch_id)
-                                          ~event_log
+                                          ~worktree_mutex ~hook_mutex
+                                          ~backend:(pick_backend ~complexity)
+                                          ~complexity ~event_log
                                       in
                                       (r
                                         :> [ `Failed
@@ -2533,6 +2534,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         else base_changed_prefix ^ "\n" ^ raw
                                       in
                                       let on_pr_detected _pr_number = () in
+                                      let complexity =
+                                        patch_complexity ~gameplan ~patch_id
+                                      in
                                       let result, _tool_failures =
                                         Session_driver.run
                                           ~kind:
@@ -2544,11 +2548,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex ~backend
-                                          ~complexity:
-                                            (patch_complexity ~gameplan
-                                               ~patch_id)
-                                          ~event_log
+                                          ~worktree_mutex ~hook_mutex
+                                          ~backend:(pick_backend ~complexity)
+                                          ~complexity ~event_log
                                       in
                                       (match result with
                                       | `Ok
@@ -2896,6 +2898,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         (Project_store.pr_body_artifact_path
                                            ~project_name ~patch_id)
                                     in
+                                    let complexity =
+                                      patch_complexity ~gameplan ~patch_id
+                                    in
                                     let result, tool_failures =
                                       Session_driver.run ~kind:(Some kind)
                                         ~runtime ~process_mgr ~clock ~fs
@@ -2905,10 +2910,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
                                         ~user_config:config.user_config
-                                        ~worktree_mutex ~hook_mutex ~backend
-                                        ~complexity:
-                                          (patch_complexity ~gameplan ~patch_id)
-                                        ~event_log
+                                        ~worktree_mutex ~hook_mutex
+                                        ~backend:(pick_backend ~complexity)
+                                        ~complexity ~event_log
                                     in
                                     let result =
                                       (result
@@ -3591,36 +3595,36 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             None
         | None -> None
       in
-      let backend =
-        let model_opt =
-          if Base.String.is_empty config.model then None else Some config.model
-        in
-        match config.backend with
-        | "claude" ->
-            let display_name =
-              match model_opt with
-              | Some m -> Printf.sprintf "Claude (%s)" m
-              | None -> "Claude"
-            in
-            Claude_backend.create ~name:display_name ~model:model_opt
-              ~process_mgr ~clock ~timeout:session_timeout ~setsid_exec
-        | "codex" ->
-            Codex_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | "opencode" ->
-            Opencode_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | "pi" ->
-            Pi_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | "gemini" ->
-            Gemini_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | other ->
-            invalid_arg
-              (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
-                 (String.concat ", " known_backends))
+      let cli_model_opt =
+        if Base.String.is_empty config.model then None else Some config.model
       in
+      let repo_config =
+        let config_dir =
+          User_config.config_dir ~github_owner:config.github_owner
+            ~github_repo:config.github_repo
+        in
+        match Repo_config.load ~config_dir ~known_backends with
+        | Ok t -> t
+        | Error msg ->
+            Printf.eprintf "Error: %s\n" msg;
+            Stdlib.exit 1
+      in
+      let registry =
+        Backend_registry.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
+      in
+      (* [pick_backend ~complexity] resolves a per-patch (backend, model)
+         tuple via the pure [Backend_routing.decide] and looks it up in the
+         registry. Calling with [~complexity:None] yields the run's default
+         backend (used for ad-hoc sessions and for the TUI display name). *)
+      let pick_backend ~complexity =
+        let { Backend_routing.backend; model } =
+          Backend_routing.decide ~repo_config ~default_backend:config.backend
+            ~cli_model:cli_model_opt ~complexity
+        in
+        Backend_registry.get registry ~backend ~model
+      in
+      let default_backend = pick_backend ~complexity:None in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
       (* Capture agent state and worktree list BEFORE launching concurrent
@@ -3712,7 +3716,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
-            runner_fiber ~runtime ~env ~config ~backend ~project_name
+            runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
               ~pr_registry ~transcripts ~github ~net ~event_log ())
           :: common_fibers)
       else
@@ -3753,7 +3757,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
                      ~input_mode ~prompt_line ~patches_start_row
                      ~patches_scroll_offset ~patches_visible_count
-                     ~backend_name:backend.Llm_backend.name)
+                     ~backend_name:default_backend.Llm_backend.name)
                 :: (fun () ->
                   input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
                     ~detail_scroll ~detail_follow ~timeline_scroll
@@ -3763,7 +3767,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo)
                 :: (fun () ->
-                  runner_fiber ~runtime ~env ~config ~backend ~project_name
+                  runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~transcripts ~github ~net ~event_log
                     ~status_msg ())
                 :: common_fibers)
@@ -3825,8 +3829,11 @@ let model_arg =
            [sonnet-4-6] for claude; [gpt-5.5] for codex). The literal value \
            [auto] picks a model per patch from the gameplan's [complexity] \
            field (1/2/3 → cheap/standard/strongest tier of the selected \
-           backend). When omitted, onton does not pass --model to the \
-           underlying CLI, so the backend's own default applies.")
+           backend). The per-backend ladder can be overridden by writing \
+           [~/.config/onton/<owner>/<repo>/config.json] with a [routing] map — \
+           see lib/repo_config.mli for the schema. When omitted, onton does \
+           not pass --model to the underlying CLI, so the backend's own \
+           default applies.")
 
 let repo_arg =
   let open Cmdliner in
