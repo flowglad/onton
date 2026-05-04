@@ -17,6 +17,20 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Cache opam switch
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: _opam
+          key: opam-${{ runner.os }}-ocaml-5.4.0-${{ hashFiles('*.opam') }}
+
+      - name: Cache dune build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/.cache/dune
+          key: ${{ runner.os }}-dune-${{ hashFiles('**/dune', '**/dune-project') }}
+          restore-keys: |
+            ${{ runner.os }}-dune-
+
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.0'
@@ -69,31 +83,15 @@ jobs:
               print(f'::error file={f},line={line}::Test failed: {name}')
           "
 
-  property-tests:
-    name: Property Tests (10k)
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
-        with:
-          ocaml-compiler: '5.4.0'
-          dune-cache: true
-
-      - name: Use opam.ocaml.org archive cache
-        run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
-
-      - name: Install dependencies
-        run: opam install . --deps-only --with-test -y
-
       - name: Run property tests (10k iterations)
-        run: opam exec -- dune runtest 2>&1 | tee proptest.log
+        # The default `Run tests` step above gates this one, so a non-property
+        # regression fails fast before paying for 10k QCheck iterations.
+        run: opam exec -- dune runtest --force 2>&1 | tee proptest.log
         env:
           QCHECK_COUNT: "10000"
 
       - name: Annotate property test failures
-        if: failure()
+        if: failure() && hashFiles('proptest.log') != ''
         run: |
           python3 -c "
           import re
@@ -108,6 +106,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Cache opam switch
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: _opam
+          key: opam-${{ runner.os }}-ocaml-5.4.0-${{ hashFiles('*.opam') }}
 
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:

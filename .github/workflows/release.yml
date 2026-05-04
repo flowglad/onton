@@ -22,20 +22,19 @@ jobs:
           key: opam-macos-14-ocaml-5.4.0-${{ hashFiles('*.opam') }}
 
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
-        if: steps.cache-opam.outputs.cache-hit != 'true'
         with:
           ocaml-compiler: '5.4.0'
           dune-cache: true
 
       - name: Use opam.ocaml.org archive cache
-        if: steps.cache-opam.outputs.cache-hit != 'true'
         # erratique.ch (upstream for cmdliner, mtime, fpath, logs, uutf, ...)
         # is frequently flaky; the community cache mirrors opam-repository
         # archives behind a CDN, so opam only falls back to upstream on a miss.
         run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
 
       - name: Install dependencies
-        if: steps.cache-opam.outputs.cache-hit != 'true'
+        # Near-noop on a `_opam` cache hit: every dep is already present in the
+        # switch, so opam just re-resolves and exits.
         run: opam install . --deps-only --with-test -y
 
       - name: Build
