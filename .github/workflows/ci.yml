@@ -24,11 +24,21 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Cache opam switch
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+      # Split restore/save on the opam switch cache so a canceled run (the
+      # workflow uses [cancel-in-progress: true]) can't poison the cache with
+      # a half-installed switch. The classic symptom is zarith's [make install]
+      # failing with "Package zarith is already installed - META already
+      # exists": the previous run saved [_opam/lib/zarith/META] on disk before
+      # opam recorded the install in the switch state, then the next run
+      # restores that desync and tries to re-install zarith over its own
+      # leftover files. With [cache/save] gated on [success()], only fully
+      # green runs roll the cache forward.
+      - name: Restore opam switch cache
+        id: opam-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: _opam
-          key: opam-${{ runner.os }}-ocaml-5.4.0-test-v2-${{ hashFiles('*.opam') }}
+          key: opam-${{ runner.os }}-ocaml-5.4.0-test-v3-${{ hashFiles('*.opam') }}
 
       # `dune-cache: true` below makes setup-ocaml manage the ~/.cache/dune
       # lifecycle internally — adding a second actions/cache step on the same
@@ -92,6 +102,15 @@ jobs:
               name, f, line = m.groups()
               print(f'::error file={f},line={line}::Test failed: {name}')
           "
+
+      # Save only on a fully successful job and only if we didn't already
+      # have a hit (cache-hit means the existing entry is still valid).
+      - name: Save opam switch cache
+        if: success() && steps.opam-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: _opam
+          key: opam-${{ runner.os }}-ocaml-5.4.0-test-v3-${{ hashFiles('*.opam') }}
 
   format:
     name: Format Check
