@@ -14,6 +14,13 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    # Pin to bash so `${PIPESTATUS[0]}` (a bash-only array) in the Build and
+    # Run tests steps is guaranteed — GitHub Actions defaults to bash on Linux
+    # in practice, but making it explicit avoids silent breakage if the
+    # default ever shifts.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
