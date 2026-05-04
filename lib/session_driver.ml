@@ -227,6 +227,15 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
                 Buffer.add_string text_buf text;
                 maybe_sync_transcript ();
                 if not !pr_found then
+                  (* Anchor the tail window to [prev_len], NOT [new_len].
+                     We want the window to always cover the ENTIRE new chunk
+                     plus up to [pr_url_lookback] bytes back into the prior
+                     content (to catch a URL/digit run that spanned the
+                     chunk boundary). LLM stream chunks are routinely longer
+                     than [pr_url_lookback] (~62 bytes), so anchoring to
+                     [new_len] would shrink the window to the last
+                     [pr_url_lookback] bytes and miss URLs in the early part
+                     of long chunks. *)
                   let offset = max 0 (prev_len - pr_url_lookback) in
                   let tail =
                     Buffer.To_string.sub text_buf ~pos:offset
