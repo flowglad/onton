@@ -24,25 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # Split restore/save on the opam switch cache so a canceled run (the
-      # workflow uses [cancel-in-progress: true]) can't poison the cache with
-      # a half-installed switch. The classic symptom is zarith's [make install]
-      # failing with "Package zarith is already installed - META already
-      # exists": the previous run saved [_opam/lib/zarith/META] on disk before
-      # opam recorded the install in the switch state, then the next run
-      # restores that desync and tries to re-install zarith over its own
-      # leftover files. With [cache/save] gated on [success()], only fully
-      # green runs roll the cache forward.
-      - name: Restore opam switch cache
-        id: opam-cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
-        with:
-          path: _opam
-          key: opam-${{ runner.os }}-ocaml-5.4.0-test-v3-${{ hashFiles('*.opam') }}
-
-      # `dune-cache: true` below makes setup-ocaml manage the ~/.cache/dune
-      # lifecycle internally — adding a second actions/cache step on the same
-      # path would race with it on save and clobber on restore.
+      # We deliberately do NOT cache [_opam/] here. setup-ocaml@v3 caches its
+      # own opam-root state at [~/.opam/] (compiler + repo metadata) keyed
+      # separately from anything we'd cache for [_opam/]. Caching the local
+      # switch alongside means the two can drift: a stale [~/.opam/] without
+      # the switch registered makes opam treat [_opam/] as a fresh switch and
+      # try to reinstall packages whose files still exist on disk — the
+      # classic "zarith ... META already exists" symptom we kept hitting
+      # whenever a cancel-in-progress run saved a half-consistent [_opam/].
+      # [dune-cache: true] handles the much larger speed win (avoiding
+      # recompilation), and the opam.ocaml.org archive mirror keeps the
+      # `opam install` step under ~90s by serving precompiled binaries.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.0'
@@ -102,15 +94,6 @@ jobs:
               name, f, line = m.groups()
               print(f'::error file={f},line={line}::Test failed: {name}')
           "
-
-      # Save only on a fully successful job and only if we didn't already
-      # have a hit (cache-hit means the existing entry is still valid).
-      - name: Save opam switch cache
-        if: success() && steps.opam-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
-        with:
-          path: _opam
-          key: opam-${{ runner.os }}-ocaml-5.4.0-test-v3-${{ hashFiles('*.opam') }}
 
   format:
     name: Format Check
