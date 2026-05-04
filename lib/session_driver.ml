@@ -84,6 +84,16 @@ let%test_module "extract_pr_number_from_text" =
       Option.is_none
         (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
            "github.com/other/repo/pull/12345 ")
+
+    let%test
+        "left-to-right: with two URLs, the first wins (callers must window the \
+         tail to favor the latest)" =
+      Option.equal Types.Pr_number.equal
+        (extract_pr_number_from_text ~at_end_of_stream:true ~owner:"foo"
+           ~repo:"bar"
+           "early stub github.com/foo/bar/pull/12 ... later real \
+            github.com/foo/bar/pull/1234")
+        (pr 12)
   end)
 
 let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
@@ -287,13 +297,26 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             | Types.Stream_event.Final_result { stop_reason; _ } ->
                 mark_backend_accepted_turn ();
                 sync_transcript ();
-                (* Final pass over the full buffer with end-of-stream
-                   semantics — catches PR URLs whose digit run terminated
-                   exactly at the buffer end (no trailing newline / next
-                   chunk to provide a non-digit terminator). *)
-                if not !pr_found then
-                  try_extract_pr ~at_end_of_stream:true
-                    (Buffer.contents text_buf);
+                (* Final pass with end-of-stream semantics — catches PR URLs
+                   whose digit run terminates exactly at the buffer end (no
+                   trailing newline / next chunk to provide a non-digit
+                   terminator).
+
+                   Restricted to the same [pr_url_lookback] tail window the
+                   per-chunk path uses: scanning the full buffer would
+                   left-to-right match an earlier stub fragment (e.g. an
+                   abandoned [.../pull/12] from a mid-stream digit-boundary
+                   that the per-chunk path correctly returned [None] for),
+                   reporting the wrong PR if the real URL appears later in
+                   the same buffer. The per-chunk path already saw any URL
+                   that had a non-digit terminator during streaming, so the
+                   final pass only needs to cover what the tail window does. *)
+                (if not !pr_found then
+                   let full = Buffer.contents text_buf in
+                   let len = String.length full in
+                   let offset = max 0 (len - pr_url_lookback) in
+                   let tail = String.sub full ~pos:offset ~len:(len - offset) in
+                   try_extract_pr ~at_end_of_stream:true tail);
                 let reason = Types.Stop_reason.to_display stop_reason in
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Finished reason)
