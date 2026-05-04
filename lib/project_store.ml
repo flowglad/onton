@@ -62,6 +62,7 @@ type stored_config = {
   github_owner : string;
   github_repo : string;
   backend : string;
+  model : string;
   main_branch : string;
   poll_interval : float;
   repo_root : string;
@@ -70,7 +71,7 @@ type stored_config = {
 [@@deriving yojson]
 
 let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
-    ~main_branch ~poll_interval ~repo_root ~max_concurrency =
+    ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
@@ -80,6 +81,7 @@ let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
       github_owner;
       github_repo;
       backend;
+      model;
       main_branch;
       poll_interval;
       repo_root;
@@ -94,6 +96,35 @@ let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
       Stdlib.output_string oc (Yojson.Safe.pretty_to_string json);
       Stdlib.flush oc)
 
+(* Migrate legacy combined backend strings (["claude-sonnet"], ["claude-opus"])
+   into the decomposed [backend] + [model] form, and ensure the [model] field
+   is always present (it was added after [backend] and is missing from older
+   configs). Only the legacy combined names inject a model; bare ["claude"]
+   stays bare and lets the runtime omit [--model] so the Claude CLI applies
+   its own default. *)
+let migrate_backend_model fields =
+  let assoc = List.Assoc.find fields ~equal:String.equal in
+  let stored_backend =
+    match assoc "backend" with Some (`String s) -> s | _ -> ""
+  in
+  let stored_model =
+    match assoc "model" with Some (`String s) -> s | _ -> ""
+  in
+  let backend, model =
+    match (stored_backend, stored_model) with
+    | "claude-sonnet", "" -> ("claude", "sonnet")
+    | "claude-opus", "" -> ("claude", "opus")
+    (* Legacy combined name with an explicitly stored model: keep the stored
+       model rather than overriding it from the legacy backend suffix. *)
+    | ("claude-sonnet" | "claude-opus"), m -> ("claude", m)
+    | b, m -> (b, m)
+  in
+  let without =
+    List.filter fields ~f:(fun (k, _) ->
+        not (String.equal k "backend" || String.equal k "model"))
+  in
+  ("backend", `String backend) :: ("model", `String model) :: without
+
 let load_config ~project_name =
   let path = config_path project_name in
   try
@@ -106,17 +137,7 @@ let load_config ~project_name =
     let json = Yojson.Safe.from_string content in
     match json with
     | `Assoc fields ->
-        let fields =
-          let fields =
-            if List.Assoc.mem fields "backend" ~equal:String.equal then fields
-            else ("backend", `String "claude-opus") :: fields
-          in
-          List.map fields ~f:(fun (key, value) ->
-              match (key, value) with
-              | "backend", `String "claude" -> (key, `String "claude-opus")
-              | _ -> (key, value))
-        in
-        Ok (stored_config_of_yojson (`Assoc fields))
+        Ok (stored_config_of_yojson (`Assoc (migrate_backend_model fields)))
     | _ -> Ok (stored_config_of_yojson json)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 

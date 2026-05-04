@@ -1,29 +1,20 @@
 open Base
 
-let build_args ~cwd_path ~prompt ~resume_session =
+let build_args ~model ~cwd_path ~prompt ~resume_session =
+  let model_args =
+    match model with
+    | Some m when not (String.is_empty m) -> [ "-m"; m ]
+    | _ -> []
+  in
   match resume_session with
   | Some session_id ->
-      [
-        "codex";
-        "exec";
-        "resume";
-        session_id;
-        prompt;
-        "--json";
-        "--dangerously-bypass-approvals-and-sandbox";
-        "-C";
-        cwd_path;
-      ]
+      [ "codex"; "exec"; "resume"; session_id; prompt; "--json" ]
+      @ model_args
+      @ [ "--dangerously-bypass-approvals-and-sandbox"; "-C"; cwd_path ]
   | None ->
-      [
-        "codex";
-        "exec";
-        prompt;
-        "--json";
-        "--dangerously-bypass-approvals-and-sandbox";
-        "-C";
-        cwd_path;
-      ]
+      [ "codex"; "exec"; prompt; "--json" ]
+      @ model_args
+      @ [ "--dangerously-bypass-approvals-and-sandbox"; "-C"; cwd_path ]
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -98,11 +89,11 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
-let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-    ~prompt ~resume_session ~on_event =
+let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+    ~patch_id ~prompt ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
   let cwd_path = snd cwd in
-  let args = build_args ~cwd_path ~prompt ~resume_session in
+  let args = build_args ~model ~cwd_path ~prompt ~resume_session in
   let process_line line =
     let trimmed = String.strip line in
     if String.is_empty trimmed then [] else parse_event trimmed
@@ -110,18 +101,19 @@ let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
     ~args ~process_line ~on_event
 
-let create ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
+let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "Codex";
     run_streaming =
       (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
-        run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-          ~prompt ~resume_session ~on_event);
+        run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+          ~patch_id ~prompt ~resume_session ~on_event);
   }
 
-let%test "build_args fresh (no resume)" =
+let%test "build_args fresh (no resume, no model)" =
   let args =
-    build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff" ~resume_session:None
+    build_args ~model:None ~cwd_path:"/tmp/work" ~prompt:"do stuff"
+      ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -134,9 +126,27 @@ let%test "build_args fresh (no resume)" =
       "/tmp/work";
     ]
 
+let%test "build_args fresh with model" =
+  let args =
+    build_args ~model:(Some "gpt-5-mini") ~cwd_path:"/tmp/work"
+      ~prompt:"do stuff" ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "codex";
+      "exec";
+      "do stuff";
+      "--json";
+      "-m";
+      "gpt-5-mini";
+      "--dangerously-bypass-approvals-and-sandbox";
+      "-C";
+      "/tmp/work";
+    ]
+
 let%test "build_args with resume session passes prompt and bypass flag" =
   let args =
-    build_args ~cwd_path:"/tmp/work" ~prompt:"do stuff"
+    build_args ~model:None ~cwd_path:"/tmp/work" ~prompt:"do stuff"
       ~resume_session:(Some "sess-1")
   in
   List.equal String.equal args
@@ -147,6 +157,26 @@ let%test "build_args with resume session passes prompt and bypass flag" =
       "sess-1";
       "do stuff";
       "--json";
+      "--dangerously-bypass-approvals-and-sandbox";
+      "-C";
+      "/tmp/work";
+    ]
+
+let%test "build_args with resume session and model" =
+  let args =
+    build_args ~model:(Some "gpt-5-mini") ~cwd_path:"/tmp/work"
+      ~prompt:"do stuff" ~resume_session:(Some "sess-1")
+  in
+  List.equal String.equal args
+    [
+      "codex";
+      "exec";
+      "resume";
+      "sess-1";
+      "do stuff";
+      "--json";
+      "-m";
+      "gpt-5-mini";
       "--dangerously-bypass-approvals-and-sandbox";
       "-C";
       "/tmp/work";

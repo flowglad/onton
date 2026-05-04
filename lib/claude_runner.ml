@@ -39,34 +39,29 @@ let ansi_re =
 (** Strip ANSI escape sequences and stray control characters. *)
 let strip_ansi s = Re.replace_string ansi_re ~by:"" s
 
+let model_args = function
+  | Some m when not (String.is_empty m) -> [ "--model"; m ]
+  | _ -> []
+
 let build_args ~model ~prompt ~resume_session =
-  let base =
-    [ "claude"; "--model"; model; "-p"; prompt; "--output-format"; "text" ]
-  in
+  let base = [ "claude" ] in
+  let prompt_args = [ "-p"; prompt; "--output-format"; "text" ] in
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
   in
   let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
-  base @ session_args @ flags
+  base @ model_args model @ prompt_args @ session_args @ flags
 
 let build_stream_args ~model ~prompt ~resume_session =
-  let base =
-    [
-      "claude";
-      "--model";
-      model;
-      "-p";
-      prompt;
-      "--output-format";
-      "stream-json";
-      "--verbose";
-    ]
+  let base = [ "claude" ] in
+  let prompt_args =
+    [ "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
   in
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
   in
   let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
-  base @ session_args @ flags
+  base @ model_args model @ prompt_args @ session_args @ flags
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
@@ -275,9 +270,9 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
     ~args ~process_line ~on_event
 
-let%test "build_args fresh (no resume)" =
+let%test "build_args fresh (no resume, with model)" =
   let args =
-    build_args ~model:"sonnet" ~prompt:"do stuff" ~resume_session:None
+    build_args ~model:(Some "sonnet") ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -293,9 +288,24 @@ let%test "build_args fresh (no resume)" =
       "200";
     ]
 
+let%test "build_args fresh (no resume, no model)" =
+  let args = build_args ~model:None ~prompt:"do stuff" ~resume_session:None in
+  List.equal String.equal args
+    [
+      "claude";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "text";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+    ]
+
 let%test "build_args with resume session" =
   let args =
-    build_args ~model:"opus" ~prompt:"do stuff" ~resume_session:(Some "abc-123")
+    build_args ~model:(Some "opus") ~prompt:"do stuff"
+      ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
@@ -313,9 +323,10 @@ let%test "build_args with resume session" =
       "200";
     ]
 
-let%test "build_stream_args fresh (no resume)" =
+let%test "build_stream_args fresh (no resume, with model)" =
   let args =
-    build_stream_args ~model:"sonnet" ~prompt:"do stuff" ~resume_session:None
+    build_stream_args ~model:(Some "sonnet") ~prompt:"do stuff"
+      ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -332,9 +343,26 @@ let%test "build_stream_args fresh (no resume)" =
       "200";
     ]
 
+let%test "build_stream_args fresh (no resume, no model)" =
+  let args =
+    build_stream_args ~model:None ~prompt:"do stuff" ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "claude";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "stream-json";
+      "--verbose";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+    ]
+
 let%test "build_stream_args with resume session" =
   let args =
-    build_stream_args ~model:"opus" ~prompt:"do stuff"
+    build_stream_args ~model:(Some "opus") ~prompt:"do stuff"
       ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
