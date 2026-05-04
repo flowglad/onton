@@ -172,7 +172,7 @@ let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     separate table populated when PRs are created and used for polling.
 
     PR numbers are discovered by querying GitHub for open PRs matching the
-    patch's branch name after Claude completes work. *)
+    patch's branch name after the backend session completes. *)
 
 module Pr_registry = struct
   type t = { mutex : Eio.Mutex.t; table : (Patch_id.t, Pr_number.t) Hashtbl.t }
@@ -299,6 +299,14 @@ let build_branch_map (gameplan : Gameplan.t) ~default =
   in
   fun pid -> Base.Option.value (Base.Map.find map pid) ~default
 
+(** Look up the gameplan-author's 1/2/3 complexity for a patch. [None] when the
+    patch is missing or the gameplan didn't specify — backends running under
+    [--model auto] should treat that as the highest tier. *)
+let patch_complexity ~(gameplan : Gameplan.t) ~patch_id =
+  Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+      Patch_id.equal p.Patch.id patch_id)
+  |> Base.Option.bind ~f:(fun (p : Patch.t) -> p.Patch.complexity)
+
 (** {1 Shared helpers} *)
 
 (** Pluralize a count for inline rendering: [pluralize 1 "comment"] →
@@ -309,10 +317,7 @@ let pluralize ?plural n singular =
   Printf.sprintf "%d %s" n (if n = 1 then singular else many)
 
 let log_event runtime ?patch_id msg =
-  Runtime.update_activity_log runtime (fun log ->
-      Activity_log.add_event log
-        (Activity_log.Event.create ~timestamp:(Unix.gettimeofday ()) ?patch_id
-           msg))
+  Runtime_logging.log_event runtime ?patch_id msg
 
 (** Reconcile per-patch automerge deadlines. For each deadline that has elapsed,
     merge the PR on GitHub and mark the patch merged on success. On failure the
@@ -570,180 +575,8 @@ let mark_session_failed event_log runtime patch_id =
           ~reason:Orchestrator.Unexpected_exception ~agent_before:before
           ~agent_after:after)
 
-(** Compute the session mode for the fallback chain.
-
-    The fallback chain is: resume existing session → fresh session → give up.
-    - [Fresh_available] with [llm_session_id = Some id]: use [--resume <id>] to
-      target the specific session.
-    - [Fresh_available] without a stored session_id, or [Tried_fresh]: start
-      fresh (no --resume).
-    - [Given_up]: the agent has exhausted its fallback chain — return
-      [`Give_up]. *)
-let session_mode (agent : Patch_agent.t) :
-    [ `Resume of string | `Fresh | `Give_up ] =
-  match agent.Patch_agent.session_fallback with
-  | Patch_agent.Given_up -> `Give_up
-  | Patch_agent.Tried_fresh -> `Fresh
-  | Patch_agent.Fresh_available -> (
-      match agent.Patch_agent.llm_session_id with
-      | Some id -> `Resume id
-      | None -> `Fresh)
-
-(** Extract a PR number from text containing a GitHub PR URL. Scans for
-    [github.com/owner/repo/pull/N] patterns. *)
-let extract_pr_number_from_text ~owner ~repo text =
-  let needle = Printf.sprintf "github.com/%s/%s/pull/" owner repo in
-  let needle_len = String.length needle in
-  let text_len = String.length text in
-  let rec scan i =
-    if i + needle_len >= text_len then None
-    else if String.sub text i needle_len = needle then
-      (* Extract digits after the needle *)
-      let start = i + needle_len in
-      let rec end_pos j =
-        if j < text_len && text.[j] >= '0' && text.[j] <= '9' then
-          end_pos (j + 1)
-        else j
-      in
-      let stop = end_pos start in
-      if stop > start then
-        try
-          Some
-            (Pr_number.of_int
-               (int_of_string (String.sub text start (stop - start))))
-        with _ -> scan (i + 1)
-      else scan (i + 1)
-    else scan (i + 1)
-  in
-  scan 0
-
-(** Log a stream entry to the activity log. *)
-let log_stream_entry runtime ~patch_id kind =
-  Runtime.update_activity_log runtime (fun log ->
-      Activity_log.add_stream_entry log
-        (Activity_log.Stream_entry.create ~timestamp:(Unix.gettimeofday ())
-           ~patch_id ~kind))
-
-(** Run a Claude process with streaming and handle the result. Returns [`Ok] on
-    successful Claude exit (code 0), otherwise [`Failed]. The [on_pr_detected]
-    callback is invoked if a PR number is found in Claude's text output.
-    Implements the session fallback chain: resume → fresh → give up. On success,
-    stores the session ID and clears fallback state. *)
-
-(** Resolve the worktree path for a patch. Checks the stored path first, then
-    searches git worktrees by branch, then falls back to the default computed
-    path. Persists the result so subsequent calls are instant. *)
-let resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id
-    ~(agent : Patch_agent.t) ?branch () =
-  match agent.Patch_agent.worktree_path with
-  | Some p -> p
-  | None ->
-      let search_branch =
-        match branch with Some b -> b | None -> agent.Patch_agent.branch
-      in
-      let found =
-        Worktree.find_for_branch ~process_mgr ~repo_root search_branch
-      in
-      let path =
-        match found with
-        | Some p -> p
-        | None -> Worktree.worktree_dir ~project_name ~patch_id
-      in
-      path
-
-(** Ensure a worktree exists for the given patch. Resolves the path, discovers
-    existing worktrees for the branch, creates one if needed, and persists the
-    path. Returns [Some path] on success or [None] if the branch is unknown and
-    no worktree can be created yet. *)
-let ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root ~project_name
-    ~patch_id ~(agent : Patch_agent.t) ~(user_config : User_config.t)
-    ~worktree_mutex ~hook_mutex ?branch ?base_ref () =
-  let path =
-    resolve_worktree_path ~process_mgr ~repo_root ~project_name ~patch_id ~agent
-      ?branch ()
-  in
-  if Stdlib.Sys.file_exists path then (
-    Runtime.update_orchestrator runtime (fun orch ->
-        Orchestrator.set_worktree_path orch patch_id path);
-    Some path)
-  else
-    let br =
-      match branch with Some b -> b | None -> agent.Patch_agent.branch
-    in
-    match Worktree.find_for_branch ~process_mgr ~repo_root br with
-    | Some existing ->
-        log_event runtime ~patch_id
-          (Printf.sprintf "Found existing worktree for branch at %s" existing);
-        Runtime.update_orchestrator runtime (fun orch ->
-            Orchestrator.set_worktree_path orch patch_id existing);
-        Some existing
-    | None ->
-        if Worktree.is_checked_out_in_repo_root ~process_mgr ~repo_root br then (
-          let main_root = Worktree.resolve_main_root ~process_mgr ~repo_root in
-          log_event runtime ~patch_id
-            (Printf.sprintf
-               "Cannot create worktree — branch %s is checked out in the main \
-                working tree (%s). Switch the main tree to another branch \
-                (e.g. `git -C %s checkout <default-branch>`) and try again."
-               (Branch.to_string br) main_root main_root);
-          None)
-        else
-          let base =
-            match base_ref with
-            | Some b -> b
-            | None -> (
-                match agent.Patch_agent.base_branch with
-                | Some b -> Branch.to_string b
-                | None -> "HEAD")
-          in
-          log_event runtime ~patch_id
-            (Printf.sprintf "Creating worktree at %s" path);
-          (match
-             Eio.Mutex.use_ro worktree_mutex (fun () ->
-                 ignore
-                   (Worktree.create ~process_mgr ~repo_root ~project_name
-                      ~patch_id ~branch:br ~base_ref:base))
-           with
-          | () -> ()
-          | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
-          | exception exn ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "Worktree creation failed — %s"
-                   (Printexc.to_string exn)));
-          if Stdlib.Sys.file_exists path then (
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.set_worktree_path orch patch_id path);
-            (match user_config.User_config.on_worktree_create with
-            | Some script -> (
-                let env =
-                  [
-                    ("ONTON_WORKTREE_PATH", path);
-                    ("ONTON_PATCH_ID", Patch_id.to_string patch_id);
-                    ("ONTON_BRANCH", Branch.to_string br);
-                  ]
-                in
-                let cwd = Eio.Path.(fs / path) in
-                (* [hook_mutex] serializes hook invocations across patch
-                   fibers — npm/dune/bun aren't parallelism-safe across
-                   shared caches, and per-hook fan-out is the dominant
-                   subprocess multiplier (see issue #209). *)
-                match
-                  Eio.Mutex.use_ro hook_mutex (fun () ->
-                      User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env
-                        ())
-                with
-                | Ok () ->
-                    log_event runtime ~patch_id "Ran on_worktree_create hook"
-                | Error msg ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Hook on_worktree_create failed — %s" msg)
-                )
-            | None -> ());
-            Some path)
-          else (
-            log_event runtime ~patch_id
-              (Printf.sprintf "Worktree still missing at %s" path);
-            None)
+let resolve_worktree_path = Worktree_setup.resolve_worktree_path
+let ensure_worktree = Worktree_setup.ensure_worktree
 
 (** Execute a [Worktree_plan.t] against the live filesystem. The plan is built
     purely (see [Worktree_plan.for_rebase] / [for_merge_conflict]); this
@@ -799,421 +632,6 @@ let execute_worktree_plan ~runtime ~process_mgr ~clock ~fs ~repo_root
             (r, path))
   in
   loop ~path:default_path plan
-
-let truncate s n = if String.length s <= n then s else String.sub s 0 n ^ "..."
-
-let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
-    ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
-    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
-    ~user_config ~worktree_mutex ~hook_mutex ~backend ~event_log =
-  match session_mode agent with
-  | `Give_up ->
-      log_event runtime ~patch_id
-        "Session fallback exhausted — continue and fresh both failed, needs \
-         intervention";
-      Runtime.update_orchestrator runtime (fun orch ->
-          Orchestrator.apply_session_result orch patch_id
-            Orchestrator.Session_give_up);
-      (`Failed, [])
-  | (`Resume _ | `Fresh) as mode -> (
-      let resume_session, is_fresh =
-        match mode with `Resume id -> (Some id, false) | `Fresh -> (None, true)
-      in
-      match
-        ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root
-          ~project_name ~patch_id ~agent ~user_config ~worktree_mutex
-          ~hook_mutex ()
-      with
-      | None ->
-          Runtime.update_orchestrator runtime (fun orch ->
-              Orchestrator.apply_session_result orch patch_id
-                Orchestrator.Session_worktree_missing);
-          (`Failed, [])
-      | Some worktree_path ->
-          let cwd = Eio.Path.(fs / worktree_path) in
-          let text_buf =
-            let buf = Buffer.create 4096 in
-            (match Hashtbl.find_opt transcripts patch_id with
-            | Some prev when String.length prev > 0 ->
-                Buffer.add_string buf prev;
-                Buffer.add_char buf '\n'
-            | Some _ | None -> ());
-            (* Write the prompt being delivered so it appears in the transcript *)
-            let now = Unix.gettimeofday () in
-            let tm = Unix.localtime now in
-            Buffer.add_string buf
-              (Printf.sprintf
-                 "\n---\n**[%02d:%02d:%02d] Delivered to %s%s:**\n\n"
-                 tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-                 backend.Llm_backend.name
-                 (match resume_session with
-                 | Some id ->
-                     Printf.sprintf " (--resume %s)"
-                       (String.sub id 0 (min 8 (String.length id)))
-                 | None -> ""));
-            Buffer.add_string buf prompt;
-            Buffer.add_string buf
-              (Printf.sprintf "\n\n---\n**%s response:**\n\n"
-                 backend.Llm_backend.name);
-            Hashtbl.replace transcripts patch_id (Buffer.contents buf);
-            buf
-          in
-          let error_buf = Buffer.create 256 in
-          let tool_count = ref 0 in
-          (* Accumulates (tool_name, status) for Tool_use events that report a
-             non-"completed" status (OpenCode surfaces [pending]/[running] or
-             error states; other backends do not populate [status] and so never
-             contribute here). Propagated to the caller so artifact-backed
-             phases like Pr_body can tell "agent chose not to write" apart
-             from "a tool call was announced but never executed". *)
-          let tool_failures = ref [] in
-          let pr_found = ref false in
-          let needle_len =
-            String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
-          in
-          let last_sync = ref (Unix.gettimeofday ()) in
-          let sync_transcript () =
-            Hashtbl.replace transcripts patch_id (Buffer.contents text_buf)
-          in
-          let maybe_sync_transcript () =
-            let now = Unix.gettimeofday () in
-            if now -. !last_sync >= 0.2 then (
-              last_sync := now;
-              sync_transcript ())
-          in
-          let captured_session_id = ref None in
-          let backend_accepted_turn = ref false in
-          let mark_backend_accepted_turn () =
-            if not !backend_accepted_turn then (
-              backend_accepted_turn := true;
-              match kind with
-              | Some Operation_kind.Human ->
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      Orchestrator.mark_inflight_human_messages_delivered orch
-                        patch_id)
-              | Some Operation_kind.Ci
-              | Some Operation_kind.Review_comments
-              | Some Operation_kind.Pr_body
-              | Some Operation_kind.Merge_conflict
-              | Some Operation_kind.Rebase
-              | None ->
-                  ())
-          in
-          let on_event (event : Types.Stream_event.t) =
-            match event with
-            (* Turn_started is the preferred signal; the arms below are
-               fallbacks for backends that do not emit it. *)
-            | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
-            | Types.Stream_event.Text_delta text -> (
-                mark_backend_accepted_turn ();
-                let prev_len = Buffer.length text_buf in
-                Buffer.add_string text_buf text;
-                maybe_sync_transcript ();
-                if not !pr_found then
-                  let offset = max 0 (prev_len - needle_len) in
-                  let tail =
-                    Buffer.sub text_buf offset (Buffer.length text_buf - offset)
-                  in
-                  match extract_pr_number_from_text ~owner ~repo tail with
-                  | Some pr_number ->
-                      pr_found := true;
-                      log_stream_entry runtime ~patch_id
-                        (Activity_log.Stream_entry.Text_chunk
-                           (Printf.sprintf "PR #%d detected"
-                              (Pr_number.to_int pr_number)));
-                      on_pr_detected pr_number
-                  | None -> ())
-            | Types.Stream_event.Tool_use { name; input; status } ->
-                mark_backend_accepted_turn ();
-                tool_count := !tool_count + 1;
-                (* OpenCode emits pending → running → completed for a single
-                   tool call. Track only the latest unresolved status per tool
-                   name: clear on completed, replace on any other status.
-                   Otherwise a normal pending → completed lifecycle would leave
-                   a stale (name, "pending") entry that
-                   [classify_pr_body_respond] would misread as a blocked Write. *)
-                (match status with
-                | Some s when String.equal s "completed" ->
-                    tool_failures :=
-                      Base.List.filter !tool_failures ~f:(fun (n, _) ->
-                          not (String.equal n name))
-                | Some s ->
-                    let without =
-                      Base.List.filter !tool_failures ~f:(fun (n, _) ->
-                          not (String.equal n name))
-                    in
-                    tool_failures := (name, s) :: without
-                | None -> ());
-                let summary =
-                  try
-                    let json = Yojson.Safe.from_string input in
-                    let field key =
-                      Yojson.Safe.Util.(member key json |> to_string_option)
-                    in
-                    let s =
-                      match name with
-                      | "Bash" -> field "command"
-                      | "Read" | "Write" -> field "file_path"
-                      | "Edit" -> field "file_path"
-                      | "Glob" -> field "pattern"
-                      | "Grep" -> field "pattern"
-                      | _ -> None
-                    in
-                    match s with Some v -> truncate v 80 | None -> ""
-                  with _ -> ""
-                in
-                let detail =
-                  if summary <> "" then Printf.sprintf " %s" summary else ""
-                in
-                let sep =
-                  let len = Buffer.length text_buf in
-                  if len = 0 then ""
-                  else if
-                    len >= 2
-                    && Char.equal (Buffer.nth text_buf (len - 1)) '\n'
-                    && Char.equal (Buffer.nth text_buf (len - 2)) '\n'
-                  then ""
-                  else if Char.equal (Buffer.nth text_buf (len - 1)) '\n' then
-                    "\n"
-                  else "\n\n"
-                in
-                Buffer.add_string text_buf
-                  (Printf.sprintf "%s[tool: %s]%s\n" sep name detail);
-                sync_transcript ();
-                log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Tool_use (name, summary))
-            | Types.Stream_event.Final_result { stop_reason; _ } ->
-                mark_backend_accepted_turn ();
-                sync_transcript ();
-                let reason = Types.Stop_reason.to_display stop_reason in
-                log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Finished reason)
-            | Types.Stream_event.Error msg ->
-                if Buffer.length error_buf > 0 then
-                  Buffer.add_char error_buf '\n';
-                Buffer.add_string error_buf msg;
-                log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Stream_error msg)
-            | Types.Stream_event.Session_init { session_id } ->
-                captured_session_id := Some session_id
-          in
-          let result =
-            try
-              Ok
-                (backend.Llm_backend.run_streaming ~cwd ~patch_id ~prompt
-                   ~resume_session ~on_event)
-            with exn -> Error (Printexc.to_string exn)
-          in
-          let open Run_classification in
-          let outcome =
-            Result.map
-              (fun (r : Llm_backend.result) ->
-                {
-                  exit_code = r.Llm_backend.exit_code;
-                  got_events = r.Llm_backend.got_events;
-                  saw_final_result = r.Llm_backend.saw_final_result;
-                  stderr = r.Llm_backend.stderr;
-                  stream_errors = String.trim (Buffer.contents error_buf);
-                  timed_out = r.Llm_backend.timed_out;
-                })
-              result
-          in
-          (* classify routes Error outcomes to Process_error, so the
-             empty-events arms below only ever see Ok. *)
-          let log_empty_resume ~tail =
-            match result with
-            | Error _ -> ()
-            | Ok r ->
-                let render label s =
-                  let s = String.trim s in
-                  if String.equal s "" then label ^ "=empty"
-                  else
-                    Printf.sprintf "%s=%d chars: %s" label (String.length s)
-                      (truncate s 500)
-                in
-                log_event runtime ~patch_id
-                  (Printf.sprintf
-                     "Resume exited %d (%s) with no parsed stream events%s — \
-                      %s %s"
-                     r.Llm_backend.exit_code backend.Llm_backend.name tail
-                     (render "stdout" r.Llm_backend.stdout)
-                     (render "stderr" r.Llm_backend.stderr))
-          in
-          let session_result, user_result =
-            match
-              classify ~is_resume:(Option.is_some resume_session) outcome
-            with
-            | Process_error msg ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Process error from %s — %s"
-                     backend.Llm_backend.name msg);
-                (Orchestrator.Session_process_error { is_fresh }, `Failed)
-            | No_session_to_resume ->
-                log_empty_resume ~tail:" — no session to resume, retrying fresh";
-                (Orchestrator.Session_no_resume, `Failed)
-            | Timed_out ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Session timed out (%s) — marking failed"
-                     backend.Llm_backend.name);
-                (Orchestrator.Session_failed { is_fresh }, `Failed)
-            | Success { stream_errors } ->
-                (match (resume_session, result) with
-                | Some _, Ok r when not r.Llm_backend.got_events ->
-                    log_empty_resume ~tail:""
-                | Some _, (Ok _ | Error _) | None, _ -> ());
-                if String.length stream_errors > 0 then
-                  log_event runtime ~patch_id
-                    (Printf.sprintf
-                       "Session exited 0 (%s) with stream errors — %s"
-                       backend.Llm_backend.name
-                       (truncate stream_errors 500));
-                let text_len = Buffer.length text_buf in
-                let tools = !tool_count in
-                if tools = 0 && text_len < 200 then
-                  log_event runtime ~patch_id
-                    (Printf.sprintf
-                       "Session exited 0 (%s) with no tool use and %s of text \
-                        — %s"
-                       backend.Llm_backend.name
-                       (pluralize text_len "char")
-                       (truncate (String.trim (Buffer.contents text_buf)) 200));
-                (Orchestrator.Session_ok, `Ok)
-            | Session_failed { exit_code; detail } ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Session failed (%s) — exit %d: %s"
-                     backend.Llm_backend.name exit_code detail);
-                (Orchestrator.Session_failed { is_fresh }, `Failed)
-          in
-          (* Observability: if any tool_use events reported a non-"completed"
-             status (OpenCode's sandbox/rejection/pending states), summarize
-             them so the disconnect is visible in the activity log even when
-             the session otherwise looks healthy. *)
-          (match !tool_failures with
-          | [] -> ()
-          | failures ->
-              let rendered =
-                List.rev failures
-                |> List.map (fun (n, s) -> Printf.sprintf "%s[%s]" n s)
-                |> String.concat ", "
-              in
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Session ended with %d non-completed tool call(s) (%s): %s"
-                   (List.length failures) backend.Llm_backend.name rendered));
-          (* Supervisor-owned push: agent commits locally; we push every
-             local commit to the remote at session end. force_push_with_lease
-             is idempotent (Push_up_to_date when nothing new), and lease-safe
-             against concurrent remote updates. Runs regardless of the LLM's
-             session result so commits made before a partial failure still
-             reach the remote. *)
-          let branch = agent.Patch_agent.branch in
-          let base =
-            match agent.Patch_agent.base_branch with
-            | Some b -> b
-            | None ->
-                (* Invariant: a running session always has a base_branch set
-                   by start/respond/rebase. Fall back to main just in case. *)
-                Runtime.read runtime (fun snap ->
-                    Orchestrator.main_branch snap.Runtime.orchestrator)
-          in
-          let push_outcome =
-            Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
-              ~branch ~base
-          in
-          (match push_outcome with
-          | Worktree.Push_ok ->
-              log_event runtime ~patch_id "runner: pushed after session"
-          | Worktree.Push_up_to_date ->
-              log_event runtime ~patch_id
-                "runner: push up-to-date after session (no new commits)"
-          | Worktree.Push_no_commits ->
-              log_event runtime ~patch_id
-                "runner: session ended with no commits on branch — push \
-                 skipped, PR creation deferred"
-          | Worktree.Push_rejected ->
-              log_event runtime ~patch_id
-                "runner: push rejected after session (lease)"
-          | Worktree.Push_error msg ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "runner: push error after session: %s" msg));
-          (* Combine LLM session outcome with push outcome into a single
-             session_result via the pure decision in
-             [Orchestrator.combine_session_and_push]. user_result mirrors:
-             same Ok/Failed disposition unless the combination promoted us
-             to Session_push_failed (which is always Failed).
-
-             Special case: when the agent is responding to a human message,
-             the human may have asked a question or made a request that
-             requires no code changes. Absence of new commits is therefore
-             not a failure — override Session_no_commits to Session_ok so
-             the no_commits_push_count counter does not march toward
-             needs_intervention and the operation completes cleanly. *)
-          let no_commits_is_ok =
-            match kind with
-            | Some Operation_kind.Human -> true
-            | Some Operation_kind.Ci
-            | Some Operation_kind.Review_comments
-            | Some Operation_kind.Pr_body
-            | Some Operation_kind.Merge_conflict
-            | Some Operation_kind.Rebase
-            | None ->
-                false
-          in
-          let final_session_result =
-            let combined =
-              Orchestrator.combine_session_and_push ~session:session_result
-                ~push:push_outcome
-            in
-            match combined with
-            | Orchestrator.Session_no_commits when no_commits_is_ok ->
-                Orchestrator.Session_ok
-            | Orchestrator.Session_ok | Orchestrator.Session_no_commits
-            | Orchestrator.Session_process_error _
-            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
-            | Orchestrator.Session_give_up
-            | Orchestrator.Session_worktree_missing
-            | Orchestrator.Session_push_failed ->
-                combined
-          in
-          let final_user_result =
-            match final_session_result with
-            | Orchestrator.Session_ok -> user_result
-            | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits
-              ->
-                (* LLM session ran fine but commits didn't ship (push failed
-                   or the agent made no commits) — signal retry so the
-                   Respond path uses Respond_retry_push (clean complete) and
-                   the reconciler re-enqueues the operation naturally. After
-                   2 consecutive no-commit sessions, needs_intervention fires
-                   and the scheduler stops re-enqueueing. *)
-                `Retry_push
-            | Orchestrator.Session_process_error _
-            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
-            | Orchestrator.Session_give_up
-            | Orchestrator.Session_worktree_missing ->
-                `Failed
-          in
-          let agent_before, agent_after =
-            Runtime.update_orchestrator_returning runtime (fun orch ->
-                let agent_before = Orchestrator.agent orch patch_id in
-                let orch =
-                  Orchestrator.apply_session_result orch patch_id
-                    final_session_result
-                in
-                (* Store the captured session_id for future --resume calls *)
-                let orch =
-                  match !captured_session_id with
-                  | Some _ ->
-                      Orchestrator.set_llm_session_id orch patch_id
-                        !captured_session_id
-                  | None -> orch
-                in
-                let agent_after = Orchestrator.agent orch patch_id in
-                (orch, (agent_before, agent_after)))
-          in
-          Event_log.log_complete event_log ~patch_id
-            ~result:final_session_result ~agent_before ~agent_after;
-          (final_user_result, List.rev !tool_failures))
 
 (** {1 Fibers} *)
 
@@ -2405,9 +1823,9 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
   in
   loop ()
 
-(** Runner fiber — executes orchestrator actions by spawning Claude processes
+(** Runner fiber — executes orchestrator actions by driving backend sessions
     concurrently. *)
-let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
+let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
     ~transcripts ~github ~net ~event_log ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
@@ -2419,7 +1837,7 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
     | None -> ()
   in
   let semaphore = Eio.Semaphore.make config.max_concurrency in
-  let with_claude_slot f =
+  let with_session_slot f =
     Eio.Semaphore.acquire semaphore;
     Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
   in
@@ -2587,7 +2005,7 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                     (fun () ->
                       with_busy_guard ~patch_id (fun () ->
                           let result =
-                            with_claude_slot (fun () ->
+                            with_session_slot (fun () ->
                                 let agent =
                                   Runtime.read runtime (fun snap ->
                                       Orchestrator.agent
@@ -2635,22 +2053,30 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                       in
                                       (* PR detection from stream text is a hint
                                      only — always confirmed via the GitHub
-                                     REST API (Github.list_prs) after Claude
-                                     finishes *)
+                                     REST API (Github.list_prs) after the
+                                     backend session finishes *)
                                       let on_pr_detected _pr_number = () in
+                                      let complexity =
+                                        patch_complexity ~gameplan ~patch_id
+                                      in
                                       let r, _tool_failures =
-                                        run_claude_and_handle ~kind:None
-                                          ~runtime ~process_mgr ~clock ~fs
-                                          ~project_name ~patch_id
-                                          ~repo_root:config.repo_root ~prompt
-                                          ~agent ~owner:config.github_owner
+                                        Session_driver.run ~kind:None ~runtime
+                                          ~process_mgr ~clock ~fs ~project_name
+                                          ~patch_id ~repo_root:config.repo_root
+                                          ~prompt ~agent
+                                          ~owner:config.github_owner
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex ~backend
-                                          ~event_log
+                                          ~worktree_mutex ~hook_mutex
+                                          ~backend:(pick_backend ~complexity)
+                                          ~complexity ~event_log
                                       in
-                                      r))
+                                      (r
+                                        :> [ `Failed
+                                           | `Ok
+                                           | `Retry_push
+                                           | `Stale ])))
                           in
                           let start_outcome =
                             match result with
@@ -2801,7 +2227,7 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
               Some
                 (fun () ->
                   with_busy_guard ~patch_id (fun () ->
-                      (* Rebase is orchestrator-executed (no Claude slot), so
+                      (* Rebase is orchestrator-executed (no session slot), so
                          work begins immediately under the busy guard. *)
                       Runtime.update_orchestrator runtime (fun orch ->
                           Orchestrator.mark_running orch patch_id);
@@ -2910,7 +2336,7 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
               Some
                 (fun () ->
                   (* For Review_comments and Ci, fetch fresh state from
-                     GitHub before acquiring a Claude slot to avoid blocking
+                     GitHub before acquiring a session slot to avoid blocking
                      concurrency on GitHub API I/O. The Ci fetch is the
                      freshness gate against delivering a failure that's
                      already been superseded by a newer run. *)
@@ -2980,13 +2406,13 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                         match ci_skip_reason with
                         | Some reason ->
                             (* Fast path: skip decision already made. Don't
-                               consume a Claude slot for a no-op — that
+                               consume a session slot for a no-op — that
                                slot can go to another agent. *)
                             log_event runtime ~patch_id
                               (Printf.sprintf "Skipped ci delivery — %s" reason);
                             `Skip_empty
                         | None ->
-                            with_claude_slot (fun () ->
+                            with_session_slot (fun () ->
                                 Runtime.update_orchestrator runtime (fun orch ->
                                     Orchestrator.mark_running orch patch_id);
                                 (* Write fresh ci_checks under the busy guard
@@ -3108,8 +2534,11 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         else base_changed_prefix ^ "\n" ^ raw
                                       in
                                       let on_pr_detected _pr_number = () in
+                                      let complexity =
+                                        patch_complexity ~gameplan ~patch_id
+                                      in
                                       let result, _tool_failures =
-                                        run_claude_and_handle
+                                        Session_driver.run
                                           ~kind:
                                             (Some Operation_kind.Merge_conflict)
                                           ~runtime ~process_mgr ~clock ~fs
@@ -3119,8 +2548,9 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                           ~repo:config.github_repo
                                           ~on_pr_detected ~transcripts
                                           ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex ~backend
-                                          ~event_log
+                                          ~worktree_mutex ~hook_mutex
+                                          ~backend:(pick_backend ~complexity)
+                                          ~complexity ~event_log
                                       in
                                       (match result with
                                       | `Ok
@@ -3133,7 +2563,13 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                               .set_notified_base_branch orch
                                                 patch_id (Branch.of_string base))
                                       | _ -> ());
-                                      result
+                                      (result
+                                        :> [ `Failed
+                                           | `Ok
+                                           | `Pr_body_miss
+                                           | `Retry_push
+                                           | `Skip_empty
+                                           | `Stale ])
                                     in
                                     let ancestor_ids =
                                       Runtime.read runtime (fun snap ->
@@ -3452,7 +2888,7 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         ());
                                     (* Snapshot the pr-body artifact before
                                        the session so the post-session sync
-                                       step (after run_claude_and_handle) can
+                                       step (after Session_driver.run) can
                                        detect content changes from any kind
                                        of session, not only Pr_body. For
                                        Pr_body the artifact was just unlinked
@@ -3462,8 +2898,11 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         (Project_store.pr_body_artifact_path
                                            ~project_name ~patch_id)
                                     in
+                                    let complexity =
+                                      patch_complexity ~gameplan ~patch_id
+                                    in
                                     let result, tool_failures =
-                                      run_claude_and_handle ~kind:(Some kind)
+                                      Session_driver.run ~kind:(Some kind)
                                         ~runtime ~process_mgr ~clock ~fs
                                         ~project_name ~patch_id
                                         ~repo_root:config.repo_root ~prompt
@@ -3471,8 +2910,16 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                         ~repo:config.github_repo ~on_pr_detected
                                         ~transcripts
                                         ~user_config:config.user_config
-                                        ~worktree_mutex ~hook_mutex ~backend
-                                        ~event_log
+                                        ~worktree_mutex ~hook_mutex
+                                        ~backend:(pick_backend ~complexity)
+                                        ~complexity ~event_log
+                                    in
+                                    let result =
+                                      (result
+                                        :> [ `Failed
+                                           | `Ok
+                                           | `Pr_body_miss
+                                           | `Retry_push ])
                                     in
                                     (match result with
                                     | `Ok when Base.Option.is_some base_change
@@ -3640,7 +3087,13 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
                                           "pr-body: opportunistic sync PATCH \
                                            failed; leaving state — next \
                                            Pr_body cycle will retry");
-                                    result)
+                                    (result
+                                      :> [ `Failed
+                                         | `Ok
+                                         | `Pr_body_miss
+                                         | `Retry_push
+                                         | `Skip_empty
+                                         | `Stale ]))
                       in
                       let respond_outcome =
                         match result with
@@ -3718,7 +3171,7 @@ let runner_fiber ~runtime ~env ~config ~backend ~project_name ~pr_registry
     in
     (* Spawn action fibers without waiting for completion. Each fiber is
        guarded by with_busy_guard (ensures complete on exit) and
-       with_claude_slot (semaphore backpressure). The runner loop continues
+       with_session_slot (semaphore backpressure). The runner loop continues
        immediately to pick up newly-queued actions from the poller. *)
     Base.List.iter action_fibers ~f:(fun f ->
         Eio.Fiber.fork_daemon ~sw (fun () ->
@@ -4038,7 +3491,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       Stdlib.exit 1
   | Ok () ->
       (* Preflight: ensure RLIMIT_NOFILE is high enough for [max_concurrency]
-         long-lived Claude subprocesses (each holding 3 pipes = 6 FDs),
+         long-lived backend subprocesses (each holding 3 pipes = 6 FDs),
          parallel git subprocesses, HTTPS connections, the activity log,
          snapshot files, and the project lock. Budget 256 FDs/slot plus 512
          headroom. Auto-raise the soft limit to the hard cap silently; fail
@@ -4142,36 +3595,36 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             None
         | None -> None
       in
-      let backend =
-        let model_opt =
-          if Base.String.is_empty config.model then None else Some config.model
-        in
-        match config.backend with
-        | "claude" ->
-            let display_name =
-              match model_opt with
-              | Some m -> Printf.sprintf "Claude (%s)" m
-              | None -> "Claude"
-            in
-            Claude_backend.create ~name:display_name ~model:model_opt
-              ~process_mgr ~clock ~timeout:session_timeout ~setsid_exec
-        | "codex" ->
-            Codex_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | "opencode" ->
-            Opencode_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | "pi" ->
-            Pi_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | "gemini" ->
-            Gemini_backend.create ~model:model_opt ~process_mgr ~clock
-              ~timeout:session_timeout ~setsid_exec
-        | other ->
-            invalid_arg
-              (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
-                 (String.concat ", " known_backends))
+      let cli_model_opt =
+        if Base.String.is_empty config.model then None else Some config.model
       in
+      let repo_config =
+        let config_dir =
+          User_config.config_dir ~github_owner:config.github_owner
+            ~github_repo:config.github_repo
+        in
+        match Repo_config.load ~config_dir ~known_backends with
+        | Ok t -> t
+        | Error msg ->
+            Printf.eprintf "Error: %s\n" msg;
+            Stdlib.exit 1
+      in
+      let registry =
+        Backend_registry.create ~process_mgr ~clock ~timeout:session_timeout
+          ~setsid_exec
+      in
+      (* [pick_backend ~complexity] resolves a per-patch (backend, model)
+         tuple via the pure [Backend_routing.decide] and looks it up in the
+         registry. Calling with [~complexity:None] yields the run's default
+         backend (used for ad-hoc sessions and for the TUI display name). *)
+      let pick_backend ~complexity =
+        let { Backend_routing.backend; model } =
+          Backend_routing.decide ~repo_config ~default_backend:config.backend
+            ~cli_model:cli_model_opt ~complexity
+        in
+        Backend_registry.get registry ~backend ~model
+      in
+      let default_backend = pick_backend ~complexity:None in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
       (* Capture agent state and worktree list BEFORE launching concurrent
@@ -4263,7 +3716,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
-            runner_fiber ~runtime ~env ~config ~backend ~project_name
+            runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
               ~pr_registry ~transcripts ~github ~net ~event_log ())
           :: common_fibers)
       else
@@ -4304,7 +3757,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
                      ~input_mode ~prompt_line ~patches_start_row
                      ~patches_scroll_offset ~patches_visible_count
-                     ~backend_name:backend.Llm_backend.name)
+                     ~backend_name:default_backend.Llm_backend.name)
                 :: (fun () ->
                   input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
                     ~detail_scroll ~detail_follow ~timeline_scroll
@@ -4314,7 +3767,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo)
                 :: (fun () ->
-                  runner_fiber ~runtime ~env ~config ~backend ~project_name
+                  runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~transcripts ~github ~net ~event_log
                     ~status_msg ())
                 :: common_fibers)
@@ -4373,9 +3826,14 @@ let model_arg =
     & info [ "model" ] ~docv:"MODEL"
         ~doc:
           "Model name to pass to the selected backend (e.g. [sonnet], [opus], \
-           [sonnet-4-6] for claude; [gpt-5-mini] for codex). When omitted, \
-           onton does not pass --model to the underlying CLI, so the backend's \
-           own default applies.")
+           [sonnet-4-6] for claude; [gpt-5.5] for codex). The literal value \
+           [auto] picks a model per patch from the gameplan's [complexity] \
+           field (1/2/3 → cheap/standard/strongest tier of the selected \
+           backend). The per-backend ladder can be overridden by writing \
+           [~/.config/onton/<owner>/<repo>/config.json] with a [routing] map — \
+           see lib/repo_config.mli for the schema. When omitted, onton does \
+           not pass --model to the underlying CLI, so the backend's own \
+           default applies.")
 
 let repo_arg =
   let open Cmdliner in
@@ -4405,7 +3863,7 @@ let max_concurrency_arg =
   Arg.(
     value & opt int 5
     & info [ "max-concurrency" ] ~docv:"N"
-        ~doc:"Maximum number of concurrent Claude processes (default: 5)."
+        ~doc:"Maximum number of concurrent backend sessions (default: 5)."
         ~env:(Cmd.Env.info "ONTON_MAX_CONCURRENCY"))
 
 let headless_arg =
@@ -4472,7 +3930,7 @@ let main_cmd =
   let info =
     Cmd.info "onton" ~version:Version.s
       ~doc:
-        "Orchestrate parallel patch development with Claude.\n\n\
+        "Orchestrate parallel patch development with an LLM coding agent.\n\n\
          Usage:\n\
         \  onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   Start a new project\n\
         \  onton PROJECT [OPTIONS]                         Resume a saved \

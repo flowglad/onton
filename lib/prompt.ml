@@ -292,6 +292,7 @@ let%test "render_spec_suffix: both empty" =
       classification = "";
       test_stubs_introduced = [];
       test_stubs_implemented = [];
+      complexity = None;
     }
   in
   let gameplan =
@@ -324,6 +325,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       classification = "";
       test_stubs_introduced = [];
       test_stubs_implemented = [];
+      complexity = None;
     }
   in
   let gameplan =
@@ -359,6 +361,7 @@ let%test "render_spec_suffix: patch spec only" =
       classification = "";
       test_stubs_introduced = [];
       test_stubs_implemented = [];
+      complexity = None;
     }
   in
   let gameplan =
@@ -394,6 +397,7 @@ let%test "render_spec_suffix: both present" =
       classification = "";
       test_stubs_introduced = [];
       test_stubs_implemented = [];
+      complexity = None;
     }
   in
   let gameplan =
@@ -935,6 +939,7 @@ let%test "patch prompt includes title and deps" =
         changes = [];
         test_stubs_introduced = [];
         test_stubs_implemented = [];
+        complexity = None;
       }
   in
   let gameplan : Gameplan.t =
@@ -963,6 +968,7 @@ let%test "patch prompt includes title and deps" =
               changes = [];
               test_stubs_introduced = [];
               test_stubs_implemented = [];
+              complexity = None;
             };
             patch;
           ];

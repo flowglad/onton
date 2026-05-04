@@ -189,6 +189,60 @@ type t = {
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     resume_session:string option ->
+    complexity:int option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;
 }
+
+(** Resolve a model selector for a single backend invocation.
+
+    [Some "auto"] (case-insensitive) routes through the per-backend [auto_model]
+    mapping. [None] / empty / any other string passes through unchanged. This
+    keeps "auto" as a documented sentinel string rather than introducing a new
+    type, so it round-trips cleanly through Project_store and the CLI without
+    any migration.
+
+    [auto_model] is the backend's complexity → model name function. It may
+    return [None] when complexity is missing AND the backend has no sensible
+    fallback — in that case we drop [--model] and let the CLI's own default
+    apply. *)
+let resolve_auto_model ~model ~complexity ~auto_model : string option =
+  let is_auto = function
+    | Some s -> Base.String.equal (Base.String.lowercase s) "auto"
+    | None -> false
+  in
+  if is_auto model then auto_model ~complexity else model
+
+let%test "resolve_auto_model passes None through" =
+  let auto_model ~complexity:_ = Some "fallback" in
+  Option.equal Base.String.equal
+    (resolve_auto_model ~model:None ~complexity:None ~auto_model)
+    None
+
+let%test "resolve_auto_model passes explicit model through unchanged" =
+  let auto_model ~complexity:_ = Some "fallback" in
+  Option.equal Base.String.equal
+    (resolve_auto_model ~model:(Some "sonnet") ~complexity:(Some 1) ~auto_model)
+    (Some "sonnet")
+
+let%test "resolve_auto_model: 'auto' routes through auto_model" =
+  let auto_model ~complexity =
+    match complexity with Some 1 -> Some "fast" | _ -> Some "strong"
+  in
+  Option.equal Base.String.equal
+    (resolve_auto_model ~model:(Some "auto") ~complexity:(Some 1) ~auto_model)
+    (Some "fast")
+
+let%test "resolve_auto_model: 'AUTO' is also recognised (case-insensitive)" =
+  let auto_model ~complexity:_ = Some "picked" in
+  Option.equal Base.String.equal
+    (resolve_auto_model ~model:(Some "AUTO") ~complexity:(Some 2) ~auto_model)
+    (Some "picked")
+
+let%test "resolve_auto_model: 'auto' with no complexity hits fallback tier" =
+  let auto_model ~complexity =
+    match complexity with None -> Some "strong" | _ -> Some "wrong"
+  in
+  Option.equal Base.String.equal
+    (resolve_auto_model ~model:(Some "auto") ~complexity:None ~auto_model)
+    (Some "strong")

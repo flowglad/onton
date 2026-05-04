@@ -76,9 +76,20 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
+let auto_model ~complexity =
+  (* Gemini CLI model ladder. 1 = the cheapest current Flash, 2 = the latest
+     Flash preview, 3 = the latest Pro preview. [None] complexity falls
+     through to Pro — be conservative. *)
+  match complexity with
+  | Some 1 -> Some "gemini-2.5-flash"
+  | Some 2 -> Some "gemini-3-flash-preview"
+  | Some 3 -> Some "gemini-3-pro-preview"
+  | Some _ | None -> Some "gemini-3-pro-preview"
+
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-    ~patch_id ~prompt ~resume_session ~on_event =
+    ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   ignore (patch_id : Types.Patch_id.t);
+  let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let args = build_args ~model ~prompt ~resume_session in
   let process_line line =
     let trimmed = String.strip line in
@@ -91,9 +102,9 @@ let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "Gemini";
     run_streaming =
-      (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
+      (fun ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event ->
         run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-          ~patch_id ~prompt ~resume_session ~on_event);
+          ~patch_id ~prompt ~resume_session ~complexity ~on_event);
   }
 
 let%test "build_args fresh (no resume, no model)" =

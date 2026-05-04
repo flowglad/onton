@@ -76,6 +76,7 @@
     {
       "number": 1,
       "classification": "INFRA",
+      "complexity": 1,
       "title": "Add Patch_decision types and module skeleton",
       "files": [
         {
@@ -106,6 +107,7 @@
     {
       "number": 2,
       "classification": "INFRA",
+      "complexity": 1,
       "title": "Add QCheck2 test stubs for decision properties",
       "files": [
         {
@@ -135,6 +137,7 @@
     {
       "number": 3,
       "classification": "INFRA",
+      "complexity": 2,
       "title": "Implement decision functions and enable tests",
       "files": [
         {
@@ -164,6 +167,7 @@
     {
       "number": 4,
       "classification": "BEHAVIOR",
+      "complexity": 2,
       "title": "Wire Patch_decision into main.ml runner_fiber",
       "files": [
         {

@@ -256,6 +256,11 @@ let parse_json_string input =
                 | `String s -> s
                 | _ -> ""
               in
+              let complexity =
+                match p |> member "complexity" with
+                | `Int n when n >= 1 && n <= 3 -> Some n
+                | _ -> None
+              in
               let test_stubs_introduced =
                 json_string_list p "testStubsIntroduced"
               in
@@ -295,6 +300,7 @@ let parse_json_string input =
                 changes;
                 test_stubs_introduced;
                 test_stubs_implemented;
+                complexity;
               })
         in
         match open_questions with
@@ -405,6 +411,7 @@ let%test_module "Gameplan_parser" =
               changes = [];
               test_stubs_introduced = [];
               test_stubs_implemented = [];
+              complexity = None;
             };
         ]
       in
@@ -430,6 +437,7 @@ let%test_module "Gameplan_parser" =
             changes = [];
             test_stubs_introduced = [];
             test_stubs_implemented = [];
+            complexity = None;
           }
       in
       let dep_graph = Map.of_alist_exn (module Types.Patch_id) [ (pid, []) ] in

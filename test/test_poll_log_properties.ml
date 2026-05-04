@@ -28,6 +28,7 @@ let make_patch pid branch =
       changes = [];
       test_stubs_introduced = [];
       test_stubs_implemented = [];
+      complexity = None;
     }
 
 let make_orch patch agent =

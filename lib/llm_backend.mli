@@ -19,6 +19,16 @@ type result = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
+val resolve_auto_model :
+  model:string option ->
+  complexity:int option ->
+  auto_model:(complexity:int option -> string option) ->
+  string option
+(** Resolve the [--model] sentinel ["auto"] (case-insensitive) into a concrete
+    model name using [auto_model] (each backend supplies its own complexity →
+    model mapping). All other model values, including [None] and the empty
+    string, pass through unchanged so the backend's own default still wins. *)
+
 val spawn_and_stream :
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
@@ -49,6 +59,12 @@ type t = {
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     resume_session:string option ->
+    complexity:int option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;
 }
+(** [complexity] is the gameplan-author's 1/2/3 estimate for this patch. When
+    the user passes [--model auto], each backend uses [complexity] to pick a
+    backend-specific model: harder patches get stronger models. [None] means the
+    gameplan didn't specify (legacy gameplans, ad-hoc operations) — the backend
+    should treat that as the highest tier. *)

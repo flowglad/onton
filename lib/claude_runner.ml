@@ -39,6 +39,16 @@ let ansi_re =
 (** Strip ANSI escape sequences and stray control characters. *)
 let strip_ansi s = Re.replace_string ansi_re ~by:"" s
 
+let auto_model ~complexity =
+  (* Use Claude Code's stable aliases (resolved by the CLI to the latest
+     pinned version per provider). 1 = haiku, 2 = sonnet, 3 = opus.
+     [None] complexity falls through to opus — be conservative. *)
+  match complexity with
+  | Some 1 -> Some "haiku"
+  | Some 2 -> Some "sonnet"
+  | Some 3 -> Some "opus"
+  | Some _ | None -> Some "opus"
+
 let model_args = function
   | Some m when not (String.is_empty m) -> [ "--model"; m ]
   | _ -> []
@@ -260,8 +270,9 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
   }
 
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-    ~patch_id ~prompt ~resume_session ~on_event =
+    ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   ignore (patch_id : Types.Patch_id.t);
+  let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let args = build_stream_args ~model ~prompt ~resume_session in
   let process_line line =
     let trimmed = strip_ansi (String.strip line) in
@@ -269,6 +280,21 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
   in
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
     ~args ~process_line ~on_event
+
+let%test "auto_model: complexity 1 -> haiku" =
+  Option.equal String.equal (auto_model ~complexity:(Some 1)) (Some "haiku")
+
+let%test "auto_model: complexity 2 -> sonnet" =
+  Option.equal String.equal (auto_model ~complexity:(Some 2)) (Some "sonnet")
+
+let%test "auto_model: complexity 3 -> opus" =
+  Option.equal String.equal (auto_model ~complexity:(Some 3)) (Some "opus")
+
+let%test "auto_model: None -> opus (conservative)" =
+  Option.equal String.equal (auto_model ~complexity:None) (Some "opus")
+
+let%test "auto_model: out-of-range -> opus (conservative)" =
+  Option.equal String.equal (auto_model ~complexity:(Some 7)) (Some "opus")
 
 let%test "build_args fresh (no resume, with model)" =
   let args =

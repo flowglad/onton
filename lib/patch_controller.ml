@@ -644,6 +644,7 @@ let make_orchestrator ~patch_id ~main_branch =
       classification = "";
       test_stubs_introduced = [];
       test_stubs_implemented = [];
+      complexity = None;
     }
   in
   (patch, Orchestrator.create ~patches:[ patch ] ~main_branch)

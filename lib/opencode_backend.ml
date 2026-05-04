@@ -100,9 +100,21 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
+let auto_model ~complexity =
+  (* OpenCode uses provider/model_id format. Default the auto ladder to
+     Anthropic since it's the most common provider for coding work. Users
+     wanting a different provider can pass --model <provider>/<model>
+     explicitly. [None] complexity falls through to Opus — be conservative. *)
+  match complexity with
+  | Some 1 -> Some "anthropic/claude-haiku-4-5"
+  | Some 2 -> Some "anthropic/claude-sonnet-4-6"
+  | Some 3 -> Some "anthropic/claude-opus-4-7"
+  | Some _ | None -> Some "anthropic/claude-opus-4-7"
+
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-    ~patch_id ~prompt ~resume_session ~on_event =
+    ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   ignore (patch_id : Types.Patch_id.t);
+  let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let cwd_path = snd cwd in
   let args = build_args ~model ~cwd_path ~prompt ~resume_session in
   let process_line line =
@@ -116,9 +128,9 @@ let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "OpenCode";
     run_streaming =
-      (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
+      (fun ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event ->
         run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
-          ~patch_id ~prompt ~resume_session ~on_event);
+          ~patch_id ~prompt ~resume_session ~complexity ~on_event);
   }
 
 let%test "build_args without continue (no model)" =

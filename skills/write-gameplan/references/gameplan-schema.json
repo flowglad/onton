@@ -210,13 +210,16 @@
     },
     "patch": {
       "type": "object",
-      "required": ["number", "classification", "title", "files", "changes", "spec"],
+      "required": ["number", "classification", "complexity", "title", "files", "changes", "spec"],
       "properties": {
         "number": {
           "$ref": "#/$defs/patchId"
         },
         "classification": {
           "$ref": "#/$defs/patchClassification"
+        },
+        "complexity": {
+          "$ref": "#/$defs/patchComplexity"
         },
         "title": {
           "type": "string",
@@ -255,6 +258,11 @@
     "patchClassification": {
       "type": "string",
       "enum": ["INFRA", "GATED", "BEHAVIOR"]
+    },
+    "patchComplexity": {
+      "type": "integer",
+      "enum": [1, 2, 3],
+      "description": "Conservative estimate of how hard this patch is to implement correctly. 1 = mechanical / shallow / well-precedented; 2 = moderate — requires reading the surrounding code, designing a small abstraction, or writing non-trivial tests; 3 = deep — requires reasoning about subtle invariants, concurrency, distributed state, novel algorithms, or unfamiliar third-party APIs. When in doubt, choose the higher value. Used by orchestrators (e.g. onton --model auto) to pick a model strong enough for the task."
     },
     "patchFile": {
       "type": "object",
