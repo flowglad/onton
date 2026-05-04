@@ -1,15 +1,20 @@
 open Base
 
-let build_args ~prompt ~resume_session =
+let build_args ~model ~prompt ~resume_session =
   let base =
     [ "gemini"; "-p"; prompt; "--output-format"; "stream-json"; "--yolo" ]
+  in
+  let model_args =
+    match model with
+    | Some m when not (String.is_empty m) -> [ "-m"; m ]
+    | _ -> []
   in
   let resume_args =
     match resume_session with
     | Some session_id -> [ "-r"; session_id ]
     | None -> []
   in
-  base @ resume_args
+  base @ model_args @ resume_args
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -71,10 +76,10 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
-let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-    ~prompt ~resume_session ~on_event =
+let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+    ~patch_id ~prompt ~resume_session ~on_event =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_args ~prompt ~resume_session in
+  let args = build_args ~model ~prompt ~resume_session in
   let process_line line =
     let trimmed = String.strip line in
     if String.is_empty trimmed then [] else parse_event trimmed
@@ -82,22 +87,41 @@ let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
     ~args ~process_line ~on_event
 
-let create ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
+let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "Gemini";
     run_streaming =
       (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
-        run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-          ~prompt ~resume_session ~on_event);
+        run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+          ~patch_id ~prompt ~resume_session ~on_event);
   }
 
-let%test "build_args fresh (no resume)" =
-  let args = build_args ~prompt:"do stuff" ~resume_session:None in
+let%test "build_args fresh (no resume, no model)" =
+  let args = build_args ~model:None ~prompt:"do stuff" ~resume_session:None in
   List.equal String.equal args
     [ "gemini"; "-p"; "do stuff"; "--output-format"; "stream-json"; "--yolo" ]
 
+let%test "build_args with model" =
+  let args =
+    build_args ~model:(Some "gemini-2.5-pro") ~prompt:"do stuff"
+      ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "gemini";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "stream-json";
+      "--yolo";
+      "-m";
+      "gemini-2.5-pro";
+    ]
+
 let%test "build_args with resume session" =
-  let args = build_args ~prompt:"do stuff" ~resume_session:(Some "latest") in
+  let args =
+    build_args ~model:None ~prompt:"do stuff" ~resume_session:(Some "latest")
+  in
   List.equal String.equal args
     [
       "gemini";

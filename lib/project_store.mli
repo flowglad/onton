@@ -28,6 +28,7 @@ type stored_config = {
   github_owner : string;
   github_repo : string;
   backend : string;
+  model : string;
   main_branch : string;
   poll_interval : float;
   repo_root : string;
@@ -41,6 +42,7 @@ val save_config :
   github_owner:string ->
   github_repo:string ->
   backend:string ->
+  model:string ->
   main_branch:string ->
   poll_interval:float ->
   repo_root:string ->

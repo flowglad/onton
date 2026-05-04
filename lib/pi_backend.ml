@@ -1,15 +1,20 @@
 open Base
 
-let build_args ~cwd_path ~patch_id ~prompt ~resume_session =
+let build_args ~model ~cwd_path ~patch_id ~prompt ~resume_session =
   let session_dir = cwd_path ^ "/.pi-sessions/" ^ patch_id in
   let base = [ "pi"; "-p"; prompt; "--mode"; "json" ] in
+  let model_args =
+    match model with
+    | Some m when not (String.is_empty m) -> [ "--model"; m ]
+    | _ -> []
+  in
   let resume_args =
     match resume_session with
     | Some session_id -> [ "--resume"; session_id ]
     | None -> []
   in
   let session_args = [ "--session-dir"; session_dir ] in
-  base @ resume_args @ session_args
+  base @ model_args @ resume_args @ session_args
 
 let parse_event (line : string) : Types.Stream_event.t list =
   match Yojson.Safe.from_string line with
@@ -50,12 +55,12 @@ let parse_event (line : string) : Types.Stream_event.t list =
   | exception Yojson.Json_error _ -> []
   | exception Yojson.Safe.Util.Type_error _ -> []
 
-let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-    ~prompt ~resume_session ~on_event =
+let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+    ~patch_id ~prompt ~resume_session ~on_event =
   let cwd_path = snd cwd in
   let patch_id_str = Types.Patch_id.to_string patch_id in
   let args =
-    build_args ~cwd_path ~patch_id:patch_id_str ~prompt ~resume_session
+    build_args ~model ~cwd_path ~patch_id:patch_id_str ~prompt ~resume_session
   in
   let process_line line =
     let trimmed = String.strip line in
@@ -64,19 +69,19 @@ let run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec
     ~args ~process_line ~on_event
 
-let create ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
+let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {
     name = "Pi";
     run_streaming =
       (fun ~cwd ~patch_id ~prompt ~resume_session ~on_event ->
-        run_streaming ~process_mgr ~clock ~timeout ~setsid_exec ~cwd ~patch_id
-          ~prompt ~resume_session ~on_event);
+        run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~cwd
+          ~patch_id ~prompt ~resume_session ~on_event);
   }
 
-let%test "build_args without continue" =
+let%test "build_args without continue (no model)" =
   let args =
-    build_args ~cwd_path:"/tmp/work" ~patch_id:"patch-1" ~prompt:"do stuff"
-      ~resume_session:None
+    build_args ~model:None ~cwd_path:"/tmp/work" ~patch_id:"patch-1"
+      ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -89,10 +94,28 @@ let%test "build_args without continue" =
       "/tmp/work/.pi-sessions/patch-1";
     ]
 
+let%test "build_args with model" =
+  let args =
+    build_args ~model:(Some "pi-3") ~cwd_path:"/tmp/work" ~patch_id:"patch-1"
+      ~prompt:"do stuff" ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "pi";
+      "-p";
+      "do stuff";
+      "--mode";
+      "json";
+      "--model";
+      "pi-3";
+      "--session-dir";
+      "/tmp/work/.pi-sessions/patch-1";
+    ]
+
 let%test "build_args with continue" =
   let args =
-    build_args ~cwd_path:"/tmp/work" ~patch_id:"patch-1" ~prompt:"do stuff"
-      ~resume_session:(Some "x")
+    build_args ~model:None ~cwd_path:"/tmp/work" ~patch_id:"patch-1"
+      ~prompt:"do stuff" ~resume_session:(Some "x")
   in
   List.equal String.equal args
     [

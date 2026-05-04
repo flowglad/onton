@@ -106,7 +106,7 @@ of these must be installed and configured before onton can run.
 |------|---------|---------|
 | `git` | Worktree CRUD, branch detection, rebase | `brew install git` (or system package manager) |
 | `gh` (GitHub CLI) | Token resolution, PR discovery (`gh pr list`), and the main vehicle agents use to interact with GitHub (`gh pr create`, `gh pr edit`, `gh pr view`, `gh api`, `gh api graphql`) | `brew install gh`, then `gh auth login` |
-| Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code); selected as `claude-opus` or `claude-sonnet` via `--backend`), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode`, `pi`, `gemini`. Selected via `--backend` (default `claude-opus`) and must be on `PATH` | See each tool's docs |
+| Coding-agent CLI | Drives the actual patches. One of: `claude` ([Claude Code](https://docs.anthropic.com/en/docs/claude-code)), `codex` ([OpenAI Codex CLI](https://github.com/openai/codex)), `opencode` ([OpenCode](https://opencode.ai)), `pi`, `gemini` ([Gemini CLI](https://github.com/google-gemini/gemini-cli)). Selected via `--backend` (default `claude`) and `--model` (see [Backend & model](#backend--model) below). Must be on `PATH` | See each tool's docs |
 
 Onton is built and tested on macOS (ARM64 and x86_64). Linux should work but is
 not part of the release pipeline.
@@ -220,6 +220,8 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--gameplan` | — | Path to the gameplan markdown file |
 | `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
 | `--token` | `$GITHUB_TOKEN` or `gh auth token` | GitHub API token |
+| `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
+| `--model` | backend default (`opus` for `claude`) | Model name passed to the backend CLI |
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | GitHub polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
@@ -419,21 +421,44 @@ GitHub Actions runs on every push and PR:
 - **Property tests** — QCheck2 with 10,000 iterations
 - **Format check** — `ocamlformat` via `ocaml/setup-ocaml/lint-fmt`
 
-## CLI
+## Backend & model
 
-Backend selection uses `--backend`:
+Two flags control which agent runs the patches:
 
-- `onton --backend claude-opus`
-- `onton --backend claude-sonnet`
-- `onton --backend codex`
-- `onton --backend opencode`
-- `onton --backend pi`
-- `onton --backend gemini`
+- `--backend BACKEND` — one of `claude`, `codex`, `opencode`, `pi`, `gemini`.
+  Default: `claude`.
+- `--model MODEL` — model name passed through to the backend's CLI. When
+  omitted, the backend picks its own default (for `claude`, that's `opus`).
 
-If omitted for a new project, `claude-opus` is the default. Existing stored
-`claude` configs are migrated to `claude-opus`. The selected backend is
-persisted in project config and reused on resume unless you pass `--backend`
-again to override it.
+```sh
+onton --backend claude --model sonnet-4-6
+onton --backend claude --model opus
+onton --backend codex --model gpt-5-codex
+onton --backend gemini --model gemini-2.5-pro
+onton --backend opencode --model anthropic/claude-sonnet-4-5
+```
+
+Both flags are persisted in project config and reused on resume unless
+overridden. The legacy `--backend claude-opus` / `--backend claude-sonnet`
+forms are still accepted and split into the equivalent `--backend claude
+--model {opus,sonnet}` pair. Stored configs from older onton versions are
+migrated automatically on load.
+
+### Supported models
+
+Onton passes `--model` through to the backend CLI verbatim, so any model the
+underlying CLI accepts will work. Use unpinned aliases (e.g. `sonnet`,
+`opus`) when you want "current best in tier"; pin a specific version when you
+need reproducibility. The names below are accurate as of February 2026 —
+**check each provider's docs for the current list**:
+
+| Backend | Common model names | Source of truth |
+|---------|-------------------|-----------------|
+| `claude` | `opus`, `sonnet`, `haiku` (unpinned aliases); `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` (pinned) | [Anthropic models](https://docs.anthropic.com/en/docs/about-claude/models) |
+| `codex` | `gpt-5-codex`, `gpt-5`, `gpt-5-mini` | [OpenAI models](https://platform.openai.com/docs/models), [Codex CLI README](https://github.com/openai/codex) |
+| `gemini` | `gemini-2.5-pro`, `gemini-2.5-flash` | [Gemini API models](https://ai.google.dev/gemini-api/docs/models) |
+| `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
+| `pi` | Run `pi --help` for the current list | Pi CLI |
 
 Pushing a `v*` tag builds a macOS ARM64 binary, creates a GitHub release, and
 updates the Homebrew formula.

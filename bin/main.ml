@@ -6,6 +6,7 @@ open Onton.Types
 type config = {
   project : string option;
   backend : string;
+  model : string;
   github_token : string;
   github_owner : string;
   github_repo : string;
@@ -122,17 +123,48 @@ let infer_default_branch ~repo_root =
           | Some _ -> "master"
           | None -> "main"))
 
-let default_backend = "claude-opus"
+let default_backend = "claude"
+let default_claude_model = "opus"
+let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
 
-let normalize_backend backend =
-  match backend with "claude" -> default_backend | other -> other
+(** Decompose legacy combined backend strings (["claude-opus"],
+    ["claude-sonnet"]) into [(backend, model)]. Returns [None] for current,
+    already-decomposed forms. *)
+let split_legacy_backend = function
+  | "claude-sonnet" -> Some ("claude", "sonnet")
+  | "claude-opus" -> Some ("claude", "opus")
+  | _ -> None
 
-let known_backends =
-  [ "claude-sonnet"; "claude-opus"; "codex"; "opencode"; "pi"; "gemini" ]
+(** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
+    canonical [(backend, model)] tuple used internally.
+
+    - Empty [backend] falls back to [default_backend].
+    - Legacy combined names like ["claude-opus"] are split. An explicit [model]
+      still overrides the embedded one — so
+      [--backend claude-sonnet --model opus] yields [("claude", "opus")].
+    - For ["claude"] with no model, fills in [default_claude_model] so
+      historical behaviour ([--backend claude] ≡ opus) is preserved. *)
+let resolve_backend_model ~backend ~model =
+  let backend =
+    if Base.String.is_empty (Base.String.strip backend) then default_backend
+    else Base.String.strip backend
+  in
+  let model = Base.String.strip model in
+  let backend, model =
+    match split_legacy_backend backend with
+    | Some (b, default_m) ->
+        (b, if Base.String.is_empty model then default_m else model)
+    | None -> (backend, model)
+  in
+  let model =
+    if String.equal backend "claude" && Base.String.is_empty model then
+      default_claude_model
+    else model
+  in
+  (backend, model)
 
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
     ~main_branch ~poll_interval ~max_concurrency =
-  let backend = normalize_backend backend in
   let errors =
     Base.List.filter_map
       [
@@ -3815,8 +3847,9 @@ let with_snapshot_load ~project_name config gameplan =
       project name.
     - [PROJECT] only: load stored config + gameplan. CLI flags override stored
       values. *)
-let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
-    ~poll_interval ~(repo_root : string option) ~max_concurrency ~headless =
+let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
+    ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
+    ~headless =
   let repo_root_for_fresh =
     Repo_root.normalize (Base.Option.value repo_root ~default:".")
   in
@@ -3849,19 +3882,17 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
             open_questions = [];
           }
       in
-      let backend =
-        if Base.String.is_empty backend then default_backend
-        else backend |> normalize_backend
-      in
+      let backend, model = resolve_backend_model ~backend ~model in
       let main_branch = resolve_branch ~repo_root main_branch in
       Project_store.save_config ~project_name ~github_token:token
-        ~github_owner:owner ~github_repo:repo ~backend
+        ~github_owner:owner ~github_repo:repo ~backend ~model
         ~main_branch:(Branch.to_string main_branch)
         ~poll_interval ~repo_root ~max_concurrency;
       let config =
         {
           project = Some project_name;
           backend;
+          model;
           github_token = token;
           github_owner = owner;
           github_repo = repo;
@@ -3888,13 +3919,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
           let token, owner, repo =
             resolve_github_credentials ~github_token ~repo_root
           in
-          let backend =
-            if Base.String.is_empty backend then default_backend
-            else backend |> normalize_backend
-          in
+          let backend, model = resolve_backend_model ~backend ~model in
           let main_branch = resolve_branch ~repo_root main_branch in
           Project_store.save_config ~project_name ~github_token:token
-            ~github_owner:owner ~github_repo:repo ~backend
+            ~github_owner:owner ~github_repo:repo ~backend ~model
             ~main_branch:(Branch.to_string main_branch)
             ~poll_interval ~repo_root ~max_concurrency;
           Project_store.save_gameplan_source ~project_name ~source_path:gp_path;
@@ -3902,6 +3930,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
             {
               project = Some project_name;
               backend;
+              model;
               github_token = token;
               github_owner = owner;
               github_repo = repo;
@@ -3944,9 +3973,15 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                     let c = Base.String.strip cli in
                     if Base.String.is_empty c then stored_val else c
                   in
-                  let backend =
+                  let resolved_backend_str =
                     merge_cli_stored backend stored.Project_store.backend
-                    |> normalize_backend
+                  in
+                  let resolved_model_str =
+                    merge_cli_stored model stored.Project_store.model
+                  in
+                  let backend, model =
+                    resolve_backend_model ~backend:resolved_backend_str
+                      ~model:resolved_model_str
                   in
                   let token_from_stored =
                     merge_cli_stored github_token
@@ -3985,13 +4020,14 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
                      CLI overrides picks up the current values. *)
                   Project_store.save_config ~project_name:proj
                     ~github_token:token ~github_owner:owner ~github_repo:repo
-                    ~backend ~main_branch:(Branch.to_string branch)
+                    ~backend ~model ~main_branch:(Branch.to_string branch)
                     ~poll_interval:stored.Project_store.poll_interval ~repo_root
                     ~max_concurrency:stored.Project_store.max_concurrency;
                   let config =
                     {
                       project = Some proj;
                       backend;
+                      model;
                       github_token = token;
                       github_owner = owner;
                       github_repo = repo;
@@ -4127,25 +4163,30 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         | None -> None
       in
       let backend =
-        match normalize_backend config.backend with
-        | "claude-sonnet" ->
-            Claude_backend.create ~name:"Claude Sonnet" ~model:"sonnet"
+        let model_opt =
+          if Base.String.is_empty config.model then None else Some config.model
+        in
+        match config.backend with
+        | "claude" ->
+            let claude_model =
+              if Base.String.is_empty config.model then default_claude_model
+              else config.model
+            in
+            let display_name = Printf.sprintf "Claude (%s)" claude_model in
+            Claude_backend.create ~name:display_name ~model:claude_model
               ~process_mgr ~clock ~timeout:session_timeout ~setsid_exec
-        | "claude-opus" ->
-            Claude_backend.create ~name:"Claude Opus" ~model:"opus" ~process_mgr
-              ~clock ~timeout:session_timeout ~setsid_exec
         | "codex" ->
-            Codex_backend.create ~process_mgr ~clock ~timeout:session_timeout
-              ~setsid_exec
+            Codex_backend.create ~model:model_opt ~process_mgr ~clock
+              ~timeout:session_timeout ~setsid_exec
         | "opencode" ->
-            Opencode_backend.create ~process_mgr ~clock ~timeout:session_timeout
-              ~setsid_exec
+            Opencode_backend.create ~model:model_opt ~process_mgr ~clock
+              ~timeout:session_timeout ~setsid_exec
         | "pi" ->
-            Pi_backend.create ~process_mgr ~clock ~timeout:session_timeout
-              ~setsid_exec
+            Pi_backend.create ~model:model_opt ~process_mgr ~clock
+              ~timeout:session_timeout ~setsid_exec
         | "gemini" ->
-            Gemini_backend.create ~process_mgr ~clock ~timeout:session_timeout
-              ~setsid_exec
+            Gemini_backend.create ~model:model_opt ~process_mgr ~clock
+              ~timeout:session_timeout ~setsid_exec
         | other ->
             invalid_arg
               (Printf.sprintf "Unsupported --backend=%S (expected %s)" other
@@ -4299,12 +4340,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                 :: common_fibers)
             with Quit_tui -> ())
 
-let run ~project ~gameplan_path ~github_token ~backend
+let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
     ~max_concurrency ~headless ~no_lock =
   match
-    resolve_config ~project ~gameplan_path ~github_token ~backend ~main_branch
-      ~poll_interval ~repo_root ~max_concurrency ~headless
+    resolve_config ~project ~gameplan_path ~github_token ~backend ~model
+      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -4344,8 +4385,20 @@ let backend_arg =
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
         ~doc:
-          "LLM backend to use: claude-sonnet, claude-opus, codex, opencode, \
-           pi, or gemini.")
+          "LLM backend to use: claude, codex, opencode, pi, or gemini. The \
+           legacy values [claude-sonnet] and [claude-opus] are accepted and \
+           split into [--backend claude --model sonnet|opus].")
+
+let model_arg =
+  let open Cmdliner in
+  Arg.(
+    value & opt string ""
+    & info [ "model" ] ~docv:"MODEL"
+        ~doc:
+          "Model name to pass to the selected backend (e.g. [sonnet], [opus], \
+           [sonnet-4-6] for claude; [gpt-5-mini] for codex). When omitted, the \
+           backend's own default is used (except for claude, which defaults to \
+           opus).")
 
 let repo_arg =
   let open Cmdliner in
@@ -4405,7 +4458,7 @@ let no_lock_arg =
 
 let main_cmd =
   let open Cmdliner in
-  let run_cmd project gameplan_path github_token backend main_branch
+  let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock =
     if upload_debug then (
       match project with
@@ -4430,13 +4483,13 @@ let main_cmd =
       in
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
-        ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
-        ~no_lock
+        ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
+        ~max_concurrency ~headless ~no_lock
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
-      $ backend_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
+      $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
       $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg)
   in
   let info =
