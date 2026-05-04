@@ -439,10 +439,9 @@ onton --backend opencode --model anthropic/claude-sonnet-4-5
 ```
 
 Both flags are persisted in project config and reused on resume unless
-overridden. The legacy `--backend claude-opus` / `--backend claude-sonnet`
-forms are still accepted and split into the equivalent `--backend claude
---model {opus,sonnet}` pair. Stored configs from older onton versions are
-migrated automatically on load.
+overridden. Stored configs written by older onton versions (where `backend`
+was `claude-opus` or `claude-sonnet`) are migrated to the decomposed shape
+automatically on load.
 
 ### Supported models
 

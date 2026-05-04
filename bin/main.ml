@@ -127,35 +127,17 @@ let default_backend = "claude"
 let default_claude_model = "opus"
 let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
 
-(** Decompose legacy combined backend strings (["claude-opus"],
-    ["claude-sonnet"]) into [(backend, model)]. Returns [None] for current,
-    already-decomposed forms. *)
-let split_legacy_backend = function
-  | "claude-sonnet" -> Some ("claude", "sonnet")
-  | "claude-opus" -> Some ("claude", "opus")
-  | _ -> None
-
 (** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
-    canonical [(backend, model)] tuple used internally.
-
-    - Empty [backend] falls back to [default_backend].
-    - Legacy combined names like ["claude-opus"] are split. An explicit [model]
-      still overrides the embedded one — so
-      [--backend claude-sonnet --model opus] yields [("claude", "opus")].
-    - For ["claude"] with no model, fills in [default_claude_model] so
-      historical behaviour ([--backend claude] ≡ opus) is preserved. *)
+    canonical [(backend, model)] tuple used internally. Empty [backend] falls
+    back to [default_backend]; an empty [model] paired with ["claude"] is filled
+    in with [default_claude_model] so [--backend claude] alone keeps its
+    historical meaning of "opus". *)
 let resolve_backend_model ~backend ~model =
   let backend =
     if Base.String.is_empty (Base.String.strip backend) then default_backend
     else Base.String.strip backend
   in
   let model = Base.String.strip model in
-  let backend, model =
-    match split_legacy_backend backend with
-    | Some (b, default_m) ->
-        (b, if Base.String.is_empty model then default_m else model)
-    | None -> (backend, model)
-  in
   let model =
     if String.equal backend "claude" && Base.String.is_empty model then
       default_claude_model
@@ -4384,10 +4366,7 @@ let backend_arg =
   Arg.(
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
-        ~doc:
-          "LLM backend to use: claude, codex, opencode, pi, or gemini. The \
-           legacy values [claude-sonnet] and [claude-opus] are accepted and \
-           split into [--backend claude --model sonnet|opus].")
+        ~doc:"LLM backend to use: claude, codex, opencode, pi, or gemini.")
 
 let model_arg =
   let open Cmdliner in
