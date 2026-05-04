@@ -71,133 +71,133 @@ let find_json_start s =
   | Some n -> String.drop_prefix s n
 
 let parse_stream_events (line : string) : Types.Stream_event.t list =
-  match Yojson.Safe.from_string (find_json_start line) with
-  | json -> (
-      let open Yojson.Safe.Util in
-      let typ = member "type" json |> to_string_option in
-      match typ with
-      | Some "content_block_delta" -> (
-          let delta = member "delta" json in
-          let delta_type = member "type" delta |> to_string_option in
-          match delta_type with
-          | Some "text_delta" ->
-              let text =
-                member "text" delta |> to_string_option
-                |> Option.value ~default:""
-              in
-              [ Types.Stream_event.Text_delta text ]
-          | _ -> [])
-      | Some "content_block_start" -> (
-          let content_block = member "content_block" json in
-          let block_type = member "type" content_block |> to_string_option in
-          match block_type with
-          | Some "tool_use" ->
-              let name =
-                member "name" content_block
-                |> to_string_option |> Option.value ~default:""
-              in
-              [
-                Types.Stream_event.Tool_use { name; input = ""; status = None };
-              ]
-          | _ -> [])
-      | Some "assistant" ->
-          (* --verbose format: assistant event contains message.content array *)
-          let content =
-            match member "message" json |> member "content" with
-            | `List l -> l
-            | _ -> []
-          in
-          List.filter_map content ~f:(fun block ->
-              let block_type = member "type" block |> to_string_option in
-              match block_type with
-              | Some "tool_use" ->
-                  let name =
-                    member "name" block |> to_string_option
-                    |> Option.value ~default:""
-                  in
-                  let input =
-                    match member "input" block with
-                    | `Null -> ""
-                    | v -> Yojson.Safe.to_string v
-                  in
-                  Some
-                    (Types.Stream_event.Tool_use { name; input; status = None })
-              | Some "text" ->
-                  let text =
-                    member "text" block |> to_string_option
-                    |> Option.value ~default:""
-                  in
-                  Some (Types.Stream_event.Text_delta text)
-              | _ -> None)
-      | Some "message_delta" -> (
-          let delta = member "delta" json in
-          let raw_reason =
-            member "stop_reason" delta |> to_string_option
-            |> Option.value ~default:""
-          in
-          match Types.Stop_reason.of_string raw_reason with
-          | None -> []
-          | Some stop_reason ->
-              [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
-      | Some "result" ->
-          let is_error =
-            member "is_error" json |> to_bool_option
-            |> Option.value ~default:false
-          in
-          (* The result event also carries session_id — extract it as a
-             fallback in case the system/init event was lost. *)
-          let session_init =
-            match member "session_id" json |> to_string_option with
-            | Some sid ->
-                [ Types.Stream_event.Session_init { session_id = sid } ]
-            | None -> []
-          in
-          if is_error then
-            let errors =
-              match member "errors" json with
-              | `List items ->
-                  List.filter_map items ~f:(fun item -> to_string_option item)
-              | _ -> []
-            in
-            let msg =
-              match errors with
-              | [] -> "unknown error"
-              | errs -> String.concat ~sep:"; " errs
-            in
-            session_init @ [ Types.Stream_event.Error msg ]
-          else
+  (* try/with (not match-with-exception) so Type_error raised by `member`
+     calls inside the body — e.g. when the JSON parses as a non-object like
+     a bare int — is also swallowed, not just from_string failures. *)
+  try
+    let json = Yojson.Safe.from_string (find_json_start line) in
+    let open Yojson.Safe.Util in
+    let typ = member "type" json |> to_string_option in
+    match typ with
+    | Some "content_block_delta" -> (
+        let delta = member "delta" json in
+        let delta_type = member "type" delta |> to_string_option in
+        match delta_type with
+        | Some "text_delta" ->
             let text =
-              member "result" json |> to_string_option
+              member "text" delta |> to_string_option
               |> Option.value ~default:""
             in
-            let raw_reason =
-              member "stop_reason" json |> to_string_option
-              |> Option.value ~default:"end_turn"
+            [ Types.Stream_event.Text_delta text ]
+        | _ -> [])
+    | Some "content_block_start" -> (
+        let content_block = member "content_block" json in
+        let block_type = member "type" content_block |> to_string_option in
+        match block_type with
+        | Some "tool_use" ->
+            let name =
+              member "name" content_block
+              |> to_string_option |> Option.value ~default:""
             in
-            let stop_reason =
-              Types.Stop_reason.of_string raw_reason
-              |> Option.value ~default:Types.Stop_reason.End_turn
-            in
-            session_init
-            @ [ Types.Stream_event.Final_result { text; stop_reason } ]
-      | Some "error" ->
-          let err =
-            member "error" json |> member "message" |> to_string_option
-            |> Option.value ~default:"unknown error"
+            [ Types.Stream_event.Tool_use { name; input = ""; status = None } ]
+        | _ -> [])
+    | Some "assistant" ->
+        (* --verbose format: assistant event contains message.content array *)
+        let content =
+          match member "message" json |> member "content" with
+          | `List l -> l
+          | _ -> []
+        in
+        List.filter_map content ~f:(fun block ->
+            let block_type = member "type" block |> to_string_option in
+            match block_type with
+            | Some "tool_use" ->
+                let name =
+                  member "name" block |> to_string_option
+                  |> Option.value ~default:""
+                in
+                let input =
+                  match member "input" block with
+                  | `Null -> ""
+                  | v -> Yojson.Safe.to_string v
+                in
+                Some
+                  (Types.Stream_event.Tool_use { name; input; status = None })
+            | Some "text" ->
+                let text =
+                  member "text" block |> to_string_option
+                  |> Option.value ~default:""
+                in
+                Some (Types.Stream_event.Text_delta text)
+            | _ -> None)
+    | Some "message_delta" -> (
+        let delta = member "delta" json in
+        let raw_reason =
+          member "stop_reason" delta |> to_string_option
+          |> Option.value ~default:""
+        in
+        match Types.Stop_reason.of_string raw_reason with
+        | None -> []
+        | Some stop_reason ->
+            [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
+    | Some "result" ->
+        let is_error =
+          member "is_error" json |> to_bool_option
+          |> Option.value ~default:false
+        in
+        (* The result event also carries session_id — extract it as a
+             fallback in case the system/init event was lost. *)
+        let session_init =
+          match member "session_id" json |> to_string_option with
+          | Some sid -> [ Types.Stream_event.Session_init { session_id = sid } ]
+          | None -> []
+        in
+        if is_error then
+          let errors =
+            match member "errors" json with
+            | `List items ->
+                List.filter_map items ~f:(fun item -> to_string_option item)
+            | _ -> []
           in
-          [ Types.Stream_event.Error err ]
-      | Some "system" -> (
-          let subtype = member "subtype" json |> to_string_option in
-          match subtype with
-          | Some "init" -> (
-              match member "session_id" json |> to_string_option with
-              | Some session_id ->
-                  [ Types.Stream_event.Session_init { session_id } ]
-              | None -> [])
-          | _ -> [])
-      | _ -> [])
-  | exception Yojson.Json_error _ -> []
-  | exception Yojson.Safe.Util.Type_error _ -> []
+          let msg =
+            match errors with
+            | [] -> "unknown error"
+            | errs -> String.concat ~sep:"; " errs
+          in
+          session_init @ [ Types.Stream_event.Error msg ]
+        else
+          let text =
+            member "result" json |> to_string_option |> Option.value ~default:""
+          in
+          let raw_reason =
+            member "stop_reason" json |> to_string_option
+            |> Option.value ~default:"end_turn"
+          in
+          let stop_reason =
+            Types.Stop_reason.of_string raw_reason
+            |> Option.value ~default:Types.Stop_reason.End_turn
+          in
+          session_init
+          @ [ Types.Stream_event.Final_result { text; stop_reason } ]
+    | Some "error" ->
+        let err =
+          member "error" json |> member "message" |> to_string_option
+          |> Option.value ~default:"unknown error"
+        in
+        [ Types.Stream_event.Error err ]
+    | Some "system" -> (
+        let subtype = member "subtype" json |> to_string_option in
+        match subtype with
+        | Some "init" -> (
+            match member "session_id" json |> to_string_option with
+            | Some session_id ->
+                [ Types.Stream_event.Session_init { session_id } ]
+            | None -> [])
+        | _ -> [])
+    | _ -> []
+  with
+  | Yojson.Json_error _ -> []
+  | Yojson.Safe.Util.Type_error _ -> []
 
 (** Backward-compatible wrapper returning the first parsed event. *)
 let parse_stream_event (line : string) : Types.Stream_event.t option =

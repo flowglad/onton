@@ -14,9 +14,25 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
+    # Pin to bash so `${PIPESTATUS[0]}` (a bash-only array) in the Build and
+    # Run tests steps is guaranteed — GitHub Actions defaults to bash on Linux
+    # in practice, but making it explicit avoids silent breakage if the
+    # default ever shifts.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Cache opam switch
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: _opam
+          key: opam-${{ runner.os }}-ocaml-5.4.0-test-${{ hashFiles('*.opam') }}
+
+      # `dune-cache: true` below makes setup-ocaml manage the ~/.cache/dune
+      # lifecycle internally — adding a second actions/cache step on the same
+      # path would race with it on save and clobber on restore.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.0'
@@ -53,7 +69,15 @@ jobs:
           "
 
       - name: Run tests
-        run: opam exec -- dune runtest 2>&1 | tee test.log
+        # Single invocation — the runtest alias covers unit, expect, inline,
+        # and QCheck property tests, so a separate `--force` re-run would just
+        # repeat the entire suite. QCHECK_COUNT raises iteration depth for the
+        # property tests; non-property tests ignore it.
+        run: |
+          opam exec -- dune runtest 2>&1 | tee test.log
+          exit ${PIPESTATUS[0]}
+        env:
+          QCHECK_COUNT: "10000"
 
       - name: Annotate test failures
         if: failure() && hashFiles('test.log') != ''
@@ -69,45 +93,17 @@ jobs:
               print(f'::error file={f},line={line}::Test failed: {name}')
           "
 
-  property-tests:
-    name: Property Tests (10k)
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
-        with:
-          ocaml-compiler: '5.4.0'
-          dune-cache: true
-
-      - name: Use opam.ocaml.org archive cache
-        run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
-
-      - name: Install dependencies
-        run: opam install . --deps-only --with-test -y
-
-      - name: Run property tests (10k iterations)
-        run: opam exec -- dune runtest 2>&1 | tee proptest.log
-        env:
-          QCHECK_COUNT: "10000"
-
-      - name: Annotate property test failures
-        if: failure()
-        run: |
-          python3 -c "
-          import re
-          log = open('proptest.log').read()
-          for m in re.finditer(r'File \"([^\"]+)\", line (\d+).*?:\s*(.*?fail.*)', log, re.IGNORECASE):
-              f, line, msg = m.groups()
-              print(f'::error file={f},line={line}::{msg.strip()}')
-          "
-
   format:
     name: Format Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Cache opam switch
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: _opam
+          key: opam-${{ runner.os }}-ocaml-5.4.0-${{ hashFiles('*.opam') }}
 
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
