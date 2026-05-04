@@ -22,7 +22,12 @@ let extract_pr_number_from_text ?(at_end_of_stream = false) ~owner ~repo text =
   let needle_len = String.length needle in
   let text_len = String.length text in
   let rec scan i =
-    if i + needle_len >= text_len then None
+    (* [>] not [>=]: at [i = text_len - needle_len] the needle still fits
+       exactly. Using [>=] would skip that final position; the digit-run
+       check below correctly returns [None] when the needle ends at
+       [text_len] (no digits possible), so [>] gives the same answer
+       without the off-by-one. *)
+    if i + needle_len > text_len then None
     else if String.equal (String.sub text ~pos:i ~len:needle_len) needle then
       let start = i + needle_len in
       let rec end_pos j =
@@ -84,6 +89,14 @@ let%test_module "extract_pr_number_from_text" =
       Option.is_none
         (extract_pr_number_from_text ~owner:"foo" ~repo:"bar"
            "github.com/other/repo/pull/12345 ")
+
+    let%test "needle ending exactly at text_len -> None (no digits)" =
+      (* The scan-termination guard uses [>] not [>=] so this position is
+         attempted, but the digit-run check correctly returns None since
+         there's no room for a digit after the needle. *)
+      Option.is_none
+        (extract_pr_number_from_text ~at_end_of_stream:true ~owner:"foo"
+           ~repo:"bar" "github.com/foo/bar/pull/")
 
     let%test
         "left-to-right: with two URLs, the first wins (callers must window the \
