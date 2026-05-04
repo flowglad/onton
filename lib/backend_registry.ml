@@ -6,6 +6,15 @@ type t = {
 }
 
 let display_name_of_claude_model = function
+  | Some m when Backend_routing.is_auto_model (Some m) ->
+      (* Under [--model auto] the registry caches one backend per
+         [(backend, "auto")] key and [run_streaming] resolves the actual
+         Claude alias from [complexity] at call time, so any single label
+         here would be wrong for at least some patches. Drop the
+         parenthetical: showing "Claude" matches the no-flag default and
+         avoids the literal "Claude (auto)" string treating the sentinel
+         as if it were a Claude model name. *)
+      "Claude"
   | Some m -> Printf.sprintf "Claude (%s)" m
   | None -> "Claude"
 
