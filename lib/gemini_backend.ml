@@ -134,6 +134,25 @@ let%test "build_args with resume session" =
       "latest";
     ]
 
+let%test "build_args with model and resume session" =
+  let args =
+    build_args ~model:(Some "gemini-2.5-pro") ~prompt:"do stuff"
+      ~resume_session:(Some "latest")
+  in
+  List.equal String.equal args
+    [
+      "gemini";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "stream-json";
+      "--yolo";
+      "-m";
+      "gemini-2.5-pro";
+      "-r";
+      "latest";
+    ]
+
 let%test "parse_event init" =
   let line =
     {|{"type":"init","timestamp":"2026-04-13T14:16:47.453Z","session_id":"abc-123","model":"gemini-3-flash-preview"}|}
