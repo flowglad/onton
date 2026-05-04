@@ -1018,6 +1018,27 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
                 })
               result
           in
+          (* classify routes Error outcomes to Process_error, so the
+             empty-events arms below only ever see Ok. *)
+          let log_empty_resume ~tail =
+            match result with
+            | Error _ -> ()
+            | Ok r ->
+                let render label s =
+                  let s = String.trim s in
+                  if String.equal s "" then label ^ "=empty"
+                  else
+                    Printf.sprintf "%s=%d chars: %s" label (String.length s)
+                      (truncate s 500)
+                in
+                log_event runtime ~patch_id
+                  (Printf.sprintf
+                     "Resume exited %d (%s) with no parsed stream events%s — \
+                      %s %s"
+                     r.Llm_backend.exit_code backend.Llm_backend.name tail
+                     (render "stdout" r.Llm_backend.stdout)
+                     (render "stderr" r.Llm_backend.stderr))
+          in
           let session_result, user_result =
             match
               classify ~is_resume:(Option.is_some resume_session) outcome
@@ -1028,9 +1049,7 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
                      backend.Llm_backend.name msg);
                 (Orchestrator.Session_process_error { is_fresh }, `Failed)
             | No_session_to_resume ->
-                log_event runtime ~patch_id
-                  "Resume produced no events — no session to resume, retrying \
-                   fresh";
+                log_empty_resume ~tail:" — no session to resume, retrying fresh";
                 (Orchestrator.Session_no_resume, `Failed)
             | Timed_out ->
                 log_event runtime ~patch_id
@@ -1040,21 +1059,7 @@ let run_claude_and_handle ~(kind : Operation_kind.t option) ~runtime
             | Success { stream_errors } ->
                 (match (resume_session, result) with
                 | Some _, Ok r when not r.Llm_backend.got_events ->
-                    let stdout = String.trim r.Llm_backend.stdout in
-                    let stderr = String.trim r.Llm_backend.stderr in
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Resume exited 0 (%s) with no parsed stream events — \
-                          stdout=%s stderr=%s"
-                         backend.Llm_backend.name
-                         (if String.equal stdout "" then "empty"
-                          else
-                            Printf.sprintf "%d chars: %s" (String.length stdout)
-                              (truncate stdout 500))
-                         (if String.equal stderr "" then "empty"
-                          else
-                            Printf.sprintf "%d chars: %s" (String.length stderr)
-                              (truncate stderr 500)))
+                    log_empty_resume ~tail:""
                 | Some _, (Ok _ | Error _) | None, _ -> ());
                 if String.length stream_errors > 0 then
                   log_event runtime ~patch_id
