@@ -40,5 +40,11 @@ let get t ~backend ~model =
   | Some b -> b
   | None ->
       let b = t.factory ~backend ~model in
-      Hashtbl.add_exn t.cache ~key ~data:b;
+      (* [set] (not [add_exn]): the runner forks one daemon fiber per patch
+         action, so two fibers may both miss [find] and race to insert the
+         same key. Constructing a duplicate backend is harmless — they hold
+         the same {process_mgr, clock, timeout, setsid_exec} closure — so
+         losing the race just means one of the two backend records is
+         garbage. [add_exn] would raise [Duplicate] on the loser. *)
+      Hashtbl.set t.cache ~key ~data:b;
       b
