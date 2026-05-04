@@ -114,6 +114,8 @@ let migrate_backend_model fields =
     match (stored_backend, stored_model) with
     | "claude-sonnet", "" -> ("claude", "sonnet")
     | "claude-opus", "" -> ("claude", "opus")
+    (* Legacy combined name with an explicitly stored model: keep the stored
+       model rather than overriding it from the legacy backend suffix. *)
     | ("claude-sonnet" | "claude-opus"), m -> ("claude", m)
     | b, m -> (b, m)
   in
