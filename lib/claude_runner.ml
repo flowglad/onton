@@ -56,7 +56,6 @@ let model_args = function
 let max_turns_for ~complexity =
   match complexity with Some 1 -> 50 | Some 2 -> 100 | _ -> 200
 
-let build_args ~model ~complexity ~prompt ~resume_session =
 let budget_cap_args ~warn () =
   match
     Sys.getenv "ONTON_BUDGET_CAP_USD"
