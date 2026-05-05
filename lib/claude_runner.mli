@@ -21,6 +21,7 @@ val run :
   patch_id:Types.Patch_id.t ->
   prompt:string ->
   resume_session:string option ->
+  complexity:int option ->
   Llm_backend.result
 (** Spawn a Claude CLI process for [patch_id] in directory [cwd].
 
@@ -74,6 +75,7 @@ val strip_ansi : string -> string
 
 val build_args :
   model:string option ->
+  complexity:int option ->
   prompt:string ->
   resume_session:string option ->
   string list
@@ -81,6 +83,7 @@ val build_args :
 
 val build_stream_args :
   model:string option ->
+  complexity:int option ->
   prompt:string ->
   resume_session:string option ->
   string list
