@@ -111,6 +111,8 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
                     | Types.Stream_event.Session_init _ ->
                         false)
                 in
+                (* [saw_terminal] = [saw_final] || [saw_error]; only
+                   [saw_terminal] stops recursion. *)
                 if saw_final then saw_final_result_ref := true;
                 if saw_terminal then saw_terminal_event_ref := true
                 else read_lines ()

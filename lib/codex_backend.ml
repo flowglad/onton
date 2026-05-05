@@ -13,6 +13,8 @@ let model_pricing = function
       Some { input_usd_per_1k = 0.0025; output_usd_per_1k = 0.015 }
   | Some "gpt-5.5" ->
       Some { input_usd_per_1k = 0.005; output_usd_per_1k = 0.03 }
+  (* Unknown/None model: cost tracking disabled, cap not enforced.
+     Keep this table in sync with [auto_model]. *)
   | _ -> None
 
 let budget_cap_usd_from_env () =
@@ -32,6 +34,9 @@ let usage_member_int json name =
 
 let usage_reasoning_tokens usage =
   let open Yojson.Safe.Util in
+  (* Support the current nested Responses schema
+     ([usage.output_tokens_details.reasoning_tokens]) plus older/alternate
+     flat spellings that have appeared in streamed usage payloads. *)
   let from_details =
     member "output_tokens_details" usage
     |> member "reasoning_tokens" |> to_int_option
