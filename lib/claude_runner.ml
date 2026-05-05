@@ -72,10 +72,22 @@ let build_args ~model ~complexity ~prompt ~resume_session =
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
-let build_stream_args ~model ~complexity ~prompt ~resume_session =
+let build_stream_args ~model ~complexity ~prompt ~minted_session_id
+    ~resume_session =
+  (match (minted_session_id, resume_session) with
+  | Some _, Some _ ->
+      invalid_arg
+        "Claude_runner.build_stream_args: minted_session_id and resume_session \
+         are mutually exclusive"
+  | _ -> ());
   let base = [ "claude" ] in
   let prompt_args =
     [ "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
+  in
+  let minted_session_args =
+    match minted_session_id with
+    | Some id -> [ "--session-id"; id ]
+    | None -> []
   in
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
@@ -88,7 +100,27 @@ let build_stream_args ~model ~complexity ~prompt ~resume_session =
       "--exclude-dynamic-system-prompt-sections";
     ]
   in
-  base @ model_args model @ prompt_args @ session_args @ flags
+  base @ model_args model @ minted_session_args @ prompt_args @ session_args
+  @ flags
+
+let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
+  match (resume_session, getenv_opt "ONTON_MINTED_SESSION_IDS") with
+  | Some _, _ | _, None | _, Some "" -> Ok None
+  | None, Some "1" -> (
+      match getenv_opt "ONTON_SNAPSHOT_PATH" with
+      | Some snapshot_path
+        when not (String.is_empty (String.strip snapshot_path)) ->
+          let session_id = Session_id.mint () in
+          Result.map
+            (Persistence.record_session_id ~snapshot_path ~patch_id ~session_id)
+            ~f:(fun () -> Some session_id)
+      | _ ->
+          Error
+            "ONTON_MINTED_SESSION_IDS=1 requires ONTON_SNAPSHOT_PATH to be set")
+  | None, Some _ -> Ok None
+
+let prepare_minted_session_id =
+  prepare_minted_session_id_with_env ~getenv_opt:Stdlib.Sys.getenv_opt
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
@@ -289,17 +321,31 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
     ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
-  let args = build_stream_args ~model ~complexity ~prompt ~resume_session in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
       ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
   in
-  let process_line line =
-    let trimmed = strip_ansi (String.strip line) in
-    if String.is_empty trimmed then [] else parse_stream_events trimmed
-  in
-  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
-    ~setsid_exec ~args ~process_line ~on_event
+  match prepare_minted_session_id ~patch_id ~resume_session with
+  | Error msg ->
+      {
+        Llm_backend.exit_code = 1;
+        stdout = "";
+        stderr = msg;
+        got_events = false;
+        saw_final_result = false;
+        timed_out = false;
+      }
+  | Ok minted_session_id ->
+      let args =
+        build_stream_args ~model ~complexity ~prompt ~minted_session_id
+          ~resume_session
+      in
+      let process_line line =
+        let trimmed = strip_ansi (String.strip line) in
+        if String.is_empty trimmed then [] else parse_stream_events trimmed
+      in
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
+        ~setsid_exec ~args ~process_line ~on_event
 
 let%test "auto_model: complexity 1 -> haiku" =
   Option.equal String.equal (auto_model ~complexity:(Some 1)) (Some "haiku")
@@ -401,7 +447,7 @@ let%test "build_stream_args fresh (no resume, with model)" =
   let complexity = Some 2 in
   let args =
     build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
-      ~resume_session:None
+      ~minted_session_id:None ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -423,7 +469,7 @@ let%test "build_stream_args fresh (no resume, no model)" =
   let complexity = None in
   let args =
     build_stream_args ~model:None ~complexity ~prompt:"do stuff"
-      ~resume_session:None
+      ~minted_session_id:None ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -443,7 +489,7 @@ let%test "build_stream_args with resume session" =
   let complexity = Some 1 in
   let args =
     build_stream_args ~model:(Some "opus") ~complexity ~prompt:"do stuff"
-      ~resume_session:(Some "abc-123")
+      ~minted_session_id:None ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
@@ -466,9 +512,56 @@ let%test "build_stream_args with resume session" =
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
   let args =
     build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
-      ~resume_session:None
+      ~minted_session_id:None ~resume_session:None
   in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
+
+let%test "build_stream_args emits --session-id when minted_session_id is Some" =
+  let complexity = None in
+  let args =
+    build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
+      ~minted_session_id:(Some "123e4567-e89b-42d3-a456-426614174000")
+      ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "claude";
+      "--model";
+      "sonnet";
+      "--session-id";
+      "123e4567-e89b-42d3-a456-426614174000";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "stream-json";
+      "--verbose";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+      "--exclude-dynamic-system-prompt-sections";
+    ]
+
+let%test "build_stream_args rejects session-id plus resume together" =
+  match
+    build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
+      ~minted_session_id:(Some "minted") ~resume_session:(Some "resume")
+  with
+  | _ -> false
+  | exception Invalid_argument _ -> true
+
+let%test "prepare_minted_session_id errors when flag is on and path missing" =
+  let patch_id = Types.Patch_id.of_string "5" in
+  let getenv_opt = function
+    | "ONTON_MINTED_SESSION_IDS" -> Some "1"
+    | "ONTON_SNAPSHOT_PATH" -> None
+    | _ -> None
+  in
+  match
+    prepare_minted_session_id_with_env ~getenv_opt ~patch_id
+      ~resume_session:None
+  with
+  | Error _ -> true
+  | Ok _ -> false
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"

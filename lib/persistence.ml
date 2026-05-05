@@ -3,6 +3,87 @@ open Types
 
 (* ---------- helpers ---------- *)
 
+let write_file_atomically ~path ~content =
+  let dir = Stdlib.Filename.dirname path in
+  let base = Stdlib.Filename.basename path in
+  let tmp_path = Stdlib.Filename.temp_file ~temp_dir:dir (base ^ ".") ".tmp" in
+  try
+    let oc = Stdlib.open_out_bin tmp_path in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_out oc)
+      (fun () ->
+        Stdlib.output_string oc content;
+        Stdlib.flush oc);
+    Stdlib.Sys.rename tmp_path path;
+    Ok ()
+  with exn ->
+    (try Stdlib.Sys.remove tmp_path with _ -> ());
+    Error (Stdlib.Printexc.to_string exn)
+
+let remove_if_exists path =
+  if Stdlib.Sys.file_exists path then Stdlib.Sys.remove path
+
+let session_id_dir ~snapshot_path =
+  Stdlib.Filename.concat
+    (Stdlib.Filename.dirname snapshot_path)
+    "llm-session-ids"
+
+let session_id_path ~snapshot_path ~patch_id =
+  Stdlib.Filename.concat
+    (session_id_dir ~snapshot_path)
+    (Patch_id.to_string patch_id ^ ".txt")
+
+let sync_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
+  let ( let* ) r f = Result.bind r ~f in
+  try
+    let dir = session_id_dir ~snapshot_path in
+    Project_store.ensure_dir dir;
+    List.fold (Orchestrator.all_agents snap.Runtime.orchestrator) ~init:(Ok ())
+      ~f:(fun acc (agent : Patch_agent.t) ->
+        let* () = acc in
+        let path =
+          session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
+        in
+        match agent.Patch_agent.llm_session_id with
+        | Some session_id -> write_file_atomically ~path ~content:session_id
+        | None ->
+            (* A fresh Claude session may have minted and persisted its ID
+               before the in-memory orchestrator has observed the first
+               stream event. While that session is still marked busy, preserve
+               any existing sidecar rather than deleting the crash-recovery
+               resume key. *)
+            if not agent.Patch_agent.busy then remove_if_exists path;
+            Ok ())
+  with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
+  let orchestrator =
+    List.fold (Orchestrator.all_agents snap.Runtime.orchestrator)
+      ~init:snap.Runtime.orchestrator ~f:(fun orch (agent : Patch_agent.t) ->
+        let path =
+          session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
+        in
+        if
+          agent.Patch_agent.busy
+          && Option.is_none agent.Patch_agent.llm_session_id
+          && Stdlib.Sys.file_exists path
+        then
+          try
+            let ic = Stdlib.open_in path in
+            let session_id =
+              Stdlib.Fun.protect
+                ~finally:(fun () -> Stdlib.close_in_noerr ic)
+                (fun () -> Stdlib.In_channel.input_all ic |> String.strip)
+            in
+            if String.is_empty session_id then orch
+            else
+              Orchestrator.set_llm_session_id orch agent.Patch_agent.patch_id
+                (Some session_id)
+          with _ -> orch
+        else orch)
+  in
+  { snap with Runtime.orchestrator }
+
 let string_member key json = Yojson.Safe.Util.(member key json |> to_string)
 
 let string_member_opt key json =
@@ -584,23 +665,12 @@ let snapshot_of_yojson json =
 (* ---------- File I/O ---------- *)
 
 let save ~path (snap : Runtime.snapshot) =
-  let dir = Stdlib.Filename.dirname path in
-  let base = Stdlib.Filename.basename path in
-  let tmp_path = Stdlib.Filename.temp_file ~temp_dir:dir (base ^ ".") ".tmp" in
   try
     let json = snapshot_to_yojson snap in
     let content = Yojson.Safe.pretty_to_string json in
-    let oc = Stdlib.open_out_bin tmp_path in
-    Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_out oc)
-      (fun () ->
-        Stdlib.output_string oc content;
-        Stdlib.flush oc);
-    Stdlib.Sys.rename tmp_path path;
-    Ok ()
-  with exn ->
-    (try Stdlib.Sys.remove tmp_path with _ -> ());
-    Error (Stdlib.Printexc.to_string exn)
+    Result.bind (write_file_atomically ~path ~content) ~f:(fun () ->
+        sync_session_id_sidecars ~snapshot_path:path snap)
+  with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let load ~path =
   try
@@ -611,6 +681,140 @@ let load ~path =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    let result = snapshot_of_yojson json in
+    let result =
+      Result.map (snapshot_of_yojson json)
+        ~f:(overlay_session_id_sidecars ~snapshot_path:path)
+    in
     result
   with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let record_session_id ~snapshot_path ~patch_id ~session_id =
+  try
+    let dir = session_id_dir ~snapshot_path in
+    Project_store.ensure_dir dir;
+    write_file_atomically
+      ~path:(session_id_path ~snapshot_path ~patch_id)
+      ~content:session_id
+  with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let%test_module "session_id_sidecars" =
+  (module struct
+    let patch_id = Patch_id.of_string "5"
+    let main_branch = Branch.of_string "main"
+
+    let patch =
+      Patch.
+        {
+          id = patch_id;
+          title = "Patch 5";
+          description = "";
+          branch = Branch.of_string "patch-5";
+          dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+          complexity = None;
+        }
+
+    let gameplan =
+      Gameplan.
+        {
+          project_name = "sidecar-test";
+          problem_statement = "";
+          solution_summary = "";
+          final_state_spec = "";
+          patches = [ patch ];
+          current_state_analysis = "";
+          explicit_opinions = "";
+          acceptance_criteria = [];
+          open_questions = [];
+        }
+
+    let snapshot ?(busy = false) ?llm_session_id () =
+      let agent =
+        Patch_agent.restore ~patch_id ~branch:patch.branch ~pr_number:None
+          ~has_session:false ~busy ~merged:false ~queue:[] ~satisfies:false
+          ~changed:false ~has_conflict:false ~base_branch:None
+          ~notified_base_branch:None ~ci_failure_count:0
+          ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+          ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
+          ~is_draft:false ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+          ~start_attempts_without_pr:0 ~conflict_noop_count:0
+          ~no_commits_push_count:0 ~branch_rebased_onto:None
+          ~checks_passing:false ~current_op:None
+          ~current_op_state:Patch_agent.Queued ~current_message_id:None
+          ~generation:0 ~worktree_path:None ~branch_blocked:false
+          ~llm_session_id ~automerge_enabled:false ~automerge_deadline:None
+          ~automerge_inflight:false ~automerge_failure_count:0
+          ~delivered_ci_run_ids:[]
+      in
+      let orch =
+        Orchestrator.restore
+          ~graph:(Graph.of_patches [ patch ])
+          ~agents:(Map.singleton (module Patch_id) patch_id agent)
+          ~outbox:(Map.empty (module Message_id))
+          ~main_branch
+      in
+      {
+        Runtime.orchestrator = orch;
+        activity_log = Activity_log.empty;
+        gameplan;
+        transcripts = Hashtbl.create (module Patch_id);
+      }
+
+    let with_temp_snapshot_path f =
+      let dir = Stdlib.Filename.temp_file "onton-persistence" ".tmpdir" in
+      Stdlib.Sys.remove dir;
+      Stdlib.Sys.mkdir dir 0o755;
+      Stdlib.Fun.protect
+        ~finally:(fun () ->
+          try
+            Stdlib.Sys.command
+              (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
+            |> ignore
+          with _ -> ())
+        (fun () -> f (Stdlib.Filename.concat dir "snapshot.json"))
+
+    let%test "load overlays sidecar for crashed busy session missing id" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      Result.is_ok (save ~path:snapshot_path (snapshot ~busy:true ()))
+      && Result.is_ok
+           (record_session_id ~snapshot_path ~patch_id ~session_id:"minted")
+      &&
+      match load ~path:snapshot_path with
+      | Ok loaded -> (
+          match
+            Orchestrator.find_agent loaded.Runtime.orchestrator patch_id
+          with
+          | Some agent ->
+              Option.equal String.equal agent.Patch_agent.llm_session_id
+                (Some "minted")
+          | None -> false)
+      | Error _ -> false
+
+    let%test "load ignores stale sidecar for idle session without id" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      Result.is_ok (save ~path:snapshot_path (snapshot ()))
+      && Result.is_ok
+           (record_session_id ~snapshot_path ~patch_id ~session_id:"stale")
+      &&
+      match load ~path:snapshot_path with
+      | Ok loaded -> (
+          match
+            Orchestrator.find_agent loaded.Runtime.orchestrator patch_id
+          with
+          | Some agent -> Option.is_none agent.Patch_agent.llm_session_id
+          | None -> false)
+      | Error _ -> false
+
+    let%test "save surfaces sidecar write failures" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      let blocking_path = session_id_dir ~snapshot_path in
+      ignore (write_file_atomically ~path:blocking_path ~content:"not a dir");
+      Result.is_error
+        (save ~path:snapshot_path (snapshot ~llm_session_id:"id" ()))
+  end)
