@@ -65,7 +65,8 @@ let budget_cap_args ~warn () =
   | Some raw -> (
       match Float.of_string_opt raw with
       | Some cap when Float.(cap > 0.) -> [ "--max-budget-usd"; raw ]
-      | Some _ | None ->
+      | Some _ -> []
+      | None ->
           warn
             (Printf.sprintf
                "warning: ignoring invalid ONTON_BUDGET_CAP_USD=%S; expected a \
