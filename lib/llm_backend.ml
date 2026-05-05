@@ -19,7 +19,7 @@ let kill_group ~pid ~signal =
   try Unix.kill (-pid) signal
   with Unix.Unix_error ((ESRCH | EPERM), _, _) -> ()
 
-let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
+let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
     ~(process_line : string -> Types.Stream_event.t list) ~on_event =
   let args =
     match setsid_exec with Some path -> path :: args | None -> args
@@ -56,7 +56,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
       let stderr_r, stderr_w = Eio.Process.pipe ~sw process_mgr in
       let child =
         Eio.Process.spawn ~sw process_mgr ~cwd ~stdin:stdin_r ~stdout:stdout_w
-          ~stderr:stderr_w args
+          ~stderr:stderr_w ~env args
       in
       let pid = Eio.Process.pid child in
       let have_group = Option.is_some setsid_exec in
@@ -185,6 +185,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~setsid_exec ~args
 type t = {
   name : string;
   run_streaming :
+    project_name:string ->
     cwd:Eio.Fs.dir_ty Eio.Path.t ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->

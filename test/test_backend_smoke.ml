@@ -14,8 +14,9 @@ let smoke ?setsid_exec ~process_mgr ~clock ~cwd ~ndjson ~process_line () =
   let on_event ev = events := ev :: !events in
   let payload = String.concat ~sep:"\n" ndjson in
   let args = [ "printf"; "%s"; payload ] in
+  let env = Unix.environment () in
   let result =
-    Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
+    Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd ~env
       ~setsid_exec ~args ~process_line ~on_event
   in
   (result, List.rev !events)
@@ -105,7 +106,7 @@ let () =
     in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
-        ~setsid_exec:None ~args
+        ~env:(Unix.environment ()) ~setsid_exec:None ~args
         ~process_line:(process_line_strip Codex_backend.parse_event)
         ~on_event
     in
@@ -143,7 +144,7 @@ let () =
     let on_event ev = events := ev :: !events in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
-        ~setsid_exec:None
+        ~env:(Unix.environment ()) ~setsid_exec:None
         ~args:[ "printf"; "%s"; "not-json\n" ]
         ~process_line:(fun _ -> [])
         ~on_event
@@ -257,7 +258,8 @@ let () =
     let started = Unix.gettimeofday () in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
-        ~setsid_exec:None ~args ~process_line:process_line_claude ~on_event
+        ~env:(Unix.environment ()) ~setsid_exec:None ~args
+        ~process_line:process_line_claude ~on_event
     in
     let elapsed = Unix.gettimeofday () -. started in
     if not result.Llm_backend.saw_final_result then (
@@ -281,7 +283,8 @@ let () =
     let started = Unix.gettimeofday () in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:1.0 ~cwd
-        ~setsid_exec:None ~args ~process_line:process_line_claude ~on_event
+        ~env:(Unix.environment ()) ~setsid_exec:None ~args
+        ~process_line:process_line_claude ~on_event
     in
     let elapsed = Unix.gettimeofday () -. started in
     if not result.Llm_backend.timed_out then (
@@ -334,8 +337,8 @@ exit 0|}
         let args = [ "sh"; "-c"; script ] in
         let result =
           Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
-            ~setsid_exec:(Some shim) ~args ~process_line:process_line_claude
-            ~on_event
+            ~env:(Unix.environment ()) ~setsid_exec:(Some shim) ~args
+            ~process_line:process_line_claude ~on_event
         in
         if not result.Llm_backend.saw_final_result then (
           Stdio.printf "FAIL: grandchild reap: Final_result not seen\n";

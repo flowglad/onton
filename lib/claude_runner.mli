@@ -47,6 +47,7 @@ val run_streaming :
   clock:_ Eio.Time.clock ->
   timeout:float ->
   setsid_exec:string option ->
+  project_name:string ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
   patch_id:Types.Patch_id.t ->
   prompt:string ->
