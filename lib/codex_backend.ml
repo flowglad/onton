@@ -149,6 +149,8 @@ let parse_event_with_cost_tracking ~model ~budget_cap_usd ~cost_state line =
                        "Codex budget cap exceeded: cumulative cost $%.4f > cap \
                         $%.4f"
                        cost_state.cumulative_usd cap);
+                  Types.Stream_event.Final_result
+                    { text = ""; stop_reason = Types.Stop_reason.End_turn };
                 ]
             | _ ->
                 [
@@ -398,6 +400,8 @@ let%test "cost tracker emits Error when cumulative exceeds cap" =
        [
          Types.Stream_event.Error
            "Codex budget cap exceeded: cumulative cost $0.0650 > cap $0.0500";
+         Types.Stream_event.Final_result
+           { text = ""; stop_reason = Types.Stop_reason.End_turn };
        ]
 
 let%test "parse_event error" =
