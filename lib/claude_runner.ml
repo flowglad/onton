@@ -74,10 +74,10 @@ let budget_cap_args ~warn () =
                raw);
           [])
 
-let bare_args ~getenv_opt =
-  match getenv_opt "ONTON_BARE_CLAUDE" with Some "1" -> [ "--bare" ] | _ -> []
+let bare_args = [ "--bare" ]
 
 let build_args ~getenv_opt ~model ~complexity ~prompt ~resume_session =
+  ignore getenv_opt;
   let base = [ "claude" ] in
   let prompt_args = [ "-p"; prompt; "--output-format"; "text" ] in
   let session_args =
@@ -91,12 +91,13 @@ let build_args ~getenv_opt ~model ~complexity ~prompt ~resume_session =
       "--exclude-dynamic-system-prompt-sections";
     ]
     @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
-    @ bare_args ~getenv_opt
+    @ bare_args
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
 let build_stream_args ~getenv_opt ~model ~complexity ~prompt ~minted_session_id
     ~resume_session =
+  ignore getenv_opt;
   (match (minted_session_id, resume_session) with
   | Some _, Some _ ->
       invalid_arg
@@ -123,7 +124,7 @@ let build_stream_args ~getenv_opt ~model ~complexity ~prompt ~minted_session_id
       "--exclude-dynamic-system-prompt-sections";
     ]
     @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
-    @ bare_args ~getenv_opt
+    @ bare_args
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
@@ -422,6 +423,7 @@ let%test "build_args fresh (no resume, with model)" =
       "--max-turns";
       "100";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_args fresh (no resume, no model)" =
@@ -442,6 +444,7 @@ let%test "build_args fresh (no resume, no model)" =
       "--max-turns";
       "50";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_args with resume session" =
@@ -467,6 +470,7 @@ let%test "build_args with resume session" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
@@ -499,6 +503,7 @@ let%test "build_stream_args fresh (no resume, with model)" =
       "--max-turns";
       "100";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args fresh (no resume, no model)" =
@@ -521,6 +526,7 @@ let%test "build_stream_args fresh (no resume, no model)" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args with resume session" =
@@ -547,6 +553,7 @@ let%test "build_stream_args with resume session" =
       "--max-turns";
       "50";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
@@ -583,6 +590,7 @@ let%test "build_stream_args emits --session-id when minted_session_id is Some" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args rejects session-id plus resume together" =
@@ -637,45 +645,27 @@ let%test
           "--exclude-dynamic-system-prompt-sections";
           "--max-budget-usd";
           "10";
+          "--bare";
         ])
     ~finally:(fun () ->
       match previous with
       | Some value -> Unix.putenv "ONTON_BUDGET_CAP_USD" value
       | None -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
 
-let%test "build_stream_args includes --bare when ONTON_BARE_CLAUDE=1" =
+let%test "build_stream_args includes --bare" =
   List.mem
     (build_stream_args
-       ~getenv_opt:(fun name ->
-         if String.equal name "ONTON_BARE_CLAUDE" then Some "1" else None)
+       ~getenv_opt:(fun _ -> None)
        ~model:None ~complexity:None ~prompt:"do stuff" ~minted_session_id:None
        ~resume_session:None)
     "--bare" ~equal:String.equal
 
-let%test "build_stream_args omits --bare when ONTON_BARE_CLAUDE is unset" =
-  not
-    (List.mem
-       (build_stream_args
-          ~getenv_opt:(fun _ -> None)
-          ~model:None ~complexity:None ~prompt:"do stuff"
-          ~minted_session_id:None ~resume_session:None)
-       "--bare" ~equal:String.equal)
-
-let%test "build_args includes --bare when ONTON_BARE_CLAUDE=1" =
+let%test "build_args includes --bare" =
   List.mem
     (build_args
-       ~getenv_opt:(fun name ->
-         if String.equal name "ONTON_BARE_CLAUDE" then Some "1" else None)
+       ~getenv_opt:(fun _ -> None)
        ~model:None ~complexity:None ~prompt:"do stuff" ~resume_session:None)
     "--bare" ~equal:String.equal
-
-let%test "build_args omits --bare when ONTON_BARE_CLAUDE is unset" =
-  not
-    (List.mem
-       (build_args
-          ~getenv_opt:(fun _ -> None)
-          ~model:None ~complexity:None ~prompt:"do stuff" ~resume_session:None)
-       "--bare" ~equal:String.equal)
 
 let%test "budget_cap_args omits flag and warns on invalid cap" =
   let previous = Sys.getenv "ONTON_BUDGET_CAP_USD" in
