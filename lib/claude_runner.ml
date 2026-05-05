@@ -366,6 +366,10 @@ let%test "build_args with resume session" =
       "--exclude-dynamic-system-prompt-sections";
     ]
 
+let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
+  let args = build_args ~model:None ~prompt:"do stuff" ~resume_session:None in
+  List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
+
 let%test "build_stream_args fresh (no resume, with model)" =
   let args =
     build_stream_args ~model:(Some "sonnet") ~prompt:"do stuff"
