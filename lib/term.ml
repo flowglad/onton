@@ -396,11 +396,7 @@ module Raw = struct
     ref None
 
   let _saved_winch_handler : Stdlib.Sys.signal_behavior option ref = ref None
-
-  (* [Sys] does not expose [sigwinch] on every toolchain. Linux and Darwin use
-     signal number 28 for terminal resize notifications, which are the Unix
-     targets supported by this TUI module. *)
-  let sigwinch = 28
+  let sigwinch = Stdlib.Sys.sigwinch
 
   (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
       TUI render loop should check and clear this each iteration. *)
