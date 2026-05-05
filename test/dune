@@ -16,6 +16,27 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_backend_parser_totality)
+ (modules test_backend_parser_totality)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_activity_log_properties)
+ (modules test_activity_log_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_display_status_properties)
+ (modules test_display_status_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_properties)
  (modules test_properties)
  (libraries onton onton_core onton_test_support qcheck-core)

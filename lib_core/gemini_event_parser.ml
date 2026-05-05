@@ -21,64 +21,66 @@ let build_args ~model ~prompt ~resume_session =
   base @ model_args @ resume_args
 
 let parse_event (line : string) : Types.Stream_event.t list =
-  match Yojson.Safe.from_string line with
-  | json -> (
-      let open Yojson.Safe.Util in
-      let typ = member "type" json |> to_string_option in
-      match typ with
-      | Some "init" -> (
-          match member "session_id" json |> to_string_option with
-          | Some id when not (String.is_empty id) ->
-              [ Types.Stream_event.Session_init { session_id = id } ]
-          | _ -> [])
-      | Some "message" -> (
-          let role = member "role" json |> to_string_option in
-          match role with
-          | Some "assistant" ->
-              let text =
-                member "content" json |> to_string_option
-                |> Option.value ~default:""
-              in
-              if String.is_empty text then []
-              else [ Types.Stream_event.Text_delta text ]
-          | _ -> [])
-      | Some "tool_use" ->
-          let name =
-            member "tool_name" json |> to_string_option
-            |> Option.value ~default:""
-          in
-          let input =
-            match member "parameters" json with
-            | `Null -> ""
-            | v -> Yojson.Safe.to_string v
-          in
-          [ Types.Stream_event.Tool_use { name; input; status = None } ]
-      | Some "result" -> (
-          let status = member "status" json |> to_string_option in
-          match status with
-          | Some "success" ->
-              [
-                Types.Stream_event.Final_result
-                  { text = ""; stop_reason = Types.Stop_reason.End_turn };
-              ]
-          | Some other ->
-              let detail =
-                match member "message" json |> to_string_option with
-                | Some m when not (String.is_empty m) ->
-                    Printf.sprintf "gemini %s: %s" other m
-                | _ -> Printf.sprintf "gemini %s" other
-              in
-              [ Types.Stream_event.Error detail ]
-          | None -> [])
-      | Some "error" ->
-          let msg =
-            member "message" json |> to_string_option
-            |> Option.value ~default:"unknown gemini error"
-          in
-          [ Types.Stream_event.Error msg ]
-      | _ -> [])
-  | exception Yojson.Json_error _ -> []
-  | exception Yojson.Safe.Util.Type_error _ -> []
+  try
+    match Yojson.Safe.from_string line with
+    | json -> (
+        let open Yojson.Safe.Util in
+        let typ = member "type" json |> to_string_option in
+        match typ with
+        | Some "init" -> (
+            match member "session_id" json |> to_string_option with
+            | Some id when not (String.is_empty id) ->
+                [ Types.Stream_event.Session_init { session_id = id } ]
+            | _ -> [])
+        | Some "message" -> (
+            let role = member "role" json |> to_string_option in
+            match role with
+            | Some "assistant" ->
+                let text =
+                  member "content" json |> to_string_option
+                  |> Option.value ~default:""
+                in
+                if String.is_empty text then []
+                else [ Types.Stream_event.Text_delta text ]
+            | _ -> [])
+        | Some "tool_use" ->
+            let name =
+              member "tool_name" json |> to_string_option
+              |> Option.value ~default:""
+            in
+            let input =
+              match member "parameters" json with
+              | `Null -> ""
+              | v -> Yojson.Safe.to_string v
+            in
+            [ Types.Stream_event.Tool_use { name; input; status = None } ]
+        | Some "result" -> (
+            let status = member "status" json |> to_string_option in
+            match status with
+            | Some "success" ->
+                [
+                  Types.Stream_event.Final_result
+                    { text = ""; stop_reason = Types.Stop_reason.End_turn };
+                ]
+            | Some other ->
+                let detail =
+                  match member "message" json |> to_string_option with
+                  | Some m when not (String.is_empty m) ->
+                      Printf.sprintf "gemini %s: %s" other m
+                  | _ -> Printf.sprintf "gemini %s" other
+                in
+                [ Types.Stream_event.Error detail ]
+            | None -> [])
+        | Some "error" ->
+            let msg =
+              member "message" json |> to_string_option
+              |> Option.value ~default:"unknown gemini error"
+            in
+            [ Types.Stream_event.Error msg ]
+        | _ -> [])
+  with
+  | Yojson.Json_error _ -> []
+  | Yojson.Safe.Util.Type_error _ -> []
 
 let auto_model ~complexity =
   match complexity with

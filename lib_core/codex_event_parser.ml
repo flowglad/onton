@@ -9,78 +9,84 @@ open Base
 
 let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
     =
-  match Yojson.Safe.from_string line with
-  | json -> (
-      let open Yojson.Safe.Util in
-      let typ = member "type" json |> to_string_option in
-      match typ with
-      | Some "item.completed" -> (
-          let item = member "item" json in
-          let item_type = member "type" item |> to_string_option in
-          match item_type with
-          | Some "agent_message" ->
-              let text =
-                match member "text" item |> to_string_option with
-                | Some t -> t
-                | None ->
-                    let parts =
-                      match member "content" item with
-                      | `List l ->
-                          List.filter_map l ~f:(fun block ->
-                              match member "type" block |> to_string_option with
-                              | Some "output_text" ->
-                                  member "text" block |> to_string_option
-                              | _ -> None)
-                      | _ -> []
+  try
+    match Yojson.Safe.from_string line with
+    | json -> (
+        let open Yojson.Safe.Util in
+        let typ = member "type" json |> to_string_option in
+        match typ with
+        | Some "item.completed" -> (
+            let item = member "item" json in
+            let item_type = member "type" item |> to_string_option in
+            match item_type with
+            | Some "agent_message" ->
+                let text =
+                  match member "text" item |> to_string_option with
+                  | Some t -> t
+                  | None ->
+                      let parts =
+                        match member "content" item with
+                        | `List l ->
+                            List.filter_map l ~f:(fun block ->
+                                match
+                                  member "type" block |> to_string_option
+                                with
+                                | Some "output_text" ->
+                                    member "text" block |> to_string_option
+                                | _ -> None)
+                        | _ -> []
+                      in
+                      String.concat ~sep:"" parts
+                in
+                let events =
+                  if String.is_empty text then []
+                  else [ Types.Stream_event.Text_delta text ]
+                in
+                (events, cost_state)
+            | Some "command_execution" -> ([], cost_state)
+            | _ -> ([], cost_state))
+        | Some "item.started" -> (
+            let item = member "item" json in
+            let item_type = member "type" item |> to_string_option in
+            match item_type with
+            | Some "command_execution" -> (
+                match member "command" item |> to_string_option with
+                | Some cmd when not (String.is_empty cmd) ->
+                    let input =
+                      Yojson.Safe.to_string
+                        (`Assoc [ ("command", `String cmd) ])
                     in
-                    String.concat ~sep:"" parts
-              in
-              let events =
-                if String.is_empty text then []
-                else [ Types.Stream_event.Text_delta text ]
-              in
-              (events, cost_state)
-          | Some "command_execution" -> ([], cost_state)
-          | _ -> ([], cost_state))
-      | Some "item.started" -> (
-          let item = member "item" json in
-          let item_type = member "type" item |> to_string_option in
-          match item_type with
-          | Some "command_execution" -> (
-              match member "command" item |> to_string_option with
-              | Some cmd when not (String.is_empty cmd) ->
-                  let input =
-                    Yojson.Safe.to_string (`Assoc [ ("command", `String cmd) ])
-                  in
-                  ( [
-                      Types.Stream_event.Tool_use
-                        { name = "Bash"; input; status = None };
-                    ],
-                    cost_state )
-              | _ -> ([], cost_state))
-          | _ -> ([], cost_state))
-      | Some "thread.started" -> (
-          match member "thread_id" json |> to_string_option with
-          | Some id when not (String.is_empty id) ->
-              ( [ Types.Stream_event.Session_init { session_id = id } ],
-                cost_state )
-          | _ -> ([], cost_state))
-      | Some "turn.started" -> ([ Types.Stream_event.Turn_started ], cost_state)
-      | Some "turn.completed" ->
-          let { Codex_cost.events; state } =
-            Codex_cost.on_turn_completed ~model ~budget_cap_nano_usd
-              ~state:cost_state json
-          in
-          (events, state)
-      | Some "error" ->
-          let msg =
-            member "message" json |> to_string_option
-            |> Option.value ~default:"unknown codex error"
-          in
-          ([ Types.Stream_event.Error msg ], cost_state)
-      | _ -> ([], cost_state))
-  | exception Yojson.Json_error _ -> ([], cost_state)
-  | exception Yojson.Safe.Util.Type_error _ -> ([], cost_state)
+                    ( [
+                        Types.Stream_event.Tool_use
+                          { name = "Bash"; input; status = None };
+                      ],
+                      cost_state )
+                | _ -> ([], cost_state))
+            | _ -> ([], cost_state))
+        | Some "thread.started" -> (
+            match member "thread_id" json |> to_string_option with
+            | Some id when not (String.is_empty id) ->
+                ( [ Types.Stream_event.Session_init { session_id = id } ],
+                  cost_state )
+            | _ -> ([], cost_state))
+        | Some "turn.started" ->
+            ([ Types.Stream_event.Turn_started ], cost_state)
+        | Some "turn.completed" ->
+            let { Codex_cost.events; state } =
+              Codex_cost.on_turn_completed ~model ~budget_cap_nano_usd
+                ~state:cost_state json
+            in
+            (events, state)
+        | Some "error" ->
+            let msg =
+              member "message" json |> to_string_option
+              |> Option.value ~default:"unknown codex error"
+            in
+            ([ Types.Stream_event.Error msg ], cost_state)
+        | _ -> ([], cost_state))
+  with
+  | Yojson.Json_error _ -> ([], cost_state)
+  | Yojson.Safe.Util.Type_error _ -> ([], cost_state)
 
 let build_args ~model ~cwd_path ~prompt ~resume_session =
   let model_args =
