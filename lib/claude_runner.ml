@@ -584,6 +584,7 @@ let%test "prepare_minted_session_id errors when flag is on and path missing" =
 
 let%test
     "build_stream_args emits --max-budget-usd when ONTON_BUDGET_CAP_USD set" =
+  let previous = Sys.getenv "ONTON_BUDGET_CAP_USD" in
   Unix.putenv "ONTON_BUDGET_CAP_USD" "10";
   Exn.protect
     ~f:(fun () ->
@@ -608,9 +609,13 @@ let%test
           "--max-budget-usd";
           "10";
         ])
-    ~finally:(fun () -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
+    ~finally:(fun () ->
+      match previous with
+      | Some value -> Unix.putenv "ONTON_BUDGET_CAP_USD" value
+      | None -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
 
 let%test "budget_cap_args omits flag and warns on invalid cap" =
+  let previous = Sys.getenv "ONTON_BUDGET_CAP_USD" in
   Unix.putenv "ONTON_BUDGET_CAP_USD" "not-a-number";
   let warnings = ref [] in
   Exn.protect
@@ -624,7 +629,10 @@ let%test "budget_cap_args omits flag and warns on invalid cap" =
              "warning: ignoring invalid ONTON_BUDGET_CAP_USD=\"not-a-number\"; \
               expected a positive numeric USD cap";
            ])
-    ~finally:(fun () -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
+    ~finally:(fun () ->
+      match previous with
+      | Some value -> Unix.putenv "ONTON_BUDGET_CAP_USD" value
+      | None -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
