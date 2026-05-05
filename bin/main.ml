@@ -2056,14 +2056,14 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                             .Session_worktree_missing);
                                       `Failed
                                   | Some _wt_path ->
-                                      let claude_md =
+                                      let agents_md =
                                         read_optional_file
                                           (Stdlib.Filename.concat _wt_path
-                                             "CLAUDE.md")
+                                             "AGENTS.md")
                                       in
                                       let prompt =
                                         Prompt.render_patch_prompt ~project_name
-                                          ?claude_md
+                                          ?agents_md
                                           ?pr_number:agent.Patch_agent.pr_number
                                           patch gameplan
                                           ~base_branch:
