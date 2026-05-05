@@ -95,8 +95,13 @@ let optional_list_section ~header items =
   | [] -> ""
   | _ -> optional_section ~header (format_list items)
 
-let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
-    (gameplan : Gameplan.t) ~(base_branch : string) =
+let agents_md_section = function
+  | Some content when not (String.is_empty (String.strip content)) ->
+      "## Project Conventions (AGENTS.md)\n\n" ^ String.rstrip content ^ "\n\n"
+  | Some _ | None -> ""
+
+let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
+    (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -172,6 +177,7 @@ Continue implementing until all tests pass.|}
       ("spec", patch.Patch.spec);
       ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
       ("files", format_list patch.Patch.files);
+      ("claude_md_section", agents_md_section agents_md);
       ( "final_state_spec_section",
         optional_section ~header:"Final State Specification (Non-negotiable)"
           gameplan.Gameplan.final_state_spec );
@@ -242,7 +248,7 @@ Continue implementing until all tests pass.|}
       substitute_variables
         {|# [{{project_name}}]
 
-## Problem Statement
+{{claude_md_section}}## Problem Statement
 {{problem_statement}}
 
 ## Solution Summary
@@ -985,16 +991,14 @@ let%test "patch prompt includes title and deps" =
   && String.is_substring result ~substring:"Patch 1: Core types"
   && String.is_substring result ~substring:"## Patch 5: Prompt renderer"
 
+let prompt_prefix_through_patch_heading prompt =
+  let marker = "## Patch " in
+  let all = String.substr_index_all prompt ~pattern:marker ~may_overlap:false in
+  match List.last all with
+  | None -> None
+  | Some idx -> Some (String.prefix prompt (idx + String.length marker))
+
 let%test "patch prompt static prefix is byte-identical across patches" =
-  let prompt_prefix_through_patch_heading prompt =
-    let marker = "## Patch " in
-    let all =
-      String.substr_index_all prompt ~pattern:marker ~may_overlap:false
-    in
-    match List.last all with
-    | None -> None
-    | Some idx -> Some (String.prefix prompt (idx + String.length marker))
-  in
   let patch_1 : Patch.t =
     Patch.
       {
@@ -1064,6 +1068,94 @@ let%test "patch prompt static prefix is byte-identical across patches" =
   with
   | Some prefix_1, Some prefix_2 -> String.equal prefix_1 prefix_2
   | _ -> false
+
+let%test "agents_md content appears in static prefix when Some" =
+  let patch : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "7";
+        title = "Bare Claude";
+        description = "Inject AGENTS.md into prompt prefix.";
+        branch = Branch.of_string "headless-cache-tuning/patch-7";
+        dependencies = [];
+        spec = "";
+        acceptance_criteria = [];
+        files = [];
+        classification = "";
+        changes = [];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+      }
+  in
+  let gameplan : Gameplan.t =
+    Gameplan.
+      {
+        project_name = "onton";
+        problem_statement = "Prompt cache hit rate is low.";
+        solution_summary = "Keep shared content in a stable prefix.";
+        final_state_spec = "";
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+        open_questions = [];
+        patches = [ patch ];
+      }
+  in
+  let prompt =
+    render_patch_prompt ~project_name:"onton"
+      ~agents_md:"Follow AGENTS.md.\nNever use *_exn." patch gameplan
+      ~base_branch:"main"
+  in
+  match prompt_prefix_through_patch_heading prompt with
+  | None -> false
+  | Some prefix ->
+      String.is_substring prefix ~substring:"## Project Conventions (AGENTS.md)"
+      && String.is_substring prefix ~substring:"Never use *_exn."
+
+let%test "agents_md section is omitted when None" =
+  let patch : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "7";
+        title = "Bare Claude";
+        description = "Inject AGENTS.md into prompt prefix.";
+        branch = Branch.of_string "headless-cache-tuning/patch-7";
+        dependencies = [];
+        spec = "";
+        acceptance_criteria = [];
+        files = [];
+        classification = "";
+        changes = [];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+      }
+  in
+  let gameplan : Gameplan.t =
+    Gameplan.
+      {
+        project_name = "onton";
+        problem_statement = "Prompt cache hit rate is low.";
+        solution_summary = "Keep shared content in a stable prefix.";
+        final_state_spec = "";
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+        open_questions = [];
+        patches = [ patch ];
+      }
+  in
+  let prompt =
+    render_patch_prompt ~project_name:"onton" patch gameplan ~base_branch:"main"
+  in
+  not
+    (String.is_substring prompt ~substring:"## Project Conventions (AGENTS.md)")
+
+let%test "agents_md section normalizes trailing newline spacing" =
+  String.equal
+    (agents_md_section (Some "Rule one.\n"))
+    "## Project Conventions (AGENTS.md)\n\nRule one.\n\n"
 
 let%test "substitute_variables replaces placeholders" =
   let result =

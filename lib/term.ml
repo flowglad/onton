@@ -396,6 +396,7 @@ module Raw = struct
     ref None
 
   let _saved_winch_handler : Stdlib.Sys.signal_behavior option ref = ref None
+  let sigwinch = Stdlib.Sys.sigwinch
 
   (** Flag set by the SIGCONT handler to request an immediate TUI redraw. The
       TUI render loop should check and clear this each iteration. *)
@@ -464,7 +465,7 @@ module Raw = struct
     in
     _saved_handlers := Some (prev_tstp, prev_cont);
     let prev_winch =
-      Stdlib.Sys.signal Stdlib.Sys.sigwinch
+      Stdlib.Sys.signal sigwinch
         (Stdlib.Sys.Signal_handle
            (fun _signum ->
              invalidate_size_cache ();
@@ -483,8 +484,7 @@ module Raw = struct
     _saved_handlers := None;
     (match !_saved_winch_handler with
     | None -> ()
-    | Some prev_winch ->
-        ignore (Stdlib.Sys.signal Stdlib.Sys.sigwinch prev_winch));
+    | Some prev_winch -> ignore (Stdlib.Sys.signal sigwinch prev_winch));
     _saved_winch_handler := None;
     match Atomic.exchange _saved_state None with
     | Some state -> leave state

@@ -486,21 +486,19 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
                      (Printexc.to_string exn))))
     decisions
 
-(** Read an artifact file. Returns [Some contents] if the file exists and is
-    readable, [None] otherwise. *)
-let read_artifact_file path =
+let read_optional_file path =
   try
     if Stdlib.Sys.file_exists path then
-      let ic = Stdlib.open_in path in
+      let ic = Stdlib.In_channel.open_text path in
       Stdlib.Fun.protect
-        ~finally:(fun () -> Stdlib.close_in_noerr ic)
-        (fun () ->
-          let len = Stdlib.in_channel_length ic in
-          let s = Bytes.create len in
-          Stdlib.really_input ic s 0 len;
-          Some (Bytes.to_string s))
+        ~finally:(fun () -> Stdlib.In_channel.close ic)
+        (fun () -> Some (Stdlib.In_channel.input_all ic))
     else None
   with _ -> None
+
+(** Read an artifact file. Returns [Some contents] if the file exists and is
+    readable, [None] otherwise. *)
+let read_artifact_file = read_optional_file
 
 (** Apply the agent-authored notes artifact to the PR. Composes the final body
     as: gameplan description + specs + Implementation Notes (from artifact).
@@ -2046,8 +2044,14 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                             .Session_worktree_missing);
                                       `Failed
                                   | Some _wt_path ->
+                                      let agents_md =
+                                        read_optional_file
+                                          (Stdlib.Filename.concat _wt_path
+                                             "AGENTS.md")
+                                      in
                                       let prompt =
                                         Prompt.render_patch_prompt ~project_name
+                                          ?agents_md
                                           ?pr_number:agent.Patch_agent.pr_number
                                           patch gameplan
                                           ~base_branch:
