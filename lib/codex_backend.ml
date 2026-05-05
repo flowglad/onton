@@ -1,36 +1,12 @@
 open Base
 
-type cost_state = { cumulative_nano_usd : int64 }
+(* Cost-tracking decision logic lives in [Codex_cost]; this file is the
+   effectful handler — JSON-line decoder + process driver — that threads its
+   state through the stream and decides on per-event basis what to emit. *)
 
-let initial_cost_state = { cumulative_nano_usd = 0L }
+type cost_state = Codex_cost.cost_state
 
-type model_pricing = {
-  input_nano_usd_per_1k : int64;
-  output_nano_usd_per_1k : int64;
-}
-
-let model_pricing = function
-  | Some "gpt-5.4-mini" ->
-      Some
-        {
-          input_nano_usd_per_1k = 750_000L;
-          output_nano_usd_per_1k = 4_500_000L;
-        }
-  | Some "gpt-5.4" ->
-      Some
-        {
-          input_nano_usd_per_1k = 2_500_000L;
-          output_nano_usd_per_1k = 15_000_000L;
-        }
-  | Some "gpt-5.5" ->
-      Some
-        {
-          input_nano_usd_per_1k = 5_000_000L;
-          output_nano_usd_per_1k = 30_000_000L;
-        }
-  (* Unknown/None model: cost tracking disabled, cap not enforced.
-     Keep this table in sync with [auto_model]. *)
-  | _ -> None
+let initial_cost_state = Codex_cost.initial_cost_state
 
 let budget_cap_nano_usd_from_env () =
   match
@@ -43,56 +19,6 @@ let budget_cap_nano_usd_from_env () =
       | Some cap when Float.(cap > 0.) ->
           Some (Int64.of_float (Float.round_nearest (cap *. 1_000_000_000.0)))
       | Some _ | None -> None)
-
-let usage_member_int json name =
-  let open Yojson.Safe.Util in
-  member name json |> to_int_option |> Option.value ~default:0 |> Int.max 0
-
-let usage_reasoning_tokens usage =
-  let open Yojson.Safe.Util in
-  (* Support the current nested Responses schema
-     ([usage.output_tokens_details.reasoning_tokens]) plus older/alternate
-     flat spellings that have appeared in streamed usage payloads. The
-     [output_tokens_details] field may be absent (or explicitly null) on some
-     turn.completed payloads — guard against that before recursing. *)
-  let from_details =
-    match member "output_tokens_details" usage with
-    | `Assoc _ as details -> member "reasoning_tokens" details |> to_int_option
-    | _ -> None
-  in
-  Option.first_some from_details
-    (member "reasoning_tokens" usage |> to_int_option)
-  |> Option.first_some (member "reasoning_output_tokens" usage |> to_int_option)
-  |> Option.value ~default:0 |> Int.max 0
-
-let cost_nano_usd_for_tokens tokens nano_usd_per_1k =
-  Int64.(of_int tokens * nano_usd_per_1k / 1000L)
-
-let float_usd_of_nano_usd nano_usd = Int64.to_float nano_usd /. 1_000_000_000.0
-
-let completed_turn_cost_nano_usd ~model json =
-  match model_pricing model with
-  | None -> None
-  | Some pricing ->
-      let open Yojson.Safe.Util in
-      let usage = member "usage" json in
-      let input_tokens = usage_member_int usage "input_tokens" in
-      let output_tokens = usage_member_int usage "output_tokens" in
-      let reasoning_tokens = usage_reasoning_tokens usage in
-      let visible_output_tokens =
-        Int.max 0 (output_tokens - reasoning_tokens)
-      in
-      let input_cost =
-        cost_nano_usd_for_tokens input_tokens pricing.input_nano_usd_per_1k
-      in
-      let visible_output_cost =
-        cost_nano_usd_for_tokens visible_output_tokens
-          pricing.output_nano_usd_per_1k
-      in
-      let reasoning_cost =
-        cost_nano_usd_for_tokens reasoning_tokens pricing.output_nano_usd_per_1k
-      in
-      Some Int64.(input_cost + visible_output_cost + reasoning_cost)
 
 let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
     =
@@ -159,35 +85,11 @@ let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
           | _ -> ([], cost_state))
       | Some "turn.started" -> ([ Types.Stream_event.Turn_started ], cost_state)
       | Some "turn.completed" ->
-          let added_cost =
-            completed_turn_cost_nano_usd ~model json |> Option.value ~default:0L
+          let { Codex_cost.events; state } =
+            Codex_cost.on_turn_completed ~model ~budget_cap_nano_usd
+              ~state:cost_state json
           in
-          let cost_state =
-            {
-              cumulative_nano_usd =
-                Int64.(cost_state.cumulative_nano_usd + added_cost);
-            }
-          in
-          let events =
-            match budget_cap_nano_usd with
-            | Some cap when Int64.(cost_state.cumulative_nano_usd > cap) ->
-                [
-                  Types.Stream_event.Error
-                    (Printf.sprintf
-                       "Codex budget cap exceeded: cumulative cost $%.4f > cap \
-                        $%.4f"
-                       (float_usd_of_nano_usd cost_state.cumulative_nano_usd)
-                       (float_usd_of_nano_usd cap));
-                  Types.Stream_event.Final_result
-                    { text = ""; stop_reason = Types.Stop_reason.End_turn };
-                ]
-            | _ ->
-                [
-                  Types.Stream_event.Final_result
-                    { text = ""; stop_reason = Types.Stop_reason.End_turn };
-                ]
-          in
-          (events, cost_state)
+          (events, state)
       | Some "error" ->
           let msg =
             member "message" json |> to_string_option
