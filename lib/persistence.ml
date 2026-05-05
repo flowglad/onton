@@ -689,11 +689,13 @@ let load ~path =
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let record_session_id ~snapshot_path ~patch_id ~session_id =
-  let dir = session_id_dir ~snapshot_path in
-  Project_store.ensure_dir dir;
-  write_file_atomically
-    ~path:(session_id_path ~snapshot_path ~patch_id)
-    ~content:session_id
+  try
+    let dir = session_id_dir ~snapshot_path in
+    Project_store.ensure_dir dir;
+    write_file_atomically
+      ~path:(session_id_path ~snapshot_path ~patch_id)
+      ~content:session_id
+  with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let%test_module "session_id_sidecars" =
   (module struct

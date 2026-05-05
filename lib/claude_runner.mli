@@ -89,4 +89,5 @@ val build_stream_args :
   resume_session:string option ->
   string list
 (** Build the CLI argument list for stream-json output mode. Exposed for
-    testing. *)
+    testing. [minted_session_id] and [resume_session] are mutually exclusive:
+    fresh spawns pass the former, resumes pass the latter. *)

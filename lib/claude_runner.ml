@@ -74,6 +74,12 @@ let build_args ~model ~complexity ~prompt ~resume_session =
 
 let build_stream_args ~model ~complexity ~prompt ~minted_session_id
     ~resume_session =
+  (match (minted_session_id, resume_session) with
+  | Some _, Some _ ->
+      invalid_arg
+        "Claude_runner.build_stream_args: minted_session_id and resume_session \
+         are mutually exclusive"
+  | _ -> ());
   let base = [ "claude" ] in
   let prompt_args =
     [ "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
@@ -534,6 +540,14 @@ let%test "build_stream_args emits --session-id when minted_session_id is Some" =
       "200";
       "--exclude-dynamic-system-prompt-sections";
     ]
+
+let%test "build_stream_args rejects session-id plus resume together" =
+  match
+    build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
+      ~minted_session_id:(Some "minted") ~resume_session:(Some "resume")
+  with
+  | _ -> false
+  | exception Invalid_argument _ -> true
 
 let%test "prepare_minted_session_id errors when flag is on and path missing" =
   let patch_id = Types.Patch_id.of_string "5" in
