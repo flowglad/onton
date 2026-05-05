@@ -100,6 +100,16 @@ type patch_view = {
   automerge_enabled : bool;
   automerge_deadline : float option;
   automerge_failure_count : int;
+  complexity : int option;
+      (** Gameplan-author's complexity tier for this patch (1/2/3), or [None]
+          when the gameplan didn't specify. *)
+  backend : string;
+      (** Backend name (e.g. ["claude"], ["codex"]) routed to for this patch
+          given its complexity, the CLI flags, and the repo config. *)
+  model : string option;
+      (** Concrete model name the patch will run under (auto sentinel already
+          resolved), or [None] when no [--model] flag was supplied and the
+          backend uses its built-in default. *)
 }
 
 (** {2 Frame rendering} *)
@@ -130,6 +140,7 @@ val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->
   activity:activity_entry list ->
+  resolve_routing:(complexity:int option -> Backend_routing.decision) ->
   ?intervention_reasons:(Patch_id.t, string) Map.Poly.t ->
   unit ->
   patch_view list

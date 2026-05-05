@@ -43,6 +43,17 @@ let create ~process_mgr ~clock ~timeout ~setsid_exec =
     cache = Hashtbl.Poly.create ();
   }
 
+let auto_model ~backend ~complexity =
+  match backend with
+  | "claude" -> Claude_runner.auto_model ~complexity
+  | "codex" -> Codex_backend.auto_model ~complexity
+  | "opencode" -> Opencode_backend.auto_model ~complexity
+  | "pi" -> Pi_backend.auto_model ~complexity
+  | "gemini" -> Gemini_backend.auto_model ~complexity
+  | other ->
+      invalid_arg
+        (Printf.sprintf "Backend_registry.auto_model: unknown backend %S" other)
+
 let get t ~backend ~model =
   let key = (backend, model) in
   match Hashtbl.find t.cache key with
