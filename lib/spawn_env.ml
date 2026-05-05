@@ -36,6 +36,7 @@ let merge_env ~base_env ~overrides =
   List.iter overrides ~f:(fun (key, value) ->
       Hashtbl.set merged ~key ~data:value);
   Hashtbl.to_alist merged
+  |> List.sort ~compare:(fun (k1, _) (k2, _) -> String.compare k1 k2)
   |> List.map ~f:(fun (key, value) -> key ^ "=" ^ value)
   |> Array.of_list
 
@@ -49,12 +50,7 @@ let rec remove_tree path =
     else Unix.unlink path
 
 let with_temp_project_dir f =
-  let base = Stdlib.Filename.get_temp_dir_name () in
-  let dir =
-    Stdlib.Filename.concat base
-      (Printf.sprintf "onton-spawn-env-%06x" (Random.bits ()))
-  in
-  Project_store.ensure_dir dir;
+  let dir = Stdlib.Filename.temp_dir "onton-spawn-env-" "" in
   Stdlib.Fun.protect ~finally:(fun () -> remove_tree dir) (fun () -> f dir)
 
 let%test "distinct patch_ids yield distinct config dirs" =
