@@ -91,7 +91,7 @@
 (test
  (name test_worktree_parser)
  (modules test_worktree_parser)
- (libraries onton onton_core qcheck-core qcheck-core.runner)
+ (libraries onton_core qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
