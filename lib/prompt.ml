@@ -987,9 +987,13 @@ let%test "patch prompt includes title and deps" =
 
 let%test "patch prompt static prefix is byte-identical across patches" =
   let prompt_prefix_through_patch_heading prompt =
-    match String.substr_index prompt ~pattern:"## Patch " with
+    let marker = "## Patch " in
+    let all =
+      String.substr_index_all prompt ~pattern:marker ~may_overlap:false
+    in
+    match List.last all with
     | None -> None
-    | Some idx -> Some (String.prefix prompt (idx + String.length "## Patch "))
+    | Some idx -> Some (String.prefix prompt (idx + String.length marker))
   in
   let patch_1 : Patch.t =
     Patch.
@@ -1035,11 +1039,12 @@ let%test "patch prompt static prefix is byte-identical across patches" =
     Gameplan.
       {
         project_name = "onton";
-        problem_statement = "Prompt cache hit rate is low.";
+        problem_statement = "Prompt cache hit rate is low.\n\n## Patch notes";
         solution_summary = "Move shared prompt content into a stable prefix.";
-        final_state_spec = "module HEADLESS_CACHE_TUNING.";
-        current_state_analysis = "Patch-specific text currently appears first.";
-        explicit_opinions = "- Use env vars for flags.";
+        final_state_spec = "module HEADLESS_CACHE_TUNING.\n\n## Patch state.";
+        current_state_analysis =
+          "Patch-specific text currently appears first.\n\n## Patch drift.";
+        explicit_opinions = "- Use env vars for flags.\n- ## Patch fallback.";
         acceptance_criteria = [];
         open_questions = [];
         patches = [ patch_1; patch_2 ];
