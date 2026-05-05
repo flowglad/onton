@@ -34,6 +34,7 @@ val spawn_and_stream :
   clock:_ Eio.Time.clock ->
   timeout:float ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
+  env:string array ->
   setsid_exec:string option ->
   args:string list ->
   process_line:(string -> Types.Stream_event.t list) ->
@@ -55,6 +56,7 @@ val spawn_and_stream :
 type t = {
   name : string;
   run_streaming :
+    project_name:string ->
     cwd:Eio.Fs.dir_ty Eio.Path.t ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->

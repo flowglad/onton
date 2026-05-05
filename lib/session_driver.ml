@@ -354,8 +354,8 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
           let result =
             try
               Ok
-                (backend.Llm_backend.run_streaming ~cwd ~patch_id ~prompt
-                   ~resume_session ~complexity ~on_event)
+                (backend.Llm_backend.run_streaming ~project_name ~cwd ~patch_id
+                   ~prompt ~resume_session ~complexity ~on_event)
             with exn -> Error (Stdlib.Printexc.to_string exn)
           in
           let open Run_classification in
