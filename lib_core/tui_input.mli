@@ -1,6 +1,6 @@
 (** Pure keyboard input → TUI command translation.
 
-    Maps {!Term.Key.t} values to semantic TUI commands. Contains no I/O — the
+    Maps {!Term_key.t} values to semantic TUI commands. Contains no I/O — the
     reading of keys from stdin is the caller's responsibility. *)
 
 type command =
@@ -36,7 +36,7 @@ type input_mode =
 val prompt_prefix : input_mode -> string
 (** Returns the prompt prefix for each mode (e.g. ["PR #: "], ["> "]). *)
 
-val of_key : Term.Key.t -> command
+val of_key : Term_key.t -> command
 (** Translate a key press into a TUI command. *)
 
 val apply_move : count:int -> selected:int -> command -> int

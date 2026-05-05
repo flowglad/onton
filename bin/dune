@@ -1,7 +1,9 @@
 (executable
  (name main)
  (public_name onton)
- (libraries onton onton_core cmdliner eio eio_main re))
+ (libraries onton onton_core cmdliner eio eio_main re)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
 
 (rule
  (target version.ml)

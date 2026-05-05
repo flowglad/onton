@@ -799,7 +799,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
   let last_click_row = ref (-1) in
   let rec loop () =
     sync_input ();
-    match Term.Key.read () with
+    match Term.Key_io.read () with
     | None ->
         (* Transient EOF can happen if a child process (e.g. script/gh)
            briefly interferes with the terminal. Retry a few times before
@@ -1205,7 +1205,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
               | Tui.List_view | Tui.Timeline_view -> loop ())
           | Term.Key.Mouse ev -> (
               match (ev, !view_mode) with
-              | ( Term.Click { button = Term.Left; row; press = true; _ },
+              | ( Term_key.Click { button = Term_key.Left; row; press = true; _ },
                   Tui.List_view ) ->
                   let start = !patches_start_row in
                   let count = !patches_visible_count in
@@ -1235,7 +1235,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                             detail_follow := true))
                     else list_selected := abs_idx);
                   loop ()
-              | ( Term.Click { button = Term.Left; row; press = true; _ },
+              | ( Term_key.Click { button = Term_key.Left; row; press = true; _ },
                   Tui.Detail_view pid ) ->
                   let size = Term.get_size () in
                   let height =
@@ -1246,22 +1246,32 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                       (!detail_scroll, !detail_follow);
                     view_mode := Tui.List_view);
                   loop ()
-              | Term.Scroll { dir; _ }, Tui.List_view ->
+              | Term_key.Scroll { dir; _ }, Tui.List_view ->
                   let count = Base.List.length !sorted_patch_ids in
-                  let delta = match dir with Term.Up -> -1 | Term.Down -> 1 in
+                  let delta =
+                    match dir with Term_key.Up -> -1 | Term_key.Down -> 1
+                  in
                   list_selected :=
                     Base.Int.max (-1)
                       (Base.Int.min (count - 1) (!list_selected + delta));
                   loop ()
-              | Term.Scroll { dir; _ }, Tui.Detail_view _ ->
-                  let delta = match dir with Term.Up -> -3 | Term.Down -> 3 in
+              | Term_key.Scroll { dir; _ }, Tui.Detail_view _ ->
+                  let delta =
+                    match dir with Term_key.Up -> -3 | Term_key.Down -> 3
+                  in
                   detail_scroll := Base.Int.max 0 (!detail_scroll + delta);
                   loop ()
-              | Term.Scroll { dir; _ }, Tui.Timeline_view ->
-                  let delta = match dir with Term.Up -> -3 | Term.Down -> 3 in
+              | Term_key.Scroll { dir; _ }, Tui.Timeline_view ->
+                  let delta =
+                    match dir with Term_key.Up -> -3 | Term_key.Down -> 3
+                  in
                   timeline_scroll := Base.Int.max 0 (!timeline_scroll + delta);
                   loop ()
-              | ( Term.Click { button = Term.Left | Term.Middle | Term.Right; _ },
+              | ( Term_key.Click
+                    {
+                      button = Term_key.Left | Term_key.Middle | Term_key.Right;
+                      _;
+                    },
                   (Tui.List_view | Tui.Detail_view _ | Tui.Timeline_view) ) ->
                   loop ())
           | Term.Key.Char '*' when Tui.equal_view_mode !view_mode Tui.List_view
