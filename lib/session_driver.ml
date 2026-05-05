@@ -487,6 +487,12 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
           | Worktree.Push_rejected ->
               log_event runtime ~patch_id
                 "runner: push rejected after session (lease)"
+          | Worktree.Push_worktree_missing ->
+              log_event runtime ~patch_id
+                (Printf.sprintf
+                   "runner: worktree disappeared mid-session (%s) — local \
+                    commits are lost; will reconstruct on next attempt"
+                   worktree_path)
           | Worktree.Push_error msg ->
               log_event runtime ~patch_id
                 (Printf.sprintf "runner: push error after session: %s" msg));

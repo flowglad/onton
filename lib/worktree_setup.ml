@@ -38,7 +38,29 @@ let ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root ~project_name
     let br =
       match branch with Some b -> b | None -> agent.Patch_agent.branch
     in
-    match Worktree.find_for_branch ~process_mgr ~repo_root br with
+    (* The previous worktree directory is gone — prune git's registry first so
+       a stale entry (deleted dir but still listed by [git worktree list])
+       does not steer [find_for_branch] back to the same dead path and
+       prevent [Worktree.create] from re-registering it. *)
+    Worktree.prune_admin ~process_mgr ~repo_root;
+    let found = Worktree.find_for_branch ~process_mgr ~repo_root br in
+    (* Treat a hit whose directory is gone as a miss — defends against races
+       (another process re-registering between our prune and our list) or
+       git versions that leave half-pruned state. We log the discard so the
+       user can see why we are recreating despite git's bookkeeping. *)
+    let live_existing =
+      match found with
+      | Some p when Stdlib.Sys.file_exists p -> Some p
+      | Some stale ->
+          log_event runtime ~patch_id
+            (Printf.sprintf
+               "Ignoring stale worktree registration (git lists %s but \
+                directory is gone) — will recreate"
+               stale);
+          None
+      | None -> None
+    in
+    match live_existing with
     | Some existing ->
         log_event runtime ~patch_id
           (Printf.sprintf "Found existing worktree for branch at %s" existing);

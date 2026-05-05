@@ -651,6 +651,14 @@ type push_result =
   | Push_up_to_date
   | Push_no_commits
   | Push_rejected
+  | Push_worktree_missing
+      (** The worktree directory was deleted out from under us between session
+          start and push. Distinguished from [Push_error] so the caller can
+          route to the [Session_worktree_missing] cleanup path (which clears
+          inflight state for a clean retry that will rebuild the worktree via
+          [Worktree_setup.ensure_worktree]) rather than the
+          [Session_push_failed] retry-push path (which assumes the worktree is
+          intact and the commits exist locally). *)
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
@@ -714,25 +722,33 @@ let commits_ahead_of_base ~process_mgr ~path ~base =
   parse_commit_count ~code ~stdout
 
 let force_push_with_lease ~process_mgr ~path ~branch ~base =
-  let count = commits_ahead_of_base ~process_mgr ~path ~base in
-  match push_gate_from_count count with
-  | Skip_no_commits -> Push_no_commits
-  | Proceed ->
-      let branch_str = Types.Branch.to_string branch in
-      let code, stdout, stderr =
-        run_git_exit_code ~process_mgr
-          [
-            "git";
-            "-C";
-            path;
-            "push";
-            "--porcelain";
-            "--force-with-lease";
-            "origin";
-            branch_str;
-          ]
-      in
-      classify_push_result ~code ~stdout ~stderr
+  (* If the worktree directory is gone (deleted out from under us mid-session),
+     short-circuit before spawning git so the caller can route to the
+     worktree-missing cleanup path. Without this, every git invocation below
+     fails with "fatal: cannot change to '<path>': No such file or directory"
+     and surfaces as a generic [Push_error] that triggers retry-push instead
+     of reconstruction. *)
+  if not (Stdlib.Sys.file_exists path) then Push_worktree_missing
+  else
+    let count = commits_ahead_of_base ~process_mgr ~path ~base in
+    match push_gate_from_count count with
+    | Skip_no_commits -> Push_no_commits
+    | Proceed ->
+        let branch_str = Types.Branch.to_string branch in
+        let code, stdout, stderr =
+          run_git_exit_code ~process_mgr
+            [
+              "git";
+              "-C";
+              path;
+              "push";
+              "--porcelain";
+              "--force-with-lease";
+              "origin";
+              branch_str;
+            ]
+        in
+        classify_push_result ~code ~stdout ~stderr
 
 let rebase_in_progress ~process_mgr ~path =
   let code, stdout, _ =
@@ -842,6 +858,18 @@ let find_for_branch ~process_mgr ~repo_root branch =
   let pairs = try list_with_branches ~process_mgr ~repo_root with _ -> [] in
   List.find_map pairs ~f:(fun (path, b) ->
       if Types.Branch.equal b branch then Some path else None)
+
+(** Drop git's worktree-registry entries for directories that no longer exist on
+    disk. Useful before [find_for_branch] / [create] when a previous worktree
+    directory was deleted out-of-band ([rm -rf] or a leftover failed checkout):
+    without this, [git worktree list] still reports the stale entry and
+    [git worktree add] refuses to recreate the same path. *)
+let prune_admin ~process_mgr ~repo_root =
+  let _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; repo_root; "worktree"; "prune" ]
+  in
+  ()
 
 let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
