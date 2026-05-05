@@ -2057,15 +2057,9 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       `Failed
                                   | Some _wt_path ->
                                       let claude_md =
-                                        match
-                                          Stdlib.Sys.getenv_opt
-                                            "ONTON_BARE_CLAUDE"
-                                        with
-                                        | Some "1" ->
-                                            read_optional_file
-                                              (Stdlib.Filename.concat _wt_path
-                                                 "CLAUDE.md")
-                                        | _ -> None
+                                        read_optional_file
+                                          (Stdlib.Filename.concat _wt_path
+                                             "CLAUDE.md")
                                       in
                                       let prompt =
                                         Prompt.render_patch_prompt ~project_name

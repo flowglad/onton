@@ -147,19 +147,6 @@ let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
 let prepare_minted_session_id =
   prepare_minted_session_id_with_env ~getenv_opt:Stdlib.Sys.getenv_opt
 
-let with_onton_bare_claude value f =
-  let original = Stdlib.Sys.getenv_opt "ONTON_BARE_CLAUDE" in
-  let restore () =
-    match original with
-    | Some v -> Unix.putenv "ONTON_BARE_CLAUDE" v
-    | None -> Unix.putenv "ONTON_BARE_CLAUDE" ""
-  in
-  Stdlib.Fun.protect ~finally:restore (fun () ->
-      (match value with
-      | Some v -> Unix.putenv "ONTON_BARE_CLAUDE" v
-      | None -> Unix.putenv "ONTON_BARE_CLAUDE" "");
-      f ())
-
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
 let find_json_start s =
@@ -435,6 +422,7 @@ let%test "build_args fresh (no resume, with model)" =
       "--max-turns";
       "100";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_args fresh (no resume, no model)" =
@@ -454,6 +442,7 @@ let%test "build_args fresh (no resume, no model)" =
       "--max-turns";
       "50";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_args with resume session" =
@@ -477,6 +466,7 @@ let%test "build_args with resume session" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
@@ -506,6 +496,7 @@ let%test "build_stream_args fresh (no resume, with model)" =
       "--max-turns";
       "100";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args fresh (no resume, no model)" =
@@ -526,6 +517,7 @@ let%test "build_stream_args fresh (no resume, no model)" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args with resume session" =
@@ -551,6 +543,7 @@ let%test "build_stream_args with resume session" =
       "--max-turns";
       "50";
       "--exclude-dynamic-system-prompt-sections";
+      "--bare";
     ]
 
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
