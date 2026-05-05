@@ -169,8 +169,8 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
 |}
         vars)
 
-let render_patch_layer ~(project_name : string) (patch : Patch.t)
-    (_gameplan : Gameplan.t) ?pr_number ~(base_branch : string) () : string =
+let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
+    ~(base_branch : string) () : string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -323,12 +323,10 @@ let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
       ^ (match agents_md with
         | Some content -> agents_md_section (Some content)
         | None -> "")
-      ^ render_patch_layer ~project_name p g ?pr_number ~base_branch:b ()
+      ^ render_patch_layer ~project_name p ?pr_number ~base_branch:b ()
   | _ -> ""
 
-let render_turn_layer_start ~(project_name : string)
-    ~(pr_number : Pr_number.t option) : string =
-  let _ = pr_number in
+let render_turn_layer_start ~(project_name : string) : string =
   let vars = [ ("project_name", project_name) ] in
   render_with_override ~project_name ~name:"turn_start" ~vars
     ~default:(fun () -> "Continue implementing until all tests pass.\n")
@@ -337,8 +335,8 @@ let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
     (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
   render_gameplan_layer ~project_name gameplan
   ^ agents_md_section agents_md
-  ^ render_patch_layer ~project_name patch gameplan ?pr_number ~base_branch ()
-  ^ render_turn_layer_start ~project_name ~pr_number
+  ^ render_patch_layer ~project_name patch ?pr_number ~base_branch ()
+  ^ render_turn_layer_start ~project_name
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
   let gp =
@@ -1295,7 +1293,7 @@ let%test
   let pr_number = Pr_number.of_int 7 in
   let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
   let p_layer =
-    render_patch_layer ~project_name:"onton" patch_a gameplan ~pr_number
+    render_patch_layer ~project_name:"onton" patch_a ~pr_number
       ~base_branch:"main" ()
   in
   let prefix = g_layer ^ p_layer in

@@ -36,7 +36,6 @@ val render_gameplan_layer : project_name:string -> Gameplan.t -> string
 val render_patch_layer :
   project_name:string ->
   Patch.t ->
-  Gameplan.t ->
   ?pr_number:Pr_number.t ->
   base_branch:string ->
   unit ->
@@ -46,8 +45,7 @@ val render_patch_layer :
     Pantagruel guide), acceptance criteria, git identifiers, and PR
     instructions. Ends with a trailing blank line. *)
 
-val render_turn_layer_start :
-  project_name:string -> pr_number:Pr_number.t option -> string
+val render_turn_layer_start : project_name:string -> string
 
 val render_turn_layer_review :
   project_name:string ->
