@@ -241,7 +241,7 @@ Continue implementing until all tests pass.|}
   in
   render_with_override ~project_name ~name:"patch" ~vars ~default:(fun () ->
       substitute_variables
-        {|# [{{project_name}}] Patch {{patch_id}}{{classification_note}}: {{title}}
+        {|# [{{project_name}}]
 
 ## Problem Statement
 {{problem_statement}}
@@ -249,20 +249,23 @@ Continue implementing until all tests pass.|}
 ## Solution Summary
 {{solution_summary}}
 {{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
+## Patches in Gameplan
+{{patches_list}}
+
+## Patch {{patch_id}}{{classification_note}}: {{title}}
+
 ## Dependencies
 {{dependencies}}
 
 ## Your Task
 
-{{description}}
+{{base_branch_note}}{{description}}
 {{changes_section}}{{files_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
 - PR: {{pr_str}}
-{{base_branch_note}}{{pr_instructions}}
-## Patches in Gameplan
-{{patches_list}}|}
+{{pr_instructions}}|}
         vars)
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
@@ -978,11 +981,85 @@ let%test "patch prompt includes title and deps" =
     render_patch_prompt ~project_name:"onton-port" patch gameplan
       ~base_branch:"onton-port/patch-1"
   in
-  String.is_substring result
-    ~substring:"# [onton-port] Patch 5: Prompt renderer"
+  String.is_substring result ~substring:"# [onton-port]\n"
   && String.is_substring result ~substring:"Patches 1"
   && String.is_substring result ~substring:"Patch 1: Core types"
-  && String.is_substring result ~substring:"Patch 5: Prompt renderer"
+  && String.is_substring result ~substring:"## Patch 5: Prompt renderer"
+
+let prompt_prefix_through_patch_heading prompt =
+  match String.substr_index prompt ~pattern:"## Patch " with
+  | None -> None
+  | Some idx -> Some (String.prefix prompt (idx + String.length "## Patch "))
+
+let%test "patch prompt static prefix is byte-identical across patches" =
+  let patch_1 : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "1";
+        title = "Restructure prompt";
+        description = "Make shared content static.";
+        branch = Branch.of_string "headless-cache-tuning/patch-1";
+        dependencies = [];
+        spec = "module P1.";
+        acceptance_criteria = [ "Prefix is stable." ];
+        files = [ "lib/prompt.ml" ];
+        classification = "INFRA";
+        changes = [ "Move shared sections above patch heading." ];
+        test_stubs_introduced = [];
+        test_stubs_implemented =
+          [
+            "Prompt > static prefix is byte-identical across patches in one \
+             gameplan";
+          ];
+        complexity = None;
+      }
+  in
+  let patch_2 : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "2";
+        title = "Add Claude flags";
+        description = "Add spawn args.";
+        branch = Branch.of_string "headless-cache-tuning/patch-2";
+        dependencies = [ Patch_id.of_string "1" ];
+        spec = "module P2.";
+        acceptance_criteria = [ "Claude gets the new flag." ];
+        files = [ "lib/claude_runner.ml" ];
+        classification = "INFRA";
+        changes = [ "Emit exclude-dynamic-system-prompt-sections." ];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+      }
+  in
+  let gameplan : Gameplan.t =
+    Gameplan.
+      {
+        project_name = "onton";
+        problem_statement = "Prompt cache hit rate is low.";
+        solution_summary = "Move shared prompt content into a stable prefix.";
+        final_state_spec = "module HEADLESS_CACHE_TUNING.";
+        current_state_analysis = "Patch-specific text currently appears first.";
+        explicit_opinions = "- Use env vars for flags.";
+        acceptance_criteria = [];
+        open_questions = [];
+        patches = [ patch_1; patch_2 ];
+      }
+  in
+  let prompt_1 =
+    render_patch_prompt ~project_name:"onton" patch_1 gameplan
+      ~base_branch:"main"
+  in
+  let prompt_2 =
+    render_patch_prompt ~project_name:"onton" patch_2 gameplan
+      ~base_branch:"headless-cache-tuning/patch-1"
+  in
+  match
+    ( prompt_prefix_through_patch_heading prompt_1,
+      prompt_prefix_through_patch_heading prompt_2 )
+  with
+  | Some prefix_1, Some prefix_2 -> String.equal prefix_1 prefix_2
+  | _ -> false
 
 let%test "substitute_variables replaces placeholders" =
   let result =
