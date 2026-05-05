@@ -57,6 +57,27 @@ let max_turns_for ~complexity =
   match complexity with Some 1 -> 50 | Some 2 -> 100 | _ -> 200
 
 let build_args ~model ~complexity ~prompt ~resume_session =
+let warned_invalid_budget_cap = ref false
+
+let budget_cap_args () =
+  match
+    Sys.getenv "ONTON_BUDGET_CAP_USD"
+    |> Option.map ~f:(fun value -> String.strip value)
+  with
+  | None | Some "" -> []
+  | Some raw -> (
+      match Float.of_string_opt raw with
+      | Some cap when Float.(cap > 0.) -> [ "--max-budget-usd"; raw ]
+      | Some _ | None ->
+          if not !warned_invalid_budget_cap then (
+            warned_invalid_budget_cap := true;
+            Stdio.eprintf
+              "warning: ignoring invalid ONTON_BUDGET_CAP_USD=%S; expected a \
+               positive numeric USD cap\n"
+              raw);
+          [])
+
+let build_args ~model ~complexity ~prompt ~resume_session =
   let base = [ "claude" ] in
   let prompt_args = [ "-p"; prompt; "--output-format"; "text" ] in
   let session_args =
@@ -69,6 +90,7 @@ let build_args ~model ~complexity ~prompt ~resume_session =
       Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
+    @ budget_cap_args ()
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
@@ -99,6 +121,7 @@ let build_stream_args ~model ~complexity ~prompt ~minted_session_id
       Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
+    @ budget_cap_args ()
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
@@ -562,6 +585,34 @@ let%test "prepare_minted_session_id errors when flag is on and path missing" =
   with
   | Error _ -> true
   | Ok _ -> false
+
+let%test
+    "build_stream_args emits --max-budget-usd when ONTON_BUDGET_CAP_USD set" =
+  Unix.putenv "ONTON_BUDGET_CAP_USD" "10";
+  Exn.protect
+    ~f:(fun () ->
+      let args =
+        build_stream_args ~model:(Some "sonnet") ~complexity:None
+          ~prompt:"do stuff" ~minted_session_id:None ~resume_session:None
+      in
+      List.equal String.equal args
+        [
+          "claude";
+          "--model";
+          "sonnet";
+          "-p";
+          "do stuff";
+          "--output-format";
+          "stream-json";
+          "--verbose";
+          "--dangerously-skip-permissions";
+          "--max-turns";
+          "200";
+          "--exclude-dynamic-system-prompt-sections";
+          "--max-budget-usd";
+          "10";
+        ])
+    ~finally:(fun () -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"

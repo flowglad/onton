@@ -28,6 +28,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
   let stderr_max_size = 1024 * 1024 in
   let stdout_capture_max_size = 64 * 1024 in
   let saw_final_result_ref = ref false in
+  let saw_terminal_event_ref = ref false in
   let got_events_ref = ref false in
   let stdout_capture = Buffer.create 4096 in
   let stdout_capture_truncated = ref false in
@@ -99,12 +100,24 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
                     | Types.Stream_event.Session_init _ ->
                         false)
                 in
-                if saw_final then saw_final_result_ref := true
+                let saw_terminal =
+                  saw_final
+                  || List.exists events ~f:(function
+                    | Types.Stream_event.Error _ -> true
+                    | Types.Stream_event.Final_result _
+                    | Types.Stream_event.Turn_started
+                    | Types.Stream_event.Text_delta _
+                    | Types.Stream_event.Tool_use _
+                    | Types.Stream_event.Session_init _ ->
+                        false)
+                in
+                if saw_final then saw_final_result_ref := true;
+                if saw_terminal then saw_terminal_event_ref := true
                 else read_lines ()
             | exception End_of_file -> ()
           in
           read_lines ();
-          if !saw_final_result_ref then (
+          if !saw_terminal_event_ref then (
             (* Tear down immediately: the model's turn is over. Descendants
                of the child (e.g. Bash-tool zsh processes) may keep the
                inherited stderr write-end open indefinitely, which would
@@ -135,7 +148,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
           | End_of_file -> ()
           | Eio.Exn.Io _ -> ());
       let status =
-        if !saw_final_result_ref then
+        if !saw_terminal_event_ref then
           (* SIGTERM was just delivered; cap the await so a child that
              ignores it doesn't stall us, then escalate to SIGKILL. *)
           match
