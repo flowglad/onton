@@ -2057,9 +2057,15 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       `Failed
                                   | Some _wt_path ->
                                       let agents_md =
-                                        read_optional_file
-                                          (Stdlib.Filename.concat _wt_path
-                                             "AGENTS.md")
+                                        match
+                                          Stdlib.Sys.getenv_opt
+                                            "ONTON_BARE_CLAUDE"
+                                        with
+                                        | Some "1" ->
+                                            read_optional_file
+                                              (Stdlib.Filename.concat _wt_path
+                                                 "AGENTS.md")
+                                        | _ -> None
                                       in
                                       let prompt =
                                         Prompt.render_patch_prompt ~project_name

@@ -422,7 +422,6 @@ let%test "build_args fresh (no resume, with model)" =
       "--max-turns";
       "100";
       "--exclude-dynamic-system-prompt-sections";
-      "--bare";
     ]
 
 let%test "build_args fresh (no resume, no model)" =
@@ -442,7 +441,6 @@ let%test "build_args fresh (no resume, no model)" =
       "--max-turns";
       "50";
       "--exclude-dynamic-system-prompt-sections";
-      "--bare";
     ]
 
 let%test "build_args with resume session" =
@@ -466,7 +464,6 @@ let%test "build_args with resume session" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
-      "--bare";
     ]
 
 let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
@@ -496,7 +493,6 @@ let%test "build_stream_args fresh (no resume, with model)" =
       "--max-turns";
       "100";
       "--exclude-dynamic-system-prompt-sections";
-      "--bare";
     ]
 
 let%test "build_stream_args fresh (no resume, no model)" =
@@ -517,7 +513,6 @@ let%test "build_stream_args fresh (no resume, no model)" =
       "--max-turns";
       "200";
       "--exclude-dynamic-system-prompt-sections";
-      "--bare";
     ]
 
 let%test "build_stream_args with resume session" =
@@ -543,7 +538,6 @@ let%test "build_stream_args with resume session" =
       "--max-turns";
       "50";
       "--exclude-dynamic-system-prompt-sections";
-      "--bare";
     ]
 
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =

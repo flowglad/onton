@@ -992,16 +992,14 @@ let%test "patch prompt includes title and deps" =
   && String.is_substring result ~substring:"Patch 1: Core types"
   && String.is_substring result ~substring:"## Patch 5: Prompt renderer"
 
+let prompt_prefix_through_patch_heading prompt =
+  let marker = "## Patch " in
+  let all = String.substr_index_all prompt ~pattern:marker ~may_overlap:false in
+  match List.last all with
+  | None -> None
+  | Some idx -> Some (String.prefix prompt (idx + String.length marker))
+
 let%test "patch prompt static prefix is byte-identical across patches" =
-  let prompt_prefix_through_patch_heading prompt =
-    let marker = "## Patch " in
-    let all =
-      String.substr_index_all prompt ~pattern:marker ~may_overlap:false
-    in
-    match List.last all with
-    | None -> None
-    | Some idx -> Some (String.prefix prompt (idx + String.length marker))
-  in
   let patch_1 : Patch.t =
     Patch.
       {
