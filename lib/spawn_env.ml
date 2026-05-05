@@ -22,7 +22,7 @@ let seed_link ~src ~dst =
   let src_exists =
     match Unix.lstat src with
     | _ -> true
-    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
+    | exception Unix.Unix_error _ -> false
   in
   if (not dst_exists) && src_exists then
     try Unix.symlink src dst with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
