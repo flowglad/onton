@@ -13,6 +13,11 @@ val render_patch_prompt :
   Gameplan.t ->
   base_branch:string ->
   string
+(** Renders the patch prompt such that the prefix up to and including the
+    [`## Patch `] heading marker is gameplan-stable and intended for
+    prompt-cache reuse across patches in the same orchestrator run when using
+    the built-in default template. Project-level prompt overrides are
+    user-controlled and may not preserve this structure. *)
 
 val render_pr_description :
   project_name:string -> Patch.t -> Gameplan.t -> string
