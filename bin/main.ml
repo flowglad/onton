@@ -2527,11 +2527,16 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                           ~f:(fun (p : Patch.t) ->
                                             Patch_id.equal p.Patch.id patch_id)
                                       in
+                                      let agents_md =
+                                        read_optional_file
+                                          (Stdlib.Filename.concat wt_path
+                                             "AGENTS.md")
+                                      in
                                       let prompt =
                                         let raw =
                                           Prompt.render_merge_conflict_prompt
-                                            ~project_name ?pr_number ?patch
-                                            ~gameplan ~base_branch:base
+                                            ~project_name ?agents_md ?pr_number
+                                            ?patch ~gameplan ~base_branch:base
                                             ~git_status ~git_diff ?conflict_info
                                             ()
                                         in
@@ -2777,6 +2782,16 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                         ~default:(Branch.to_string main)
                                         ~f:Branch.to_string
                                     in
+                                    let wt_path =
+                                      resolve_worktree_path ~process_mgr
+                                        ~repo_root:config.repo_root
+                                        ~project_name ~patch_id ~agent ()
+                                    in
+                                    let agents_md =
+                                      read_optional_file
+                                        (Stdlib.Filename.concat wt_path
+                                           "AGENTS.md")
+                                    in
                                     log_event runtime ~patch_id
                                       (match payload with
                                       | Patch_decision.Review_payload
@@ -2806,14 +2821,16 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                           then
                                             Prompt
                                             .render_ci_failure_unknown_prompt
-                                              ~project_name ?pr_number
-                                              ?patch:patch_for_layer ~gameplan
+                                              ~project_name ?agents_md
+                                              ?pr_number ?patch:patch_for_layer
+                                              ~gameplan
                                               ~base_branch:base_branch_for_layer
                                               ()
                                           else
                                             Prompt.render_ci_failure_prompt
-                                              ~project_name ?pr_number
-                                              ?patch:patch_for_layer ~gameplan
+                                              ~project_name ?agents_md
+                                              ?pr_number ?patch:patch_for_layer
+                                              ~gameplan
                                               ~base_branch:base_branch_for_layer
                                               failed_checks
                                       | Patch_decision.Review_payload
@@ -2824,7 +2841,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                                 ps.Pr_state.head_oid)
                                           in
                                           Prompt.render_review_prompt
-                                            ~project_name ?pr_number
+                                            ~project_name ?agents_md ?pr_number
                                             ?current_head_sha
                                             ?patch:patch_for_layer ~gameplan
                                             ~base_branch:base_branch_for_layer

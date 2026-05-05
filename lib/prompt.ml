@@ -709,9 +709,11 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
              supervisor will push them for you — do not run `git push`."
             pr_ctx sha_anchor formatted pr_num_str)
 
-let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
-    ?patch ?gameplan ?base_branch (comments : Comment.t list) : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch ()
+let render_review_prompt ~(project_name : string) ?agents_md ?pr_number
+    ?current_head_sha ?patch ?gameplan ?base_branch (comments : Comment.t list)
+    : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md ()
   ^ render_turn_layer_review ~project_name ?pr_number ?current_head_sha comments
 
 let render_turn_layer_ci ~(project_name : string) ?pr_number
@@ -761,9 +763,10 @@ let render_turn_layer_ci ~(project_name : string) ?pr_number
              them for you — do not run `git push`."
             pr_ctx formatted)
 
-let render_ci_failure_prompt ~(project_name : string) ?pr_number ?patch
-    ?gameplan ?base_branch (checks : Ci_check.t list) : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch ()
+let render_ci_failure_prompt ~(project_name : string) ?agents_md ?pr_number
+    ?patch ?gameplan ?base_branch (checks : Ci_check.t list) : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md ()
   ^ render_turn_layer_ci ~project_name ?pr_number checks
 
 let render_turn_layer_ci_unknown ~(project_name : string) ?pr_number () =
@@ -792,9 +795,10 @@ let render_turn_layer_ci_unknown ~(project_name : string) ?pr_number () =
          for you — do not run `git push`."
         pr_ctx)
 
-let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number ?patch
-    ?gameplan ?base_branch () : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch ()
+let render_ci_failure_unknown_prompt ~(project_name : string) ?agents_md
+    ?pr_number ?patch ?gameplan ?base_branch () : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md ()
   ^ render_turn_layer_ci_unknown ~project_name ?pr_number ()
 
 let render_recovery_section (ci : Worktree.conflict_info) =
@@ -947,10 +951,11 @@ After resolving all conflicts and completing the rebase, the supervisor will pus
         pr_ctx base_branch base_branch status_section diff_section
         recovery_section)
 
-let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
-    ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
+let render_merge_conflict_prompt ~(project_name : string) ?agents_md ?pr_number
+    ?patch ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
     ?conflict_info () : string =
-  layered_prefix ~project_name ?pr_number ?patch ?gameplan ~base_branch ()
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan
+    ?base_branch:(Some base_branch) ?agents_md ()
   ^ render_turn_layer_merge_conflict ~project_name ?pr_number ~base_branch
       ~git_status ~git_diff ?conflict_info ()
 
@@ -1296,14 +1301,15 @@ let%test
     render_patch_layer ~project_name:"onton" patch_a ~pr_number
       ~base_branch:"main" ()
   in
-  let prefix = g_layer ^ p_layer in
+  let agents_md = "Follow AGENTS.md.\nNever use *_exn." in
+  let prefix = g_layer ^ agents_md_section (Some agents_md) ^ p_layer in
   let start_prompt =
-    render_patch_prompt ~project_name:"onton" ~pr_number patch_a gameplan
-      ~base_branch:"main"
+    render_patch_prompt ~project_name:"onton" ~agents_md ~pr_number patch_a
+      gameplan ~base_branch:"main"
   in
   let ci_prompt =
-    render_ci_failure_prompt ~project_name:"onton" ~pr_number ~patch:patch_a
-      ~gameplan ~base_branch:"main"
+    render_ci_failure_prompt ~project_name:"onton" ~agents_md ~pr_number
+      ~patch:patch_a ~gameplan ~base_branch:"main"
       [
         Ci_check.
           {
@@ -1317,12 +1323,12 @@ let%test
       ]
   in
   let ci_unknown_prompt =
-    render_ci_failure_unknown_prompt ~project_name:"onton" ~pr_number
+    render_ci_failure_unknown_prompt ~project_name:"onton" ~agents_md ~pr_number
       ~patch:patch_a ~gameplan ~base_branch:"main" ()
   in
   let review_prompt =
-    render_review_prompt ~project_name:"onton" ~pr_number ~patch:patch_a
-      ~gameplan ~base_branch:"main"
+    render_review_prompt ~project_name:"onton" ~agents_md ~pr_number
+      ~patch:patch_a ~gameplan ~base_branch:"main"
       [
         Comment.
           {
@@ -1338,8 +1344,8 @@ let%test
       ]
   in
   let conflict_prompt =
-    render_merge_conflict_prompt ~project_name:"onton" ~pr_number ~patch:patch_a
-      ~gameplan ~base_branch:"main" ()
+    render_merge_conflict_prompt ~project_name:"onton" ~agents_md ~pr_number
+      ~patch:patch_a ~gameplan ~base_branch:"main" ()
   in
   String.is_prefix start_prompt ~prefix
   && String.is_prefix ci_prompt ~prefix

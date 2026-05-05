@@ -115,6 +115,7 @@ val render_pr_body_prompt :
 
 val render_review_prompt :
   project_name:string ->
+  ?agents_md:string ->
   ?pr_number:Pr_number.t ->
   ?current_head_sha:string ->
   ?patch:Patch.t ->
@@ -125,6 +126,7 @@ val render_review_prompt :
 
 val render_ci_failure_prompt :
   project_name:string ->
+  ?agents_md:string ->
   ?pr_number:Pr_number.t ->
   ?patch:Patch.t ->
   ?gameplan:Gameplan.t ->
@@ -134,6 +136,7 @@ val render_ci_failure_prompt :
 
 val render_ci_failure_unknown_prompt :
   project_name:string ->
+  ?agents_md:string ->
   ?pr_number:Pr_number.t ->
   ?patch:Patch.t ->
   ?gameplan:Gameplan.t ->
@@ -143,6 +146,7 @@ val render_ci_failure_unknown_prompt :
 
 val render_merge_conflict_prompt :
   project_name:string ->
+  ?agents_md:string ->
   ?pr_number:Pr_number.t ->
   ?patch:Patch.t ->
   ?gameplan:Gameplan.t ->
