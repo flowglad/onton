@@ -46,7 +46,7 @@ let budget_cap_nano_usd_from_env () =
 
 let usage_member_int json name =
   let open Yojson.Safe.Util in
-  member name json |> to_int_option |> Option.value ~default:0
+  member name json |> to_int_option |> Option.value ~default:0 |> Int.max 0
 
 let usage_reasoning_tokens usage =
   let open Yojson.Safe.Util in
@@ -60,7 +60,7 @@ let usage_reasoning_tokens usage =
   Option.first_some from_details
     (member "reasoning_tokens" usage |> to_int_option)
   |> Option.first_some (member "reasoning_output_tokens" usage |> to_int_option)
-  |> Option.value ~default:0
+  |> Option.value ~default:0 |> Int.max 0
 
 let cost_nano_usd_for_tokens tokens nano_usd_per_1k =
   Int64.(of_int tokens * nano_usd_per_1k / 1000L)
