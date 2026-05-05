@@ -251,7 +251,13 @@ let%test "seed_auth_links skips backends with no src auth file" =
   in
   seed_auth_links_with ~claude_src_dir:None ~codex_src_dir:(Some codex_src)
     ~opencode_src_dir:None ~claude_dir ~codex_dir ~opencode_dir;
-  not (Stdlib.Sys.file_exists (Stdlib.Filename.concat codex_dir "auth.json"))
+  let auth_dst = Stdlib.Filename.concat codex_dir "auth.json" in
+  let entry_exists =
+    match Unix.lstat auth_dst with
+    | _ -> true
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
+  in
+  not entry_exists
 
 let%test "seed_auth_links preserves an existing dst file (no clobber)" =
   with_temp_project_dir @@ fun project_dir ->
