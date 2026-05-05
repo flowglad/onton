@@ -71,7 +71,7 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
     List.equal Patch_id.equal pids_a pids_b
   in
   let gameplan_eq = Gameplan.equal a.gameplan b.gameplan in
-  let log_eq = Onton.Activity_log.equal a.activity_log b.activity_log in
+  let log_eq = Onton_core.Activity_log.equal a.activity_log b.activity_log in
   agents_eq && main_eq && graph_pids_eq && gameplan_eq && log_eq
 
 (* ---------- Snapshot generators ---------- *)
@@ -137,7 +137,7 @@ let () =
           in
           let json = Onton.Persistence.snapshot_to_yojson snap in
           match Onton.Persistence.snapshot_of_yojson json with
-          | Ok snap' -> Onton.Activity_log.equal log snap'.activity_log
+          | Ok snap' -> Onton_core.Activity_log.equal log snap'.activity_log
           | Error _msg -> false
         with _ -> false)
   in
@@ -272,7 +272,7 @@ let () =
           let snap =
             {
               Onton.Runtime.orchestrator;
-              activity_log = Onton.Activity_log.empty;
+              activity_log = Onton_core.Activity_log.empty;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
             }
@@ -333,7 +333,7 @@ let () =
           let snap =
             {
               Onton.Runtime.orchestrator = orch;
-              activity_log = Onton.Activity_log.empty;
+              activity_log = Onton_core.Activity_log.empty;
               gameplan;
               transcripts = Base.Hashtbl.create (module Patch_id);
             }

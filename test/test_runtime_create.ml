@@ -23,7 +23,7 @@ let () =
     {
       Onton.Runtime.orchestrator =
         Onton.Orchestrator.create ~patches:[] ~main_branch;
-      activity_log = Onton.Activity_log.empty;
+      activity_log = Onton_core.Activity_log.empty;
       gameplan;
       transcripts = Base.Hashtbl.create (module Onton_core.Types.Patch_id);
     }
@@ -55,7 +55,7 @@ let () =
     {
       Onton.Runtime.orchestrator =
         Onton.Orchestrator.create ~patches:[] ~main_branch:old_branch;
-      activity_log = Onton.Activity_log.empty;
+      activity_log = Onton_core.Activity_log.empty;
       gameplan;
       transcripts = Base.Hashtbl.create (module Onton_core.Types.Patch_id);
     }

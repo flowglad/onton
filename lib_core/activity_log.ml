@@ -5,8 +5,8 @@ module Transition_entry = struct
   type t = {
     timestamp : float;
     patch_id : Types.Patch_id.t;
-    from_status : Tui.display_status;
-    to_status : Tui.display_status;
+    from_status : Display_status.t;
+    to_status : Display_status.t;
     action : string;
   }
   [@@deriving show, eq, sexp_of, compare, yojson]

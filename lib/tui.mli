@@ -1,7 +1,12 @@
 open Base
 open Types
 
-type display_status =
+(** Pure derivation of the patch display status lives in
+    {!Onton_core.Display_status}. The transparent type re-export below equates
+    [Tui.display_status] with [Display_status.t] so existing call sites that
+    spell [Tui.Merged] etc. keep compiling unchanged. *)
+
+type display_status = Display_status.t =
   | Merged
   | Needs_help
   | Approved_idle
