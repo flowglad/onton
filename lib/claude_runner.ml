@@ -59,7 +59,14 @@ let build_args ~model ~prompt ~resume_session =
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
   in
-  let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
+  let flags =
+    [
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+      "--exclude-dynamic-system-prompt-sections";
+    ]
+  in
   base @ model_args model @ prompt_args @ session_args @ flags
 
 let build_stream_args ~model ~prompt ~resume_session =
@@ -70,7 +77,14 @@ let build_stream_args ~model ~prompt ~resume_session =
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
   in
-  let flags = [ "--dangerously-skip-permissions"; "--max-turns"; "200" ] in
+  let flags =
+    [
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+      "--exclude-dynamic-system-prompt-sections";
+    ]
+  in
   base @ model_args model @ prompt_args @ session_args @ flags
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
@@ -312,6 +326,7 @@ let%test "build_args fresh (no resume, with model)" =
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
+      "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_args fresh (no resume, no model)" =
@@ -326,6 +341,7 @@ let%test "build_args fresh (no resume, no model)" =
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
+      "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_args with resume session" =
@@ -347,6 +363,7 @@ let%test "build_args with resume session" =
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
+      "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_stream_args fresh (no resume, with model)" =
@@ -367,6 +384,7 @@ let%test "build_stream_args fresh (no resume, with model)" =
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
+      "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_stream_args fresh (no resume, no model)" =
@@ -384,6 +402,7 @@ let%test "build_stream_args fresh (no resume, no model)" =
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
+      "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_stream_args with resume session" =
@@ -406,7 +425,14 @@ let%test "build_stream_args with resume session" =
       "--dangerously-skip-permissions";
       "--max-turns";
       "200";
+      "--exclude-dynamic-system-prompt-sections";
     ]
+
+let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
+  let args =
+    build_stream_args ~model:None ~prompt:"do stuff" ~resume_session:None
+  in
+  List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
