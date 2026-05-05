@@ -17,15 +17,21 @@ let seed_link ~src ~dst =
     | _ -> true
     | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
   in
-  if (not dst_exists) && Stdlib.Sys.file_exists src then Unix.symlink src dst
+  if (not dst_exists) && Stdlib.Sys.file_exists src then
+    try Unix.symlink src dst with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
 
 let resolve_user_config_dir ~env_var ~home_subpath =
+  let absolutize path =
+    if Stdlib.Filename.is_relative path then
+      Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
+    else path
+  in
   match Stdlib.Sys.getenv_opt env_var with
-  | Some dir when not (String.is_empty dir) -> Some dir
+  | Some dir when not (String.is_empty dir) -> Some (absolutize dir)
   | _ -> (
       match Stdlib.Sys.getenv_opt "HOME" with
       | Some home when not (String.is_empty home) ->
-          Some (Stdlib.Filename.concat home home_subpath)
+          Some (Stdlib.Filename.concat (absolutize home) home_subpath)
       | _ -> None)
 
 (* Seed the per-patch config dirs with symlinks to the user's real auth
@@ -262,3 +268,26 @@ let%test "seed_auth_links preserves an existing dst file (no clobber)" =
         false
   in
   is_regular && String.equal (read_file dst) "preexisting-tok"
+
+let%test "resolve_user_config_dir absolutizes relative env and HOME paths" =
+  let cwd = Stdlib.Sys.getcwd () in
+  let old_home = Stdlib.Sys.getenv_opt "HOME" in
+  let restore_home () =
+    match old_home with Some home -> Unix.putenv "HOME" home | None -> ()
+  in
+  Unix.putenv "HOME" "relative-home";
+  Stdlib.Fun.protect ~finally:restore_home @@ fun () ->
+  let env_dir =
+    Option.value_exn
+      (resolve_user_config_dir ~env_var:"HOME" ~home_subpath:".unused")
+  in
+  let home_dir =
+    Option.value_exn
+      (resolve_user_config_dir ~env_var:"ONTON_MISSING_CONFIG_DIR"
+         ~home_subpath:".config/onton")
+  in
+  String.equal env_dir (Stdlib.Filename.concat cwd "relative-home")
+  && String.equal home_dir
+       (Stdlib.Filename.concat
+          (Stdlib.Filename.concat cwd "relative-home")
+          ".config/onton")
