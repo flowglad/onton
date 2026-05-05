@@ -52,10 +52,13 @@ let usage_reasoning_tokens usage =
   let open Yojson.Safe.Util in
   (* Support the current nested Responses schema
      ([usage.output_tokens_details.reasoning_tokens]) plus older/alternate
-     flat spellings that have appeared in streamed usage payloads. *)
+     flat spellings that have appeared in streamed usage payloads. The
+     [output_tokens_details] field may be absent (or explicitly null) on some
+     turn.completed payloads — guard against that before recursing. *)
   let from_details =
-    member "output_tokens_details" usage
-    |> member "reasoning_tokens" |> to_int_option
+    match member "output_tokens_details" usage with
+    | `Assoc _ as details -> member "reasoning_tokens" details |> to_int_option
+    | _ -> None
   in
   Option.first_some from_details
     (member "reasoning_tokens" usage |> to_int_option)
@@ -430,6 +433,23 @@ let%test "cost tracker emits Error when cumulative exceeds cap" =
          Types.Stream_event.Final_result
            { text = ""; stop_reason = Types.Stop_reason.End_turn };
        ]
+
+let%test "cost tracker handles usage without output_tokens_details" =
+  (* Some turn.completed payloads omit [output_tokens_details] entirely. The
+     cost path must not raise Yojson Type_error when chaining into a missing
+     nested object. *)
+  let line =
+    {|{"type":"turn.completed","usage":{"input_tokens":1000,"output_tokens":2000}}|}
+  in
+  let events, _ =
+    parse_event_with_cost_tracking ~model:(Some "gpt-5.5")
+      ~budget_cap_nano_usd:None ~cost_state:initial_cost_state line
+  in
+  List.equal Types.Stream_event.equal events
+    [
+      Types.Stream_event.Final_result
+        { text = ""; stop_reason = Types.Stop_reason.End_turn };
+    ]
 
 let%test "parse_event error" =
   let line = {|{"type":"error","message":"rate limited"}|} in
