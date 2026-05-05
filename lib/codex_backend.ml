@@ -1,23 +1,38 @@
 open Base
 
-type cost_state = { cumulative_usd : float }
+type cost_state = { cumulative_nano_usd : int64 }
 
-let initial_cost_state = { cumulative_usd = 0.0 }
+let initial_cost_state = { cumulative_nano_usd = 0L }
 
-type model_pricing = { input_usd_per_1k : float; output_usd_per_1k : float }
+type model_pricing = {
+  input_nano_usd_per_1k : int64;
+  output_nano_usd_per_1k : int64;
+}
 
 let model_pricing = function
   | Some "gpt-5.4-mini" ->
-      Some { input_usd_per_1k = 0.00075; output_usd_per_1k = 0.0045 }
+      Some
+        {
+          input_nano_usd_per_1k = 750_000L;
+          output_nano_usd_per_1k = 4_500_000L;
+        }
   | Some "gpt-5.4" ->
-      Some { input_usd_per_1k = 0.0025; output_usd_per_1k = 0.015 }
+      Some
+        {
+          input_nano_usd_per_1k = 2_500_000L;
+          output_nano_usd_per_1k = 15_000_000L;
+        }
   | Some "gpt-5.5" ->
-      Some { input_usd_per_1k = 0.005; output_usd_per_1k = 0.03 }
+      Some
+        {
+          input_nano_usd_per_1k = 5_000_000L;
+          output_nano_usd_per_1k = 30_000_000L;
+        }
   (* Unknown/None model: cost tracking disabled, cap not enforced.
      Keep this table in sync with [auto_model]. *)
   | _ -> None
 
-let budget_cap_usd_from_env () =
+let budget_cap_nano_usd_from_env () =
   match
     Sys.getenv "ONTON_BUDGET_CAP_USD"
     |> Option.map ~f:(fun value -> String.strip value)
@@ -25,7 +40,8 @@ let budget_cap_usd_from_env () =
   | None | Some "" -> None
   | Some raw -> (
       match Float.of_string_opt raw with
-      | Some cap when Float.(cap > 0.) -> Some cap
+      | Some cap when Float.(cap > 0.) ->
+          Some (Int64.of_float (Float.round_nearest (cap *. 1_000_000_000.0)))
       | Some _ | None -> None)
 
 let usage_member_int json name =
@@ -46,7 +62,12 @@ let usage_reasoning_tokens usage =
   |> Option.first_some (member "reasoning_output_tokens" usage |> to_int_option)
   |> Option.value ~default:0
 
-let completed_turn_cost_usd ~model json =
+let cost_nano_usd_for_tokens tokens nano_usd_per_1k =
+  Int64.(of_int tokens * nano_usd_per_1k / 1000L)
+
+let float_usd_of_nano_usd nano_usd = Int64.to_float nano_usd /. 1_000_000_000.0
+
+let completed_turn_cost_nano_usd ~model json =
   match model_pricing model with
   | None -> None
   | Some pricing ->
@@ -59,18 +80,19 @@ let completed_turn_cost_usd ~model json =
         Int.max 0 (output_tokens - reasoning_tokens)
       in
       let input_cost =
-        Float.of_int input_tokens /. 1000.0 *. pricing.input_usd_per_1k
+        cost_nano_usd_for_tokens input_tokens pricing.input_nano_usd_per_1k
       in
       let visible_output_cost =
-        Float.of_int visible_output_tokens
-        /. 1000.0 *. pricing.output_usd_per_1k
+        cost_nano_usd_for_tokens visible_output_tokens
+          pricing.output_nano_usd_per_1k
       in
       let reasoning_cost =
-        Float.of_int reasoning_tokens /. 1000.0 *. pricing.output_usd_per_1k
+        cost_nano_usd_for_tokens reasoning_tokens pricing.output_nano_usd_per_1k
       in
-      Some (input_cost +. visible_output_cost +. reasoning_cost)
+      Some Int64.(input_cost + visible_output_cost + reasoning_cost)
 
-let parse_event_with_cost_tracking ~model ~budget_cap_usd ~cost_state line =
+let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
+    =
   match Yojson.Safe.from_string line with
   | json -> (
       let open Yojson.Safe.Util in
@@ -135,20 +157,24 @@ let parse_event_with_cost_tracking ~model ~budget_cap_usd ~cost_state line =
       | Some "turn.started" -> ([ Types.Stream_event.Turn_started ], cost_state)
       | Some "turn.completed" ->
           let added_cost =
-            completed_turn_cost_usd ~model json |> Option.value ~default:0.0
+            completed_turn_cost_nano_usd ~model json |> Option.value ~default:0L
           in
           let cost_state =
-            { cumulative_usd = cost_state.cumulative_usd +. added_cost }
+            {
+              cumulative_nano_usd =
+                Int64.(cost_state.cumulative_nano_usd + added_cost);
+            }
           in
           let events =
-            match budget_cap_usd with
-            | Some cap when Float.(cost_state.cumulative_usd > cap) ->
+            match budget_cap_nano_usd with
+            | Some cap when Int64.(cost_state.cumulative_nano_usd > cap) ->
                 [
                   Types.Stream_event.Error
                     (Printf.sprintf
                        "Codex budget cap exceeded: cumulative cost $%.4f > cap \
                         $%.4f"
-                       cost_state.cumulative_usd cap);
+                       (float_usd_of_nano_usd cost_state.cumulative_nano_usd)
+                       (float_usd_of_nano_usd cap));
                   Types.Stream_event.Final_result
                     { text = ""; stop_reason = Types.Stop_reason.End_turn };
                 ]
@@ -189,7 +215,7 @@ let build_args ~model ~cwd_path ~prompt ~resume_session =
 
 let parse_event (line : string) : Types.Stream_event.t list =
   fst
-    (parse_event_with_cost_tracking ~model:None ~budget_cap_usd:None
+    (parse_event_with_cost_tracking ~model:None ~budget_cap_nano_usd:None
        ~cost_state:initial_cost_state line)
 
 let auto_model ~complexity =
@@ -211,14 +237,14 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
     Spawn_env.merge_env ~base_env:(Unix.environment ())
       ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
   in
-  let budget_cap_usd = budget_cap_usd_from_env () in
+  let budget_cap_nano_usd = budget_cap_nano_usd_from_env () in
   let cost_state = ref initial_cost_state in
   let process_line line =
     let trimmed = String.strip line in
     if String.is_empty trimmed then []
     else
       let events, next_cost_state =
-        parse_event_with_cost_tracking ~model ~budget_cap_usd
+        parse_event_with_cost_tracking ~model ~budget_cap_nano_usd
           ~cost_state:!cost_state trimmed
       in
       cost_state := next_cost_state;
@@ -393,9 +419,10 @@ let%test "cost tracker emits Error when cumulative exceeds cap" =
   in
   let events, cost_state =
     parse_event_with_cost_tracking ~model:(Some "gpt-5.5")
-      ~budget_cap_usd:(Some 0.05) ~cost_state:initial_cost_state line
+      ~budget_cap_nano_usd:(Some 50_000_000L) ~cost_state:initial_cost_state
+      line
   in
-  Float.(cost_state.cumulative_usd > 0.05)
+  Int64.(cost_state.cumulative_nano_usd > 50_000_000L)
   && List.equal Types.Stream_event.equal events
        [
          Types.Stream_event.Error
