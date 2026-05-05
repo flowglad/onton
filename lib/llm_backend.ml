@@ -130,8 +130,9 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
           (* Only swallow the expected teardown exceptions: Eio.Buf_read
              raises when the buffer fills up; End_of_file and Eio.Exn.Io
              fire when the stdout fiber closes stderr_r out from under us
-             after saw_final_result. Letting anything else propagate — in
-             particular Eio.Cancel.Cancelled — is required so this fiber
+             after a terminal stream event (Final_result or Error) closes
+             stderr_r out from under us. Letting anything else propagate —
+             in particular Eio.Cancel.Cancelled — is required so this fiber
              can honour cancellation and release Eio.Fiber.both. *)
           try err_ref := Eio.Buf_read.take_all stderr_buf with
           | Eio.Buf_read.Buffer_limit_exceeded -> (

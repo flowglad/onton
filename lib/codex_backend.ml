@@ -30,9 +30,8 @@ let usage_member_int json name =
   let open Yojson.Safe.Util in
   member name json |> to_int_option |> Option.value ~default:0
 
-let usage_reasoning_tokens json =
+let usage_reasoning_tokens usage =
   let open Yojson.Safe.Util in
-  let usage = member "usage" json in
   let from_details =
     member "output_tokens_details" usage
     |> member "reasoning_tokens" |> to_int_option
@@ -50,7 +49,7 @@ let completed_turn_cost_usd ~model json =
       let usage = member "usage" json in
       let input_tokens = usage_member_int usage "input_tokens" in
       let output_tokens = usage_member_int usage "output_tokens" in
-      let reasoning_tokens = usage_reasoning_tokens json in
+      let reasoning_tokens = usage_reasoning_tokens usage in
       let visible_output_tokens =
         Int.max 0 (output_tokens - reasoning_tokens)
       in

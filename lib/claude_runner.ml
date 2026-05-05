@@ -57,9 +57,7 @@ let max_turns_for ~complexity =
   match complexity with Some 1 -> 50 | Some 2 -> 100 | _ -> 200
 
 let build_args ~model ~complexity ~prompt ~resume_session =
-let warned_invalid_budget_cap = ref false
-
-let budget_cap_args () =
+let budget_cap_args ~warn () =
   match
     Sys.getenv "ONTON_BUDGET_CAP_USD"
     |> Option.map ~f:(fun value -> String.strip value)
@@ -69,12 +67,11 @@ let budget_cap_args () =
       match Float.of_string_opt raw with
       | Some cap when Float.(cap > 0.) -> [ "--max-budget-usd"; raw ]
       | Some _ | None ->
-          if not !warned_invalid_budget_cap then (
-            warned_invalid_budget_cap := true;
-            Stdio.eprintf
-              "warning: ignoring invalid ONTON_BUDGET_CAP_USD=%S; expected a \
-               positive numeric USD cap\n"
-              raw);
+          warn
+            (Printf.sprintf
+               "warning: ignoring invalid ONTON_BUDGET_CAP_USD=%S; expected a \
+                positive numeric USD cap"
+               raw);
           [])
 
 let build_args ~model ~complexity ~prompt ~resume_session =
@@ -90,7 +87,7 @@ let build_args ~model ~complexity ~prompt ~resume_session =
       Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
-    @ budget_cap_args ()
+    @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
@@ -121,7 +118,7 @@ let build_stream_args ~model ~complexity ~prompt ~minted_session_id
       Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
-    @ budget_cap_args ()
+    @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
@@ -612,6 +609,22 @@ let%test
           "--max-budget-usd";
           "10";
         ])
+    ~finally:(fun () -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
+
+let%test "budget_cap_args omits flag and warns on invalid cap" =
+  Unix.putenv "ONTON_BUDGET_CAP_USD" "not-a-number";
+  let warnings = ref [] in
+  Exn.protect
+    ~f:(fun () ->
+      let args =
+        budget_cap_args ~warn:(fun msg -> warnings := msg :: !warnings) ()
+      in
+      List.is_empty args
+      && List.equal String.equal !warnings
+           [
+             "warning: ignoring invalid ONTON_BUDGET_CAP_USD=\"not-a-number\"; \
+              expected a positive numeric USD cap";
+           ])
     ~finally:(fun () -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
 
 let%test "strip_ansi removes escape sequences" =
