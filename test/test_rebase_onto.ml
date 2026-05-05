@@ -1,5 +1,6 @@
 open Base
 open Onton
+open Onton_core
 module Git_env = Onton_test_support.Git_env
 
 (* ───────────────────────────────────────────────────────────────────────

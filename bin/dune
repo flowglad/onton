@@ -1,7 +1,7 @@
 (executable
  (name main)
  (public_name onton)
- (libraries onton cmdliner eio eio_main re))
+ (libraries onton onton_core cmdliner eio eio_main re))
 
 (rule
  (target version.ml)

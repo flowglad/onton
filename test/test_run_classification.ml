@@ -1,5 +1,5 @@
 open Base
-open Onton
+open Onton_core
 
 (** QCheck2 property-based tests for [Run_classification.classify]. *)
 

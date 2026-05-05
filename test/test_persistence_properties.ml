@@ -1,5 +1,5 @@
 open Base
-open Onton.Types
+open Onton_core.Types
 open Onton_test_support.Test_generators
 
 (** QCheck2 property-based tests for persistence round-trips.
@@ -10,7 +10,7 @@ open Onton_test_support.Test_generators
 (** Build a minimal gameplan containing a single patch with the given agent's
     [patch_id] and [branch], so [patch_agent_of_yojson] can derive the branch
     for legacy snapshots that lack a ["branch"] key. *)
-let gameplan_for_agent (agent : Onton.Patch_agent.t) =
+let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
   Gameplan.
     {
       project_name = "t";
@@ -49,7 +49,7 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
   let agents_eq =
     List.equal
       (fun (ka, va) (kb, vb) ->
-        Patch_id.equal ka kb && Onton.Patch_agent.equal va vb)
+        Patch_id.equal ka kb && Onton_core.Patch_agent.equal va vb)
       agents_a agents_b
   in
   let main_eq =
@@ -60,12 +60,12 @@ let snapshots_equal (a : Onton.Runtime.snapshot) (b : Onton.Runtime.snapshot) =
   let graph_pids_eq =
     let pids_a =
       Onton.Orchestrator.graph a.orchestrator
-      |> Onton.Graph.all_patch_ids
+      |> Onton_core.Graph.all_patch_ids
       |> List.sort ~compare:Patch_id.compare
     in
     let pids_b =
       Onton.Orchestrator.graph b.orchestrator
-      |> Onton.Graph.all_patch_ids
+      |> Onton_core.Graph.all_patch_ids
       |> List.sort ~compare:Patch_id.compare
     in
     List.equal Patch_id.equal pids_a pids_b
@@ -177,7 +177,7 @@ let () =
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
           match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
-          | Ok agent' -> Onton.Patch_agent.equal agent agent'
+          | Ok agent' -> Onton_core.Patch_agent.equal agent agent'
           | Error _msg -> false
         with _ -> false)
   in
@@ -343,8 +343,8 @@ let () =
           | Error _ -> false
           | Ok snap' ->
               let g = Onton.Orchestrator.graph snap'.orchestrator in
-              let deps_b = Onton.Graph.deps g pid_b in
-              let dependents_a = Onton.Graph.dependents g pid_a in
+              let deps_b = Onton_core.Graph.deps g pid_b in
+              let dependents_a = Onton_core.Graph.dependents g pid_a in
               List.mem deps_b pid_a ~equal:Patch_id.equal
               && List.mem dependents_a pid_b ~equal:Patch_id.equal
         with _ -> false)

@@ -1,5 +1,5 @@
 open Base
-open Onton
+open Onton_core
 
 (** Property + interleaving tests for {!Codex_cost}.
 

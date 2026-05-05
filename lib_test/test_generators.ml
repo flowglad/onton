@@ -1,5 +1,5 @@
 open Base
-open Onton.Types
+open Onton_core.Types
 
 (** QCheck2 generators for all core types.
 
@@ -254,22 +254,23 @@ let gen_gameplan =
           })
       gen_patch_list_unique)
 
-let gen_graph = QCheck2.Gen.(map Onton.Graph.of_patches gen_patch_list_unique)
+let gen_graph =
+  QCheck2.Gen.(map Onton_core.Graph.of_patches gen_patch_list_unique)
 
 (* -- Pr_state types -- *)
 
 let gen_pr_status =
-  QCheck2.Gen.oneof_list Onton.Pr_state.[ Open; Merged; Closed ]
+  QCheck2.Gen.oneof_list Onton_core.Pr_state.[ Open; Merged; Closed ]
 
 let gen_merge_state =
-  QCheck2.Gen.oneof_list Onton.Pr_state.[ Mergeable; Conflicting; Unknown ]
+  QCheck2.Gen.oneof_list Onton_core.Pr_state.[ Mergeable; Conflicting; Unknown ]
 
 let gen_check_status =
-  QCheck2.Gen.oneof_list Onton.Pr_state.[ Passing; Failing; Pending ]
+  QCheck2.Gen.oneof_list Onton_core.Pr_state.[ Passing; Failing; Pending ]
 
 let gen_pr_state =
   QCheck2.Gen.(
-    let open Onton.Pr_state in
+    let open Onton_core.Pr_state in
     let* is_draft = bool in
     let* is_fork = bool in
     let* head_branch = option gen_branch in
@@ -324,7 +325,7 @@ let gen_poller =
     map5
       (fun queue (merged, closed, has_conflict) merge_ready checks_passing
            ci_checks ->
-        Onton.Poller.
+        Onton_core.Poller.
           {
             queue;
             merged;
@@ -343,47 +344,47 @@ let gen_poller =
 let gen_patch_agent_fresh =
   QCheck2.Gen.(
     map2
-      (fun pid branch -> Onton.Patch_agent.create ~branch pid)
+      (fun pid branch -> Onton_core.Patch_agent.create ~branch pid)
       gen_patch_id gen_branch)
 
 let gen_patch_agent_started =
   QCheck2.Gen.(
     map2
       (fun pid branch ->
-        let a = Onton.Patch_agent.create ~branch pid in
-        let a = Onton.Patch_agent.start a ~base_branch:branch in
-        Onton.Patch_agent.set_llm_session_id a (Some "test-session"))
+        let a = Onton_core.Patch_agent.create ~branch pid in
+        let a = Onton_core.Patch_agent.start a ~base_branch:branch in
+        Onton_core.Patch_agent.set_llm_session_id a (Some "test-session"))
       gen_patch_id gen_branch)
 
 let gen_patch_agent_with_queue =
   QCheck2.Gen.(
     map3
       (fun pid branch ops ->
-        let a = Onton.Patch_agent.create ~branch pid in
-        let a = Onton.Patch_agent.start a ~base_branch:branch in
-        let a = Onton.Patch_agent.complete a in
-        List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
+        let a = Onton_core.Patch_agent.create ~branch pid in
+        let a = Onton_core.Patch_agent.start a ~base_branch:branch in
+        let a = Onton_core.Patch_agent.complete a in
+        List.fold ops ~init:a ~f:Onton_core.Patch_agent.enqueue)
       gen_patch_id gen_branch gen_operation_kind_queue)
 
 let gen_patch_agent_with_messages =
   QCheck2.Gen.(
     map4
       (fun pid branch messages ops ->
-        let a = Onton.Patch_agent.create ~branch pid in
-        let a = Onton.Patch_agent.start a ~base_branch:branch in
+        let a = Onton_core.Patch_agent.create ~branch pid in
+        let a = Onton_core.Patch_agent.start a ~base_branch:branch in
         let a =
           List.fold messages ~init:a ~f:(fun a msg ->
-              Onton.Patch_agent.add_human_message a msg)
+              Onton_core.Patch_agent.add_human_message a msg)
         in
-        let a = Onton.Patch_agent.complete a in
-        List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue)
+        let a = Onton_core.Patch_agent.complete a in
+        List.fold ops ~init:a ~f:Onton_core.Patch_agent.enqueue)
       gen_patch_id gen_branch
       (list_small (string_size ~gen:printable (int_range 1 80)))
       gen_operation_kind_queue)
 
 let gen_session_fallback =
   QCheck2.Gen.oneof_list
-    Onton.Patch_agent.[ Fresh_available; Tried_fresh; Given_up ]
+    Onton_core.Patch_agent.[ Fresh_available; Tried_fresh; Given_up ]
 
 let gen_patch_agent_fully_populated =
   QCheck2.Gen.(
@@ -399,36 +400,39 @@ let gen_patch_agent_fully_populated =
     let* raw_llm_session_id =
       option (string_size ~gen:printable (int_range 8 36))
     in
-    let a = Onton.Patch_agent.create ~branch pid in
-    let a = Onton.Patch_agent.start a ~base_branch:branch in
+    let a = Onton_core.Patch_agent.create ~branch pid in
+    let a = Onton_core.Patch_agent.start a ~base_branch:branch in
     let a =
       List.fold messages ~init:a ~f:(fun a msg ->
-          Onton.Patch_agent.add_human_message a msg)
+          Onton_core.Patch_agent.add_human_message a msg)
     in
     let a =
       match fallback with
-      | Onton.Patch_agent.Fresh_available -> a
-      | Onton.Patch_agent.Tried_fresh -> Onton.Patch_agent.set_tried_fresh a
-      | Onton.Patch_agent.Given_up -> Onton.Patch_agent.set_session_failed a
+      | Onton_core.Patch_agent.Fresh_available -> a
+      | Onton_core.Patch_agent.Tried_fresh ->
+          Onton_core.Patch_agent.set_tried_fresh a
+      | Onton_core.Patch_agent.Given_up ->
+          Onton_core.Patch_agent.set_session_failed a
     in
     (* When session_fallback is Tried_fresh or Given_up, llm_session_id must
        be None (escalation clears it). Only Fresh_available may have a value. *)
     let llm_session_id =
       match fallback with
-      | Onton.Patch_agent.Fresh_available -> raw_llm_session_id
-      | Onton.Patch_agent.Tried_fresh | Onton.Patch_agent.Given_up -> None
+      | Onton_core.Patch_agent.Fresh_available -> raw_llm_session_id
+      | Onton_core.Patch_agent.Tried_fresh | Onton_core.Patch_agent.Given_up ->
+          None
     in
-    let a = Onton.Patch_agent.set_llm_session_id a llm_session_id in
-    let a = Onton.Patch_agent.complete a in
-    let a = List.fold ops ~init:a ~f:Onton.Patch_agent.enqueue in
-    let a = Onton.Patch_agent.set_ci_checks a ci_checks in
+    let a = Onton_core.Patch_agent.set_llm_session_id a llm_session_id in
+    let a = Onton_core.Patch_agent.complete a in
+    let a = List.fold ops ~init:a ~f:Onton_core.Patch_agent.enqueue in
+    let a = Onton_core.Patch_agent.set_ci_checks a ci_checks in
     let a =
       match pr_number with
-      | Some n -> Onton.Patch_agent.set_pr_number a n
+      | Some n -> Onton_core.Patch_agent.set_pr_number a n
       | None -> a
     in
-    let a = Onton.Patch_agent.set_merge_ready a merge_ready in
-    let a = Onton.Patch_agent.set_checks_passing a checks_passing in
+    let a = Onton_core.Patch_agent.set_merge_ready a merge_ready in
+    let a = Onton_core.Patch_agent.set_checks_passing a checks_passing in
     return a)
 
 (* -- Reconciler -- *)
@@ -438,7 +442,7 @@ let gen_patch_view =
     map3
       (fun (id, base_branch) (has_pr, merged, busy, branch_blocked)
            (needs_intervention, queue) ->
-        Onton.Reconciler.
+        Onton_core.Reconciler.
           {
             id;
             has_pr;
@@ -462,11 +466,11 @@ let gen_reconciler_action =
   QCheck2.Gen.(
     oneof
       [
-        map (fun pid -> Onton.Reconciler.Mark_merged pid) gen_patch_id;
-        map (fun pid -> Onton.Reconciler.Enqueue_rebase pid) gen_patch_id;
+        map (fun pid -> Onton_core.Reconciler.Mark_merged pid) gen_patch_id;
+        map (fun pid -> Onton_core.Reconciler.Enqueue_rebase pid) gen_patch_id;
         map3
           (fun patch_id kind new_base ->
-            Onton.Reconciler.Start_operation { patch_id; kind; new_base })
+            Onton_core.Reconciler.Start_operation { patch_id; kind; new_base })
           gen_patch_id gen_operation_kind (option gen_branch);
       ])
 
@@ -499,7 +503,7 @@ let gen_orchestrator_action =
 let gen_violation =
   QCheck2.Gen.(
     map2
-      (fun invariant details -> Onton.Invariants.{ invariant; details })
+      (fun invariant details -> Onton_core.Invariants.{ invariant; details })
       (string_size ~gen:(char_range 'a' 'z') (int_range 5 30))
       (string_size ~gen:printable (int_range 5 50)))
 
@@ -587,7 +591,7 @@ let gen_activity_log =
 
 let gen_run_outcome =
   QCheck2.Gen.(
-    let open Onton.Run_classification in
+    let open Onton_core.Run_classification in
     let* exit_code = int_range (-1) 255 in
     let* got_events = bool in
     let* saw_final_result = bool in
@@ -704,45 +708,46 @@ let pid_of_idx patches i =
 let apply_reconcile_actions orch ~main ~branch_of =
   let agents = Onton.Orchestrator.all_agents orch in
   let patch_views =
-    List.map agents ~f:(fun (a : Onton.Patch_agent.t) ->
-        Onton.Reconciler.
+    List.map agents ~f:(fun (a : Onton_core.Patch_agent.t) ->
+        Onton_core.Reconciler.
           {
-            id = a.Onton.Patch_agent.patch_id;
-            has_pr = Onton.Patch_agent.has_pr a;
-            merged = a.Onton.Patch_agent.merged;
-            busy = a.Onton.Patch_agent.busy;
-            needs_intervention = Onton.Patch_agent.needs_intervention a;
-            branch_blocked = a.Onton.Patch_agent.branch_blocked;
-            queue = a.Onton.Patch_agent.queue;
+            id = a.Onton_core.Patch_agent.patch_id;
+            has_pr = Onton_core.Patch_agent.has_pr a;
+            merged = a.Onton_core.Patch_agent.merged;
+            busy = a.Onton_core.Patch_agent.busy;
+            needs_intervention = Onton_core.Patch_agent.needs_intervention a;
+            branch_blocked = a.Onton_core.Patch_agent.branch_blocked;
+            queue = a.Onton_core.Patch_agent.queue;
             base_branch =
-              Option.value a.Onton.Patch_agent.base_branch ~default:main;
-            branch_rebased_onto = a.Onton.Patch_agent.branch_rebased_onto;
+              Option.value a.Onton_core.Patch_agent.base_branch ~default:main;
+            branch_rebased_onto = a.Onton_core.Patch_agent.branch_rebased_onto;
           })
   in
   let merged_patches =
-    List.filter_map agents ~f:(fun (a : Onton.Patch_agent.t) ->
-        if a.Onton.Patch_agent.merged then Some a.Onton.Patch_agent.patch_id
+    List.filter_map agents ~f:(fun (a : Onton_core.Patch_agent.t) ->
+        if a.Onton_core.Patch_agent.merged then
+          Some a.Onton_core.Patch_agent.patch_id
         else None)
   in
   let actions =
-    Onton.Reconciler.reconcile
+    Onton_core.Reconciler.reconcile
       ~graph:(Onton.Orchestrator.graph orch)
       ~main ~merged_pr_patches:merged_patches ~branch_of patch_views
   in
   List.fold actions ~init:orch ~f:(fun orch action ->
       match action with
-      | Onton.Reconciler.Mark_merged pid ->
+      | Onton_core.Reconciler.Mark_merged pid ->
           Onton.Orchestrator.mark_merged orch pid
-      | Onton.Reconciler.Enqueue_rebase pid ->
+      | Onton_core.Reconciler.Enqueue_rebase pid ->
           Onton.Orchestrator.enqueue orch pid Operation_kind.Rebase
-      | Onton.Reconciler.Start_operation _ -> orch)
+      | Onton_core.Reconciler.Start_operation _ -> orch)
 
 let print_operation_kind = Operation_kind.show
 let print_comment = Comment.show
 let print_patch = Patch.show
 let print_ci_check = Ci_check.show
 let print_gameplan = Gameplan.show
-let print_patch_agent = Onton.Patch_agent.show
-let print_poller = Onton.Poller.show
-let print_pr_state = Onton.Pr_state.show
+let print_patch_agent = Onton_core.Patch_agent.show
+let print_poller = Onton_core.Poller.show
+let print_pr_state = Onton_core.Pr_state.show
 let print_github_error = Onton.Github.show_error

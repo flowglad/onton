@@ -1,5 +1,6 @@
 open Onton
-open Onton.Types
+open Onton_core
+open Onton_core.Types
 
 (** {1 Configuration} *)
 

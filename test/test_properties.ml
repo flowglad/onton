@@ -1,5 +1,6 @@
 open Base
 open Onton
+open Onton_core
 
 let make_gameplan patches =
   Types.Gameplan.

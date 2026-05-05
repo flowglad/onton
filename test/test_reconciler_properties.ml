@@ -1,5 +1,5 @@
 open Base
-open Onton
+open Onton_core
 open Onton_test_support.Test_generators
 
 let is_mark_merged = function

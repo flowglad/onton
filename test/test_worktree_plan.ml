@@ -1,6 +1,6 @@
 open Base
-open Onton.Types
-open Onton.Worktree_plan
+open Onton_core.Types
+open Onton_core.Worktree_plan
 
 (* Generators *)
 

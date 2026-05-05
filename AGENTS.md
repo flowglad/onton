@@ -23,6 +23,35 @@
 - Every `Patch_agent.busy = true` must have a corresponding `complete` on all exit paths (success, error, cancel). Use `Fun.protect` when the busy→idle transition spans async work.
 - bisect_ppx is not compatible with our OCaml version — do not add it as a dependency.
 
+## Pure decision modules
+
+The codebase is split into two dune libraries:
+
+- `lib_core/` — pure decision logic. Modules here are total functions of their inputs (parsers, state algebras, predicates, decision functions). `lib_core/dune` lists only `base`, `yojson`, `ppx_yojson_conv_lib` in `(libraries ...)`. The linker rejects any pure module that reaches for `eio`, `unix`, `cohttp-eio`, `tls-eio`, `mirage-crypto-rng.unix`, `ca-certs`, `lwt`, or any other effectful library.
+- `lib/` — effectful handlers. Process spawning, Eio fibers, FS, HTTP, locks. Handlers decode inputs from the effect world, call pure decisions, thread the returned state, and emit effects.
+
+Reference example: `Codex_cost` (pure, in `lib_core/`) plus `Codex_backend` (handler, in `lib/`). The handler reads `codex exec --json` lines, calls `Codex_cost.on_turn_completed`, threads the returned state, and emits stream events.
+
+### Rules for new code
+
+- Anything that is a pure function of its inputs — parsing, state transitions, predicates, decisions, classifications — goes in `lib_core/`. Default to the pure side; only put code in `lib/` when it needs an effect.
+- Do NOT add `eio`, `unix`, `cohttp-eio`, `tls-eio`, `mirage-crypto-rng.unix`, `ca-certs`, `lwt`, or any process/IO library to `lib_core/dune`. If a pure decision needs an effectful input (clock, env var, file contents), the handler in `lib/` reads it and passes it as an argument.
+- Pure modules must be **total** — decoders return zero/default values on malformed input, never raise. Use private types and `.mli` files to make invariants explicit (e.g. `cost_state` is private so monotonicity is enforced at construction).
+- Handler modules in `lib/` are thin: decode → call pure decision → thread state → emit. Resist putting decision logic inline in the handler; extract it into the pure module instead.
+
+### Property tests for pure modules
+
+Each pure module gets a property test exe at `test/test_<module>_properties.ml` and a `test/dune` stanza that links **`onton_core` only** (not `onton`). The pure-only link is a second-tier linker check: if the module accidentally depends on something from `onton`, the test exe stops compiling.
+
+Required property families:
+
+- **Totality**: the function never raises over arbitrary generated inputs.
+- **Algebraic properties**: monotonicity, idempotence, commutativity, bounds — whatever the pure semantics promise.
+- **Interleaving properties**: when the module exposes a state machine, generate sequences of operations and verify invariants hold across all interleavings (cumulative monotone, sums match, permutation invariance, error stickiness, etc.).
+- **Boundary conditions**: closed-vs-open intervals, zero/negative values, empty collections, schema-priority order.
+
+Worked example: `test/test_codex_cost_properties.ml` (26 properties × 100–500 cases each, covering pricing math, usage decoding totality, schema priority, cap-decision boundary, single-step decisions, and full interleavings).
+
 ## Reference
 - Reference implementation (Elixir): `../orchestrate-gameplan/`
 - Reference specification: `../orchestrate-gameplan/spec/anton.pant`
