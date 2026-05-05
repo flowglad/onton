@@ -127,8 +127,7 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
     if String.equal base_branch "main" then ""
     else
       Printf.sprintf
-        "\n\
-         **NOTE:** Your branch is based on `%s`, which is a dependency patch's \
+        "**NOTE:** Your branch is based on `%s`, which is a dependency patch's \
          branch. Your worktree already contains that patch's changes. This is \
          expected — build on top of those changes. Your PR will target `%s`, \
          so the diff should only show YOUR patch's changes, not the \
@@ -986,12 +985,12 @@ let%test "patch prompt includes title and deps" =
   && String.is_substring result ~substring:"Patch 1: Core types"
   && String.is_substring result ~substring:"## Patch 5: Prompt renderer"
 
-let prompt_prefix_through_patch_heading prompt =
-  match String.substr_index prompt ~pattern:"## Patch " with
-  | None -> None
-  | Some idx -> Some (String.prefix prompt (idx + String.length "## Patch "))
-
 let%test "patch prompt static prefix is byte-identical across patches" =
+  let prompt_prefix_through_patch_heading prompt =
+    match String.substr_index prompt ~pattern:"## Patch " with
+    | None -> None
+    | Some idx -> Some (String.prefix prompt (idx + String.length "## Patch "))
+  in
   let patch_1 : Patch.t =
     Patch.
       {
