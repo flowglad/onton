@@ -39,8 +39,7 @@ let mint () =
   in
   let buf = Buffer.create 36 in
   Array.iteri normalized ~f:(fun i byte ->
-      if List.mem [ 4; 6; 8; 10 ] i ~equal:Int.equal then
-        Buffer.add_char buf '-';
+      (match i with 4 | 6 | 8 | 10 -> Buffer.add_char buf '-' | _ -> ());
       append_hex_byte buf byte);
   Buffer.contents buf
 
