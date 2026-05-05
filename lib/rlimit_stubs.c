@@ -18,6 +18,7 @@
 #include <sys/resource.h>
 #include <errno.h>
 #include <string.h>
+#include <stdlib.h>
 
 /* Returns (soft, hard) as an OCaml int pair. */
 CAMLprim value caml_onton_getrlimit_nofile(value unit) {
@@ -51,6 +52,15 @@ CAMLprim value caml_onton_setrlimit_nofile_soft(value v_soft) {
   }
   rl.rlim_cur = (rlim_t)Long_val(v_soft);
   if (setrlimit(RLIMIT_NOFILE, &rl) != 0) {
+    caml_failwith(strerror(errno));
+  }
+  CAMLreturn(Val_unit);
+}
+
+CAMLprim value caml_onton_unsetenv(value v_name) {
+  CAMLparam1(v_name);
+  const char *name = String_val(v_name);
+  if (unsetenv(name) != 0) {
     caml_failwith(strerror(errno));
   }
   CAMLreturn(Val_unit);
