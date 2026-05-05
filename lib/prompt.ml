@@ -100,8 +100,77 @@ let agents_md_section = function
       "## Project Conventions (AGENTS.md)\n\n" ^ String.rstrip content ^ "\n\n"
   | Some _ | None -> ""
 
-let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
-    (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
+(* === Three-layer prompt structure ===
+
+   Every layered prompt is composed as
+
+       gameplan_layer ^ patch_layer ^ turn_layer
+
+   so prefix-cache hits accumulate at the layer boundaries:
+
+   - {!render_gameplan_layer} produces a string that is byte-identical
+     across every layered prompt in a single gameplan run (cache reuse
+     across patches and turn kinds).
+   - {!render_patch_layer} produces a string that is byte-identical
+     across every layered prompt for one patch agent during a period
+     where [pr_number] and [base_branch] are stable (cache reuse across
+     follow-up turns of the same patch).
+   - The per-kind [render_turn_layer_*] helpers produce strictly
+     turn-dynamic content that lives at the tail.
+
+   Project-level overrides are now per-layer:
+   [prompts/gameplan.md], [prompts/patch.md], and
+   [prompts/turn_<kind>.md] (e.g. [prompts/turn_ci.md]). Each layer
+   renders independently; overriding one layer leaves the others' cache
+   structure intact. The legacy whole-prompt override names
+   ([prompts/patch.md] used to mean the entire Start prompt;
+   [prompts/review.md], [prompts/ci_failure.md], etc.) are no longer
+   honoured. *)
+
+let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
+    string =
+  let patches_list =
+    List.map gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+        Printf.sprintf "- Patch %s: %s"
+          (Patch_id.to_string p.Patch.id)
+          p.Patch.title)
+    |> String.concat ~sep:"\n"
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ("problem_statement", gameplan.Gameplan.problem_statement);
+      ("solution_summary", gameplan.Gameplan.solution_summary);
+      ( "final_state_spec_section",
+        optional_section ~header:"Final State Specification (Non-negotiable)"
+          gameplan.Gameplan.final_state_spec );
+      ( "explicit_opinions_section",
+        optional_section ~header:"Explicit Opinions (Non-negotiable)"
+          gameplan.Gameplan.explicit_opinions );
+      ( "current_state_section",
+        optional_section ~header:"Current State Analysis"
+          gameplan.Gameplan.current_state_analysis );
+      ("patches_list", patches_list);
+    ]
+  in
+  render_with_override ~project_name ~name:"gameplan" ~vars ~default:(fun () ->
+      substitute_variables
+        {|# [{{project_name}}]
+
+## Problem Statement
+{{problem_statement}}
+
+## Solution Summary
+{{solution_summary}}
+{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
+## Patches in Gameplan
+{{patches_list}}
+
+|}
+        vars)
+
+let render_patch_layer ~(project_name : string) (patch : Patch.t)
+    (_gameplan : Gameplan.t) ?pr_number ~(base_branch : string) () : string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -112,13 +181,6 @@ let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
         |> Printf.sprintf "Patches %s"
   in
   let branch = Branch.to_string patch.Patch.branch in
-  let patches_list =
-    List.map gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
-        Printf.sprintf "- Patch %s: %s"
-          (Patch_id.to_string p.Patch.id)
-          p.Patch.title)
-    |> String.concat ~sep:"\n"
-  in
   let pr_str =
     match pr_number with
     | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
@@ -147,27 +209,22 @@ let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
 **Do NOT run `git push` or `gh pr create` yourself.** The supervisor pushes your commits and opens/updates the PR.|}
     in
     match pr_number with
-    | Some _ -> commit_block ^ "\n\nContinue implementing until all tests pass."
+    | Some _ -> commit_block
     | None ->
         commit_block
         ^ {|
 
-The supervisor opens the draft PR after your first commit lands on the remote, with a gameplan-derived title and body.
-
-Continue implementing until all tests pass.|}
+The supervisor opens the draft PR after your first commit lands on the remote, with a gameplan-derived title and body.|}
   in
   let vars =
     [
       ("project_name", project_name);
       ("title", patch.Patch.title);
       ("classification_note", classification_note);
-      ("problem_statement", gameplan.Gameplan.problem_statement);
-      ("solution_summary", gameplan.Gameplan.solution_summary);
       ("dependencies", deps);
       ("branch", branch);
       ("base_branch", base_branch);
       ("patch_id", patch_id);
-      ("patches_list", patches_list);
       ( "pr_number",
         match pr_number with
         | Some n -> Int.to_string (Pr_number.to_int n)
@@ -177,16 +234,6 @@ Continue implementing until all tests pass.|}
       ("spec", patch.Patch.spec);
       ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
       ("files", format_list patch.Patch.files);
-      ("claude_md_section", agents_md_section agents_md);
-      ( "final_state_spec_section",
-        optional_section ~header:"Final State Specification (Non-negotiable)"
-          gameplan.Gameplan.final_state_spec );
-      ( "explicit_opinions_section",
-        optional_section ~header:"Explicit Opinions (Non-negotiable)"
-          gameplan.Gameplan.explicit_opinions );
-      ( "current_state_section",
-        optional_section ~header:"Current State Analysis"
-          gameplan.Gameplan.current_state_analysis );
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ( "spec_section",
         if String.is_empty patch.spec then ""
@@ -246,18 +293,7 @@ Continue implementing until all tests pass.|}
   in
   render_with_override ~project_name ~name:"patch" ~vars ~default:(fun () ->
       substitute_variables
-        {|# [{{project_name}}]
-
-{{claude_md_section}}## Problem Statement
-{{problem_statement}}
-
-## Solution Summary
-{{solution_summary}}
-{{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
-## Patches in Gameplan
-{{patches_list}}
-
-## Patch {{patch_id}}{{classification_note}}: {{title}}
+        {|## Patch {{patch_id}}{{classification_note}}: {{title}}
 
 ## Dependencies
 {{dependencies}}
@@ -270,8 +306,39 @@ Continue implementing until all tests pass.|}
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
 - PR: {{pr_str}}
-{{pr_instructions}}|}
+{{pr_instructions}}
+
+|}
         vars)
+
+(* When all of [patch], [gameplan], [base_branch] are supplied, returns
+   the gameplan+patch prefix; otherwise returns the empty string. Used by
+   the layered turn-prompt composers to support callers that don't have a
+   gameplan-defined patch in scope (e.g. ad-hoc PRs). *)
+let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md () =
+  match (patch, gameplan, base_branch) with
+  | Some p, Some g, Some b ->
+      render_gameplan_layer ~project_name g
+      ^ (match agents_md with
+        | Some content -> agents_md_section (Some content)
+        | None -> "")
+      ^ render_patch_layer ~project_name p g ?pr_number ~base_branch:b ()
+  | _ -> ""
+
+let render_turn_layer_start ~(project_name : string)
+    ~(pr_number : Pr_number.t option) : string =
+  let _ = pr_number in
+  let vars = [ ("project_name", project_name) ] in
+  render_with_override ~project_name ~name:"turn_start" ~vars
+    ~default:(fun () -> "Continue implementing until all tests pass.\n")
+
+let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
+    (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
+  render_gameplan_layer ~project_name gameplan
+  ^ agents_md_section agents_md
+  ^ render_patch_layer ~project_name patch gameplan ?pr_number ~base_branch ()
+  ^ render_turn_layer_start ~project_name ~pr_number
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
   let gp =
@@ -508,8 +575,8 @@ Keep it concise — a few bullet points usually suffices. If you have nothing ma
 (* Private helper — truncates a Git SHA to 7 chars for prompt display. *)
 let short_sha s = if String.length s <= 7 then s else String.sub s ~pos:0 ~len:7
 
-let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
-    (comments : Comment.t list) =
+let render_turn_layer_review ~(project_name : string) ?pr_number
+    ?current_head_sha (comments : Comment.t list) : string =
   match comments with
   | [] -> "No review comments to address."
   | _ ->
@@ -621,7 +688,7 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
           ("sha_anchor", sha_anchor);
         ]
       in
-      render_with_override ~project_name ~name:"review" ~vars
+      render_with_override ~project_name ~name:"turn_review" ~vars
         ~default:(fun () ->
           Printf.sprintf
             "# Review Comments%s%s\n\n\
@@ -644,8 +711,13 @@ let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
              supervisor will push them for you — do not run `git push`."
             pr_ctx sha_anchor formatted pr_num_str)
 
-let render_ci_failure_prompt ~(project_name : string) ?pr_number
-    (checks : Ci_check.t list) =
+let render_review_prompt ~(project_name : string) ?pr_number ?current_head_sha
+    ?patch ?gameplan ?base_branch (comments : Comment.t list) : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch ()
+  ^ render_turn_layer_review ~project_name ?pr_number ?current_head_sha comments
+
+let render_turn_layer_ci ~(project_name : string) ?pr_number
+    (checks : Ci_check.t list) : string =
   match checks with
   | [] -> "No CI failures."
   | _ ->
@@ -681,7 +753,7 @@ let render_ci_failure_prompt ~(project_name : string) ?pr_number
             | None -> "" );
         ]
       in
-      render_with_override ~project_name ~name:"ci_failure" ~vars
+      render_with_override ~project_name ~name:"turn_ci" ~vars
         ~default:(fun () ->
           Printf.sprintf
             "# CI Failures%s\n\n\
@@ -691,7 +763,12 @@ let render_ci_failure_prompt ~(project_name : string) ?pr_number
              them for you — do not run `git push`."
             pr_ctx formatted)
 
-let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
+let render_ci_failure_prompt ~(project_name : string) ?pr_number ?patch
+    ?gameplan ?base_branch (checks : Ci_check.t list) : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch ()
+  ^ render_turn_layer_ci ~project_name ?pr_number checks
+
+let render_turn_layer_ci_unknown ~(project_name : string) ?pr_number () =
   let pr_ctx =
     match pr_number with
     | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
@@ -706,7 +783,7 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
         | None -> "" );
     ]
   in
-  render_with_override ~project_name ~name:"ci_failure_unknown" ~vars
+  render_with_override ~project_name ~name:"turn_ci_unknown" ~vars
     ~default:(fun () ->
       Printf.sprintf
         "# CI Failures%s\n\n\
@@ -716,6 +793,11 @@ let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number () =
          After making your changes, commit them. The supervisor will push them \
          for you — do not run `git push`."
         pr_ctx)
+
+let render_ci_failure_unknown_prompt ~(project_name : string) ?pr_number ?patch
+    ?gameplan ?base_branch () : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch ()
+  ^ render_turn_layer_ci_unknown ~project_name ?pr_number ()
 
 let render_recovery_section (ci : Worktree.conflict_info) =
   let bullet (c : Worktree.unique_commit) =
@@ -785,9 +867,9 @@ to a plain rebase against `%s` because no unique commits were
 identified.)%s|}
         ci.target ci.target orig_head_block
 
-let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
-    ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
-    ?conflict_info () =
+let render_turn_layer_merge_conflict ~(project_name : string) ?pr_number
+    ~(base_branch : string) ?(git_status = "") ?(git_diff = "") ?conflict_info
+    () : string =
   let pr_ctx =
     match pr_number with
     | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
@@ -813,37 +895,6 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
 %s
 ```|} git_diff
   in
-  let task_context =
-    match (patch, gameplan) with
-    | Some (patch : Patch.t), Some (gp : Gameplan.t) ->
-        let patch_id = Patch_id.to_string patch.Patch.id in
-        let desc_section =
-          if String.is_empty patch.Patch.description then ""
-          else "\n\n### Your Task\n\n" ^ patch.Patch.description
-        in
-        let changes_section =
-          optional_list_section ~header:"Changes" patch.Patch.changes
-        in
-        let ac_section =
-          optional_list_section ~header:"Acceptance Criteria"
-            patch.Patch.acceptance_criteria
-        in
-        Printf.sprintf
-          {|
-
-## Task Context
-
-**Patch %s: %s**
-
-### Problem Statement
-%s
-
-### Solution Summary
-%s%s%s%s|}
-          patch_id patch.Patch.title gp.Gameplan.problem_statement
-          gp.Gameplan.solution_summary desc_section changes_section ac_section
-    | _ -> ""
-  in
   let recovery_section =
     match conflict_info with
     | Some ci -> render_recovery_section ci
@@ -868,14 +919,13 @@ let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
         | None -> "" );
       ("git_status", git_status);
       ("git_diff", git_diff);
-      ("task_context", task_context);
       ("recovery_section", recovery_section);
       ("old_base", old_base_var);
       ("target_branch", target_branch_var);
       ("orig_head", orig_head_var);
     ]
   in
-  render_with_override ~project_name ~name:"merge_conflict" ~vars
+  render_with_override ~project_name ~name:"turn_merge_conflict" ~vars
     ~default:(fun () ->
       Printf.sprintf
         {|# Merge Conflict%s
@@ -895,9 +945,16 @@ Do NOT run `git rebase origin/%s` — the rebase is already set up with the
 correct --onto range. Starting a new rebase would re-introduce dependency
 commits that have already been stripped.
 
-After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s%s|}
-        pr_ctx base_branch base_branch status_section diff_section task_context
+After resolving all conflicts and completing the rebase, the supervisor will push the rebased commits for you — do not run `git push`.%s%s%s|}
+        pr_ctx base_branch base_branch status_section diff_section
         recovery_section)
+
+let render_merge_conflict_prompt ~(project_name : string) ?pr_number ?patch
+    ?gameplan ~(base_branch : string) ?(git_status = "") ?(git_diff = "")
+    ?conflict_info () : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ~base_branch ()
+  ^ render_turn_layer_merge_conflict ~project_name ?pr_number ~base_branch
+      ~git_status ~git_diff ?conflict_info ()
 
 let render_human_message_prompt ~(project_name : string)
     (messages : string list) =
@@ -1156,6 +1213,176 @@ let%test "agents_md section normalizes trailing newline spacing" =
   String.equal
     (agents_md_section (Some "Rule one.\n"))
     "## Project Conventions (AGENTS.md)\n\nRule one.\n\n"
+
+(* === Three-layer invariants ===
+
+   The fixture below is reused by every layer-invariant test in this
+   block. Two patches in the same gameplan, both with non-empty patch
+   fields, so the helpers exercise the full templates. *)
+
+let make_layer_test_fixture () =
+  let patch_a : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "1";
+        title = "Add layer helpers";
+        description = "Introduce render_*_layer helpers.";
+        branch = Branch.of_string "feat/patch-1";
+        dependencies = [];
+        spec = "module L1.";
+        acceptance_criteria = [ "Three helpers exist." ];
+        files = [ "lib/prompt.ml" ];
+        classification = "INFRA";
+        changes = [ "Add helpers." ];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+      }
+  in
+  let patch_b : Patch.t =
+    Patch.
+      {
+        id = Patch_id.of_string "2";
+        title = "Wire dispatch";
+        description = "Pass patch + gameplan + base_branch to follow-ups.";
+        branch = Branch.of_string "feat/patch-2";
+        dependencies = [ Patch_id.of_string "1" ];
+        spec = "module L2.";
+        acceptance_criteria = [ "Follow-ups receive the layer args." ];
+        files = [ "bin/main.ml" ];
+        classification = "";
+        changes = [ "Add Base.List.find for patch resolution." ];
+        test_stubs_introduced = [];
+        test_stubs_implemented = [];
+        complexity = None;
+      }
+  in
+  let gameplan : Gameplan.t =
+    Gameplan.
+      {
+        project_name = "onton";
+        problem_statement = "Prompts mix gameplan, patch, and turn content.";
+        solution_summary = "Compose three layers in a fixed order.";
+        final_state_spec = "module THREE_LAYERS.";
+        current_state_analysis = "Today only the Start prompt is layered.";
+        explicit_opinions = "- Caching pays off when prefixes repeat.";
+        acceptance_criteria = [];
+        open_questions = [];
+        patches = [ patch_a; patch_b ];
+      }
+  in
+  (patch_a, patch_b, gameplan)
+
+let%test "gameplan_layer is the prefix of render_patch_prompt for both patches"
+    =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
+  let prompt_a =
+    render_patch_prompt ~project_name:"onton" patch_a gameplan
+      ~base_branch:"main"
+  in
+  let prompt_b =
+    render_patch_prompt ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  String.is_prefix prompt_a ~prefix:g_layer
+  && String.is_prefix prompt_b ~prefix:g_layer
+
+let%test
+    "gameplan + patch layers are the prefix of every layered prompt for one \
+     patch" =
+  let patch_a, _, gameplan = make_layer_test_fixture () in
+  let pr_number = Pr_number.of_int 7 in
+  let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
+  let p_layer =
+    render_patch_layer ~project_name:"onton" patch_a gameplan ~pr_number
+      ~base_branch:"main" ()
+  in
+  let prefix = g_layer ^ p_layer in
+  let start_prompt =
+    render_patch_prompt ~project_name:"onton" ~pr_number patch_a gameplan
+      ~base_branch:"main"
+  in
+  let ci_prompt =
+    render_ci_failure_prompt ~project_name:"onton" ~pr_number ~patch:patch_a
+      ~gameplan ~base_branch:"main"
+      [
+        Ci_check.
+          {
+            name = "build";
+            conclusion = "FAILURE";
+            details_url = None;
+            description = None;
+            started_at = None;
+            id = None;
+          };
+      ]
+  in
+  let ci_unknown_prompt =
+    render_ci_failure_unknown_prompt ~project_name:"onton" ~pr_number
+      ~patch:patch_a ~gameplan ~base_branch:"main" ()
+  in
+  let review_prompt =
+    render_review_prompt ~project_name:"onton" ~pr_number ~patch:patch_a
+      ~gameplan ~base_branch:"main"
+      [
+        Comment.
+          {
+            id = Comment_id.of_int 100;
+            thread_id = None;
+            body = "Looks good.";
+            path = None;
+            line = None;
+            commit_sha = None;
+            original_commit_sha = None;
+            outdated = false;
+          };
+      ]
+  in
+  let conflict_prompt =
+    render_merge_conflict_prompt ~project_name:"onton" ~pr_number ~patch:patch_a
+      ~gameplan ~base_branch:"main" ()
+  in
+  String.is_prefix start_prompt ~prefix
+  && String.is_prefix ci_prompt ~prefix
+  && String.is_prefix ci_unknown_prompt ~prefix
+  && String.is_prefix review_prompt ~prefix
+  && String.is_prefix conflict_prompt ~prefix
+
+let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
+  let _, _, _gameplan = make_layer_test_fixture () in
+  let ci_prompt =
+    render_ci_failure_prompt ~project_name:"onton"
+      [
+        Ci_check.
+          {
+            name = "build";
+            conclusion = "FAILURE";
+            details_url = None;
+            description = None;
+            started_at = None;
+            id = None;
+          };
+      ]
+  in
+  (* No layered prefix: the prompt does not start with the project heading. *)
+  not (String.is_prefix ci_prompt ~prefix:"# [onton]")
+
+let%test "human and pr_body prompts do not include the gameplan layer" =
+  let human_prompt =
+    render_human_message_prompt ~project_name:"onton" [ "Please rebase." ]
+  in
+  let pr_body_prompt =
+    render_pr_body_prompt ~project_name:"onton" ~pr_number:(Pr_number.of_int 42)
+      ~pr_body:"## Patch 1: Foo\nBody." ~spec_suffix:""
+      ~artifact_path:"/tmp/notes.md"
+  in
+  (* Neither contains the gameplan project heading marker — these
+     intentionally stay turn-only. The pr_body prompt may legitimately
+     contain "## Patch ..." inside its embedded PR body, so we only
+     check the project heading prefix. *)
+  (not (String.is_substring human_prompt ~substring:"# [onton]"))
+  && not (String.is_prefix pr_body_prompt ~prefix:"# [onton]")
 
 let%test "substitute_variables replaces placeholders" =
   let result =

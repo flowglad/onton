@@ -2760,6 +2760,23 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                     let base_changed_prefix =
                                       render_base_changed_prefix base_change
                                     in
+                                    (* Resolve the patch + base branch for
+                                       layered prompt prefixes (Ci, Review).
+                                       Ad-hoc PRs have no gameplan-defined
+                                       patch — [patch_for_layer] is then
+                                       [None] and the renderers omit the
+                                       gameplan+patch prefix. *)
+                                    let patch_for_layer =
+                                      Base.List.find gameplan.Gameplan.patches
+                                        ~f:(fun (p : Patch.t) ->
+                                          Patch_id.equal p.Patch.id patch_id)
+                                    in
+                                    let base_branch_for_layer =
+                                      Base.Option.value_map
+                                        agent.Patch_agent.base_branch
+                                        ~default:(Branch.to_string main)
+                                        ~f:Branch.to_string
+                                    in
                                     log_event runtime ~patch_id
                                       (match payload with
                                       | Patch_decision.Review_payload
@@ -2789,10 +2806,15 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                           then
                                             Prompt
                                             .render_ci_failure_unknown_prompt
-                                              ~project_name ?pr_number ()
+                                              ~project_name ?pr_number
+                                              ?patch:patch_for_layer ~gameplan
+                                              ~base_branch:base_branch_for_layer
+                                              ()
                                           else
                                             Prompt.render_ci_failure_prompt
                                               ~project_name ?pr_number
+                                              ?patch:patch_for_layer ~gameplan
+                                              ~base_branch:base_branch_for_layer
                                               failed_checks
                                       | Patch_decision.Review_payload
                                           { comments } ->
@@ -2803,7 +2825,10 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                           in
                                           Prompt.render_review_prompt
                                             ~project_name ?pr_number
-                                            ?current_head_sha comments
+                                            ?current_head_sha
+                                            ?patch:patch_for_layer ~gameplan
+                                            ~base_branch:base_branch_for_layer
+                                            comments
                                       | Patch_decision.Human_payload
                                           { messages } ->
                                           Prompt.render_human_message_prompt
