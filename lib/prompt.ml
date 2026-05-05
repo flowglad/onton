@@ -97,7 +97,7 @@ let optional_list_section ~header items =
 
 let claude_md_section = function
   | Some content when not (String.is_empty (String.strip content)) ->
-      "## Project Conventions (CLAUDE.md)\n\n" ^ content ^ "\n\n"
+      "## Project Conventions (CLAUDE.md)\n\n" ^ String.rstrip content ^ "\n\n"
   | Some _ | None -> ""
 
 let render_patch_prompt ~(project_name : string) ?claude_md ?pr_number
@@ -1151,6 +1151,11 @@ let%test "claude_md section is omitted when None" =
   in
   not
     (String.is_substring prompt ~substring:"## Project Conventions (CLAUDE.md)")
+
+let%test "claude_md section normalizes trailing newline spacing" =
+  String.equal
+    (claude_md_section (Some "Rule one.\n"))
+    "## Project Conventions (CLAUDE.md)\n\nRule one.\n\n"
 
 let%test "substitute_variables replaces placeholders" =
   let result =
