@@ -53,7 +53,10 @@ let model_args = function
   | Some m when not (String.is_empty m) -> [ "--model"; m ]
   | _ -> []
 
-let build_args ~model ~prompt ~resume_session =
+let max_turns_for ~complexity =
+  match complexity with Some 1 -> 50 | Some 2 -> 100 | _ -> 200
+
+let build_args ~model ~complexity ~prompt ~resume_session =
   let base = [ "claude" ] in
   let prompt_args = [ "-p"; prompt; "--output-format"; "text" ] in
   let session_args =
@@ -63,13 +66,13 @@ let build_args ~model ~prompt ~resume_session =
     [
       "--dangerously-skip-permissions";
       "--max-turns";
-      "200";
+      Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
-let build_stream_args ~model ~prompt ~resume_session =
+let build_stream_args ~model ~complexity ~prompt ~resume_session =
   let base = [ "claude" ] in
   let prompt_args =
     [ "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
@@ -81,7 +84,7 @@ let build_stream_args ~model ~prompt ~resume_session =
     [
       "--dangerously-skip-permissions";
       "--max-turns";
-      "200";
+      Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
   in
@@ -227,9 +230,9 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
 let parse_stream_event (line : string) : Types.Stream_event.t option =
   match parse_stream_events line with [] -> None | e :: _ -> Some e
 
-let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
+let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_args ~model ~prompt ~resume_session in
+  let args = build_args ~model ~complexity ~prompt ~resume_session in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
@@ -286,7 +289,7 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session =
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
     ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
-  let args = build_stream_args ~model ~prompt ~resume_session in
+  let args = build_stream_args ~model ~complexity ~prompt ~resume_session in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
       ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
@@ -313,9 +316,23 @@ let%test "auto_model: None -> opus (conservative)" =
 let%test "auto_model: out-of-range -> opus (conservative)" =
   Option.equal String.equal (auto_model ~complexity:(Some 7)) (Some "opus")
 
+let%test "max_turns_for: complexity 1 -> 50" =
+  Int.equal (max_turns_for ~complexity:(Some 1)) 50
+
+let%test "max_turns_for: complexity 2 -> 100" =
+  Int.equal (max_turns_for ~complexity:(Some 2)) 100
+
+let%test "max_turns_for: complexity 3 -> 200" =
+  Int.equal (max_turns_for ~complexity:(Some 3)) 200
+
+let%test "max_turns_for: None -> 200" =
+  Int.equal (max_turns_for ~complexity:None) 200
+
 let%test "build_args fresh (no resume, with model)" =
+  let complexity = Some 2 in
   let args =
-    build_args ~model:(Some "sonnet") ~prompt:"do stuff" ~resume_session:None
+    build_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
+      ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -328,12 +345,15 @@ let%test "build_args fresh (no resume, with model)" =
       "text";
       "--dangerously-skip-permissions";
       "--max-turns";
-      "200";
+      "100";
       "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_args fresh (no resume, no model)" =
-  let args = build_args ~model:None ~prompt:"do stuff" ~resume_session:None in
+  let complexity = Some 1 in
+  let args =
+    build_args ~model:None ~complexity ~prompt:"do stuff" ~resume_session:None
+  in
   List.equal String.equal args
     [
       "claude";
@@ -343,13 +363,14 @@ let%test "build_args fresh (no resume, no model)" =
       "text";
       "--dangerously-skip-permissions";
       "--max-turns";
-      "200";
+      "50";
       "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_args with resume session" =
+  let complexity = Some 3 in
   let args =
-    build_args ~model:(Some "opus") ~prompt:"do stuff"
+    build_args ~model:(Some "opus") ~complexity ~prompt:"do stuff"
       ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
@@ -370,12 +391,16 @@ let%test "build_args with resume session" =
     ]
 
 let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
-  let args = build_args ~model:None ~prompt:"do stuff" ~resume_session:None in
+  let args =
+    build_args ~model:None ~complexity:None ~prompt:"do stuff"
+      ~resume_session:None
+  in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
 
 let%test "build_stream_args fresh (no resume, with model)" =
+  let complexity = Some 2 in
   let args =
-    build_stream_args ~model:(Some "sonnet") ~prompt:"do stuff"
+    build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
       ~resume_session:None
   in
   List.equal String.equal args
@@ -390,13 +415,15 @@ let%test "build_stream_args fresh (no resume, with model)" =
       "--verbose";
       "--dangerously-skip-permissions";
       "--max-turns";
-      "200";
+      "100";
       "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_stream_args fresh (no resume, no model)" =
+  let complexity = None in
   let args =
-    build_stream_args ~model:None ~prompt:"do stuff" ~resume_session:None
+    build_stream_args ~model:None ~complexity ~prompt:"do stuff"
+      ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -413,8 +440,9 @@ let%test "build_stream_args fresh (no resume, no model)" =
     ]
 
 let%test "build_stream_args with resume session" =
+  let complexity = Some 1 in
   let args =
-    build_stream_args ~model:(Some "opus") ~prompt:"do stuff"
+    build_stream_args ~model:(Some "opus") ~complexity ~prompt:"do stuff"
       ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
@@ -431,13 +459,14 @@ let%test "build_stream_args with resume session" =
       "abc-123";
       "--dangerously-skip-permissions";
       "--max-turns";
-      "200";
+      "50";
       "--exclude-dynamic-system-prompt-sections";
     ]
 
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
   let args =
-    build_stream_args ~model:None ~prompt:"do stuff" ~resume_session:None
+    build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
+      ~resume_session:None
   in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
 
