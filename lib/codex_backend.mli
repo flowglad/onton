@@ -17,6 +17,7 @@ val parse_event : string -> Types.Stream_event.t list
 val auto_model : complexity:int option -> string option
 (** Codex's complexity → model ladder used to resolve [--model auto]. Exposed so
     the TUI can display the concrete model name a patch will run under. *)
+
 type cost_state = { cumulative_usd : float }
 
 val initial_cost_state : cost_state
