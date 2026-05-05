@@ -13,6 +13,14 @@ val load : path:string -> (Runtime.snapshot, string) result
     orchestrator graph directly from the saved JSON. Returns [Error msg] if the
     file is missing, malformed, or incompatible. *)
 
+val record_session_id :
+  snapshot_path:string ->
+  patch_id:Types.Patch_id.t ->
+  session_id:string ->
+  (unit, string) result
+(** Persist a patch's backend session ID synchronously before spawn so crash
+    recovery can resume even if the first stream event never arrives. *)
+
 val snapshot_to_yojson : Runtime.snapshot -> Yojson.Safe.t
 (** Convert a snapshot to its JSON representation. *)
 

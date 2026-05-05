@@ -3,6 +3,79 @@ open Types
 
 (* ---------- helpers ---------- *)
 
+let write_file_atomically ~path ~content =
+  let dir = Stdlib.Filename.dirname path in
+  let base = Stdlib.Filename.basename path in
+  let tmp_path = Stdlib.Filename.temp_file ~temp_dir:dir (base ^ ".") ".tmp" in
+  try
+    let oc = Stdlib.open_out_bin tmp_path in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_out oc)
+      (fun () ->
+        Stdlib.output_string oc content;
+        Stdlib.flush oc);
+    Stdlib.Sys.rename tmp_path path;
+    Ok ()
+  with exn ->
+    (try Stdlib.Sys.remove tmp_path with _ -> ());
+    Error (Stdlib.Printexc.to_string exn)
+
+let remove_if_exists path =
+  if Stdlib.Sys.file_exists path then Stdlib.Sys.remove path
+
+let session_id_dir ~snapshot_path =
+  Stdlib.Filename.concat
+    (Stdlib.Filename.dirname snapshot_path)
+    "llm-session-ids"
+
+let session_id_path ~snapshot_path ~patch_id =
+  Stdlib.Filename.concat
+    (session_id_dir ~snapshot_path)
+    (Patch_id.to_string patch_id ^ ".txt")
+
+let sync_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
+  let dir = session_id_dir ~snapshot_path in
+  Project_store.ensure_dir dir;
+  Orchestrator.all_agents snap.Runtime.orchestrator
+  |> List.iter ~f:(fun (agent : Patch_agent.t) ->
+      let path =
+        session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
+      in
+      match agent.Patch_agent.llm_session_id with
+      | Some session_id ->
+          ignore (write_file_atomically ~path ~content:session_id)
+      | None ->
+          (* A fresh Claude session may have minted and persisted its ID
+                before the in-memory orchestrator has observed the first
+                stream event. While that session is still marked busy, preserve
+                any existing sidecar rather than deleting the crash-recovery
+                resume key. *)
+          if not agent.Patch_agent.busy then remove_if_exists path)
+
+let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
+  let orchestrator =
+    List.fold (Orchestrator.all_agents snap.Runtime.orchestrator)
+      ~init:snap.Runtime.orchestrator ~f:(fun orch (agent : Patch_agent.t) ->
+        let path =
+          session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
+        in
+        if Stdlib.Sys.file_exists path then
+          try
+            let ic = Stdlib.open_in path in
+            let session_id =
+              Stdlib.Fun.protect
+                ~finally:(fun () -> Stdlib.close_in_noerr ic)
+                (fun () -> Stdlib.In_channel.input_all ic |> String.strip)
+            in
+            if String.is_empty session_id then orch
+            else
+              Orchestrator.set_llm_session_id orch agent.Patch_agent.patch_id
+                (Some session_id)
+          with _ -> orch
+        else orch)
+  in
+  { snap with Runtime.orchestrator }
+
 let string_member key json = Yojson.Safe.Util.(member key json |> to_string)
 
 let string_member_opt key json =
@@ -584,23 +657,13 @@ let snapshot_of_yojson json =
 (* ---------- File I/O ---------- *)
 
 let save ~path (snap : Runtime.snapshot) =
-  let dir = Stdlib.Filename.dirname path in
-  let base = Stdlib.Filename.basename path in
-  let tmp_path = Stdlib.Filename.temp_file ~temp_dir:dir (base ^ ".") ".tmp" in
   try
     let json = snapshot_to_yojson snap in
     let content = Yojson.Safe.pretty_to_string json in
-    let oc = Stdlib.open_out_bin tmp_path in
-    Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_out oc)
-      (fun () ->
-        Stdlib.output_string oc content;
-        Stdlib.flush oc);
-    Stdlib.Sys.rename tmp_path path;
+    Result.ok_or_failwith (write_file_atomically ~path ~content);
+    sync_session_id_sidecars ~snapshot_path:path snap;
     Ok ()
-  with exn ->
-    (try Stdlib.Sys.remove tmp_path with _ -> ());
-    Error (Stdlib.Printexc.to_string exn)
+  with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let load ~path =
   try
@@ -611,6 +674,16 @@ let load ~path =
         (fun () -> Stdlib.In_channel.input_all ic)
     in
     let json = Yojson.Safe.from_string content in
-    let result = snapshot_of_yojson json in
+    let result =
+      Result.map (snapshot_of_yojson json)
+        ~f:(overlay_session_id_sidecars ~snapshot_path:path)
+    in
     result
   with exn -> Error (Stdlib.Printexc.to_string exn)
+
+let record_session_id ~snapshot_path ~patch_id ~session_id =
+  let dir = session_id_dir ~snapshot_path in
+  Project_store.ensure_dir dir;
+  write_file_atomically
+    ~path:(session_id_path ~snapshot_path ~patch_id)
+    ~content:session_id

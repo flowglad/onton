@@ -3558,6 +3558,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             Printf.eprintf "Starting new project %S.\n%!" project_name;
             Runtime.create ~gameplan ~main_branch:config.main_branch ()
       in
+      Unix.putenv "ONTON_SNAPSHOT_PATH"
+        (Project_store.snapshot_path project_name);
       let github =
         Github.create ~token:config.github_token ~owner:config.github_owner
           ~repo:config.github_repo

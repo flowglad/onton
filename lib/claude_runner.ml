@@ -72,10 +72,17 @@ let build_args ~model ~complexity ~prompt ~resume_session =
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
-let build_stream_args ~model ~complexity ~prompt ~resume_session =
+let build_stream_args ~model ~prompt ~minted_session_id ~resume_session =
+let build_stream_args ~model ~complexity ~prompt ~minted_session_id
+    ~resume_session =
   let base = [ "claude" ] in
   let prompt_args =
     [ "-p"; prompt; "--output-format"; "stream-json"; "--verbose" ]
+  in
+  let minted_session_args =
+    match minted_session_id with
+    | Some id -> [ "--session-id"; id ]
+    | None -> []
   in
   let session_args =
     match resume_session with Some id -> [ "--resume"; id ] | None -> []
@@ -88,7 +95,8 @@ let build_stream_args ~model ~complexity ~prompt ~resume_session =
       "--exclude-dynamic-system-prompt-sections";
     ]
   in
-  base @ model_args model @ prompt_args @ session_args @ flags
+  base @ model_args model @ minted_session_args @ prompt_args @ session_args
+  @ flags
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
@@ -289,7 +297,25 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
     ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
-  let args = build_stream_args ~model ~complexity ~prompt ~resume_session in
+  let minted_session_id =
+    match
+      (resume_session, Stdlib.Sys.getenv_opt "ONTON_MINTED_SESSION_IDS")
+    with
+    | None, Some "1" ->
+        let session_id = Session_id.mint () in
+        (match Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" with
+        | Some snapshot_path ->
+            ignore
+              (Persistence.record_session_id ~snapshot_path ~patch_id
+                 ~session_id)
+        | None -> ());
+        Some session_id
+    | _ -> None
+  in
+  let args =
+    build_stream_args ~model ~complexity ~prompt ~minted_session_id
+      ~resume_session
+  in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
       ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
@@ -401,7 +427,7 @@ let%test "build_stream_args fresh (no resume, with model)" =
   let complexity = Some 2 in
   let args =
     build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
-      ~resume_session:None
+      ~minted_session_id:None ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -423,7 +449,7 @@ let%test "build_stream_args fresh (no resume, no model)" =
   let complexity = None in
   let args =
     build_stream_args ~model:None ~complexity ~prompt:"do stuff"
-      ~resume_session:None
+      ~minted_session_id:None ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -443,7 +469,7 @@ let%test "build_stream_args with resume session" =
   let complexity = Some 1 in
   let args =
     build_stream_args ~model:(Some "opus") ~complexity ~prompt:"do stuff"
-      ~resume_session:(Some "abc-123")
+      ~minted_session_id:None ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
@@ -466,9 +492,34 @@ let%test "build_stream_args with resume session" =
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
   let args =
     build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
-      ~resume_session:None
+      ~minted_session_id:None ~resume_session:None
   in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
+
+let%test "build_stream_args emits --session-id when minted_session_id is Some" =
+  let complexity = None in
+  let args =
+    build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
+      ~minted_session_id:(Some "123e4567-e89b-42d3-a456-426614174000")
+      ~resume_session:None
+  in
+  List.equal String.equal args
+    [
+      "claude";
+      "--model";
+      "sonnet";
+      "--session-id";
+      "123e4567-e89b-42d3-a456-426614174000";
+      "-p";
+      "do stuff";
+      "--output-format";
+      "stream-json";
+      "--verbose";
+      "--dangerously-skip-permissions";
+      "--max-turns";
+      "200";
+      "--exclude-dynamic-system-prompt-sections";
+    ]
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
