@@ -512,15 +512,22 @@ type patch_view = {
   automerge_enabled : bool;
   automerge_deadline : float option;
   automerge_failure_count : int;
+  complexity : int option;
+  backend : string;
+  model : string option;
 }
 [@@warning "-69"]
 
 let patch_view_of_agent (agent : Patch_agent.t)
     ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
     ~(main_branch : Branch.t) ~(agents_by_id : Patch_agent.t Map.M(Patch_id).t)
-    =
+    ~(resolve_routing : complexity:int option -> Backend_routing.decision) =
   let patch_id = agent.patch_id in
   let patch_opt = Map.find patches_by_id patch_id in
+  let complexity = Option.bind patch_opt ~f:(fun p -> p.Patch.complexity) in
+  let { Backend_routing.backend = backend_name; model } =
+    resolve_routing ~complexity
+  in
   let title =
     match patch_opt with
     | Some p -> p.Patch.title
@@ -612,6 +619,9 @@ let patch_view_of_agent (agent : Patch_agent.t)
     automerge_enabled = agent.automerge_enabled;
     automerge_deadline = agent.automerge_deadline;
     automerge_failure_count = agent.automerge_failure_count;
+    complexity;
+    backend = backend_name;
+    model;
   }
 
 (** {1 Render helpers} *)
@@ -854,6 +864,11 @@ let detail_info_rows (pv : patch_view) ~width ~now =
         | None -> "(not set)");
       fit_value "  Worktree:    "
         (match pv.worktree_path with Some p -> p | None -> "(none)");
+      Printf.sprintf "  Complexity:  %s"
+        (match pv.complexity with Some n -> Int.to_string n | None -> "—");
+      fit_value "  Backend:     " pv.backend;
+      fit_value "  Model:       "
+        (match pv.model with Some m -> m | None -> "(backend default)");
       Printf.sprintf "  PR:          %s"
         (match pv.pr_number with
         | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
@@ -1255,6 +1270,7 @@ let detail_info_height (pv : patch_view) =
 
 let views_of_orchestrator ~(orchestrator : Orchestrator.t)
     ~(gameplan : Gameplan.t) ~(activity : activity_entry list)
+    ~(resolve_routing : complexity:int option -> Backend_routing.decision)
     ?(intervention_reasons = Map.Poly.empty) () =
   let agents = Orchestrator.all_agents orchestrator in
   let graph = Orchestrator.graph orchestrator in
@@ -1273,7 +1289,7 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         let main_branch = Orchestrator.main_branch orchestrator in
         let pv =
           patch_view_of_agent agent ~patches_by_id ~graph ~main_branch
-            ~agents_by_id
+            ~agents_by_id ~resolve_routing
         in
         let pid_str = Patch_id.to_string agent.patch_id in
         let filtered =

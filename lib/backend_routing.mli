@@ -42,3 +42,13 @@ val is_auto_model : string option -> bool
 (** [is_auto_model m] returns [true] iff [m] is [Some s] where [s]
     case-insensitively equals ["auto"]. Exposed for tests and call sites that
     need to gate other behavior on the same predicate. *)
+
+val resolve_auto :
+  decision ->
+  auto_model:(complexity:int option -> string option) ->
+  complexity:int option ->
+  decision
+(** Inline the [Some "auto"] sentinel: when [decision.model] is auto, replace it
+    with [auto_model ~complexity]; otherwise return [decision] unchanged. Used
+    by display sites (the TUI) that want to show the concrete model name a patch
+    will run under, rather than the sentinel. *)

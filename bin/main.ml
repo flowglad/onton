@@ -669,7 +669,8 @@ let intervention_reasons_of_log (log : Activity_log.t)
 let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
     ~transcripts ~sorted_patch_ids ~input_mode ~prompt_line ~patches_start_row
-    ~patches_scroll_offset ~patches_visible_count ~backend_name =
+    ~patches_scroll_offset ~patches_visible_count ~backend_name ~resolve_routing
+    =
   Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
   let first = ref true in
   let prev_output = ref "" in
@@ -699,7 +700,7 @@ let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
     in
     let views =
       Tui.views_of_orchestrator ~orchestrator:orch ~gameplan:gp ~activity
-        ~intervention_reasons ()
+        ~resolve_routing ~intervention_reasons ()
     in
     sorted_patch_ids :=
       Base.List.map views ~f:(fun (pv : Tui.patch_view) -> pv.Tui.patch_id);
@@ -767,7 +768,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
     ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
     ~project_name ~show_help ~status_msg ~sorted_patch_ids ~input_mode
     ~prompt_line ~patches_start_row ~patches_scroll_offset
-    ~patches_visible_count ~owner ~repo =
+    ~patches_visible_count ~owner ~repo ~resolve_routing =
   let buf = Tui_input.Edit_buffer.create () in
   let selected_pid () =
     let pids = !sorted_patch_ids in
@@ -932,7 +933,8 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                       Runtime.read runtime (fun snap ->
                           Tui.views_of_orchestrator
                             ~orchestrator:snap.Runtime.orchestrator
-                            ~gameplan:snap.Runtime.gameplan ~activity:[] ())
+                            ~gameplan:snap.Runtime.gameplan ~activity:[]
+                            ~resolve_routing ())
                     in
                     let active =
                       Base.List.filter views ~f:(fun (pv : Tui.patch_view) ->
@@ -3625,6 +3627,19 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         Backend_registry.get registry ~backend ~model
       in
       let default_backend = pick_backend ~complexity:None in
+      (* Display-side counterpart to [pick_backend]: returns the routing
+         decision with the [auto] sentinel resolved to the concrete model
+         name, so the TUI shows what will actually run. *)
+      let resolve_routing ~complexity : Backend_routing.decision =
+        let dec : Backend_routing.decision =
+          Backend_routing.decide ~repo_config ~default_backend:config.backend
+            ~cli_model:cli_model_opt ~complexity
+        in
+        Backend_routing.resolve_auto dec
+          ~auto_model:
+            (Backend_registry.auto_model ~backend:dec.Backend_routing.backend)
+          ~complexity
+      in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
       (* Capture agent state and worktree list BEFORE launching concurrent
@@ -3757,7 +3772,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
                      ~input_mode ~prompt_line ~patches_start_row
                      ~patches_scroll_offset ~patches_visible_count
-                     ~backend_name:default_backend.Llm_backend.name)
+                     ~backend_name:default_backend.Llm_backend.name
+                     ~resolve_routing)
                 :: (fun () ->
                   input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
                     ~detail_scroll ~detail_follow ~timeline_scroll
@@ -3765,7 +3781,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~show_help ~status_msg ~sorted_patch_ids ~input_mode
                     ~prompt_line ~patches_start_row ~patches_scroll_offset
                     ~patches_visible_count ~owner:config.github_owner
-                    ~repo:config.github_repo)
+                    ~repo:config.github_repo ~resolve_routing)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~transcripts ~github ~net ~event_log

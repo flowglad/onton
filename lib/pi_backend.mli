@@ -13,3 +13,7 @@ val create :
 
 val parse_event : string -> Types.Stream_event.t list
 (** Parse a single NDJSON line from Pi's JSON output. Exposed for testing. *)
+
+val auto_model : complexity:int option -> string option
+(** Pi's complexity → model ladder used to resolve [--model auto]. Exposed so
+    the TUI can display the concrete model name a patch will run under. *)

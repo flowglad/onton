@@ -24,3 +24,9 @@ val get : t -> backend:string -> model:string option -> Llm_backend.t
 (** Return the cached [Llm_backend.t] for [(backend, model)], constructing it on
     first request. Raises [Invalid_argument] for unrecognised backend names —
     callers are expected to validate against the known list before asking. *)
+
+val auto_model : backend:string -> complexity:int option -> string option
+(** Look up the named backend's hardcoded complexity → model ladder — the model
+    name it would resolve [--model auto] to for this complexity. Pure; no [t]
+    required, no IO. Raises [Invalid_argument] on unknown backend names,
+    matching {!get}. *)
