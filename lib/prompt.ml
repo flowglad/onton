@@ -131,7 +131,7 @@ let render_patch_prompt ~(project_name : string) ?pr_number (patch : Patch.t)
          branch. Your worktree already contains that patch's changes. This is \
          expected — build on top of those changes. Your PR will target `%s`, \
          so the diff should only show YOUR patch's changes, not the \
-         dependency's.\n"
+         dependency's.\n\n"
         base_branch base_branch
   in
   let pr_instructions =
