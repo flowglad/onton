@@ -1,6 +1,6 @@
 open Base
-open Onton.Types
-open Onton.Patch_agent
+open Onton_core.Types
+open Onton_core.Patch_agent
 
 let all_ops =
   Operation_kind.[ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
@@ -172,7 +172,7 @@ let () =
         ~name:"priority enforced: low rejected and high accepted for all pairs"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let rank = Onton.Priority.priority in
+          let rank = Onton_core.Priority.priority in
           let dispatch a k =
             if Operation_kind.equal k Operation_kind.Rebase then
               rebase a ~base_branch:(Branch.of_string "new-base")
@@ -478,7 +478,7 @@ let () =
             (* ci_checks must still be readable so the runner can filter
                for failures at delivery time *)
             let failure_conclusions =
-              Onton.Patch_decision.failure_conclusions
+              Onton_core.Patch_decision.failure_conclusions
             in
             let has_any_failure =
               List.exists a.ci_checks ~f:(fun c ->
@@ -523,7 +523,7 @@ let () =
             let a = enqueue a Operation_kind.Ci in
             let a = respond a Operation_kind.Ci in
             let failure_conclusions =
-              Onton.Patch_decision.failure_conclusions
+              Onton_core.Patch_decision.failure_conclusions
             in
             not
               (List.exists a.ci_checks ~f:(fun c ->
@@ -716,7 +716,7 @@ let () =
           let a = complete a in
           let a = mark_merged a in
           let a =
-            Onton.Patch_agent.restore ~patch_id:a.patch_id ~branch:br
+            Onton_core.Patch_agent.restore ~patch_id:a.patch_id ~branch:br
               ~pr_number:None ~has_session:false ~busy:false ~merged:false
               ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
               ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
@@ -726,7 +726,7 @@ let () =
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
               ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-              ~current_op_state:Onton.Patch_agent.Queued
+              ~current_op_state:Onton_core.Patch_agent.Queued
               ~current_message_id:None ~generation:0 ~worktree_path:None
               ~branch_blocked:false ~llm_session_id:None
               ~automerge_enabled:false ~automerge_deadline:None
@@ -807,7 +807,7 @@ let () =
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
               ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-              ~current_op_state:Onton.Patch_agent.Queued
+              ~current_op_state:Onton_core.Patch_agent.Queued
               ~current_message_id:None ~generation:0 ~worktree_path:None
               ~branch_blocked:false ~llm_session_id:None
               ~automerge_enabled:false ~automerge_deadline:None

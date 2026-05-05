@@ -1,7 +1,7 @@
 open Base
-open Onton.Types
-open Onton.Patch_agent
-open Onton.Patch_decision
+open Onton_core.Types
+open Onton_core.Patch_agent
+open Onton_core.Patch_decision
 
 (* -- Generators -- *)
 

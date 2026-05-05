@@ -1,10 +1,6 @@
 (library
- (name onton)
- (libraries onton_core base unix eio eio_main eio.unix yojson ppx_yojson_conv_lib cohttp-eio tls-eio mirage-crypto-rng.unix ca-certs cmarkit)
- (flags (:standard -open Onton_core))
- (foreign_stubs
-  (language c)
-  (names rlimit_stubs))
+ (name onton_core)
+ (libraries base yojson ppx_yojson_conv_lib)
  (inline_tests)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42))

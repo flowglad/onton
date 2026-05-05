@@ -4,7 +4,7 @@
    reintroduces Eio mutex/effect usage in the constructor. *)
 
 let () =
-  let open Onton.Types in
+  let open Onton_core.Types in
   let main_branch = Branch.of_string "main" in
   let gameplan =
     {
@@ -25,7 +25,7 @@ let () =
         Onton.Orchestrator.create ~patches:[] ~main_branch;
       activity_log = Onton.Activity_log.empty;
       gameplan;
-      transcripts = Base.Hashtbl.create (module Onton.Types.Patch_id);
+      transcripts = Base.Hashtbl.create (module Onton_core.Types.Patch_id);
     }
   in
   let _rt = Onton.Runtime.create ~gameplan ~main_branch ~snapshot () in
@@ -35,7 +35,7 @@ let () =
    with the config-provided value, so stale snapshots don't silently use the
    wrong branch. *)
 let () =
-  let open Onton.Types in
+  let open Onton_core.Types in
   let old_branch = Branch.of_string "old-branch" in
   let new_branch = Branch.of_string "new-branch" in
   let gameplan =
@@ -57,7 +57,7 @@ let () =
         Onton.Orchestrator.create ~patches:[] ~main_branch:old_branch;
       activity_log = Onton.Activity_log.empty;
       gameplan;
-      transcripts = Base.Hashtbl.create (module Onton.Types.Patch_id);
+      transcripts = Base.Hashtbl.create (module Onton_core.Types.Patch_id);
     }
   in
   let rt =

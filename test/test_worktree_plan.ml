@@ -1,5 +1,5 @@
 open Base
-open Onton.Types
+open Onton_core.Types
 open Onton.Worktree_plan
 
 (* Generators *)

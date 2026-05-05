@@ -1,6 +1,7 @@
 open Base
 open Onton
-open Onton.Types
+open Onton_core
+open Onton_core.Types
 
 (** Property tests for [Orchestrator.apply_start_outcome] and
     [Orchestrator.apply_respond_outcome]. These encode the runner's contract:

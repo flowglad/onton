@@ -1,5 +1,6 @@
 open Base
 open Onton
+open Onton_core
 
 (** End-to-end recovery pipeline for "worktree deleted between session start and
     post-session push". Drives:

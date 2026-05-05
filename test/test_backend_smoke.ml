@@ -1,5 +1,6 @@
 open Base
 open Onton
+open Onton_core
 
 (** Smoke integration tests for all LLM backends.
 

@@ -1,6 +1,7 @@
 open Base
 open Onton
-open Onton.Types
+open Onton_core
+open Onton_core.Types
 
 (** State machine command sequence properties (P1–P7).
 

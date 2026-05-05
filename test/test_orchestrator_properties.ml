@@ -1,6 +1,7 @@
 open Base
 open Onton
-open Onton.Types
+open Onton_core
+open Onton_core.Types
 
 (** QCheck2 property-based tests for orchestrator tick and spawn logic.
 

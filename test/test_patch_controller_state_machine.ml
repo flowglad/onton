@@ -1,6 +1,7 @@
 open Base
 open Onton
-open Onton.Types
+open Onton_core
+open Onton_core.Types
 
 let main = Branch.of_string "main"
 
@@ -499,8 +500,9 @@ let () =
           (* Assert session_id cleared and fallback is Tried_fresh *)
           let agent = Orchestrator.agent orch pid in
           Option.is_none agent.Patch_agent.llm_session_id
-          && Onton.Patch_agent.equal_session_fallback
-               agent.Patch_agent.session_fallback Onton.Patch_agent.Tried_fresh
+          && Onton_core.Patch_agent.equal_session_fallback
+               agent.Patch_agent.session_fallback
+               Onton_core.Patch_agent.Tried_fresh
         with _ -> false
         end)
   in

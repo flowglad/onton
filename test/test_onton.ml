@@ -1,12 +1,12 @@
 let () =
   let patches =
     [
-      Onton.Types.Patch.
+      Onton_core.Types.Patch.
         {
-          id = Onton.Types.Patch_id.of_string "1";
+          id = Onton_core.Types.Patch_id.of_string "1";
           title = "Test patch";
           description = "";
-          branch = Onton.Types.Branch.of_string "test-1";
+          branch = Onton_core.Types.Branch.of_string "test-1";
           dependencies = [];
           spec = "";
           acceptance_criteria = [];
@@ -19,10 +19,10 @@ let () =
         };
     ]
   in
-  let main_branch = Onton.Types.Branch.of_string "main" in
+  let main_branch = Onton_core.Types.Branch.of_string "main" in
   let orch = Onton.Orchestrator.create ~patches ~main_branch in
   let gameplan =
-    Onton.Types.Gameplan.
+    Onton_core.Types.Gameplan.
       {
         project_name = "test-project";
         problem_statement = "";
@@ -41,8 +41,9 @@ let () =
   (match actions with
   | [ Onton.Orchestrator.Start (pid, base) ] ->
       assert (
-        Onton.Types.Patch_id.equal pid (Onton.Types.Patch_id.of_string "1"));
-      assert (Onton.Types.Branch.equal base main_branch)
+        Onton_core.Types.Patch_id.equal pid
+          (Onton_core.Types.Patch_id.of_string "1"));
+      assert (Onton_core.Types.Branch.equal base main_branch)
   | [] | _ :: _ :: _
   | [ Onton.Orchestrator.Respond _ ]
   | [ Onton.Orchestrator.Rebase _ ] ->
