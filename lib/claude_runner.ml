@@ -72,7 +72,6 @@ let build_args ~model ~complexity ~prompt ~resume_session =
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
-let build_stream_args ~model ~prompt ~minted_session_id ~resume_session =
 let build_stream_args ~model ~complexity ~prompt ~minted_session_id
     ~resume_session =
   let base = [ "claude" ] in
@@ -97,6 +96,22 @@ let build_stream_args ~model ~complexity ~prompt ~minted_session_id
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
+
+let prepare_minted_session_id ~patch_id ~resume_session =
+  match (resume_session, Stdlib.Sys.getenv_opt "ONTON_MINTED_SESSION_IDS") with
+  | Some _, _ | _, None | _, Some "" -> Ok None
+  | None, Some "1" -> (
+      match Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" with
+      | Some snapshot_path
+        when not (String.is_empty (String.strip snapshot_path)) ->
+          let session_id = Session_id.mint () in
+          Result.map
+            (Persistence.record_session_id ~snapshot_path ~patch_id ~session_id)
+            ~f:(fun () -> Some session_id)
+      | _ ->
+          Error
+            "ONTON_MINTED_SESSION_IDS=1 requires ONTON_SNAPSHOT_PATH to be set")
+  | None, Some _ -> Ok None
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
@@ -297,35 +312,31 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
     ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
-  let minted_session_id =
-    match
-      (resume_session, Stdlib.Sys.getenv_opt "ONTON_MINTED_SESSION_IDS")
-    with
-    | None, Some "1" ->
-        let session_id = Session_id.mint () in
-        (match Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" with
-        | Some snapshot_path ->
-            ignore
-              (Persistence.record_session_id ~snapshot_path ~patch_id
-                 ~session_id)
-        | None -> ());
-        Some session_id
-    | _ -> None
-  in
-  let args =
-    build_stream_args ~model ~complexity ~prompt ~minted_session_id
-      ~resume_session
-  in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
       ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
   in
-  let process_line line =
-    let trimmed = strip_ansi (String.strip line) in
-    if String.is_empty trimmed then [] else parse_stream_events trimmed
-  in
-  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
-    ~setsid_exec ~args ~process_line ~on_event
+  match prepare_minted_session_id ~patch_id ~resume_session with
+  | Error msg ->
+      {
+        Llm_backend.exit_code = 1;
+        stdout = "";
+        stderr = msg;
+        got_events = false;
+        saw_final_result = false;
+        timed_out = false;
+      }
+  | Ok minted_session_id ->
+      let args =
+        build_stream_args ~model ~complexity ~prompt ~minted_session_id
+          ~resume_session
+      in
+      let process_line line =
+        let trimmed = strip_ansi (String.strip line) in
+        if String.is_empty trimmed then [] else parse_stream_events trimmed
+      in
+      Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
+        ~setsid_exec ~args ~process_line ~on_event
 
 let%test "auto_model: complexity 1 -> haiku" =
   Option.equal String.equal (auto_model ~complexity:(Some 1)) (Some "haiku")
@@ -520,6 +531,26 @@ let%test "build_stream_args emits --session-id when minted_session_id is Some" =
       "200";
       "--exclude-dynamic-system-prompt-sections";
     ]
+
+let%test "prepare_minted_session_id errors when flag is on and path missing" =
+  let patch_id = Types.Patch_id.of_string "5" in
+  let restore name value =
+    match value with
+    | Some v -> Unix.putenv name v
+    | None -> Unix.putenv name ""
+  in
+  let old_flag = Stdlib.Sys.getenv_opt "ONTON_MINTED_SESSION_IDS" in
+  let old_path = Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      restore "ONTON_MINTED_SESSION_IDS" old_flag;
+      restore "ONTON_SNAPSHOT_PATH" old_path)
+    (fun () ->
+      Unix.putenv "ONTON_MINTED_SESSION_IDS" "1";
+      Unix.putenv "ONTON_SNAPSHOT_PATH" "";
+      match prepare_minted_session_id ~patch_id ~resume_session:None with
+      | Error _ -> true
+      | Ok _ -> false)
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
