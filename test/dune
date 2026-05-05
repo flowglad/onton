@@ -25,7 +25,7 @@
 (test
  (name test_reconciler_properties)
  (modules test_reconciler_properties)
- (libraries onton onton_core onton_test_support qcheck-core)
+ (libraries onton_core onton_test_support qcheck-core)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
@@ -66,7 +66,7 @@
 (test
  (name test_poller_properties)
  (modules test_poller_properties)
- (libraries onton onton_core onton_test_support qcheck-core))
+ (libraries onton_core onton_test_support qcheck-core))
 
 (test
  (name test_tui_scheduling)
@@ -81,7 +81,7 @@
 (test
  (name test_worktree_plan)
  (modules test_worktree_plan)
- (libraries onton onton_core qcheck-core))
+ (libraries onton_core qcheck-core))
 
 (test
  (name test_spawn_logic)

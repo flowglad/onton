@@ -9,25 +9,25 @@ let () =
       (* merge_ready is passed through from PR state *)
       Test.make ~name:"merge_ready passed through" ~count:500 gen_pr_state
         (fun pr ->
-          let result = Onton.Poller.poll ~was_merged:false pr in
-          Bool.equal result.Onton.Poller.merge_ready
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          Bool.equal result.Onton_core.Poller.merge_ready
             (Onton_core.Pr_state.merge_ready pr));
       Test.make ~name:"is_draft passed through" ~count:500 gen_pr_state
         (fun pr ->
-          let result = Onton.Poller.poll ~was_merged:false pr in
-          Bool.equal result.Onton.Poller.is_draft
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          Bool.equal result.Onton_core.Poller.is_draft
             (Onton_core.Pr_state.is_draft pr));
       (* checks_passing is passed through from PR state *)
       Test.make ~name:"checks_passing passed through" ~count:500 gen_pr_state
         (fun pr ->
-          let result = Onton.Poller.poll ~was_merged:false pr in
-          Bool.equal result.Onton.Poller.checks_passing
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          Bool.equal result.Onton_core.Poller.checks_passing
             (Onton_core.Pr_state.checks_passing pr));
       (* ci_checks are passed through from PR state *)
       Test.make ~name:"ci_checks passed through" ~count:500 gen_pr_state
         (fun pr ->
-          let result = Onton.Poller.poll ~was_merged:false pr in
-          List.equal Ci_check.equal result.Onton.Poller.ci_checks
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          List.equal Ci_check.equal result.Onton_core.Poller.ci_checks
             pr.Onton_core.Pr_state.ci_checks);
       (* -- derive_check_status semantics ------------------------------- *)
       (* Failing iff any conclusion is in failure_conclusions *)

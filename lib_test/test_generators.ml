@@ -325,7 +325,7 @@ let gen_poller =
     map5
       (fun queue (merged, closed, has_conflict) merge_ready checks_passing
            ci_checks ->
-        Onton.Poller.
+        Onton_core.Poller.
           {
             queue;
             merged;
@@ -442,7 +442,7 @@ let gen_patch_view =
     map3
       (fun (id, base_branch) (has_pr, merged, busy, branch_blocked)
            (needs_intervention, queue) ->
-        Onton.Reconciler.
+        Onton_core.Reconciler.
           {
             id;
             has_pr;
@@ -466,11 +466,11 @@ let gen_reconciler_action =
   QCheck2.Gen.(
     oneof
       [
-        map (fun pid -> Onton.Reconciler.Mark_merged pid) gen_patch_id;
-        map (fun pid -> Onton.Reconciler.Enqueue_rebase pid) gen_patch_id;
+        map (fun pid -> Onton_core.Reconciler.Mark_merged pid) gen_patch_id;
+        map (fun pid -> Onton_core.Reconciler.Enqueue_rebase pid) gen_patch_id;
         map3
           (fun patch_id kind new_base ->
-            Onton.Reconciler.Start_operation { patch_id; kind; new_base })
+            Onton_core.Reconciler.Start_operation { patch_id; kind; new_base })
           gen_patch_id gen_operation_kind (option gen_branch);
       ])
 
@@ -709,7 +709,7 @@ let apply_reconcile_actions orch ~main ~branch_of =
   let agents = Onton.Orchestrator.all_agents orch in
   let patch_views =
     List.map agents ~f:(fun (a : Onton_core.Patch_agent.t) ->
-        Onton.Reconciler.
+        Onton_core.Reconciler.
           {
             id = a.Onton_core.Patch_agent.patch_id;
             has_pr = Onton_core.Patch_agent.has_pr a;
@@ -730,17 +730,17 @@ let apply_reconcile_actions orch ~main ~branch_of =
         else None)
   in
   let actions =
-    Onton.Reconciler.reconcile
+    Onton_core.Reconciler.reconcile
       ~graph:(Onton.Orchestrator.graph orch)
       ~main ~merged_pr_patches:merged_patches ~branch_of patch_views
   in
   List.fold actions ~init:orch ~f:(fun orch action ->
       match action with
-      | Onton.Reconciler.Mark_merged pid ->
+      | Onton_core.Reconciler.Mark_merged pid ->
           Onton.Orchestrator.mark_merged orch pid
-      | Onton.Reconciler.Enqueue_rebase pid ->
+      | Onton_core.Reconciler.Enqueue_rebase pid ->
           Onton.Orchestrator.enqueue orch pid Operation_kind.Rebase
-      | Onton.Reconciler.Start_operation _ -> orch)
+      | Onton_core.Reconciler.Start_operation _ -> orch)
 
 let print_operation_kind = Operation_kind.show
 let print_comment = Comment.show
@@ -748,6 +748,6 @@ let print_patch = Patch.show
 let print_ci_check = Ci_check.show
 let print_gameplan = Gameplan.show
 let print_patch_agent = Onton_core.Patch_agent.show
-let print_poller = Onton.Poller.show
+let print_poller = Onton_core.Poller.show
 let print_pr_state = Onton_core.Pr_state.show
 let print_github_error = Onton.Github.show_error
