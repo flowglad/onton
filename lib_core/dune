@@ -1,6 +1,6 @@
 (library
  (name onton_core)
- (libraries base yojson ppx_yojson_conv_lib)
+ (libraries base yojson ppx_yojson_conv_lib re)
  (inline_tests)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42))
