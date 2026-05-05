@@ -97,11 +97,11 @@ let build_stream_args ~model ~complexity ~prompt ~minted_session_id
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
 
-let prepare_minted_session_id ~patch_id ~resume_session =
-  match (resume_session, Stdlib.Sys.getenv_opt "ONTON_MINTED_SESSION_IDS") with
+let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
+  match (resume_session, getenv_opt "ONTON_MINTED_SESSION_IDS") with
   | Some _, _ | _, None | _, Some "" -> Ok None
   | None, Some "1" -> (
-      match Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" with
+      match getenv_opt "ONTON_SNAPSHOT_PATH" with
       | Some snapshot_path
         when not (String.is_empty (String.strip snapshot_path)) ->
           let session_id = Session_id.mint () in
@@ -112,6 +112,9 @@ let prepare_minted_session_id ~patch_id ~resume_session =
           Error
             "ONTON_MINTED_SESSION_IDS=1 requires ONTON_SNAPSHOT_PATH to be set")
   | None, Some _ -> Ok None
+
+let prepare_minted_session_id =
+  prepare_minted_session_id_with_env ~getenv_opt:Stdlib.Sys.getenv_opt
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
@@ -534,23 +537,17 @@ let%test "build_stream_args emits --session-id when minted_session_id is Some" =
 
 let%test "prepare_minted_session_id errors when flag is on and path missing" =
   let patch_id = Types.Patch_id.of_string "5" in
-  let restore name value =
-    match value with
-    | Some v -> Unix.putenv name v
-    | None -> Unix.putenv name ""
+  let getenv_opt = function
+    | "ONTON_MINTED_SESSION_IDS" -> Some "1"
+    | "ONTON_SNAPSHOT_PATH" -> None
+    | _ -> None
   in
-  let old_flag = Stdlib.Sys.getenv_opt "ONTON_MINTED_SESSION_IDS" in
-  let old_path = Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" in
-  Stdlib.Fun.protect
-    ~finally:(fun () ->
-      restore "ONTON_MINTED_SESSION_IDS" old_flag;
-      restore "ONTON_SNAPSHOT_PATH" old_path)
-    (fun () ->
-      Unix.putenv "ONTON_MINTED_SESSION_IDS" "1";
-      Unix.putenv "ONTON_SNAPSHOT_PATH" "";
-      match prepare_minted_session_id ~patch_id ~resume_session:None with
-      | Error _ -> true
-      | Ok _ -> false)
+  match
+    prepare_minted_session_id_with_env ~getenv_opt ~patch_id
+      ~resume_session:None
+  with
+  | Error _ -> true
+  | Ok _ -> false
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
