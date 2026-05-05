@@ -97,6 +97,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_worktree_missing_recovery)
+ (modules test_worktree_missing_recovery)
+ (libraries onton eio eio_main eio.unix unix)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_backend_routing)
  (modules test_backend_routing)
  (libraries onton qcheck-core qcheck-core.runner)

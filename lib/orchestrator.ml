@@ -493,9 +493,14 @@ let apply_rebase_push_result t patch_id
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Rebase_push_failed)
-  | Some Worktree.Push_no_commits | Some (Worktree.Push_error _) ->
+  | Some Worktree.Push_no_commits
+  | Some (Worktree.Push_error _)
+  | Some Worktree.Push_worktree_missing ->
       (* Push_no_commits after rebase means every commit squashed away — treat
-         as an infrastructure error and retry the rebase. *)
+         as an infrastructure error and retry the rebase. Push_worktree_missing
+         lands here because the next Rebase invocation re-runs through
+         [ensure_worktree], which reconstructs the missing worktree before
+         retrying. *)
       let t = enqueue t patch_id Operation_kind.Rebase in
       (t, Rebase_push_error)
 
@@ -557,7 +562,7 @@ let apply_conflict_push_result t patch_id decision
       ( None
       | Some
           ( Worktree.Push_rejected | Worktree.Push_no_commits
-          | Worktree.Push_error _ ) ) ) ->
+          | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Conflict_retry_push)
@@ -566,7 +571,7 @@ let apply_conflict_push_result t patch_id decision
       | Some
           ( Worktree.Push_ok | Worktree.Push_up_to_date
           | Worktree.Push_no_commits | Worktree.Push_rejected
-          | Worktree.Push_error _ ) ) ) ->
+          | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
       (t, Conflict_needs_agent)
   | Conflict_failed, _ -> (t, Conflict_give_up)
 
@@ -693,16 +698,30 @@ let apply_session_result t patch_id result =
 
 let combine_session_and_push ~(session : session_result)
     ~(push : Worktree.push_result) : session_result =
-  match session with
-  | Session_ok -> (
-      match push with
-      | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
-      | Worktree.Push_no_commits -> Session_no_commits
-      | Worktree.Push_rejected | Worktree.Push_error _ -> Session_push_failed)
-  | Session_process_error _ | Session_no_resume | Session_failed _
-  | Session_give_up | Session_worktree_missing | Session_push_failed
-  | Session_no_commits ->
-      session
+  (* Push_worktree_missing dominates every prior session outcome: even if the
+     LLM session reported [Session_ok], the worktree (and thus the local
+     commits) are gone, so the only safe action is to clear inflight state
+     and let the next session rebuild the worktree from scratch via
+     [ensure_worktree]. The [Session_push_failed] retry-push path would loop
+     forever because the deleted directory cannot be repaired by retrying. *)
+  match push with
+  | Worktree.Push_worktree_missing -> Session_worktree_missing
+  | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
+  | Worktree.Push_rejected | Worktree.Push_error _ -> (
+      match session with
+      | Session_ok -> (
+          match push with
+          | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
+          | Worktree.Push_no_commits -> Session_no_commits
+          | Worktree.Push_rejected | Worktree.Push_error _ ->
+              Session_push_failed
+          | Worktree.Push_worktree_missing ->
+              Session_worktree_missing
+              (* unreachable — outer match catches this *))
+      | Session_process_error _ | Session_no_resume | Session_failed _
+      | Session_give_up | Session_worktree_missing | Session_push_failed
+      | Session_no_commits ->
+          session)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]

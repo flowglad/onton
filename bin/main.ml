@@ -2307,6 +2307,12 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                             | Worktree.Push_rejected ->
                                 log_event runtime ~patch_id
                                   "Force-push rejected — lease violated"
+                            | Worktree.Push_worktree_missing ->
+                                log_event runtime ~patch_id
+                                  (Printf.sprintf
+                                     "Worktree disappeared (%s) — rebase will \
+                                      reconstruct on retry"
+                                     wt_path)
                             | Worktree.Push_error msg ->
                                 log_event runtime ~patch_id
                                   (Printf.sprintf "Force-push failed — %s" msg));
@@ -2714,6 +2720,14 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                                 log_event runtime ~patch_id
                                                   "Conflict force-push \
                                                    rejected — lease violated"
+                                            | Worktree.Push_worktree_missing ->
+                                                log_event runtime ~patch_id
+                                                  (Printf.sprintf
+                                                     "Worktree disappeared \
+                                                      (%s) — conflict \
+                                                      resolution will \
+                                                      reconstruct on retry"
+                                                     wt_path)
                                             | Worktree.Push_error msg ->
                                                 log_event runtime ~patch_id
                                                   (Printf.sprintf

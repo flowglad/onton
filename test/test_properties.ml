@@ -1021,9 +1021,15 @@ let () =
         Gen.map (fun s -> Worktree.Push_error s) Gen.string_small;
       ]
   in
+  let gen_any_session : Orchestrator.session_result Gen.t =
+    Gen.oneof [ Gen.return Orchestrator.Session_ok; gen_non_ok_session ]
+  in
   let prop_cp5_failure_dominates =
-    Test.make ~name:"CP-5: pre-existing failure dominates any push outcome"
-      ~count:300 (Gen.pair gen_non_ok_session gen_push) (fun (session, push) ->
+    Test.make
+      ~name:
+        "CP-5: pre-existing failure dominates any push outcome \
+         (Push_worktree_missing excluded — handled by CP-7)" ~count:300
+      (Gen.pair gen_non_ok_session gen_push) (fun (session, push) ->
         Orchestrator.equal_session_result
           (Orchestrator.combine_session_and_push ~session ~push)
           session)
@@ -1035,6 +1041,23 @@ let () =
           (Orchestrator.combine_session_and_push ~session:Session_ok
              ~push:Worktree.Push_no_commits)
           Session_no_commits)
+  in
+  (* Push_worktree_missing means the worktree directory was deleted between
+     session start and push; the local commits are gone. Whatever the session
+     reported, the only correct next step is to clear inflight state and let
+     the next session rebuild the worktree via [ensure_worktree] — that
+     mapping is [Session_worktree_missing], which goes through the
+     pre-session-failure path rather than the retry-push path that assumes
+     the directory still exists. *)
+  let prop_cp7_worktree_missing_dominates =
+    Test.make ~count:300
+      ~name:
+        "CP-7: any session + Push_worktree_missing = Session_worktree_missing"
+      gen_any_session (fun session ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~session
+             ~push:Worktree.Push_worktree_missing)
+          Session_worktree_missing)
   in
   (* Session_no_commits property tests (PNC-N) mirror PSF-N: clear fallback,
      increment counter, reset on Session_ok, trigger needs_intervention at
@@ -1261,7 +1284,7 @@ let () =
         match Worktree.classify_push_result ~code ~stdout:"" ~stderr with
         | Worktree.Push_error _ -> true
         | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
-        | Worktree.Push_rejected ->
+        | Worktree.Push_rejected | Worktree.Push_worktree_missing ->
             false)
   in
   let prop_classify_never_returns_no_commits =
@@ -1273,7 +1296,7 @@ let () =
       (Gen.triple (Gen.int_range 0 255) Gen.string_small Gen.string_small)
       (fun (code, stdout, stderr) ->
         match Worktree.classify_push_result ~code ~stdout ~stderr with
-        | Worktree.Push_no_commits -> false
+        | Worktree.Push_no_commits | Worktree.Push_worktree_missing -> false
         | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected
         | Worktree.Push_error _ ->
             true)
@@ -1290,6 +1313,7 @@ let () =
       prop_cp4_ok_error;
       prop_cp5_failure_dominates;
       prop_cp6_ok_no_commits;
+      prop_cp7_worktree_missing_dominates;
       prop_pnc1_clears_session_fallback;
       prop_pnc2_increments_counter;
       prop_pnc3_intervention_threshold;

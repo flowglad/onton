@@ -216,6 +216,13 @@ type push_result =
   | Push_up_to_date
   | Push_no_commits
   | Push_rejected
+  | Push_worktree_missing
+      (** Returned when the worktree directory was deleted between session start
+          and push — typically a manual [rm -rf] or a leftover failed checkout.
+          The caller should route this to a clean state-reset (e.g.
+          [Session_worktree_missing]) rather than retry-push, since the local
+          commits the LLM produced are gone with the directory and retry-push
+          would just keep failing the same way. *)
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
@@ -260,7 +267,16 @@ val find_for_branch :
   Types.Branch.t ->
   string option
 (** Search existing git worktrees for one checked out at [branch]. Returns
-    [None] if no matching worktree is found or if listing fails. *)
+    [None] if no matching worktree is found or if listing fails. The result
+    reflects what [git worktree list] reports, which can include stale entries
+    whose directories were deleted on disk; callers that need disk truth should
+    additionally check [Sys.file_exists] or call {!prune_admin} first. *)
+
+val prune_admin : process_mgr:_ Eio.Process.mgr -> repo_root:string -> unit
+(** Run [git worktree prune] in [repo_root] to drop registry entries whose
+    directories were deleted on disk. Idempotent; silent on failure. Callers use
+    this to bring git's worktree bookkeeping in sync with disk state before
+    {!find_for_branch} or {!create}. *)
 
 val normalize_path : string -> string
 (** Resolve a relative path to absolute using the current working directory. *)
