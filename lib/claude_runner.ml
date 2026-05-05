@@ -56,6 +56,24 @@ let model_args = function
 let max_turns_for ~complexity =
   match complexity with Some 1 -> 50 | Some 2 -> 100 | _ -> 200
 
+let budget_cap_args ~warn () =
+  match
+    Sys.getenv "ONTON_BUDGET_CAP_USD"
+    |> Option.map ~f:(fun value -> String.strip value)
+  with
+  | None | Some "" -> []
+  | Some raw -> (
+      match Float.of_string_opt raw with
+      | Some cap when Float.(cap > 0.) -> [ "--max-budget-usd"; raw ]
+      | Some _ -> []
+      | None ->
+          warn
+            (Printf.sprintf
+               "warning: ignoring invalid ONTON_BUDGET_CAP_USD=%S; expected a \
+                positive numeric USD cap"
+               raw);
+          [])
+
 let build_args ~model ~complexity ~prompt ~resume_session =
   let base = [ "claude" ] in
   let prompt_args = [ "-p"; prompt; "--output-format"; "text" ] in
@@ -69,6 +87,7 @@ let build_args ~model ~complexity ~prompt ~resume_session =
       Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
+    @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
@@ -99,6 +118,7 @@ let build_stream_args ~model ~complexity ~prompt ~minted_session_id
       Int.to_string (max_turns_for ~complexity);
       "--exclude-dynamic-system-prompt-sections";
     ]
+    @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
@@ -562,6 +582,58 @@ let%test "prepare_minted_session_id errors when flag is on and path missing" =
   with
   | Error _ -> true
   | Ok _ -> false
+
+let%test
+    "build_stream_args emits --max-budget-usd when ONTON_BUDGET_CAP_USD set" =
+  let previous = Sys.getenv "ONTON_BUDGET_CAP_USD" in
+  Unix.putenv "ONTON_BUDGET_CAP_USD" "10";
+  Exn.protect
+    ~f:(fun () ->
+      let args =
+        build_stream_args ~model:(Some "sonnet") ~complexity:None
+          ~prompt:"do stuff" ~minted_session_id:None ~resume_session:None
+      in
+      List.equal String.equal args
+        [
+          "claude";
+          "--model";
+          "sonnet";
+          "-p";
+          "do stuff";
+          "--output-format";
+          "stream-json";
+          "--verbose";
+          "--dangerously-skip-permissions";
+          "--max-turns";
+          "200";
+          "--exclude-dynamic-system-prompt-sections";
+          "--max-budget-usd";
+          "10";
+        ])
+    ~finally:(fun () ->
+      match previous with
+      | Some value -> Unix.putenv "ONTON_BUDGET_CAP_USD" value
+      | None -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
+
+let%test "budget_cap_args omits flag and warns on invalid cap" =
+  let previous = Sys.getenv "ONTON_BUDGET_CAP_USD" in
+  Unix.putenv "ONTON_BUDGET_CAP_USD" "not-a-number";
+  let warnings = ref [] in
+  Exn.protect
+    ~f:(fun () ->
+      let args =
+        budget_cap_args ~warn:(fun msg -> warnings := msg :: !warnings) ()
+      in
+      List.is_empty args
+      && List.equal String.equal !warnings
+           [
+             "warning: ignoring invalid ONTON_BUDGET_CAP_USD=\"not-a-number\"; \
+              expected a positive numeric USD cap";
+           ])
+    ~finally:(fun () ->
+      match previous with
+      | Some value -> Unix.putenv "ONTON_BUDGET_CAP_USD" value
+      | None -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
 
 let%test "strip_ansi removes escape sequences" =
   String.equal (strip_ansi "\027[31mhello\027[0m") "hello"
