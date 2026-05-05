@@ -1,5 +1,7 @@
 open Base
 
+external unsetenv_stub : string -> unit = "caml_onton_unsetenv"
+
 let patch_root ~project_dir ~patch_id =
   Stdlib.Filename.concat project_dir
     (Stdlib.Filename.concat "spawn-envs" (Types.Patch_id.to_string patch_id))
@@ -17,7 +19,12 @@ let seed_link ~src ~dst =
     | _ -> true
     | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
   in
-  if (not dst_exists) && Stdlib.Sys.file_exists src then
+  let src_exists =
+    match Unix.lstat src with
+    | _ -> true
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
+  in
+  if (not dst_exists) && src_exists then
     try Unix.symlink src dst with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
 
 let resolve_user_config_dir ~env_var ~home_subpath =
@@ -273,7 +280,9 @@ let%test "resolve_user_config_dir absolutizes relative env and HOME paths" =
   let cwd = Stdlib.Sys.getcwd () in
   let old_home = Stdlib.Sys.getenv_opt "HOME" in
   let restore_home () =
-    match old_home with Some home -> Unix.putenv "HOME" home | None -> ()
+    match old_home with
+    | Some home -> Unix.putenv "HOME" home
+    | None -> unsetenv_stub "HOME"
   in
   Unix.putenv "HOME" "relative-home";
   Stdlib.Fun.protect ~finally:restore_home @@ fun () ->
