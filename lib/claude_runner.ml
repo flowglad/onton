@@ -74,7 +74,10 @@ let budget_cap_args ~warn () =
                raw);
           [])
 
-let build_args ~model ~complexity ~prompt ~resume_session =
+let bare_args ~getenv_opt =
+  match getenv_opt "ONTON_BARE_CLAUDE" with Some "1" -> [ "--bare" ] | _ -> []
+
+let build_args ~getenv_opt ~model ~complexity ~prompt ~resume_session =
   let base = [ "claude" ] in
   let prompt_args = [ "-p"; prompt; "--output-format"; "text" ] in
   let session_args =
@@ -88,10 +91,11 @@ let build_args ~model ~complexity ~prompt ~resume_session =
       "--exclude-dynamic-system-prompt-sections";
     ]
     @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
+    @ bare_args ~getenv_opt
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
-let build_stream_args ~model ~complexity ~prompt ~minted_session_id
+let build_stream_args ~getenv_opt ~model ~complexity ~prompt ~minted_session_id
     ~resume_session =
   (match (minted_session_id, resume_session) with
   | Some _, Some _ ->
@@ -119,6 +123,7 @@ let build_stream_args ~model ~complexity ~prompt ~minted_session_id
       "--exclude-dynamic-system-prompt-sections";
     ]
     @ budget_cap_args ~warn:(fun msg -> Stdio.eprintf "%s\n" msg) ()
+    @ bare_args ~getenv_opt
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
@@ -141,6 +146,19 @@ let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
 
 let prepare_minted_session_id =
   prepare_minted_session_id_with_env ~getenv_opt:Stdlib.Sys.getenv_opt
+
+let with_onton_bare_claude value f =
+  let original = Stdlib.Sys.getenv_opt "ONTON_BARE_CLAUDE" in
+  let restore () =
+    match original with
+    | Some v -> Unix.putenv "ONTON_BARE_CLAUDE" v
+    | None -> Unix.putenv "ONTON_BARE_CLAUDE" ""
+  in
+  Stdlib.Fun.protect ~finally:restore (fun () ->
+      (match value with
+      | Some v -> Unix.putenv "ONTON_BARE_CLAUDE" v
+      | None -> Unix.putenv "ONTON_BARE_CLAUDE" "");
+      f ())
 
 (** Find the first '\{' in [s] and return the substring starting there. Defense
     against any leading garbage in a stream-json line. *)
@@ -284,7 +302,10 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
 
 let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
   ignore (patch_id : Types.Patch_id.t);
-  let args = build_args ~model ~complexity ~prompt ~resume_session in
+  let args =
+    build_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~complexity ~prompt
+      ~resume_session
+  in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
     let stdin_r, stdin_w = Eio.Process.pipe ~sw process_mgr in
@@ -357,8 +378,8 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
       }
   | Ok minted_session_id ->
       let args =
-        build_stream_args ~model ~complexity ~prompt ~minted_session_id
-          ~resume_session
+        build_stream_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~complexity
+          ~prompt ~minted_session_id ~resume_session
       in
       let process_line line =
         let trimmed = strip_ansi (String.strip line) in
@@ -397,7 +418,8 @@ let%test "max_turns_for: None -> 200" =
 let%test "build_args fresh (no resume, with model)" =
   let complexity = Some 2 in
   let args =
-    build_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
+    build_args ~getenv_opt:(fun _ -> None) ~model:(Some "sonnet") ~complexity
+      ~prompt:"do stuff"
       ~resume_session:None
   in
   List.equal String.equal args
@@ -418,7 +440,8 @@ let%test "build_args fresh (no resume, with model)" =
 let%test "build_args fresh (no resume, no model)" =
   let complexity = Some 1 in
   let args =
-    build_args ~model:None ~complexity ~prompt:"do stuff" ~resume_session:None
+    build_args ~getenv_opt:(fun _ -> None) ~model:None ~complexity
+      ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -436,8 +459,8 @@ let%test "build_args fresh (no resume, no model)" =
 let%test "build_args with resume session" =
   let complexity = Some 3 in
   let args =
-    build_args ~model:(Some "opus") ~complexity ~prompt:"do stuff"
-      ~resume_session:(Some "abc-123")
+    build_args ~getenv_opt:(fun _ -> None) ~model:(Some "opus") ~complexity
+      ~prompt:"do stuff" ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
@@ -458,16 +481,16 @@ let%test "build_args with resume session" =
 
 let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
   let args =
-    build_args ~model:None ~complexity:None ~prompt:"do stuff"
-      ~resume_session:None
+    build_args ~getenv_opt:(fun _ -> None) ~model:None ~complexity:None
+      ~prompt:"do stuff" ~resume_session:None
   in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
 
 let%test "build_stream_args fresh (no resume, with model)" =
   let complexity = Some 2 in
   let args =
-    build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
-      ~minted_session_id:None ~resume_session:None
+    build_stream_args ~getenv_opt:(fun _ -> None) ~model:(Some "sonnet")
+      ~complexity ~prompt:"do stuff" ~minted_session_id:None ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -488,8 +511,8 @@ let%test "build_stream_args fresh (no resume, with model)" =
 let%test "build_stream_args fresh (no resume, no model)" =
   let complexity = None in
   let args =
-    build_stream_args ~model:None ~complexity ~prompt:"do stuff"
-      ~minted_session_id:None ~resume_session:None
+    build_stream_args ~getenv_opt:(fun _ -> None) ~model:None ~complexity
+      ~prompt:"do stuff" ~minted_session_id:None ~resume_session:None
   in
   List.equal String.equal args
     [
@@ -508,8 +531,9 @@ let%test "build_stream_args fresh (no resume, no model)" =
 let%test "build_stream_args with resume session" =
   let complexity = Some 1 in
   let args =
-    build_stream_args ~model:(Some "opus") ~complexity ~prompt:"do stuff"
-      ~minted_session_id:None ~resume_session:(Some "abc-123")
+    build_stream_args ~getenv_opt:(fun _ -> None) ~model:(Some "opus")
+      ~complexity ~prompt:"do stuff" ~minted_session_id:None
+      ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
@@ -531,15 +555,16 @@ let%test "build_stream_args with resume session" =
 
 let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
   let args =
-    build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
-      ~minted_session_id:None ~resume_session:None
+    build_stream_args ~getenv_opt:(fun _ -> None) ~model:None ~complexity:None
+      ~prompt:"do stuff" ~minted_session_id:None ~resume_session:None
   in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
 
 let%test "build_stream_args emits --session-id when minted_session_id is Some" =
   let complexity = None in
   let args =
-    build_stream_args ~model:(Some "sonnet") ~complexity ~prompt:"do stuff"
+    build_stream_args ~getenv_opt:(fun _ -> None) ~model:(Some "sonnet")
+      ~complexity ~prompt:"do stuff"
       ~minted_session_id:(Some "123e4567-e89b-42d3-a456-426614174000")
       ~resume_session:None
   in
@@ -563,8 +588,9 @@ let%test "build_stream_args emits --session-id when minted_session_id is Some" =
 
 let%test "build_stream_args rejects session-id plus resume together" =
   match
-    build_stream_args ~model:None ~complexity:None ~prompt:"do stuff"
-      ~minted_session_id:(Some "minted") ~resume_session:(Some "resume")
+    build_stream_args ~getenv_opt:(fun _ -> None) ~model:None ~complexity:None
+      ~prompt:"do stuff" ~minted_session_id:(Some "minted")
+      ~resume_session:(Some "resume")
   with
   | _ -> false
   | exception Invalid_argument _ -> true
@@ -590,8 +616,9 @@ let%test
   Exn.protect
     ~f:(fun () ->
       let args =
-        build_stream_args ~model:(Some "sonnet") ~complexity:None
-          ~prompt:"do stuff" ~minted_session_id:None ~resume_session:None
+        build_stream_args ~getenv_opt:(fun _ -> None) ~model:(Some "sonnet")
+          ~complexity:None ~prompt:"do stuff" ~minted_session_id:None
+          ~resume_session:None
       in
       List.equal String.equal args
         [
@@ -614,6 +641,40 @@ let%test
       match previous with
       | Some value -> Unix.putenv "ONTON_BUDGET_CAP_USD" value
       | None -> Unix.putenv "ONTON_BUDGET_CAP_USD" "")
+
+let%test "build_stream_args includes --bare when ONTON_BARE_CLAUDE=1" =
+  List.mem
+    (build_stream_args
+       ~getenv_opt:(fun name ->
+         if String.equal name "ONTON_BARE_CLAUDE" then Some "1" else None)
+       ~model:None ~complexity:None ~prompt:"do stuff" ~minted_session_id:None
+       ~resume_session:None)
+    "--bare" ~equal:String.equal
+
+let%test "build_stream_args omits --bare when ONTON_BARE_CLAUDE is unset" =
+  not
+    (List.mem
+       (build_stream_args
+          ~getenv_opt:(fun _ -> None)
+          ~model:None ~complexity:None ~prompt:"do stuff"
+          ~minted_session_id:None ~resume_session:None)
+       "--bare" ~equal:String.equal)
+
+let%test "build_args includes --bare when ONTON_BARE_CLAUDE=1" =
+  List.mem
+    (build_args
+       ~getenv_opt:(fun name ->
+         if String.equal name "ONTON_BARE_CLAUDE" then Some "1" else None)
+       ~model:None ~complexity:None ~prompt:"do stuff" ~resume_session:None)
+    "--bare" ~equal:String.equal
+
+let%test "build_args omits --bare when ONTON_BARE_CLAUDE is unset" =
+  not
+    (List.mem
+       (build_args
+          ~getenv_opt:(fun _ -> None)
+          ~model:None ~complexity:None ~prompt:"do stuff" ~resume_session:None)
+       "--bare" ~equal:String.equal)
 
 let%test "budget_cap_args omits flag and warns on invalid cap" =
   let previous = Sys.getenv "ONTON_BUDGET_CAP_USD" in

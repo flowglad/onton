@@ -8,6 +8,7 @@ val substitute_variables : string -> (string * string) list -> string
 
 val render_patch_prompt :
   project_name:string ->
+  ?claude_md:string ->
   ?pr_number:Pr_number.t ->
   Patch.t ->
   Gameplan.t ->

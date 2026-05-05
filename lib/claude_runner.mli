@@ -74,6 +74,7 @@ val strip_ansi : string -> string
     Exposed for testing. *)
 
 val build_args :
+  getenv_opt:(string -> string option) ->
   model:string option ->
   complexity:int option ->
   prompt:string ->
@@ -82,6 +83,7 @@ val build_args :
 (** Build the CLI argument list for the Claude process. Exposed for testing. *)
 
 val build_stream_args :
+  getenv_opt:(string -> string option) ->
   model:string option ->
   complexity:int option ->
   prompt:string ->

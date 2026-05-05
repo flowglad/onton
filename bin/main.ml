@@ -502,6 +502,16 @@ let read_artifact_file path =
     else None
   with _ -> None
 
+let read_optional_file path =
+  try
+    if Stdlib.Sys.file_exists path then
+      let ic = Stdlib.In_channel.open_text path in
+      Stdlib.Fun.protect
+        ~finally:(fun () -> Stdlib.In_channel.close ic)
+        (fun () -> Some (Stdlib.In_channel.input_all ic))
+    else None
+  with _ -> None
+
 (** Apply the agent-authored notes artifact to the PR. Composes the final body
     as: gameplan description + specs + Implementation Notes (from artifact).
     Returns a tag describing the outcome so the caller can correlate with
@@ -2046,8 +2056,20 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                             .Session_worktree_missing);
                                       `Failed
                                   | Some _wt_path ->
+                                      let claude_md =
+                                        match
+                                          Stdlib.Sys.getenv_opt
+                                            "ONTON_BARE_CLAUDE"
+                                        with
+                                        | Some "1" ->
+                                            read_optional_file
+                                              (Stdlib.Filename.concat _wt_path
+                                                 "CLAUDE.md")
+                                        | _ -> None
+                                      in
                                       let prompt =
                                         Prompt.render_patch_prompt ~project_name
+                                          ?claude_md
                                           ?pr_number:agent.Patch_agent.pr_number
                                           patch gameplan
                                           ~base_branch:
