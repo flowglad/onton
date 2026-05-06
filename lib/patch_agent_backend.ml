@@ -14,8 +14,6 @@ type handle = {
   mutable prompt_count : int;
 }
 
-type Long_lived.handle += Handle of handle
-
 let stdout_max_size = 64 * 1024 * 1024
 let stdout_capture_max_size = 64 * 1024
 let stderr_capture_max_size = 1024 * 1024
@@ -65,6 +63,19 @@ let emit_error on_event message =
     stderr = message;
     got_events = true;
     saw_final_result = false;
+    timed_out = false;
+  }
+
+let write_error_result ~stdout ~stderr ~got_events ~saw_final_result ~on_event
+    message =
+  got_events := true;
+  on_event (Types.Stream_event.Error message);
+  {
+    Llm_backend.exit_code = 1;
+    stdout = stdout ();
+    stderr = stderr ();
+    got_events = !got_events;
+    saw_final_result = !saw_final_result;
     timed_out = false;
   }
 
@@ -162,34 +173,49 @@ let start ~process_mgr ~binary_path ~setsid_exec ~sw
          done
        with End_of_file | Eio.Exn.Io _ | Invalid_argument _ -> ());
       `Stop_daemon);
-  Handle handle
+  handle
 
 let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
-  match long_lived_handle with
-  | Handle handle -> (
-      if handle.shutdown_requested then
-        emit_error on_event "patch-agent prompt requested after shutdown"
-      else
-        let stdout_capture = Buffer.create 4096 in
-        let stdout_truncated = ref false in
-        let got_events = ref false in
-        let saw_final_result = ref false in
-        let exit_code = ref 0 in
-        let capture_stdout line =
-          append_bounded stdout_capture stdout_truncated
-            ~limit:stdout_capture_max_size (line ^ "\n")
-        in
-        let captured_stdout () =
-          let stdout = Buffer.contents stdout_capture in
-          if !stdout_truncated then
-            stdout ^ "\n<stdout exceeded 64KB capture limit, truncated>"
-          else stdout
-        in
-        let run () =
-          write_line handle
-            (Patch_agent_rpc.serialize_command
-               (Prompt
-                  { request_id = request_id handle "prompt"; content = prompt }));
+  let handle = long_lived_handle in
+  if handle.shutdown_requested then
+    emit_error on_event "patch-agent prompt requested after shutdown"
+  else
+    let stdout_capture = Buffer.create 4096 in
+    let stdout_truncated = ref false in
+    let got_events = ref false in
+    let saw_final_result = ref false in
+    let exit_code = ref 0 in
+    let capture_stdout line =
+      append_bounded stdout_capture stdout_truncated
+        ~limit:stdout_capture_max_size (line ^ "\n")
+    in
+    let captured_stdout () =
+      let stdout = Buffer.contents stdout_capture in
+      if !stdout_truncated then
+        stdout ^ "\n<stdout exceeded 64KB capture limit, truncated>"
+      else stdout
+    in
+    let run () =
+      let command =
+        Patch_agent_rpc.serialize_command
+          (Prompt { request_id = request_id handle "prompt"; content = prompt })
+      in
+      let write_result =
+        try Ok (write_line handle command) with
+        | Eio.Exn.Io _ as ex -> Error ex
+        | Invalid_argument _ as ex -> Error ex
+      in
+      match write_result with
+      | Error ex ->
+          Ok
+            (write_error_result ~stdout:captured_stdout
+               ~stderr:(fun () ->
+                 Printf.sprintf "patch-agent prompt write failed: %s"
+                   (Exn.to_string ex))
+               ~got_events ~saw_final_result ~on_event
+               (Printf.sprintf "patch-agent prompt write failed: %s"
+                  (Exn.to_string ex)))
+      | Ok () ->
           let rec loop () =
             match Eio.Buf_read.line handle.stdout_buf with
             | line ->
@@ -226,61 +252,57 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
               saw_final_result = !saw_final_result;
               timed_out = false;
             }
-        in
-        match Eio.Time.with_timeout clock timeout run with
-        | Ok result -> result
-        | Error `Timeout ->
-            signal_process handle Stdlib.Sys.sigkill;
-            {
-              Llm_backend.exit_code = 128 + 9;
-              stdout = captured_stdout ();
-              stderr = "patch-agent prompt timed out";
-              got_events = !got_events;
-              saw_final_result = !saw_final_result;
-              timed_out = true;
-            })
-  | _ -> invalid_arg "Patch_agent_backend.prompt: foreign long-lived handle"
+    in
+    match Eio.Time.with_timeout clock timeout run with
+    | Ok result -> result
+    | Error `Timeout ->
+        signal_process handle Stdlib.Sys.sigkill;
+        {
+          Llm_backend.exit_code = 128 + 9;
+          stdout = captured_stdout ();
+          stderr = "patch-agent prompt timed out";
+          got_events = !got_events;
+          saw_final_result = !saw_final_result;
+          timed_out = true;
+        }
 
 let abort long_lived_handle =
-  match long_lived_handle with
-  | Handle handle ->
-      if not handle.shutdown_requested then
-        write_line handle
-          (Patch_agent_rpc.serialize_command
-             (Abort { request_id = request_id handle "abort" }))
-  | _ -> invalid_arg "Patch_agent_backend.abort: foreign long-lived handle"
+  let handle = long_lived_handle in
+  if not handle.shutdown_requested then
+    write_line handle
+      (Patch_agent_rpc.serialize_command
+         (Abort { request_id = request_id handle "abort" }))
 
 let shutdown ~clock long_lived_handle =
-  match long_lived_handle with
-  | Handle handle ->
-      if not handle.shutdown_requested then (
-        handle.shutdown_requested <- true;
-        (try
-           write_line handle
-             (Patch_agent_rpc.serialize_command
-                (Shutdown { request_id = request_id handle "shutdown" }))
-         with _ -> ());
-        let await_with_timeout seconds =
-          Eio.Time.with_timeout clock seconds (fun () ->
-              Ok (Eio.Process.await handle.child))
-        in
-        match await_with_timeout shutdown_grace_seconds with
-        | Ok _ -> ()
-        | Error `Timeout -> (
-            signal_process handle Stdlib.Sys.sigkill;
-            match await_with_timeout shutdown_kill_seconds with
-            | Ok _ | Error `Timeout -> ()))
-  | _ -> invalid_arg "Patch_agent_backend.shutdown: foreign long-lived handle"
+  let handle = long_lived_handle in
+  if not handle.shutdown_requested then (
+    handle.shutdown_requested <- true;
+    (try
+       write_line handle
+         (Patch_agent_rpc.serialize_command
+            (Shutdown { request_id = request_id handle "shutdown" }))
+     with _ -> ());
+    let await_with_timeout seconds =
+      Eio.Time.with_timeout clock seconds (fun () ->
+          Ok (Eio.Process.await handle.child))
+    in
+    match await_with_timeout shutdown_grace_seconds with
+    | Ok _ -> ()
+    | Error `Timeout -> (
+        signal_process handle Stdlib.Sys.sigkill;
+        match await_with_timeout shutdown_kill_seconds with
+        | Ok _ | Error `Timeout -> ()))
 
 let create ~process_mgr ~clock ~binary_path ~setsid_exec : Long_lived.t =
-  {
-    name = "Patch-agent";
-    start =
-      (fun ~sw config ->
-        start ~process_mgr ~binary_path ~setsid_exec ~sw config);
-    prompt =
-      (fun handle ~prompt ~timeout ~on_event ->
-        prompt_session ~clock handle ~prompt ~timeout ~on_event);
-    abort;
-    shutdown = (fun handle -> shutdown ~clock handle);
-  }
+  T
+    {
+      name = "Patch-agent";
+      start =
+        (fun ~sw config ->
+          start ~process_mgr ~binary_path ~setsid_exec ~sw config);
+      prompt =
+        (fun handle ~prompt ~timeout ~on_event ->
+          prompt_session ~clock handle ~prompt ~timeout ~on_event);
+      abort;
+      shutdown = (fun handle -> shutdown ~clock handle);
+    }

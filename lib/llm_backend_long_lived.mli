@@ -17,8 +17,6 @@ type result = Llm_backend.result = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-type handle = ..
-
 type start_config = {
   project_name : string;
   worktree : Eio.Fs.dir_ty Eio.Path.t;
@@ -30,15 +28,22 @@ type start_config = {
   patch_prompt : string;
 }
 
-type t = {
-  name : string;
-  start : sw:Eio.Switch.t -> start_config -> handle;
-  prompt :
-    handle ->
-    prompt:string ->
-    timeout:float ->
-    on_event:(Types.Stream_event.t -> unit) ->
-    result;
-  abort : handle -> unit;
-  shutdown : handle -> unit;
-}
+type t =
+  | T : {
+      name : string;
+      start : sw:Eio.Switch.t -> start_config -> 'handle;
+      prompt :
+        'handle ->
+        prompt:string ->
+        timeout:float ->
+        on_event:(Types.Stream_event.t -> unit) ->
+        result;
+      abort : 'handle -> unit;
+      shutdown : 'handle -> unit;
+    }
+      -> t
+      (** A packed backend carries its own private handle type. Consumers can
+          only get a handle by pattern matching [T] and calling that same
+          package's [start], so accidentally passing a handle from one backend
+          to another backend's lifecycle functions is rejected by the type
+          checker. *)
