@@ -9,6 +9,13 @@
  (libraries onton onton_core qcheck-core))
 
 (test
+ (name test_patch_agent_rpc)
+ (modules test_patch_agent_rpc)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_codex_cost_properties)
  (modules test_codex_cost_properties)
  (libraries onton_core qcheck-core qcheck-core.runner yojson)
