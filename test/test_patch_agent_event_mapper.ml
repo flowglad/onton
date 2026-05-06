@@ -92,6 +92,23 @@ let prop_final_text_preserved =
         (Types.Stream_event.Final_result
            { text = final_text; stop_reason = Types.Stop_reason.End_turn }))
 
+let prop_stop_reason_mapping_contract =
+  QCheck2.Test.make
+    ~name:"Patch_agent_event_mapper > stop_reason contract" QCheck2.Gen.unit
+    (fun () ->
+      let check raw expected =
+        Types.Stream_event.equal
+          (Patch_agent_event_mapper.map_event
+             (Patch_agent_rpc.Done
+                { stop_reason = raw; final_text = "t"; usage = None }))
+          (Types.Stream_event.Final_result { text = "t"; stop_reason = expected })
+      in
+      check "stop" Types.Stop_reason.End_turn
+      && check "tool_use" Types.Stop_reason.Tool_use
+      && check "max_tokens" Types.Stop_reason.Max_tokens
+      && check "error" Types.Stop_reason.End_turn
+      && check "some_future_value" Types.Stop_reason.End_turn)
+
 let prop_whitespace_code_uses_message =
   QCheck2.Test.make
     ~name:"Patch_agent_event_mapper > whitespace-only code uses message"
@@ -115,6 +132,7 @@ let () =
       prop_session_id_preserved;
       prop_tool_call_preserved;
       prop_final_text_preserved;
+      prop_stop_reason_mapping_contract;
       prop_whitespace_code_uses_message;
       prop_deterministic;
     ]
