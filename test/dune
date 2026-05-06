@@ -11,7 +11,7 @@
 (test
  (name test_patch_agent_rpc)
  (modules test_patch_agent_rpc)
- (libraries onton onton_core qcheck-core qcheck-core.runner yojson)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
