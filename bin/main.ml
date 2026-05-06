@@ -1603,6 +1603,19 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
                   possible review-service schema drift"
                  b.Review_backend.name response.Review_service.count
                  parsed_count);
+          Base.List.iter response.Review_service.dropped_findings
+            ~f:(fun (e : Review_service.finding_parse_error) ->
+              let json =
+                if String.length e.Review_service.json <= 500 then
+                  e.Review_service.json
+                else String.sub e.Review_service.json 0 497 ^ "..."
+              in
+              log_event runtime ~patch_id
+                (Printf.sprintf
+                   "Review backend %s dropped finding at index %d while \
+                    parsing: %s; json=%s"
+                   b.Review_backend.name e.Review_service.index
+                   e.Review_service.error json));
           let keyed_findings =
             Base.List.map response.Review_service.findings
               ~f:(fun (f : Review_service.finding) ->

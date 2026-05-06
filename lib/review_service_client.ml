@@ -34,6 +34,8 @@ let https_config () =
       | Ok cfg -> Ok cfg
       | Error (`Msg msg) -> Error ("TLS config failed: " ^ msg))
 
+let cached_https_config = lazy (https_config ())
+
 let https_fun tls_config uri flow =
   let host =
     match Uri.host uri with
@@ -72,68 +74,69 @@ let request ~net ~clock ~backend ~meth ~path ?body () : (string, error) Result.t
   | Ok token -> (
       try
         match
-          Eio.Time.with_timeout clock 30.0 (fun () ->
-              Ok
-                (match
-                   Result.map_error
-                     (fun msg -> Transport_error { meth = meth_s; url; msg })
-                     (https_config ())
-                 with
-                | Error _ as e -> e
-                | Ok tls_config ->
-                    let client =
-                      Cohttp_eio.Client.make
-                        ~https:(Some (https_fun tls_config))
-                        net
-                    in
-                    let uri = Uri.of_string url in
-                    let headers =
-                      Http.Header.of_list
-                        [
-                          ("Authorization", "Bearer " ^ token);
-                          ("Content-Type", "application/json");
-                          ("Accept", "application/json");
-                          ("User-Agent", "onton/0.1.0");
-                        ]
-                    in
-                    Eio.Switch.run @@ fun sw ->
-                    let resp, resp_body =
-                      match meth with
-                      | `GET -> Cohttp_eio.Client.get client ~sw ~headers uri
-                      | `POST ->
-                          let body =
-                            Cohttp_eio.Body.of_string
-                              (Option.value body ~default:"{}")
-                          in
-                          Cohttp_eio.Client.post client ~sw ~headers ~body uri
-                    in
-                    let status =
-                      Http.Response.status resp |> Http.Status.to_int
-                    in
-                    let resp_str =
-                      Eio.Buf_read.(
-                        of_flow ~max_size:max_response_size resp_body
-                        |> take_all)
-                    in
-                    if status >= 200 && status < 300 then Ok resp_str
-                    else
-                      let server_error =
-                        Onton_core.Review_service.parse_error_message resp_str
-                      in
-                      Error
-                        (Http_error
-                           {
-                             meth = meth_s;
-                             url;
-                             status;
-                             body = resp_str;
-                             server_error;
-                           })))
+          Result.map_error
+            (fun msg -> Transport_error { meth = meth_s; url; msg })
+            (Lazy.force cached_https_config)
         with
-        | Ok result -> result
-        | Error `Timeout ->
-            Error
-              (Transport_error { meth = meth_s; url; msg = "request timed out" })
+        | Error _ as e -> e
+        | Ok tls_config -> (
+            match
+              Eio.Time.with_timeout clock 30.0 (fun () ->
+                  Ok
+                    (let client =
+                       Cohttp_eio.Client.make
+                         ~https:(Some (https_fun tls_config))
+                         net
+                     in
+                     let uri = Uri.of_string url in
+                     let headers =
+                       Http.Header.of_list
+                         [
+                           ("Authorization", "Bearer " ^ token);
+                           ("Content-Type", "application/json");
+                           ("Accept", "application/json");
+                           ("User-Agent", "onton/0.1.0");
+                         ]
+                     in
+                     Eio.Switch.run @@ fun sw ->
+                     let resp, resp_body =
+                       match meth with
+                       | `GET -> Cohttp_eio.Client.get client ~sw ~headers uri
+                       | `POST ->
+                           let body =
+                             Cohttp_eio.Body.of_string
+                               (Option.value body ~default:"{}")
+                           in
+                           Cohttp_eio.Client.post client ~sw ~headers ~body uri
+                     in
+                     let status =
+                       Http.Response.status resp |> Http.Status.to_int
+                     in
+                     let resp_str =
+                       Eio.Buf_read.(
+                         of_flow ~max_size:max_response_size resp_body
+                         |> take_all)
+                     in
+                     if status >= 200 && status < 300 then Ok resp_str
+                     else
+                       let server_error =
+                         Onton_core.Review_service.parse_error_message resp_str
+                       in
+                       Error
+                         (Http_error
+                            {
+                              meth = meth_s;
+                              url;
+                              status;
+                              body = resp_str;
+                              server_error;
+                            })))
+            with
+            | Ok result -> result
+            | Error `Timeout ->
+                Error
+                  (Transport_error
+                     { meth = meth_s; url; msg = "request timed out" }))
       with
       | Eio.Cancel.Cancelled _ as exn -> raise exn
       | exn ->

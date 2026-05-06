@@ -32,11 +32,15 @@ type finding = {
 }
 [@@deriving show, eq, sexp_of, compare]
 
+type finding_parse_error = { index : int; error : string; json : string }
+[@@deriving show, eq, sexp_of, compare]
+
 type findings_response = {
   repo_id : string;
   pull_number : int;
   count : int;
   findings : finding list;
+  dropped_findings : finding_parse_error list;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -180,15 +184,23 @@ let parse_findings_response json : (findings_response, string) Result.t =
       let raw_findings =
         match json |> member "findings" with `List xs -> xs | _ -> []
       in
-      (* Drop entries that fail to parse rather than failing the whole response.
-         A single schema-drift entry shouldn't blank out a PR's findings — the
-         caller can compare [count] against [List.length findings] to detect
-         partial-decode loss. *)
-      let findings =
-        List.filter_map raw_findings ~f:(fun f ->
-            match parse_finding f with Ok f -> Some f | Error _ -> None)
+      (* Drop entries that fail to parse rather than failing the whole response,
+         but keep diagnostics so the effectful caller can log schema drift. *)
+      let findings, dropped_findings =
+        List.foldi raw_findings ~init:([], []) ~f:(fun index (ok, dropped) f ->
+            match parse_finding f with
+            | Ok finding -> (finding :: ok, dropped)
+            | Error error ->
+                (ok, { index; error; json = Yojson.Safe.to_string f } :: dropped))
       in
-      Ok { repo_id; pull_number; count; findings }
+      Ok
+        {
+          repo_id;
+          pull_number;
+          count;
+          findings = List.rev findings;
+          dropped_findings = List.rev dropped_findings;
+        }
   | _ -> Error "findings response must be an object"
 
 let parse_findings_response_string body =
@@ -338,10 +350,17 @@ let%test "parse_findings_response: drops malformed entries, keeps the rest" =
      ]}|}
   in
   match parse_findings_response (Yojson.Safe.from_string raw) with
-  | Ok r ->
+  | Ok r -> (
       String.equal r.repo_id "o/r"
       && r.pull_number = 7
       && List.length r.findings = 1
+      &&
+      match r.dropped_findings with
+      | [ e ] ->
+          e.index = 1
+          && String.is_substring e.error ~substring:"postingSha"
+          && String.is_substring e.json ~substring:{|"id":"bad"|}
+      | _ -> false)
   | Error _ -> false
 
 let%test "parse_findings_response_string: invalid JSON -> Error" =
@@ -352,7 +371,10 @@ let%test "parse_findings_response_string: invalid JSON -> Error" =
 let%test "parse_findings_response_string: empty findings -> Ok empty" =
   let raw = {|{"repoId":"o/r","pullNumber":1,"count":0,"findings":[]}|} in
   match parse_findings_response_string raw with
-  | Ok r -> List.is_empty r.findings && r.count = 0
+  | Ok r ->
+      List.is_empty r.findings
+      && List.is_empty r.dropped_findings
+      && r.count = 0
   | Error _ -> false
 
 let%test "parse_resolve_response: ok with addressed outcome" =

@@ -62,11 +62,18 @@ type finding = {
     from the current PR head. The agent should use this when interpreting line
     numbers. *)
 
+type finding_parse_error = { index : int; error : string; json : string }
+[@@deriving show, eq, sexp_of, compare]
+(** Diagnostic for an individual finding entry that was dropped while parsing.
+    [index] is zero-based within the response's [findings] array, [error] is the
+    field-level parser error, and [json] is the compact offending entry. *)
+
 type findings_response = {
   repo_id : string;
   pull_number : int;
   count : int;
   findings : finding list;
+  dropped_findings : finding_parse_error list;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -96,8 +103,8 @@ val parse_finding : Yojson.Safe.t -> (finding, string) Result.t
 val parse_findings_response :
   Yojson.Safe.t -> (findings_response, string) Result.t
 (** Parse the body of [GET /prs/:owner/:repo/:n/findings]. Drops unparseable
-    individual entries (logging is not the parser's job; the caller is
-    responsible for noisy diagnostics). *)
+    individual entries into [dropped_findings] so callers can log schema drift
+    without losing the entries that did parse. *)
 
 val parse_findings_response_string :
   string -> (findings_response, string) Result.t
