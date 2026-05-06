@@ -1589,7 +1589,7 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
       with
       | Error err ->
           log_event runtime ~patch_id
-            (Printf.sprintf "Review backend %s — %s" b.Review_backend.name
+            (Printf.sprintf "Poll error — %s"
                (Review_service_client.show_error err));
           []
       | Ok response ->
