@@ -11,8 +11,7 @@ type handle
 
 type result = {
   exit_code : int;
-  stdout : string;
-      (** Bounded raw stdout capture retained for diagnostics. *)
+  stdout : string;  (** Bounded raw stdout capture retained for diagnostics. *)
   stderr : string;
   got_events : bool;
   saw_final_result : bool;

@@ -47,12 +47,28 @@ let placeholder ~name =
   {
     name;
     start =
-      (fun ~process_mgr:_ ~clock:_ ~timeout:_ ~cwd:_ ~env:_ ~project_name:_
-           ~patch_id:_ ~gameplan:_ ~patch:_ ~resume_session:_ ~complexity:_ ->
-        not_implemented ());
+      (fun ~process_mgr:_
+        ~clock:_
+        ~timeout:_
+        ~cwd:_
+        ~env:_
+        ~project_name:_
+        ~patch_id:_
+        ~gameplan:_
+        ~patch:_
+        ~resume_session:_
+        ~complexity:_
+      -> not_implemented ());
     prompt =
-      (fun _ ~process_mgr:_ ~clock:_ ~timeout:_ ~cwd:_ ~env:_ ~prompt:_
-           ~on_event:_ -> not_implemented ());
+      (fun _
+        ~process_mgr:_
+        ~clock:_
+        ~timeout:_
+        ~cwd:_
+        ~env:_
+        ~prompt:_
+        ~on_event:_
+      -> not_implemented ());
     abort = (fun _ -> not_implemented ());
     shutdown = (fun _ -> not_implemented ());
   }
