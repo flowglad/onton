@@ -17,19 +17,31 @@ type entry = {
   owner : string;
   repo : string;
   pr_number : int;
+  finding_id : string;
 }
 (** The information needed to address a resolve verb back to the originating
-    backend, on the same PR coordinates Onton observed. *)
+    backend, on the same PR coordinates Onton observed. [finding_id] is the raw
+    backend-local id used in the review-service API path. *)
 
 val create : unit -> t
 
-val register : t -> finding_id:string -> entry -> unit
-(** Idempotent: re-registering the same id replaces the prior entry. The poller
-    calls this on every successful findings fetch; if a finding moves between
-    backends (operator misconfiguration) the latest fetch wins. *)
+val make_key :
+  backend_name:string ->
+  owner:string ->
+  repo:string ->
+  pr_number:int ->
+  finding_id:string ->
+  string
+(** Composite id used in prompts, artifacts, and this registry. The key
+    namespaces backend-local finding ids by backend and PR coordinates so two
+    review backends can emit the same raw [finding_id] without colliding. *)
 
-val find : t -> finding_id:string -> entry option
+val register : t -> key:string -> entry -> unit
+(** Idempotent: re-registering the same composite key replaces the prior entry.
+    The poller calls this on every successful findings fetch. *)
 
-val forget : t -> finding_id:string -> unit
+val find : t -> key:string -> entry option
+
+val forget : t -> key:string -> unit
 (** Drop the entry. Called after a resolve POST so the table doesn't grow
     unbounded across the lifetime of the process. *)

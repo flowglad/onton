@@ -719,7 +719,6 @@ let render_review_prompt ~(project_name : string) ?agents_md ?pr_number
 let render_turn_layer_findings ~(project_name : string) ?pr_number
     ?current_head_sha ~artifact_path (findings : Review_service.finding list) :
     string =
-  let _ = project_name in
   let pr_num_str =
     match pr_number with
     | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
@@ -754,27 +753,46 @@ let render_turn_layer_findings ~(project_name : string) ?pr_number
               f.id lines f.posting_sha f.body)
         |> String.concat ~sep:"\n\n---\n\n"
   in
-  Printf.sprintf
-    "You are reviewing pull request %s. The findings below come from a review \
-     service, not from GitHub review threads — there is no thread to reply to. \
-     To resolve a finding, you must EITHER (a) make code changes that address \
-     it, OR (b) explicitly mark it as wontfix in an artifact file.%s\n\n\
-     %s\n\n\
-     ## Resolving findings\n\
-     - For each finding you fix in code, do nothing extra: it will be reported \
-     back as `addressed` after this session.\n\
-     - For each finding you decide NOT to fix (out of scope, false positive, \
-     intentional, etc.), write an entry to the artifact file at `%s`. The \
-     supervisor reads it after this session and reports those findings as \
-     `wontfix`.\n\
-     - Artifact format: a JSON array of objects with required string field \
-     `id` (the finding's UUID) and required string field `reason`.\n\
-     - If you create or update the artifact, use the Write tool with the \
-     absolute path above (it is outside the worktree on purpose — do not \
-     commit it).\n\n\
-     After addressing the in-scope findings, commit your changes. The \
-     supervisor will push them for you — do not run `git push`."
-    pr_num_str sha_anchor formatted artifact_path
+  let vars =
+    [
+      ("project_name", project_name);
+      ("findings", formatted);
+      ("count", Int.to_string (List.length findings));
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+      ("pr_ref", pr_num_str);
+      ("current_head_sha", Option.value current_head_sha ~default:"");
+      ("sha_anchor", sha_anchor);
+      ("artifact_path", artifact_path);
+    ]
+  in
+  render_with_override ~project_name ~name:"turn_findings" ~vars
+    ~default:(fun () ->
+      Printf.sprintf
+        "You are reviewing pull request %s. The findings below come from a \
+         review service, not from GitHub review threads — there is no thread \
+         to reply to. To resolve a finding, you must EITHER (a) make code \
+         changes that address it, OR (b) explicitly mark it as wontfix in an \
+         artifact file.%s\n\n\
+         %s\n\n\
+         ## Resolving findings\n\
+         - For each finding you fix in code, do nothing extra: it will be \
+         reported back as `addressed` after this session.\n\
+         - For each finding you decide NOT to fix (out of scope, false \
+         positive, intentional, etc.), write an entry to the artifact file at \
+         `%s`. The supervisor reads it after this session and reports those \
+         findings as `wontfix`.\n\
+         - Artifact format: a JSON array of objects with required string field \
+         `id` (the composite finding id shown above) and required string field \
+         `reason`.\n\
+         - If you create or update the artifact, use the Write tool with the \
+         absolute path above (it is outside the worktree on purpose — do not \
+         commit it).\n\n\
+         After addressing the in-scope findings, commit your changes. The \
+         supervisor will push them for you — do not run `git push`."
+        pr_num_str sha_anchor formatted artifact_path)
 
 let render_findings_prompt ~(project_name : string) ?agents_md ?pr_number
     ?current_head_sha ?patch ?gameplan ?base_branch ~artifact_path

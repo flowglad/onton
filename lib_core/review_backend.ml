@@ -31,6 +31,12 @@ let parse_review_service_kind json : (kind, string) Result.t =
   let open Yojson.Safe.Util in
   let ( let* ) = Result.( >>= ) in
   let* base_url = string_field "baseUrl" json in
+  let base_url = strip_trailing_slashes base_url in
+  let* () =
+    if String.is_empty base_url then
+      Error "review-service \"baseUrl\" must not be empty"
+    else Ok ()
+  in
   let auth_json = json |> member "auth" in
   let* () =
     match auth_json with
@@ -40,12 +46,7 @@ let parse_review_service_kind json : (kind, string) Result.t =
   in
   let* app_id = string_field "appId" auth_json in
   let* private_key_path = string_field "privateKeyPath" auth_json in
-  Ok
-    (Review_service
-       {
-         base_url = strip_trailing_slashes base_url;
-         auth = { app_id; private_key_path };
-       })
+  Ok (Review_service { base_url; auth = { app_id; private_key_path } })
 
 let parse ~known_kinds json : (t, string) Result.t =
   let ( let* ) = Result.( >>= ) in
@@ -130,6 +131,16 @@ let%test "parse_array: trailing slash stripped" =
       | Review_service { base_url; _ } -> String.equal base_url "https://x")
   | Ok _ -> false
   | Error _ -> false
+
+let%test "parse_array: rejects all-slash baseUrl" =
+  let raw =
+    {|[{"name":"a","kind":"review-service","baseUrl":"///","auth":{"appId":"1","privateKeyPath":"/k"}}]|}
+  in
+  match
+    parse_array ~known_kinds:known_kind_default (Yojson.Safe.from_string raw)
+  with
+  | Error msg -> String.is_substring msg ~substring:"baseUrl"
+  | Ok _ -> false
 
 let%test "parse_array: rejects unknown kind" =
   let raw =

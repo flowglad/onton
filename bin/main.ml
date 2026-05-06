@@ -1593,12 +1593,21 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
                (Review_service_client.show_error err));
           []
       | Ok response ->
-          Base.List.iter response.Review_service.findings
+          Base.List.map response.Review_service.findings
             ~f:(fun (f : Review_service.finding) ->
-              Findings_registry.register findings_registry
-                ~finding_id:f.Review_service.id
-                { Findings_registry.backend = b; owner; repo; pr_number });
-          response.Review_service.findings)
+              let key =
+                Findings_registry.make_key ~backend_name:b.Review_backend.name
+                  ~owner ~repo ~pr_number ~finding_id:f.Review_service.id
+              in
+              Findings_registry.register findings_registry ~key
+                {
+                  Findings_registry.backend = b;
+                  owner;
+                  repo;
+                  pr_number;
+                  finding_id = f.Review_service.id;
+                };
+              { f with Review_service.id = key }))
 
 let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
     ~pr_registry ~branch_of ~event_log ~review_backends ~findings_registry =

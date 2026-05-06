@@ -248,6 +248,13 @@ type wontfix_entry = { id : string; reason : string }
 [@@deriving show, eq, sexp_of, compare]
 
 let parse_wontfix_artifact body : (wontfix_entry list, string) Result.t =
+  let nonblank_string_opt = function
+    | `String s ->
+        let s = String.strip s in
+        if String.is_empty s then None else Some s
+    | `Null -> None
+    | _ -> None
+  in
   let trimmed = String.strip body in
   if String.is_empty trimmed then Ok []
   else
@@ -260,8 +267,10 @@ let parse_wontfix_artifact body : (wontfix_entry list, string) Result.t =
               let open Yojson.Safe.Util in
               match entry with
               | `Assoc _ ->
-                  let id = entry |> member "id" |> string_opt in
-                  let reason = entry |> member "reason" |> string_opt in
+                  let id = entry |> member "id" |> nonblank_string_opt in
+                  let reason =
+                    entry |> member "reason" |> nonblank_string_opt
+                  in
                   Option.map2 id reason ~f:(fun id reason -> { id; reason })
               | _ -> None)
         in
@@ -421,7 +430,7 @@ let%test "parse_wontfix_artifact: empty array -> Ok []" =
 
 let%test "parse_wontfix_artifact: well-formed entries" =
   let raw =
-    {|[{"id":"a","reason":"out of scope"},{"id":"b","reason":"false positive"}]|}
+    {|[{"id":" a ","reason":" out of scope "},{"id":"b","reason":"false positive"}]|}
   in
   match parse_wontfix_artifact raw with
   | Ok [ a; b ] ->
@@ -434,7 +443,7 @@ let%test "parse_wontfix_artifact: well-formed entries" =
 
 let%test "parse_wontfix_artifact: malformed entries skipped, valid ones kept" =
   let raw =
-    {|[{"id":"a","reason":"r"},{"id":"only-id"},{"reason":"only-r"}]|}
+    {|[{"id":"a","reason":"r"},{"id":"only-id"},{"reason":"only-r"},{"id":"  ","reason":"r"},{"id":"b","reason":"  "}]|}
   in
   match parse_wontfix_artifact raw with
   | Ok [ e ] -> String.equal e.id "a" && String.equal e.reason "r"

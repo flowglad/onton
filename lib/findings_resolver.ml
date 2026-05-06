@@ -30,7 +30,7 @@ let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
            artifact_path msg));
   List.iter
     (fun (f : Onton_core.Review_service.finding) ->
-      match Findings_registry.find findings_registry ~finding_id:f.id with
+      match Findings_registry.find findings_registry ~key:f.id with
       | None ->
           log
             (Printf.sprintf
@@ -48,8 +48,9 @@ let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
               ~backend:entry.Findings_registry.backend
               ~owner:entry.Findings_registry.owner
               ~repo:entry.Findings_registry.repo
-              ~pr_number:entry.Findings_registry.pr_number ~finding_id:f.id
-              ~kind ?actor ?reason ()
+              ~pr_number:entry.Findings_registry.pr_number
+              ~finding_id:entry.Findings_registry.finding_id ~kind ?actor
+              ?reason ()
           with
           | Ok response ->
               log
@@ -57,7 +58,7 @@ let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
                    (Onton_core.Review_service.resolve_kind_to_string kind)
                    (Onton_core.Review_service.outcome_kind_to_string
                       response.Onton_core.Review_service.outcome.kind));
-              Findings_registry.forget findings_registry ~finding_id:f.id
+              Findings_registry.forget findings_registry ~key:f.id
           | Error err ->
               log
                 (Printf.sprintf "Failed to resolve finding %s — %s" f.id

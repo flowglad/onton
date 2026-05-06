@@ -3,6 +3,7 @@ type entry = {
   owner : string;
   repo : string;
   pr_number : int;
+  finding_id : string;
 }
 
 type t = { mutex : Eio.Mutex.t; table : (string, entry) Hashtbl.t }
@@ -13,11 +14,11 @@ let with_lock t f =
   Eio.Mutex.lock t.mutex;
   Fun.protect ~finally:(fun () -> Eio.Mutex.unlock t.mutex) f
 
-let register t ~finding_id entry =
-  with_lock t (fun () -> Hashtbl.replace t.table finding_id entry)
+let make_key ~backend_name ~owner ~repo ~pr_number ~finding_id =
+  Printf.sprintf "%s/%s/%s#%d/%s" backend_name owner repo pr_number finding_id
 
-let find t ~finding_id =
-  with_lock t (fun () -> Hashtbl.find_opt t.table finding_id)
+let register t ~key entry =
+  with_lock t (fun () -> Hashtbl.replace t.table key entry)
 
-let forget t ~finding_id =
-  with_lock t (fun () -> Hashtbl.remove t.table finding_id)
+let find t ~key = with_lock t (fun () -> Hashtbl.find_opt t.table key)
+let forget t ~key = with_lock t (fun () -> Hashtbl.remove t.table key)
