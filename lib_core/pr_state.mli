@@ -20,6 +20,7 @@ type t = {
   ci_checks_truncated : bool;
   comments : Comment.t list;
   unresolved_comment_count : int;
+  findings : Review_service.finding list;
   head_branch : Branch.t option;
   head_oid : string option;
   base_branch : Branch.t option;

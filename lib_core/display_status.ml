@@ -16,6 +16,7 @@ type t =
   | Approved_running
   | Fixing_ci
   | Addressing_review
+  | Addressing_findings
   | Resolving_conflict
   | Responding_to_human
   | Writing_pr_body
@@ -24,6 +25,7 @@ type t =
   | Updating
   | Ci_queued
   | Review_queued
+  | Findings_queued
   | Awaiting_ci
   | Awaiting_review
   | Blocked_by_dep
@@ -51,6 +53,7 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
     match current_op with
     | Some Ci -> Fixing_ci
     | Some Review_comments -> Addressing_review
+    | Some Findings -> Addressing_findings
     | Some Merge_conflict -> Resolving_conflict
     | Some Human -> Responding_to_human
     | Some Pr_body -> Writing_pr_body
@@ -62,6 +65,8 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Ci then Ci_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Review_comments then
       Review_queued
+    else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Findings then
+      Findings_queued
     else if State.Patch_ctx.ci_failure_count ctx ~patch_id > 0 then Awaiting_ci
     else Awaiting_review
   else Pending

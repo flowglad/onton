@@ -1,6 +1,6 @@
 (library
  (name onton)
- (libraries onton_core base unix eio eio_main eio.unix yojson ppx_yojson_conv_lib cohttp-eio tls-eio mirage-crypto-rng.unix ca-certs cmarkit)
+ (libraries onton_core base unix eio eio_main eio.unix yojson ppx_yojson_conv_lib cohttp-eio tls-eio mirage-crypto-rng.unix mirage-crypto-pk x509 base64 ca-certs cmarkit)
  (flags (:standard -open Onton_core))
  (foreign_stubs
   (language c)

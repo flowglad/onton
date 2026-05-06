@@ -124,6 +124,24 @@ val render_review_prompt :
   Comment.t list ->
   string
 
+val render_findings_prompt :
+  project_name:string ->
+  ?agents_md:string ->
+  ?pr_number:Pr_number.t ->
+  ?current_head_sha:string ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
+  ?base_branch:string ->
+  artifact_path:string ->
+  Review_service.finding list ->
+  string
+(** Findings session prompt. Renders each finding with its severity, anchor
+    (path:start_line-end_line), posting SHA, and body. Instructs the agent to
+    address findings via code edits and, for any finding it cannot or should not
+    fix, write a JSON list of [{id, reason}] objects to [artifact_path]
+    ([findings_wontfix.json]). Findings not listed in the artifact are POSTed as
+    [addressed] to the originating review backend after the session. *)
+
 val render_ci_failure_prompt :
   project_name:string ->
   ?agents_md:string ->

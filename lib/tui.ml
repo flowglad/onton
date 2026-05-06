@@ -14,6 +14,7 @@ type display_status = Display_status.t =
   | Approved_running
   | Fixing_ci
   | Addressing_review
+  | Addressing_findings
   | Resolving_conflict
   | Responding_to_human
   | Writing_pr_body
@@ -22,6 +23,7 @@ type display_status = Display_status.t =
   | Updating
   | Ci_queued
   | Review_queued
+  | Findings_queued
   | Awaiting_ci
   | Awaiting_review
   | Blocked_by_dep
@@ -38,6 +40,7 @@ let label = function
   | Approved_running -> "approved-running"
   | Fixing_ci -> "fixing-ci"
   | Addressing_review -> "addressing-review"
+  | Addressing_findings -> "addressing-findings"
   | Resolving_conflict -> "resolving-conflict"
   | Responding_to_human -> "responding-to-human"
   | Writing_pr_body -> "writing-pr-body"
@@ -46,6 +49,7 @@ let label = function
   | Updating -> "updating"
   | Ci_queued -> "ci-queued"
   | Review_queued -> "review-queued"
+  | Findings_queued -> "findings-queued"
   | Awaiting_ci -> "awaiting-ci"
   | Awaiting_review -> "awaiting-review"
   | Blocked_by_dep -> "blocked-by-dep"
@@ -58,6 +62,7 @@ let color = function
   | Approved_running -> Term.Sgr.fg_cyan
   | Fixing_ci -> Term.Sgr.fg_yellow
   | Addressing_review -> Term.Sgr.fg_yellow
+  | Addressing_findings -> Term.Sgr.fg_yellow
   | Resolving_conflict -> Term.Sgr.fg_yellow
   | Responding_to_human -> Term.Sgr.fg_magenta
   | Writing_pr_body -> Term.Sgr.fg_cyan
@@ -66,6 +71,7 @@ let color = function
   | Updating -> Term.Sgr.fg_cyan
   | Ci_queued -> Term.Sgr.fg_yellow
   | Review_queued -> Term.Sgr.fg_yellow
+  | Findings_queued -> Term.Sgr.fg_yellow
   | Awaiting_ci -> Term.Sgr.fg_blue
   | Awaiting_review -> Term.Sgr.fg_blue
   | Blocked_by_dep -> Term.Sgr.fg_blue
@@ -149,12 +155,12 @@ let status_style = function
   | Needs_help -> [ Term.Sgr.fg_red; Term.Sgr.bold ]
   | Approved_idle -> [ Term.Sgr.fg_green ]
   | Approved_running -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
-  | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Writing_pr_body ->
+  | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
+  | Responding_to_human | Writing_pr_body ->
       [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Rebasing -> [ Term.Sgr.fg_yellow ]
   | Starting | Updating -> [ Term.Sgr.fg_cyan ]
-  | Ci_queued | Review_queued -> [ Term.Sgr.fg_yellow ]
+  | Ci_queued | Review_queued | Findings_queued -> [ Term.Sgr.fg_yellow ]
   | Awaiting_ci -> [ Term.Sgr.fg_blue ]
   | Awaiting_review -> [ Term.Sgr.fg_blue ]
   | Blocked_by_dep -> [ Term.Sgr.fg_blue ]
@@ -165,12 +171,12 @@ let status_indicator = function
   | Needs_help -> "!"
   | Approved_idle -> "✓"
   | Approved_running -> "▶"
-  | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Writing_pr_body ->
+  | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
+  | Responding_to_human | Writing_pr_body ->
       "▶"
   | Rebasing -> "↻"
   | Starting | Updating -> "▶"
-  | Ci_queued | Review_queued -> "◎"
+  | Ci_queued | Review_queued | Findings_queued -> "◎"
   | Awaiting_ci | Awaiting_review -> "◎"
   | Blocked_by_dep -> "◎"
   | Pending -> "·"
@@ -432,11 +438,13 @@ let render_status_badge ?(queued = false) status =
   styled_status status (Printf.sprintf "%s %s%s" ind lbl suffix)
 
 let is_running_status = function
-  | Fixing_ci | Addressing_review | Resolving_conflict | Responding_to_human
-  | Writing_pr_body | Rebasing | Starting | Updating | Approved_running ->
+  | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
+  | Responding_to_human | Writing_pr_body | Rebasing | Starting | Updating
+  | Approved_running ->
       true
   | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
-  | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending ->
+  | Findings_queued | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending
+    ->
       false
 
 (** {1 Frame rendering} *)
@@ -464,6 +472,7 @@ let render_header ~project_name ~width =
 let short_op_name = function
   | Operation_kind.Ci -> "ci"
   | Operation_kind.Review_comments -> "review"
+  | Operation_kind.Findings -> "findings"
   | Operation_kind.Merge_conflict -> "conflict"
   | Operation_kind.Human -> "human"
   | Operation_kind.Pr_body -> "pr-body"

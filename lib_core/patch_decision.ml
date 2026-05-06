@@ -31,7 +31,7 @@ let disposition (a : Patch_agent.t) : disposition =
         | Operation_kind.Rebase -> Ready_rebase
         | Operation_kind.Human | Operation_kind.Merge_conflict
         | Operation_kind.Ci | Operation_kind.Review_comments
-        | Operation_kind.Pr_body ->
+        | Operation_kind.Findings | Operation_kind.Pr_body ->
             Ready_respond k)
 
 type ci_decision =
@@ -99,6 +99,10 @@ type delivery_payload =
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
+  | Findings_payload of { findings : Review_service.finding list }
+      (** Review-service findings (see {!Review_backend}). The runner
+          materialises these into the agent's prompt and posts resolve verbs
+          back to the originating backend after the session completes. *)
   | Pr_body_payload
   | Merge_conflict_payload
 [@@deriving show, eq, sexp_of, compare]
@@ -124,8 +128,9 @@ let filter_undelivered_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
 
 let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     ~(pre_fire_agent : Patch_agent.t option)
-    ~(prefetched_comments : Comment.t list) ~(main_branch : string) :
-    respond_delivery =
+    ~(prefetched_comments : Comment.t list)
+    ~(prefetched_findings : Review_service.finding list) ~(main_branch : string)
+    : respond_delivery =
   if
     agent.merged
     || Patch_agent.needs_intervention agent
@@ -141,6 +146,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     let is_empty =
       match kind with
       | Operation_kind.Review_comments -> List.is_empty prefetched_comments
+      | Operation_kind.Findings -> List.is_empty prefetched_findings
       | Operation_kind.Human -> List.is_empty source.human_messages
       | Operation_kind.Ci ->
           (* Freshness is the caller's responsibility: it re-polls GitHub
@@ -177,6 +183,8 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
         | Operation_kind.Ci -> Ci_payload { failed_checks = ci_undelivered }
         | Operation_kind.Review_comments ->
             Review_payload { comments = prefetched_comments }
+        | Operation_kind.Findings ->
+            Findings_payload { findings = prefetched_findings }
         | Operation_kind.Pr_body -> Pr_body_payload
         | Operation_kind.Merge_conflict -> Merge_conflict_payload
         | Operation_kind.Rebase ->
@@ -256,7 +264,7 @@ let plan_artifact_sync ~(kind : Operation_kind.t) ~(session_ok : bool)
     | Operation_kind.Pr_body -> Sync_skip
     | Operation_kind.Rebase | Operation_kind.Human
     | Operation_kind.Merge_conflict | Operation_kind.Ci
-    | Operation_kind.Review_comments ->
+    | Operation_kind.Review_comments | Operation_kind.Findings ->
         if pr_body_artifact_changed ~pre ~post then Sync_attempt_pr_body
         else Sync_skip
 

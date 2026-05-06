@@ -16,12 +16,16 @@ type t = {
 
 let poll ~was_merged (pr : Pr_state.t) =
   let unresolved = not (List.is_empty pr.comments) in
+  let has_findings = not (List.is_empty pr.findings) in
   let queue =
     let acc = [] in
     (* world-has-comment c p and ~resolved c -> queue' p review-comments *)
     let acc =
       if unresolved then Operation_kind.Review_comments :: acc else acc
     in
+    (* world-has-finding f p -> queue' p findings.
+       Mirror of the comment rule, but for review-service backends. *)
+    let acc = if has_findings then Operation_kind.Findings :: acc else acc in
     (* world-has-conflict p -> queue' p merge-conflict *)
     let acc =
       if Pr_state.has_conflict pr then Operation_kind.Merge_conflict :: acc

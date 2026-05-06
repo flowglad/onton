@@ -80,6 +80,10 @@ type delivery_payload =
   | Human_payload of { messages : string list }
   | Ci_payload of { failed_checks : Ci_check.t list }
   | Review_payload of { comments : Comment.t list }
+  | Findings_payload of { findings : Review_service.finding list }
+      (** Review-service findings — distinct from GitHub review comments.
+          Carries the data needed both for prompting the agent and (after the
+          session) issuing resolve verbs back to the originating backend. *)
   | Pr_body_payload
   | Merge_conflict_payload
 [@@deriving show, eq, sexp_of, compare]
@@ -95,6 +99,7 @@ val respond_delivery :
   kind:Operation_kind.t ->
   pre_fire_agent:Patch_agent.t option ->
   prefetched_comments:Comment.t list ->
+  prefetched_findings:Review_service.finding list ->
   main_branch:string ->
   respond_delivery
 (** Pure pre-session decision for Respond actions. Determines whether the

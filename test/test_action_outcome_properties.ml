@@ -154,7 +154,7 @@ let () =
           match
             Patch_decision.respond_delivery ~agent ~kind:Operation_kind.Human
               ~pre_fire_agent:(Some second_pre) ~prefetched_comments:[]
-              ~main_branch:(Branch.to_string main)
+              ~prefetched_findings:[] ~main_branch:(Branch.to_string main)
           with
           | Patch_decision.Deliver { payload; _ } -> (
               match payload with
@@ -164,6 +164,7 @@ let () =
                   && List.mem first_pre.Patch_agent.human_messages first_msg
                        ~equal:String.equal
               | Patch_decision.Ci_payload _ | Patch_decision.Review_payload _
+              | Patch_decision.Findings_payload _
               | Patch_decision.Pr_body_payload
               | Patch_decision.Merge_conflict_payload ->
                   false)

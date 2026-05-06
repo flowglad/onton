@@ -45,7 +45,19 @@ module Branch : sig
 end
 
 module Operation_kind : sig
-  type t = Rebase | Human | Merge_conflict | Ci | Review_comments | Pr_body
+  type t =
+    | Rebase
+    | Human
+    | Merge_conflict
+    | Ci
+    | Review_comments
+    | Pr_body
+    | Findings
+        (** Review-service findings — deliveries from a backend in
+            {!Review_backend} that mints its own finding store separate from
+            GitHub review threads. The agent receives one [Findings_payload] per
+            session and POSTs resolve verbs back to the originating backend
+            after the session completes. *)
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   val t_of_yojson_compat : Yojson.Safe.t -> t

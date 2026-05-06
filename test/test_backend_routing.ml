@@ -76,7 +76,7 @@ let gen_repo_config : Repo_config.t QCheck2.Gen.t =
   in
   let* routes = list_size (return (List.length keys)) gen_route in
   let complexity_routes = List.zip_exn keys routes in
-  return { Repo_config.complexity_routes }
+  return { Repo_config.complexity_routes; review_backends = [] }
 
 let pp_decision (d : Backend_routing.decision) =
   Printf.sprintf "{ backend = %s; model = %s }" d.backend

@@ -48,6 +48,15 @@ let artifact_dir ~project_name ~patch_id =
 let pr_body_artifact_path ~project_name ~patch_id =
   Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "pr-body.md"
 
+(** Absolute path the agent writes [findings_wontfix.json] to during a Findings
+    session. Lives alongside [pr-body.md] under [artifacts/<patch_id>/]. The
+    supervisor reads it after the session to decide which findings to POST as
+    ["wontfix"]; everything not listed is POSTed as ["addressed"]. *)
+let findings_wontfix_artifact_path ~project_name ~patch_id =
+  Stdlib.Filename.concat
+    (artifact_dir ~project_name ~patch_id)
+    "findings_wontfix.json"
+
 let ensure_dir path =
   let rec mkdir_p dir =
     if not (Stdlib.Sys.file_exists dir) then (

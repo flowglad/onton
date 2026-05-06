@@ -9,11 +9,13 @@ let priority (k : Ok.t) : int =
   | Ok.Merge_conflict -> 2
   | Ok.Ci -> 3
   | Ok.Review_comments -> 4
-  | Ok.Pr_body -> 5
+  | Ok.Findings -> 5
+  | Ok.Pr_body -> 6
 
 let is_feedback (k : Ok.t) : bool =
   match k with
-  | Ok.Human | Ok.Merge_conflict | Ok.Ci | Ok.Review_comments | Ok.Pr_body ->
+  | Ok.Human | Ok.Merge_conflict | Ok.Ci | Ok.Review_comments | Ok.Findings
+  | Ok.Pr_body ->
       true
   | Ok.Rebase -> false
 

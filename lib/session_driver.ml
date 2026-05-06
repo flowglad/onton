@@ -223,6 +223,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
                         patch_id)
               | Some Types.Operation_kind.Ci
               | Some Types.Operation_kind.Review_comments
+              | Some Types.Operation_kind.Findings
               | Some Types.Operation_kind.Pr_body
               | Some Types.Operation_kind.Merge_conflict
               | Some Types.Operation_kind.Rebase
@@ -513,6 +514,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             | Some Types.Operation_kind.Human -> true
             | Some Types.Operation_kind.Ci
             | Some Types.Operation_kind.Review_comments
+            | Some Types.Operation_kind.Findings
             | Some Types.Operation_kind.Pr_body
             | Some Types.Operation_kind.Merge_conflict
             | Some Types.Operation_kind.Rebase
