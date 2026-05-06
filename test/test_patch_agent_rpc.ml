@@ -190,6 +190,18 @@ let test_rejects_invalid_json =
       | Result.Error msg -> String.is_substring msg ~substring:"invalid JSON"
       | Result.Ok _ -> false)
 
+let test_rejects_null_usage_when_present =
+  QCheck2.Test.make
+    ~name:"Patch_agent_rpc > rejects done event with usage = null"
+    QCheck2.Gen.unit (fun () ->
+      match
+        Patch_agent_rpc.parse_event
+          {|{"type":"done","stop_reason":"end_turn","final_text":"ok","usage":null}|}
+      with
+      | Result.Error msg ->
+          String.is_substring msg ~substring:"field \"usage\" must be an object"
+      | Result.Ok _ -> false)
+
 let () =
   let suite =
     [
@@ -198,6 +210,7 @@ let () =
       prop_rejects_embedded_lf;
       test_rejects_unknown_event_type;
       test_rejects_invalid_json;
+      test_rejects_null_usage_when_present;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

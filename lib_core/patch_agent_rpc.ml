@@ -81,21 +81,14 @@ let require_int field json =
 let parse_usage json =
   let ( let* ) = Result.( >>= ) in
   match json with
-  | `Null -> Result.Ok None
   | `Assoc _ ->
       let* input_tokens = require_int "input_tokens" json in
       let* output_tokens = require_int "output_tokens" json in
       let* cache_read_tokens = require_int "cache_read_tokens" json in
       let* cache_write_tokens = require_int "cache_write_tokens" json in
       Result.Ok
-        (Some
-           {
-             input_tokens;
-             output_tokens;
-             cache_read_tokens;
-             cache_write_tokens;
-           })
-  | _ -> Result.Error "field \"usage\" must be an object or null"
+        { input_tokens; output_tokens; cache_read_tokens; cache_write_tokens }
+  | _ -> Result.Error "field \"usage\" must be an object"
 
 let parse_event_json json =
   let ( let* ) = Result.( >>= ) in
@@ -125,7 +118,8 @@ let parse_event_json json =
           let* usage =
             match member "usage" json with
             | None -> Result.Ok None
-            | Some usage_json -> parse_usage usage_json
+            | Some usage_json ->
+                Result.map (parse_usage usage_json) ~f:Option.some
           in
           Result.Ok (Done { stop_reason; final_text; usage })
       | "error" ->
