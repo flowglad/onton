@@ -15,6 +15,19 @@ let parse_event = Codex_event_parser.parse_event
 let build_args = Codex_event_parser.build_args
 let auto_model = Codex_event_parser.auto_model
 
+let is_likely_auth_refresh_failure (result : Llm_backend.result) =
+  let contains haystack needle =
+    String.is_substring haystack ~substring:needle
+  in
+  let haystack = String.lowercase (result.stderr ^ "\n" ^ result.stdout) in
+  (not result.timed_out) && result.exit_code <> 0 && (not result.got_events)
+  && (contains haystack "refresh token"
+     || contains haystack "oauth"
+     || contains haystack "unauthorized"
+     || contains haystack "authentication")
+  && (contains haystack "token" || contains haystack "auth"
+    || contains haystack "login")
+
 let budget_cap_nano_usd_from_env () =
   match
     Sys.getenv "ONTON_BUDGET_CAP_USD"
@@ -34,7 +47,8 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
   let args = build_args ~model ~cwd_path ~prompt ~resume_session in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
-      ~overrides:(Spawn_env.per_patch_env ~project_name ~patch_id)
+      ~overrides:
+        (Spawn_env.per_patch_env_without_codex_home ~project_name ~patch_id)
   in
   let budget_cap_nano_usd = budget_cap_nano_usd_from_env () in
   let cost_state = ref initial_cost_state in
@@ -49,8 +63,15 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
       cost_state := next_cost_state;
       events
   in
-  Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
-    ~setsid_exec ~args ~process_line ~on_event
+  let run_once () =
+    Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
+      ~setsid_exec ~args ~process_line ~on_event
+  in
+  let result = run_once () in
+  if is_likely_auth_refresh_failure result then (
+    Eio.Time.sleep clock 2.0;
+    run_once ())
+  else result
 
 let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {

@@ -41,10 +41,10 @@ let resolve_user_config_dir ~env_var ~home_subpath =
           Some (Stdlib.Filename.concat (absolutize home) home_subpath)
       | _ -> None)
 
-(* Seed the per-patch config dirs with symlinks to the user's real auth
-   files. Symlinks (not copies) so token rotations the backend writes
-   in-place propagate back to the user's real config dir, and so the user's
-   plain CLI continues to share a session with the per-patch CLI. *)
+(* Seed the per-patch config dirs with symlinks to the user's real auth files.
+   Symlinks (not copies) are better than stale snapshots, but they are still not
+   a refresh-token lock. Codex callers should generally inherit the user's real
+   CODEX_HOME instead of using the per-patch codex dir. *)
 let seed_auth_links_with ~claude_src_dir ~codex_src_dir ~opencode_src_dir
     ~claude_dir ~codex_dir ~opencode_dir =
   let seed src_dir dst_dir filename =
@@ -84,8 +84,17 @@ let per_patch_env_in_project_dir ~project_dir ~patch_id =
     ("OPENCODE_CONFIG_DIR", opencode_dir);
   ]
 
+let per_patch_env_without_codex_home_in_project_dir ~project_dir ~patch_id =
+  per_patch_env_in_project_dir ~project_dir ~patch_id
+  |> List.filter ~f:(fun (key, _) -> not (String.equal key "CODEX_HOME"))
+
 let per_patch_env ~project_name ~patch_id =
   per_patch_env_in_project_dir
+    ~project_dir:(Project_store.project_dir project_name)
+    ~patch_id
+
+let per_patch_env_without_codex_home ~project_name ~patch_id =
+  per_patch_env_without_codex_home_in_project_dir
     ~project_dir:(Project_store.project_dir project_name)
     ~patch_id
 
@@ -170,6 +179,17 @@ let%test "merged env contains per-patch overrides" =
   String.is_substring claude_a ~substring:"spawn-envs/patch-1/claude"
   && String.is_substring codex_a ~substring:"spawn-envs/patch-1/codex"
   && not (String.equal claude_a claude_b)
+
+let%test "codex home override can be omitted" =
+  with_temp_project_dir @@ fun project_dir ->
+  let patch_id = Types.Patch_id.of_string "patch-no-codex-home" in
+  let env =
+    per_patch_env_without_codex_home_in_project_dir ~project_dir ~patch_id
+  in
+  let find key = List.Assoc.find env ~equal:String.equal key in
+  Option.is_some (find "CLAUDE_CONFIG_DIR")
+  && Option.is_some (find "OPENCODE_CONFIG_DIR")
+  && Option.is_none (find "CODEX_HOME")
 
 let write_file path contents =
   let oc = Stdlib.open_out path in
