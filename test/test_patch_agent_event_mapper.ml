@@ -92,6 +92,15 @@ let prop_final_text_preserved =
         (Types.Stream_event.Final_result
            { text = final_text; stop_reason = Types.Stop_reason.End_turn }))
 
+let prop_whitespace_code_uses_message =
+  QCheck2.Test.make
+    ~name:"Patch_agent_event_mapper > whitespace-only code uses message"
+    QCheck2.Gen.unit (fun () ->
+      Types.Stream_event.equal
+        (Patch_agent_event_mapper.map_event
+           (Patch_agent_rpc.Error { code = "   "; message = "oops" }))
+        (Types.Stream_event.Error "oops"))
+
 let prop_deterministic =
   QCheck2.Test.make ~name:"Patch_agent_event_mapper > deterministic" ~count:500
     gen_event (fun event ->
@@ -106,6 +115,7 @@ let () =
       prop_session_id_preserved;
       prop_tool_call_preserved;
       prop_final_text_preserved;
+      prop_whitespace_code_uses_message;
       prop_deterministic;
     ]
   in
