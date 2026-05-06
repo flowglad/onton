@@ -15,10 +15,16 @@ type severity = Must_fix | Should_fix | Note
 
 type outcome_kind =
   | Outstanding  (** Posted (or persisted-only) and not yet acted on. *)
-  | Discussed  (** A human replied on GitHub. *)
-  | Addressed  (** Code edits removed the anchor lines. *)
-  | Ignored  (** PR was closed without action. *)
-  | Resolved  (** Explicitly resolved via this API (read-only echo). *)
+  | Discussed  (** A non-bot human replied on the GitHub thread. *)
+  | Addressed
+      (** Either: code edits removed the anchored region (engine path), or: a
+          caller marked it addressed via the resolve API. Distinguish via
+          [outcome.actor]/[outcome.reason] — those are present only on the API
+          path. *)
+  | Ignored  (** PR was closed without anyone touching the finding. *)
+  | Wontfix
+      (** Caller actively dismissed via the resolve API. Distinct from [Ignored]
+          (PR-close), distinct from [Addressed] (caller fixed it). *)
 [@@deriving show, eq, sexp_of, compare]
 
 type last_reply = { author : string; at : string; body : string }

@@ -3,7 +3,7 @@ open Base
 type severity = Must_fix | Should_fix | Note
 [@@deriving show, eq, sexp_of, compare]
 
-type outcome_kind = Outstanding | Discussed | Addressed | Ignored | Resolved
+type outcome_kind = Outstanding | Discussed | Addressed | Ignored | Wontfix
 [@@deriving show, eq, sexp_of, compare]
 
 type last_reply = { author : string; at : string; body : string }
@@ -59,7 +59,7 @@ let outcome_kind_of_string = function
   | "discussed" -> Some Discussed
   | "addressed" -> Some Addressed
   | "ignored" -> Some Ignored
-  | "resolved" -> Some Resolved
+  | "wontfix" -> Some Wontfix
   | _ -> None
 
 let outcome_kind_to_string = function
@@ -67,7 +67,7 @@ let outcome_kind_to_string = function
   | Discussed -> "discussed"
   | Addressed -> "addressed"
   | Ignored -> "ignored"
-  | Resolved -> "resolved"
+  | Wontfix -> "wontfix"
 
 let resolve_kind_of_string = function
   | "addressed" -> Some Resolve_addressed
@@ -280,7 +280,7 @@ let%test "severity unknown -> None" =
   Option.is_none (severity_of_string "critical")
 
 let%test "outcome_kind round trip" =
-  List.for_all [ Outstanding; Discussed; Addressed; Ignored; Resolved ]
+  List.for_all [ Outstanding; Discussed; Addressed; Ignored; Wontfix ]
     ~f:(fun k ->
       match outcome_kind_of_string (outcome_kind_to_string k) with
       | Some k' -> equal_outcome_kind k k'
