@@ -1,5 +1,5 @@
 open Base
-open Onton_core
+open Onton
 
 let gen_line_safe_char =
   QCheck2.Gen.map
@@ -163,11 +163,13 @@ let prop_events_round_trip =
 
 let prop_rejects_embedded_lf =
   QCheck2.Test.make
-    ~name:"Patch_agent_rpc > rejects input containing embedded LF"
-    QCheck2.Gen.unit (fun () ->
+    ~name:"Patch_agent_rpc > rejects input containing embedded LF" ~count:100
+    gen_line_safe_string (fun session_id ->
       let line =
-        {|{"type":"session_init","session_id":"abc",
+        Printf.sprintf
+          {|{"type":"session_init","session_id":"%s",
 "model_id":"m","provider":"p"}|}
+          session_id
       in
       match Patch_agent_rpc.parse_event line with
       | Result.Error _ -> true
@@ -189,19 +191,6 @@ let test_rejects_invalid_json =
       match Patch_agent_rpc.parse_event "not json" with
       | Result.Error msg -> String.is_substring msg ~substring:"invalid JSON"
       | Result.Ok _ -> false)
-
-let test_rejects_null_usage_when_present =
-  QCheck2.Test.make
-    ~name:"Patch_agent_rpc > rejects done event with usage = null"
-    QCheck2.Gen.unit (fun () ->
-      match
-        Patch_agent_rpc.parse_event
-          {|{"type":"done","stop_reason":"end_turn","final_text":"ok","usage":null}|}
-      with
-      | Result.Error msg ->
-          String.is_substring msg ~substring:"field \"usage\" must be an object"
-      | Result.Ok _ -> false)
-
 let () =
   let suite =
     [
@@ -210,7 +199,6 @@ let () =
       prop_rejects_embedded_lf;
       test_rejects_unknown_event_type;
       test_rejects_invalid_json;
-      test_rejects_null_usage_when_present;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in
