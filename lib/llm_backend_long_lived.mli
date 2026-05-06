@@ -1,51 +1,49 @@
 open Base
 
-(** Generic long-lived LLM backend interface.
+(** Long-lived LLM backend interface.
 
-    A long-lived backend owns a persistent subprocess across a patch lifetime.
-    The gameplan-stable and patch-stable prompt layers are supplied once at
-    {!start}; each subsequent {!prompt} sends only the turn-dynamic suffix. *)
+    This lifecycle is distinct from {!Llm_backend.t}'s fresh-process-per-turn
+    [run_streaming] shape. A long-lived backend starts one process for a patch
+    session, sends rendered turn prompts over that process, and shuts the
+    process down when the patch session ends. *)
 
-type handle
-(** Abstract session handle for a live long-lived backend process. *)
-
-type result = Llm_backend.result
-
-type t = {
-  name : string;
-  start :
-    'tag 'clock.
-    process_mgr:[> 'tag Eio.Process.mgr_ty ] Eio.Resource.t ->
-    clock:'clock Eio.Time.clock ->
-    timeout:float ->
-    cwd:Eio.Fs.dir_ty Eio.Path.t ->
-    env:string array ->
-    project_name:string ->
-    patch_id:Types.Patch_id.t ->
-    gameplan:string ->
-    patch:string ->
-    resume_session:string option ->
-    complexity:int option ->
-    handle;
-  prompt :
-    'tag 'clock.
-    handle ->
-    process_mgr:[> 'tag Eio.Process.mgr_ty ] Eio.Resource.t ->
-    clock:'clock Eio.Time.clock ->
-    timeout:float ->
-    cwd:Eio.Fs.dir_ty Eio.Path.t ->
-    env:string array ->
-    prompt:string ->
-    on_event:(Types.Stream_event.t -> unit) ->
-    result;
-  abort : handle -> unit;
-  shutdown : handle -> unit;
+type result = Llm_backend.result = {
+  exit_code : int;
+  stdout : string;
+  stderr : string;
+  got_events : bool;
+  saw_final_result : bool;
+  timed_out : bool;
 }
-(** [complexity] is the gameplan-author's 1/2/3 estimate for this patch. When
-    the user passes [--model auto], a long-lived backend can resolve the actual
-    model at {!start} time from this value. [None] means the gameplan did not
-    specify a complexity. *)
+[@@deriving show, eq, sexp_of, compare]
 
-val placeholder : name:string -> t
-(** Placeholder implementation for incremental integration. Every lifecycle
-    function raises [Failure "not implemented; see patch 4"]. *)
+type start_config = {
+  project_name : string;
+  worktree : Eio.Fs.dir_ty Eio.Path.t;
+  patch_id : Types.Patch_id.t;
+  provider : string;
+  model : string;
+  effort : string;
+  gameplan_prompt : string;
+  patch_prompt : string;
+}
+
+type t =
+  | T : {
+      name : string;
+      start : sw:Eio.Switch.t -> start_config -> 'handle;
+      prompt :
+        'handle ->
+        prompt:string ->
+        timeout:float ->
+        on_event:(Types.Stream_event.t -> unit) ->
+        result;
+      abort : 'handle -> unit;
+      shutdown : 'handle -> unit;
+    }
+      -> t
+      (** A packed backend carries its own private handle type. Consumers can
+          only get a handle by pattern matching [T] and calling that same
+          package's [start], so accidentally passing a handle from one backend
+          to another backend's lifecycle functions is rejected by the type
+          checker. *)
