@@ -1,22 +1,14 @@
 open Base
 
 type handle = unit
-
-type result = {
-  exit_code : int;
-  stdout : string;
-  stderr : string;
-  got_events : bool;
-  saw_final_result : bool;
-  timed_out : bool;
-}
-[@@deriving show, eq, sexp_of, compare]
+type result = Llm_backend.result [@@deriving show, eq, sexp_of, compare]
 
 type t = {
   name : string;
   start :
-    process_mgr:[ `Process_mgr | `Platform of [ `Generic ] ] Eio.Resource.t ->
-    clock:[ `Clock of float ] Eio.Resource.t ->
+    'tag 'clock.
+    process_mgr:[> 'tag Eio.Process.mgr_ty ] Eio.Resource.t ->
+    clock:'clock Eio.Time.clock ->
     timeout:float ->
     cwd:Eio.Fs.dir_ty Eio.Path.t ->
     env:string array ->
@@ -28,9 +20,10 @@ type t = {
     complexity:int option ->
     handle;
   prompt :
+    'tag 'clock.
     handle ->
-    process_mgr:[ `Process_mgr | `Platform of [ `Generic ] ] Eio.Resource.t ->
-    clock:[ `Clock of float ] Eio.Resource.t ->
+    process_mgr:[> 'tag Eio.Process.mgr_ty ] Eio.Resource.t ->
+    clock:'clock Eio.Time.clock ->
     timeout:float ->
     cwd:Eio.Fs.dir_ty Eio.Path.t ->
     env:string array ->
