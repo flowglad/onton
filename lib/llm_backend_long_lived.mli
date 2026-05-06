@@ -9,7 +9,7 @@ open Base
 type handle
 (** Abstract session handle for a live long-lived backend process. *)
 
-type result = Llm_backend.result [@@deriving show, eq, sexp_of, compare]
+type result = Llm_backend.result
 
 type t = {
   name : string;

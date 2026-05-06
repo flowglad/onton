@@ -1,7 +1,7 @@
 open Base
 
 type handle = unit
-type result = Llm_backend.result [@@deriving show, eq, sexp_of, compare]
+type result = Llm_backend.result
 
 type t = {
   name : string;
