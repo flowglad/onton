@@ -3152,34 +3152,34 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       | _ -> false
                                     in
                                     let result =
-                                      if session_ok then
-                                        match payload with
-                                        | Patch_decision.Pr_body_payload -> (
-                                            let pr =
-                                              Base.Option.value_exn pr_number
-                                            in
-                                            let patch =
-                                              Base.List.find_exn
-                                                gameplan.Gameplan.patches
-                                                ~f:(fun (p : Patch.t) ->
-                                                  Patch_id.equal p.Patch.id
-                                                    patch_id)
-                                            in
-                                            let artifact_outcome =
-                                              apply_pr_body_artifact ~runtime
-                                                ~net ~github ~project_name
-                                                ~patch_id ~pr_number:pr ~patch
-                                                ~gameplan
-                                            in
-                                            match
-                                              Patch_decision
-                                              .classify_pr_body_respond
-                                                ~artifact_outcome ~tool_failures
-                                            with
-                                            | `Pr_body_miss -> `Pr_body_miss
-                                            | `Ok -> result)
-                                        | Patch_decision.Findings_payload
-                                            { findings } ->
+                                      match payload with
+                                      | Patch_decision.Pr_body_payload
+                                        when session_ok -> (
+                                          let pr =
+                                            Base.Option.value_exn pr_number
+                                          in
+                                          let patch =
+                                            Base.List.find_exn
+                                              gameplan.Gameplan.patches
+                                              ~f:(fun (p : Patch.t) ->
+                                                Patch_id.equal p.Patch.id
+                                                  patch_id)
+                                          in
+                                          let artifact_outcome =
+                                            apply_pr_body_artifact ~runtime ~net
+                                              ~github ~project_name ~patch_id
+                                              ~pr_number:pr ~patch ~gameplan
+                                          in
+                                          match
+                                            Patch_decision
+                                            .classify_pr_body_respond
+                                              ~artifact_outcome ~tool_failures
+                                          with
+                                          | `Pr_body_miss -> `Pr_body_miss
+                                          | `Ok -> result)
+                                      | Patch_decision.Findings_payload
+                                          { findings } ->
+                                          if session_ok then (
                                             let artifact_path =
                                               Project_store
                                               .findings_wontfix_artifact_path
@@ -3195,14 +3195,35 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                                 (Printf.sprintf "onton:%s"
                                                    (Patch_id.to_string patch_id))
                                               ();
+                                            result)
+                                          else
+                                            let ids =
+                                              Base.List.map findings
+                                                ~f:(fun
+                                                    (f : Review_service.finding)
+                                                  -> f.Review_service.id)
+                                            in
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "Session failed before \
+                                                  resolving findings; \
+                                                  forgetting delivered finding \
+                                                  registry entries: %s"
+                                                 (String.concat ", " ids));
+                                            Base.List.iter findings
+                                              ~f:(fun
+                                                  (f : Review_service.finding)
+                                                ->
+                                                Findings_registry.forget
+                                                  findings_registry
+                                                  ~key:f.Review_service.id);
                                             result
-                                        | Patch_decision.Human_payload _
-                                        | Patch_decision.Ci_payload _
-                                        | Patch_decision.Review_payload _
-                                        | Patch_decision.Merge_conflict_payload
-                                          ->
-                                            result
-                                      else result
+                                      | Patch_decision.Human_payload _
+                                      | Patch_decision.Ci_payload _
+                                      | Patch_decision.Review_payload _
+                                      | Patch_decision.Pr_body_payload
+                                      | Patch_decision.Merge_conflict_payload ->
+                                          result
                                     in
                                     (* Opportunistic pr-body sync. If the
                                        agent updated the artifact during a

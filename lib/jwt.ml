@@ -14,10 +14,7 @@ let show_error = function
 
 (** Base64url without padding — RFC 7515 §2. *)
 let base64url_encode s =
-  let b64 =
-    Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
-  in
-  b64
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
 let read_file path =
   try
