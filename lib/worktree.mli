@@ -56,7 +56,10 @@ val is_ancestor_patch_subject :
     squash-merged ancestor commits whose patch-ids no longer match any commit on
     [main]. *)
 
-type unique_commit = { sha : string; subject : string }
+type unique_commit = Worktree_parser.unique_commit = {
+  sha : string;
+  subject : string;
+}
 [@@deriving show, eq, sexp_of, compare]
 
 val classify_unique_commits :
@@ -117,9 +120,10 @@ val fetch_origin :
     fails with "cannot lock ref". The lock serializes fetches to prevent this.
 *)
 
-type rebase_strategy = Onto | Plain [@@deriving show, eq, sexp_of, compare]
+type rebase_strategy = Worktree_parser.rebase_strategy = Onto | Plain
+[@@deriving show, eq, sexp_of, compare]
 
-type conflict_info = {
+type conflict_info = Worktree_parser.conflict_info = {
   target : string;
   old_base : string;
   unique_commits : unique_commit list;
@@ -163,7 +167,11 @@ val parse_rebase_merge_state :
     commits cannot be enumerated. [onto_contents] is the rebase destination SHA;
     [upstream_contents] is the old-base SHA used as the recovery [old_base]. *)
 
-type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string
+type rebase_result = Worktree_parser.rebase_result =
+  | Ok
+  | Noop
+  | Conflict of conflict_info
+  | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
 val rebase_onto :
@@ -211,7 +219,7 @@ val parse_push_porcelain : string -> char option
     Returns [Some '!'] for rejected, [Some '+'] for forced update, etc. Returns
     [None] if no status line is found. *)
 
-type push_result =
+type push_result = Worktree_parser.push_result =
   | Push_ok
   | Push_up_to_date
   | Push_no_commits
@@ -226,7 +234,8 @@ type push_result =
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
-type push_gate = Proceed | Skip_no_commits [@@deriving show, eq, sexp_of]
+type push_gate = Worktree_parser.push_gate = Proceed | Skip_no_commits
+[@@deriving show, eq, sexp_of]
 
 val parse_commit_count : code:int -> stdout:string -> int option
 (** Pure: parse [git rev-list --count base..HEAD] output into a commit count.

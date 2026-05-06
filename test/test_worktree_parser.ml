@@ -1,5 +1,5 @@
 open Base
-open Onton
+open Onton_core
 open Onton_core.Types
 
 (** QCheck2 property-based tests for [Worktree.parse_porcelain]. *)
@@ -10,7 +10,9 @@ let () =
   let prop_empty_input =
     Test.make ~name:"parse_porcelain: empty input -> empty list" ~count:1
       Gen.unit (fun () ->
-        let result = Worktree.parse_porcelain ~repo_root:"/repo" "" in
+        let result =
+          Worktree_parser.parse_porcelain ~cwd:"" ~repo_root:"/repo" ""
+        in
         List.is_empty result)
   in
 
@@ -19,7 +21,9 @@ let () =
     Test.make ~name:"parse_porcelain: detached HEAD entries skipped" ~count:1
       Gen.unit (fun () ->
         let input = "worktree /tmp/wt\nHEAD abc123\ndetached\n" in
-        let result = Worktree.parse_porcelain ~repo_root:"/repo" input in
+        let result =
+          Worktree_parser.parse_porcelain ~cwd:"" ~repo_root:"/repo" input
+        in
         List.is_empty result)
   in
 
@@ -33,7 +37,9 @@ let () =
            worktree /wt/foo\n\
            branch refs/heads/feature\n"
         in
-        let result = Worktree.parse_porcelain ~repo_root:"/repo" input in
+        let result =
+          Worktree_parser.parse_porcelain ~cwd:"" ~repo_root:"/repo" input
+        in
         match result with
         | [ (path, branch) ] ->
             String.equal path "/wt/foo"
@@ -51,7 +57,9 @@ let () =
            worktree /wt/b\n\
            branch refs/heads/b\n"
         in
-        let result = Worktree.parse_porcelain ~repo_root:"/repo" input in
+        let result =
+          Worktree_parser.parse_porcelain ~cwd:"" ~repo_root:"/repo" input
+        in
         List.length result = 2)
   in
 
@@ -73,7 +81,9 @@ let () =
                   branch)
             |> String.concat ~sep:"\n\n"
           in
-          let result = Worktree.parse_porcelain ~repo_root porcelain in
+          let result =
+            Worktree_parser.parse_porcelain ~cwd:"" ~repo_root porcelain
+          in
           (* Each generated entry should appear in results *)
           match List.zip entries result with
           | Unequal_lengths -> false
@@ -90,7 +100,9 @@ let () =
     Test.make ~name:"parse_porcelain: entries without branch are skipped"
       ~count:1 Gen.unit (fun () ->
         let input = "worktree /wt/bare\n\n" in
-        let result = Worktree.parse_porcelain ~repo_root:"/repo" input in
+        let result =
+          Worktree_parser.parse_porcelain ~cwd:"" ~repo_root:"/repo" input
+        in
         List.is_empty result)
   in
 
@@ -101,7 +113,7 @@ let () =
       (fun s ->
         (* No slashes means no prefixes *)
         if String.mem s '/' then true (* skip *)
-        else List.is_empty (Worktree.branch_prefixes s))
+        else List.is_empty (Worktree_parser.branch_prefixes s))
   in
 
   (* branch_prefixes: result length = number of slashes - but only
@@ -115,7 +127,7 @@ let () =
           (string_size ~gen:(char_range 'a' 'z') (int_range 1 8)))
       (fun segments ->
         let branch = String.concat ~sep:"/" segments in
-        let prefixes = Worktree.branch_prefixes branch in
+        let prefixes = Worktree_parser.branch_prefixes branch in
         List.length prefixes = List.length segments - 1)
   in
 
@@ -128,7 +140,7 @@ let () =
           (string_size ~gen:(char_range 'a' 'z') (int_range 1 8)))
       (fun segments ->
         let branch = String.concat ~sep:"/" segments in
-        let prefixes = Worktree.branch_prefixes branch in
+        let prefixes = Worktree_parser.branch_prefixes branch in
         List.for_all prefixes ~f:(fun pfx ->
             String.is_prefix branch ~prefix:(pfx ^ "/")))
   in
@@ -138,7 +150,7 @@ let () =
     Test.make ~name:"find_ci_ref_collision: exact prefix match detected"
       ~count:1 Gen.unit (fun () ->
         let r =
-          Worktree.find_ci_ref_collision
+          Worktree_parser.find_ci_ref_collision
             ~existing_branches:[ "main"; "my-project" ] "my-project/patch-1"
         in
         Option.equal String.equal r (Some "my-project"))
@@ -149,7 +161,7 @@ let () =
     Test.make ~name:"find_ci_ref_collision: case-insensitive match detected"
       ~count:1 Gen.unit (fun () ->
         let r =
-          Worktree.find_ci_ref_collision
+          Worktree_parser.find_ci_ref_collision
             ~existing_branches:[ "main"; "My-Project" ] "my-project/patch-1"
         in
         Option.equal String.equal r (Some "My-Project"))
@@ -161,7 +173,7 @@ let () =
       ~name:"find_ci_ref_collision: no collision when unrelated branches"
       ~count:1 Gen.unit (fun () ->
         let r =
-          Worktree.find_ci_ref_collision
+          Worktree_parser.find_ci_ref_collision
             ~existing_branches:[ "main"; "feature-x"; "other/thing" ]
             "my-project/patch-1"
         in
@@ -173,7 +185,7 @@ let () =
     Test.make ~name:"find_ci_ref_collision: reverse prefix collision detected"
       ~count:1 Gen.unit (fun () ->
         let r =
-          Worktree.find_ci_ref_collision
+          Worktree_parser.find_ci_ref_collision
             ~existing_branches:[ "main"; "Foo/bar" ] "foo"
         in
         Option.equal String.equal r (Some "Foo/bar"))
@@ -195,8 +207,10 @@ let () =
       (fun (existing_branches, segments) ->
         let branch = String.concat ~sep:"/" segments in
         let branch_lc = String.lowercase branch in
-        let prefixes = Worktree.branch_prefixes branch in
-        match Worktree.find_ci_ref_collision ~existing_branches branch with
+        let prefixes = Worktree_parser.branch_prefixes branch in
+        match
+          Worktree_parser.find_ci_ref_collision ~existing_branches branch
+        with
         | None -> true
         | Some colliding ->
             let lower_colliding = String.lowercase colliding in

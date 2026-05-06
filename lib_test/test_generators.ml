@@ -564,7 +564,7 @@ let gen_transition_entry =
     let* to_status = gen_display_status in
     let* action = string_size ~gen:printable (int_range 3 40) in
     return
-      (Onton.Activity_log.Transition_entry.create ~timestamp ~patch_id
+      (Onton_core.Activity_log.Transition_entry.create ~timestamp ~patch_id
          ~from_status ~to_status ~action))
 
 let gen_event =
@@ -572,18 +572,18 @@ let gen_event =
     let* timestamp = float_range 0.0 1e12 in
     let* patch_id = option gen_patch_id in
     let* message = string_size ~gen:printable (int_range 3 80) in
-    return (Onton.Activity_log.Event.create ~timestamp ?patch_id message))
+    return (Onton_core.Activity_log.Event.create ~timestamp ?patch_id message))
 
 let gen_activity_log =
   QCheck2.Gen.(
     map2
       (fun transitions events ->
         let log =
-          List.fold transitions ~init:Onton.Activity_log.empty ~f:(fun acc e ->
-              Onton.Activity_log.add_transition acc e)
+          List.fold transitions ~init:Onton_core.Activity_log.empty
+            ~f:(fun acc e -> Onton_core.Activity_log.add_transition acc e)
         in
         List.fold events ~init:log ~f:(fun acc e ->
-            Onton.Activity_log.add_event acc e))
+            Onton_core.Activity_log.add_event acc e))
       (list_size (int_range 0 5) gen_transition_entry)
       (list_size (int_range 0 5) gen_event))
 

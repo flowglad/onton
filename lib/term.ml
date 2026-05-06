@@ -491,42 +491,23 @@ module Raw = struct
     | None -> ()
 end
 
-type mouse_button = Left | Middle | Right [@@deriving show, eq]
-type scroll_dir = Up | Down [@@deriving show, eq]
-
-type mouse_event =
-  | Click of { button : mouse_button; row : int; col : int; press : bool }
-  | Scroll of { dir : scroll_dir; row : int; col : int }
-[@@deriving show, eq]
+(* Mouse event and key types live in Onton_core.Term_key. *)
 
 (** SGR 1006 mouse mode escape sequences. *)
 let enable_mouse = "\027[?1006h\027[?1000h"
 
 let disable_mouse = "\027[?1006l\027[?1000l"
 
-(** Keyboard input types and parsing. *)
-module Key = struct
-  type t =
-    | Char of char
-    | Enter
-    | Tab
-    | Backspace
-    | Escape
-    | Up
-    | Down
-    | Left
-    | Right
-    | Home
-    | End
-    | Page_up
-    | Page_down
-    | Delete
-    | F of int
-    | Ctrl of char
-    | Paste of string
-    | Mouse of mouse_event
-    | Unknown of string
-  [@@deriving show, eq]
+module Key = Term_key
+(** Keyboard input types: alias of the pure module in onton_core. *)
+
+(** Effectful keyboard input reader. The parsing of escape sequences happens
+    here because it is interleaved with stdin reads in a systhread; the pure
+    [Key.t] data type lives in [Onton_core.Term_key]. *)
+module Key_io = struct
+  open Term_key
+
+  [@@@ocaml.warning "-45"] (* scroll_dir.Up/Down vs Key.Up/Down both in scope *)
 
   (** Read a single byte from stdin, returning None on EOF/error. Runs in a
       systhread so it does not block the Eio event loop. *)
@@ -774,6 +755,10 @@ let%test "disable_mouse is correct" =
 let%test "enable_mouse and disable_mouse are distinct" =
   not (String.equal enable_mouse disable_mouse)
 
+[@@@ocaml.warning "-45"]
+
+open Term_key
+
 let%test "mouse_event Click equality" =
   equal_mouse_event
     (Click { button = Left; row = 5; col = 10; press = true })
@@ -786,45 +771,45 @@ let%test "mouse_event Scroll equality" =
 
 let%test "decode_sgr_mouse left click press" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:0 ~col:10 ~row:5 ~final:'M')
+    (Key_io.decode_sgr_mouse ~pb:0 ~col:10 ~row:5 ~final:'M')
     (Mouse (Click { button = Left; col = 10; row = 5; press = true }))
 
 let%test "decode_sgr_mouse left click release" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:0 ~col:10 ~row:5 ~final:'m')
+    (Key_io.decode_sgr_mouse ~pb:0 ~col:10 ~row:5 ~final:'m')
     (Mouse (Click { button = Left; col = 10; row = 5; press = false }))
 
 let%test "decode_sgr_mouse middle click press" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:1 ~col:3 ~row:7 ~final:'M')
+    (Key_io.decode_sgr_mouse ~pb:1 ~col:3 ~row:7 ~final:'M')
     (Mouse (Click { button = Middle; col = 3; row = 7; press = true }))
 
 let%test "decode_sgr_mouse right click release" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:2 ~col:1 ~row:1 ~final:'m')
+    (Key_io.decode_sgr_mouse ~pb:2 ~col:1 ~row:1 ~final:'m')
     (Mouse (Click { button = Right; col = 1; row = 1; press = false }))
 
 let%test "decode_sgr_mouse scroll up" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:64 ~col:5 ~row:3 ~final:'M')
+    (Key_io.decode_sgr_mouse ~pb:64 ~col:5 ~row:3 ~final:'M')
     (Mouse (Scroll { dir = Up; col = 5; row = 3 }))
 
 let%test "decode_sgr_mouse scroll down" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:65 ~col:5 ~row:3 ~final:'M')
+    (Key_io.decode_sgr_mouse ~pb:65 ~col:5 ~row:3 ~final:'M')
     (Mouse (Scroll { dir = Down; col = 5; row = 3 }))
 
 let%test "decode_sgr_mouse scroll release is unknown" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:64 ~col:1 ~row:1 ~final:'m')
+    (Key_io.decode_sgr_mouse ~pb:64 ~col:1 ~row:1 ~final:'m')
     (Unknown "mouse:64")
 
 let%test "decode_sgr_mouse unknown button code" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:999 ~col:1 ~row:1 ~final:'M')
+    (Key_io.decode_sgr_mouse ~pb:999 ~col:1 ~row:1 ~final:'M')
     (Unknown "mouse:999")
 
 let%test "decode_sgr_mouse invalid final char" =
   Key.equal
-    (Key.decode_sgr_mouse ~pb:0 ~col:1 ~row:1 ~final:'X')
+    (Key_io.decode_sgr_mouse ~pb:0 ~col:1 ~row:1 ~final:'X')
     (Unknown "mouse:0")

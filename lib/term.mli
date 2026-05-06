@@ -130,45 +130,19 @@ module Raw : sig
   (** Set by the SIGCONT handler when the TUI should redraw. *)
 end
 
-(** {1 Mouse input} *)
+(** {1 Mouse and keyboard input}
 
-type mouse_button = Left | Middle | Right [@@deriving show, eq]
-type scroll_dir = Up | Down [@@deriving show, eq]
-
-type mouse_event =
-  | Click of { button : mouse_button; row : int; col : int; press : bool }
-  | Scroll of { dir : scroll_dir; row : int; col : int }
-[@@deriving show, eq]
+    Pure data types for mouse and key events live in [Onton_core.Term_key].
+    [Term.Key] is a module alias — [Term.Key.t = Term_key.t] — kept so that
+    pattern matches in callers continue to spell [Term.Key.Char 'j'] etc. *)
 
 val enable_mouse : string
 val disable_mouse : string
 
-(** {1 Keyboard input} *)
+module Key = Term_key
 
-module Key : sig
-  type t =
-    | Char of char
-    | Enter
-    | Tab
-    | Backspace
-    | Escape
-    | Up
-    | Down
-    | Left
-    | Right
-    | Home
-    | End
-    | Page_up
-    | Page_down
-    | Delete
-    | F of int
-    | Ctrl of char
-    | Paste of string
-    | Mouse of mouse_event
-    | Unknown of string
-  [@@deriving show, eq]
-
-  val read : unit -> t option
+module Key_io : sig
+  val read : unit -> Term_key.t option
   (** Read and parse a single key press. Blocks until input is available. Must
       be called while in raw mode. *)
 end

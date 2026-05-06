@@ -42,7 +42,7 @@ let prompt_prefix = function
   | Prompt_broadcast -> "broadcast> "
   | Manage_patch -> ""
 
-let of_key (key : Term.Key.t) : command =
+let of_key (key : Term_key.t) : command =
   match key with
   | Char 'q' | Ctrl 'c' -> Quit
   | Char 'h' | Char '?' -> Help

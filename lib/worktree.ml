@@ -3,25 +3,12 @@ open Base
 type t = { patch_id : Types.Patch_id.t; branch : Types.Branch.t; path : string }
 [@@deriving show, eq, sexp_of, compare]
 
+(* Pure parsers and decision functions live in [Worktree_parser] (lib_core/).
+   This file is the effectful handler — git subprocess driver, FS operations,
+   per-worktree mutex pool — that calls into the pure side. *)
+
 let normalize_path path =
-  let p =
-    if Stdlib.Filename.is_relative path then
-      Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) path
-    else path
-  in
-  let p =
-    if String.length p > 1 && String.is_suffix p ~suffix:"/" then
-      let stripped = String.rstrip p ~drop:(Char.equal '/') in
-      if String.is_empty stripped then p else stripped
-    else p
-  in
-  (* Strip trailing "/." segments so "foo/." compares equal to "foo" *)
-  let rec strip_dot_suffix s =
-    if String.length s > 2 && String.is_suffix s ~suffix:"/." then
-      strip_dot_suffix (String.chop_suffix_exn s ~suffix:"/.")
-    else s
-  in
-  strip_dot_suffix p
+  Worktree_parser.normalize_path ~cwd:(Stdlib.Sys.getcwd ()) path
 
 let worktree_dir ~project_name ~patch_id =
   let home =
@@ -121,40 +108,8 @@ let add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str =
   run_git ~process_mgr
     [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ]
 
-(** Collect all path prefixes of a branch name. For ["a/b/c"] returns
-    [["a"; "a/b"]]. Used to detect case-insensitive ref collisions on macOS: a
-    branch [Foo] stored as [refs/heads/Foo] blocks creation of [foo/bar] (which
-    needs [refs/heads/foo/] as a directory). *)
-let branch_prefixes branch_str =
-  let parts = String.split branch_str ~on:'/' in
-  let rec build acc prefix = function
-    | [] | [ _ ] -> List.rev acc
-    | seg :: rest ->
-        let prefix =
-          if String.is_empty prefix then seg else prefix ^ "/" ^ seg
-        in
-        build (prefix :: acc) prefix rest
-  in
-  build [] "" parts
-
-(** Pure: find the first existing branch that case-insensitively collides with
-    [branch_str] via the file-vs-directory ref storage on macOS. Checks both
-    directions: existing branch equals a prefix of the new name (e.g. [Foo] vs
-    [foo/bar]) and existing branch has the new name as a prefix (e.g. [Foo/bar]
-    vs [foo]). Returns [Some colliding_branch] or [None]. *)
-let find_ci_ref_collision ~existing_branches branch_str =
-  let branch_lc = String.lowercase branch_str in
-  let prefixes = branch_prefixes branch_str in
-  match
-    List.find_map prefixes ~f:(fun pfx ->
-        let lower_pfx = String.lowercase pfx in
-        List.find existing_branches ~f:(fun b ->
-            String.equal (String.lowercase b) lower_pfx))
-  with
-  | Some _ as collision -> collision
-  | None ->
-      List.find existing_branches ~f:(fun b ->
-          String.is_prefix (String.lowercase b) ~prefix:(branch_lc ^ "/"))
+let branch_prefixes = Worktree_parser.branch_prefixes
+let find_ci_ref_collision = Worktree_parser.find_ci_ref_collision
 
 let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 512 in
@@ -261,53 +216,7 @@ let detect_branch ~process_mgr ~path =
   Types.Branch.of_string branch_str
 
 let parse_porcelain ~repo_root raw =
-  let lines = String.split_lines raw in
-  let repo_root = normalize_path repo_root in
-  let flush_entry acc p branch =
-    let p = normalize_path p in
-    match branch with
-    | None -> acc (* skip detached-HEAD worktrees *)
-    | Some b -> if String.( <> ) p repo_root then (p, b) :: acc else acc
-  in
-  let rec parse acc current_path current_branch = function
-    | [] ->
-        let acc =
-          match current_path with
-          | Some p -> flush_entry acc p current_branch
-          | None -> acc
-        in
-        List.rev acc
-    | line :: rest -> (
-        match () with
-        | () when String.is_prefix line ~prefix:"worktree " ->
-            let p = String.drop_prefix line (String.length "worktree ") in
-            (* Flush any pending entry that wasn't terminated by a blank line *)
-            let acc =
-              match current_path with
-              | Some prev_p -> flush_entry acc prev_p current_branch
-              | None -> acc
-            in
-            parse acc (Some p) None rest
-        | () when String.is_prefix line ~prefix:"branch " ->
-            let b = String.drop_prefix line (String.length "branch ") in
-            let branch =
-              match String.chop_prefix b ~prefix:"refs/heads/" with
-              | Some short when not (String.is_empty short) ->
-                  Some (Types.Branch.of_string short)
-              | _ -> None (* detached, non-local ref, or empty name *)
-            in
-            parse acc current_path branch rest
-        | () ->
-            if String.is_empty line then
-              let acc =
-                match current_path with
-                | Some p -> flush_entry acc p current_branch
-                | None -> acc
-              in
-              parse acc None None rest
-            else parse acc current_path current_branch rest)
-  in
-  parse [] None None lines
+  Worktree_parser.parse_porcelain ~cwd:(Stdlib.Sys.getcwd ()) ~repo_root raw
 
 let list_with_branches ~process_mgr ~repo_root =
   let main_root = resolve_main_root ~process_mgr ~repo_root in
@@ -329,24 +238,34 @@ let list_with_branches ~process_mgr ~repo_root =
            repo_root (Exn.to_string exn) msg));
   parse_porcelain ~repo_root:main_root (Buffer.contents buf)
 
-type unique_commit = { sha : string; subject : string }
+(* Type re-exports — pure definitions live in Worktree_parser. The manifest
+   equations equate Worktree.X with Worktree_parser.X across the library
+   boundary so callers that pattern-match on Worktree.Push_ok etc. compile
+   unchanged. *)
+
+type unique_commit = Worktree_parser.unique_commit = {
+  sha : string;
+  subject : string;
+}
 [@@deriving show, eq, sexp_of, compare]
 
-type rebase_strategy = Onto | Plain [@@deriving show, eq, sexp_of, compare]
+type rebase_strategy = Worktree_parser.rebase_strategy = Onto | Plain
+[@@deriving show, eq, sexp_of, compare]
 
-type conflict_info = {
+type conflict_info = Worktree_parser.conflict_info = {
   target : string;
   old_base : string;
   unique_commits : unique_commit list;
   strategy : rebase_strategy;
   orig_head : string;
-      (* Pre-rebase HEAD SHA — captured before the rebase started, so an agent
-         that loses worktree state can [git reset --hard <orig_head>] back to
-         where they began. Empty string when capture failed (best-effort). *)
 }
 [@@deriving show, eq, sexp_of, compare]
 
-type rebase_result = Ok | Noop | Conflict of conflict_info | Error of string
+type rebase_result = Worktree_parser.rebase_result =
+  | Ok
+  | Noop
+  | Conflict of conflict_info
+  | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
 let run_git_exit_code ~process_mgr args =
@@ -372,26 +291,7 @@ let run_git_exit_code ~process_mgr args =
     doesn't itself contain such a character round-trips correctly. Empty
     [project_name] or [ancestor_ids] always returns false: callers must supply
     the real project name for this match to be meaningful. *)
-let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
-  if String.is_empty project_name || List.is_empty ancestor_ids then false
-  else
-    let prefix = Printf.sprintf "[%s] Patch " project_name in
-    match String.chop_prefix subject ~prefix with
-    | None -> false
-    | Some rest ->
-        let id_end =
-          String.lfindi rest ~f:(fun _ c ->
-              Char.is_whitespace c || Char.equal c ':')
-        in
-        let id_str =
-          match id_end with
-          | None -> rest
-          | Some i -> String.sub rest ~pos:0 ~len:i
-        in
-        (not (String.is_empty id_str))
-        && List.mem ancestor_ids
-             (Types.Patch_id.of_string id_str)
-             ~equal:Types.Patch_id.equal
+let is_ancestor_patch_subject = Worktree_parser.is_ancestor_patch_subject
 
 (** Pure: parse [git log --format=%H %s] output into [unique_commit] records,
     dropping entries whose subject matches an ancestor patch. Preserves git's
@@ -399,44 +299,13 @@ let is_ancestor_patch_subject ~project_name ~ancestor_ids subject =
     [~1] of which becomes the rebase's [--onto] anchor). The list and the SHA
     are produced together so callers cannot accidentally request one without the
     other and lose the recovery info needed by the conflict prompt. *)
-let classify_unique_commits ~project_name ~ancestor_ids log_output =
-  let lines = String.split_lines log_output in
-  let kept =
-    List.filter_map lines ~f:(fun line ->
-        (* [rstrip ~drop:\r] removes only trailing [\r] (CRLF); the full
-           [String.strip] gate below handles lines that are only spaces (e.g.
-           blank separator lines that some git configs emit). Both are needed:
-           a bare "\r" becomes "" after rstrip and is skipped; "  \r" becomes
-           "  " and is skipped by the strip gate; "<sha> " (empty subject)
-           survives rstrip and the gate because the trailing space is a
-           content-bearing separator. *)
-        let line = String.rstrip line ~drop:(Char.equal '\r') in
-        if String.is_empty (String.strip line) then None
-        else
-          match String.lsplit2 line ~on:' ' with
-          | None -> None
-          | Some ("", _) ->
-              (* Leading space: no sha at start of line. Cannot arise from
-                 [git log --format=%H %s] but guard in case of wrapper
-                 indentation so we don't pass [""] to [git rev-parse]. *)
-              None
-          | Some (sha, subject) ->
-              if is_ancestor_patch_subject ~project_name ~ancestor_ids subject
-              then None
-              else Some { sha; subject })
-  in
-  match List.last kept with
-  | Some last -> Result.Ok (kept, last.sha)
-  | None -> Result.Error "no unique commits found"
+let classify_unique_commits = Worktree_parser.classify_unique_commits
 
 (** Pure: parse [git log --format=%H %s] output and return the oldest SHA whose
     subject is not [is_ancestor_patch_subject]. Back-compat wrapper around
     [classify_unique_commits] — preserved so existing call sites that need only
     the SHA do not need to handle the per-commit list. *)
-let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
-  Result.map
-    (classify_unique_commits ~project_name ~ancestor_ids log_output)
-    ~f:snd
+let oldest_non_ancestor_commit = Worktree_parser.oldest_non_ancestor_commit
 
 (** Pure: assemble a [conflict_info] from the contents of
     [.git/rebase-merge/onto], [.git/rebase-merge/upstream], and
@@ -455,36 +324,7 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
     [git rebase --onto X Y]); [upstream_contents] is the old-base SHA (second
     positional arg, the limit on what gets replayed). The recovery command needs
     the upstream as [old_base], not [onto]. *)
-let parse_rebase_merge_state ~onto_contents ~upstream_contents
-    ~orig_head_contents ~log_format_h_s ~project_name ~ancestor_ids ~target =
-  let onto = String.strip onto_contents in
-  let old_base = String.strip upstream_contents in
-  let orig_head = String.strip orig_head_contents in
-  if String.is_empty onto || String.is_empty old_base then None
-  else
-    let commits =
-      match
-        classify_unique_commits ~project_name ~ancestor_ids log_format_h_s
-      with
-      | Result.Ok (commits, _oldest_sha) -> commits
-      | Result.Error _ ->
-          (* Empty log or every commit filtered as ancestor — degrade to an
-             empty list rather than [None]. The recovery command is still
-             [git rebase --onto target old_base] (we read the supervisor's
-             actual args from rebase-merge state); we just can't enumerate
-             the commits. The renderer omits the commits header when the
-             list is empty. *)
-          []
-    in
-    (* Only [.git/rebase-merge] state is read by this function. A plain
-       [git rebase] normally uses [rebase-apply], not [rebase-merge], so
-       [strategy = Onto] is correct. Caveat: [rebase.backend = merge] in
-       the user's gitconfig forces [rebase-merge] for plain rebases too,
-       in which case the recovery command would be a plain rebase wearing
-       [--onto] clothing — still functional because [onto = upstream] in
-       that case. *)
-    Some
-      { target; old_base; unique_commits = commits; strategy = Onto; orig_head }
+let parse_rebase_merge_state = Worktree_parser.parse_rebase_merge_state
 
 (** Find the old base commit for [--onto] rebase by identifying which commits on
     our branch are unique (not in target). Uses patch-id matching via
@@ -530,15 +370,7 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
                (String.strip stderr))
         else Result.Ok (String.strip stdout, commits)
 
-(** Pure: classify a [git fetch origin] invocation from its exit code and
-    stderr. Split out so the mapping from raw git output to fetch outcome can be
-    property-tested independently of the subprocess and mutex. *)
-let classify_fetch_result ~code ~stderr =
-  if code = 0 then Result.Ok ()
-  else
-    Result.Error
-      (Printf.sprintf "git fetch origin failed (exit %d): %s" code
-         (String.strip stderr))
+let classify_fetch_result = Worktree_parser.classify_fetch_result
 
 let fetch_origin ~fetch_lock ~process_mgr ~path =
   (* Serialize concurrent fetches across worktrees of the same repo. All
@@ -646,71 +478,23 @@ let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
           Conflict
             { target; old_base; unique_commits; strategy = Onto; orig_head }
 
-type push_result =
+type push_result = Worktree_parser.push_result =
   | Push_ok
   | Push_up_to_date
   | Push_no_commits
   | Push_rejected
   | Push_worktree_missing
-      (** The worktree directory was deleted out from under us between session
-          start and push. Distinguished from [Push_error] so the caller can
-          route to the [Session_worktree_missing] cleanup path (which clears
-          inflight state for a clean retry that will rebuild the worktree via
-          [Worktree_setup.ensure_worktree]) rather than the
-          [Session_push_failed] retry-push path (which assumes the worktree is
-          intact and the commits exist locally). *)
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
 
-(** Parse a single porcelain status line from [git push --porcelain]. Format:
-    [<flag>\t<from>:<to>\t<summary>]. Returns the flag character. *)
-let parse_push_porcelain stdout =
-  let lines =
-    String.split_lines (String.strip stdout)
-    |> List.filter ~f:(fun l ->
-        let s = String.strip l in
-        (not (String.is_empty s))
-        && (not (String.is_prefix s ~prefix:"To "))
-        && not (String.equal s "Done"))
-  in
-  match lines with
-  | [] -> None
-  | line :: _ -> (
-      match String.lstrip line with
-      | s when String.length s > 0 -> Some s.[0]
-      | _ -> None)
+let parse_push_porcelain = Worktree_parser.parse_push_porcelain
+let parse_commit_count = Worktree_parser.parse_commit_count
 
-(** Pure: parse [git rev-list --count base..HEAD] output into a commit count.
-    Returns [None] on non-zero exit or unparseable stdout (treat as unknown —
-    caller may decide to proceed with the push rather than erroneously skip). *)
-let parse_commit_count ~code ~stdout =
-  if code <> 0 then None else Stdlib.int_of_string_opt (String.strip stdout)
+type push_gate = Worktree_parser.push_gate = Proceed | Skip_no_commits
+[@@deriving show, eq, sexp_of]
 
-type push_gate = Proceed | Skip_no_commits [@@deriving show, eq, sexp_of]
-
-(** Pure: given a commit-count result, decide whether to push. Zero commits
-    ahead of base means a push would publish an empty ref that GitHub rejects on
-    PR creation — skip. Unknown ([None]) defaults to [Proceed] so real failures
-    surface via the push step rather than being masked by a silent skip. *)
-let push_gate_from_count = function
-  | Some 0 -> Skip_no_commits
-  | None | Some _ -> Proceed
-
-(** Pure: classify a [git push --porcelain --force-with-lease] invocation from
-    its exit code + stdout + stderr. Split out so the mapping from raw git
-    output to [push_result] can be property-tested independently of the shell.
-*)
-let classify_push_result ~code ~stdout ~stderr =
-  if code = 0 then
-    match parse_push_porcelain stdout with
-    | Some '=' -> Push_up_to_date
-    | _ -> Push_ok
-  else
-    match parse_push_porcelain stdout with
-    | Some '!' -> Push_rejected
-    | _ ->
-        Push_error
-          (Printf.sprintf "push failed (exit %d): %s" code (String.strip stderr))
+let push_gate_from_count = Worktree_parser.push_gate_from_count
+let classify_push_result = Worktree_parser.classify_push_result
 
 (** Effectful: run [git rev-list --count base..HEAD] in the worktree. *)
 let commits_ahead_of_base ~process_mgr ~path ~base =
