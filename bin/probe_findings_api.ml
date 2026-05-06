@@ -48,6 +48,7 @@ let resolve_pem_path () =
              GITHUB_PRIVATE_KEY_PATH (path to PEM file)";
           exit 2
       | Some pem ->
+          Random.self_init ();
           let rec create_private_tmp attempts =
             if attempts <= 0 then (
               prerr_endline "error: could not create private temporary PEM file";

@@ -37,6 +37,7 @@ let decode_pem pem =
   | Error (`Msg msg) -> Error (Key_decode_error msg)
 
 let clamp ~lo ~hi v = max lo (min hi v)
+let rng_init = lazy (Mirage_crypto_rng_unix.use_default ())
 
 let json_compact_of_assoc fields =
   (* Yojson.Safe.to_string emits compact (no whitespace) by default — exactly
@@ -47,9 +48,8 @@ let mint ~now ~app_id ~private_key_path ~ttl_seconds :
     (string, error) Stdlib.Result.t =
   let ( let* ) = Result.bind in
   (* RSA PKCS1 sign uses [Mirage_crypto_rng] for blinding; seed it before
-     signing so callers don't have to remember. Idempotent — calling more
-     than once is a no-op after the first init. *)
-  Mirage_crypto_rng_unix.use_default ();
+     signing so callers don't have to remember. *)
+  Lazy.force rng_init;
   let* pem = read_file private_key_path in
   let* priv = decode_pem pem in
   let iat = int_of_float now in

@@ -91,5 +91,6 @@ let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
             | Error err ->
                 log
                   (Printf.sprintf "Failed to resolve finding %s — %s" f.id
-                     (Review_service_client.show_error err))))
+                     (Review_service_client.show_error err));
+                Findings_registry.forget findings_registry ~key:f.id))
       delivered
