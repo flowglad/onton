@@ -11,8 +11,7 @@ type handle = {
   stderr_truncated : bool ref;
   pid : int;
   have_group : bool;
-  await_mutex : Eio.Mutex.t;
-  mutable await_status : [ `Exited of int | `Signaled of int ] option;
+  await_promise : [ `Exited of int | `Signaled of int ] Eio.Promise.or_exn;
   mutable shutdown_requested : bool;
   mutable prompt_count : int;
 }
@@ -60,21 +59,7 @@ let request_id handle kind =
   handle.prompt_count <- handle.prompt_count + 1;
   Printf.sprintf "patch-agent-%s-%d" kind handle.prompt_count
 
-let await_child handle =
-  Eio.Mutex.lock handle.await_mutex;
-  Stdlib.Fun.protect
-    ~finally:(fun () -> Eio.Mutex.unlock handle.await_mutex)
-    (fun () ->
-      match handle.await_status with
-      | Some status -> status
-      | None -> (
-          match Eio.Process.await handle.child with
-          | status ->
-              handle.await_status <- Some status;
-              status
-          | exception exn ->
-              handle.await_status <- Some (`Signaled 9);
-              raise exn))
+let await_child handle = Eio.Promise.await_exn handle.await_promise
 
 let await_child_with_timeout ~clock handle seconds =
   Eio.Time.with_timeout clock seconds (fun () -> Ok (await_child handle))
@@ -186,8 +171,8 @@ let start ~process_mgr ~binary_path ~setsid_exec ~sw
       stderr_truncated = ref false;
       pid = Eio.Process.pid child;
       have_group = Option.is_some setsid_exec;
-      await_mutex = Eio.Mutex.create ();
-      await_status = None;
+      await_promise =
+        Eio.Fiber.fork_promise ~sw (fun () -> Eio.Process.await child);
       shutdown_requested = false;
       prompt_count = 0;
     }
