@@ -1593,6 +1593,16 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
                (Review_service_client.show_error err));
           []
       | Ok response ->
+          let parsed_count =
+            Base.List.length response.Review_service.findings
+          in
+          if not (Int.equal parsed_count response.Review_service.count) then
+            log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Review backend %s declared %d finding(s) but parsed %d — \
+                  possible review-service schema drift"
+                 b.Review_backend.name response.Review_service.count
+                 parsed_count);
           Base.List.map response.Review_service.findings
             ~f:(fun (f : Review_service.finding) ->
               let key =
