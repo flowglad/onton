@@ -67,10 +67,14 @@ let await_child handle =
     (fun () ->
       match handle.await_status with
       | Some status -> status
-      | None ->
-          let status = Eio.Process.await handle.child in
-          handle.await_status <- Some status;
-          status)
+      | None -> (
+          match Eio.Process.await handle.child with
+          | status ->
+              handle.await_status <- Some status;
+              status
+          | exception exn ->
+              handle.await_status <- Some (`Signaled 9);
+              raise exn))
 
 let await_child_with_timeout ~clock handle seconds =
   Eio.Time.with_timeout clock seconds (fun () -> Ok (await_child handle))
@@ -229,11 +233,12 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
         stdout ^ "\n<stdout exceeded 64KB capture limit, truncated>"
       else stdout
     in
+    let req_id = request_id handle "prompt" in
+    let command =
+      Patch_agent_rpc.serialize_command
+        (Prompt { request_id = req_id; content = prompt })
+    in
     let run () =
-      let command =
-        Patch_agent_rpc.serialize_command
-          (Prompt { request_id = request_id handle "prompt"; content = prompt })
-      in
       let write_result =
         try Ok (write_raw handle command) with
         | Eio.Exn.Io _ as ex -> Error ex
