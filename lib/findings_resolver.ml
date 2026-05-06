@@ -40,7 +40,23 @@ let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
                  artifact_path msg);
             false)
   in
-  if artifact_ok then
+  if not artifact_ok then (
+    let ids =
+      List.map (fun (f : Onton_core.Review_service.finding) -> f.id) delivered
+    in
+    (match ids with
+    | [] -> ()
+    | _ ->
+        log
+          (Printf.sprintf
+             "Skipped findings resolution for delivered findings; operator \
+              action required for: %s"
+             (String.concat ", " ids)));
+    List.iter
+      (fun (f : Onton_core.Review_service.finding) ->
+        Findings_registry.forget findings_registry ~key:f.id)
+      delivered)
+  else
     List.iter
       (fun (f : Onton_core.Review_service.finding) ->
         match Findings_registry.find findings_registry ~key:f.id with
