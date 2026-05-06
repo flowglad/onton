@@ -99,22 +99,27 @@ let backend_of_env () : Onton_core.Review_backend.t =
   let name =
     Option.value (getenv_opt "ONTON_REVIEW_BACKEND_NAME") ~default:"probe"
   in
-  {
-    Onton_core.Review_backend.name;
-    kind =
-      Onton_core.Review_backend.Review_service
-        {
-          base_url =
-            (* Strip trailing slashes so we don't double them when joining. *)
-            (let rec strip s =
-               let n = String.length s in
-               if n > 0 && s.[n - 1] = '/' then strip (String.sub s 0 (n - 1))
-               else s
-             in
-             strip base_url);
-          auth = { app_id; private_key_path };
-        };
-  }
+  let json =
+    `Assoc
+      [
+        ("name", `String name);
+        ("kind", `String "review-service");
+        ("baseUrl", `String base_url);
+        ( "auth",
+          `Assoc
+            [
+              ("appId", `String app_id);
+              ("privateKeyPath", `String private_key_path);
+            ] );
+      ]
+  in
+  match
+    Onton_core.Review_backend.parse ~known_kinds:[ "review-service" ] json
+  with
+  | Ok backend -> backend
+  | Error msg ->
+      prerr_endline (Printf.sprintf "error: invalid review backend: %s" msg);
+      exit 2
 
 let print_outcome (o : Onton_core.Review_service.outcome) =
   let so opt = match opt with Some s -> s | None -> "" in

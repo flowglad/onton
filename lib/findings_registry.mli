@@ -40,6 +40,19 @@ val register : t -> key:string -> entry -> unit
 (** Idempotent: re-registering the same composite key replaces the prior entry.
     The poller calls this on every successful findings fetch. *)
 
+val remove_stale_for_scope :
+  t ->
+  backend_name:string ->
+  owner:string ->
+  repo:string ->
+  pr_number:int ->
+  keep_keys:string list ->
+  unit
+(** Remove entries for the given backend/PR scope whose composite keys are not
+    in [keep_keys]. Called after a successful poll so the registry reflects the
+    backend's current unresolved findings instead of accumulating stale routes.
+*)
+
 val find : t -> key:string -> entry option
 
 val forget : t -> key:string -> unit

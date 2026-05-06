@@ -56,6 +56,8 @@ let parse_review_service_kind json : (kind, string) Result.t =
       Error "review-service \"baseUrl\" must not be empty"
     else if not (has_authority base_url) then
       Error "review-service \"baseUrl\" must include a host/authority"
+    else if not (String.is_prefix base_url ~prefix:"https://") then
+      Error "review-service \"baseUrl\" must use https"
     else Ok ()
   in
   let auth_json = json |> member "auth" in
@@ -171,6 +173,16 @@ let%test "parse_array: rejects scheme-only baseUrl" =
     parse_array ~known_kinds:known_kind_default (Yojson.Safe.from_string raw)
   with
   | Error msg -> String.is_substring msg ~substring:"host/authority"
+  | Ok _ -> false
+
+let%test "parse_array: rejects non-https baseUrl" =
+  let raw =
+    {|[{"name":"a","kind":"review-service","baseUrl":"http://x","auth":{"appId":"1","privateKeyPath":"/k"}}]|}
+  in
+  match
+    parse_array ~known_kinds:known_kind_default (Yojson.Safe.from_string raw)
+  with
+  | Error msg -> String.is_substring msg ~substring:"https"
   | Ok _ -> false
 
 let%test "parse_array: rejects unknown kind" =

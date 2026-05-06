@@ -1603,12 +1603,19 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
                   possible review-service schema drift"
                  b.Review_backend.name response.Review_service.count
                  parsed_count);
-          Base.List.map response.Review_service.findings
-            ~f:(fun (f : Review_service.finding) ->
-              let key =
-                Findings_registry.make_key ~backend_name:b.Review_backend.name
-                  ~owner ~repo ~pr_number ~finding_id:f.Review_service.id
-              in
+          let keyed_findings =
+            Base.List.map response.Review_service.findings
+              ~f:(fun (f : Review_service.finding) ->
+                let key =
+                  Findings_registry.make_key ~backend_name:b.Review_backend.name
+                    ~owner ~repo ~pr_number ~finding_id:f.Review_service.id
+                in
+                (key, f))
+          in
+          Findings_registry.remove_stale_for_scope findings_registry
+            ~backend_name:b.Review_backend.name ~owner ~repo ~pr_number
+            ~keep_keys:(Base.List.map keyed_findings ~f:fst);
+          Base.List.map keyed_findings ~f:(fun (key, f) ->
               Findings_registry.register findings_registry ~key
                 {
                   Findings_registry.backend = b;
@@ -2554,6 +2561,14 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       (Printf.sprintf
                                          "Skipped %s — nothing to deliver"
                                          (Operation_kind.to_label kind));
+                                    if
+                                      Operation_kind.equal kind
+                                        Operation_kind.Findings
+                                    then
+                                      log_event runtime ~patch_id
+                                        "Skipped findings delivery after \
+                                         pre-session refresh returned no \
+                                         findings; no resolution was posted";
                                     `Skip_empty
                                 | Patch_decision.Deliver
                                     {
