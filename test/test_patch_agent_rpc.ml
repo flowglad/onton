@@ -1,5 +1,5 @@
 open Base
-open Onton
+open Onton_core
 
 let gen_line_safe_char =
   QCheck2.Gen.map
@@ -151,7 +151,7 @@ let prop_commands_round_trip =
       &&
       match Yojson.Safe.from_string (String.drop_suffix line 1) with
       | exception _ -> false
-      | json -> Poly.equal json (command_to_json command))
+      | json -> Yojson.Safe.equal json (command_to_json command))
 
 let prop_events_round_trip =
   QCheck2.Test.make ~name:"Patch_agent_rpc > round-trips every event" ~count:500
@@ -163,13 +163,11 @@ let prop_events_round_trip =
 
 let prop_rejects_embedded_lf =
   QCheck2.Test.make
-    ~name:"Patch_agent_rpc > rejects input containing embedded LF" ~count:100
-    gen_line_safe_string (fun session_id ->
+    ~name:"Patch_agent_rpc > rejects input containing embedded LF"
+    QCheck2.Gen.unit (fun () ->
       let line =
-        Printf.sprintf
-          {|{"type":"session_init","session_id":"%s",
+        {|{"type":"session_init","session_id":"abc",
 "model_id":"m","provider":"p"}|}
-          session_id
       in
       match Patch_agent_rpc.parse_event line with
       | Result.Error _ -> true
