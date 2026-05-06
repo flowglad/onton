@@ -48,12 +48,40 @@ let resolve_pem_path () =
              GITHUB_PRIVATE_KEY_PATH (path to PEM file)";
           exit 2
       | Some pem ->
-          let tmp = Filename.temp_file "onton-probe-key" ".pem" in
-          (try Unix.chmod tmp 0o600 with Unix.Unix_error _ -> ());
-          let oc = open_out tmp in
-          Fun.protect
-            ~finally:(fun () -> close_out_noerr oc)
-            (fun () -> output_string oc pem);
+          let rec create_private_tmp attempts =
+            if attempts <= 0 then (
+              prerr_endline "error: could not create private temporary PEM file";
+              exit 2)
+            else
+              let tmp =
+                Filename.concat
+                  (Filename.get_temp_dir_name ())
+                  (Printf.sprintf "onton-probe-key-%d-%08x.pem" (Unix.getpid ())
+                     (Random.bits ()))
+              in
+              match
+                Unix.openfile tmp
+                  [ Unix.O_CREAT; Unix.O_WRONLY; Unix.O_EXCL ]
+                  0o600
+              with
+              | fd -> (tmp, fd)
+              | exception Unix.Unix_error (Unix.EEXIST, _, _) ->
+                  create_private_tmp (attempts - 1)
+              | exception Unix.Unix_error (err, fn, arg) ->
+                  prerr_endline
+                    (Printf.sprintf "error: could not create PEM tempfile: %s"
+                       (Unix.error_message err));
+                  prerr_endline (Printf.sprintf "while running %s %s" fn arg);
+                  exit 2
+          in
+          let tmp, fd = create_private_tmp 100 in
+          let oc = Unix.out_channel_of_descr fd in
+          (try output_string oc pem
+           with exn ->
+             close_out_noerr oc;
+             (try Unix.unlink tmp with Unix.Unix_error _ -> ());
+             raise exn);
+          close_out_noerr oc;
           (* Best-effort cleanup: register at_exit so the tempfile dies with
              the probe. We rely on it for the duration of the probe and
              tolerate the race window where a crash might leak it. *)

@@ -71,7 +71,6 @@ let request ~net ~clock ~backend ~meth ~path ?body () : (string, error) Result.t
   | Error e -> Error e
   | Ok token -> (
       try
-        Mirage_crypto_rng_unix.use_default ();
         match
           Result.map_error
             (fun msg -> Transport_error { meth = meth_s; url; msg })

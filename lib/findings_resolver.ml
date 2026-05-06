@@ -10,7 +10,6 @@ let read_artifact path =
 
 let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
     ~delivered ?actor () =
-  let _ = net in
   (* Parse the wontfix artifact. Errors are surfaced and then we proceed —
      a malformed artifact should not cause every finding to silently drop;
      the agent's intent for its non-listed findings was clearly "addressed". *)

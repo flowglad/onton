@@ -26,11 +26,12 @@ let gen_branch =
 let gen_operation_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.
-      [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+      [ Rebase; Human; Merge_conflict; Ci; Review_comments; Findings; Pr_body ]
 
 let gen_feedback_kind =
   QCheck2.Gen.oneof_list
-    Operation_kind.[ Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+    Operation_kind.
+      [ Human; Merge_conflict; Ci; Review_comments; Findings; Pr_body ]
 
 let gen_operation_kind_queue =
   QCheck2.Gen.(
