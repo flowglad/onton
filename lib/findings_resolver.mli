@@ -24,4 +24,6 @@ val resolve_after_session :
     know which backend to talk to.
 
     [artifact_path] is the absolute path of [findings_wontfix.json]. If the file
-    does not exist, every delivered finding is treated as [addressed]. *)
+    does not exist, every delivered finding is treated as [addressed]. If the
+    file exists but cannot be read or parsed, resolution is skipped so findings
+    are not silently marked with the wrong outcome. *)

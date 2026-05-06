@@ -27,6 +27,25 @@ let strip_trailing_slashes s =
   let l = last len in
   if l = len then s else String.sub s ~pos:0 ~len:l
 
+let has_authority base_url =
+  match String.substr_index base_url ~pattern:"://" with
+  | None -> false
+  | Some scheme_sep ->
+      let len = String.length base_url in
+      let start = scheme_sep + 3 in
+      let rec authority_end i =
+        if i >= len then i
+        else
+          match String.get base_url i with
+          | '/' | '?' | '#' -> i
+          | _ -> authority_end (i + 1)
+      in
+      let stop = authority_end start in
+      stop > start
+      && String.exists
+           (String.sub base_url ~pos:start ~len:(stop - start))
+           ~f:(fun c -> not (Char.equal c ':'))
+
 let parse_review_service_kind json : (kind, string) Result.t =
   let open Yojson.Safe.Util in
   let ( let* ) = Result.( >>= ) in
@@ -35,6 +54,8 @@ let parse_review_service_kind json : (kind, string) Result.t =
   let* () =
     if String.is_empty base_url then
       Error "review-service \"baseUrl\" must not be empty"
+    else if not (has_authority base_url) then
+      Error "review-service \"baseUrl\" must include a host/authority"
     else Ok ()
   in
   let auth_json = json |> member "auth" in
@@ -140,6 +161,16 @@ let%test "parse_array: rejects all-slash baseUrl" =
     parse_array ~known_kinds:known_kind_default (Yojson.Safe.from_string raw)
   with
   | Error msg -> String.is_substring msg ~substring:"baseUrl"
+  | Ok _ -> false
+
+let%test "parse_array: rejects scheme-only baseUrl" =
+  let raw =
+    {|[{"name":"a","kind":"review-service","baseUrl":"https://","auth":{"appId":"1","privateKeyPath":"/k"}}]|}
+  in
+  match
+    parse_array ~known_kinds:known_kind_default (Yojson.Safe.from_string raw)
+  with
+  | Error msg -> String.is_substring msg ~substring:"host/authority"
   | Ok _ -> false
 
 let%test "parse_array: rejects unknown kind" =
