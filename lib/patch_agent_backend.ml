@@ -4,6 +4,7 @@ module Long_lived = Llm_backend_long_lived
 type handle = {
   child : [ `Process | `Platform of [ `Generic ] ] Eio.Resource.t;
   stdin_w : [ `Close | `Flow | `W ] Eio.Resource.t;
+  stdout_r : [ `Close | `Flow | `R ] Eio.Resource.t;
   stderr_r : [ `Close | `Flow | `R ] Eio.Resource.t;
   stdout_buf : Eio.Buf_read.t;
   stderr_capture : Buffer.t;
@@ -29,6 +30,8 @@ let kill_group ~pid ~signal =
 let signal_process handle signal =
   if handle.have_group then kill_group ~pid:handle.pid ~signal
   else try Eio.Process.signal handle.child signal with _ -> ()
+
+let close_flow flow = try Eio.Flow.close flow with _ -> ()
 
 let exit_code_of_status = function
   | `Exited code -> code
@@ -172,6 +175,7 @@ let start ~process_mgr ~binary_path ~setsid_exec ~sw
     {
       child;
       stdin_w;
+      stdout_r;
       stderr_r;
       stdout_buf = Eio.Buf_read.of_flow ~max_size:stdout_max_size stdout_r;
       stderr_capture = Buffer.create 4096;
@@ -186,7 +190,10 @@ let start ~process_mgr ~binary_path ~setsid_exec ~sw
   in
   Eio.Switch.on_release sw (fun () ->
       if not handle.shutdown_requested then
-        signal_process handle Stdlib.Sys.sigkill);
+        signal_process handle Stdlib.Sys.sigkill;
+      close_flow handle.stdin_w;
+      close_flow handle.stdout_r;
+      close_flow handle.stderr_r);
   Eio.Fiber.fork_daemon ~sw (fun () ->
       let buf = Bytes.create 4096 in
       (try
@@ -285,7 +292,9 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
     | Error `Timeout ->
         handle.shutdown_requested <- true;
         signal_process handle Stdlib.Sys.sigkill;
+        Eio.Fiber.yield ();
         ignore (await_child_with_timeout ~clock handle shutdown_kill_seconds);
+        close_flow handle.stdout_r;
         {
           Llm_backend.exit_code = 128 + 9;
           stdout = captured_stdout ();
@@ -298,9 +307,11 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
 let abort long_lived_handle =
   let handle = long_lived_handle in
   if not handle.shutdown_requested then
-    write_raw handle
-      (Patch_agent_rpc.serialize_command
-         (Abort { request_id = request_id handle "abort" }))
+    try
+      write_raw handle
+        (Patch_agent_rpc.serialize_command
+           (Abort { request_id = request_id handle "abort" }))
+    with Eio.Exn.Io _ | Invalid_argument _ -> ()
 
 let shutdown ~clock long_lived_handle =
   let handle = long_lived_handle in
@@ -312,11 +323,11 @@ let shutdown ~clock long_lived_handle =
             (Shutdown { request_id = request_id handle "shutdown" }))
      with _ -> ());
     match await_child_with_timeout ~clock handle shutdown_grace_seconds with
-    | Ok _ -> ()
+    | Ok _ -> close_flow handle.stdout_r
     | Error `Timeout -> (
         signal_process handle Stdlib.Sys.sigkill;
         match await_child_with_timeout ~clock handle shutdown_kill_seconds with
-        | Ok _ | Error `Timeout -> ()))
+        | Ok _ | Error `Timeout -> close_flow handle.stdout_r))
 
 let create ~process_mgr ~clock ~binary_path ~setsid_exec : Long_lived.t =
   T
