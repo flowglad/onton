@@ -12,6 +12,13 @@
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
+(executable
+ (name check_repo_config)
+ (public_name onton-check-repo-config)
+ (libraries onton onton_core)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
 (rule
  (target version.ml)
  (deps (universe))
