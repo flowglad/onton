@@ -1,9 +1,13 @@
 open Base
 
 type route = { backend : string; model : string option }
-type t = { complexity_routes : (int * route) list }
 
-let empty = { complexity_routes = [] }
+type t = {
+  complexity_routes : (int * route) list;
+  review_backends : Review_backend.t list;
+}
+
+let empty = { complexity_routes = []; review_backends = [] }
 let config_path ~config_dir = Stdlib.Filename.concat config_dir "config.json"
 
 let parse_route ~known_backends ~complexity (json : Yojson.Safe.t) :
@@ -84,7 +88,11 @@ let parse_routing ~known_backends (json : Yojson.Safe.t) :
         ("routing must be an object mapping complexity -> {backend, model};"
        ^ " got " ^ Yojson.Safe.to_string json)
 
-let parse_string ~known_backends (raw : string) : (t, string) Result.t =
+let default_known_review_kinds = [ "review-service" ]
+
+let parse_string ~known_backends
+    ?(known_review_kinds = default_known_review_kinds) (raw : string) :
+    (t, string) Result.t =
   match
     try Ok (Yojson.Safe.from_string raw)
     with Yojson.Json_error msg -> Error (Printf.sprintf "config.json: %s" msg)
@@ -95,11 +103,15 @@ let parse_string ~known_backends (raw : string) : (t, string) Result.t =
       match json with
       | `Assoc _ ->
           let routing = member "routing" json in
-          Result.map (parse_routing ~known_backends routing) ~f:(fun routes ->
-              { complexity_routes = routes })
+          let review_backends_json = member "reviewBackends" json in
+          Result.bind (parse_routing ~known_backends routing) ~f:(fun routes ->
+              Result.map
+                (Review_backend.parse_array ~known_kinds:known_review_kinds
+                   review_backends_json) ~f:(fun review_backends ->
+                  { complexity_routes = routes; review_backends }))
       | _ -> Error "config.json: top-level value must be an object")
 
-let load ~config_dir ~known_backends =
+let load ~config_dir ~known_backends ?known_review_kinds () =
   let path = config_path ~config_dir in
   if not (Stdlib.Sys.file_exists path) then Ok empty
   else
@@ -110,7 +122,7 @@ let load ~config_dir ~known_backends =
           ~finally:(fun () -> Stdlib.In_channel.close ic)
           ~f:(fun () -> Stdlib.In_channel.input_all ic)
       in
-      parse_string ~known_backends raw
+      parse_string ~known_backends ?known_review_kinds raw
     with Sys_error msg ->
       Error (Printf.sprintf "config.json: cannot read: %s" msg)
 
@@ -225,4 +237,41 @@ let%test "parse_string: duplicate complexity keys rejected" =
   in
   match parse_string ~known_backends:[ "claude"; "codex" ] raw with
   | Error msg -> String.is_substring msg ~substring:"duplicated"
+  | Ok _ -> false
+
+let%test "parse_string: reviewBackends parse alongside routing" =
+  let raw =
+    {|{
+       "routing":{"1":{"backend":"claude"}},
+       "reviewBackends":[
+         {"name":"primary","kind":"review-service","baseUrl":"https://r.example.com","auth":{"appId":"1","privateKeyPath":"/k"}}
+       ]
+     }|}
+  in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t ->
+      List.length t.complexity_routes = 1
+      && List.length t.review_backends = 1
+      && String.equal (List.hd_exn t.review_backends).name "primary"
+  | Error _ -> false
+
+let%test "parse_string: reviewBackends absent -> empty list" =
+  let raw = {|{"routing":{"1":{"backend":"claude"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t -> List.is_empty t.review_backends
+  | Error _ -> false
+
+let%test "parse_string: reviewBackends-only config" =
+  let raw =
+    {|{"reviewBackends":[{"name":"a","kind":"review-service","baseUrl":"https://x","auth":{"appId":"1","privateKeyPath":"/k"}}]}|}
+  in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t ->
+      List.is_empty t.complexity_routes && List.length t.review_backends = 1
+  | Error _ -> false
+
+let%test "parse_string: invalid reviewBackends propagates as Error" =
+  let raw = {|{"reviewBackends":[{"name":"a","kind":"unknown"}]}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Error msg -> String.is_substring msg ~substring:"unknown"
   | Ok _ -> false

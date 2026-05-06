@@ -1580,8 +1580,67 @@ type poll_intent =
 
 (** Poller fiber — periodically polls GitHub for PR state changes and
     reconciles. *)
+let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
+    ~review_backends ~owner ~repo ~pr_number : Review_service.finding list =
+  Base.List.concat_map review_backends ~f:(fun (b : Review_backend.t) ->
+      match
+        Review_service_client.list_findings ~net ~clock ~backend:b ~owner ~repo
+          ~pr_number ()
+      with
+      | Error err ->
+          log_event runtime ~patch_id
+            (Printf.sprintf "Poll error — %s"
+               (Review_service_client.show_error err));
+          []
+      | Ok response ->
+          let parsed_count =
+            Base.List.length response.Review_service.findings
+          in
+          if not (Int.equal parsed_count response.Review_service.count) then
+            log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Review backend %s declared %d finding(s) but parsed %d — \
+                  possible review-service schema drift"
+                 b.Review_backend.name response.Review_service.count
+                 parsed_count);
+          Base.List.iter response.Review_service.dropped_findings
+            ~f:(fun (e : Review_service.finding_parse_error) ->
+              let json =
+                if String.length e.Review_service.json <= 500 then
+                  e.Review_service.json
+                else String.sub e.Review_service.json 0 497 ^ "..."
+              in
+              log_event runtime ~patch_id
+                (Printf.sprintf
+                   "Review backend %s dropped finding at index %d while \
+                    parsing: %s; json=%s"
+                   b.Review_backend.name e.Review_service.index
+                   e.Review_service.error json));
+          let keyed_findings =
+            Base.List.map response.Review_service.findings
+              ~f:(fun (f : Review_service.finding) ->
+                let key =
+                  Findings_registry.make_key ~backend_name:b.Review_backend.name
+                    ~owner ~repo ~pr_number ~finding_id:f.Review_service.id
+                in
+                (key, f))
+          in
+          Findings_registry.remove_stale_for_scope findings_registry
+            ~backend_name:b.Review_backend.name ~owner ~repo ~pr_number
+            ~keep_keys:(Base.List.map keyed_findings ~f:fst);
+          Base.List.map keyed_findings ~f:(fun (key, f) ->
+              Findings_registry.register findings_registry ~key
+                {
+                  Findings_registry.backend = b;
+                  owner;
+                  repo;
+                  pr_number;
+                  finding_id = f.Review_service.id;
+                };
+              { f with Review_service.id = key }))
+
 let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
-    ~pr_registry ~branch_of ~event_log =
+    ~pr_registry ~branch_of ~event_log ~review_backends ~findings_registry =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let rec loop () =
@@ -1630,6 +1689,19 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                          (Pr_number.to_int pr_number)));
                   None
               | Ok pr_state ->
+                  (* Augment the GitHub-derived [pr_state] with findings from
+                     every configured review backend. Failures are logged
+                     but non-fatal — a flaky review service shouldn't stop
+                     the rest of the poll cycle. *)
+                  let findings =
+                    if Base.List.is_empty review_backends then []
+                    else
+                      poll_review_backends ~net ~clock ~runtime ~patch_id
+                        ~findings_registry ~review_backends
+                        ~owner:config.github_owner ~repo:config.github_repo
+                        ~pr_number:(Pr_number.to_int pr_number)
+                  in
+                  let pr_state = { pr_state with Pr_state.findings } in
                   let poll_result = Poller.poll ~was_merged pr_state in
                   (* PR was closed — re-discover the current open PR.
                      This path does its own I/O and separate atomic update;
@@ -1837,7 +1909,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 (** Runner fiber — executes orchestrator actions by driving backend sessions
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
-    ~transcripts ~github ~net ~event_log ?status_msg () =
+    ~findings_registry ~review_backends ~transcripts ~github ~net ~event_log
+    ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
@@ -2400,6 +2473,20 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                       | None -> []
                     else []
                   in
+                  let prefetched_findings =
+                    if Operation_kind.equal kind Operation_kind.Findings then
+                      match pr_number with
+                      | Some pr_num
+                        when not (Base.List.is_empty review_backends) ->
+                          log_event runtime ~patch_id
+                            "Fetching fresh findings from review backends";
+                          poll_review_backends ~net ~clock ~runtime ~patch_id
+                            ~findings_registry ~review_backends
+                            ~owner:config.github_owner ~repo:config.github_repo
+                            ~pr_number:(Pr_number.to_int pr_num)
+                      | Some _ | None -> []
+                    else []
+                  in
                   (* Ci freshness gate: if we have no PR number, couldn't
                      fetch, or the fetched state shows no current failures,
                      skip the delivery — don't wake the agent for a failure
@@ -2459,6 +2546,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                 let delivery =
                                   Patch_decision.respond_delivery ~agent ~kind
                                     ~pre_fire_agent ~prefetched_comments
+                                    ~prefetched_findings
                                     ~main_branch:(Branch.to_string main)
                                 in
                                 let render_base_changed_prefix base_change =
@@ -2483,9 +2571,17 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                     `Stale
                                 | Patch_decision.Skip_empty ->
                                     log_event runtime ~patch_id
-                                      (Printf.sprintf
-                                         "Skipped %s — nothing to deliver"
-                                         (Operation_kind.to_label kind));
+                                      (if
+                                         Operation_kind.equal kind
+                                           Operation_kind.Findings
+                                       then
+                                         "Skipped findings — pre-session \
+                                          refresh returned no findings; no \
+                                          resolution posted"
+                                       else
+                                         Printf.sprintf
+                                           "Skipped %s — nothing to deliver"
+                                           (Operation_kind.to_label kind));
                                     `Skip_empty
                                 | Patch_decision.Deliver
                                     {
@@ -2780,6 +2876,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                         ( Patch_decision.Human_payload _
                                         | Patch_decision.Ci_payload _
                                         | Patch_decision.Review_payload _
+                                        | Patch_decision.Findings_payload _
                                         | Patch_decision.Pr_body_payload ) as
                                         payload;
                                       base_change;
@@ -2826,6 +2923,13 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                             (pluralize
                                                (Base.List.length comments)
                                                "comment")
+                                      | Patch_decision.Findings_payload
+                                          { findings } ->
+                                          Printf.sprintf "Delivering %s (%s)"
+                                            (Operation_kind.to_label kind)
+                                            (pluralize
+                                               (Base.List.length findings)
+                                               "finding")
                                       | Patch_decision.Human_payload
                                           { messages } ->
                                           Printf.sprintf "Delivering %s (%s)"
@@ -2871,6 +2975,32 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                             ?patch:patch_for_layer ~gameplan
                                             ~base_branch:base_branch_for_layer
                                             comments
+                                      | Patch_decision.Findings_payload
+                                          { findings } ->
+                                          let current_head_sha =
+                                            Base.Option.bind fresh_pr_state
+                                              ~f:(fun ps ->
+                                                ps.Pr_state.head_oid)
+                                          in
+                                          let artifact_path =
+                                            Project_store
+                                            .findings_wontfix_artifact_path
+                                              ~project_name ~patch_id
+                                          in
+                                          Project_store.ensure_dir
+                                            (Stdlib.Filename.dirname
+                                               artifact_path);
+                                          (try Unix.unlink artifact_path
+                                           with
+                                           | Unix.Unix_error (Unix.ENOENT, _, _)
+                                           ->
+                                             ());
+                                          Prompt.render_findings_prompt
+                                            ~project_name ?agents_md ?pr_number
+                                            ?current_head_sha
+                                            ?patch:patch_for_layer ~gameplan
+                                            ~base_branch:base_branch_for_layer
+                                            ~artifact_path findings
                                       | Patch_decision.Human_payload
                                           { messages } ->
                                           Prompt.render_human_message_prompt
@@ -2956,6 +3086,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                                 patch_id ids)
                                     | Patch_decision.Human_payload _
                                     | Patch_decision.Review_payload _
+                                    | Patch_decision.Findings_payload _
                                     | Patch_decision.Pr_body_payload
                                     | Patch_decision.Merge_conflict_payload ->
                                         ());
@@ -3021,39 +3152,78 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       | _ -> false
                                     in
                                     let result =
-                                      if session_ok then
-                                        match payload with
-                                        | Patch_decision.Pr_body_payload -> (
-                                            let pr =
-                                              Base.Option.value_exn pr_number
+                                      match payload with
+                                      | Patch_decision.Pr_body_payload
+                                        when session_ok -> (
+                                          let pr =
+                                            Base.Option.value_exn pr_number
+                                          in
+                                          let patch =
+                                            Base.List.find_exn
+                                              gameplan.Gameplan.patches
+                                              ~f:(fun (p : Patch.t) ->
+                                                Patch_id.equal p.Patch.id
+                                                  patch_id)
+                                          in
+                                          let artifact_outcome =
+                                            apply_pr_body_artifact ~runtime ~net
+                                              ~github ~project_name ~patch_id
+                                              ~pr_number:pr ~patch ~gameplan
+                                          in
+                                          match
+                                            Patch_decision
+                                            .classify_pr_body_respond
+                                              ~artifact_outcome ~tool_failures
+                                          with
+                                          | `Pr_body_miss -> `Pr_body_miss
+                                          | `Ok -> result)
+                                      | Patch_decision.Findings_payload
+                                          { findings } ->
+                                          if session_ok then (
+                                            let artifact_path =
+                                              Project_store
+                                              .findings_wontfix_artifact_path
+                                                ~project_name ~patch_id
                                             in
-                                            let patch =
-                                              Base.List.find_exn
-                                                gameplan.Gameplan.patches
-                                                ~f:(fun (p : Patch.t) ->
-                                                  Patch_id.equal p.Patch.id
-                                                    patch_id)
+                                            Findings_resolver
+                                            .resolve_after_session ~net ~clock
+                                              ~log:(fun msg ->
+                                                log_event runtime ~patch_id msg)
+                                              ~findings_registry ~artifact_path
+                                              ~delivered:findings
+                                              ~actor:
+                                                (Printf.sprintf "onton:%s"
+                                                   (Patch_id.to_string patch_id))
+                                              ();
+                                            result)
+                                          else
+                                            let ids =
+                                              Base.List.map findings
+                                                ~f:(fun
+                                                    (f : Review_service.finding)
+                                                  -> f.Review_service.id)
                                             in
-                                            let artifact_outcome =
-                                              apply_pr_body_artifact ~runtime
-                                                ~net ~github ~project_name
-                                                ~patch_id ~pr_number:pr ~patch
-                                                ~gameplan
-                                            in
-                                            match
-                                              Patch_decision
-                                              .classify_pr_body_respond
-                                                ~artifact_outcome ~tool_failures
-                                            with
-                                            | `Pr_body_miss -> `Pr_body_miss
-                                            | `Ok -> result)
-                                        | Patch_decision.Human_payload _
-                                        | Patch_decision.Ci_payload _
-                                        | Patch_decision.Review_payload _
-                                        | Patch_decision.Merge_conflict_payload
-                                          ->
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "Session failed before \
+                                                  resolving findings; \
+                                                  forgetting delivered finding \
+                                                  registry entries: %s"
+                                                 (String.concat ", " ids));
+                                            Base.List.iter findings
+                                              ~f:(fun
+                                                  (f : Review_service.finding)
+                                                ->
+                                                Findings_registry.forget
+                                                  findings_registry
+                                                  ~key:f.Review_service.id);
                                             result
-                                      else result
+                                      | Patch_decision.Human_payload _
+                                      | Patch_decision.Ci_payload _
+                                      | Patch_decision.Review_payload _
+                                      | Patch_decision.Pr_body_payload
+                                      | Patch_decision.Merge_conflict_payload ->
+                                          result
                                     in
                                     (* Opportunistic pr-body sync. If the
                                        agent updated the artifact during a
@@ -3678,7 +3848,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           User_config.config_dir ~github_owner:config.github_owner
             ~github_repo:config.github_repo
         in
-        match Repo_config.load ~config_dir ~known_backends with
+        match Repo_config.load ~config_dir ~known_backends () with
         | Ok t -> t
         | Error msg ->
             Printf.eprintf "Error: %s\n" msg;
@@ -3790,12 +3960,15 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       let event_log =
         Event_log.create ~path:(Project_store.event_log_path project_name)
       in
+      let review_backends = repo_config.Repo_config.review_backends in
+      let findings_registry = Findings_registry.create () in
       let common_fibers =
         [
           reconciliation_fiber;
           (fun () ->
             poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
-              ~project_name ~pr_registry ~branch_of ~event_log);
+              ~project_name ~pr_registry ~branch_of ~event_log ~review_backends
+              ~findings_registry);
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
@@ -3805,7 +3978,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-              ~pr_registry ~transcripts ~github ~net ~event_log ())
+              ~pr_registry ~findings_registry ~review_backends ~transcripts
+              ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -3857,8 +4031,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~repo:config.github_repo ~resolve_routing)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-                    ~pr_registry ~transcripts ~github ~net ~event_log
-                    ~status_msg ())
+                    ~pr_registry ~findings_registry ~review_backends
+                    ~transcripts ~github ~net ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

@@ -534,7 +534,8 @@ module Key_io = struct
               if n = 0 then None else Some (Bytes.get buf 0)
             with _ -> None))
 
-  (** Read bracketed paste content until ESC[201~ (paste end). *)
+  (** Read bracketed paste content until the paste-end CSI sequence
+      ([ESC\[201~]). *)
   let read_bracketed_paste () =
     let buf = Buffer.create 256 in
     let rec consume () =

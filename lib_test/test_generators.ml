@@ -26,11 +26,12 @@ let gen_branch =
 let gen_operation_kind =
   QCheck2.Gen.oneof_list
     Operation_kind.
-      [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+      [ Rebase; Human; Merge_conflict; Ci; Review_comments; Findings; Pr_body ]
 
 let gen_feedback_kind =
   QCheck2.Gen.oneof_list
-    Operation_kind.[ Human; Merge_conflict; Ci; Review_comments; Pr_body ]
+    Operation_kind.
+      [ Human; Merge_conflict; Ci; Review_comments; Findings; Pr_body ]
 
 let gen_operation_kind_queue =
   QCheck2.Gen.(
@@ -288,6 +289,7 @@ let gen_pr_state =
           ci_checks_truncated;
           comments;
           unresolved_comment_count;
+          findings = [];
           head_branch;
           head_oid = None;
           base_branch;
@@ -519,6 +521,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Approved_running -> Approved_running
     | Fixing_ci -> Fixing_ci
     | Addressing_review -> Addressing_review
+    | Addressing_findings -> Addressing_findings
     | Resolving_conflict -> Resolving_conflict
     | Responding_to_human -> Responding_to_human
     | Writing_pr_body -> Writing_pr_body
@@ -527,6 +530,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Updating -> Updating
     | Ci_queued -> Ci_queued
     | Review_queued -> Review_queued
+    | Findings_queued -> Findings_queued
     | Awaiting_ci -> Awaiting_ci
     | Awaiting_review -> Awaiting_review
     | Blocked_by_dep -> Blocked_by_dep
@@ -540,6 +544,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Approved_running;
       Fixing_ci;
       Addressing_review;
+      Addressing_findings;
       Resolving_conflict;
       Responding_to_human;
       Writing_pr_body;
@@ -548,6 +553,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Updating;
       Ci_queued;
       Review_queued;
+      Findings_queued;
       Awaiting_ci;
       Awaiting_review;
       Blocked_by_dep;

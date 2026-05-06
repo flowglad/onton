@@ -13,6 +13,7 @@ type display_status = Display_status.t =
   | Approved_running
   | Fixing_ci
   | Addressing_review
+  | Addressing_findings
   | Resolving_conflict
   | Responding_to_human
   | Writing_pr_body
@@ -21,6 +22,7 @@ type display_status = Display_status.t =
   | Updating
   | Ci_queued
   | Review_queued
+  | Findings_queued
   | Awaiting_ci
   | Awaiting_review
   | Blocked_by_dep

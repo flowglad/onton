@@ -493,7 +493,7 @@ let make_busy_orch ~patches ~kind ~messages =
                 Orchestrator.send_human_message acc pid msg)
         | Operation_kind.Rebase | Operation_kind.Merge_conflict
         | Operation_kind.Ci | Operation_kind.Review_comments
-        | Operation_kind.Pr_body ->
+        | Operation_kind.Findings | Operation_kind.Pr_body ->
             Orchestrator.enqueue orch pid kind
       in
       let orch =

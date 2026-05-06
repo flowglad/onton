@@ -147,7 +147,7 @@ let apply_poll_result t patch_id
             | Patch_decision.Cap_reached ->
                 log "CI failure cap reached (>=3) — skipping CI enqueue";
                 acc)
-        | Operation_kind.Review_comments ->
+        | Operation_kind.Review_comments | Operation_kind.Findings ->
             if is_new then
               log (Printf.sprintf "Enqueued %s" (Operation_kind.to_label kind));
             Orchestrator.enqueue acc patch_id kind

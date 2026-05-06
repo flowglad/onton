@@ -372,6 +372,10 @@ let parse_response_json ~owner json =
                 ci_checks_truncated;
                 comments;
                 unresolved_comment_count;
+                findings = [];
+                (* GitHub does not produce review-service findings; the
+                     poller in [bin/main.ml] augments this list from
+                     configured review-service backends. *)
                 head_branch;
                 head_oid;
                 base_branch;

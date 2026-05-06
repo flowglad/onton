@@ -47,7 +47,14 @@ module Branch = struct
 end
 
 module Operation_kind = struct
-  type t = Rebase | Human | Merge_conflict | Ci | Review_comments | Pr_body
+  type t =
+    | Rebase
+    | Human
+    | Merge_conflict
+    | Ci
+    | Review_comments
+    | Pr_body
+    | Findings
   [@@deriving show, eq, ord, sexp_of, compare, hash, yojson]
 
   (** Migration-aware deserializer: maps removed constructors to their
@@ -66,6 +73,7 @@ module Operation_kind = struct
     | Ci -> "ci"
     | Review_comments -> "review-comments"
     | Pr_body -> "pr-body"
+    | Findings -> "findings"
 end
 
 module Comment_id = struct

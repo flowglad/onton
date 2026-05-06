@@ -239,7 +239,8 @@ let () =
     assert (
       equal_respond_delivery
         (respond_delivery ~agent:a ~kind:Operation_kind.Human
-           ~pre_fire_agent:None ~prefetched_comments:[] ~main_branch)
+           ~pre_fire_agent:None ~prefetched_comments:[] ~prefetched_findings:[]
+           ~main_branch)
         Respond_stale);
 
     (* needs_intervention → Stale *)
@@ -256,7 +257,8 @@ let () =
     assert (
       equal_respond_delivery
         (respond_delivery ~agent:a ~kind:Operation_kind.Human
-           ~pre_fire_agent:None ~prefetched_comments:[] ~main_branch)
+           ~pre_fire_agent:None ~prefetched_comments:[] ~prefetched_findings:[]
+           ~main_branch)
         Respond_stale);
 
     (* not busy → Stale *)
@@ -264,7 +266,8 @@ let () =
     assert (
       equal_respond_delivery
         (respond_delivery ~agent:a ~kind:Operation_kind.Human
-           ~pre_fire_agent:None ~prefetched_comments:[] ~main_branch)
+           ~pre_fire_agent:None ~prefetched_comments:[] ~prefetched_findings:[]
+           ~main_branch)
         Respond_stale);
     Stdlib.print_endline "RD-1 passed"
   in
@@ -280,7 +283,8 @@ let () =
     assert (
       equal_respond_delivery
         (respond_delivery ~agent:a ~kind:Operation_kind.Human
-           ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch)
+           ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+           ~prefetched_findings:[] ~main_branch)
         Skip_empty);
     Stdlib.print_endline "RD-2a passed"
   in
@@ -312,7 +316,8 @@ let () =
     assert (
       equal_respond_delivery
         (respond_delivery ~agent:a ~kind:Operation_kind.Ci
-           ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch)
+           ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+           ~prefetched_findings:[] ~main_branch)
         Skip_empty);
     Stdlib.print_endline "RD-2b passed"
   in
@@ -327,7 +332,8 @@ let () =
     assert (
       equal_respond_delivery
         (respond_delivery ~agent:a ~kind:Operation_kind.Review_comments
-           ~pre_fire_agent:None ~prefetched_comments:[] ~main_branch)
+           ~pre_fire_agent:None ~prefetched_comments:[] ~prefetched_findings:[]
+           ~main_branch)
         Skip_empty);
     Stdlib.print_endline "RD-2c passed"
   in
@@ -341,15 +347,16 @@ let () =
     let a = respond a Operation_kind.Human in
     (match
        respond_delivery ~agent:a ~kind:Operation_kind.Human
-         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+         ~prefetched_findings:[] ~main_branch
      with
     | Deliver { payload = Human_payload { messages }; _ } ->
         assert (List.equal String.equal messages [ "fix this" ])
     | Deliver
         {
           payload =
-            ( Ci_payload _ | Review_payload _ | Pr_body_payload
-            | Merge_conflict_payload );
+            ( Ci_payload _ | Review_payload _ | Findings_payload _
+            | Pr_body_payload | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -373,7 +380,8 @@ let () =
     assert (not (List.is_empty post_fire.inflight_human_messages));
     (match
        respond_delivery ~agent:post_fire ~kind:Operation_kind.Human
-         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+         ~prefetched_findings:[] ~main_branch
      with
     | Deliver { payload = Human_payload { messages }; _ } ->
         (* Messages come from pre_fire.human_messages (reversed) *)
@@ -381,8 +389,8 @@ let () =
     | Deliver
         {
           payload =
-            ( Ci_payload _ | Review_payload _ | Pr_body_payload
-            | Merge_conflict_payload );
+            ( Ci_payload _ | Review_payload _ | Findings_payload _
+            | Pr_body_payload | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -405,7 +413,8 @@ let () =
        but base_branch is now "feature" → base changed *)
     (match
        respond_delivery ~agent:a ~kind:Operation_kind.Human
-         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+         ~prefetched_findings:[] ~main_branch
      with
     | Deliver { base_change = Some bc; _ } ->
         assert (String.equal bc.old_base (Branch.to_string br));
@@ -440,15 +449,16 @@ let () =
         let a = respond a Operation_kind.Ci in
         match
           respond_delivery ~agent:a ~kind:Operation_kind.Ci
-            ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+            ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+            ~prefetched_findings:[] ~main_branch
         with
         | Deliver { payload = Ci_payload { failed_checks }; _ } ->
             assert (not (List.is_empty failed_checks))
         | Deliver
             {
               payload =
-                ( Human_payload _ | Review_payload _ | Pr_body_payload
-                | Merge_conflict_payload );
+                ( Human_payload _ | Review_payload _ | Findings_payload _
+                | Pr_body_payload | Merge_conflict_payload );
               _;
             }
         | Skip_empty | Respond_stale ->
@@ -469,7 +479,7 @@ let () =
         let a = respond a kind in
         match
           respond_delivery ~agent:a ~kind ~pre_fire_agent:None
-            ~prefetched_comments:[] ~main_branch
+            ~prefetched_comments:[] ~prefetched_findings:[] ~main_branch
         with
         | Skip_empty ->
             failwith
@@ -502,7 +512,8 @@ let () =
     let a = respond a Operation_kind.Ci in
     (match
        respond_delivery ~agent:a ~kind:Operation_kind.Ci
-         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+         ~prefetched_findings:[] ~main_branch
      with
     | Skip_empty -> ()
     | Deliver _ | Respond_stale ->
@@ -534,7 +545,8 @@ let () =
     let a = respond a Operation_kind.Ci in
     (match
        respond_delivery ~agent:a ~kind:Operation_kind.Ci
-         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+         ~prefetched_findings:[] ~main_branch
      with
     | Deliver { payload = Ci_payload { failed_checks }; _ } ->
         let ids =
@@ -545,8 +557,8 @@ let () =
     | Deliver
         {
           payload =
-            ( Human_payload _ | Review_payload _ | Pr_body_payload
-            | Merge_conflict_payload );
+            ( Human_payload _ | Review_payload _ | Findings_payload _
+            | Pr_body_payload | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->
@@ -579,15 +591,16 @@ let () =
     let a = respond a Operation_kind.Ci in
     (match
        respond_delivery ~agent:a ~kind:Operation_kind.Ci
-         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[] ~main_branch
+         ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+         ~prefetched_findings:[] ~main_branch
      with
     | Deliver { payload = Ci_payload { failed_checks }; _ } ->
         assert (List.length failed_checks = 1)
     | Deliver
         {
           payload =
-            ( Human_payload _ | Review_payload _ | Pr_body_payload
-            | Merge_conflict_payload );
+            ( Human_payload _ | Review_payload _ | Findings_payload _
+            | Pr_body_payload | Merge_conflict_payload );
           _;
         }
     | Skip_empty | Respond_stale ->

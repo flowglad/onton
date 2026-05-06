@@ -74,6 +74,14 @@ val pr_body_artifact_path :
     project's data directory at [artifacts/<patch_id>/pr-body.md] — outside the
     worktree so it can never be accidentally committed. *)
 
+val findings_wontfix_artifact_path :
+  project_name:string -> patch_id:Types.Patch_id.t -> string
+(** Absolute path of the [findings_wontfix.json] artifact for a Findings
+    session. The agent writes a JSON list of [{id, reason}] for any finding it
+    has decided not to fix; the supervisor consumes it post-session and POSTs
+    the corresponding resolve verbs to the review backend. Findings not listed
+    here default to [addressed]. *)
+
 val project_exists : string -> bool
 (** Whether a project data directory with config exists. *)
 

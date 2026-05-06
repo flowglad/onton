@@ -23,6 +23,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_review_service_properties)
+ (modules test_review_service_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_activity_log_properties)
  (modules test_activity_log_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)

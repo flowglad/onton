@@ -24,13 +24,20 @@ type t = {
           the set is tiny and the lookup is per-patch — fast enough. Missing
           keys mean "no override", and the caller falls back to its default
           backend / built-in [auto_model] ladder. *)
+  review_backends : Review_backend.t list;
+      (** Additional review sources to poll alongside the forge. Empty (the
+          default) means GitHub review comments are the only source. *)
 }
 
 val empty : t
 (** Returned when [config.json] is absent — the no-op config. *)
 
 val load :
-  config_dir:string -> known_backends:string list -> (t, string) Stdlib.Result.t
+  config_dir:string ->
+  known_backends:string list ->
+  ?known_review_kinds:string list ->
+  unit ->
+  (t, string) Stdlib.Result.t
 (** Read and validate [<config_dir>/config.json]. [config_dir] should be the
     output of [User_config.config_dir ~github_owner ~github_repo] so the routing
     config lives alongside the [on_worktree_create] hook for the same repo.

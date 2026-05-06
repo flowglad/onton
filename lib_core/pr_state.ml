@@ -14,6 +14,12 @@ type t = {
   ci_checks_truncated : bool;
   comments : Types.Comment.t list;
   unresolved_comment_count : int;
+  findings : Review_service.finding list;
+      (** Unresolved findings from review-service backends, merged across all
+          configured sources. Empty when no review backends are configured or
+          all returned empty. Distinct from [comments] (GitHub review threads)
+          because the agent's resolution surface differs — see
+          {!Operation_kind.Findings}. *)
   head_branch : Types.Branch.t option;
   head_oid : string option;
   base_branch : Types.Branch.t option;
