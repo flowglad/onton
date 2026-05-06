@@ -1879,7 +1879,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
 (** Runner fiber — executes orchestrator actions by driving backend sessions
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
-    ~findings_registry ~transcripts ~github ~net ~event_log ?status_msg () =
+    ~findings_registry ~review_backends ~transcripts ~github ~net ~event_log
+    ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
@@ -2444,9 +2445,16 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                   in
                   let prefetched_findings =
                     if Operation_kind.equal kind Operation_kind.Findings then
-                      match fresh_pr_state with
-                      | Some pr_state -> pr_state.Pr_state.findings
-                      | None -> []
+                      match pr_number with
+                      | Some pr_num
+                        when not (Base.List.is_empty review_backends) ->
+                          log_event runtime ~patch_id
+                            "Fetching fresh findings from review backends";
+                          poll_review_backends ~net ~clock ~runtime ~patch_id
+                            ~findings_registry ~review_backends
+                            ~owner:config.github_owner ~repo:config.github_repo
+                            ~pr_number:(Pr_number.to_int pr_num)
+                      | Some _ | None -> []
                     else []
                   in
                   (* Ci freshness gate: if we have no PR number, couldn't
@@ -3911,8 +3919,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-              ~pr_registry ~findings_registry ~transcripts ~github ~net
-              ~event_log ())
+              ~pr_registry ~findings_registry ~review_backends ~transcripts
+              ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -3964,8 +3972,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~repo:config.github_repo ~resolve_routing)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-                    ~pr_registry ~findings_registry ~transcripts ~github ~net
-                    ~event_log ~status_msg ())
+                    ~pr_registry ~findings_registry ~review_backends
+                    ~transcripts ~github ~net ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 
