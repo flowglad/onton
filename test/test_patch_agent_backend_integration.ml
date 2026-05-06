@@ -3,12 +3,11 @@ open Base
 let pending_test =
   QCheck2.Test.make
     ~name:"Patch_agent_backend_integration > one-turn smoke against real binary"
-    ~count:1
-    QCheck2.Gen.unit (fun () ->
+    ~count:1 QCheck2.Gen.unit (fun () ->
       (* PENDING: implemented in patch 6 *)
       Stdlib.prerr_endline
-        "SKIP: pending integration smoke for patch-agent backend \
-         (implemented in patch 6)";
+        "SKIP: pending integration smoke for patch-agent backend (implemented \
+         in patch 6)";
       true)
 
 let () =
