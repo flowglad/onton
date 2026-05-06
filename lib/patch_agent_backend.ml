@@ -10,6 +10,8 @@ type handle = {
   stderr_truncated : bool ref;
   pid : int;
   have_group : bool;
+  await_mutex : Eio.Mutex.t;
+  mutable await_status : [ `Exited of int | `Signaled of int ] option;
   mutable shutdown_requested : bool;
   mutable prompt_count : int;
 }
@@ -32,7 +34,7 @@ let exit_code_of_status = function
   | `Exited code -> code
   | `Signaled signal -> 128 + signal
 
-let write_line handle line = Eio.Flow.copy_string line handle.stdin_w
+let write_raw handle bytes = Eio.Flow.copy_string bytes handle.stdin_w
 let captured_stderr handle = Buffer.contents handle.stderr_capture
 
 let append_bounded buffer truncated ~limit text =
@@ -54,6 +56,21 @@ let captured_stderr_for_result handle =
 let request_id handle kind =
   handle.prompt_count <- handle.prompt_count + 1;
   Printf.sprintf "patch-agent-%s-%d" kind handle.prompt_count
+
+let await_child handle =
+  Eio.Mutex.lock handle.await_mutex;
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Eio.Mutex.unlock handle.await_mutex)
+    (fun () ->
+      match handle.await_status with
+      | Some status -> status
+      | None ->
+          let status = Eio.Process.await handle.child in
+          handle.await_status <- Some status;
+          status)
+
+let await_child_with_timeout ~clock handle seconds =
+  Eio.Time.with_timeout clock seconds (fun () -> Ok (await_child handle))
 
 let emit_error on_event message =
   on_event (Types.Stream_event.Error message);
@@ -113,6 +130,14 @@ let spawn_args ~binary_path ~setsid_exec ~gameplan_path ~patch_path
   in
   match setsid_exec with Some path -> path :: args | None -> args
 
+let native_absolute_exn path ~what =
+  let native = Eio.Path.native_exn path in
+  if Stdlib.Filename.is_relative native then
+    invalid_arg
+      (Printf.sprintf
+         "patch-agent %s must be a native absolute path for subprocess use" what);
+  native
+
 let write_prompt_files worktree ~gameplan_prompt ~patch_prompt =
   let dir = Eio.Path.(worktree / ".patch-agent") in
   Eio.Path.mkdirs ~exists_ok:true ~perm:0o755 dir;
@@ -125,10 +150,10 @@ let write_prompt_files worktree ~gameplan_prompt ~patch_prompt =
 let start ~process_mgr ~binary_path ~setsid_exec ~sw
     ({ worktree; provider; model; effort; gameplan_prompt; patch_prompt; _ } :
       Long_lived.start_config) =
+  let worktree_path = native_absolute_exn worktree ~what:"worktree" in
   let gameplan_path, patch_path =
     write_prompt_files worktree ~gameplan_prompt ~patch_prompt
   in
-  let worktree_path = Eio.Path.native_exn worktree in
   let args =
     spawn_args ~binary_path ~setsid_exec ~gameplan_path ~patch_path
       ~worktree_path ~provider ~model ~effort
@@ -153,6 +178,8 @@ let start ~process_mgr ~binary_path ~setsid_exec ~sw
       stderr_truncated = ref false;
       pid = Eio.Process.pid child;
       have_group = Option.is_some setsid_exec;
+      await_mutex = Eio.Mutex.create ();
+      await_status = None;
       shutdown_requested = false;
       prompt_count = 0;
     }
@@ -201,7 +228,7 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
           (Prompt { request_id = request_id handle "prompt"; content = prompt })
       in
       let write_result =
-        try Ok (write_line handle command) with
+        try Ok (write_raw handle command) with
         | Eio.Exn.Io _ as ex -> Error ex
         | Invalid_argument _ as ex -> Error ex
       in
@@ -232,7 +259,7 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
                 on_event event;
                 if is_terminal event then () else loop ()
             | exception End_of_file ->
-                let status = Eio.Process.await handle.child in
+                let status = await_child handle in
                 let code = exit_code_of_status status in
                 exit_code := code;
                 if code <> 0 then (
@@ -256,7 +283,9 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
     match Eio.Time.with_timeout clock timeout run with
     | Ok result -> result
     | Error `Timeout ->
+        handle.shutdown_requested <- true;
         signal_process handle Stdlib.Sys.sigkill;
+        ignore (await_child_with_timeout ~clock handle shutdown_kill_seconds);
         {
           Llm_backend.exit_code = 128 + 9;
           stdout = captured_stdout ();
@@ -269,7 +298,7 @@ let prompt_session ~clock long_lived_handle ~prompt ~timeout ~on_event =
 let abort long_lived_handle =
   let handle = long_lived_handle in
   if not handle.shutdown_requested then
-    write_line handle
+    write_raw handle
       (Patch_agent_rpc.serialize_command
          (Abort { request_id = request_id handle "abort" }))
 
@@ -278,19 +307,15 @@ let shutdown ~clock long_lived_handle =
   if not handle.shutdown_requested then (
     handle.shutdown_requested <- true;
     (try
-       write_line handle
+       write_raw handle
          (Patch_agent_rpc.serialize_command
             (Shutdown { request_id = request_id handle "shutdown" }))
      with _ -> ());
-    let await_with_timeout seconds =
-      Eio.Time.with_timeout clock seconds (fun () ->
-          Ok (Eio.Process.await handle.child))
-    in
-    match await_with_timeout shutdown_grace_seconds with
+    match await_child_with_timeout ~clock handle shutdown_grace_seconds with
     | Ok _ -> ()
     | Error `Timeout -> (
         signal_process handle Stdlib.Sys.sigkill;
-        match await_with_timeout shutdown_kill_seconds with
+        match await_child_with_timeout ~clock handle shutdown_kill_seconds with
         | Ok _ | Error `Timeout -> ()))
 
 let create ~process_mgr ~clock ~binary_path ~setsid_exec : Long_lived.t =
