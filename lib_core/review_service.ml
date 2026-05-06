@@ -180,9 +180,13 @@ let parse_findings_response json : (findings_response, string) Result.t =
   | `Assoc _ ->
       let* repo_id = require_string "repoId" json in
       let* pull_number = require_int "pullNumber" json in
-      let count = match json |> member "count" with `Int n -> n | _ -> 0 in
       let raw_findings =
         match json |> member "findings" with `List xs -> xs | _ -> []
+      in
+      let count =
+        match json |> member "count" with
+        | `Int n -> n
+        | _ -> List.length raw_findings
       in
       (* Drop entries that fail to parse rather than failing the whole response,
          but keep diagnostics so the effectful caller can log schema drift. *)
@@ -375,6 +379,17 @@ let%test "parse_findings_response_string: empty findings -> Ok empty" =
       List.is_empty r.findings
       && List.is_empty r.dropped_findings
       && r.count = 0
+  | Error _ -> false
+
+let%test "parse_findings_response_string: missing count defaults to raw length"
+    =
+  let raw =
+    {|{"repoId":"o/r","pullNumber":1,"findings":[
+       {"id":"a","postingSha":"s","path":"f","startLine":1,"endLine":1,"severity":"note","body":"b","createdAt":"t","outcome":{"kind":"outstanding"}}
+     ]}|}
+  in
+  match parse_findings_response_string raw with
+  | Ok r -> r.count = 1 && List.length r.findings = 1
   | Error _ -> false
 
 let%test "parse_resolve_response: ok with addressed outcome" =

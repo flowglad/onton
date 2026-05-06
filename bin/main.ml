@@ -2571,17 +2571,17 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                     `Stale
                                 | Patch_decision.Skip_empty ->
                                     log_event runtime ~patch_id
-                                      (Printf.sprintf
-                                         "Skipped %s — nothing to deliver"
-                                         (Operation_kind.to_label kind));
-                                    if
-                                      Operation_kind.equal kind
-                                        Operation_kind.Findings
-                                    then
-                                      log_event runtime ~patch_id
-                                        "Skipped findings delivery after \
-                                         pre-session refresh returned no \
-                                         findings; no resolution was posted";
+                                      (if
+                                         Operation_kind.equal kind
+                                           Operation_kind.Findings
+                                       then
+                                         "Skipped findings — pre-session \
+                                          refresh returned no findings; no \
+                                          resolution posted"
+                                       else
+                                         Printf.sprintf
+                                           "Skipped %s — nothing to deliver"
+                                           (Operation_kind.to_label kind));
                                     `Skip_empty
                                 | Patch_decision.Deliver
                                     {
