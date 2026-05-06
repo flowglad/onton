@@ -67,33 +67,34 @@ let prop_session_id_preserved =
     ~count:500 gen_string (fun session_id ->
       Types.Stream_event.equal
         (Patch_agent_event_mapper.map_event
-          (Patch_agent_rpc.Session_init
-             { session_id; model_id = "model"; provider = "provider" }))
+           (Patch_agent_rpc.Session_init
+              { session_id; model_id = "model"; provider = "provider" }))
         (Types.Stream_event.Session_init { session_id }))
 
 let prop_tool_call_preserved =
   QCheck2.Test.make
     ~name:"Patch_agent_event_mapper > tool_call name and input preserved"
-    ~count:500 QCheck2.(Gen.pair gen_string gen_string) (fun (name, input) ->
+    ~count:500
+    QCheck2.(Gen.pair gen_string gen_string)
+    (fun (name, input) ->
       Types.Stream_event.equal
         (Patch_agent_event_mapper.map_event
            (Patch_agent_rpc.Tool_call { name; input; call_id = "call-id" }))
         (Types.Stream_event.Tool_use { name; input; status = None }))
 
 let prop_final_text_preserved =
-  QCheck2.Test.make
-    ~name:"Patch_agent_event_mapper > final_text preserved" ~count:500
-    gen_string (fun final_text ->
+  QCheck2.Test.make ~name:"Patch_agent_event_mapper > final_text preserved"
+    ~count:500 gen_string (fun final_text ->
       Types.Stream_event.equal
         (Patch_agent_event_mapper.map_event
-          (Patch_agent_rpc.Done
-             { stop_reason = "stop"; final_text; usage = None }))
+           (Patch_agent_rpc.Done
+              { stop_reason = "stop"; final_text; usage = None }))
         (Types.Stream_event.Final_result
            { text = final_text; stop_reason = Types.Stop_reason.End_turn }))
 
 let prop_deterministic =
-  QCheck2.Test.make ~name:"Patch_agent_event_mapper > deterministic"
-    ~count:500 gen_event (fun event ->
+  QCheck2.Test.make ~name:"Patch_agent_event_mapper > deterministic" ~count:500
+    gen_event (fun event ->
       Types.Stream_event.equal
         (Patch_agent_event_mapper.map_event event)
         (Patch_agent_event_mapper.map_event event))

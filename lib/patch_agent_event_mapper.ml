@@ -7,8 +7,8 @@ let warn_unknown_stop_reason raw =
     warned_unknown_stop_reason := true;
     Stdlib.prerr_endline
       (Printf.sprintf
-         "warning: patch-agent reported unsupported stop_reason %S; \
-          defaulting to end_turn"
+         "warning: patch-agent reported unsupported stop_reason %S; defaulting \
+          to end_turn"
          raw))
 
 let parse_stop_reason (raw : string) : Types.Stop_reason.t =
@@ -28,7 +28,8 @@ let parse_stop_reason (raw : string) : Types.Stop_reason.t =
 
 let map_event (event : Patch_agent_rpc.event) : Types.Stream_event.t =
   match event with
-  | Session_init { session_id; _ } -> Types.Stream_event.Session_init { session_id }
+  | Session_init { session_id; _ } ->
+      Types.Stream_event.Session_init { session_id }
   | Turn_started _ -> Types.Stream_event.Turn_started
   | Text_delta { delta } -> Types.Stream_event.Text_delta delta
   | Tool_call { name; input; _ } ->

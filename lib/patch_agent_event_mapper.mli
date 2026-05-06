@@ -10,5 +10,4 @@ open Base
     takes that fallback path. *)
 
 val parse_stop_reason : string -> Types.Stop_reason.t
-
 val map_event : Patch_agent_rpc.event -> Types.Stream_event.t
