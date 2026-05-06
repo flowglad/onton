@@ -30,4 +30,8 @@ val mint :
     [ttl_seconds] is clamped to [[60, 300]] (60s minimum to absorb clock skew at
     the server, 300s maximum per the spec's server-side window). The PEM is read
     from disk on every call — token mints are infrequent and keeping the key
-    off-heap reduces blast radius. *)
+    off-heap reduces blast radius.
+
+    Seeds [Mirage_crypto_rng] via {!Mirage_crypto_rng_unix.use_default} before
+    signing (RSA PKCS1 needs randomness for blinding). The seed is idempotent —
+    repeated calls are a no-op. *)

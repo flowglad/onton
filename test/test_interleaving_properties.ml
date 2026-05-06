@@ -1265,7 +1265,7 @@ let () =
   QCheck2.Test.check_exn prop_pi4;
   Stdlib.print_endline "PI-4 passed"
 
-(** PI-5: Repeated Session_process_error { is_fresh = true } on a no-PR agent
+(** PI-5: Repeated [Session_process_error { is_fresh = true }] on a no-PR agent
     converges to needs_intervention. This tests the same liveness guarantee as
     PI-4 but for the process-error path. *)
 let () =
@@ -2196,10 +2196,10 @@ let respond_outcome_of session_result =
   | Orchestrator.Session_worktree_missing ->
       Orchestrator.Respond_failed
 
-(** Given the current agent state, produce the session_result that a
-    persistent LLM failure would yield.  This models the session_mode →
-    failure chain: Resume → Session_failed{is_fresh=false}, Fresh →
-    Session_failed{is_fresh=true}, Give_up → Session_give_up. *)
+(** Given the current agent state, produce the session_result that a persistent
+    LLM failure would yield. This models the session_mode → failure chain:
+    Resume → [Session_failed { is_fresh = false }], Fresh →
+    [Session_failed { is_fresh = true }], Give_up → [Session_give_up]. *)
 let session_failure_for_state (a : Patch_agent.t) =
   match a.Patch_agent.session_fallback with
   | Patch_agent.Fresh_available -> (
@@ -2467,9 +2467,10 @@ let () =
 
     Resume-path coverage: [mk_bootstrapped] leaves [llm_session_id = None], so
     [session_failure_for_state] here always enters on the Fresh-first arm
-    (Session_failed {is_fresh=true}).  The Resume-first arm (Session_failed
-    {is_fresh=false}) — i.e. the full [Resume fail → Tried_fresh → Fresh fail
-    → Given_up] chain — is covered explicitly by CV-3b. *)
+    ([Session_failed { is_fresh = true }]). The Resume-first arm
+    ([Session_failed { is_fresh = false }]) — i.e. the full
+    [Resume fail → Tried_fresh → Fresh fail → Given_up] chain — is covered
+    explicitly by CV-3b. *)
 let () =
   let prop_cv5 =
     QCheck2.Test.make

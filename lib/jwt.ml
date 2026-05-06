@@ -49,6 +49,10 @@ let json_compact_of_assoc fields =
 let mint ~now ~app_id ~private_key_path ~ttl_seconds :
     (string, error) Stdlib.Result.t =
   let ( let* ) = Result.bind in
+  (* RSA PKCS1 sign uses [Mirage_crypto_rng] for blinding; seed it before
+     signing so callers don't have to remember. Idempotent — calling more
+     than once is a no-op after the first init. *)
+  Mirage_crypto_rng_unix.use_default ();
   let* pem = read_file private_key_path in
   let* priv = decode_pem pem in
   let iat = int_of_float now in

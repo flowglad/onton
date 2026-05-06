@@ -5,3 +5,6 @@ _opam/
 .claude
 .vercel
 node_modules/
+.env
+*.pem
+private.pem
