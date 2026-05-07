@@ -577,9 +577,9 @@ let apply_conflict_push_result t patch_id decision
 
 type session_result =
   | Session_ok
-  | Session_process_error of { is_fresh : bool }
+  | Session_process_error of { is_fresh : bool; detail : string option }
   | Session_no_resume
-  | Session_failed of { is_fresh : bool }
+  | Session_failed of { is_fresh : bool; detail : string option }
   | Session_give_up
   | Session_worktree_missing
   | Session_push_failed
@@ -646,7 +646,7 @@ let apply_session_result t patch_id result =
       let t = clear_session_fallback t patch_id in
       (* A healthy session that pushed commits clears the no-commits counter. *)
       update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
-  | Session_process_error { is_fresh } ->
+  | Session_process_error { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
       complete_failed t patch_id
@@ -657,7 +657,7 @@ let apply_session_result t patch_id result =
             Patch_agent.set_llm_session_id a None)
       in
       complete_failed t patch_id
-  | Session_failed { is_fresh } ->
+  | Session_failed { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       complete_failed t patch_id
   | Session_give_up ->

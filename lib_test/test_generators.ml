@@ -652,10 +652,15 @@ let gen_session_result =
       [
         return Onton.Orchestrator.Session_ok;
         map
-          (fun b -> Onton.Orchestrator.Session_process_error { is_fresh = b })
+          (fun b ->
+            Onton.Orchestrator.Session_process_error
+              { is_fresh = b; detail = None })
           bool;
         return Onton.Orchestrator.Session_no_resume;
-        map (fun b -> Onton.Orchestrator.Session_failed { is_fresh = b }) bool;
+        map
+          (fun b ->
+            Onton.Orchestrator.Session_failed { is_fresh = b; detail = None })
+          bool;
         return Onton.Orchestrator.Session_give_up;
         return Onton.Orchestrator.Session_worktree_missing;
         return Onton.Orchestrator.Session_push_failed;

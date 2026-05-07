@@ -264,11 +264,11 @@ let () =
 let () =
   let failed_results =
     [
-      Orchestrator.Session_process_error { is_fresh = false };
-      Orchestrator.Session_process_error { is_fresh = true };
+      Orchestrator.Session_process_error { is_fresh = false; detail = None };
+      Orchestrator.Session_process_error { is_fresh = true; detail = None };
       Orchestrator.Session_no_resume;
-      Orchestrator.Session_failed { is_fresh = false };
-      Orchestrator.Session_failed { is_fresh = true };
+      Orchestrator.Session_failed { is_fresh = false; detail = None };
+      Orchestrator.Session_failed { is_fresh = true; detail = None };
       Orchestrator.Session_give_up;
     ]
   in

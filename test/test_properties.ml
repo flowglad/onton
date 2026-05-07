@@ -1002,10 +1002,13 @@ let () =
     Gen.oneof
       [
         Gen.map
-          (fun b -> Orchestrator.Session_process_error { is_fresh = b })
+          (fun b ->
+            Orchestrator.Session_process_error { is_fresh = b; detail = None })
           Gen.bool;
         Gen.return Orchestrator.Session_no_resume;
-        Gen.map (fun b -> Orchestrator.Session_failed { is_fresh = b }) Gen.bool;
+        Gen.map
+          (fun b -> Orchestrator.Session_failed { is_fresh = b; detail = None })
+          Gen.bool;
         Gen.return Orchestrator.Session_give_up;
         Gen.return Orchestrator.Session_worktree_missing;
         Gen.return Orchestrator.Session_push_failed;
