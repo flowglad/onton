@@ -389,14 +389,16 @@ let apply_reconcile orch patches =
 
 let to_session_result = function
   | Sess_ok -> Orchestrator.Session_ok
-  | Sess_failed_fresh -> Orchestrator.Session_failed { is_fresh = true }
-  | Sess_failed_resume -> Orchestrator.Session_failed { is_fresh = false }
+  | Sess_failed_fresh ->
+      Orchestrator.Session_failed { is_fresh = true; detail = None }
+  | Sess_failed_resume ->
+      Orchestrator.Session_failed { is_fresh = false; detail = None }
   | Sess_give_up -> Orchestrator.Session_give_up
   | Sess_worktree_missing -> Orchestrator.Session_worktree_missing
   | Sess_process_error_fresh ->
-      Orchestrator.Session_process_error { is_fresh = true }
+      Orchestrator.Session_process_error { is_fresh = true; detail = None }
   | Sess_process_error_resume ->
-      Orchestrator.Session_process_error { is_fresh = false }
+      Orchestrator.Session_process_error { is_fresh = false; detail = None }
   | Sess_no_resume -> Orchestrator.Session_no_resume
 
 let stub_conflict_info : Worktree.conflict_info =
@@ -1278,7 +1280,8 @@ let () =
         (* First process error *)
         let orch =
           Orchestrator.apply_session_result orch pid
-            (Orchestrator.Session_process_error { is_fresh = true })
+            (Orchestrator.Session_process_error
+               { is_fresh = true; detail = None })
         in
         let a = Orchestrator.agent orch pid in
         if Patch_agent.needs_intervention a then
@@ -1287,7 +1290,8 @@ let () =
         let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
         let orch =
           Orchestrator.apply_session_result orch pid
-            (Orchestrator.Session_process_error { is_fresh = true })
+            (Orchestrator.Session_process_error
+               { is_fresh = true; detail = None })
         in
         let a = Orchestrator.agent orch pid in
         Patch_agent.needs_intervention a)
@@ -2206,13 +2210,13 @@ let session_failure_for_state (a : Patch_agent.t) =
       match a.Patch_agent.llm_session_id with
       | Some _ ->
           (* Would attempt Resume → fails *)
-          Orchestrator.Session_failed { is_fresh = false }
+          Orchestrator.Session_failed { is_fresh = false; detail = None }
       | None ->
           (* Would attempt Fresh → fails *)
-          Orchestrator.Session_failed { is_fresh = true })
+          Orchestrator.Session_failed { is_fresh = true; detail = None })
   | Patch_agent.Tried_fresh ->
       (* Would attempt Fresh → fails *)
-      Orchestrator.Session_failed { is_fresh = true }
+      Orchestrator.Session_failed { is_fresh = true; detail = None }
   | Patch_agent.Given_up -> Orchestrator.Session_give_up
 
 (** Run one full Respond(Human) pipeline iteration: fire → apply_session_result
@@ -2367,7 +2371,7 @@ let () =
         let first = session_failure_for_state a0 in
         let is_resume_failure =
           Orchestrator.equal_session_result first
-            (Orchestrator.Session_failed { is_fresh = false })
+            (Orchestrator.Session_failed { is_fresh = false; detail = None })
         in
         if not is_resume_failure then
           QCheck2.Test.fail_reportf

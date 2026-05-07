@@ -398,17 +398,24 @@ let run_with_backend ~session_mode_for_agent
               classify ~is_resume:(Option.is_some resume_session) outcome
             with
             | Process_error msg ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Process error from %s — %s" backend_name msg);
-                (Orchestrator.Session_process_error { is_fresh }, `Failed)
+                let detail =
+                  Printf.sprintf "Process error from %s — %s" backend_name msg
+                in
+                log_event runtime ~patch_id detail;
+                ( Orchestrator.Session_process_error
+                    { is_fresh; detail = Some detail },
+                  `Failed )
             | No_session_to_resume ->
                 log_empty_resume ~tail:" — no session to resume, retrying fresh";
                 (Orchestrator.Session_no_resume, `Failed)
             | Timed_out ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Session timed out (%s) — marking failed"
-                     backend_name);
-                (Orchestrator.Session_failed { is_fresh }, `Failed)
+                let detail =
+                  Printf.sprintf "Session timed out (%s) — marking failed"
+                    backend_name
+                in
+                log_event runtime ~patch_id detail;
+                ( Orchestrator.Session_failed { is_fresh; detail = Some detail },
+                  `Failed )
             | Success { stream_errors } ->
                 (match (resume_session, result) with
                 | Some _, Ok r when not r.Llm_backend.got_events ->
@@ -432,10 +439,14 @@ let run_with_backend ~session_mode_for_agent
                        (truncate (String.strip (Buffer.contents text_buf)) 200));
                 (Orchestrator.Session_ok, `Ok)
             | Session_failed { exit_code; detail } ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Session failed (%s) — exit %d: %s"
-                     backend_name exit_code detail);
-                (Orchestrator.Session_failed { is_fresh }, `Failed)
+                let formatted =
+                  Printf.sprintf "Session failed (%s) — exit %d: %s"
+                    backend_name exit_code detail
+                in
+                log_event runtime ~patch_id formatted;
+                ( Orchestrator.Session_failed
+                    { is_fresh; detail = Some formatted },
+                  `Failed )
           in
           (* Observability: if any tool_use events reported a non-"completed"
              status (OpenCode's sandbox/rejection/pending states), summarize

@@ -158,11 +158,15 @@ val add_agent :
 
 (** {2 Persistence support} *)
 
+(** [detail] carries the same formatted reason that [session_driver] writes to
+    the activity log (truncated to ~500 chars) — backend, exit code, stderr
+    excerpt. It surfaces in [events.jsonl] via [show_session_result] so
+    [debug_upload] bundles are self-diagnosing. *)
 type session_result =
   | Session_ok
-  | Session_process_error of { is_fresh : bool }
+  | Session_process_error of { is_fresh : bool; detail : string option }
   | Session_no_resume
-  | Session_failed of { is_fresh : bool }
+  | Session_failed of { is_fresh : bool; detail : string option }
   | Session_give_up
   | Session_worktree_missing
   | Session_push_failed
