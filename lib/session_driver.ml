@@ -675,66 +675,81 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
   let (Long_lived_session session) = session in
   let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
       ~complexity:_ ~on_event =
-    if session.failed then (
-      on_event
-        (Types.Stream_event.Error
-           (Option.value session.failure_reason
-              ~default:
-                "long-lived backend session already failed; waiting for \
-                 teardown"));
+    let failed_result message =
+      on_event (Types.Stream_event.Error message);
       {
         Llm_backend.exit_code = 1;
         stdout = "";
-        stderr =
-          Option.value session.failure_reason
-            ~default:"long-lived backend session already failed";
+        stderr = message;
         got_events = true;
         saw_final_result = false;
         timed_out = false;
-      })
+      }
+    in
+    if session.failed then
+      failed_result
+        (Option.value session.failure_reason
+           ~default:
+             "long-lived backend session already failed; waiting for teardown")
     else
-      let handle =
+      match
         match session.handle with
-        | Some handle -> handle
-        | None ->
-            let handle =
-              session.start ~sw
-                {
-                  project_name;
-                  worktree = cwd;
-                  patch_id;
-                  provider = session.provider;
-                  model = session.model;
-                  effort = session.effort;
-                  gameplan_prompt = session.gameplan_prompt;
-                  patch_prompt = session.patch_prompt;
-                }
+        | Some handle -> Ok handle
+        | None -> (
+            try
+              let handle =
+                session.start ~sw
+                  {
+                    project_name;
+                    worktree = cwd;
+                    patch_id;
+                    provider = session.provider;
+                    model = session.model;
+                    effort = session.effort;
+                    gameplan_prompt = session.gameplan_prompt;
+                    patch_prompt = session.patch_prompt;
+                  }
+              in
+              session.handle <- Some handle;
+              Ok handle
+            with
+            | Eio.Cancel.Cancelled _ as exn -> raise exn
+            | exn ->
+                session.failed <- true;
+                let message =
+                  Printf.sprintf "long-lived backend start raised: %s"
+                    (Stdlib.Printexc.to_string exn)
+                in
+                session.failure_reason <- Some message;
+                Error message)
+      with
+      | Error message -> failed_result message
+      | Ok handle -> (
+          try
+            let result =
+              session.prompt_backend handle ~prompt ~timeout:session.timeout
+                ~on_event
             in
-            session.handle <- Some handle;
-            handle
-      in
-      try
-        let result =
-          session.prompt_backend handle ~prompt ~timeout:session.timeout
-            ~on_event
-        in
-        if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out
-        then (
-          session.handle <- None;
-          session.pending_shutdown_handle <- Some handle;
-          session.failed <- true;
-          session.failure_reason <-
-            Some "long-lived backend prompt failed or timed out");
-        result
-      with exn ->
-        session.handle <- None;
-        session.pending_shutdown_handle <- Some handle;
-        session.failed <- true;
-        session.failure_reason <-
-          Some
-            (Printf.sprintf "long-lived backend prompt raised: %s"
-               (Stdlib.Printexc.to_string exn));
-        raise exn
+            if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out
+            then (
+              session.handle <- None;
+              session.pending_shutdown_handle <- Some handle;
+              session.failed <- true;
+              session.failure_reason <-
+                Some "long-lived backend prompt failed or timed out");
+            result
+          with
+          | Eio.Cancel.Cancelled _ as exn -> raise exn
+          | exn ->
+              session.handle <- None;
+              session.pending_shutdown_handle <- Some handle;
+              session.failed <- true;
+              let message =
+                Printf.sprintf "long-lived backend prompt raised: %s"
+                  (Stdlib.Printexc.to_string exn)
+              in
+              session.failure_reason <- Some message;
+              failed_result message)
   in
   run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected

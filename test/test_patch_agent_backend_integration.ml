@@ -117,12 +117,13 @@ let smoke_test =
                         patch_prompt;
                       }
                   in
+                  let shutdown_err = ref None in
                   let result =
                     Stdlib.Fun.protect
                       ~finally:(fun () ->
                         try shutdown handle with
                         | Eio.Cancel.Cancelled _ as exn -> raise exn
-                        | _ -> ())
+                        | exn -> shutdown_err := Some exn)
                       (fun () ->
                         prompt_backend handle
                           ~prompt:
@@ -141,7 +142,8 @@ let smoke_test =
                         is_turn_started turn_started
                     | _ -> false)
                   && has_text_delta events
-                  && List.exists events ~f:is_final_result))
+                  && List.exists events ~f:is_final_result
+                  && Option.is_none !shutdown_err))
         with
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | _ -> false)
