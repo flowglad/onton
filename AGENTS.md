@@ -60,7 +60,7 @@ under the key `uploads/<case-id>.json`.
 
 Fetching:
 
-```
+```bash
 wrangler r2 object get "onton-debug/uploads/<case-id>.json" --remote --file /tmp/case.json
 ```
 
