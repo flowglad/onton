@@ -52,6 +52,49 @@ Required property families:
 
 Worked example: `test/test_codex_cost_properties.ml` (26 properties × 100–500 cases each, covering pricing math, usage decoding totality, schema priority, cap-decision boundary, single-step decisions, and full interleavings).
 
+## Debug case investigation
+
+User-reported issues arrive with a case ID (e.g. `c1bd-9d8d-1732`). Bundles are
+uploaded by `lib/debug_upload.ml` to the Cloudflare R2 bucket `onton-debug`
+under the key `uploads/<case-id>.json`.
+
+Fetching:
+
+```
+wrangler r2 object get "onton-debug/uploads/<case-id>.json" --remote --file /tmp/case.json
+```
+
+`--remote` is required — without it wrangler reads the local simulator and the
+key won't be found.
+
+Bundle shape: top-level `{version, timestamp, project_name, onton_version,
+files}`. The `files` map carries string-encoded `config.json`, `events.jsonl`,
+`snapshot.json`, and (when present) `gameplan`. Extract with
+`jq -r '.files["events.jsonl"]' > /tmp/events.jsonl` etc.
+
+Pitfalls when reading a bundle:
+
+- `events.jsonl` is **append-only across onton restarts**. The same file can
+  carry events from multiple sessions separated by long gaps. Always check
+  the timestamp range first (`jq -r .ts | sort -u | head/tail`) and look for
+  multi-minute gaps — they mark a process restart, and config (e.g.
+  `main_branch`) may have changed across the gap. Don't conflate epochs.
+- `snapshot.json` is a point-in-time runtime view written every 5s by
+  `persistence_fiber`. It can lag the live runtime, and in some setups it
+  appears stale (empty `agents`, empty `activity_log`) while `events.jsonl`
+  clearly shows agent activity. When the snapshot disagrees with events,
+  trust the `agent_before`/`agent_after` fields embedded in each event for
+  ground-truth agent state at that timestamp.
+- `activity_log.events` (inside the snapshot) carries the human-readable
+  per-session error strings — `"Session failed (Claude) — exit 1: …"`,
+  rebase failure detail, etc. Check it before concluding that `complete`
+  events are opaque; `complete.result` only carries the structured
+  `session_result` (with `detail : string option` post-error-capture-fix).
+- `config.json` shows the persisted config. Compare its fields (especially
+  `main_branch` and `repo_root`) against the same fields in `agent_before`
+  across epochs — a mismatch usually means the user changed CLI flags
+  between runs.
+
 ## Reference
 - Reference implementation (Elixir): `../orchestrate-gameplan/`
 - Reference specification: `../orchestrate-gameplan/spec/anton.pant`
