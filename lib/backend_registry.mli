@@ -34,3 +34,14 @@ val auto_model : backend:string -> complexity:int option -> string option
     name it would resolve [--model auto] to for this complexity. Pure; no [t]
     required, no IO. Raises [Invalid_argument] on unknown backend names,
     matching {!get}. *)
+
+val resolve_model :
+  backend:string ->
+  model:string option ->
+  complexity:int option ->
+  string option
+(** Resolve the model name that should be shown or passed to lifecycle-specific
+    backend code for [(backend, model, complexity)]. [Some "auto"] is resolved
+    through {!auto_model}; backend-specific mandatory defaults, such as
+    [patch-agent]'s model argument, are also applied here so display and
+    execution agree. *)

@@ -1964,12 +1964,16 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
           ~hook_mutex ~backend ~complexity ~event_log
     | Backend_registry.Long_lived backend, decision ->
         let patch_agent_model =
-          match decision.Backend_routing.model with
-          | Some m
-            when (not (Base.String.is_empty (Base.String.strip m)))
-                 && not (Backend_routing.is_auto_model (Some m)) ->
+          match
+            Backend_registry.resolve_model
+              ~backend:decision.Backend_routing.backend
+              ~model:decision.Backend_routing.model ~complexity
+          with
+          | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
               Base.String.strip m
-          | Some _ | None -> "claude-sonnet-4-5"
+          | Some _ | None ->
+              invalid_arg
+                "patch-agent backend requires a concrete model after routing"
         in
         let session =
           match Stdlib.Hashtbl.find_opt long_lived_sessions patch_id with
@@ -3986,10 +3990,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           Backend_routing.decide ~repo_config ~default_backend:config.backend
             ~cli_model:cli_model_opt ~complexity
         in
-        Backend_routing.resolve_auto dec
-          ~auto_model:
-            (Backend_registry.auto_model ~backend:dec.Backend_routing.backend)
-          ~complexity
+        {
+          dec with
+          model =
+            Backend_registry.resolve_model ~backend:dec.Backend_routing.backend
+              ~model:dec.Backend_routing.model ~complexity;
+        }
       in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in

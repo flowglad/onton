@@ -64,10 +64,19 @@ let auto_model ~backend ~complexity =
   | "opencode" -> Opencode_backend.auto_model ~complexity
   | "pi" -> Pi_backend.auto_model ~complexity
   | "gemini" -> Gemini_backend.auto_model ~complexity
-  | "patch-agent" -> None
+  | "patch-agent" -> Some "claude-sonnet-4-5"
   | other ->
       invalid_arg
         (Printf.sprintf "Backend_registry.auto_model: unknown backend %S" other)
+
+let resolve_model ~backend ~model ~complexity =
+  let model =
+    Llm_backend.resolve_auto_model ~model ~complexity
+      ~auto_model:(auto_model ~backend)
+  in
+  match (backend, model) with
+  | "patch-agent", None -> auto_model ~backend ~complexity
+  | _ -> model
 
 let get t ~backend ~model =
   let key = (backend, model) in
