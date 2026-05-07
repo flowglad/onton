@@ -90,9 +90,12 @@ let infer_github_token () =
       with _ -> "")
 
 (** Detect the default branch of a git repository. Tries: 1.
-    [git symbolic-ref refs/remotes/origin/HEAD] (fast, local) 2.
-    [git rev-parse --verify refs/heads/main] → "main" 3.
-    [git rev-parse --verify refs/heads/master] → "master" 4. Fallback: "main" *)
+    [git symbolic-ref refs/remotes/origin/HEAD], verifying the target tracking
+    ref actually resolves (origin/HEAD is set at clone time and is NOT refreshed
+    by [git fetch] — a stale value can point at a branch that has since been
+    renamed or deleted upstream). 2. [git rev-parse --verify refs/heads/main] →
+    "main" 3. [git rev-parse --verify refs/heads/master] → "master" 4. Fallback:
+    "main" *)
 let infer_default_branch ~repo_root =
   let run_git cmd =
     try
@@ -110,19 +113,26 @@ let infer_default_branch ~repo_root =
           None
     with _ -> None
   in
+  let resolves ref_name =
+    Option.is_some
+      (run_git
+         (Printf.sprintf "rev-parse --verify %s" (Filename.quote ref_name)))
+  in
+  let head_probes () =
+    if resolves "refs/heads/main" then "main"
+    else if resolves "refs/heads/master" then "master"
+    else "main"
+  in
   match run_git "symbolic-ref refs/remotes/origin/HEAD" with
   | Some ref_path ->
       let prefix = "refs/remotes/origin/" in
-      if Base.String.is_prefix ref_path ~prefix then
-        Base.String.chop_prefix_exn ref_path ~prefix
-      else ref_path
-  | None -> (
-      match run_git "rev-parse --verify refs/heads/main" with
-      | Some _ -> "main"
-      | None -> (
-          match run_git "rev-parse --verify refs/heads/master" with
-          | Some _ -> "master"
-          | None -> "main"))
+      let candidate =
+        if Base.String.is_prefix ref_path ~prefix then
+          Base.String.chop_prefix_exn ref_path ~prefix
+        else ref_path
+      in
+      if resolves (prefix ^ candidate) then candidate else head_probes ()
+  | None -> head_probes ()
 
 let default_backend = "claude"
 
@@ -167,6 +177,52 @@ let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
   match errors with [] -> Ok () | errs -> Error errs
+
+(** Verify that the configured [main_branch] resolves as
+    [refs/remotes/origin/<branch>] in the local clone. If the local tracking ref
+    is missing, attempt one [git fetch origin] and re-check. Returns an
+    actionable error when the branch cannot be resolved — e.g., when it was
+    renamed or deleted upstream and the stored config still names the old
+    branch. Without this guard the rebase loop in [Worktree.rebase_onto] would
+    fail every poll with [merge-base --is-ancestor: Not a valid object name] and
+    silently retry forever. *)
+let validate_branch_resolves ~repo_root ~main_branch =
+  let run_git cmd =
+    try
+      match
+        read_process_capture (fun () ->
+            Unix.open_process_in
+              (Printf.sprintf "git -C %s %s 2>/dev/null"
+                 (Filename.quote repo_root) cmd))
+      with
+      | Some (Unix.WEXITED 0, _) -> true
+      | Some (Unix.WEXITED _, _)
+      | Some (Unix.WSIGNALED _, _)
+      | Some (Unix.WSTOPPED _, _)
+      | None ->
+          false
+    with _ -> false
+  in
+  let branch_str = Branch.to_string main_branch in
+  let ref_name = "refs/remotes/origin/" ^ branch_str in
+  let resolves () =
+    run_git (Printf.sprintf "rev-parse --verify %s" (Filename.quote ref_name))
+  in
+  if resolves () then Ok ()
+  else
+    let _ : bool = run_git "fetch origin --quiet" in
+    if resolves () then Ok ()
+    else
+      Error
+        (Printf.sprintf
+           "configured main branch %S does not resolve as origin/%s in %s\n\
+           \  (the branch may have been renamed or deleted upstream, or the \
+            local clone has not fetched it).\n\
+           \  Refresh the local default and retry:\n\
+           \    git -C %s remote set-head origin -a\n\
+           \    git -C %s fetch --prune\n\
+           \  Or override at launch with --main-branch <name>."
+           branch_str branch_str repo_root repo_root repo_root)
 
 (** {1 PR number registry}
 
@@ -3846,6 +3902,14 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok () ->
+      (match
+         validate_branch_resolves ~repo_root:config.repo_root
+           ~main_branch:config.main_branch
+       with
+      | Ok () -> ()
+      | Error msg ->
+          Printf.eprintf "Error: %s\n" msg;
+          Stdlib.exit 1);
       (* Preflight: ensure RLIMIT_NOFILE is high enough for [max_concurrency]
          long-lived backend subprocesses (each holding 3 pipes = 6 FDs),
          parallel git subprocesses, HTTPS connections, the activity log,
