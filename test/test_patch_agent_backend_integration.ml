@@ -119,7 +119,10 @@ let smoke_test =
                   in
                   let result =
                     Stdlib.Fun.protect
-                      ~finally:(fun () -> shutdown handle)
+                      ~finally:(fun () ->
+                        try shutdown handle with
+                        | Eio.Cancel.Cancelled _ as exn -> raise exn
+                        | _ -> ())
                       (fun () ->
                         prompt_backend handle
                           ~prompt:
@@ -139,7 +142,9 @@ let smoke_test =
                     | _ -> false)
                   && has_text_delta events
                   && List.exists events ~f:is_final_result))
-        with _ -> false)
+        with
+        | Eio.Cancel.Cancelled _ as exn -> raise exn
+        | _ -> false)
 
 let () =
   let exit_code = QCheck_base_runner.run_tests ~verbose:true [ smoke_test ] in

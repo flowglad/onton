@@ -1962,40 +1962,46 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
           ~owner:config.github_owner ~repo:config.github_repo ~on_pr_detected
           ~transcripts ~user_config:config.user_config ~worktree_mutex
           ~hook_mutex ~backend ~complexity ~event_log
-    | Backend_registry.Long_lived backend, decision ->
-        let patch_agent_model =
+    | Backend_registry.Long_lived backend, decision -> (
+        let patch_agent_model_result =
           match
             Backend_registry.resolve_model
               ~backend:decision.Backend_routing.backend
               ~model:decision.Backend_routing.model ~complexity
           with
           | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
-              Base.String.strip m
+              Ok (Base.String.strip m)
           | Some _ | None ->
-              invalid_arg
-                "patch-agent backend requires a concrete model after routing"
+              Error
+                "patch-agent backend requires a concrete non-empty model after \
+                 routing"
         in
-        let session =
-          match Stdlib.Hashtbl.find_opt long_lived_sessions patch_id with
-          | Some session ->
-              Session_driver.update_long_lived_session_prompts session
-                ~gameplan_prompt ~patch_prompt;
-              session
-          | None ->
-              let session =
-                Session_driver.create_long_lived_session ~backend
-                  ~provider:patch_agent_provider ~model:patch_agent_model
-                  ~effort:patch_agent_effort ~gameplan_prompt ~patch_prompt
-                  ~timeout:session_timeout
-              in
-              Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
-              session
-        in
-        Session_driver.run_long_lived ~sw ~kind ~runtime ~process_mgr ~clock ~fs
-          ~project_name ~patch_id ~repo_root:config.repo_root ~prompt ~agent
-          ~owner:config.github_owner ~repo:config.github_repo ~on_pr_detected
-          ~transcripts ~user_config:config.user_config ~worktree_mutex
-          ~hook_mutex ~session ~complexity ~event_log
+        match patch_agent_model_result with
+        | Error message ->
+            log_event runtime ~patch_id message;
+            (`Failed, [])
+        | Ok patch_agent_model ->
+            let session =
+              match Stdlib.Hashtbl.find_opt long_lived_sessions patch_id with
+              | Some session ->
+                  Session_driver.update_long_lived_session_prompts session
+                    ~gameplan_prompt ~patch_prompt;
+                  session
+              | None ->
+                  let session =
+                    Session_driver.create_long_lived_session ~backend
+                      ~provider:patch_agent_provider ~model:patch_agent_model
+                      ~effort:patch_agent_effort ~gameplan_prompt ~patch_prompt
+                      ~timeout:session_timeout
+                  in
+                  Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
+                  session
+            in
+            Session_driver.run_long_lived ~sw ~kind ~runtime ~process_mgr ~clock
+              ~fs ~project_name ~patch_id ~repo_root:config.repo_root ~prompt
+              ~agent ~owner:config.github_owner ~repo:config.github_repo
+              ~on_pr_detected ~transcripts ~user_config:config.user_config
+              ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log)
   in
   let shutdown_finished_long_lived_sessions ~sw () =
     let finished =
