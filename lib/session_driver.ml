@@ -643,9 +643,20 @@ let update_long_lived_session_prompts session ~gameplan_prompt ~patch_prompt =
     || not (String.equal session.patch_prompt patch_prompt)
   in
   if changed && Option.is_some session.handle then (
+    let handle = session.handle in
+    session.handle <- None;
     session.failed <- true;
     session.failure_reason <-
-      Some "long-lived backend prompt prefix changed after session start");
+      Some "long-lived backend prompt prefix changed after session start";
+    match handle with
+    | None -> ()
+    | Some handle -> (
+        try session.shutdown handle
+        with exn ->
+          session.failure_reason <-
+            Some
+              (Printf.sprintf "long-lived backend shutdown raised: %s"
+                 (Stdlib.Printexc.to_string exn))));
   session.gameplan_prompt <- gameplan_prompt;
   session.patch_prompt <- patch_prompt
 
@@ -654,11 +665,9 @@ let long_lived_session_failed = function
 
 let shutdown_long_lived_session = function
   | Long_lived_session session -> (
-      match session.handle with
-      | None -> ()
-      | Some handle ->
-          session.handle <- None;
-          session.shutdown handle)
+      let handle = session.handle in
+      session.handle <- None;
+      match handle with None -> () | Some handle -> session.shutdown handle)
 
 let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
     ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
@@ -712,16 +721,30 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
         in
         if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out
         then (
+          session.handle <- None;
           session.failed <- true;
           session.failure_reason <-
-            Some "long-lived backend prompt failed or timed out");
+            Some "long-lived backend prompt failed or timed out";
+          try session.shutdown handle
+          with exn ->
+            session.failure_reason <-
+              Some
+                (Printf.sprintf "long-lived backend shutdown raised: %s"
+                   (Stdlib.Printexc.to_string exn)));
         result
       with exn ->
+        session.handle <- None;
         session.failed <- true;
         session.failure_reason <-
           Some
             (Printf.sprintf "long-lived backend prompt raised: %s"
                (Stdlib.Printexc.to_string exn));
+        (try session.shutdown handle
+         with shutdown_exn ->
+           session.failure_reason <-
+             Some
+               (Printf.sprintf "long-lived backend shutdown raised: %s"
+                  (Stdlib.Printexc.to_string shutdown_exn)));
         raise exn
   in
   run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name

@@ -77,67 +77,69 @@ let smoke_test =
            run";
         true)
       else
-        Eio_main.run @@ fun env ->
-        let fixture_dir = "fixtures/patch_agent_integration" in
-        let gameplan_prompt =
-          read_file (Stdlib.Filename.concat fixture_dir "gameplan.md")
-        in
-        let patch_prompt =
-          read_file (Stdlib.Filename.concat fixture_dir "patch.md")
-        in
-        let tmp = mktempdir "onton-patch-agent-integration" in
-        Stdlib.Fun.protect
-          ~finally:(fun () -> rm_rf tmp)
-          (fun () ->
-            let process_mgr = Eio.Stdenv.process_mgr env in
-            let clock = Eio.Stdenv.clock env in
-            let fs = Eio.Stdenv.fs env in
-            let backend =
-              Patch_agent_backend.create ~process_mgr ~clock
-                ~binary_path:"patch-agent" ~setsid_exec:None
-            in
-            let events = ref [] in
-            Eio.Switch.run (fun sw ->
-                let (Llm_backend_long_lived.T
-                       { start; prompt = prompt_backend; shutdown; _ }) =
-                  backend
-                in
-                let worktree = Eio.Path.(fs / tmp) in
-                let handle =
-                  start ~sw
-                    {
-                      Llm_backend_long_lived.project_name = "onton";
-                      worktree;
-                      patch_id = Types.Patch_id.of_string "patch-6-smoke";
-                      provider = "anthropic";
-                      model = "claude-sonnet-4-5";
-                      effort = "medium";
-                      gameplan_prompt;
-                      patch_prompt;
-                    }
-                in
-                let result =
-                  Stdlib.Fun.protect
-                    ~finally:(fun () -> shutdown handle)
-                    (fun () ->
-                      prompt_backend handle
-                        ~prompt:
-                          "Run a smoke turn for the integration fixture. Reply \
-                           briefly and do not edit files." ~timeout:60.0
-                        ~on_event:(fun event -> events := event :: !events))
-                in
-                let events = List.rev !events in
-                result.Llm_backend.got_events
-                && result.Llm_backend.saw_final_result
-                && (not result.Llm_backend.timed_out)
-                && Option.value_map (List.hd events) ~default:false
-                     ~f:is_session_init
-                && (match events with
-                  | _session_init :: turn_started :: _ ->
-                      is_turn_started turn_started
-                  | _ -> false)
-                && has_text_delta events
-                && List.exists events ~f:is_final_result)))
+        try
+          Eio_main.run @@ fun env ->
+          let fixture_dir = "fixtures/patch_agent_integration" in
+          let gameplan_prompt =
+            read_file (Stdlib.Filename.concat fixture_dir "gameplan.md")
+          in
+          let patch_prompt =
+            read_file (Stdlib.Filename.concat fixture_dir "patch.md")
+          in
+          let tmp = mktempdir "onton-patch-agent-integration" in
+          Stdlib.Fun.protect
+            ~finally:(fun () -> rm_rf tmp)
+            (fun () ->
+              let process_mgr = Eio.Stdenv.process_mgr env in
+              let clock = Eio.Stdenv.clock env in
+              let fs = Eio.Stdenv.fs env in
+              let backend =
+                Patch_agent_backend.create ~process_mgr ~clock
+                  ~binary_path:"patch-agent" ~setsid_exec:None
+              in
+              let events = ref [] in
+              Eio.Switch.run (fun sw ->
+                  let (Llm_backend_long_lived.T
+                         { start; prompt = prompt_backend; shutdown; _ }) =
+                    backend
+                  in
+                  let worktree = Eio.Path.(fs / tmp) in
+                  let handle =
+                    start ~sw
+                      {
+                        Llm_backend_long_lived.project_name = "onton";
+                        worktree;
+                        patch_id = Types.Patch_id.of_string "patch-6-smoke";
+                        provider = "anthropic";
+                        model = "claude-sonnet-4-5";
+                        effort = "medium";
+                        gameplan_prompt;
+                        patch_prompt;
+                      }
+                  in
+                  let result =
+                    Stdlib.Fun.protect
+                      ~finally:(fun () -> shutdown handle)
+                      (fun () ->
+                        prompt_backend handle
+                          ~prompt:
+                            "Run a smoke turn for the integration fixture. \
+                             Reply briefly and do not edit files." ~timeout:60.0
+                          ~on_event:(fun event -> events := event :: !events))
+                  in
+                  let events = List.rev !events in
+                  result.Llm_backend.got_events
+                  && result.Llm_backend.saw_final_result
+                  && (not result.Llm_backend.timed_out)
+                  && Option.value_map (List.hd events) ~default:false
+                       ~f:is_session_init
+                  && (match events with
+                    | _session_init :: turn_started :: _ ->
+                        is_turn_started turn_started
+                    | _ -> false)
+                  && has_text_delta events
+                  && List.exists events ~f:is_final_result))
+        with _ -> false)
 
 let () =
   let exit_code = QCheck_base_runner.run_tests ~verbose:true [ smoke_test ] in

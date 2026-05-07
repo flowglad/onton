@@ -2005,10 +2005,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                   Orchestrator.find_agent snap.Runtime.orchestrator patch_id
                 with
                 | None -> (patch_id, session) :: acc
-                | Some agent
-                  when agent.Patch_agent.merged
-                       || (not agent.Patch_agent.busy)
-                          && Patch_agent.needs_intervention agent ->
+                | Some agent when agent.Patch_agent.merged ->
                     (patch_id, session) :: acc
                 | Some _ -> acc)
             long_lived_sessions [])
@@ -3526,7 +3523,6 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
         Eio.Fiber.fork_daemon ~sw (fun () ->
             f ();
             `Stop_daemon));
-    shutdown_finished_long_lived_sessions ~sw ();
     Eio.Time.sleep clock 1.0;
     loop sw
   in
