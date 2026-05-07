@@ -739,7 +739,13 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
                 Some "long-lived backend prompt failed or timed out");
             result
           with
-          | Eio.Cancel.Cancelled _ as exn -> raise exn
+          | Eio.Cancel.Cancelled _ as exn ->
+              session.handle <- None;
+              session.failed <- true;
+              session.failure_reason <-
+                Some "long-lived backend prompt cancelled";
+              (try session.shutdown handle with _ -> ());
+              raise exn
           | exn ->
               session.handle <- None;
               session.pending_shutdown_handle <- Some handle;

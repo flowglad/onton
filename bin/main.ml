@@ -2015,7 +2015,8 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                   Orchestrator.find_agent snap.Runtime.orchestrator patch_id
                 with
                 | None -> (patch_id, session) :: acc
-                | Some agent when agent.Patch_agent.merged ->
+                | Some agent
+                  when agent.Patch_agent.merged && not agent.Patch_agent.busy ->
                     (patch_id, session) :: acc
                 | Some _ -> acc)
             long_lived_sessions [])

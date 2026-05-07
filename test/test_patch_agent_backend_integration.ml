@@ -98,6 +98,7 @@ let smoke_test =
                   ~binary_path:"patch-agent" ~setsid_exec:None
               in
               let events = ref [] in
+              let passed = ref false in
               Eio.Switch.run (fun sw ->
                   let (Llm_backend_long_lived.T
                          { start; prompt = prompt_backend; shutdown; _ }) =
@@ -132,18 +133,20 @@ let smoke_test =
                           ~on_event:(fun event -> events := event :: !events))
                   in
                   let events = List.rev !events in
-                  result.Llm_backend.got_events
-                  && result.Llm_backend.saw_final_result
-                  && (not result.Llm_backend.timed_out)
-                  && Option.value_map (List.hd events) ~default:false
-                       ~f:is_session_init
-                  && (match events with
-                    | _session_init :: turn_started :: _ ->
-                        is_turn_started turn_started
-                    | _ -> false)
-                  && has_text_delta events
-                  && List.exists events ~f:is_final_result
-                  && Option.is_none !shutdown_err))
+                  passed :=
+                    result.Llm_backend.got_events
+                    && result.Llm_backend.saw_final_result
+                    && (not result.Llm_backend.timed_out)
+                    && Option.value_map (List.hd events) ~default:false
+                         ~f:is_session_init
+                    && (match events with
+                      | _session_init :: turn_started :: _ ->
+                          is_turn_started turn_started
+                      | _ -> false)
+                    && has_text_delta events
+                    && List.exists events ~f:is_final_result
+                    && Option.is_none !shutdown_err);
+              !passed)
         with
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | _ -> false)
