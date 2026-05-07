@@ -23,6 +23,14 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_patch_agent_backend_integration)
+ (modules test_patch_agent_backend_integration)
+ (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner
+   eio eio_main eio.unix unix)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_codex_cost_properties)
  (modules test_codex_cost_properties)
  (libraries onton_core qcheck-core qcheck-core.runner yojson)
