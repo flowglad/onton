@@ -4180,7 +4180,9 @@ let backend_arg =
   Arg.(
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
-        ~doc:"LLM backend to use: claude, codex, opencode, pi, or gemini.")
+        ~doc:
+          "LLM backend to use: claude, codex, opencode, pi, gemini, or \
+           patch-agent.")
 
 let model_arg =
   let open Cmdliner in
