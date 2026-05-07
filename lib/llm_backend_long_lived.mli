@@ -31,6 +31,7 @@ type start_config = {
 type t =
   | T : {
       name : string;
+      timeout : float;
       start : sw:Eio.Switch.t -> start_config -> 'handle;
       prompt :
         'handle ->

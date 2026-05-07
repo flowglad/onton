@@ -39,6 +39,52 @@ val run :
     checks before invoking this function — the polymorphic-variant union widens
     at the call site. *)
 
+type long_lived_session
+(** Mutable per-patch long-lived backend session state. The backend's
+    existential handle type remains tied to the backend that created it. *)
+
+val create_long_lived_session :
+  backend:Llm_backend_long_lived.t ->
+  provider:string ->
+  model:string ->
+  effort:string ->
+  gameplan_prompt:string ->
+  patch_prompt:string ->
+  long_lived_session
+
+val update_long_lived_session_prompts :
+  long_lived_session -> gameplan_prompt:string -> patch_prompt:string -> unit
+
+val long_lived_session_failed : long_lived_session -> bool
+val shutdown_long_lived_session : long_lived_session -> unit
+
+val run_long_lived :
+  sw:Eio.Switch.t ->
+  kind:Types.Operation_kind.t option ->
+  runtime:Runtime.t ->
+  process_mgr:_ Eio.Process.mgr ->
+  clock:_ Eio.Time.clock ->
+  fs:Eio.Fs.dir_ty Eio.Path.t ->
+  project_name:string ->
+  patch_id:Types.Patch_id.t ->
+  repo_root:string ->
+  prompt:string ->
+  agent:Patch_agent.t ->
+  owner:string ->
+  repo:string ->
+  on_pr_detected:(Types.Pr_number.t -> unit) ->
+  transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
+  user_config:User_config.t ->
+  worktree_mutex:Eio.Mutex.t ->
+  hook_mutex:Eio.Mutex.t ->
+  session:long_lived_session ->
+  complexity:int option ->
+  event_log:Event_log.t ->
+  [ `Ok | `Failed | `Retry_push ] * (string * string) list
+(** Long-lived backend counterpart to {!run}. It shares the same supervisor
+    bookkeeping and delivers the rendered turn over [backend.prompt] instead of
+    spawning a fresh backend process. *)
+
 val session_mode : Patch_agent.t -> [ `Resume of string | `Fresh | `Give_up ]
 (** Inspect the agent's session-fallback state to decide whether the next
     invocation should resume an existing session, start fresh, or give up. *)

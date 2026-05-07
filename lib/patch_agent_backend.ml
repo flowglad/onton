@@ -2,7 +2,7 @@ open Base
 module Long_lived = Llm_backend_long_lived
 
 type handle = {
-  child : [ `Process | `Platform of [ `Generic ] ] Eio.Resource.t;
+  child : [ `Process | `Platform of [ `Generic | `Unix ] ] Eio.Resource.t;
   stdin_w : [ `Close | `Flow | `W ] Eio.Resource.t;
   stdout_r : [ `Close | `Flow | `R ] Eio.Resource.t;
   stderr_r : [ `Close | `Flow | `R ] Eio.Resource.t;
@@ -139,7 +139,8 @@ let write_prompt_files worktree ~gameplan_prompt ~patch_prompt =
   Eio.Path.save ~create:(`Or_truncate 0o644) patch_path patch_prompt;
   (Eio.Path.native_exn gameplan_path, Eio.Path.native_exn patch_path)
 
-let start ~process_mgr ~binary_path ~setsid_exec ~sw
+let start ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~binary_path
+    ~setsid_exec ~sw
     ({ worktree; provider; model; effort; gameplan_prompt; patch_prompt; _ } :
       Long_lived.start_config) =
   let worktree_path = native_absolute_exn worktree ~what:"worktree" in
@@ -319,10 +320,13 @@ let shutdown ~clock long_lived_handle =
         match await_child_with_timeout ~clock handle shutdown_kill_seconds with
         | Ok _ | Error `Timeout -> close_flow handle.stdout_r))
 
-let create ~process_mgr ~clock ~binary_path ~setsid_exec : Long_lived.t =
+let create ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t)
+    ~(clock : _ Eio.Time.clock) ~timeout ~binary_path ~setsid_exec :
+    Long_lived.t =
   T
     {
       name = "Patch-agent";
+      timeout;
       start =
         (fun ~sw config ->
           start ~process_mgr ~binary_path ~setsid_exec ~sw config);

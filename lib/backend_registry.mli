@@ -1,4 +1,4 @@
-(** Lazy cache of [Llm_backend.t] instances keyed by [(backend_name, model)].
+(** Lazy cache of backend instances keyed by [(backend_name, model)].
 
     A run can route different patches to different backends (see
     [Repo_config.modelRouting]), so we may need several distinct [Llm_backend.t]
@@ -10,8 +10,12 @@
 
 type t
 
+type kind =
+  | Ephemeral of Llm_backend.t
+  | Long_lived of Llm_backend_long_lived.t
+
 val create :
-  process_mgr:_ Eio.Process.mgr ->
+  process_mgr:Eio_unix.Process.mgr_ty Eio.Resource.t ->
   clock:_ Eio.Time.clock ->
   timeout:float ->
   setsid_exec:string option ->
@@ -20,13 +24,24 @@ val create :
     backends. The Eio capabilities and per-session [timeout] are baked into the
     closure so callers don't re-thread them on every [get]. *)
 
-val get : t -> backend:string -> model:string option -> Llm_backend.t
-(** Return the cached [Llm_backend.t] for [(backend, model)], constructing it on
-    first request. Raises [Invalid_argument] for unrecognised backend names —
-    callers are expected to validate against the known list before asking. *)
+val get : t -> backend:string -> model:string option -> kind
+(** Return the cached backend for [(backend, model)], constructing it on first
+    request. Raises [Invalid_argument] for unrecognised backend names — callers
+    are expected to validate against the known list before asking. *)
 
 val auto_model : backend:string -> complexity:int option -> string option
 (** Look up the named backend's hardcoded complexity → model ladder — the model
     name it would resolve [--model auto] to for this complexity. Pure; no [t]
     required, no IO. Raises [Invalid_argument] on unknown backend names,
     matching {!get}. *)
+
+val resolve_model :
+  backend:string ->
+  model:string option ->
+  complexity:int option ->
+  string option
+(** Resolve the model name that should be shown or passed to lifecycle-specific
+    backend code for [(backend, model, complexity)]. [Some "auto"] is resolved
+    through {!auto_model}; backend-specific mandatory defaults, such as
+    [patch-agent]'s model argument, are also applied here so display and
+    execution agree. *)

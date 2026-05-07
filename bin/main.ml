@@ -125,7 +125,9 @@ let infer_default_branch ~repo_root =
           | None -> "main"))
 
 let default_backend = "claude"
-let known_backends = [ "claude"; "codex"; "opencode"; "pi"; "gemini" ]
+
+let known_backends =
+  [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
 
 (** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
     canonical [(backend, model)] tuple used internally. Empty [backend] falls
@@ -1935,6 +1937,100 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
      of short-lived children. Running 10 hooks in parallel is how issue
      #209 blew through the system FD table. *)
   let hook_mutex = Eio.Mutex.create () in
+  let long_lived_sessions :
+      (Patch_id.t, Session_driver.long_lived_session) Stdlib.Hashtbl.t =
+    Stdlib.Hashtbl.create 16
+  in
+  let patch_agent_provider =
+    match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
+    | Some s when not (Base.String.is_empty (Base.String.strip s)) ->
+        Base.String.strip s
+    | Some _ | None -> "anthropic"
+  in
+  let patch_agent_effort =
+    match Stdlib.Sys.getenv_opt "PATCH_AGENT_EFFORT" with
+    | Some s when not (Base.String.is_empty (Base.String.strip s)) ->
+        Base.String.strip s
+    | Some _ | None -> "medium"
+  in
+  let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~patch_id ~prompt
+      ~agent ~on_pr_detected ~complexity =
+    match pick_backend ~complexity with
+    | Backend_registry.Ephemeral backend, _decision ->
+        Session_driver.run ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
+          ~patch_id ~repo_root:config.repo_root ~prompt ~agent
+          ~owner:config.github_owner ~repo:config.github_repo ~on_pr_detected
+          ~transcripts ~user_config:config.user_config ~worktree_mutex
+          ~hook_mutex ~backend ~complexity ~event_log
+    | Backend_registry.Long_lived backend, decision -> (
+        let patch_agent_model_result =
+          match
+            Backend_registry.resolve_model
+              ~backend:decision.Backend_routing.backend
+              ~model:decision.Backend_routing.model ~complexity
+          with
+          | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
+              Ok (Base.String.strip m)
+          | Some _ | None ->
+              Error
+                "patch-agent backend requires a concrete non-empty model after \
+                 routing"
+        in
+        match patch_agent_model_result with
+        | Error message ->
+            log_event runtime ~patch_id message;
+            (`Failed, [])
+        | Ok patch_agent_model ->
+            let session =
+              match Stdlib.Hashtbl.find_opt long_lived_sessions patch_id with
+              | Some session ->
+                  Session_driver.update_long_lived_session_prompts session
+                    ~gameplan_prompt ~patch_prompt;
+                  session
+              | None ->
+                  let session =
+                    Session_driver.create_long_lived_session ~backend
+                      ~provider:patch_agent_provider ~model:patch_agent_model
+                      ~effort:patch_agent_effort ~gameplan_prompt ~patch_prompt
+                  in
+                  Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
+                  session
+            in
+            Session_driver.run_long_lived ~sw ~kind ~runtime ~process_mgr ~clock
+              ~fs ~project_name ~patch_id ~repo_root:config.repo_root ~prompt
+              ~agent ~owner:config.github_owner ~repo:config.github_repo
+              ~on_pr_detected ~transcripts ~user_config:config.user_config
+              ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log)
+  in
+  let shutdown_finished_long_lived_sessions ~sw () =
+    let finished =
+      Runtime.read runtime (fun snap ->
+          Stdlib.Hashtbl.fold
+            (fun patch_id session acc ->
+              if Session_driver.long_lived_session_failed session then
+                (patch_id, session) :: acc
+              else
+                match
+                  Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+                with
+                | None -> (patch_id, session) :: acc
+                | Some agent
+                  when agent.Patch_agent.merged && not agent.Patch_agent.busy ->
+                    (patch_id, session) :: acc
+                | Some _ -> acc)
+            long_lived_sessions [])
+    in
+    Base.List.iter finished ~f:(fun (patch_id, session) ->
+        Stdlib.Hashtbl.remove long_lived_sessions patch_id;
+        Eio.Fiber.fork_daemon ~sw (fun () ->
+            (try Session_driver.shutdown_long_lived_session session with
+            | Eio.Cancel.Cancelled _ -> ()
+            | exn ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "long-lived backend shutdown error — %s"
+                     (Printexc.to_string exn)));
+            `Stop_daemon))
+  in
   let with_busy_guard ~patch_id f =
     let cancelled = ref false in
     let exception_raised = ref false in
@@ -1995,6 +2091,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
            which subsumes its effect. *))
   in
   let rec loop sw =
+    shutdown_finished_long_lived_sessions ~sw ();
     let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
     let lifecycle_effects, messages, pre_fire_agents =
       Runtime.update_orchestrator_returning runtime (fun orch ->
@@ -2149,18 +2246,23 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       let complexity =
                                         patch_complexity ~gameplan ~patch_id
                                       in
+                                      let gameplan_prompt =
+                                        Prompt.render_gameplan_layer
+                                          ~project_name gameplan
+                                      in
+                                      let patch_prompt =
+                                        Prompt.render_patch_layer ~project_name
+                                          patch
+                                          ?pr_number:agent.Patch_agent.pr_number
+                                          ~base_branch:
+                                            (Branch.to_string base_branch)
+                                          ()
+                                      in
                                       let r, _tool_failures =
-                                        Session_driver.run ~kind:None ~runtime
-                                          ~process_mgr ~clock ~fs ~project_name
-                                          ~patch_id ~repo_root:config.repo_root
-                                          ~prompt ~agent
-                                          ~owner:config.github_owner
-                                          ~repo:config.github_repo
-                                          ~on_pr_detected ~transcripts
-                                          ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex
-                                          ~backend:(pick_backend ~complexity)
-                                          ~complexity ~event_log
+                                        run_llm_session ~sw ~gameplan_prompt
+                                          ~patch_prompt ~kind:None ~patch_id
+                                          ~prompt ~agent ~on_pr_detected
+                                          ~complexity
                                       in
                                       (r
                                         :> [ `Failed
@@ -2661,20 +2763,25 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       let complexity =
                                         patch_complexity ~gameplan ~patch_id
                                       in
+                                      let gameplan_prompt =
+                                        Prompt.render_gameplan_layer
+                                          ~project_name gameplan
+                                      in
+                                      let patch_prompt =
+                                        match patch with
+                                        | Some p ->
+                                            Prompt.render_patch_layer
+                                              ~project_name p ?pr_number
+                                              ~base_branch:base ()
+                                        | None -> ""
+                                      in
                                       let result, _tool_failures =
-                                        Session_driver.run
+                                        run_llm_session ~sw ~gameplan_prompt
+                                          ~patch_prompt
                                           ~kind:
                                             (Some Operation_kind.Merge_conflict)
-                                          ~runtime ~process_mgr ~clock ~fs
-                                          ~project_name ~patch_id
-                                          ~repo_root:config.repo_root ~prompt
-                                          ~agent ~owner:config.github_owner
-                                          ~repo:config.github_repo
-                                          ~on_pr_detected ~transcripts
-                                          ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex
-                                          ~backend:(pick_backend ~complexity)
-                                          ~complexity ~event_log
+                                          ~patch_id ~prompt ~agent
+                                          ~on_pr_detected ~complexity
                                       in
                                       (match result with
                                       | `Ok
@@ -3105,18 +3212,24 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                     let complexity =
                                       patch_complexity ~gameplan ~patch_id
                                     in
+                                    let gameplan_prompt =
+                                      Prompt.render_gameplan_layer ~project_name
+                                        gameplan
+                                    in
+                                    let patch_prompt =
+                                      match patch_for_layer with
+                                      | Some p ->
+                                          Prompt.render_patch_layer
+                                            ~project_name p ?pr_number
+                                            ~base_branch:base_branch_for_layer
+                                            ()
+                                      | None -> ""
+                                    in
                                     let result, tool_failures =
-                                      Session_driver.run ~kind:(Some kind)
-                                        ~runtime ~process_mgr ~clock ~fs
-                                        ~project_name ~patch_id
-                                        ~repo_root:config.repo_root ~prompt
-                                        ~agent ~owner:config.github_owner
-                                        ~repo:config.github_repo ~on_pr_detected
-                                        ~transcripts
-                                        ~user_config:config.user_config
-                                        ~worktree_mutex ~hook_mutex
-                                        ~backend:(pick_backend ~complexity)
-                                        ~complexity ~event_log
+                                      run_llm_session ~sw ~gameplan_prompt
+                                        ~patch_prompt ~kind:(Some kind)
+                                        ~patch_id ~prompt ~agent ~on_pr_detected
+                                        ~complexity
                                     in
                                     let result =
                                       (result
@@ -3863,13 +3976,18 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
          registry. Calling with [~complexity:None] yields the run's default
          backend (used for ad-hoc sessions and for the TUI display name). *)
       let pick_backend ~complexity =
-        let { Backend_routing.backend; model } =
+        let ({ Backend_routing.backend; model } as decision) =
           Backend_routing.decide ~repo_config ~default_backend:config.backend
             ~cli_model:cli_model_opt ~complexity
         in
-        Backend_registry.get registry ~backend ~model
+        (Backend_registry.get registry ~backend ~model, decision)
       in
       let default_backend = pick_backend ~complexity:None in
+      let backend_name = function
+        | Backend_registry.Ephemeral backend -> backend.Llm_backend.name
+        | Backend_registry.Long_lived (Llm_backend_long_lived.T { name; _ }) ->
+            name
+      in
       (* Display-side counterpart to [pick_backend]: returns the routing
          decision with the [auto] sentinel resolved to the concrete model
          name, so the TUI shows what will actually run. *)
@@ -3878,10 +3996,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           Backend_routing.decide ~repo_config ~default_backend:config.backend
             ~cli_model:cli_model_opt ~complexity
         in
-        Backend_routing.resolve_auto dec
-          ~auto_model:
-            (Backend_registry.auto_model ~backend:dec.Backend_routing.backend)
-          ~complexity
+        {
+          dec with
+          model =
+            Backend_registry.resolve_model ~backend:dec.Backend_routing.backend
+              ~model:dec.Backend_routing.model ~complexity;
+        }
       in
       let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
@@ -4019,7 +4139,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~show_help ~status_msg ~transcripts ~sorted_patch_ids
                      ~input_mode ~prompt_line ~patches_start_row
                      ~patches_scroll_offset ~patches_visible_count
-                     ~backend_name:default_backend.Llm_backend.name
+                     ~backend_name:(backend_name (fst default_backend))
                      ~resolve_routing)
                 :: (fun () ->
                   input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
@@ -4080,7 +4200,9 @@ let backend_arg =
   Arg.(
     value & opt string ""
     & info [ "backend" ] ~docv:"BACKEND"
-        ~doc:"LLM backend to use: claude, codex, opencode, pi, or gemini.")
+        ~doc:
+          "LLM backend to use: claude, codex, opencode, pi, gemini, or \
+           patch-agent.")
 
 let model_arg =
   let open Cmdliner in
