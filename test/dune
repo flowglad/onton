@@ -27,6 +27,9 @@
  (modules test_patch_agent_backend_integration)
  (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner
    eio eio_main eio.unix unix)
+ (deps
+  fixtures/patch_agent_integration/gameplan.md
+  fixtures/patch_agent_integration/patch.md)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 

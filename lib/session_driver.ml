@@ -109,10 +109,11 @@ let%test_module "extract_pr_number_from_text" =
         (pr 12)
   end)
 
-let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
-    ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
-    ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend ~complexity ~event_log =
+let run_with_backend ~(kind : Types.Operation_kind.t option) ~runtime
+    ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
+    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
+    ~user_config ~worktree_mutex ~hook_mutex ~backend_name ~run_backend
+    ~complexity ~event_log =
   let log_event = Runtime_logging.log_event in
   let log_stream_entry = Runtime_logging.log_stream_entry in
   match session_mode agent with
@@ -153,8 +154,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             Buffer.add_string buf
               (Printf.sprintf
                  "\n---\n**[%02d:%02d:%02d] Delivered to %s%s:**\n\n"
-                 tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
-                 backend.Llm_backend.name
+                 tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec backend_name
                  (match resume_session with
                  | Some id ->
                      Printf.sprintf " (--resume %s)"
@@ -162,8 +162,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
                  | None -> ""));
             Buffer.add_string buf prompt;
             Buffer.add_string buf
-              (Printf.sprintf "\n\n---\n**%s response:**\n\n"
-                 backend.Llm_backend.name);
+              (Printf.sprintf "\n\n---\n**%s response:**\n\n" backend_name);
             Stdlib.Hashtbl.replace transcripts patch_id (Buffer.contents buf);
             buf
           in
@@ -355,8 +354,8 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
           let result =
             try
               Ok
-                (backend.Llm_backend.run_streaming ~project_name ~cwd ~patch_id
-                   ~prompt ~resume_session ~complexity ~on_event)
+                (run_backend ~project_name ~cwd ~patch_id ~prompt
+                   ~resume_session ~complexity ~on_event)
             with exn -> Error (Stdlib.Printexc.to_string exn)
           in
           let open Run_classification in
@@ -390,7 +389,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
                   (Printf.sprintf
                      "Resume exited %d (%s) with no parsed stream events%s — \
                       %s %s"
-                     r.Llm_backend.exit_code backend.Llm_backend.name tail
+                     r.Llm_backend.exit_code backend_name tail
                      (render "stdout" r.Llm_backend.stdout)
                      (render "stderr" r.Llm_backend.stderr))
           in
@@ -400,8 +399,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             with
             | Process_error msg ->
                 log_event runtime ~patch_id
-                  (Printf.sprintf "Process error from %s — %s"
-                     backend.Llm_backend.name msg);
+                  (Printf.sprintf "Process error from %s — %s" backend_name msg);
                 (Orchestrator.Session_process_error { is_fresh }, `Failed)
             | No_session_to_resume ->
                 log_empty_resume ~tail:" — no session to resume, retrying fresh";
@@ -409,7 +407,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
             | Timed_out ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Session timed out (%s) — marking failed"
-                     backend.Llm_backend.name);
+                     backend_name);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
             | Success { stream_errors } ->
                 (match (resume_session, result) with
@@ -420,7 +418,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
                   log_event runtime ~patch_id
                     (Printf.sprintf
                        "Session exited 0 (%s) with stream errors — %s"
-                       backend.Llm_backend.name
+                       backend_name
                        (truncate stream_errors 500));
                 let text_len = Buffer.length text_buf in
                 let tools = !tool_count in
@@ -429,14 +427,14 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
                     (Printf.sprintf
                        "Session exited 0 (%s) with no tool use and %s of text \
                         — %s"
-                       backend.Llm_backend.name
+                       backend_name
                        (pluralize text_len "char")
                        (truncate (String.strip (Buffer.contents text_buf)) 200));
                 (Orchestrator.Session_ok, `Ok)
             | Session_failed { exit_code; detail } ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Session failed (%s) — exit %d: %s"
-                     backend.Llm_backend.name exit_code detail);
+                     backend_name exit_code detail);
                 (Orchestrator.Session_failed { is_fresh }, `Failed)
           in
           (* Observability: if any tool_use events reported a non-"completed"
@@ -454,7 +452,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
               log_event runtime ~patch_id
                 (Printf.sprintf
                    "Session ended with %d non-completed tool call(s) (%s): %s"
-                   (List.length failures) backend.Llm_backend.name rendered));
+                   (List.length failures) backend_name rendered));
           (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
              is idempotent (Push_up_to_date when nothing new), and lease-safe
@@ -581,3 +579,106 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
           Event_log.log_complete event_log ~patch_id
             ~result:final_session_result ~agent_before ~agent_after;
           (final_user_result, List.rev !tool_failures))
+
+let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
+    ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
+    ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
+    ~backend ~complexity ~event_log =
+  run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
+    ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
+    ~transcripts ~user_config ~worktree_mutex ~hook_mutex
+    ~backend_name:backend.Llm_backend.name
+    ~run_backend:backend.Llm_backend.run_streaming ~complexity ~event_log
+
+type long_lived_session =
+  | Long_lived_session : {
+      name : string;
+      start : sw:Eio.Switch.t -> Llm_backend_long_lived.start_config -> 'handle;
+      prompt_backend :
+        'handle ->
+        prompt:string ->
+        timeout:float ->
+        on_event:(Types.Stream_event.t -> unit) ->
+        Llm_backend_long_lived.result;
+      shutdown : 'handle -> unit;
+      mutable handle : 'handle option;
+      provider : string;
+      model : string;
+      effort : string;
+      gameplan_prompt : string;
+      patch_prompt : string;
+      timeout : float;
+    }
+      -> long_lived_session
+
+let create_long_lived_session ~(backend : Llm_backend_long_lived.t) ~provider
+    ~model ~effort ~gameplan_prompt ~patch_prompt ~timeout =
+  let (Llm_backend_long_lived.T
+         { name; start; prompt = prompt_backend; shutdown; _ }) =
+    backend
+  in
+  Long_lived_session
+    {
+      name;
+      start;
+      prompt_backend;
+      shutdown;
+      handle = None;
+      provider;
+      model;
+      effort;
+      gameplan_prompt;
+      patch_prompt;
+      timeout;
+    }
+
+let shutdown_long_lived_session = function
+  | Long_lived_session session -> (
+      match session.handle with
+      | None -> ()
+      | Some handle ->
+          session.handle <- None;
+          session.shutdown handle)
+
+let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
+    ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
+    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
+    ~user_config ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log =
+  let (Long_lived_session session) = session in
+  let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
+      ~complexity:_ ~on_event =
+    let handle =
+      match session.handle with
+      | Some handle -> handle
+      | None ->
+          let handle =
+            session.start ~sw
+              {
+                project_name;
+                worktree = cwd;
+                patch_id;
+                provider = session.provider;
+                model = session.model;
+                effort = session.effort;
+                gameplan_prompt = session.gameplan_prompt;
+                patch_prompt = session.patch_prompt;
+              }
+          in
+          session.handle <- Some handle;
+          handle
+    in
+    try
+      let result =
+        session.prompt_backend handle ~prompt ~timeout:session.timeout ~on_event
+      in
+      if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out then
+        session.handle <- None;
+      result
+    with exn ->
+      session.handle <- None;
+      raise exn
+  in
+  run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
+    ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
+    ~transcripts ~user_config ~worktree_mutex ~hook_mutex
+    ~backend_name:session.name ~run_backend ~complexity ~event_log
