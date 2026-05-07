@@ -132,8 +132,10 @@ let smoke_test =
                 && (not result.Llm_backend.timed_out)
                 && Option.value_map (List.hd events) ~default:false
                      ~f:is_session_init
-                && Option.value_map (List.nth events 1) ~default:false
-                     ~f:is_turn_started
+                && (match events with
+                  | _session_init :: turn_started :: _ ->
+                      is_turn_started turn_started
+                  | _ -> false)
                 && has_text_delta events
                 && List.exists events ~f:is_final_result)))
 

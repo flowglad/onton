@@ -53,6 +53,10 @@ val create_long_lived_session :
   timeout:float ->
   long_lived_session
 
+val update_long_lived_session_prompts :
+  long_lived_session -> gameplan_prompt:string -> patch_prompt:string -> unit
+
+val long_lived_session_failed : long_lived_session -> bool
 val shutdown_long_lived_session : long_lived_session -> unit
 
 val run_long_lived :

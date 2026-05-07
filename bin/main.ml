@@ -1973,7 +1973,10 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
         in
         let session =
           match Stdlib.Hashtbl.find_opt long_lived_sessions patch_id with
-          | Some session -> session
+          | Some session ->
+              Session_driver.update_long_lived_session_prompts session
+                ~gameplan_prompt ~patch_prompt;
+              session
           | None ->
               let session =
                 Session_driver.create_long_lived_session ~backend
@@ -1990,26 +1993,36 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
           ~transcripts ~user_config:config.user_config ~worktree_mutex
           ~hook_mutex ~session ~complexity ~event_log
   in
-  let shutdown_finished_long_lived_sessions () =
+  let shutdown_finished_long_lived_sessions ~sw () =
     let finished =
       Runtime.read runtime (fun snap ->
           Stdlib.Hashtbl.fold
             (fun patch_id session acc ->
-              match
-                Orchestrator.find_agent snap.Runtime.orchestrator patch_id
-              with
-              | None -> (patch_id, session) :: acc
-              | Some agent
-                when agent.Patch_agent.merged
-                     || (not agent.Patch_agent.busy)
-                        && Patch_agent.needs_intervention agent ->
-                  (patch_id, session) :: acc
-              | Some _ -> acc)
+              if Session_driver.long_lived_session_failed session then
+                (patch_id, session) :: acc
+              else
+                match
+                  Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+                with
+                | None -> (patch_id, session) :: acc
+                | Some agent
+                  when agent.Patch_agent.merged
+                       || (not agent.Patch_agent.busy)
+                          && Patch_agent.needs_intervention agent ->
+                    (patch_id, session) :: acc
+                | Some _ -> acc)
             long_lived_sessions [])
     in
     Base.List.iter finished ~f:(fun (patch_id, session) ->
-        Session_driver.shutdown_long_lived_session session;
-        Stdlib.Hashtbl.remove long_lived_sessions patch_id)
+        Stdlib.Hashtbl.remove long_lived_sessions patch_id;
+        Eio.Fiber.fork_daemon ~sw (fun () ->
+            (try Session_driver.shutdown_long_lived_session session with
+            | Eio.Cancel.Cancelled _ -> ()
+            | exn ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "long-lived backend shutdown error — %s"
+                     (Printexc.to_string exn)));
+            `Stop_daemon))
   in
   let with_busy_guard ~patch_id f =
     let cancelled = ref false in
@@ -2071,7 +2084,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
            which subsumes its effect. *))
   in
   let rec loop sw =
-    shutdown_finished_long_lived_sessions ();
+    shutdown_finished_long_lived_sessions ~sw ();
     let gameplan = Runtime.read runtime (fun snap -> snap.Runtime.gameplan) in
     let lifecycle_effects, messages, pre_fire_agents =
       Runtime.update_orchestrator_returning runtime (fun orch ->
@@ -3513,7 +3526,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
         Eio.Fiber.fork_daemon ~sw (fun () ->
             f ();
             `Stop_daemon));
-    shutdown_finished_long_lived_sessions ();
+    shutdown_finished_long_lived_sessions ~sw ();
     Eio.Time.sleep clock 1.0;
     loop sw
   in

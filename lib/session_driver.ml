@@ -109,14 +109,14 @@ let%test_module "extract_pr_number_from_text" =
         (pr 12)
   end)
 
-let run_with_backend ~(kind : Types.Operation_kind.t option) ~runtime
-    ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
-    ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
-    ~user_config ~worktree_mutex ~hook_mutex ~backend_name ~run_backend
-    ~complexity ~event_log =
+let run_with_backend ~session_mode_for_agent
+    ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
+    ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
+    ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
+    ~backend_name ~run_backend ~complexity ~event_log =
   let log_event = Runtime_logging.log_event in
   let log_stream_entry = Runtime_logging.log_stream_entry in
-  match session_mode agent with
+  match session_mode_for_agent agent with
   | `Give_up ->
       log_event runtime ~patch_id
         "Session fallback exhausted — continue and fresh both failed, needs \
@@ -587,7 +587,7 @@ let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
   run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
     ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend_name:backend.Llm_backend.name
+    ~session_mode_for_agent:session_mode ~backend_name:backend.Llm_backend.name
     ~run_backend:backend.Llm_backend.run_streaming ~complexity ~event_log
 
 type long_lived_session =
@@ -602,11 +602,13 @@ type long_lived_session =
         Llm_backend_long_lived.result;
       shutdown : 'handle -> unit;
       mutable handle : 'handle option;
+      mutable failed : bool;
+      mutable failure_reason : string option;
       provider : string;
       model : string;
       effort : string;
-      gameplan_prompt : string;
-      patch_prompt : string;
+      mutable gameplan_prompt : string;
+      mutable patch_prompt : string;
       timeout : float;
     }
       -> long_lived_session
@@ -624,6 +626,8 @@ let create_long_lived_session ~(backend : Llm_backend_long_lived.t) ~provider
       prompt_backend;
       shutdown;
       handle = None;
+      failed = false;
+      failure_reason = None;
       provider;
       model;
       effort;
@@ -631,6 +635,22 @@ let create_long_lived_session ~(backend : Llm_backend_long_lived.t) ~provider
       patch_prompt;
       timeout;
     }
+
+let update_long_lived_session_prompts session ~gameplan_prompt ~patch_prompt =
+  let (Long_lived_session session) = session in
+  let changed =
+    (not (String.equal session.gameplan_prompt gameplan_prompt))
+    || not (String.equal session.patch_prompt patch_prompt)
+  in
+  if changed && Option.is_some session.handle then (
+    session.failed <- true;
+    session.failure_reason <-
+      Some "long-lived backend prompt prefix changed after session start");
+  session.gameplan_prompt <- gameplan_prompt;
+  session.patch_prompt <- patch_prompt
+
+let long_lived_session_failed = function
+  | Long_lived_session session -> session.failed
 
 let shutdown_long_lived_session = function
   | Long_lived_session session -> (
@@ -647,38 +667,65 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
   let (Long_lived_session session) = session in
   let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
       ~complexity:_ ~on_event =
-    let handle =
-      match session.handle with
-      | Some handle -> handle
-      | None ->
-          let handle =
-            session.start ~sw
-              {
-                project_name;
-                worktree = cwd;
-                patch_id;
-                provider = session.provider;
-                model = session.model;
-                effort = session.effort;
-                gameplan_prompt = session.gameplan_prompt;
-                patch_prompt = session.patch_prompt;
-              }
-          in
-          session.handle <- Some handle;
-          handle
-    in
-    try
-      let result =
-        session.prompt_backend handle ~prompt ~timeout:session.timeout ~on_event
+    if session.failed then (
+      on_event
+        (Types.Stream_event.Error
+           (Option.value session.failure_reason
+              ~default:
+                "long-lived backend session already failed; waiting for \
+                 teardown"));
+      {
+        Llm_backend.exit_code = 1;
+        stdout = "";
+        stderr =
+          Option.value session.failure_reason
+            ~default:"long-lived backend session already failed";
+        got_events = true;
+        saw_final_result = false;
+        timed_out = false;
+      })
+    else
+      let handle =
+        match session.handle with
+        | Some handle -> handle
+        | None ->
+            let handle =
+              session.start ~sw
+                {
+                  project_name;
+                  worktree = cwd;
+                  patch_id;
+                  provider = session.provider;
+                  model = session.model;
+                  effort = session.effort;
+                  gameplan_prompt = session.gameplan_prompt;
+                  patch_prompt = session.patch_prompt;
+                }
+            in
+            session.handle <- Some handle;
+            handle
       in
-      if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out then
-        session.handle <- None;
-      result
-    with exn ->
-      session.handle <- None;
-      raise exn
+      try
+        let result =
+          session.prompt_backend handle ~prompt ~timeout:session.timeout
+            ~on_event
+        in
+        if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out
+        then (
+          session.failed <- true;
+          session.failure_reason <-
+            Some "long-lived backend prompt failed or timed out");
+        result
+      with exn ->
+        session.failed <- true;
+        session.failure_reason <-
+          Some
+            (Printf.sprintf "long-lived backend prompt raised: %s"
+               (Stdlib.Printexc.to_string exn));
+        raise exn
   in
   run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
     ~transcripts ~user_config ~worktree_mutex ~hook_mutex
+    ~session_mode_for_agent:(fun _ -> `Fresh)
     ~backend_name:session.name ~run_backend ~complexity ~event_log
