@@ -1912,7 +1912,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
     concurrently. *)
 let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
     ~findings_registry ~review_backends ~transcripts ~github ~net ~event_log
-    ~session_timeout ?status_msg () =
+    ?status_msg () =
   let main = config.main_branch in
   let process_mgr = Eio.Stdenv.process_mgr env in
   let clock = Eio.Stdenv.clock env in
@@ -1992,7 +1992,6 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                     Session_driver.create_long_lived_session ~backend
                       ~provider:patch_agent_provider ~model:patch_agent_model
                       ~effort:patch_agent_effort ~gameplan_prompt ~patch_prompt
-                      ~timeout:session_timeout
                   in
                   Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
                   session
@@ -4100,7 +4099,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
               ~pr_registry ~findings_registry ~review_backends ~transcripts
-              ~github ~net ~event_log ~session_timeout ())
+              ~github ~net ~event_log ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -4153,8 +4152,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~findings_registry ~review_backends
-                    ~transcripts ~github ~net ~event_log ~session_timeout
-                    ~status_msg ())
+                    ~transcripts ~github ~net ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

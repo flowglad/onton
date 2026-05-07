@@ -44,7 +44,7 @@ let make_factory ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
         (Gemini_backend.create ~model ~process_mgr ~clock ~timeout ~setsid_exec)
   | "patch-agent" ->
       Long_lived
-        (Patch_agent_backend.create ~process_mgr ~clock
+        (Patch_agent_backend.create ~process_mgr ~clock ~timeout
            ~binary_path:"patch-agent" ~setsid_exec)
   | other ->
       invalid_arg

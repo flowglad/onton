@@ -321,10 +321,12 @@ let shutdown ~clock long_lived_handle =
         | Ok _ | Error `Timeout -> close_flow handle.stdout_r))
 
 let create ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t)
-    ~(clock : _ Eio.Time.clock) ~binary_path ~setsid_exec : Long_lived.t =
+    ~(clock : _ Eio.Time.clock) ~timeout ~binary_path ~setsid_exec :
+    Long_lived.t =
   T
     {
       name = "Patch-agent";
+      timeout;
       start =
         (fun ~sw config ->
           start ~process_mgr ~binary_path ~setsid_exec ~sw config);

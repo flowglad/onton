@@ -50,7 +50,6 @@ val create_long_lived_session :
   effort:string ->
   gameplan_prompt:string ->
   patch_prompt:string ->
-  timeout:float ->
   long_lived_session
 
 val update_long_lived_session_prompts :

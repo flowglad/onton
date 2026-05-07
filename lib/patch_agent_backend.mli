@@ -41,6 +41,7 @@ open Base
 val create :
   process_mgr:Eio_unix.Process.mgr_ty Eio.Resource.t ->
   clock:_ Eio.Time.clock ->
+  timeout:float ->
   binary_path:string ->
   setsid_exec:string option ->
   Llm_backend_long_lived.t

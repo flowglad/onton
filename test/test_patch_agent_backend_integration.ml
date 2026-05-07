@@ -94,7 +94,7 @@ let smoke_test =
               let clock = Eio.Stdenv.clock env in
               let fs = Eio.Stdenv.fs env in
               let backend =
-                Patch_agent_backend.create ~process_mgr ~clock
+                Patch_agent_backend.create ~process_mgr ~clock ~timeout:60.0
                   ~binary_path:"patch-agent" ~setsid_exec:None
               in
               let events = ref [] in

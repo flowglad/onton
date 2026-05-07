@@ -615,9 +615,9 @@ type long_lived_session =
       -> long_lived_session
 
 let create_long_lived_session ~(backend : Llm_backend_long_lived.t) ~provider
-    ~model ~effort ~gameplan_prompt ~patch_prompt ~timeout =
+    ~model ~effort ~gameplan_prompt ~patch_prompt =
   let (Llm_backend_long_lived.T
-         { name; start; prompt = prompt_backend; shutdown; _ }) =
+         { name; timeout; start; prompt = prompt_backend; shutdown; _ }) =
     backend
   in
   Long_lived_session
@@ -733,10 +733,10 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
             if result.Llm_backend.exit_code <> 0 || result.Llm_backend.timed_out
             then (
               session.handle <- None;
-              session.pending_shutdown_handle <- Some handle;
               session.failed <- true;
               session.failure_reason <-
-                Some "long-lived backend prompt failed or timed out");
+                Some "long-lived backend prompt failed or timed out";
+              try session.shutdown handle with _ -> ());
             result
           with
           | Eio.Cancel.Cancelled _ as exn ->
