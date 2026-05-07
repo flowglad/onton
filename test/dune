@@ -19,6 +19,8 @@
  (name test_patch_agent_event_mapper)
  (modules test_patch_agent_event_mapper)
  (libraries onton onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_patch_agent_backend_integration)
