@@ -283,8 +283,9 @@ type activity_entry =
       to_status : display_status;
       to_label : string;
       action : string;
+      timestamp : float;
     }
-  | Event of { patch_id : string option; message : string }
+  | Event of { patch_id : string option; message : string; timestamp : float }
 [@@warning "-37"]
 
 (** {1 Patch view — derived per-patch rendering data} *)
@@ -619,6 +620,13 @@ let render_summary ~backend_name (views : patch_view list) =
   in
   Term.styled [ Term.Sgr.dim ] (" " ^ String.concat ~sep:" │ " parts)
 
+let format_activity_ts ts =
+  match try Some (Unix.localtime ts) with _ -> None with
+  | None -> "--:--:--"
+  | Some tm ->
+      Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
+        tm.Unix.tm_sec
+
 let render_activity (entries : activity_entry list) =
   if List.is_empty entries then []
   else
@@ -626,19 +634,24 @@ let render_activity (entries : activity_entry list) =
     let lines =
       List.map entries ~f:(fun entry ->
           match entry with
-          | Transition { patch_id; from_label; to_status; to_label; action } ->
-              Printf.sprintf "  %s: %s → %s (%s)"
+          | Transition
+              { patch_id; from_label; to_status; to_label; action; timestamp }
+            ->
+              Printf.sprintf "  %s  %s: %s → %s (%s)"
+                (Term.styled [ Term.Sgr.dim ] (format_activity_ts timestamp))
                 (Term.styled [ Term.Sgr.dim ] patch_id)
                 from_label
                 (styled_status to_status to_label)
                 (Term.styled [ Term.Sgr.dim ] action)
-          | Event { patch_id; message } ->
+          | Event { patch_id; message; timestamp } ->
               let prefix =
                 match patch_id with
                 | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
                 | None -> ""
               in
-              Printf.sprintf "  %s%s" prefix
+              Printf.sprintf "  %s  %s%s"
+                (Term.styled [ Term.Sgr.dim ] (format_activity_ts timestamp))
+                prefix
                 (Term.styled [ Term.Sgr.dim ] message))
     in
     header :: lines
@@ -887,13 +900,14 @@ let render_timeline ~width ~scroll (entries : activity_entry list) =
     List.map visible ~f:(fun entry ->
         let row =
           match entry with
-          | Transition { patch_id; from_label; to_status; to_label; action } ->
+          | Transition { patch_id; from_label; to_status; to_label; action; _ }
+            ->
               Printf.sprintf "  %s: %s → %s (%s)"
                 (Term.styled [ Term.Sgr.dim ] patch_id)
                 from_label
                 (styled_status to_status to_label)
                 (Term.styled [ Term.Sgr.dim ] action)
-          | Event { patch_id; message } ->
+          | Event { patch_id; message; _ } ->
               let prefix =
                 match patch_id with
                 | Some pid -> Term.styled [ Term.Sgr.dim ] (pid ^ ": ")
