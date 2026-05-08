@@ -210,8 +210,12 @@ claude setup-token
 
 # 2. Save it where onton will pick it up. Mode 0600 — it's a credential.
 mkdir -p ~/.config/onton
-umask 077 && printf %s "PASTE-TOKEN-HERE" > ~/.config/onton/claude-oauth-token
+install -m 600 /dev/null ~/.config/onton/claude-oauth-token
+cat > ~/.config/onton/claude-oauth-token
+chmod 600 ~/.config/onton/claude-oauth-token
 ```
+
+Paste the token at the `cat` prompt, then press `Ctrl-D`.
 
 Onton checks `CLAUDE_CODE_OAUTH_TOKEN` in the parent env first (for users who
 prefer to export it from their shell rc), falling back to

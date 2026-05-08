@@ -57,9 +57,11 @@ let resolve_claude_oauth_token_with ~getenv_opt ~read_token_file =
       let xdg_dir =
         match getenv_opt "XDG_CONFIG_HOME" with
         | Some d when not (String.is_empty d) -> Some d
-        | _ ->
-            Option.map (getenv_opt "HOME") ~f:(fun home ->
-                Stdlib.Filename.concat home ".config")
+        | _ -> (
+            match getenv_opt "HOME" with
+            | Some home when not (String.is_empty home) ->
+                Some (Stdlib.Filename.concat home ".config")
+            | _ -> None)
       in
       Option.bind xdg_dir ~f:(fun dir ->
           let path = Stdlib.Filename.concat dir "onton/claude-oauth-token" in
@@ -435,5 +437,10 @@ let%test "resolve_claude_oauth_token: empty file → None" =
 
 let%test "resolve_claude_oauth_token: no HOME, no XDG → None" =
   let getenv_opt _ = None in
+  let read_token_file _ = Some "tok" in
+  Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)
+
+let%test "resolve_claude_oauth_token: empty HOME is missing" =
+  let getenv_opt = function "HOME" -> Some "" | _ -> None in
   let read_token_file _ = Some "tok" in
   Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)
