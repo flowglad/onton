@@ -52,7 +52,7 @@ let resolve_user_config_dir ~env_var ~home_subpath =
    (or [~/.config/onton/claude-oauth-token]). *)
 let resolve_claude_oauth_token_with ~getenv_opt ~read_token_file =
   match getenv_opt "CLAUDE_CODE_OAUTH_TOKEN" with
-  | Some t when not (String.is_empty (String.strip t)) -> None
+  | Some t when not (String.is_empty (String.strip t)) -> Some (String.strip t)
   | _ ->
       let xdg_dir =
         match getenv_opt "XDG_CONFIG_HOME" with
@@ -379,13 +379,15 @@ let%test "resolve_user_config_dir absolutizes relative env and HOME paths" =
           (Stdlib.Filename.concat cwd "relative-home")
           ".config/onton")
 
-let%test "resolve_claude_oauth_token: env var present → no override" =
+let%test "resolve_claude_oauth_token: env var present wins" =
   let getenv_opt = function
     | "CLAUDE_CODE_OAUTH_TOKEN" -> Some "shell-tok"
     | _ -> None
   in
   let read_token_file _ = Some "file-tok" in
-  Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)
+  match resolve_claude_oauth_token_with ~getenv_opt ~read_token_file with
+  | Some "shell-tok" -> true
+  | _ -> false
 
 let%test "resolve_claude_oauth_token: empty env var falls back to file" =
   let getenv_opt = function
