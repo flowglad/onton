@@ -621,8 +621,11 @@ let render_summary ~backend_name (views : patch_view list) =
   Term.styled [ Term.Sgr.dim ] (" " ^ String.concat ~sep:" │ " parts)
 
 let format_activity_ts ts =
-  let tm = Unix.localtime ts in
-  Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+  match try Some (Unix.localtime ts) with _ -> None with
+  | None -> "--:--:--"
+  | Some tm ->
+      Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min
+        tm.Unix.tm_sec
 
 let render_activity (entries : activity_entry list) =
   if List.is_empty entries then []
