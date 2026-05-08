@@ -381,6 +381,7 @@ let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
           patch_id =
             Base.Option.map e.Activity_log.Event.patch_id ~f:Patch_id.to_string;
           message = e.Activity_log.Event.message;
+          timestamp = e.Activity_log.Event.timestamp;
         })
     ~map_transition:(fun (t : Activity_log.Transition_entry.t) ->
       Tui.Transition
@@ -390,6 +391,7 @@ let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
           to_status = t.Activity_log.Transition_entry.to_status;
           to_label = Tui.label t.Activity_log.Transition_entry.to_status;
           action = t.Activity_log.Transition_entry.action;
+          timestamp = t.Activity_log.Transition_entry.timestamp;
         })
     ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
       Tui.Event
@@ -397,6 +399,7 @@ let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
           patch_id =
             Some (Patch_id.to_string s.Activity_log.Stream_entry.patch_id);
           message = format_stream_kind s.Activity_log.Stream_entry.kind;
+          timestamp = s.Activity_log.Stream_entry.timestamp;
         })
   |> Base.List.map ~f:snd
 

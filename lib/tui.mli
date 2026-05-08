@@ -79,8 +79,9 @@ type activity_entry =
       to_status : display_status;
       to_label : string;
       action : string;
+      timestamp : float;
     }
-  | Event of { patch_id : string option; message : string }
+  | Event of { patch_id : string option; message : string; timestamp : float }
 
 (** {2 Patch view} *)
 
