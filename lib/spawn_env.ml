@@ -12,7 +12,8 @@ let backend_dir ~root ~backend = Stdlib.Filename.concat root backend
    form (regular file, dir, or existing symlink): the backend CLI may have
    replaced the symlink with a freshly-written file (e.g. atomic-rename token
    refresh) and we must not clobber that real state. Skip if [src] is missing:
-   the user may not be logged in to that backend. *)
+   the user may not be logged in to that backend (or, on macOS, Claude stores
+   its credential in the Keychain — see [resolve_claude_oauth_token_with]). *)
 let seed_link ~src ~dst =
   let dst_exists =
     match Unix.lstat dst with
@@ -40,6 +41,54 @@ let resolve_user_config_dir ~env_var ~home_subpath =
       | Some home when not (String.is_empty home) ->
           Some (Stdlib.Filename.concat (absolutize home) home_subpath)
       | _ -> None)
+
+(* On macOS, Claude Code stores its OAuth token in the macOS Keychain rather
+   than in [.credentials.json]. The Keychain lookup is scoped such that
+   pointing Claude at a per-patch [CLAUDE_CONFIG_DIR] makes it report
+   "Not logged in" even when the user has a valid Keychain entry. The
+   documented escape hatch is [CLAUDE_CODE_OAUTH_TOKEN] (precedence #5 in
+   docs), generated via [claude setup-token]. We read it from the shell env
+   (preferred) or fall back to [$XDG_CONFIG_HOME/onton/claude-oauth-token]
+   (or [~/.config/onton/claude-oauth-token]). *)
+let resolve_claude_oauth_token_with ~getenv_opt ~read_token_file =
+  match getenv_opt "CLAUDE_CODE_OAUTH_TOKEN" with
+  | Some t when not (String.is_empty (String.strip t)) -> None
+  | _ ->
+      let xdg_dir =
+        match getenv_opt "XDG_CONFIG_HOME" with
+        | Some d when not (String.is_empty d) -> Some d
+        | _ ->
+            Option.map (getenv_opt "HOME") ~f:(fun home ->
+                Stdlib.Filename.concat home ".config")
+      in
+      Option.bind xdg_dir ~f:(fun dir ->
+          let path = Stdlib.Filename.concat dir "onton/claude-oauth-token" in
+          match read_token_file path with
+          | None -> None
+          | Some s ->
+              let t = String.strip s in
+              if String.is_empty t then None else Some t)
+
+let read_token_file_opt path =
+  try
+    let ic = Stdlib.open_in path in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_in_noerr ic)
+      (fun () ->
+        let len = Stdlib.in_channel_length ic in
+        let buf = Stdlib.Bytes.create len in
+        Stdlib.really_input ic buf 0 len;
+        Some (Stdlib.Bytes.to_string buf))
+  with _ -> None
+
+let resolve_claude_oauth_token () =
+  resolve_claude_oauth_token_with ~getenv_opt:Stdlib.Sys.getenv_opt
+    ~read_token_file:read_token_file_opt
+
+let claude_oauth_token_overrides () =
+  match resolve_claude_oauth_token () with
+  | None -> []
+  | Some token -> [ ("CLAUDE_CODE_OAUTH_TOKEN", token) ]
 
 (* Seed the per-patch config dirs with symlinks to the user's real auth files.
    Symlinks (not copies) are better than stale snapshots, but they are still not
@@ -83,6 +132,7 @@ let per_patch_env_in_project_dir ~project_dir ~patch_id =
     ("CODEX_HOME", codex_dir);
     ("OPENCODE_CONFIG_DIR", opencode_dir);
   ]
+  @ claude_oauth_token_overrides ()
 
 let per_patch_env_without_codex_home_in_project_dir ~project_dir ~patch_id =
   per_patch_env_in_project_dir ~project_dir ~patch_id
@@ -326,3 +376,64 @@ let%test "resolve_user_config_dir absolutizes relative env and HOME paths" =
        (Stdlib.Filename.concat
           (Stdlib.Filename.concat cwd "relative-home")
           ".config/onton")
+
+let%test "resolve_claude_oauth_token: env var present → no override" =
+  let getenv_opt = function
+    | "CLAUDE_CODE_OAUTH_TOKEN" -> Some "shell-tok"
+    | _ -> None
+  in
+  let read_token_file _ = Some "file-tok" in
+  Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)
+
+let%test "resolve_claude_oauth_token: empty env var falls back to file" =
+  let getenv_opt = function
+    | "CLAUDE_CODE_OAUTH_TOKEN" -> Some "   "
+    | "HOME" -> Some "/h"
+    | _ -> None
+  in
+  let read_token_file = function
+    | "/h/.config/onton/claude-oauth-token" -> Some "file-tok"
+    | _ -> None
+  in
+  match resolve_claude_oauth_token_with ~getenv_opt ~read_token_file with
+  | Some "file-tok" -> true
+  | _ -> false
+
+let%test "resolve_claude_oauth_token: HOME-based fallback strips whitespace" =
+  let getenv_opt = function "HOME" -> Some "/h" | _ -> None in
+  let read_token_file = function
+    | "/h/.config/onton/claude-oauth-token" -> Some "  tok\n"
+    | _ -> None
+  in
+  match resolve_claude_oauth_token_with ~getenv_opt ~read_token_file with
+  | Some "tok" -> true
+  | _ -> false
+
+let%test "resolve_claude_oauth_token: XDG_CONFIG_HOME wins over HOME" =
+  let getenv_opt = function
+    | "XDG_CONFIG_HOME" -> Some "/x"
+    | "HOME" -> Some "/h"
+    | _ -> None
+  in
+  let read_token_file = function
+    | "/x/onton/claude-oauth-token" -> Some "xdg-tok"
+    | _ -> None
+  in
+  match resolve_claude_oauth_token_with ~getenv_opt ~read_token_file with
+  | Some "xdg-tok" -> true
+  | _ -> false
+
+let%test "resolve_claude_oauth_token: missing file → None" =
+  let getenv_opt = function "HOME" -> Some "/h" | _ -> None in
+  let read_token_file _ = None in
+  Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)
+
+let%test "resolve_claude_oauth_token: empty file → None" =
+  let getenv_opt = function "HOME" -> Some "/h" | _ -> None in
+  let read_token_file _ = Some "   \n" in
+  Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)
+
+let%test "resolve_claude_oauth_token: no HOME, no XDG → None" =
+  let getenv_opt _ = None in
+  let read_token_file _ = Some "tok" in
+  Option.is_none (resolve_claude_oauth_token_with ~getenv_opt ~read_token_file)

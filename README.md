@@ -188,6 +188,37 @@ gh pr list --limit 1  # smoke-test repo access
 If you'd rather keep `gh`'s token separate from onton's, set `GITHUB_TOKEN`
 explicitly and `gh` will prefer that variable too — keeping both in sync.
 
+### Coding-agent authentication
+
+Onton spawns each patch in an isolated config dir (`spawn-envs/<patch_id>/{claude,codex,opencode}`)
+so that concurrent agents don't fight over a single auth file during token
+refresh. It then seeds those dirs with symlinks to the user's real auth files.
+This works transparently on Linux (file-based credentials) and on macOS for
+codex / opencode, but not for **Claude Code on macOS**: Claude stores its
+OAuth credential in the macOS Keychain, and a per-patch `CLAUDE_CONFIG_DIR`
+prevents the spawned Claude from finding that Keychain entry. The result is
+`Not logged in · Please run /login` even though `claude` works fine in your
+own shell.
+
+The fix is to give onton a long-lived OAuth token to inject as
+`CLAUDE_CODE_OAUTH_TOKEN` (precedence #5 in [Claude Code's credential
+docs](https://code.claude.com/docs/en/iam#authentication-precedence)).
+
+```sh
+# 1. Generate a 1-year token from your existing subscription (browser OAuth).
+claude setup-token
+
+# 2. Save it where onton will pick it up. Mode 0600 — it's a credential.
+mkdir -p ~/.config/onton
+umask 077 && printf %s "PASTE-TOKEN-HERE" > ~/.config/onton/claude-oauth-token
+```
+
+Onton checks `CLAUDE_CODE_OAUTH_TOKEN` in the parent env first (for users who
+prefer to export it from their shell rc), falling back to
+`$XDG_CONFIG_HOME/onton/claude-oauth-token` (or `~/.config/onton/claude-oauth-token`).
+Linux users don't need this — the symlinked `.credentials.json` handles auth —
+but the token file works there too if you'd rather use it.
+
 ### Optional: per-repo and project state directories
 
 Onton writes to two locations on disk. Neither requires setup but both are
