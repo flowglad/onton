@@ -105,6 +105,11 @@
  (libraries onton onton_core qcheck-core))
 
 (test
+ (name test_git_env)
+ (modules test_git_env)
+ (libraries onton unix))
+
+(test
  (name test_persistence_properties)
  (modules test_persistence_properties)
  (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner yojson)

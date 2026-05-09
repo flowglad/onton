@@ -11,19 +11,26 @@ type error =
 val show_error : error -> string
 (** Render an error as a human-readable string. Includes the HTTP method and
     path for [Http_error]/[Transport_error], extracts GitHub's "message" field
-    from the response body, and appends a hint about PAT scopes for 401/403/404
-    so users can fix permission problems without guesswork. *)
+    and validation details from the response body, and appends a hint about PAT
+    scopes for 401/403/404 so users can fix permission problems without
+    guesswork. *)
 
 val response_error_message_contains : string -> substring:string -> bool
-(** Returns [true] if any [errors[].message] in a GitHub validation response
-    body contains [substring] (case-insensitive). Use this to discriminate
-    between distinct 422 cases (e.g. "pull request already exists" vs "no
-    commits between"). Pure; safe on malformed input. *)
+(** Returns [true] if any human-meaningful field in a GitHub error response body
+    contains [substring] (case-insensitive). Use this to discriminate between
+    distinct 422 cases (e.g. "pull request already exists" vs "no commits
+    between"). Pure; safe on malformed input. *)
 
 type t
 
 val create : token:string -> owner:string -> repo:string -> t
 (** [create ~token ~owner ~repo] creates a GitHub API client. *)
+
+val check_repo_access : net:_ Eio.Net.t -> t -> (unit, error) Result.t
+(** [check_repo_access ~net t] verifies that the configured token can access
+    [owner/repo] via [GET /repos/:owner/:repo]. This is a startup preflight so
+    missing tokens, expired credentials, SSO gaps, and wrong repository names
+    fail before long-running orchestration starts. *)
 
 val parse_response_json :
   owner:string -> Yojson.Safe.t -> (Pr_state.t, error) Result.t
