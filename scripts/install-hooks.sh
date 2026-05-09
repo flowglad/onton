@@ -2,7 +2,7 @@
 # install-hooks — install onton's git hooks into the repo's hooks dir
 #
 # Currently installs:
-#   - post-checkout: runs sync-skills.sh after branch switches so ~/.claude/skills
+#   - post-checkout: runs sync-skills.sh after branch switches so ~/.agents/skills
 #     always points at the current checkout
 #   - pre-commit: runs dune build / runtest / fmt against the project's local
 #     opam switch (5.4.0), not whatever the user's default switch happens to be

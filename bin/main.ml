@@ -4093,6 +4093,14 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             Printf.eprintf "Error: %s\n" msg;
             Stdlib.exit 1
       in
+      (match
+         Backend_preflight.validate ~default_backend:config.backend
+           ~cli_model:cli_model_opt ~repo_config ()
+       with
+      | Ok () -> ()
+      | Error errs ->
+          Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
+          Stdlib.exit 1);
       let registry =
         Backend_registry.create ~process_mgr ~clock ~timeout:session_timeout
           ~setsid_exec

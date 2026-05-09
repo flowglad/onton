@@ -10,7 +10,7 @@
 
 ## Workflow
 - Always run `dune build` after edits and fix all errors before moving on.
-- A Claude Code hook runs `dune build` automatically after Edit/Write — check its output.
+- An agent hook may run `dune build` automatically after edits — check its output.
 - All warnings except 44 (open-shadow) and 70 (missing-mli) are fatal errors.
 - The pre-commit hook runs build + test + format check — commits will be rejected if any fail.
 
@@ -86,7 +86,7 @@ Pitfalls when reading a bundle:
   trust the `agent_before`/`agent_after` fields embedded in each event for
   ground-truth agent state at that timestamp.
 - `activity_log.events` (inside the snapshot) carries the human-readable
-  per-session error strings — `"Session failed (Claude) — exit 1: …"`,
+  per-session error strings — `"Session failed (<backend>) — exit 1: …"`,
   rebase failure detail, etc. Check it before concluding that `complete`
   events are opaque; `complete.result` only carries the structured
   `session_result` (with `detail : string option` post-error-capture-fix).

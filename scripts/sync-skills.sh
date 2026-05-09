@@ -1,8 +1,8 @@
 #!/bin/sh
-# sync-skills — symlink repo skills/ into ~/.claude/skills/ for cross-project discovery
+# sync-skills — symlink repo skills/ into ~/.agents/skills/ for discovery
 #
 # Run once after cloning (or whenever onton's skills change) to make the skills
-# globally available to Claude Code regardless of which repo you're working in.
+# globally available to coding agents regardless of which repo you're working in.
 # Also invoked automatically by the post-checkout hook installed via
 # scripts/install-hooks.sh.
 #
@@ -19,7 +19,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SKILLS_DIR="$REPO_ROOT/skills"
-TARGET_DIR="$HOME/.claude/skills"
+TARGET_DIR="${AGENTS_SKILLS_DIR:-$HOME/.agents/skills}"
 
 [ -d "$SKILLS_DIR" ] || exit 0
 

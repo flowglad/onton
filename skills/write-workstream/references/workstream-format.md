@@ -44,13 +44,13 @@
 
 ## Complete Example: Onton Orchestrator
 
-Below is a real-world workstream demonstrating all sections. Onton is an OCaml orchestrator that manages parallel Claude Code agents executing gameplan patches.
+Below is a real-world workstream demonstrating all sections. Onton is an OCaml orchestrator that manages parallel coding agents executing gameplan patches.
 
 # Workstream: Onton Orchestrator
 
 ## Vision
 
-Build a standalone OCaml binary that parses gameplans, builds dependency graphs, and spawns concurrent Claude Code agents in isolated git worktrees. It polls GitHub for PR status and reacts to merges, reviews, and CI. The type system and a formal specification (Pantagruel) serve as correctness tools, with property-based tests derived from the spec.
+Build a standalone OCaml binary that parses gameplans, builds dependency graphs, and spawns concurrent coding agents in isolated git worktrees. It polls GitHub for PR status and reacts to merges, reviews, and CI. The type system and a formal specification (Pantagruel) serve as correctness tools, with property-based tests derived from the spec.
 
 ## Current State
 
@@ -85,7 +85,7 @@ The OCaml project has a build skeleton (dune 3.21, OCaml 5.4, Jane Street ppx ec
 
 **Definition of Done**:
 - QCheck2 property tests for patch_agent, graph, poller, orchestrator, reconciler
-- GitHub HTTP wiring (cohttp-eio), Claude subprocess spawning (Eio.Process)
+- GitHub HTTP wiring (cohttp-eio), backend subprocess spawning (Eio.Process)
 - Full TUI with status table, detail pane, ANSI rendering
 - Three-fiber Eio event loop (TUI renderer, poller, runner)
 - JSON state persistence
@@ -113,7 +113,7 @@ The OCaml project has a build skeleton (dune 3.21, OCaml 5.4, Jane Street ppx ec
 ### Milestone 4: onton-completeness-pt-4
 
 **Definition of Done**:
-- Claude stream-JSON parsing for live activity and PR auto-detection
+- Backend stream parsing for live activity and PR auto-detection
 - PR number persistence (survives restarts)
 - Persistence migration for forward-compatible snapshots
 - GitHub comment ID tracking for dedup
