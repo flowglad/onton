@@ -104,13 +104,9 @@ let format_git_failure { stdout; stderr; _ } =
     Parses both HTTPS and SSH remote URLs. Uses argv (no shell). *)
 let infer_owner_repo ~repo_root =
   try
-    match
-      read_process_capture (fun () ->
-          Unix.open_process_args_in "git"
-            [| "git"; "-C"; repo_root; "remote"; "get-url"; "origin" |])
-    with
-    | Some (Unix.WEXITED 0, out) -> (
-        let url = Base.String.strip out in
+    match run_git_capture ~repo_root [ "remote"; "get-url"; "origin" ] with
+    | Some { status = Unix.WEXITED 0; stdout; _ } -> (
+        let url = Base.String.strip stdout in
         let re =
           Re.Pcre.re {|github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?/?$|}
           |> Re.compile
@@ -118,9 +114,9 @@ let infer_owner_repo ~repo_root =
         match Re.exec_opt re url with
         | Some g -> Some (Re.Group.get g 1, Re.Group.get g 2)
         | None -> None)
-    | Some (Unix.WEXITED _, _)
-    | Some (Unix.WSIGNALED _, _)
-    | Some (Unix.WSTOPPED _, _)
+    | Some { status = Unix.WEXITED _; _ }
+    | Some { status = Unix.WSIGNALED _; _ }
+    | Some { status = Unix.WSTOPPED _; _ }
     | None ->
         None
   with _ -> None

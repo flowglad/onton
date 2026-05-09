@@ -26,10 +26,8 @@ let extract_github_message body =
               Yojson.Safe.Util.(err |> member "message" |> to_string_option))
       | _ -> []
     in
-    let messages =
-      Option.to_list top_message @ validation_messages
-      |> List.dedup_and_sort ~compare:String.compare
-    in
+    let messages = validation_messages @ Option.to_list top_message in
+    let messages = List.stable_dedup messages ~compare:String.compare in
     match messages with
     | [] -> truncate body
     | [ msg ] -> msg
