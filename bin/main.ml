@@ -61,7 +61,7 @@ let read_channel_all ic =
     and stderr, and close all process pipes on exception paths. *)
 let run_git_capture ~repo_root args =
   let argv = Array.of_list ("git" :: "-C" :: repo_root :: args) in
-  let env = Unix.environment () in
+  let env = Git_env.clean_env () in
   match Unix.open_process_args_full "git" argv env with
   | exception _ -> None
   | in_ch, out_ch, err_ch ->
@@ -3960,6 +3960,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok () ->
+      Git_env.set_github_token config.github_token;
       (match
          validate_branch_resolves ~repo_root:config.repo_root
            ~main_branch:config.main_branch
@@ -4040,6 +4041,13 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         Github.create ~token:config.github_token ~owner:config.github_owner
           ~repo:config.github_repo
       in
+      let net = Eio.Stdenv.net env in
+      (match Github.check_repo_access ~net github with
+      | Ok () -> ()
+      | Error err ->
+          Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
+            config.github_owner config.github_repo (Github.show_error err);
+          Stdlib.exit 1);
       let pr_registry = Pr_registry.create () in
       (* Seed registry from any agents that already have a PR number — covers
          both gameplan patches restored from a snapshot and ad-hoc agents. The
@@ -4125,7 +4133,6 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
               ~model:dec.Backend_routing.model ~complexity;
         }
       in
-      let net = Eio.Stdenv.net env in
       let stdout = Eio.Stdenv.stdout env in
       (* Capture agent state and worktree list BEFORE launching concurrent
          fibers, so the reconciler sees the pre-session state rather than racing

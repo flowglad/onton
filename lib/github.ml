@@ -6,38 +6,68 @@ type error =
   | Graphql_error of string list
   | Transport_error of { meth : string; path : string; msg : string }
 
-(* Extract GitHub's "message" field from a JSON error body, falling back to the
-   raw body (truncated) when parsing fails. GitHub 4xx responses always include
-   this field with a human-readable explanation. *)
+(* Extract GitHub's "message" field and validation details from a JSON error
+   body, falling back to the raw body (truncated) when parsing fails. GitHub 422
+   responses often put the useful cause in [errors[].message] while the top-level
+   message is only "Validation Failed". *)
 let extract_github_message body =
   let truncate s =
     if String.length s <= 200 then s else String.sub s ~pos:0 ~len:200 ^ "…"
   in
   try
     let json = Yojson.Safe.from_string body in
-    match Yojson.Safe.Util.(json |> member "message" |> to_string_option) with
-    | Some msg -> msg
-    | None -> truncate body
+    let top_message =
+      Yojson.Safe.Util.(json |> member "message" |> to_string_option)
+    in
+    let validation_messages =
+      match Yojson.Safe.Util.(json |> member "errors") with
+      | `List errors ->
+          List.filter_map errors ~f:(fun err ->
+              Yojson.Safe.Util.(err |> member "message" |> to_string_option))
+      | _ -> []
+    in
+    let messages =
+      Option.to_list top_message @ validation_messages
+      |> List.dedup_and_sort ~compare:String.compare
+    in
+    match messages with
+    | [] -> truncate body
+    | [ msg ] -> msg
+    | msgs -> String.concat ~sep:": " msgs
   with _ -> truncate body
 
-(* Returns [true] if any [errors[].message] in a GitHub 422 validation response
-   body contains [substring] (case-insensitive). 422 covers many distinct
-   validation cases (no commits between head/base, head doesn't exist, branch
-   already has PR, etc.) — callers use this to discriminate which one. Pure;
-   safe on malformed input (returns false). *)
-let response_error_message_contains body ~substring =
+let response_error_messages body =
   try
     let json = Yojson.Safe.from_string body in
-    let errors = Yojson.Safe.Util.(json |> member "errors" |> to_list) in
-    let needle = String.lowercase substring in
-    List.exists errors ~f:(fun err ->
-        match
-          Yojson.Safe.Util.(err |> member "message" |> to_string_option)
-        with
-        | None -> false
-        | Some msg ->
-            String.is_substring (String.lowercase msg) ~substring:needle)
-  with _ -> false
+    let top_message =
+      Yojson.Safe.Util.(json |> member "message" |> to_string_option)
+    in
+    let validation_messages =
+      match Yojson.Safe.Util.(json |> member "errors") with
+      | `List errors ->
+          List.concat_map errors ~f:(fun err ->
+              [
+                Yojson.Safe.Util.(err |> member "message" |> to_string_option);
+                Yojson.Safe.Util.(err |> member "code" |> to_string_option);
+                Yojson.Safe.Util.(err |> member "field" |> to_string_option);
+                Yojson.Safe.Util.(err |> member "resource" |> to_string_option);
+              ]
+              |> List.filter_opt)
+      | _ -> []
+    in
+    Option.to_list top_message @ validation_messages
+  with _ -> []
+
+(* Returns [true] if any human-meaningful field in a GitHub error response
+   contains [substring] (case-insensitive). 422 covers many distinct validation
+   cases (no commits between head/base, head doesn't exist, branch already has
+   PR, etc.) — callers use this to discriminate which one. Pure; safe on
+   malformed input (returns false). *)
+let response_error_message_contains body ~substring =
+  let needle = String.lowercase substring in
+  response_error_messages body
+  |> List.exists ~f:(fun msg ->
+      String.is_substring (String.lowercase msg) ~substring:needle)
 
 let%test "response_error_message_contains: empty body returns false" =
   not (response_error_message_contains "" ~substring:"already exists")
@@ -46,6 +76,16 @@ let%test "response_error_message_contains: matches errors[].message substring" =
   response_error_message_contains
     {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"A pull request already exists for foo/bar:branch."}]}|}
     ~substring:"pull request already exists"
+
+let%test "response_error_message_contains: matches top-level message substring"
+    =
+  response_error_message_contains {|{"message":"Already exists"}|}
+    ~substring:"already exists"
+
+let%test "response_error_message_contains: matches errors[].code substring" =
+  response_error_message_contains
+    {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"already_exists","field":"head"}]}|}
+    ~substring:"already_exists"
 
 let%test "response_error_message_contains: no match for unrelated error" =
   not
@@ -473,6 +513,12 @@ let request ~net t ~meth ~path ?(query = []) ?body () =
   with exn ->
     Error (Transport_error { meth = meth_s; path; msg = Exn.to_string exn })
 
+let check_repo_access ~net t =
+  let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
+  match request ~net t ~meth:`GET ~path () with
+  | Ok _ -> Ok ()
+  | Error _ as e -> e
+
 let pr_state ~net t pr =
   let body = build_request_body t pr in
   match request ~net t ~meth:`POST ~path:"/graphql" ~body () with
@@ -783,6 +829,21 @@ let%expect_test "show_error includes endpoint + permission hint on 403" =
   Stdlib.print_endline (show_error err);
   [%expect
     {| GitHub API PATCH /repos/foo/bar/pulls/42 → HTTP 403: Resource not accessible by integration — check your GH PAT scopes (classic: `repo`; fine-grained: Pull requests read/write, Contents read, Metadata read) |}]
+
+let%expect_test "show_error includes GitHub 422 validation details" =
+  let err =
+    Http_error
+      {
+        meth = "POST";
+        path = "/repos/foo/bar/pulls";
+        status = 422;
+        body =
+          {|{"message":"Validation Failed","errors":[{"resource":"PullRequest","code":"custom","message":"No commits between main and feature."}]}|};
+      }
+  in
+  Stdlib.print_endline (show_error err);
+  [%expect
+    {| GitHub API POST /repos/foo/bar/pulls → HTTP 422: No commits between main and feature.: Validation Failed |}]
 
 let%expect_test "show_error falls back to raw body when not JSON" =
   let err =
