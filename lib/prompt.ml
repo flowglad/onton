@@ -194,8 +194,25 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
 |}
         vars)
 
+let format_functional_changes_section (fcs : Functional_change.t list) : string
+    =
+  if List.is_empty fcs then ""
+  else
+    let body =
+      List.map fcs ~f:(fun (fc : Functional_change.t) ->
+          Printf.sprintf "- **%s** — %s" fc.id fc.description)
+      |> String.concat ~sep:"\n"
+    in
+    "\n\
+     ## Functional Changes You Own\n\n\
+     These are the user-visible / behavioural changes assigned to this patch. \
+     Each is your responsibility — do not defer them to another patch, and do \
+     not stop until every one is delivered. The gameplan's enumeration is \
+     exhaustive and each change is owned by exactly one patch, so if a change \
+     appears here, no sibling patch will pick it up.\n\n" ^ body ^ "\n"
+
 let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
-    ~(base_branch : string) () : string =
+    ?(functional_changes = []) ~(base_branch : string) () : string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -259,6 +276,8 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
       ("spec", patch.Patch.spec);
       ("acceptance_criteria", format_list patch.Patch.acceptance_criteria);
       ("files", format_list patch.Patch.files);
+      ( "functional_changes_section",
+        format_functional_changes_section functional_changes );
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ( "spec_section",
         if String.is_empty patch.spec then ""
@@ -327,7 +346,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 ## Your Task
 
 {{base_branch_note}}{{description}}
-{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
+{{functional_changes_section}}{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
@@ -337,6 +356,12 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 |}
         vars)
 
+let owned_functional_changes (gameplan : Gameplan.t) (patch : Patch.t) :
+    Functional_change.t list =
+  List.filter gameplan.Gameplan.functional_changes
+    ~f:(fun (fc : Functional_change.t) ->
+      Patch_id.equal fc.Functional_change.owned_by patch.Patch.id)
+
 (* When all of [patch], [gameplan], [base_branch] are supplied, returns
    the gameplan+patch prefix; otherwise returns the empty string. Used by
    the layered turn-prompt composers to support callers that don't have a
@@ -345,11 +370,13 @@ let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md () =
   match (patch, gameplan, base_branch) with
   | Some p, Some g, Some b ->
+      let functional_changes = owned_functional_changes g p in
       render_gameplan_layer ~project_name g
       ^ (match agents_md with
         | Some content -> agents_md_section (Some content)
         | None -> "")
-      ^ render_patch_layer ~project_name p ?pr_number ~base_branch:b ()
+      ^ render_patch_layer ~project_name p ?pr_number ~functional_changes
+          ~base_branch:b ()
   | _ -> ""
 
 let render_turn_layer_start ~(project_name : string) : string =
@@ -359,9 +386,11 @@ let render_turn_layer_start ~(project_name : string) : string =
 
 let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
     (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
+  let functional_changes = owned_functional_changes gameplan patch in
   render_gameplan_layer ~project_name gameplan
   ^ agents_md_section agents_md
-  ^ render_patch_layer ~project_name patch ?pr_number ~base_branch ()
+  ^ render_patch_layer ~project_name patch ?pr_number ~functional_changes
+      ~base_branch ()
   ^ render_turn_layer_start ~project_name
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
@@ -402,6 +431,7 @@ let%test "render_spec_suffix: both empty" =
       solution_summary = "";
       final_state_spec = "";
       patches = [];
+      functional_changes = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -436,6 +466,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       solution_summary = "";
       final_state_spec = "module FOO.\nsome spec";
       patches = [];
+      functional_changes = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -473,6 +504,7 @@ let%test "render_spec_suffix: patch spec only" =
       solution_summary = "";
       final_state_spec = "";
       patches = [];
+      functional_changes = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -510,6 +542,7 @@ let%test "render_spec_suffix: both present" =
       solution_summary = "";
       final_state_spec = "module FOO.\ngameplan spec";
       patches = [];
+      functional_changes = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -1159,6 +1192,7 @@ let%test "patch prompt includes title and deps" =
             };
             patch;
           ];
+        functional_changes = [];
       }
   in
   let result =
@@ -1233,6 +1267,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         acceptance_criteria = [];
         open_questions = [];
         patches = [ patch_1; patch_2 ];
+        functional_changes = [];
       }
   in
   let prompt_1 =
@@ -1282,6 +1317,7 @@ let%test "agents_md content appears in static prefix when Some" =
         acceptance_criteria = [];
         open_questions = [];
         patches = [ patch ];
+        functional_changes = [];
       }
   in
   let prompt =
@@ -1327,6 +1363,7 @@ let%test "agents_md section is omitted when None" =
         acceptance_criteria = [];
         open_questions = [];
         patches = [ patch ];
+        functional_changes = [];
       }
   in
   let prompt =
@@ -1397,6 +1434,7 @@ let make_layer_test_fixture () =
         acceptance_criteria = [];
         open_questions = [];
         patches = [ patch_a; patch_b ];
+        functional_changes = [];
       }
   in
   (patch_a, patch_b, gameplan)
@@ -1522,6 +1560,52 @@ let%test
     render_patch_layer ~project_name:"onton" patch ~base_branch:"main" ()
   in
   not (String.is_substring rendered ~substring:"Established Precedents")
+
+let%test
+    "render_patch_prompt surfaces ONLY the owned functional changes for a patch"
+    =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let gameplan : Gameplan.t =
+    {
+      gameplan with
+      functional_changes =
+        [
+          {
+            Functional_change.id = "FC-1";
+            description = "Behavior owned by patch A only";
+            owned_by = patch_a.Patch.id;
+          };
+          {
+            Functional_change.id = "FC-2";
+            description = "Behavior owned by patch B only";
+            owned_by = patch_b.Patch.id;
+          };
+        ];
+    }
+  in
+  let prompt_a =
+    render_patch_prompt ~project_name:"onton" patch_a gameplan
+      ~base_branch:"main"
+  in
+  let prompt_b =
+    render_patch_prompt ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  String.is_substring prompt_a ~substring:"## Functional Changes You Own"
+  && String.is_substring prompt_a ~substring:"**FC-1**"
+  && String.is_substring prompt_a ~substring:"Behavior owned by patch A only"
+  && (not (String.is_substring prompt_a ~substring:"**FC-2**"))
+  && String.is_substring prompt_b ~substring:"**FC-2**"
+  && String.is_substring prompt_b ~substring:"Behavior owned by patch B only"
+  && not (String.is_substring prompt_b ~substring:"**FC-1**")
+
+let%test
+    "render_patch_layer omits Functional Changes section when patch owns none" =
+  let patch, _, _ = make_layer_test_fixture () in
+  let rendered =
+    render_patch_layer ~project_name:"onton" patch ~base_branch:"main" ()
+  in
+  not (String.is_substring rendered ~substring:"Functional Changes You Own")
 
 let%test "render_pr_description surfaces precedents when present" =
   let patch, _, gameplan = make_layer_test_fixture () in

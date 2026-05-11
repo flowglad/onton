@@ -233,6 +233,26 @@ module Stream_event : sig
   [@@deriving show, eq, sexp_of, compare]
 end
 
+module Functional_change : sig
+  type t = {
+    id : string;
+        (** Stable identifier (e.g. ["FC-1"]) unique within the gameplan. *)
+    description : string;
+        (** Single observable outcome ("Merged patches are skipped"); not an
+            implementation step. Goes verbatim into the owning patch's prompt.
+        *)
+    owned_by : Patch_id.t;
+        (** The single patch responsible for delivering this change. *)
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** A functional/behavioural change the gameplan introduces. The
+      [functional_changes] array on [Gameplan.t] is exhaustive, and the mapping
+      via [owned_by] is total and single-valued: every change has exactly one
+      owning patch, no shared ownership. Surfaced to the patch agent's prompt so
+      the agent knows which user-visible behaviors it must deliver and cannot
+      defer them to a sibling patch. *)
+end
+
 module Gameplan : sig
   type t = {
     project_name : string;
@@ -240,6 +260,11 @@ module Gameplan : sig
     solution_summary : string;
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
+    functional_changes : Functional_change.t list; [@yojson.default []]
+        (** Exhaustive enumeration of the functional/behavioural changes the
+            gameplan introduces, each assigned to exactly one owning patch.
+            Defaults to [[]] for legacy gameplans that predate the field — in
+            that case no per-patch change list is surfaced. *)
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

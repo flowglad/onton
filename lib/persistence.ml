@@ -733,6 +733,7 @@ let%test_module "session_id_sidecars" =
           explicit_opinions = "";
           acceptance_criteria = [];
           open_questions = [];
+          functional_changes = [];
         }
 
     let snapshot ?(busy = false) ?llm_session_id () =

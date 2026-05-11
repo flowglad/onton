@@ -41,6 +41,27 @@ let detect_cycle dep_graph =
   Map.iter_keys dep_graph ~f:visit;
   !found_cycle
 
+let validate_functional_changes ~patches ~functional_changes =
+  let patch_ids =
+    List.map patches ~f:(fun p -> p.Types.Patch.id)
+    |> Set.of_list (module Types.Patch_id)
+  in
+  let rec loop seen_ids = function
+    | [] -> Ok ()
+    | (fc : Types.Functional_change.t) :: rest ->
+        if String.is_empty fc.id then
+          Error "functionalChanges[].id must be a non-empty string"
+        else if Set.mem seen_ids fc.id then
+          Error (Printf.sprintf "Duplicate functionalChange id: %s" fc.id)
+        else if not (Set.mem patch_ids fc.owned_by) then
+          Error
+            (Printf.sprintf
+               "functionalChange %s is ownedBy nonexistent patch %s" fc.id
+               (Types.Patch_id.to_string fc.owned_by))
+        else loop (Set.add seen_ids fc.id) rest
+  in
+  loop (Set.empty (module String)) functional_changes
+
 let validate ~patches ~dep_graph =
   (* Check for invalid patch IDs *)
   let invalid_ids =
@@ -204,6 +225,44 @@ let parse_json_string input =
           | _ -> ""
         in
         let acceptance_criteria = json_string_list json "acceptanceCriteria" in
+        let functional_changes =
+          match json |> member "functionalChanges" with
+          | `Null -> []
+          | `List items ->
+              List.map items ~f:(fun obj ->
+                  let id =
+                    match obj |> member "id" with
+                    | `String s -> s
+                    | _ ->
+                        raise
+                          (Type_error
+                             ("functionalChanges[].id must be a string", obj))
+                  in
+                  let description =
+                    match obj |> member "description" with
+                    | `String s -> s
+                    | _ ->
+                        raise
+                          (Type_error
+                             ( "functionalChanges[].description must be a string",
+                               obj ))
+                  in
+                  let owned_by =
+                    match patch_id_of_json (obj |> member "ownedBy") with
+                    | Some id -> id
+                    | None ->
+                        raise
+                          (Type_error
+                             ( "functionalChanges[].ownedBy must be an integer \
+                                or alphanumeric patch id",
+                               obj ))
+                  in
+                  { Types.Functional_change.id; description; owned_by })
+          | _ ->
+              raise
+                (Type_error
+                   ("functionalChanges must be an array of objects", json))
+        in
         let open_questions =
           match json |> member "openQuestions" with
           | `Null -> []
@@ -346,23 +405,29 @@ let parse_json_string input =
         | [] -> (
             match validate ~patches ~dep_graph with
             | Error e -> Error e
-            | Ok () ->
-                Ok
-                  {
-                    gameplan =
+            | Ok () -> (
+                match
+                  validate_functional_changes ~patches ~functional_changes
+                with
+                | Error e -> Error e
+                | Ok () ->
+                    Ok
                       {
-                        Types.Gameplan.project_name;
-                        problem_statement;
-                        solution_summary;
-                        final_state_spec;
-                        patches;
-                        current_state_analysis;
-                        explicit_opinions;
-                        acceptance_criteria;
-                        open_questions;
-                      };
-                    dependency_graph = dep_graph;
-                  })
+                        gameplan =
+                          {
+                            Types.Gameplan.project_name;
+                            problem_statement;
+                            solution_summary;
+                            final_state_spec;
+                            patches;
+                            functional_changes;
+                            current_state_analysis;
+                            explicit_opinions;
+                            acceptance_criteria;
+                            open_questions;
+                          };
+                        dependency_graph = dep_graph;
+                      }))
       with Type_error (msg, _) ->
         Error (Printf.sprintf "JSON structure error: %s" msg))
 
@@ -742,6 +807,88 @@ let%test_module "Gameplan_parser" =
         }|}
       in
       match parse_json_string input with Ok _ -> true | Error _ -> false
+
+    let%test "parse_json_string: functionalChanges round-trip" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [
+            {"number": 1, "title": "A", "changes": []},
+            {"number": 2, "title": "B", "changes": []}
+          ],
+          "functionalChanges": [
+            {"id": "FC-1", "description": "Behavior X is added", "ownedBy": 1},
+            {"id": "FC-2", "description": "Behavior Y is added", "ownedBy": 2}
+          ],
+          "dependencyGraph": [
+            {"patch": 1, "dependsOn": []},
+            {"patch": 2, "dependsOn": [1]}
+          ]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result -> (
+          match result.gameplan.functional_changes with
+          | [ a; b ] ->
+              String.equal a.Types.Functional_change.id "FC-1"
+              && String.equal a.description "Behavior X is added"
+              && String.equal (Types.Patch_id.to_string a.owned_by) "1"
+              && String.equal b.Types.Functional_change.id "FC-2"
+              && String.equal (Types.Patch_id.to_string b.owned_by) "2"
+          | _ -> false)
+
+    let%test "parse_json_string: functionalChanges missing defaults to empty" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result -> List.is_empty result.gameplan.functional_changes
+
+    let%test
+        "parse_json_string: functionalChange owned by nonexistent patch \
+         returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "functionalChanges": [
+            {"id": "FC-1", "description": "x", "ownedBy": 99}
+          ],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg ~substring:"FC-1"
+          && String.is_substring msg ~substring:"nonexistent patch"
+
+    let%test "parse_json_string: duplicate functionalChange id returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "functionalChanges": [
+            {"id": "FC-1", "description": "x", "ownedBy": 1},
+            {"id": "FC-1", "description": "y", "ownedBy": 1}
+          ],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg ~substring:"Duplicate functionalChange"
 
     let%test "parse_json_string: non-string open question returns Error" =
       let input =

@@ -256,6 +256,7 @@ let gen_gameplan =
             explicit_opinions = "";
             acceptance_criteria = [];
             open_questions = [];
+            functional_changes = [];
           })
       gen_patch_list_unique)
 
@@ -715,6 +716,7 @@ let make_test_gameplan patches =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
 
 let pid_of_idx patches i =

@@ -49,6 +49,34 @@
     }
   ],
 
+  "functionalChanges": [
+    {
+      "id": "FC-1",
+      "description": "Patch_decision is callable as a pure module from outside main.ml — its decision functions can be exercised in isolation without instantiating a runner fiber or any Eio I/O.",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-2",
+      "description": "Merged patches are skipped (disposition = Skip) regardless of busy/ci-failure state.",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-3",
+      "description": "Busy patches are never delivered (disposition is Skip or Queue, never Deliver).",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-4",
+      "description": "Patches with ci_failure_count ≥ 3 require human intervention (needs_intervention = true).",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-5",
+      "description": "main.ml runner_fiber delegates every patch-lifecycle decision to Patch_decision — no inline merged/busy/CI-failure checks remain in I/O code paths.",
+      "ownedBy": 4
+    }
+  ],
+
   "acceptanceCriteria": [
     "Patch_decision module exists with pure functions for all decision points",
     "All decision functions are covered by QCheck2 property tests",
@@ -238,7 +266,8 @@
     "testMapImplPatchMatchesCode": true,
     "behaviorPatchesMinimal": true,
     "dependencyGraphOrdered": true,
-    "behaviorPatchesJustified": true
+    "behaviorPatchesJustified": true,
+    "functionalChangesOwnedByExactlyOnePatch": true
   },
 
   "mergabilityInsight": "3 of 4 patches are INFRA and can ship without changing observable behavior. Only Patch 4 changes behavior (wiring).",

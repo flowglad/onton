@@ -14,6 +14,7 @@ let make_gameplan patches =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
 
 let tick orch ~patches =

@@ -55,6 +55,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `currentStateAnalysis` | `string` | Where the codebase is now vs. where it needs to be |
 | `mergabilityStrategy` | `object` | `{ featureFlagStrategy, featureFlags, patchOrderingStrategy }` |
 | `requiredChanges` | `array` | `[{ file, line, description, signature }]` |
+| `functionalChanges` | `array` | `[{ id, description, ownedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
 | `acceptanceCriteria` | `string[]` | Each is a "done" condition |
 | `openQuestions` | `string[]` | Decisions for the team (empty array if none) |
 | `explicitOpinions` | `array` | `[{ opinion, rationale }]` |
@@ -103,6 +104,44 @@ Each patch includes a `classification` field:
 - `BEHAVIOR` — Changes observable behavior. Requires careful review. Should be as small as possible.
 
 **Goal**: Maximize `INFRA` and `GATED` patches. Minimize `BEHAVIOR` patches.
+
+## Functional Change Ownership
+
+A gameplan whose patches share responsibility for a behavioral change vaguely fails in a predictable way: each patch implementer reads the prose narrative, sees the change mentioned, and assumes a different patch owns it. The change falls through the cracks. The whole point of decomposing a gameplan into mergeable patches is defeated when a behavior is described as a gameplan-level concept that has no single named owner.
+
+The `functionalChanges` array prevents this. It is an **exhaustive enumeration** of every functional or behavioural delta the gameplan introduces, with each entry assigned to exactly one owning patch.
+
+### What goes here
+
+- Every observable behavior the system gains, loses, or changes as a result of this gameplan.
+- Every user-visible or API-visible change (new endpoint shape, new return value, new error path, removed deprecation).
+- Every change in protocol, contract, or invariant that downstream code can detect.
+
+What does **not** go here:
+
+- Pure refactors that have no observable effect (those still belong in `patches[].changes` as implementation steps).
+- File or signature edits (those belong in `requiredChanges`).
+- Internal helper introductions that are not callable from outside the module being changed.
+
+### The mapping
+
+Each `functionalChange` has `id` (`FC-1`, `FC-2`, …), a single-outcome `description`, and an `ownedBy` patch id. The mapping is:
+
+- **Total**: every functional change has an owner. No orphans.
+- **Single-valued**: exactly one patch owns each change. No shared ownership; co-owning a change is the failure mode this section is designed to prevent.
+- **Not strictly surjective**: an INFRA-only patch that introduces types or test stubs need not own any functional change. Most observable changes land on GATED or BEHAVIOR patches.
+
+If the same behavior is co-implemented by two patches, the change description is too coarse — split it into two changes (one per patch), each describing the slice that patch delivers.
+
+### How it surfaces to the patch agent
+
+Downstream consumers (notably onton's patch prompt renderer) read `functionalChanges` and inject the subset `ownedBy` each patch into that patch's agent prompt as an explicit "Functional Changes You Own" section. The implementing agent therefore sees the precise list of user-visible behaviors it is responsible for delivering, separate from its `changes` implementation steps. This is what closes the loophole — there is no longer prose-only behavior that no patch acknowledges.
+
+### Authoring guidance
+
+- Write each entry as the **outcome**, not the mechanism. "Merged patches are skipped instead of queued" is correct; "Add a merged-check branch to disposition" is an implementation step and belongs in `patches[].changes`.
+- Cross-check against `problemStatement`, `solutionSummary`, and `acceptanceCriteria`: every behavioral promise made there must correspond to at least one `functionalChange` entry. If you cannot point at the owning patch for a sentence in the problem statement, the gameplan has a gap.
+- Cross-check against `finalStateSpec`: every behavioral invariant in the spec should map to a functional change that introduces it (the spec says *what is true at the end*; the functional change says *which patch made it true*).
 
 ## Patch Complexity
 
@@ -236,7 +275,8 @@ After writing the gameplan JSON, verify:
 2. **Each spec MUST parse cleanly** — extract `spec`/`finalStateSpec` strings to temp files and validate them with the spec language's toolchain (see [Specification Language](#specification-language)). Fix any parse errors before finalizing. If the toolchain is not installed, flag it as a blocker — do NOT skip validation or fall back to manual review
 3. The dependency graph is a valid DAG
 4. All test stubs have corresponding implementations
-5. The mergability checklist passes
+5. **Functional change ownership is total and single-valued** — every `functionalChanges[i].id` is unique; every `functionalChanges[i].ownedBy` resolves to an existing `patches[].number`; no functional change appears unowned in prose. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec` and confirm every behavioral promise has a corresponding `functionalChanges` entry pointing at a single patch. Set `mergabilityChecklist.functionalChangesOwnedByExactlyOnePatch` to `true` only when this holds.
+6. The mergability checklist passes
 
 ## Resolving Open Questions
 

@@ -673,6 +673,7 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
             explicit_opinions = "";
             acceptance_criteria = [];
             open_questions = [];
+            functional_changes = [];
           }
       ~patch
   in
@@ -695,6 +696,7 @@ let%test "reconcile_patch enqueues pr_body after PR creation" =
         explicit_opinions = "";
         acceptance_criteria = [];
         open_questions = [];
+        functional_changes = [];
       }
   in
   let t, _ = reconcile_patch t ~project_name:"proj" ~gameplan:gp ~patch in
@@ -721,6 +723,7 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
             explicit_opinions = "";
             acceptance_criteria = [];
             open_questions = [];
+            functional_changes = [];
           }
       ~patch
   in
@@ -748,6 +751,7 @@ let%test "reconcile_patch emits no effects for merged agent" =
             explicit_opinions = "";
             acceptance_criteria = [];
             open_questions = [];
+            functional_changes = [];
           }
       ~patch
   in
