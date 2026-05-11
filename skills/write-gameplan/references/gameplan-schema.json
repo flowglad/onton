@@ -285,6 +285,21 @@
     "precedent": {
       "type": "object",
       "required": ["kind", "name", "whyApplicable"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["paper", "rfc-spec", "documentation", "blog-post"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["url"]
+          }
+        }
+      ],
       "properties": {
         "kind": {
           "type": "string",

@@ -1434,7 +1434,16 @@ let make_layer_test_fixture () =
         acceptance_criteria = [];
         open_questions = [];
         patches = [ patch_a; patch_b ];
-        functional_changes = [];
+        functional_changes =
+          [
+            {
+              Functional_change.id = "FC-LAYER-1";
+              description =
+                "Patch A owns a behavior that must stay in the cache-stable \
+                 layer.";
+              owned_by = patch_a.Patch.id;
+            };
+          ];
       }
   in
   (patch_a, patch_b, gameplan)
@@ -1460,9 +1469,10 @@ let%test
   let patch_a, _, gameplan = make_layer_test_fixture () in
   let pr_number = Pr_number.of_int 7 in
   let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
+  let functional_changes = owned_functional_changes gameplan patch_a in
   let p_layer =
     render_patch_layer ~project_name:"onton" patch_a ~pr_number
-      ~base_branch:"main" ()
+      ~functional_changes ~base_branch:"main" ()
   in
   let agents_md = "Follow AGENTS.md.\nNever use *_exn." in
   let prefix = g_layer ^ agents_md_section (Some agents_md) ^ p_layer in
@@ -1601,9 +1611,11 @@ let%test
 
 let%test
     "render_patch_layer omits Functional Changes section when patch owns none" =
-  let patch, _, _ = make_layer_test_fixture () in
+  let _, patch, gameplan = make_layer_test_fixture () in
+  let functional_changes = owned_functional_changes gameplan patch in
   let rendered =
-    render_patch_layer ~project_name:"onton" patch ~base_branch:"main" ()
+    render_patch_layer ~project_name:"onton" patch ~functional_changes
+      ~base_branch:"main" ()
   in
   not (String.is_substring rendered ~substring:"Functional Changes You Own")
 

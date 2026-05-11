@@ -72,7 +72,7 @@ Common workstream-level precedent categories (not exhaustive):
 
 - **Concurrency**: Eio / Tokio / structured concurrency, CSP, actor model, Reactive Streams.
 - **Persistence and migration**: expand/contract migrations, event sourcing, the outbox pattern.
-- **Auth and crypto**: OAuth 2.1 / RFC 6749, PASETO, JWT/RFC 7519, audited libraries (libsodium, ring).
+- **Auth and crypto**: OAuth 2.0 / RFC 6749, PASETO, JWT/RFC 7519, audited libraries (libsodium, ring).
 - **Parsing**: parser generators (Menhir, ANTLR), combinator libraries, GLR.
 - **Type and binder handling**: Bindlib, locally-nameless representation, Hindley-Milner.
 - **Graph and search**: Tarjan SCC, Dijkstra, Union-Find with path compression.
