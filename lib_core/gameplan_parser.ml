@@ -49,7 +49,7 @@ let validate_functional_changes ~patches ~functional_changes =
   let rec loop seen_ids = function
     | [] -> Ok ()
     | (fc : Types.Functional_change.t) :: rest ->
-        if String.is_empty fc.id then
+        if String.is_empty (String.strip fc.id) then
           Error "functionalChanges[].id must be a non-empty string"
         else if Set.mem seen_ids fc.id then
           Error (Printf.sprintf "Duplicate functionalChange id: %s" fc.id)
@@ -889,6 +889,25 @@ let%test_module "Gameplan_parser" =
       | Ok _ -> false
       | Error msg ->
           String.is_substring msg ~substring:"Duplicate functionalChange"
+
+    let%test
+        "parse_json_string: whitespace-only functionalChange id returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "functionalChanges": [
+            {"id": "  ", "description": "x", "ownedBy": 1}
+          ],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg
+            ~substring:"functionalChanges[].id must be a non-empty string"
 
     let%test "parse_json_string: non-string open question returns Error" =
       let input =
