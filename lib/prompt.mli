@@ -48,6 +48,11 @@ val render_patch_layer :
     line. [functional_changes] should contain only the entries from
     [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id]. *)
 
+val owned_functional_changes : Gameplan.t -> Patch.t -> Functional_change.t list
+(** Returns the functional changes in the gameplan owned by this patch. Use this
+    when constructing patch layers directly, so composed and manually layered
+    prompts carry the same patch-stable content. *)
+
 val render_turn_layer_start : project_name:string -> string
 
 val render_turn_layer_review :
