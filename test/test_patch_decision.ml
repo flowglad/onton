@@ -170,7 +170,7 @@ let () =
            delivered ids"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, br) ->
-          let check =
+          let id_less_check =
             Ci_check.
               {
                 name = "legacy-status";
@@ -181,9 +181,20 @@ let () =
                 id = None;
               }
           in
+          let delivered_check =
+            Ci_check.
+              {
+                name = "delivered-workflow";
+                conclusion = "failure";
+                details_url = None;
+                description = None;
+                started_at = None;
+                id = Some 1;
+              }
+          in
           let a =
             with_pr pid br |> fun a ->
-            set_ci_checks a [ check ] |> fun a ->
+            set_ci_checks a [ id_less_check; delivered_check ] |> fun a ->
             record_delivered_ci_run_ids a [ 1 ]
           in
           equal_ci_decision (on_ci_failure a) Enqueue_ci);

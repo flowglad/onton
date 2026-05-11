@@ -132,9 +132,15 @@ let on_ci_failure (a : Patch_agent.t) : ci_decision =
     let has_undelivered_failure =
       not (List.is_empty (filter_undelivered_ci_failures a))
     in
-    if has_known_failure && not has_undelivered_failure then
-      Ci_already_delivered
-    else Enqueue_ci
+    match (has_known_failure, has_undelivered_failure) with
+    | true, false -> Ci_already_delivered
+    | false, _ ->
+        (* The poll queue can report a CI failure before GitHub has returned
+           the failed check rows. With no stable run id available to dedup
+           against [delivered_ci_run_ids], keep the signal deliverable instead
+           of dropping it as already delivered. *)
+        Enqueue_ci
+    | true, true -> Enqueue_ci
 
 let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     ~(pre_fire_agent : Patch_agent.t option)
