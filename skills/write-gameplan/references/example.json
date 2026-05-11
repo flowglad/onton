@@ -49,6 +49,34 @@
     }
   ],
 
+  "functionalChanges": [
+    {
+      "id": "FC-1",
+      "description": "Patch_decision is callable as a pure module from outside main.ml — its decision functions can be exercised in isolation without instantiating a runner fiber or any Eio I/O.",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-2",
+      "description": "Merged patches are skipped (disposition = Skip) regardless of busy/ci-failure state.",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-3",
+      "description": "Busy patches are never delivered (disposition is Skip or Queue, never Deliver).",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-4",
+      "description": "Patches with ci_failure_count ≥ 3 require human intervention (needs_intervention = true).",
+      "ownedBy": 3
+    },
+    {
+      "id": "FC-5",
+      "description": "main.ml runner_fiber delegates every patch-lifecycle decision to Patch_decision — no inline merged/busy/CI-failure checks remain in I/O code paths.",
+      "ownedBy": 4
+    }
+  ],
+
   "acceptanceCriteria": [
     "Patch_decision module exists with pure functions for all decision points",
     "All decision functions are covered by QCheck2 property tests",
@@ -132,7 +160,21 @@
         "Patch_decision > CI failure cap at 3"
       ],
       "testStubsImplemented": null,
-      "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only. No new invariants are\n> declared — stubs are pending markers implemented in Patch 3.\n> Redeclare Patch 1's types here so the module is self-contained.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n"
+      "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only. No new invariants are\n> declared — stubs are pending markers implemented in Patch 3.\n> Redeclare Patch 1's types here so the module is self-contained.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n",
+      "precedents": [
+        {
+          "kind": "pattern",
+          "name": "Property-based testing (QuickCheck-style)",
+          "url": "https://www.cs.tufts.edu/~nr/cs257/archive/john-hughes/quick.pdf",
+          "whyApplicable": "Express each spec invariant as a universally-quantified property over a generator, not as point examples. The 'merged patch is always skipped' invariant becomes a `Test.make` with a generator for {merged, busy, ci_failure_count} triples — shrinking will surface the minimal counterexample if the implementation diverges from the spec."
+        },
+        {
+          "kind": "library",
+          "name": "QCheck2",
+          "url": "https://github.com/c-cube/qcheck",
+          "whyApplicable": "OCaml property-based testing library. Use `QCheck2.Test.make ~name ~count gen prop` for each stub; reach for `QCheck2.Gen.{bool, int_bound, oneofl}` to compose the input generators rather than writing custom samplers."
+        }
+      ]
     },
     {
       "number": 3,
@@ -224,7 +266,8 @@
     "testMapImplPatchMatchesCode": true,
     "behaviorPatchesMinimal": true,
     "dependencyGraphOrdered": true,
-    "behaviorPatchesJustified": true
+    "behaviorPatchesJustified": true,
+    "functionalChangesOwnedByExactlyOnePatch": true
   },
 
   "mergabilityInsight": "3 of 4 patches are INFRA and can ship without changing observable behavior. Only Patch 4 changes behavior (wiring).",

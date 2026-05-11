@@ -48,7 +48,38 @@ Once you understand the vision, explore the complexity:
 - What could go wrong?
 - Are there external dependencies (APIs, services, other teams)?
 
-### Phase 3: Define Milestones
+### Phase 3: Identify Established Precedents
+
+Most non-trivial workstreams cross territory that has well-known solutions in the CS literature or proven libraries in the industry. **Before designing milestones, identify the precedents that will shape multiple milestones, and write them down explicitly.** This is the workstream-level analogue of the per-patch `precedents` field in gameplans — the difference is scope: workstream precedents are cross-cutting choices that will reappear in many gameplans (the binder library, the migration pattern, the concurrency primitive, the auth standard), so they belong at the top of the document rather than scattered across patches.
+
+Work through these prompts with the user:
+
+- For each key challenge from Phase 2, ask: **has someone already solved this?** Is there a named algorithm, a maintained library, a documented pattern, an RFC, or an audited reference implementation?
+- For cross-cutting concerns (concurrency, persistence, auth, crypto, schema migration, distributed coordination, parsing, scheduling), ask which proven approach the workstream commits to.
+- For any "we're going to roll our own X" answer, push back: is there a real reason to roll our own, or is it just unfamiliarity with the prior art? Rolling your own is sometimes correct, but the decision should be conscious.
+
+**What counts as a workstream-level precedent**:
+
+- It applies across **multiple milestones** (otherwise it belongs on a specific patch when the gameplan is written).
+- It is a **load-bearing reference**: implementing agents will need to look up its API, algorithm steps, or invariants while writing code.
+- It has **non-trivial real-world adoption** — a library used in shipping projects, an algorithm cited in production literature, a pattern documented by recognised practitioners.
+
+**Do real research, not name-dropping**. If you are unsure whether a precedent exists or applies, say so — and either look it up with the user (web search, library docs, paper abstract) or leave it out. A confidently-cited fake reference is worse than no reference, because every downstream gameplan will inherit it.
+
+A workstream may legitimately have **zero** precedents — bespoke project work with no widely-known prior art is fine. Do not manufacture references.
+
+Common workstream-level precedent categories (not exhaustive):
+
+- **Concurrency**: Eio / Tokio / structured concurrency, CSP, actor model, Reactive Streams.
+- **Persistence and migration**: expand/contract migrations, event sourcing, the outbox pattern.
+- **Auth and crypto**: OAuth 2.0 / RFC 6749, PASETO, JWT/RFC 7519, audited libraries (libsodium, ring).
+- **Parsing**: parser generators (Menhir, ANTLR), combinator libraries, GLR.
+- **Type and binder handling**: Bindlib, locally-nameless representation, Hindley-Milner.
+- **Graph and search**: Tarjan SCC, Dijkstra, Union-Find with path compression.
+- **Testing**: property-based testing (QuickCheck), differential testing, snapshot testing.
+- **Distributed coordination**: Raft, vector clocks, idempotency keys, sagas.
+
+### Phase 4: Define Milestones
 
 Work with the user to break the work into milestones. For each potential milestone, validate:
 
@@ -57,7 +88,7 @@ Work with the user to break the work into milestones. For each potential milesto
 3. **What's the definition of done?** What is true about the codebase when this is complete?
 4. **What does it unlock?** What becomes possible after this milestone?
 
-### Phase 4: Sequence and Dependencies
+### Phase 5: Sequence and Dependencies
 
 Once milestones are identified, work out the order:
 
@@ -81,6 +112,9 @@ Each milestone should have:
 **Unlocks**:
 [What becomes possible after this milestone is done?]
 
+**Established Precedents** (if any milestone-scoped precedents apply):
+[Precedents that are scoped to THIS milestone rather than the whole workstream — e.g. a library or algorithm that only shows up in one milestone's patches. Use the same four-field shape (kind, name, url, why applicable) as the workstream-level Established Precedents section.]
+
 **Open Questions** (if any):
 [Questions that need to be answered before or during this gameplan]
 ```
@@ -93,10 +127,22 @@ Key sections:
 - **Vision** — 2-4 sentences describing end state and why it matters
 - **Current State** — where the codebase is today relative to the vision
 - **Key Challenges** — hardest parts or biggest unknowns
-- **Milestones** — sequenced with Definition of Done, pause points, unlocks
+- **Established Precedents** — cross-cutting libraries, algorithms, patterns, papers, or RFCs the workstream adopts; each with kind, name, URL, and why applicable
+- **Milestones** — sequenced with Definition of Done, pause points, unlocks, optional milestone-scoped precedents
 - **Dependency Graph** — milestone dependencies in tooling-compatible format
 - **Open Questions** — unresolved questions for the workstream
-- **Decisions Made** — key decisions with rationale
+- **Decisions Made** — key decisions that are NOT precedents (philosophy, rejected libraries, framing choices) with rationale
+
+## Handoff to write-gameplan
+
+Workstream-level precedents are not the final word — they are inputs to the per-milestone gameplans. When `write-gameplan` is invoked for a specific milestone with a workstream reference:
+
+1. It reads the workstream's `Established Precedents` section.
+2. For each precedent, it identifies which patches in that milestone actually consume it (touch the API, implement the algorithm, depend on the invariants).
+3. It attaches the precedent to those specific patches via the gameplan's per-patch `precedents` field — not blanket-copied onto every patch.
+4. Milestone-scoped precedents (if any) are handled the same way, restricted to patches within that milestone.
+
+Write the workstream-level precedents once, in this skill's output. Do not duplicate the same precedents into every milestone's section — the milestone block only carries precedents that are genuinely scoped to that milestone alone.
 
 ## Important Principles
 
@@ -109,6 +155,8 @@ Key sections:
 4. **Surface uncertainty early.** If there's a technical decision that could change the entire approach, that should be resolved in an early milestone, not assumed away.
 
 5. **Don't over-plan.** Later milestones can be less detailed than early ones. You'll learn things as you go.
+
+6. **Prefer proven precedents over rolling your own.** When a problem has well-known solutions in the literature or industry, cite them in the `Established Precedents` section so every downstream gameplan inherits the same proven design. Conscious decisions to roll your own are fine; cargo-cult avoidance of prior art is not.
 
 ## Recording
 

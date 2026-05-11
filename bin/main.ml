@@ -2360,10 +2360,15 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                         Prompt.render_gameplan_layer
                                           ~project_name gameplan
                                       in
+                                      let functional_changes =
+                                        Prompt.owned_functional_changes gameplan
+                                          patch
+                                      in
                                       let patch_prompt =
                                         Prompt.render_patch_layer ~project_name
                                           patch
                                           ?pr_number:agent.Patch_agent.pr_number
+                                          ~functional_changes
                                           ~base_branch:
                                             (Branch.to_string base_branch)
                                           ()
@@ -2880,8 +2885,13 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                       let patch_prompt =
                                         match patch with
                                         | Some p ->
+                                            let functional_changes =
+                                              Prompt.owned_functional_changes
+                                                gameplan p
+                                            in
                                             Prompt.render_patch_layer
                                               ~project_name p ?pr_number
+                                              ~functional_changes
                                               ~base_branch:base ()
                                         | None -> ""
                                       in
@@ -3329,8 +3339,13 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                     let patch_prompt =
                                       match patch_for_layer with
                                       | Some p ->
+                                          let functional_changes =
+                                            Prompt.owned_functional_changes
+                                              gameplan p
+                                          in
                                           Prompt.render_patch_layer
                                             ~project_name p ?pr_number
+                                            ~functional_changes
                                             ~base_branch:base_branch_for_layer
                                             ()
                                       | None -> ""
@@ -3779,6 +3794,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
             explicit_opinions = "";
             acceptance_criteria = [];
             open_questions = [];
+            functional_changes = [];
           }
       in
       let backend, model = resolve_backend_model ~backend ~model in

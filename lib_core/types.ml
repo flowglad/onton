@@ -129,6 +129,19 @@ module Comment = struct
   include Comparator.Make (T)
 end
 
+module Precedent = struct
+  type t = {
+    kind : string;
+    name : string;
+    url : string option; [@yojson.default None]
+    why_applicable : string; [@yojson.default ""]
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** Established prior art (library, algorithm, pattern, paper, RFC, doc, blog
+      post) that a patch should adopt. Surfaced to the implementing agent in the
+      patch prompt so it can prefer proven techniques over rolling its own. *)
+end
+
 module Patch = struct
   type t = {
     id : Patch_id.t;
@@ -144,6 +157,7 @@ module Patch = struct
     test_stubs_introduced : string list; [@yojson.default []]
     test_stubs_implemented : string list; [@yojson.default []]
     complexity : int option; [@yojson.default None]
+    precedents : Precedent.t list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
@@ -236,6 +250,16 @@ module Stream_event = struct
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
 
+module Functional_change = struct
+  type t = { id : string; description : string; owned_by : Patch_id.t }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** A functional/behavioural change the gameplan introduces. The
+      [functional_changes] array on [Gameplan.t] is exhaustive, and the mapping
+      via [owned_by] is total and single-valued: every change has exactly one
+      owning patch. Surfaced to the patch agent's prompt so the agent knows
+      which user-visible behaviors it must deliver. *)
+end
+
 module Gameplan = struct
   type t = {
     project_name : string;
@@ -243,6 +267,7 @@ module Gameplan = struct
     solution_summary : string;
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
+    functional_changes : Functional_change.t list; [@yojson.default []]
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

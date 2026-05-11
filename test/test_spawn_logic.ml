@@ -24,6 +24,7 @@ let make_gameplan patches =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
 
 (* ========== Helper: prepare orchestrator with PRs and queued ops ========== *)

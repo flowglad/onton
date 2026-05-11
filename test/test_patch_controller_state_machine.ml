@@ -21,6 +21,7 @@ let make_patch pid branch =
       test_stubs_introduced = [];
       test_stubs_implemented = [];
       complexity = None;
+      precedents = [];
     }
 
 let make_gameplan patch =
@@ -35,6 +36,7 @@ let make_gameplan patch =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
 
 let messages_equal a b = List.equal Orchestrator.equal_patch_agent_message a b

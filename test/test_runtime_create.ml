@@ -17,6 +17,7 @@ let () =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
   in
   let snapshot =
@@ -49,6 +50,7 @@ let () =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
   in
   let snapshot =

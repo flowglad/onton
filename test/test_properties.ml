@@ -14,6 +14,7 @@ let make_gameplan patches =
       explicit_opinions = "";
       acceptance_criteria = [];
       open_questions = [];
+      functional_changes = [];
     }
 
 let tick orch ~patches =
@@ -155,6 +156,7 @@ let () =
          test_stubs_introduced = [];
          test_stubs_implemented = [];
          complexity = None;
+         precedents = [];
        }
    in
    let a = Types.Patch_id.of_string "A" in
@@ -395,6 +397,7 @@ let () =
           test_stubs_introduced = [];
           test_stubs_implemented = [];
           complexity = None;
+          precedents = [];
         };
     ]
   in
@@ -455,6 +458,7 @@ let () =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
 
@@ -566,6 +570,7 @@ let () =
           test_stubs_introduced = [];
           test_stubs_implemented = [];
           complexity = None;
+          precedents = [];
         };
       Types.Patch.
         {
@@ -582,6 +587,7 @@ let () =
           test_stubs_introduced = [];
           test_stubs_implemented = [];
           complexity = None;
+          precedents = [];
         };
     ]
   in
@@ -630,6 +636,7 @@ let () =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           };
       ]
     in
@@ -658,6 +665,7 @@ let () =
                 test_stubs_introduced = [];
                 test_stubs_implemented = [];
                 complexity = None;
+                precedents = [];
               };
           ]
         in
@@ -764,6 +772,7 @@ let () =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           };
       ]
     in
@@ -829,6 +838,7 @@ let () =
                   test_stubs_introduced = [];
                   test_stubs_implemented = [];
                   complexity = None;
+                  precedents = [];
                 };
             ]
           in
@@ -905,6 +915,7 @@ let () =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           };
       ]
     in

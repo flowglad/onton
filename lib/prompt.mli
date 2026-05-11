@@ -37,13 +37,21 @@ val render_patch_layer :
   project_name:string ->
   Patch.t ->
   ?pr_number:Pr_number.t ->
+  ?functional_changes:Functional_change.t list ->
   base_branch:string ->
   unit ->
   string
 (** Patch-stable middle. Contains the patch heading, dependencies, base-branch
-    note, description, changes, files, test stubs, specification (with
-    Pantagruel guide), acceptance criteria, git identifiers, and PR
-    instructions. Ends with a trailing blank line. *)
+    note, description, the functional changes the patch owns (if any), changes,
+    files, test stubs, specification (with Pantagruel guide), acceptance
+    criteria, git identifiers, and PR instructions. Ends with a trailing blank
+    line. [functional_changes] should contain only the entries from
+    [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id]. *)
+
+val owned_functional_changes : Gameplan.t -> Patch.t -> Functional_change.t list
+(** Returns the functional changes in the gameplan owned by this patch. Use this
+    when constructing patch layers directly, so composed and manually layered
+    prompts carry the same patch-stable content. *)
 
 val render_turn_layer_start : project_name:string -> string
 

@@ -1965,6 +1965,7 @@ let () =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           }
         in
         let b : Patch.t =

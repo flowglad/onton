@@ -31,6 +31,7 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 2. Identify which milestone this gameplan corresponds to
 3. Review the milestone's "Definition of Done" — this informs your acceptance criteria
 4. Ensure your gameplan leaves the codebase in a consistent state
+5. Read the workstream's `Established Precedents` section (plus any milestone-scoped precedents). For each precedent, identify the specific patches in this gameplan that consume it — touch its API, implement its algorithm, depend on its invariants — and attach it to those patches' `precedents` arrays. Do **not** blanket-copy workstream precedents onto every patch; only the ones that actually use the technique. See [Leveraging Established Precedents](#leveraging-established-precedents) for the per-patch shape.
 
 **If no workstream is provided**, treat this as a standalone gameplan.
 
@@ -54,6 +55,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `currentStateAnalysis` | `string` | Where the codebase is now vs. where it needs to be |
 | `mergabilityStrategy` | `object` | `{ featureFlagStrategy, featureFlags, patchOrderingStrategy }` |
 | `requiredChanges` | `array` | `[{ file, line, description, signature }]` |
+| `functionalChanges` | `array` | `[{ id, description, ownedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
 | `acceptanceCriteria` | `string[]` | Each is a "done" condition |
 | `openQuestions` | `string[]` | Decisions for the team (empty array if none) |
 | `explicitOpinions` | `array` | `[{ opinion, rationale }]` |
@@ -66,7 +68,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 ### Required Patch Fields
 
-Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string).
+Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string). Patches may also include an optional `precedents` array citing established libraries, algorithms, or patterns the patch should adopt — see [Leveraging Established Precedents](#leveraging-established-precedents).
 
 The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
 
@@ -103,6 +105,44 @@ Each patch includes a `classification` field:
 
 **Goal**: Maximize `INFRA` and `GATED` patches. Minimize `BEHAVIOR` patches.
 
+## Functional Change Ownership
+
+A gameplan whose patches share responsibility for a behavioral change vaguely fails in a predictable way: each patch implementer reads the prose narrative, sees the change mentioned, and assumes a different patch owns it. The change falls through the cracks. The whole point of decomposing a gameplan into mergeable patches is defeated when a behavior is described as a gameplan-level concept that has no single named owner.
+
+The `functionalChanges` array prevents this. It is an **exhaustive enumeration** of every functional or behavioural delta the gameplan introduces, with each entry assigned to exactly one owning patch.
+
+### What goes here
+
+- Every observable behavior the system gains, loses, or changes as a result of this gameplan.
+- Every user-visible or API-visible change (new endpoint shape, new return value, new error path, removed deprecation).
+- Every change in protocol, contract, or invariant that downstream code can detect.
+
+What does **not** go here:
+
+- Pure refactors that have no observable effect (those still belong in `patches[].changes` as implementation steps).
+- File or signature edits (those belong in `requiredChanges`).
+- Internal helper introductions that are not callable from outside the module being changed.
+
+### The mapping
+
+Each `functionalChange` has `id` (`FC-1`, `FC-2`, …), a single-outcome `description`, and an `ownedBy` patch id. The mapping is:
+
+- **Total**: every functional change has an owner. No orphans.
+- **Single-valued**: exactly one patch owns each change. No shared ownership; co-owning a change is the failure mode this section is designed to prevent.
+- **Not strictly surjective**: an INFRA-only patch that introduces types or test stubs need not own any functional change. Most observable changes land on GATED or BEHAVIOR patches.
+
+If the same behavior is co-implemented by two patches, the change description is too coarse — split it into two changes (one per patch), each describing the slice that patch delivers.
+
+### How it surfaces to the patch agent
+
+Downstream consumers (notably onton's patch prompt renderer) read `functionalChanges` and inject the subset `ownedBy` each patch into that patch's agent prompt as an explicit "Functional Changes You Own" section. The implementing agent therefore sees the precise list of user-visible behaviors it is responsible for delivering, separate from its `changes` implementation steps. This is what closes the loophole — there is no longer prose-only behavior that no patch acknowledges.
+
+### Authoring guidance
+
+- Write each entry as the **outcome**, not the mechanism. "Merged patches are skipped instead of queued" is correct; "Add a merged-check branch to disposition" is an implementation step and belongs in `patches[].changes`.
+- Cross-check against `problemStatement`, `solutionSummary`, and `acceptanceCriteria`: every behavioral promise made there must correspond to at least one `functionalChange` entry. If you cannot point at the owning patch for a sentence in the problem statement, the gameplan has a gap.
+- Cross-check against `finalStateSpec`: every behavioral invariant in the spec should map to a functional change that introduces it (the spec says *what is true at the end*; the functional change says *which patch made it true*).
+
 ## Patch Complexity
 
 Each patch includes a `complexity` field — an integer in `1`/`2`/`3` estimating how hard the patch is to implement correctly. This is used by orchestrators (e.g. onton's `--model auto`) to route harder patches to stronger models.
@@ -125,6 +165,47 @@ Do not assign complexity from the patch title alone. Before scoring:
 4. **Score based on the worst case among the changes the patch introduces**, not the median. A patch that mostly renames things but also adds one tricky lock should be scored on the lock.
 
 If after reading you cannot tell whether something is `2` or `3`, it is `3`. If you cannot tell whether something is `1` or `2`, it is `2`.
+
+## Leveraging Established Precedents
+
+Most non-trivial engineering problems have well-known solutions: a CS algorithm with a name, a library that already solves the hard part, a design pattern with documented trade-offs, an RFC that pins down the wire format. **When a patch is solving a problem that has established prior art, identify the precedent and attach it to that patch via the optional `precedents` field.** Prefer proven, robust techniques over rolling our own — and give the implementing agent enough of a reference that it can fetch more detail when it needs to.
+
+### When precedents apply
+
+A patch likely has a precedent worth citing whenever it touches an area with mature, named solutions. Common examples (not exhaustive):
+
+- **Variable binding / scope handling** — capture-avoiding substitution, alpha renaming, free-variable computation (named libraries exist for most languages; locally-nameless and de Bruijn indices are documented techniques).
+- **Parsing and lexing** — established parser generators and combinator libraries; standard error-recovery strategies (panic-mode, GLR).
+- **Graph algorithms** — Tarjan SCC, Dijkstra/A* shortest path, Kahn topological sort, Union-Find with path compression.
+- **Type systems** — Hindley–Milner / Algorithm W; bidirectional type-checking; row polymorphism.
+- **Distributed coordination** — Raft, consistent hashing, idempotency keys, the outbox pattern, sagas, vector clocks.
+- **Cryptography** — never roll your own. Cite the standard (RFC, NIST suite, IETF draft) and an audited library implementation.
+- **Concurrency** — battle-tested constructs (Michael–Scott queues, Treiber stacks, structured concurrency, CSP/actor model).
+- **Streaming / backpressure** — Reactive Streams, async iterator protocols, credit-based flow control.
+- **Schema and data migration** — expand/contract migrations, accretive change, dual-write/backfill/cutover patterns.
+- **State machines / workflow engines** — hierarchical state charts, event sourcing, deterministic replay.
+
+A patch may have **zero** precedents. Bespoke project glue (wiring two existing modules together, renaming a field, adding a config flag) usually does not warrant any citation. Do not manufacture references where none apply.
+
+### What to write
+
+Each precedent entry has four fields:
+
+- **`kind`** — one of `library`, `algorithm`, `pattern`, `paper`, `rfc-spec`, `documentation`, `blog-post`. Pick the most specific kind that fits.
+- **`name`** — the most precise identifier a reader will recognise. `"Tarjan 1972 strongly connected components"` is better than `"a graph algorithm"`; `"RFC 7519 JSON Web Tokens"` is better than `"JWT spec"`.
+- **`url`** — the canonical link (library homepage or repo, paper DOI or arXiv, RFC URL, official docs page). Required for kinds where a URL is the durable reference (`paper`, `rfc-spec`, `documentation`, `blog-post`); strongly preferred for libraries. Do not guess URLs — fetch the real one (e.g. `WebFetch`) or leave it `null`.
+- **`whyApplicable`** — 1-2 sentences explaining what part of *this specific patch* the precedent informs and the concrete shape it imposes. Not generic praise: name the API call, the algorithm step, or the invariant that the precedent supplies. The implementing agent reads this to decide whether to fetch the reference, so be specific.
+
+### Do real research, not name-dropping
+
+- **Do not invent precedents.** A false reference is worse than none — the implementing agent will waste tokens chasing something that doesn't exist or doesn't apply. If you are not confident a precedent applies, omit it.
+- **Verify the reference exists before citing.** Fetch the library docs, the paper abstract, or the RFC index when in doubt. Do not cite from memory if the project depends on the precedent being real.
+- **Prefer precedents with non-trivial real-world adoption** — libraries used in shipping projects, algorithms cited in production literature. Abandoned or experimental references are weak evidence.
+- **Cite at the level of the technique, not the buzzword.** If three libraries implement the same algorithm, the precedent might be the algorithm (kind: `algorithm`) with the recommended library named in `whyApplicable`. Conversely, if the value is the specific library's API design, the precedent is the library.
+
+### Where to attach
+
+Attach precedents at the **patch** level, on the specific patches the precedent informs — typically the patch that introduces a new dependency or implements the named technique, plus any consumers that need to call its API. A precedent that drives the whole gameplan should still be replicated on each patch that depends on it, so an implementing agent picking up Patch N alone has the reference in hand.
 
 ## Mergability Strategy
 
@@ -194,7 +275,8 @@ After writing the gameplan JSON, verify:
 2. **Each spec MUST parse cleanly** — extract `spec`/`finalStateSpec` strings to temp files and validate them with the spec language's toolchain (see [Specification Language](#specification-language)). Fix any parse errors before finalizing. If the toolchain is not installed, flag it as a blocker — do NOT skip validation or fall back to manual review
 3. The dependency graph is a valid DAG
 4. All test stubs have corresponding implementations
-5. The mergability checklist passes
+5. **Functional change ownership is total and single-valued** — every `functionalChanges[i].id` is unique; every `functionalChanges[i].ownedBy` resolves to an existing `patches[].number`; no functional change appears unowned in prose. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec` and confirm every behavioral promise has a corresponding `functionalChanges` entry pointing at a single patch. Set `mergabilityChecklist.functionalChangesOwnedByExactlyOnePatch` to `true` only when this holds.
+6. The mergability checklist passes
 
 ## Resolving Open Questions
 

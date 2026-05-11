@@ -12,6 +12,7 @@
     "mergabilityStrategy",
     "currentStateAnalysis",
     "requiredChanges",
+    "functionalChanges",
     "acceptanceCriteria",
     "openQuestions",
     "explicitOpinions",
@@ -54,6 +55,11 @@
     "requiredChanges": {
       "type": "array",
       "items": { "$ref": "#/$defs/requiredChange" }
+    },
+    "functionalChanges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/functionalChange" },
+      "description": "Exhaustive enumeration of the functional/behavioural changes this gameplan introduces, each assigned to exactly one owning patch. Use this to defeat the failure mode where a change is described prose-only in the problem/solution narrative and every patch implementer assumes some other patch owns it. The mapping is total on changes: every entry has an `ownedBy` patch. Multiple changes may map to the same patch; INFRA-only patches that introduce no observable change need not appear here. Downstream consumers (e.g. onton's patch prompt renderer) MUST surface the subset of functionalChanges ownedBy each patch in that patch's agent prompt, so the implementing agent knows exactly which user-visible behaviors are its responsibility."
     },
     "acceptanceCriteria": {
       "type": "array",
@@ -172,6 +178,26 @@
       },
       "additionalProperties": false
     },
+    "functionalChange": {
+      "type": "object",
+      "required": ["id", "description", "ownedBy"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^FC-[0-9]+$",
+          "description": "Stable identifier (e.g. 'FC-1', 'FC-2'), unique within the gameplan. Lets commits, PRs, and other artifacts cite the change by reference."
+        },
+        "description": {
+          "type": "string",
+          "description": "A single specific functional or behavioural change, phrased as an observable outcome ('Merged patches are skipped instead of queued', 'main.ml delegates lifecycle decisions to Patch_decision'). Not an implementation step. If a single description bundles multiple deltas, split into separate entries — granularity matters because the owning patch's agent will receive this exact text as the list of behaviors it must deliver."
+        },
+        "ownedBy": {
+          "$ref": "#/$defs/patchId",
+          "description": "The single patch responsible for delivering this change. Exactly one owner — no shared ownership, no orphans. The owning patch's agent prompt will list this change explicitly so the implementing agent cannot defer it to another patch."
+        }
+      },
+      "additionalProperties": false
+    },
     "requiredChange": {
       "type": "object",
       "required": ["file", "description"],
@@ -247,6 +273,50 @@
         "spec": {
           "type": "string",
           "description": "Formal specification source — invariants that hold after this patch. Focus on the delta — only what this patch introduces or changes. Each patch spec is self-contained — redeclare any domains/rules from prior patches that this patch references. For INFRA patches that only add types, the spec may declare domains and rules with no body propositions (the types themselves are the contribution). For BEHAVIOR patches, include invariants about the new behavior. Keep specs minimal — only what this patch guarantees, not the entire system."
+        },
+        "precedents": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/precedent" },
+          "description": "Established prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) that informs this patch. Cite concrete proven techniques the implementing agent should adopt rather than rolling its own. Null or omitted means no specific precedent applies (e.g. the patch is bespoke project glue). See SKILL.md's 'Leveraging Established Precedents' section for when and how to populate this."
+        }
+      },
+      "additionalProperties": false
+    },
+    "precedent": {
+      "type": "object",
+      "required": ["kind", "name", "whyApplicable"],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["paper", "rfc-spec", "documentation", "blog-post"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["url"]
+          }
+        }
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["library", "algorithm", "pattern", "paper", "rfc-spec", "documentation", "blog-post"],
+          "description": "What kind of precedent this is. 'library' = an existing dependency to adopt directly; 'algorithm' = a named algorithm (e.g. Tarjan SCC, Hindley-Milner Algorithm W); 'pattern' = a well-known design pattern (e.g. outbox pattern, expand-contract migration); 'paper' = academic literature; 'rfc-spec' = standards (RFC, ECMA, NIST); 'documentation' = canonical vendor/maintainer docs; 'blog-post' = a respected practitioner write-up."
+        },
+        "name": {
+          "type": "string",
+          "description": "The most specific identifier the implementing agent will recognise (e.g. 'Bindlib', 'Tarjan 1972 strongly connected components', 'RFC 7519 JSON Web Tokens'). Avoid vague labels like 'a graph algorithm'."
+        },
+        "url": {
+          "type": ["string", "null"],
+          "description": "Canonical link to the precedent (library homepage / repo, paper DOI or arXiv URL, RFC URL, official docs page). Required for 'paper', 'rfc-spec', 'documentation', and 'blog-post' kinds where the URL is the durable reference. Omit only if no stable URL exists. Do not guess URLs — fetch the real one or leave it null."
+        },
+        "whyApplicable": {
+          "type": "string",
+          "description": "1-2 sentences: what part of THIS patch the precedent informs, and the concrete shape it imposes on the implementation. The implementing agent decides from this whether to read the reference, so be specific (e.g. 'Use bind_mvar / unmbind to construct and destructure quantifier binders' beats 'use for binders')."
         }
       },
       "additionalProperties": false
@@ -330,7 +400,8 @@
         "testMapImplPatchMatchesCode",
         "behaviorPatchesMinimal",
         "dependencyGraphOrdered",
-        "behaviorPatchesJustified"
+        "behaviorPatchesJustified",
+        "functionalChangesOwnedByExactlyOnePatch"
       ],
       "properties": {
         "featureFlagStrategyDocumented": { "type": "boolean" },
@@ -341,7 +412,11 @@
         "testMapImplPatchMatchesCode": { "type": "boolean" },
         "behaviorPatchesMinimal": { "type": "boolean" },
         "dependencyGraphOrdered": { "type": "boolean" },
-        "behaviorPatchesJustified": { "type": "boolean" }
+        "behaviorPatchesJustified": { "type": "boolean" },
+        "functionalChangesOwnedByExactlyOnePatch": {
+          "type": "boolean",
+          "description": "Every entry in functionalChanges has exactly one ownedBy patch, that patch exists, and the union of described behaviors covers every observable change implied by problemStatement/solutionSummary/acceptanceCriteria. No behavioral outcome is described in prose without a single named owner."
+        }
       },
       "additionalProperties": false
     }
