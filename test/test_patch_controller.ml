@@ -602,6 +602,68 @@ let () =
           ~equal:Operation_kind.equal)
   in
 
+  let prop_delivered_ci_run_does_not_reenqueue =
+    Test.make
+      ~name:
+        "patch_controller: delivered failing CI run is not re-enqueued from \
+         poll"
+      ~count:200
+      Gen.(triple gen_patch_id gen_branch (int_range 1 1_000_000))
+      (fun (pid, branch, run_id) ->
+        let patch = make_patch pid branch in
+        let check =
+          Ci_check.
+            {
+              name = "ts2pant";
+              conclusion = "failure";
+              details_url = None;
+              description = None;
+              started_at = None;
+              id = Some run_id;
+            }
+        in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:true ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:true ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[ run_id ]
+        in
+        let orch = make_orch patch agent in
+        let poll =
+          Poller.
+            {
+              queue = [ Operation_kind.Ci ];
+              merged = false;
+              closed = false;
+              is_draft = false;
+              has_conflict = false;
+              merge_ready = false;
+              checks_passing = false;
+              ci_checks = [ check ];
+            }
+        in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid
+            (make_poll_observation poll)
+        in
+        let agent = Orchestrator.agent orch pid in
+        not
+          (List.mem agent.Patch_agent.queue Operation_kind.Ci
+             ~equal:Operation_kind.equal))
+  in
+
   let prop_poll_result_persists_world_flags =
     Test.make ~name:"patch_controller: poll result persists checks_passing flag"
       ~count:200
@@ -988,6 +1050,7 @@ let () =
       prop_poll_to_controller_promotes_ready_after_pr_body;
       prop_poll_ci_failure_never_erases_pr_body_followup;
       prop_idle_ci_failure_count_allows_reenqueue;
+      prop_delivered_ci_run_does_not_reenqueue;
       prop_poll_result_persists_world_flags;
       prop_poll_observation_updates_branch_metadata;
       prop_mixed_cycle_converges_for_bootstrap_patch;

@@ -141,6 +141,52 @@ let () =
           let a = respond a Operation_kind.Ci in
           let a = complete a in
           equal_ci_decision (on_ci_failure a) Enqueue_ci);
+      Test.make
+        ~name:
+          "on_ci_failure: all known failing run ids delivered -> already \
+           delivered"
+        Gen.(triple gen_pid gen_branch (int_range 1 1_000_000))
+        (fun (pid, br, run_id) ->
+          let check =
+            Ci_check.
+              {
+                name = "test";
+                conclusion = "failure";
+                details_url = None;
+                description = None;
+                started_at = None;
+                id = Some run_id;
+              }
+          in
+          let a =
+            with_pr pid br |> fun a ->
+            set_ci_checks a [ check ] |> fun a ->
+            record_delivered_ci_run_ids a [ run_id ]
+          in
+          equal_ci_decision (on_ci_failure a) Ci_already_delivered);
+      Test.make
+        ~name:
+          "on_ci_failure: id-less failing check remains deliverable after \
+           delivered ids"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, br) ->
+          let check =
+            Ci_check.
+              {
+                name = "legacy-status";
+                conclusion = "failure";
+                details_url = None;
+                description = None;
+                started_at = None;
+                id = None;
+              }
+          in
+          let a =
+            with_pr pid br |> fun a ->
+            set_ci_checks a [ check ] |> fun a ->
+            record_delivered_ci_run_ids a [ 1 ]
+          in
+          equal_ci_decision (on_ci_failure a) Enqueue_ci);
       (* ---- on_human_message: fresh queue -> Enqueue_human ---- *)
       Test.make ~name:"on_human_message: no Human in queue -> Enqueue_human"
         Gen.(pair gen_pid gen_branch)

@@ -39,18 +39,11 @@ type ci_decision =
   | Ci_already_queued  (** Ci already in queue — no action needed. *)
   | Ci_fix_in_progress
       (** Agent is already fixing CI — suppress until checks pass. *)
+  | Ci_already_delivered
+      (** Every currently failing check with a stable run id was already
+          delivered to the agent. *)
   | Cap_reached  (** CI failure count >= 3 — do not enqueue, flag. *)
 [@@deriving show, eq, sexp_of, compare]
-
-let on_ci_failure (a : Patch_agent.t) : ci_decision =
-  if a.ci_failure_count >= 3 then Cap_reached
-  else if
-    a.busy
-    && Option.equal Operation_kind.equal a.current_op (Some Operation_kind.Ci)
-  then Ci_fix_in_progress
-  else if List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal then
-    Ci_already_queued
-  else Enqueue_ci
 
 type human_decision =
   | Enqueue_human  (** Queue human feedback for processing. *)
@@ -125,6 +118,23 @@ let filter_undelivered_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
         | None -> true
         | Some id ->
             not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
+
+let on_ci_failure (a : Patch_agent.t) : ci_decision =
+  if a.ci_failure_count >= 3 then Cap_reached
+  else if
+    a.busy
+    && Option.equal Operation_kind.equal a.current_op (Some Operation_kind.Ci)
+  then Ci_fix_in_progress
+  else if List.mem a.queue Operation_kind.Ci ~equal:Operation_kind.equal then
+    Ci_already_queued
+  else
+    let has_known_failure = List.exists a.ci_checks ~f:Ci_check.is_failure in
+    let has_undelivered_failure =
+      not (List.is_empty (filter_undelivered_ci_failures a))
+    in
+    if has_known_failure && not has_undelivered_failure then
+      Ci_already_delivered
+    else Enqueue_ci
 
 let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
     ~(pre_fire_agent : Patch_agent.t option)
