@@ -115,6 +115,7 @@ let apply_poll_result t patch_id
           t)
       else t
   in
+  let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
   let agent_before = Orchestrator.agent t patch_id in
   let t =
     List.fold poll_result.queue ~init:t ~f:(fun acc kind ->
@@ -144,6 +145,9 @@ let apply_poll_result t patch_id
             | Patch_decision.Ci_fix_in_progress ->
                 log "CI fix in progress — skipping";
                 acc
+            | Patch_decision.Ci_already_delivered ->
+                log "CI failure already delivered — skipping";
+                acc
             | Patch_decision.Cap_reached ->
                 log "CI failure cap reached (>=3) — skipping CI enqueue";
                 acc)
@@ -170,7 +174,6 @@ let apply_poll_result t patch_id
       log "Marked as ready for review";
     t
   in
-  let t = Orchestrator.set_ci_checks t patch_id poll_result.ci_checks in
   let t =
     Orchestrator.set_checks_passing t patch_id poll_result.checks_passing
   in
