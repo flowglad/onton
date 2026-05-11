@@ -95,6 +95,31 @@ let optional_list_section ~header items =
   | [] -> ""
   | _ -> optional_section ~header (format_list items)
 
+let format_precedents (ps : Precedent.t list) : string =
+  if List.is_empty ps then ""
+  else
+    let body =
+      List.map ps ~f:(fun p ->
+          let url_part =
+            match p.Precedent.url with
+            | None | Some "" -> ""
+            | Some u -> Printf.sprintf " — %s" u
+          in
+          let why =
+            if String.is_empty p.why_applicable then ""
+            else " — " ^ p.why_applicable
+          in
+          Printf.sprintf "- **[%s] %s**%s%s" p.kind p.name url_part why)
+      |> String.concat ~sep:"\n"
+    in
+    "\n\
+     ## Established Precedents\n\n\
+     This patch should adopt the following proven techniques rather than \
+     rolling its own. Read the references when you need detail on the API \
+     shape or invariants they impose. Each entry names a library, algorithm, \
+     pattern, paper, RFC, doc, or blog post; the trailing sentence explains \
+     how it applies to this specific patch.\n\n" ^ body ^ "\n"
+
 let agents_md_section = function
   | Some content when not (String.is_empty (String.strip content)) ->
       "## Project Conventions (AGENTS.md)\n\n" ^ String.rstrip content ^ "\n\n"
@@ -281,6 +306,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
           patch.acceptance_criteria );
       ( "files_section",
         optional_list_section ~header:"Files to Modify" patch.files );
+      ("precedents_section", format_precedents patch.Patch.precedents);
       ( "test_stubs_introduced_section",
         optional_list_section ~header:"Test Stubs Introduced"
           patch.test_stubs_introduced );
@@ -301,7 +327,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 ## Your Task
 
 {{base_branch_note}}{{description}}
-{{changes_section}}{{files_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
+{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
@@ -366,6 +392,7 @@ let%test "render_spec_suffix: both empty" =
       test_stubs_introduced = [];
       test_stubs_implemented = [];
       complexity = None;
+      precedents = [];
     }
   in
   let gameplan =
@@ -399,6 +426,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       test_stubs_introduced = [];
       test_stubs_implemented = [];
       complexity = None;
+      precedents = [];
     }
   in
   let gameplan =
@@ -435,6 +463,7 @@ let%test "render_spec_suffix: patch spec only" =
       test_stubs_introduced = [];
       test_stubs_implemented = [];
       complexity = None;
+      precedents = [];
     }
   in
   let gameplan =
@@ -471,6 +500,7 @@ let%test "render_spec_suffix: both present" =
       test_stubs_introduced = [];
       test_stubs_implemented = [];
       complexity = None;
+      precedents = [];
     }
   in
   let gameplan =
@@ -518,6 +548,7 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
           patch.acceptance_criteria );
       ( "files_section",
         optional_list_section ~header:"Files to Modify" patch.files );
+      ("precedents_section", format_precedents patch.Patch.precedents);
     ]
   in
   render_with_override ~project_name ~name:"pr_description" ~vars
@@ -526,7 +557,7 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
         {|## Patch {{patch_id}}: {{title}}
 
 {{description}}
-{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{acceptance_criteria_section}}{{files_section}}|}
+{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
         vars)
 
 let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
@@ -1094,6 +1125,7 @@ let%test "patch prompt includes title and deps" =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1123,6 +1155,7 @@ let%test "patch prompt includes title and deps" =
               test_stubs_introduced = [];
               test_stubs_implemented = [];
               complexity = None;
+              precedents = [];
             };
             patch;
           ];
@@ -1165,6 +1198,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
              gameplan";
           ];
         complexity = None;
+        precedents = [];
       }
   in
   let patch_2 : Patch.t =
@@ -1183,6 +1217,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1232,6 +1267,7 @@ let%test "agents_md content appears in static prefix when Some" =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1276,6 +1312,7 @@ let%test "agents_md section is omitted when None" =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1326,6 +1363,7 @@ let make_layer_test_fixture () =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
   let patch_b : Patch.t =
@@ -1344,6 +1382,7 @@ let make_layer_test_fixture () =
         test_stubs_introduced = [];
         test_stubs_implemented = [];
         complexity = None;
+        precedents = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1438,6 +1477,79 @@ let%test
   && String.is_prefix ci_unknown_prompt ~prefix
   && String.is_prefix review_prompt ~prefix
   && String.is_prefix conflict_prompt ~prefix
+
+let%test
+    "render_patch_layer surfaces precedents to the implementer when present" =
+  let patch, _, _ = make_layer_test_fixture () in
+  let patch_with_precedents : Patch.t =
+    {
+      patch with
+      precedents =
+        [
+          {
+            Precedent.kind = "library";
+            name = "Bindlib";
+            url = Some "https://github.com/rlepigre/ocaml-bindlib";
+            why_applicable =
+              "Use bind_mvar / unmbind so substitution composes via msubst.";
+          };
+          {
+            Precedent.kind = "algorithm";
+            name = "Tarjan 1972 strongly connected components";
+            url = None;
+            why_applicable = "Detect cycles in the dependency graph in O(V+E).";
+          };
+        ];
+    }
+  in
+  let rendered =
+    render_patch_layer ~project_name:"onton" patch_with_precedents
+      ~base_branch:"main" ()
+  in
+  String.is_substring rendered ~substring:"## Established Precedents"
+  && String.is_substring rendered ~substring:"**[library] Bindlib**"
+  && String.is_substring rendered
+       ~substring:"https://github.com/rlepigre/ocaml-bindlib"
+  && String.is_substring rendered
+       ~substring:"**[algorithm] Tarjan 1972 strongly connected components**"
+  && String.is_substring rendered
+       ~substring:"Detect cycles in the dependency graph"
+
+let%test
+    "render_patch_layer omits the Established Precedents section when empty" =
+  let patch, _, _ = make_layer_test_fixture () in
+  let rendered =
+    render_patch_layer ~project_name:"onton" patch ~base_branch:"main" ()
+  in
+  not (String.is_substring rendered ~substring:"Established Precedents")
+
+let%test "render_pr_description surfaces precedents when present" =
+  let patch, _, gameplan = make_layer_test_fixture () in
+  let patch_with_precedents : Patch.t =
+    {
+      patch with
+      precedents =
+        [
+          {
+            Precedent.kind = "library";
+            name = "Bindlib";
+            url = Some "https://github.com/rlepigre/ocaml-bindlib";
+            why_applicable = "Use bind_mvar / unmbind for binders.";
+          };
+        ];
+    }
+  in
+  let body =
+    render_pr_description ~project_name:"onton" patch_with_precedents gameplan
+  in
+  String.is_substring body ~substring:"## Established Precedents"
+  && String.is_substring body ~substring:"**[library] Bindlib**"
+  && String.is_substring body ~substring:"Use bind_mvar / unmbind for binders."
+
+let%test "render_pr_description omits Established Precedents when empty" =
+  let patch, _, gameplan = make_layer_test_fixture () in
+  let body = render_pr_description ~project_name:"onton" patch gameplan in
+  not (String.is_substring body ~substring:"Established Precedents")
 
 let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
   let _, _, _gameplan = make_layer_test_fixture () in

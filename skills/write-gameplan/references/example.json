@@ -132,7 +132,21 @@
         "Patch_decision > CI failure cap at 3"
       ],
       "testStubsImplemented": null,
-      "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only. No new invariants are\n> declared — stubs are pending markers implemented in Patch 3.\n> Redeclare Patch 1's types here so the module is self-contained.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n"
+      "spec": "module EXTRACT_DECISION_PATCH_2.\n\n> Patch 2 introduces test stubs only. No new invariants are\n> declared — stubs are pending markers implemented in Patch 3.\n> Redeclare Patch 1's types here so the module is self-contained.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n",
+      "precedents": [
+        {
+          "kind": "pattern",
+          "name": "Property-based testing (QuickCheck-style)",
+          "url": "https://www.cs.tufts.edu/~nr/cs257/archive/john-hughes/quick.pdf",
+          "whyApplicable": "Express each spec invariant as a universally-quantified property over a generator, not as point examples. The 'merged patch is always skipped' invariant becomes a `Test.make` with a generator for {merged, busy, ci_failure_count} triples — shrinking will surface the minimal counterexample if the implementation diverges from the spec."
+        },
+        {
+          "kind": "library",
+          "name": "QCheck2",
+          "url": "https://github.com/c-cube/qcheck",
+          "whyApplicable": "OCaml property-based testing library. Use `QCheck2.Test.make ~name ~count gen prop` for each stub; reach for `QCheck2.Gen.{bool, int_bound, oneofl}` to compose the input generators rather than writing custom samplers."
+        }
+      ]
     },
     {
       "number": 3,

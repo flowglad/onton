@@ -31,6 +31,7 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 2. Identify which milestone this gameplan corresponds to
 3. Review the milestone's "Definition of Done" — this informs your acceptance criteria
 4. Ensure your gameplan leaves the codebase in a consistent state
+5. Read the workstream's `Established Precedents` section (plus any milestone-scoped precedents). For each precedent, identify the specific patches in this gameplan that consume it — touch its API, implement its algorithm, depend on its invariants — and attach it to those patches' `precedents` arrays. Do **not** blanket-copy workstream precedents onto every patch; only the ones that actually use the technique. See [Leveraging Established Precedents](#leveraging-established-precedents) for the per-patch shape.
 
 **If no workstream is provided**, treat this as a standalone gameplan.
 
@@ -66,7 +67,7 @@ All of these fields are **required** and must be present in every gameplan:
 
 ### Required Patch Fields
 
-Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string).
+Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string). Patches may also include an optional `precedents` array citing established libraries, algorithms, or patterns the patch should adopt — see [Leveraging Established Precedents](#leveraging-established-precedents).
 
 The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
 
@@ -125,6 +126,47 @@ Do not assign complexity from the patch title alone. Before scoring:
 4. **Score based on the worst case among the changes the patch introduces**, not the median. A patch that mostly renames things but also adds one tricky lock should be scored on the lock.
 
 If after reading you cannot tell whether something is `2` or `3`, it is `3`. If you cannot tell whether something is `1` or `2`, it is `2`.
+
+## Leveraging Established Precedents
+
+Most non-trivial engineering problems have well-known solutions: a CS algorithm with a name, a library that already solves the hard part, a design pattern with documented trade-offs, an RFC that pins down the wire format. **When a patch is solving a problem that has established prior art, identify the precedent and attach it to that patch via the optional `precedents` field.** Prefer proven, robust techniques over rolling our own — and give the implementing agent enough of a reference that it can fetch more detail when it needs to.
+
+### When precedents apply
+
+A patch likely has a precedent worth citing whenever it touches an area with mature, named solutions. Common examples (not exhaustive):
+
+- **Variable binding / scope handling** — capture-avoiding substitution, alpha renaming, free-variable computation (named libraries exist for most languages; locally-nameless and de Bruijn indices are documented techniques).
+- **Parsing and lexing** — established parser generators and combinator libraries; standard error-recovery strategies (panic-mode, GLR).
+- **Graph algorithms** — Tarjan SCC, Dijkstra/A* shortest path, Kahn topological sort, Union-Find with path compression.
+- **Type systems** — Hindley–Milner / Algorithm W; bidirectional type-checking; row polymorphism.
+- **Distributed coordination** — Raft, consistent hashing, idempotency keys, the outbox pattern, sagas, vector clocks.
+- **Cryptography** — never roll your own. Cite the standard (RFC, NIST suite, IETF draft) and an audited library implementation.
+- **Concurrency** — battle-tested constructs (Michael–Scott queues, Treiber stacks, structured concurrency, CSP/actor model).
+- **Streaming / backpressure** — Reactive Streams, async iterator protocols, credit-based flow control.
+- **Schema and data migration** — expand/contract migrations, accretive change, dual-write/backfill/cutover patterns.
+- **State machines / workflow engines** — hierarchical state charts, event sourcing, deterministic replay.
+
+A patch may have **zero** precedents. Bespoke project glue (wiring two existing modules together, renaming a field, adding a config flag) usually does not warrant any citation. Do not manufacture references where none apply.
+
+### What to write
+
+Each precedent entry has four fields:
+
+- **`kind`** — one of `library`, `algorithm`, `pattern`, `paper`, `rfc-spec`, `documentation`, `blog-post`. Pick the most specific kind that fits.
+- **`name`** — the most precise identifier a reader will recognise. `"Tarjan 1972 strongly connected components"` is better than `"a graph algorithm"`; `"RFC 7519 JSON Web Tokens"` is better than `"JWT spec"`.
+- **`url`** — the canonical link (library homepage or repo, paper DOI or arXiv, RFC URL, official docs page). Required for kinds where a URL is the durable reference (`paper`, `rfc-spec`, `documentation`, `blog-post`); strongly preferred for libraries. Do not guess URLs — fetch the real one (e.g. `WebFetch`) or leave it `null`.
+- **`whyApplicable`** — 1-2 sentences explaining what part of *this specific patch* the precedent informs and the concrete shape it imposes. Not generic praise: name the API call, the algorithm step, or the invariant that the precedent supplies. The implementing agent reads this to decide whether to fetch the reference, so be specific.
+
+### Do real research, not name-dropping
+
+- **Do not invent precedents.** A false reference is worse than none — the implementing agent will waste tokens chasing something that doesn't exist or doesn't apply. If you are not confident a precedent applies, omit it.
+- **Verify the reference exists before citing.** Fetch the library docs, the paper abstract, or the RFC index when in doubt. Do not cite from memory if the project depends on the precedent being real.
+- **Prefer precedents with non-trivial real-world adoption** — libraries used in shipping projects, algorithms cited in production literature. Abandoned or experimental references are weak evidence.
+- **Cite at the level of the technique, not the buzzword.** If three libraries implement the same algorithm, the precedent might be the algorithm (kind: `algorithm`) with the recommended library named in `whyApplicable`. Conversely, if the value is the specific library's API design, the precedent is the library.
+
+### Where to attach
+
+Attach precedents at the **patch** level, on the specific patches the precedent informs — typically the patch that introduces a new dependency or implements the named technique, plus any consumers that need to call its API. A precedent that drives the whole gameplan should still be replicated on each patch that depends on it, so an implementing agent picking up Patch N alone has the reference in hand.
 
 ## Mergability Strategy
 

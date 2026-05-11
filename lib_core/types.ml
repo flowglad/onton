@@ -129,6 +129,19 @@ module Comment = struct
   include Comparator.Make (T)
 end
 
+module Precedent = struct
+  type t = {
+    kind : string;
+    name : string;
+    url : string option; [@yojson.default None]
+    why_applicable : string; [@yojson.default ""]
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** Established prior art (library, algorithm, pattern, paper, RFC, doc, blog
+      post) that a patch should adopt. Surfaced to the implementing agent in the
+      patch prompt so it can prefer proven techniques over rolling its own. *)
+end
+
 module Patch = struct
   type t = {
     id : Patch_id.t;
@@ -144,6 +157,7 @@ module Patch = struct
     test_stubs_introduced : string list; [@yojson.default []]
     test_stubs_implemented : string list; [@yojson.default []]
     complexity : int option; [@yojson.default None]
+    precedents : Precedent.t list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

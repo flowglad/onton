@@ -21,6 +21,7 @@ let make_patch pid branch =
       test_stubs_introduced = [];
       test_stubs_implemented = [];
       complexity = None;
+      precedents = [];
     }
 
 let make_gameplan patch =

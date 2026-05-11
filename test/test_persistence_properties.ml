@@ -33,6 +33,7 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           };
         ];
       current_state_analysis = "";

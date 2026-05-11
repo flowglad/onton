@@ -101,6 +101,29 @@ module Comment : sig
   include Comparator.S with type t := t
 end
 
+module Precedent : sig
+  type t = {
+    kind : string;
+        (** One of "library", "algorithm", "pattern", "paper", "rfc-spec",
+            "documentation", "blog-post". Not validated at parse time; the
+            gameplan author chooses the most specific kind. *)
+    name : string;
+        (** Most-specific identifier (e.g. "Bindlib", "Tarjan 1972 strongly
+            connected components"). *)
+    url : string option; [@yojson.default None]
+        (** Canonical link to the reference. [None] when no stable URL exists.
+        *)
+    why_applicable : string; [@yojson.default ""]
+        (** 1-2 sentences explaining how this precedent informs THIS patch and
+            the concrete shape it imposes (API call, algorithm step, invariant).
+            Goes verbatim into the patch prompt. *)
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** Established prior art the implementing agent should adopt for a given
+      patch rather than rolling its own. Surfaced to the patch prompt so the
+      agent can prefer proven libraries / algorithms / patterns. *)
+end
+
 module Patch : sig
   type t = {
     id : Patch_id.t;
@@ -120,6 +143,10 @@ module Patch : sig
             [--model auto] to pick a stronger model for harder patches. [None]
             for legacy gameplans missing the field; orchestrators should treat
             that as the highest available tier (be conservative). *)
+    precedents : Precedent.t list; [@yojson.default []]
+        (** Established prior art for this patch (libraries, algorithms,
+            patterns, papers). Empty list when the patch is bespoke project glue
+            with no relevant precedent. *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end

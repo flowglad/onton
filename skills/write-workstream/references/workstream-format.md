@@ -14,6 +14,18 @@
 ## Key Challenges
 [Bullet list of the hardest parts or biggest unknowns]
 
+## Established Precedents
+
+Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) this workstream adopts. Each entry is consumed by `write-gameplan` when a milestone is unpacked into patches — the relevant precedents are then attached to the specific patches that depend on them. Use the same four-field shape as per-patch precedents.
+
+- **[kind] Name** — [URL if a stable one exists]
+  [1-2 sentences: how this precedent applies across milestones and the concrete shape it imposes on implementation.]
+
+- **[kind] Name** — [URL]
+  [Why applicable.]
+
+`kind` is one of: `library`, `algorithm`, `pattern`, `paper`, `rfc-spec`, `documentation`, `blog-post`.
+
 ## Milestones
 
 ### Milestone 1: [gameplan-name-kebab-case]
@@ -25,6 +37,8 @@
 **Definition of Done**: ...
 **Why this is a safe pause point**: ...
 **Unlocks**: ...
+**Established Precedents** (milestone-scoped only):
+- **[kind] Name** — [URL] — [Why applicable for this milestone specifically.]
 **Open Questions** (if any): ...
 
 ## Dependency Graph
@@ -63,6 +77,20 @@ The OCaml project has a build skeleton (dune 3.21, OCaml 5.4, Jane Street ppx ec
 - **Property test coverage**: Comprehensive QCheck2 coverage from the start, with properties derived from the formal spec.
 - **Spec parity**: The formal spec defines invariants that must be explicit and machine-checkable in the implementation.
 - **Decision logic testability**: Pure decision logic must be separated from I/O for property testing.
+
+## Established Precedents
+
+- **library — Eio** — https://github.com/ocaml-multicore/eio
+  Structured-concurrency primitives (fibers, switches, cancellation, capability-based I/O) for the orchestrator main loop, poller, runner, and patch_agent. Prefer `Eio.Fiber.fork` / `Switch.run` over manual thread plumbing; pass capabilities (`#Eio.Stdenv.process_mgr`, `#Eio.Net.t`) explicitly rather than reaching for global state.
+
+- **pattern — Property-based testing (QuickCheck-style)** — https://www.cs.tufts.edu/~nr/cs257/archive/john-hughes/quick.pdf
+  Each Pantagruel rule produces at least one QCheck2 property — `forall x: T | P x` becomes a generator + property pair with shrinking. Derive properties from the spec, never from current OCaml behavior, so a divergence between code and spec surfaces as a test failure rather than being locked in.
+
+- **library — QCheck2** — https://github.com/c-cube/qcheck
+  OCaml property-based testing library. Use `QCheck2.Test.make ~name ~count gen prop`; reach for `QCheck2.Gen.{bool, int_bound, oneofl}` as composable generators. Shared generators live in `lib_test/test_generators.ml`.
+
+- **pattern — Functional core, imperative shell** — https://www.destroyallsoftware.com/screencasts/catalog/functional-core-imperative-shell
+  Pure decision modules (`Patch_decision`, `Spawn_logic`, `Reconciler`) sit beneath an imperative I/O shell in `main.ml`. Property-test the core; keep the shell minimal, dumb, and trivially auditable. Every milestone that touches decision logic extends the pure core, not the shell.
 
 ## Milestones
 
@@ -160,10 +188,10 @@ The OCaml project has a build skeleton (dune 3.21, OCaml 5.4, Jane Street ppx ec
 
 ## Decisions Made
 
+These are decisions that did NOT produce a citable precedent — rejected library choices, framing principles, and project philosophy. Accepted precedents (Eio, QCheck2, functional-core-imperative-shell, property-based testing) live in the `Established Precedents` section above.
+
 | Decision | Rationale |
 |----------|-----------|
-| Eio over Lwt | Eio provides structured concurrency (fibers, scopes). Lwt is callback-based and harder to reason about. |
-| Raw ANSI TUI | No OCaml TUI library supports the rendering model we need (incremental updates, alternate screen, raw key input). Rolling our own with Eio is simpler than fighting a library. |
-| QCheck2 from the start | Property tests derived from the formal spec catch more bugs than example-based tests and serve as machine-readable spec compliance evidence. |
-| Separate pure and I/O | Pure decision modules (Patch_decision, Spawn_logic, Reconciler) are extracted and tested independently. I/O code in main.ml is a thin wiring layer. |
-| Spec is source of truth | When the code disagrees with the formal spec, the code is wrong. Tests are derived from the spec, not from current behavior. |
+| Lwt rejected in favor of Eio | Lwt is callback-based and harder to reason about than Eio's structured fibers. Recorded here as a rejected alternative — the chosen precedent is documented in `Established Precedents`. |
+| Raw ANSI TUI (no library) | No OCaml TUI library supports the rendering model we need (incremental updates, alternate screen, raw key input). A conscious decision to roll our own — no precedent applies. Revisit if a suitable library emerges. |
+| Spec is source of truth | When the code disagrees with the formal spec, the code is wrong. Tests are derived from the spec, not from current behavior. Project philosophy rather than an external precedent. |

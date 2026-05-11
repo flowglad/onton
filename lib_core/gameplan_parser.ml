@@ -129,6 +129,31 @@ let json_string_list json key =
       List.filter_map items ~f:(function `String s -> Some s | _ -> None)
   | _ -> []
 
+let json_precedents json =
+  let open Yojson.Safe.Util in
+  match json |> member "precedents" with
+  | `List items ->
+      List.filter_map items ~f:(fun obj ->
+          match obj |> member "kind" with
+          | `String kind when not (String.is_empty kind) ->
+              let name =
+                match obj |> member "name" with `String s -> s | _ -> ""
+              in
+              let url =
+                match obj |> member "url" with
+                | `String s when not (String.is_empty s) -> Some s
+                | _ -> None
+              in
+              let why_applicable =
+                match obj |> member "whyApplicable" with
+                | `String s -> s
+                | _ -> ""
+              in
+              if String.is_empty name then None
+              else Some { Types.Precedent.kind; name; url; why_applicable }
+          | _ -> None)
+  | _ -> []
+
 let parse_json_string input =
   match
     try Ok (Yojson.Safe.from_string input)
@@ -287,6 +312,7 @@ let parse_json_string input =
                         | _ -> None)
                 | _ -> []
               in
+              let precedents = json_precedents p in
               {
                 Types.Patch.id;
                 title;
@@ -301,6 +327,7 @@ let parse_json_string input =
                 test_stubs_introduced;
                 test_stubs_implemented;
                 complexity;
+                precedents;
               })
         in
         match open_questions with
@@ -412,6 +439,7 @@ let%test_module "Gameplan_parser" =
               test_stubs_introduced = [];
               test_stubs_implemented = [];
               complexity = None;
+              precedents = [];
             };
         ]
       in
@@ -438,6 +466,7 @@ let%test_module "Gameplan_parser" =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           }
       in
       let dep_graph = Map.of_alist_exn (module Types.Patch_id) [ (pid, []) ] in
@@ -581,6 +610,82 @@ let%test_module "Gameplan_parser" =
       match parse_json_string "{not valid json}" with
       | Ok _ -> false
       | Error _ -> true
+
+    let%test "parse_json_string: precedents are extracted with all four fields"
+        =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{
+            "number": 1,
+            "title": "A",
+            "changes": [],
+            "precedents": [
+              {"kind":"library","name":"Bindlib","url":"https://example.com","whyApplicable":"capture-avoiding subst"},
+              {"kind":"pattern","name":"Locally nameless","whyApplicable":"fallback design"}
+            ]
+          }],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result -> (
+          let p = List.hd_exn result.gameplan.patches in
+          match p.Types.Patch.precedents with
+          | [ a; b ] ->
+              String.equal a.Types.Precedent.kind "library"
+              && String.equal a.name "Bindlib"
+              && (match a.url with
+                | Some "https://example.com" -> true
+                | _ -> false)
+              && String.equal a.why_applicable "capture-avoiding subst"
+              && String.equal b.kind "pattern"
+              && String.equal b.name "Locally nameless"
+              && Option.is_none b.url
+          | _ -> false)
+
+    let%test "parse_json_string: missing precedents defaults to empty list" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result ->
+          let p = List.hd_exn result.gameplan.patches in
+          List.is_empty p.Types.Patch.precedents
+
+    let%test "parse_json_string: precedent without kind or name is skipped" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{
+            "number": 1,
+            "title": "A",
+            "changes": [],
+            "precedents": [
+              {"name": "no kind", "whyApplicable": "x"},
+              {"kind": "library", "whyApplicable": "no name"},
+              {"kind": "library", "name": "OK", "whyApplicable": "ok"}
+            ]
+          }],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result -> (
+          let p = List.hd_exn result.gameplan.patches in
+          match p.Types.Patch.precedents with
+          | [ only ] -> String.equal only.Types.Precedent.name "OK"
+          | _ -> false)
 
     let%test "parse_json_string: cycle returns Error" =
       let input =

@@ -89,6 +89,7 @@ let gen_patch =
             test_stubs_introduced = [];
             test_stubs_implemented = [];
             complexity = None;
+            precedents = [];
           })
       gen_patch_id gen_title gen_branch gen_deps)
 
@@ -161,6 +162,7 @@ let gen_patch_list_linear =
                 test_stubs_introduced = [];
                 test_stubs_implemented = [];
                 complexity = None;
+                precedents = [];
               }))
       (int_range 1 8))
 
@@ -209,6 +211,7 @@ let gen_patch_dag =
               test_stubs_introduced = [];
               test_stubs_implemented = [];
               complexity = None;
+              precedents = [];
             }
         in
         gen_patches (i + 1) (patch :: acc)
@@ -229,6 +232,7 @@ let gen_patch_dag =
           test_stubs_introduced = [];
           test_stubs_implemented = [];
           complexity = None;
+          precedents = [];
         }
     in
     gen_patches 1 [ root ])
@@ -696,6 +700,7 @@ let mk_linear_patches n =
           test_stubs_introduced = [];
           test_stubs_implemented = [];
           complexity = None;
+          precedents = [];
         })
 
 let make_test_gameplan patches =

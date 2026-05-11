@@ -247,6 +247,35 @@
         "spec": {
           "type": "string",
           "description": "Formal specification source — invariants that hold after this patch. Focus on the delta — only what this patch introduces or changes. Each patch spec is self-contained — redeclare any domains/rules from prior patches that this patch references. For INFRA patches that only add types, the spec may declare domains and rules with no body propositions (the types themselves are the contribution). For BEHAVIOR patches, include invariants about the new behavior. Keep specs minimal — only what this patch guarantees, not the entire system."
+        },
+        "precedents": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/precedent" },
+          "description": "Established prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) that informs this patch. Cite concrete proven techniques the implementing agent should adopt rather than rolling its own. Null or omitted means no specific precedent applies (e.g. the patch is bespoke project glue). See SKILL.md's 'Leveraging Established Precedents' section for when and how to populate this."
+        }
+      },
+      "additionalProperties": false
+    },
+    "precedent": {
+      "type": "object",
+      "required": ["kind", "name", "whyApplicable"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["library", "algorithm", "pattern", "paper", "rfc-spec", "documentation", "blog-post"],
+          "description": "What kind of precedent this is. 'library' = an existing dependency to adopt directly; 'algorithm' = a named algorithm (e.g. Tarjan SCC, Hindley-Milner Algorithm W); 'pattern' = a well-known design pattern (e.g. outbox pattern, expand-contract migration); 'paper' = academic literature; 'rfc-spec' = standards (RFC, ECMA, NIST); 'documentation' = canonical vendor/maintainer docs; 'blog-post' = a respected practitioner write-up."
+        },
+        "name": {
+          "type": "string",
+          "description": "The most specific identifier the implementing agent will recognise (e.g. 'Bindlib', 'Tarjan 1972 strongly connected components', 'RFC 7519 JSON Web Tokens'). Avoid vague labels like 'a graph algorithm'."
+        },
+        "url": {
+          "type": ["string", "null"],
+          "description": "Canonical link to the precedent (library homepage / repo, paper DOI or arXiv URL, RFC URL, official docs page). Required for 'paper', 'rfc-spec', 'documentation', and 'blog-post' kinds where the URL is the durable reference. Omit only if no stable URL exists. Do not guess URLs — fetch the real one or leave it null."
+        },
+        "whyApplicable": {
+          "type": "string",
+          "description": "1-2 sentences: what part of THIS patch the precedent informs, and the concrete shape it imposes on the implementation. The implementing agent decides from this whether to read the reference, so be specific (e.g. 'Use bind_mvar / unmbind to construct and destructure quantifier binders' beats 'use for binders')."
         }
       },
       "additionalProperties": false
