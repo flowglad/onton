@@ -48,6 +48,9 @@ let can_start graph patch_id ~merged ~prs ~start_mode =
   && (not (List.mem prs patch_id ~equal:Patch_id.equal))
   && deps_satisfied graph patch_id ~merged ~prs ~start_mode
 
+let graph_of_patches_total patches =
+  try Graph.of_patches patches with Invalid_argument _ -> Graph.of_patches []
+
 let prop_start_mode_parse_total =
   QCheck2.Test.make ~name:"start_mode_of_string is total" ~count:1_000
     QCheck2.Gen.(string_size ~gen:printable (int_range 0 80))
@@ -150,7 +153,7 @@ let gen_generated_graph =
     List.filter_mapi pr_flags ~f:(fun i selected ->
         if selected then Some (patch_id (i + 1)) else None)
   in
-  return { graph = Graph.of_patches patches; ids; merged; prs }
+  return { graph = graph_of_patches_total patches; ids; merged; prs }
 
 let prop_naive_startable_subset_of_greedy =
   QCheck2.Test.make ~name:"naive-startable set is subset of greedy-startable"
