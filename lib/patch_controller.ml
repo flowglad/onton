@@ -433,7 +433,9 @@ let reconcile_messages ?(start_mode = Greedy) t ~patches =
         | Some msg when Orchestrator.equal_message_status msg.status Acked ->
             (acc, msg.message_id :: ids)
         | _ -> (
-            match plan_action_for_patch acc ~branch_map ~start_mode patch_id with
+            match
+              plan_action_for_patch acc ~branch_map ~start_mode patch_id
+            with
             | None -> (acc, ids)
             | Some action ->
                 let acc, msg = reconcile_action_message acc action in
@@ -708,9 +710,7 @@ let has_start_action actions patch_id =
 let%test "plan_actions naive blocks patch with unmerged dependency PR" =
   let dep_id = Patch_id.of_string "p1" in
   let child_id = Patch_id.of_string "p2" in
-  let dep =
-    scheduler_test_patch dep_id (Branch.of_string "dep-branch")
-  in
+  let dep = scheduler_test_patch dep_id (Branch.of_string "dep-branch") in
   let child =
     scheduler_test_patch child_id
       (Branch.of_string "child-branch")
@@ -727,9 +727,7 @@ let%test "plan_actions naive blocks patch with unmerged dependency PR" =
 let%test "plan_actions greedy allows patch with sole unmerged dependency PR" =
   let dep_id = Patch_id.of_string "p1" in
   let child_id = Patch_id.of_string "p2" in
-  let dep =
-    scheduler_test_patch dep_id (Branch.of_string "dep-branch")
-  in
+  let dep = scheduler_test_patch dep_id (Branch.of_string "dep-branch") in
   let child =
     scheduler_test_patch child_id
       (Branch.of_string "child-branch")
@@ -746,9 +744,7 @@ let%test "plan_actions greedy allows patch with sole unmerged dependency PR" =
 let%test "plan_actions naive allows patch after dependencies merge" =
   let dep_id = Patch_id.of_string "p1" in
   let child_id = Patch_id.of_string "p2" in
-  let dep =
-    scheduler_test_patch dep_id (Branch.of_string "dep-branch")
-  in
+  let dep = scheduler_test_patch dep_id (Branch.of_string "dep-branch") in
   let child =
     scheduler_test_patch child_id
       (Branch.of_string "child-branch")

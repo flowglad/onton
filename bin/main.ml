@@ -3901,7 +3901,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
               match Project_store.load_config ~project_name:proj with
               | Error msg ->
                   Error [ Printf.sprintf "Error loading config: %s" msg ]
-              | Ok stored ->
+              | Ok stored -> (
                   (* CLI flags override stored config; stored config overrides
                      git-remote inference *)
                   let merge_cli_stored cli stored_val =
@@ -3925,7 +3925,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                         Patch_controller.start_mode_of_string
                           stored.Project_store.start_mode
                   in
-                  (match start_mode_result with
+                  match start_mode_result with
                   | Error msg ->
                       Error [ Printf.sprintf "Error loading config: %s" msg ]
                   | Ok start_mode ->
@@ -3986,8 +3986,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                           main_branch = branch;
                           poll_interval = stored.Project_store.poll_interval;
                           repo_root;
-                          max_concurrency =
-                            stored.Project_store.max_concurrency;
+                          max_concurrency = stored.Project_store.max_concurrency;
                           start_mode;
                           headless;
                           user_config =
@@ -4445,13 +4444,11 @@ let start_mode_arg =
   let open Cmdliner in
   let mode =
     Arg.enum
-      [
-        ("naive", Patch_controller.Naive);
-        ("greedy", Patch_controller.Greedy);
-      ]
+      [ ("naive", Patch_controller.Naive); ("greedy", Patch_controller.Greedy) ]
   in
   Arg.(
-    value & opt (some mode) None
+    value
+    & opt (some mode) None
     & info [ "start-mode" ] ~docv:"MODE"
         ~doc:
           "Patch start scheduling mode: [greedy] may start downstream patches \
