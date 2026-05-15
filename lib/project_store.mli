@@ -33,6 +33,7 @@ type stored_config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  start_mode : string;
 }
 [@@deriving yojson]
 
@@ -47,6 +48,7 @@ val save_config :
   poll_interval:float ->
   repo_root:string ->
   max_concurrency:int ->
+  start_mode:string ->
   unit
 (** Persist project config to the data directory. Creates the directory if
     needed. *)
