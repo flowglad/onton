@@ -52,10 +52,10 @@ let prop_start_mode_parse_total =
   QCheck2.Test.make ~name:"start_mode_of_string is total" ~count:1_000
     QCheck2.Gen.(string_size ~gen:printable (int_range 0 80))
     (fun s ->
-      try
-        let _ = Scheduler.start_mode_of_string s in
-        true
-      with _ -> false)
+      ignore
+        (Scheduler.start_mode_of_string s
+          : (Scheduler.start_mode, string) Result.t);
+      true)
 
 let prop_start_mode_round_trip =
   QCheck2.Test.make ~name:"start_mode string round-trips"
