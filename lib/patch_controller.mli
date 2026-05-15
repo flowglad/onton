@@ -23,6 +23,14 @@ type poll_observation = {
   worktree_path : string option;
 }
 
+type start_mode = Naive | Greedy [@@deriving show, eq, sexp_of]
+
+val start_mode_to_string : start_mode -> string
+(** Stable CLI/config spelling for start scheduling modes. *)
+
+val start_mode_of_string : string -> (start_mode, string) result
+(** Parse a CLI/config spelling for start scheduling modes. *)
+
 val discovery_intents : Orchestrator.t -> (Patch_id.t * Branch.t) list
 (** Patches that have run at least once ([has_session]) but lack a PR and are
     not merged. Returns [(patch_id, branch)] pairs for tick-based PR discovery
@@ -65,11 +73,15 @@ val reconcile_all :
 (** Reconcile all gameplan patches. Ad-hoc patches are ignored. *)
 
 val plan_actions :
-  Orchestrator.t -> patches:Patch.t list -> Orchestrator.action list
+  ?start_mode:start_mode ->
+  Orchestrator.t ->
+  patches:Patch.t list ->
+  Orchestrator.action list
 (** Compute runnable actions from the current snapshot after reconciliation.
     This is the evergreen scheduler used by the main loop. *)
 
 val plan_messages :
+  ?start_mode:start_mode ->
   Orchestrator.t ->
   patches:Patch.t list ->
   Orchestrator.patch_agent_message list
@@ -78,6 +90,7 @@ val plan_messages :
     actions become pending messages in the outbox. *)
 
 val plan_tick_messages :
+  ?start_mode:start_mode ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
@@ -86,6 +99,7 @@ val plan_tick_messages :
     runnable patch-agent messages for the same snapshot. *)
 
 val plan_tick :
+  ?start_mode:start_mode ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->
@@ -94,6 +108,7 @@ val plan_tick :
     actions for the same snapshot. *)
 
 val tick :
+  ?start_mode:start_mode ->
   Orchestrator.t ->
   project_name:string ->
   gameplan:Gameplan.t ->

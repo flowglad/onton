@@ -57,6 +57,19 @@ type poll_observation = {
   worktree_path : string option;
 }
 
+type start_mode = Naive | Greedy [@@deriving show, eq, sexp_of]
+
+let start_mode_to_string = function Naive -> "naive" | Greedy -> "greedy"
+
+let start_mode_of_string s =
+  match String.lowercase (String.strip s) with
+  | "naive" -> Ok Naive
+  | "greedy" -> Ok Greedy
+  | other ->
+      Error
+        (Printf.sprintf
+           "invalid start mode %S; expected \"naive\" or \"greedy\"" other)
+
 let discovery_intents orch =
   Orchestrator.all_agents orch
   |> List.filter_map ~f:(fun (agent : Patch_agent.t) ->
@@ -295,7 +308,15 @@ let branch_map_of_patches patches =
                "Patch_controller.plan_actions: duplicate patch id %s"
                (Patch_id.to_string p.Patch.id)))
 
-let plan_action_for_patch t ~branch_map patch_id =
+let start_deps_satisfied t patch_id ~has_merged ~has_pr ~start_mode =
+  match start_mode with
+  | Greedy ->
+      Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
+  | Naive ->
+      Graph.deps (Orchestrator.graph t) patch_id
+      |> List.for_all ~f:(fun dep -> has_merged dep)
+
+let plan_action_for_patch t ~branch_map ~start_mode patch_id =
   let agent = Orchestrator.agent t patch_id in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
   let has_pr pid = Patch_agent.has_pr (Orchestrator.agent t pid) in
@@ -304,7 +325,7 @@ let plan_action_for_patch t ~branch_map patch_id =
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
-    && Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
+    && start_deps_satisfied t patch_id ~has_merged ~has_pr ~start_mode
   then
     let branch_of pid =
       match Map.find branch_map pid with
@@ -380,7 +401,7 @@ let reconcile_action_message t action =
   let msg = Option.value_exn (Orchestrator.find_message t msg.message_id) in
   (t, msg)
 
-let reconcile_messages t ~patches =
+let reconcile_messages ?(start_mode = Greedy) t ~patches =
   let branch_map = branch_map_of_patches patches in
   let missing =
     Graph.all_patch_ids (Orchestrator.graph t)
@@ -412,7 +433,7 @@ let reconcile_messages t ~patches =
         | Some msg when Orchestrator.equal_message_status msg.status Acked ->
             (acc, msg.message_id :: ids)
         | _ -> (
-            match plan_action_for_patch acc ~branch_map patch_id with
+            match plan_action_for_patch acc ~branch_map ~start_mode patch_id with
             | None -> (acc, ids)
             | Some action ->
                 let acc, msg = reconcile_action_message acc action in
@@ -431,27 +452,32 @@ let reconcile_messages t ~patches =
   in
   (t, Orchestrator.runnable_messages t)
 
-let plan_messages t ~patches = snd (reconcile_messages t ~patches)
+let plan_messages ?(start_mode = Greedy) t ~patches =
+  snd (reconcile_messages ~start_mode t ~patches)
 
-let plan_actions t ~patches =
-  plan_messages t ~patches
+let plan_actions ?(start_mode = Greedy) t ~patches =
+  plan_messages ~start_mode t ~patches
   |> List.map ~f:(fun (msg : Orchestrator.patch_agent_message) -> msg.action)
 
-let plan_tick_messages t ~project_name ~gameplan =
+let plan_tick_messages ?(start_mode = Greedy) t ~project_name ~gameplan =
   let t, effects = reconcile_all t ~project_name ~gameplan in
-  let t, messages = reconcile_messages t ~patches:gameplan.Gameplan.patches in
+  let t, messages =
+    reconcile_messages ~start_mode t ~patches:gameplan.Gameplan.patches
+  in
   (t, effects, messages)
 
-let plan_tick t ~project_name ~gameplan =
-  let t, effects, messages = plan_tick_messages t ~project_name ~gameplan in
+let plan_tick ?(start_mode = Greedy) t ~project_name ~gameplan =
+  let t, effects, messages =
+    plan_tick_messages ~start_mode t ~project_name ~gameplan
+  in
   let actions =
     List.map messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         msg.action)
   in
   (t, effects, actions)
 
-let tick t ~project_name ~gameplan =
-  let t, effects, actions = plan_tick t ~project_name ~gameplan in
+let tick ?(start_mode = Greedy) t ~project_name ~gameplan =
+  let t, effects, actions = plan_tick ~start_mode t ~project_name ~gameplan in
   let t =
     List.fold actions ~init:t ~f:(fun acc action ->
         Orchestrator.fire acc action)
@@ -655,6 +681,96 @@ let make_orchestrator ~patch_id ~main_branch =
 
 let pid = Patch_id.of_string "p1"
 let main = Branch.of_string "main"
+
+let scheduler_test_patch ?(dependencies = []) id branch =
+  {
+    Patch.id;
+    title = "test";
+    description = "test";
+    branch;
+    dependencies;
+    spec = "";
+    acceptance_criteria = [];
+    changes = [];
+    files = [];
+    classification = "";
+    test_stubs_introduced = [];
+    test_stubs_implemented = [];
+    complexity = None;
+    precedents = [];
+  }
+
+let has_start_action actions patch_id =
+  List.exists actions ~f:(function
+    | Orchestrator.Start (pid, _) -> Patch_id.equal pid patch_id
+    | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+
+let%test "plan_actions naive blocks patch with unmerged dependency PR" =
+  let dep_id = Patch_id.of_string "p1" in
+  let child_id = Patch_id.of_string "p2" in
+  let dep =
+    scheduler_test_patch dep_id (Branch.of_string "dep-branch")
+  in
+  let child =
+    scheduler_test_patch child_id
+      (Branch.of_string "child-branch")
+      ~dependencies:[ dep_id ]
+  in
+  let patches = [ dep; child ] in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let orch = Orchestrator.fire orch (Orchestrator.Start (dep_id, main)) in
+  let orch = Orchestrator.set_pr_number orch dep_id (Pr_number.of_int 41) in
+  let orch = Orchestrator.complete orch dep_id in
+  let actions = plan_actions ~start_mode:Naive orch ~patches in
+  not (has_start_action actions child_id)
+
+let%test "plan_actions greedy allows patch with sole unmerged dependency PR" =
+  let dep_id = Patch_id.of_string "p1" in
+  let child_id = Patch_id.of_string "p2" in
+  let dep =
+    scheduler_test_patch dep_id (Branch.of_string "dep-branch")
+  in
+  let child =
+    scheduler_test_patch child_id
+      (Branch.of_string "child-branch")
+      ~dependencies:[ dep_id ]
+  in
+  let patches = [ dep; child ] in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let orch = Orchestrator.fire orch (Orchestrator.Start (dep_id, main)) in
+  let orch = Orchestrator.set_pr_number orch dep_id (Pr_number.of_int 41) in
+  let orch = Orchestrator.complete orch dep_id in
+  let actions = plan_actions ~start_mode:Greedy orch ~patches in
+  has_start_action actions child_id
+
+let%test "plan_actions naive allows patch after dependencies merge" =
+  let dep_id = Patch_id.of_string "p1" in
+  let child_id = Patch_id.of_string "p2" in
+  let dep =
+    scheduler_test_patch dep_id (Branch.of_string "dep-branch")
+  in
+  let child =
+    scheduler_test_patch child_id
+      (Branch.of_string "child-branch")
+      ~dependencies:[ dep_id ]
+  in
+  let patches = [ dep; child ] in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let orch = Orchestrator.mark_merged orch dep_id in
+  let actions = plan_actions ~start_mode:Naive orch ~patches in
+  has_start_action actions child_id
+
+let%test "plan_actions naive keeps independent patches parallelizable" =
+  let p1 =
+    scheduler_test_patch (Patch_id.of_string "p1") (Branch.of_string "b1")
+  in
+  let p2 =
+    scheduler_test_patch (Patch_id.of_string "p2") (Branch.of_string "b2")
+  in
+  let patches = [ p1; p2 ] in
+  let orch = Orchestrator.create ~patches ~main_branch:main in
+  let actions = plan_actions ~start_mode:Naive orch ~patches in
+  has_start_action actions p1.Patch.id && has_start_action actions p2.Patch.id
 
 let%test "reconcile_patch escalates repeated start discovery failures" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
