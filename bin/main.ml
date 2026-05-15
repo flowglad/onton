@@ -3769,6 +3769,17 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
   let repo_root_for_fresh =
     Repo_root.normalize (Base.Option.value repo_root ~default:".")
   in
+  let merge_cli_stored cli stored_val =
+    let c = Base.String.strip cli in
+    if Base.String.is_empty c then stored_val else c
+  in
+  let load_existing_config ~project_name =
+    if Project_store.project_exists project_name then
+      match Project_store.load_config ~project_name with
+      | Ok stored -> Ok (Some stored)
+      | Error msg -> Error [ Printf.sprintf "Error loading config: %s" msg ]
+    else Ok None
+  in
   let resolve_branch ~repo_root mb_opt =
     match mb_opt with
     | Some b -> b
@@ -3838,7 +3849,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
-      | Ok parsed ->
+      | Ok parsed -> (
           let gameplan = parsed.Gameplan_parser.gameplan in
           let project_name =
             match project with
@@ -3846,39 +3857,62 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
             | None -> gameplan.Gameplan.project_name
           in
           let repo_root = repo_root_for_fresh in
-          let token, owner, repo =
-            resolve_github_credentials ~github_token ~repo_root
-          in
-          let backend, model = resolve_backend_model ~backend ~model in
-          let main_branch = resolve_branch ~repo_root main_branch in
-          let start_mode =
-            Base.Option.value start_mode ~default:Patch_controller.Greedy
-          in
-          Project_store.save_config ~project_name ~github_token:token
-            ~github_owner:owner ~github_repo:repo ~backend ~model
-            ~main_branch:(Branch.to_string main_branch)
-            ~poll_interval ~repo_root ~max_concurrency
-            ~start_mode:(Patch_controller.start_mode_to_string start_mode);
-          Project_store.save_gameplan_source ~project_name ~source_path:gp_path;
-          let config =
-            {
-              project = Some project_name;
-              backend;
-              model;
-              github_token = token;
-              github_owner = owner;
-              github_repo = repo;
-              main_branch;
-              poll_interval;
-              repo_root;
-              max_concurrency;
-              start_mode;
-              headless;
-              user_config =
-                User_config.load ~github_owner:owner ~github_repo:repo;
-            }
-          in
-          with_snapshot_load ~project_name config gameplan)
+          match load_existing_config ~project_name with
+          | Error errs -> Error errs
+          | Ok stored_opt -> (
+              let backend_str, model_str =
+                match stored_opt with
+                | None -> (backend, model)
+                | Some stored ->
+                    ( merge_cli_stored backend stored.Project_store.backend,
+                      merge_cli_stored model stored.Project_store.model )
+              in
+              let backend, model =
+                resolve_backend_model ~backend:backend_str ~model:model_str
+              in
+              let token, owner, repo =
+                resolve_github_credentials ~github_token ~repo_root
+              in
+              let main_branch = resolve_branch ~repo_root main_branch in
+              let start_mode_result =
+                match (start_mode, stored_opt) with
+                | Some mode, _ -> Ok mode
+                | None, Some stored ->
+                    Patch_controller.start_mode_of_string
+                      stored.Project_store.start_mode
+                | None, None -> Ok Patch_controller.Greedy
+              in
+              match start_mode_result with
+              | Error msg ->
+                  Error [ Printf.sprintf "Error loading config: %s" msg ]
+              | Ok start_mode ->
+                  Project_store.save_config ~project_name ~github_token:token
+                    ~github_owner:owner ~github_repo:repo ~backend ~model
+                    ~main_branch:(Branch.to_string main_branch)
+                    ~poll_interval ~repo_root ~max_concurrency
+                    ~start_mode:
+                      (Patch_controller.start_mode_to_string start_mode);
+                  Project_store.save_gameplan_source ~project_name
+                    ~source_path:gp_path;
+                  let config =
+                    {
+                      project = Some project_name;
+                      backend;
+                      model;
+                      github_token = token;
+                      github_owner = owner;
+                      github_repo = repo;
+                      main_branch;
+                      poll_interval;
+                      repo_root;
+                      max_concurrency;
+                      start_mode;
+                      headless;
+                      user_config =
+                        User_config.load ~github_owner:owner ~github_repo:repo;
+                    }
+                  in
+                  with_snapshot_load ~project_name config gameplan)))
   | Some proj, None -> (
       if not (Project_store.project_exists proj) then
         Error
@@ -3904,10 +3938,6 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
               | Ok stored -> (
                   (* CLI flags override stored config; stored config overrides
                      git-remote inference *)
-                  let merge_cli_stored cli stored_val =
-                    let c = Base.String.strip cli in
-                    if Base.String.is_empty c then stored_val else c
-                  in
                   let resolved_backend_str =
                     merge_cli_stored backend stored.Project_store.backend
                   in

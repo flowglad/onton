@@ -57,18 +57,11 @@ type poll_observation = {
   worktree_path : string option;
 }
 
-type start_mode = Naive | Greedy [@@deriving show, eq, sexp_of]
+type start_mode = Patch_controller_core.start_mode = Naive | Greedy
+[@@deriving show, eq, sexp_of]
 
-let start_mode_to_string = function Naive -> "naive" | Greedy -> "greedy"
-
-let start_mode_of_string s =
-  match String.lowercase (String.strip s) with
-  | "naive" -> Ok Naive
-  | "greedy" -> Ok Greedy
-  | other ->
-      Error
-        (Printf.sprintf
-           "invalid start mode %S; expected \"naive\" or \"greedy\"" other)
+let start_mode_to_string = Patch_controller_core.start_mode_to_string
+let start_mode_of_string = Patch_controller_core.start_mode_of_string
 
 let discovery_intents orch =
   Orchestrator.all_agents orch
@@ -309,12 +302,8 @@ let branch_map_of_patches patches =
                (Patch_id.to_string p.Patch.id)))
 
 let start_deps_satisfied t patch_id ~has_merged ~has_pr ~start_mode =
-  match start_mode with
-  | Greedy ->
-      Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
-  | Naive ->
-      Graph.deps (Orchestrator.graph t) patch_id
-      |> List.for_all ~f:(fun dep -> has_merged dep)
+  Patch_controller_core.start_deps_satisfied (Orchestrator.graph t) patch_id
+    ~has_merged ~has_pr ~start_mode
 
 let plan_action_for_patch t ~branch_map ~start_mode patch_id =
   let agent = Orchestrator.agent t patch_id in

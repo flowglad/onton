@@ -23,7 +23,8 @@ type poll_observation = {
   worktree_path : string option;
 }
 
-type start_mode = Naive | Greedy [@@deriving show, eq, sexp_of]
+type start_mode = Patch_controller_core.start_mode = Naive | Greedy
+[@@deriving show, eq, sexp_of]
 
 val start_mode_to_string : start_mode -> string
 (** Stable CLI/config spelling for start scheduling modes. *)
