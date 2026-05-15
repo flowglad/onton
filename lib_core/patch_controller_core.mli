@@ -18,6 +18,6 @@ val start_deps_satisfied :
   bool
 (** Whether [patch_id]'s dependencies allow starting under [start_mode].
 
-    [Greedy] allows a patch when all dependencies are merged or have PRs and at
-    most one dependency remains unmerged. [Naive] requires every direct
-    dependency to have merged. *)
+    [Greedy] allows a patch when every dependency has either merged or has an
+    open PR, and at most one dependency remains unmerged. [Naive] requires every
+    direct dependency to have merged. *)
