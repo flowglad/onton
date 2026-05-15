@@ -3856,10 +3856,16 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
             | Some p -> p
             | None -> gameplan.Gameplan.project_name
           in
-          let repo_root = repo_root_for_fresh in
           match load_existing_config ~project_name with
           | Error errs -> Error errs
           | Ok stored_opt -> (
+              let repo_root =
+                match (repo_root, stored_opt) with
+                | Some rr, _ -> Repo_root.normalize rr
+                | None, Some stored ->
+                    Repo_root.normalize stored.Project_store.repo_root
+                | None, None -> repo_root_for_fresh
+              in
               let backend_str, model_str =
                 match stored_opt with
                 | None -> (backend, model)
@@ -3870,10 +3876,41 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
               let backend, model =
                 resolve_backend_model ~backend:backend_str ~model:model_str
               in
-              let token, owner, repo =
-                resolve_github_credentials ~github_token ~repo_root
+              let token_input =
+                match stored_opt with
+                | None -> github_token
+                | Some stored ->
+                    merge_cli_stored github_token
+                      stored.Project_store.github_token
               in
-              let main_branch = resolve_branch ~repo_root main_branch in
+              let token, inferred_owner, inferred_repo =
+                resolve_github_credentials ~github_token:token_input ~repo_root
+              in
+              let owner =
+                match stored_opt with
+                | None -> inferred_owner
+                | Some stored ->
+                    let s =
+                      Base.String.strip stored.Project_store.github_owner
+                    in
+                    if Base.String.is_empty s then inferred_owner else s
+              in
+              let repo =
+                match stored_opt with
+                | None -> inferred_repo
+                | Some stored ->
+                    let s =
+                      Base.String.strip stored.Project_store.github_repo
+                    in
+                    if Base.String.is_empty s then inferred_repo else s
+              in
+              let main_branch =
+                match (main_branch, stored_opt) with
+                | Some b, _ -> b
+                | None, Some stored ->
+                    Branch.of_string stored.Project_store.main_branch
+                | None, None -> resolve_branch ~repo_root None
+              in
               let start_mode_result =
                 match (start_mode, stored_opt) with
                 | Some mode, _ -> Ok mode
