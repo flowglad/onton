@@ -70,4 +70,5 @@ let update_orchestrator_returning t f =
 let update_activity_log t f =
   update t (fun s -> { s with activity_log = f s.activity_log })
 
+let activity_log t = read t (fun s -> s.activity_log)
 let snapshot_unsync t = t.snap
