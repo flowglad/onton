@@ -19,8 +19,7 @@ let gen_run_classification =
       pure Run_classification.No_session_to_resume;
       pure Run_classification.Timed_out;
       map
-        (fun (stream_errors : string) ->
-          Run_classification.Success { stream_errors })
+        (fun stream_errors -> Run_classification.Success { stream_errors })
         (string_small_of printable);
       map2
         (fun exit_code detail ->
