@@ -4349,18 +4349,13 @@ let classify_project ~slug =
   else
     match Persistence.load ~path:snap_path with
     | Error msg -> Load_error msg
-    | Ok snap ->
+    | Ok snap -> (
         let agents = Orchestrator.agents_map snap.Runtime.orchestrator in
         let patches = snap.Runtime.gameplan.Gameplan.patches in
-        if Base.List.is_empty patches then No_patches
-        else
-          let all_merged =
-            Base.List.for_all patches ~f:(fun (p : Patch.t) ->
-                match Base.Map.find agents p.Patch.id with
-                | Some agent -> agent.Patch_agent.merged
-                | None -> false)
-          in
-          if all_merged then All_merged else Not_merged
+        match Prune_decision.classify_snapshot ~patches ~agents with
+        | Prune_decision.All_merged -> All_merged
+        | Prune_decision.Not_merged -> Not_merged
+        | Prune_decision.No_patches -> No_patches)
 
 let worktree_root_for ~project_name =
   let home =
