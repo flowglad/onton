@@ -20,7 +20,6 @@ type init_info = {
 [@@deriving show, eq]
 
 let t_of_yojson json =
-  let open Yojson.Safe.Util in
   match json with
   | `String "Ok" -> (Ok : t)
   | `String "Auth_unavailable" -> Auth_unavailable
@@ -30,7 +29,13 @@ let t_of_yojson json =
   | `String "Empty_response" -> Empty_response
   | `String "Process_error" -> Process_error
   | `Assoc [ ("Api_error", payload) ] ->
-      let status = payload |> member "status" |> to_int_option in
+      let status =
+        match payload with
+        | `Assoc fields ->
+            List.Assoc.find fields ~equal:String.equal "status"
+            |> Option.bind ~f:(function `Int n -> Some n | _ -> None)
+        | _ -> None
+      in
       Api_error { status }
   | `Assoc [ ("Other", `String detail) ] -> Other detail
   | _ -> Other "invalid_failure_subkind"
@@ -97,13 +102,18 @@ let mentions_network_failure stderr_tail =
 
 let classify_session_failed ~init ~text_tail ~stderr_tail ~detail =
   if mentions_not_logged_in text_tail then Auth_unavailable
-  else if api_key_source_none init then Auth_unavailable
+  else if
+    api_key_source_none init && String.is_empty text_tail
+    && String.is_empty stderr_tail
+  then Auth_unavailable
   else
     match api_error_status stderr_tail with
     | Some status -> Api_error { status = Some status }
     | None when mentions_network_failure stderr_tail -> Network_error
     | None when String.is_empty text_tail && String.is_empty stderr_tail ->
-        Empty_response
+        if String.is_empty detail || String.equal detail "(no error details)"
+        then Empty_response
+        else Other detail
     | None -> Other detail
 
 let classify ~classification ~init ~text_tail ~stderr_tail =
@@ -145,8 +155,17 @@ let%test "Auth_unavailable from api_key_source none + no Final_result" =
        ~classification:
          (Run_classification.Session_failed { exit_code = 1; detail = "detail" })
        ~init:{ default_init with api_key_source = Some "none" }
-       ~text_tail:"" ~stderr_tail:"stderr")
+       ~text_tail:"" ~stderr_tail:"")
     Auth_unavailable
+
+let%test "api_key_source none does not mask API errors" =
+  equal
+    (classify
+       ~classification:
+         (Run_classification.Session_failed { exit_code = 1; detail = "detail" })
+       ~init:{ default_init with api_key_source = Some "none" }
+       ~text_tail:"" ~stderr_tail:"API Error: 401 Unauthorized")
+    (Api_error { status = Some 401 })
 
 let%test "Api_error 401 from stderr" =
   equal
@@ -170,6 +189,16 @@ let%test "Empty_response when text and stderr are empty" =
   equal
     (classify
        ~classification:
-         (Run_classification.Session_failed { exit_code = 1; detail = "detail" })
+         (Run_classification.Session_failed
+            { exit_code = 1; detail = "(no error details)" })
        ~init:default_init ~text_tail:"" ~stderr_tail:"")
     Empty_response
+
+let%test "non-empty detail with empty tails falls through to Other" =
+  equal
+    (classify
+       ~classification:
+         (Run_classification.Session_failed
+            { exit_code = 1; detail = "exit 1 with explanation" })
+       ~init:default_init ~text_tail:"" ~stderr_tail:"")
+    (Other "exit 1 with explanation")
