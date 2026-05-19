@@ -37,6 +37,9 @@ let write_text_file ~path ~content =
   Stdlib.Fun.protect
     ~finally:(fun () -> Stdlib.close_out oc)
     (fun () ->
+      (* These diagnostic sidecar files are best-effort and written directly.
+         Unlike meta.json they are not crash-safe atomic writes, so a partial
+         file after process or filesystem failure is possible. *)
       Stdlib.output_string oc content;
       Stdlib.flush oc)
 

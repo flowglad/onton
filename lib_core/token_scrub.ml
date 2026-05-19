@@ -15,14 +15,16 @@ let token_pattern_strings =
     "AKIA[0-9A-Z]+";
   ]
 
-let scrub_with_pattern text pattern =
-  try
-    let compiled = Re.Perl.compile_pat pattern in
-    Re.replace_string compiled ~all:true ~by:redacted text
-  with _ -> text
+let compiled_patterns =
+  lazy
+    (List.map token_pattern_strings ~f:(fun pattern ->
+         try Some (Re.Perl.compile_pat pattern) with _ -> None))
 
 let scrub_token_patterns text =
-  List.fold token_pattern_strings ~init:text ~f:scrub_with_pattern
+  List.fold (Lazy.force compiled_patterns) ~init:text ~f:(fun acc pattern ->
+      match pattern with
+      | None -> acc
+      | Some compiled -> Re.replace_string compiled ~all:true ~by:redacted acc)
 
 let sensitive_env_markers = [ "KEY"; "TOKEN"; "SECRET" ]
 
