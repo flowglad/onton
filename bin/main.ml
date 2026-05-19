@@ -123,20 +123,32 @@ let run_git_no_cwd args =
   let env = Git_env.clean_env () in
   match Unix.open_process_args_full "git" argv env with
   | exception _ -> None
-  | in_ch, out_ch, err_ch ->
+  | in_ch, out_ch, err_ch -> (
       let status = ref None in
-      Stdlib.Fun.protect
-        ~finally:(fun () ->
-          if Option.is_none !status then
-            try ignore (Unix.close_process_full (in_ch, out_ch, err_ch))
-            with _ -> ())
-        (fun () ->
-          close_out_noerr out_ch;
-          let stdout = read_channel_all in_ch in
-          let stderr = read_channel_all err_ch in
-          let s = Unix.close_process_full (in_ch, out_ch, err_ch) in
-          status := Some s;
-          Some { status = s; stdout; stderr })
+      let capture =
+        match
+          Stdlib.Fun.protect
+            ~finally:(fun () ->
+              if Option.is_none !status then
+                try
+                  status :=
+                    Some (Unix.close_process_full (in_ch, out_ch, err_ch))
+                with _ -> ())
+            (fun () ->
+              close_out_noerr out_ch;
+              let stdout = read_channel_all in_ch in
+              let stderr = read_channel_all err_ch in
+              Some (stdout, stderr))
+        with
+        | result -> result
+        | exception _ -> None
+      in
+      match capture with
+      | None -> None
+      | Some (stdout, stderr) -> (
+          match !status with
+          | Some s -> Some { status = s; stdout; stderr }
+          | None -> None))
 
 (** Clone [owner/repo] from GitHub into [target_dir] (which must not exist yet).
     Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper, so
@@ -176,10 +188,12 @@ let fetch_managed_repo ~repo_root =
 let ensure_managed_repo ~project_name ~token ~owner ~repo =
   Git_env.set_github_token token;
   let repo_root = Project_store.managed_repo_dir project_name in
-  if
-    Stdlib.Sys.file_exists repo_root
-    && Stdlib.Sys.is_directory (Stdlib.Filename.concat repo_root ".git")
-  then (
+  let git_dir = Stdlib.Filename.concat repo_root ".git" in
+  let has_git_dir =
+    try Stdlib.Sys.file_exists git_dir && Stdlib.Sys.is_directory git_dir
+    with _ -> false
+  in
+  if Stdlib.Sys.file_exists repo_root && has_git_dir then (
     match fetch_managed_repo ~repo_root with
     | Ok () -> Ok repo_root
     | Error msg ->

@@ -14,7 +14,8 @@ val validate_owner : string -> (unit, string) Result.t
 val validate_repo : string -> (unit, string) Result.t
 (** Validate a string as a GitHub repository name: 1–100 characters,
     alphanumeric or [.] [-] [_], first character not punctuation. The string is
-    stripped before validation. *)
+    stripped before validation. Names ending in [.git] are rejected so
+    {!clone_url} cannot produce a double-[.git] suffix. *)
 
 val validate_target : owner:string -> repo:string -> (unit, string) Result.t
 (** Combined owner + repo validation. Returns the first [Error] encountered

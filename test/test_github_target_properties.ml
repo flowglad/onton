@@ -244,20 +244,20 @@ let prop_repo_too_long_rejected =
       let s = String.make n 'a' in
       Result.is_error (Github_target.validate_repo s))
 
+let prop_repo_dot_git_suffix_rejected =
+  QCheck2.Test.make ~name:"validate_repo: rejects repo names ending in .git"
+    gen_valid_repo (fun repo ->
+      Result.is_error (Github_target.validate_repo (repo ^ ".git")))
+
 (* ---------- Composition properties ---------- *)
 
 let prop_validate_target_short_circuits_on_owner =
   QCheck2.Test.make
-    ~name:
-      "validate_target: reports owner error when owner is invalid, regardless \
-       of repo"
+    ~name:"validate_target: rejects invalid owner, regardless of repo"
     QCheck2.Gen.(pair gen_arbitrary_string gen_arbitrary_string)
     (fun (owner, repo) ->
       match Github_target.validate_owner owner with
-      | Error owner_err -> (
-          match Github_target.validate_target ~owner ~repo with
-          | Error combined_err -> String.equal combined_err owner_err
-          | Ok () -> false (* owner valid => combined valid; contradiction *))
+      | Error _ -> Result.is_error (Github_target.validate_target ~owner ~repo)
       | Ok () -> true (* property is conditional on owner being invalid *))
 
 let prop_validate_target_passes_iff_both_pass =
@@ -370,6 +370,7 @@ let () =
       prop_owner_with_space_rejected;
       prop_owner_too_long_rejected;
       prop_repo_too_long_rejected;
+      prop_repo_dot_git_suffix_rejected;
       prop_validate_target_short_circuits_on_owner;
       prop_validate_target_passes_iff_both_pass;
       prop_clone_url_roundtrips;

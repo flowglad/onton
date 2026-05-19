@@ -20,12 +20,15 @@ let validate_owner s =
 let validate_repo s =
   let s = String.strip s in
   if String.is_empty s then Error "repo is empty"
+  else if String.is_suffix (String.lowercase s) ~suffix:".git" then
+    Error (Printf.sprintf "repo %S must not end with .git" s)
   else if Re.execp repo_re s then Ok ()
   else
     Error
       (Printf.sprintf
          "repo %S must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$ (GitHub repo: \
-          1–100 chars, alphanumeric or .-_, first char not punctuation)"
+          1–100 chars, alphanumeric or .-_, first char not punctuation, not \
+          ending in .git)"
          s)
 
 let validate_target ~owner ~repo =
@@ -60,6 +63,9 @@ let%test "validate_repo accepts onton" = Result.is_ok (validate_repo "onton")
 
 let%test "validate_repo accepts dots and dashes" =
   Result.is_ok (validate_repo "my.repo-name_v2")
+
+let%test "validate_repo rejects dot-git suffix" =
+  Result.is_error (validate_repo "my-repo.git")
 
 let%test "validate_repo rejects space" =
   Result.is_error (validate_repo "bad name")
