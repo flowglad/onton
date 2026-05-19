@@ -725,6 +725,8 @@ let%test_module "session_id_sidecars" =
       Gameplan.
         {
           project_name = "sidecar-test";
+          repo_owner = "";
+          repo_name = "";
           problem_statement = "";
           solution_summary = "";
           final_state_spec = "";

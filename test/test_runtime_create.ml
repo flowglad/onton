@@ -9,6 +9,8 @@ let () =
   let gameplan =
     {
       Gameplan.project_name = "test";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "";
@@ -42,6 +44,8 @@ let () =
   let gameplan =
     {
       Gameplan.project_name = "test";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "";

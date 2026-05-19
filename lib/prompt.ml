@@ -427,6 +427,8 @@ let%test "render_spec_suffix: both empty" =
   let gameplan =
     {
       Gameplan.project_name = "";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "";
@@ -462,6 +464,8 @@ let%test "render_spec_suffix: gameplan spec only" =
   let gameplan =
     {
       Gameplan.project_name = "";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "module FOO.\nsome spec";
@@ -500,6 +504,8 @@ let%test "render_spec_suffix: patch spec only" =
   let gameplan =
     {
       Gameplan.project_name = "";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "";
@@ -538,6 +544,8 @@ let%test "render_spec_suffix: both present" =
   let gameplan =
     {
       Gameplan.project_name = "";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "module FOO.\ngameplan spec";
@@ -1165,6 +1173,8 @@ let%test "patch prompt includes title and deps" =
     Gameplan.
       {
         project_name = "onton-port";
+        repo_owner = "flowglad";
+        repo_name = "onton";
         problem_statement = "Port Anton to OCaml.";
         solution_summary = "Use Eio for concurrency.";
         final_state_spec = "";
@@ -1258,6 +1268,8 @@ let%test "patch prompt static prefix is byte-identical across patches" =
     Gameplan.
       {
         project_name = "onton";
+        repo_owner = "flowglad";
+        repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.\n\n## Patch notes";
         solution_summary = "Move shared prompt content into a stable prefix.";
         final_state_spec = "module HEADLESS_CACHE_TUNING.\n\n## Patch state.";
@@ -1309,6 +1321,8 @@ let%test "agents_md content appears in static prefix when Some" =
     Gameplan.
       {
         project_name = "onton";
+        repo_owner = "flowglad";
+        repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.";
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
@@ -1355,6 +1369,8 @@ let%test "agents_md section is omitted when None" =
     Gameplan.
       {
         project_name = "onton";
+        repo_owner = "flowglad";
+        repo_name = "onton";
         problem_statement = "Prompt cache hit rate is low.";
         solution_summary = "Keep shared content in a stable prefix.";
         final_state_spec = "";
@@ -1426,6 +1442,8 @@ let make_layer_test_fixture () =
     Gameplan.
       {
         project_name = "onton";
+        repo_owner = "flowglad";
+        repo_name = "onton";
         problem_statement = "Prompts mix gameplan, patch, and turn content.";
         solution_summary = "Compose three layers in a fixed order.";
         final_state_spec = "module THREE_LAYERS.";

@@ -248,6 +248,8 @@ let gen_gameplan =
         Gameplan.
           {
             project_name = "test-project";
+            repo_owner = "";
+            repo_name = "";
             problem_statement = "test problem";
             solution_summary = "test solution";
             final_state_spec = "";
@@ -708,6 +710,8 @@ let make_test_gameplan patches =
   Gameplan.
     {
       project_name = "test-project";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "";
       solution_summary = "";
       final_state_spec = "";

@@ -269,6 +269,8 @@ end
 module Gameplan = struct
   type t = {
     project_name : string;
+    repo_owner : string; [@yojson.default ""]
+    repo_name : string; [@yojson.default ""]
     problem_statement : string;
     solution_summary : string;
     final_state_spec : string; [@yojson.default ""]

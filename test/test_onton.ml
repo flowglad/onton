@@ -26,6 +26,8 @@ let () =
     Onton_core.Types.Gameplan.
       {
         project_name = "test-project";
+        repo_owner = "";
+        repo_name = "";
         problem_statement = "";
         solution_summary = "";
         final_state_spec = "";
