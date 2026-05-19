@@ -439,7 +439,8 @@
         "behaviorPatchesMinimal",
         "dependencyGraphOrdered",
         "behaviorPatchesJustified",
-        "functionalChangesOwnedByExactlyOnePatch"
+        "functionalChangesOwnedByExactlyOnePatch",
+        "operationalConsiderationsSubstantive"
       ],
       "properties": {
         "featureFlagStrategyDocumented": { "type": "boolean" },
@@ -454,6 +455,10 @@
         "functionalChangesOwnedByExactlyOnePatch": {
           "type": "boolean",
           "description": "Every entry in functionalChanges has exactly one ownedBy patch, that patch exists, and the union of described behaviors covers every observable change implied by problemStatement/solutionSummary/acceptanceCriteria. No behavioral outcome is described in prose without a single named owner."
+        },
+        "operationalConsiderationsSubstantive": {
+          "type": "boolean",
+          "description": "Each operationalConsiderations sub-field (rolloutNotes, observability, rollbackPlan) engages concretely with this gameplan's specifics rather than issuing generic platitudes. Vague boilerplate like 'monitor for errors' or 'roll back if needed' without gameplan-specific detail does not qualify."
         }
       },
       "additionalProperties": false

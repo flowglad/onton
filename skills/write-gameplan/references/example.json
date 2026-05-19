@@ -275,7 +275,8 @@
     "behaviorPatchesMinimal": true,
     "dependencyGraphOrdered": true,
     "behaviorPatchesJustified": true,
-    "functionalChangesOwnedByExactlyOnePatch": true
+    "functionalChangesOwnedByExactlyOnePatch": true,
+    "operationalConsiderationsSubstantive": true
   },
 
   "mergabilityInsight": "3 of 4 patches are INFRA and can ship without changing observable behavior. Only Patch 4 changes behavior (wiring).",
