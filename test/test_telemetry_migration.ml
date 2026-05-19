@@ -37,7 +37,6 @@ let expect_equal_json ~name expected actual =
       (Printf.sprintf "%s: expected %s, got %s" name
          (Yojson.Safe.to_string expected)
          (Yojson.Safe.to_string actual))
-
 let test_event_log_complete () =
   let path = temp_path "onton-event-log" in
   let event_log = Onton.Event_log.create ~path in
