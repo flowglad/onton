@@ -4450,6 +4450,11 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       let event_log =
         Event_log.create ~path:(Project_store.event_log_path project_name)
       in
+      Telemetry_dispatch.register_sink (Event_log.sink event_log);
+      Telemetry_dispatch.register_sink
+        (Activity_log_sink.sink
+           ~update:(Runtime.update_activity_log runtime)
+           ());
       let review_backends = repo_config.Repo_config.review_backends in
       let findings_registry = Findings_registry.create () in
       let common_fibers =

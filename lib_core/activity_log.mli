@@ -84,3 +84,9 @@ val trim : t -> max:int -> t
 (** Truncate transitions, events, and stream entries to at most [max] entries,
     keeping the most recent. Use periodically to bound memory in long-running
     sessions. *)
+
+val stream_kind_of_raw :
+  channel:[ `Stdout | `Stderr ] -> string -> Stream_entry.kind
+(** Decode a raw telemetry stream line into the activity-log entry kind, falling
+    back to channel-specific text/error entries when the line is not one of the
+    activity-log JSON envelopes. *)

@@ -13,6 +13,9 @@ val create : path:string -> t
 (** Create an event log that appends to the given file path. If the file exceeds
     50 MB, it is rotated to [path.1] before returning. *)
 
+val sink : t -> Telemetry.Sink.t
+(** Telemetry sink that appends interested events to this JSONL log. *)
+
 val log_poll :
   t ->
   patch_id:Patch_id.t ->
@@ -35,7 +38,9 @@ val log_complete :
   agent_before:Patch_agent.t ->
   agent_after:Patch_agent.t ->
   unit
-(** Log a session completion with before/after state. *)
+(** Log a session completion with before/after state. This facade receives only
+    [session_result], so it records a coarse subkind; richer backend-tail
+    classification is emitted by lower-level telemetry events. *)
 
 val log_force_complete :
   t ->

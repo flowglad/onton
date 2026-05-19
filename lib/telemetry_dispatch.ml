@@ -20,36 +20,38 @@ let emit event =
         Stdlib.Printf.eprintf "telemetry: sink %s raised %s\n%!"
           sink.Telemetry.Sink.name (Exn.to_string exn))
 
+let replace_registry sinks =
+  Stdlib.Mutex.protect mutex (fun () ->
+      let old = !registry in
+      registry := sinks;
+      old)
+
+let restore_registry old =
+  Stdlib.Mutex.protect mutex (fun () -> registry := old)
+
+let with_sinks ~sinks body =
+  let old = replace_registry sinks in
+  Exn.protect ~f:body ~finally:(fun () -> restore_registry old)
+
 let with_sink ~sink body =
   let old =
     Stdlib.Mutex.protect mutex (fun () ->
-        let prev = !registry in
-        registry := sink :: prev;
-        prev)
+        let old = !registry in
+        registry := sink :: old;
+        old)
   in
-  Exn.protect ~f:body ~finally:(fun () ->
-      Stdlib.Mutex.protect mutex (fun () -> registry := old))
+  Exn.protect ~f:body ~finally:(fun () -> restore_registry old)
 
 let test_event =
   Telemetry.Event.Free_form
     {
-      patch_id = Some (Types.Patch_id.of_string "patch-2");
-      level = Info;
+      patch_id = Some (Types.Patch_id.of_string "patch-5");
+      level = Telemetry.Event.Info;
       message = "hello";
     }
 
 let test_sink ?(consume = fun _ -> ()) name interested_in =
   { Telemetry.Sink.name; interested_in; consume }
-
-let with_registry_replaced sinks body =
-  let old =
-    Stdlib.Mutex.protect mutex (fun () ->
-        let prev = !registry in
-        registry := sinks;
-        prev)
-  in
-  Exn.protect ~f:body ~finally:(fun () ->
-      Stdlib.Mutex.protect mutex (fun () -> registry := old))
 
 let%test "emit dispatches once per interested sink, never to uninterested sinks"
     =
@@ -65,12 +67,11 @@ let%test "emit dispatches once per interested sink, never to uninterested sinks"
       (fun _ -> false)
       ~consume:(fun _ -> Int.incr uninterested_count)
   in
-  with_registry_replaced [ interested; uninterested ] (fun () ->
-      emit test_event);
+  with_sinks ~sinks:[ interested; uninterested ] (fun () -> emit test_event);
   !interested_count = 1 && !uninterested_count = 0
 
 let%test "emit is a no-op when no sinks are registered" =
-  with_registry_replaced [] (fun () -> emit test_event);
+  with_sinks ~sinks:[] (fun () -> emit test_event);
   true
 
 let%test "emit is a no-op when no registered sink is interested" =
@@ -80,7 +81,7 @@ let%test "emit is a no-op when no registered sink is interested" =
       (fun _ -> false)
       ~consume:(fun _ -> Int.incr consumed)
   in
-  with_registry_replaced [ sink ] (fun () -> emit test_event);
+  with_sinks ~sinks:[ sink ] (fun () -> emit test_event);
   !consumed = 0
 
 let%test "sink exceptions in consume do not propagate to emit's caller" =
@@ -88,6 +89,24 @@ let%test "sink exceptions in consume do not propagate to emit's caller" =
     test_sink "raising" (fun _ -> true) ~consume:(fun _ -> failwith "boom")
   in
   try
-    with_registry_replaced [ sink ] (fun () -> emit test_event);
+    with_sinks ~sinks:[ sink ] (fun () -> emit test_event);
     true
   with _ -> false
+
+let%test "with_sink restores the exact prior registry" =
+  let outer_consumed = ref 0 in
+  let inner_consumed = ref 0 in
+  let outer =
+    test_sink "outer"
+      (fun _ -> true)
+      ~consume:(fun _ -> Int.incr outer_consumed)
+  in
+  let inner =
+    test_sink "inner"
+      (fun _ -> true)
+      ~consume:(fun _ -> Int.incr inner_consumed)
+  in
+  with_sinks ~sinks:[ outer ] (fun () ->
+      with_sink ~sink:inner (fun () -> emit test_event);
+      emit test_event);
+  !outer_consumed = 2 && !inner_consumed = 1

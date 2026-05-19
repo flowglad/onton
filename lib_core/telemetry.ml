@@ -30,7 +30,7 @@ module Event = struct
       }
     | Stream of {
         patch_id : Types.Patch_id.t;
-        session_uuid : string;
+        session_uuid : string option;
         channel : channel;
         raw : string;
       }
@@ -79,12 +79,20 @@ let test_sink ?(consume = fun _ -> ()) name interested_in =
 let names sinks = List.map sinks ~f:(fun sink -> sink.Sink.name)
 
 let%test "route is pure — same inputs always produce the same output" =
+  let calls = ref 0 in
   let sinks =
-    [ test_sink "yes" (fun _ -> true); test_sink "no" (fun _ -> false) ]
+    [
+      test_sink "yes" (fun _ ->
+          Int.incr calls;
+          true);
+      test_sink "no" (fun _ ->
+          Int.incr calls;
+          false);
+    ]
   in
   let first = route ~sinks test_event in
   let second = route ~sinks test_event in
-  List.equal String.equal (names first) (names second)
+  List.equal String.equal (names first) (names second) && !calls = 4
 
 let%test "route returns exactly the sinks whose interested_in is true" =
   let interested = test_sink "interested" (fun _ -> true) in
@@ -105,8 +113,9 @@ let%test "Event.t yojson roundtrip preserves every variant" =
           subkind = Failure_subkind.Network_error;
           payload = `Bool true;
         };
-      Stream { patch_id; session_uuid = "uuid"; channel = `Stdout; raw = "{}" };
-      Stream { patch_id; session_uuid = "uuid"; channel = `Stderr; raw = "err" };
+      Stream
+        { patch_id; session_uuid = Some "uuid"; channel = `Stdout; raw = "{}" };
+      Stream { patch_id; session_uuid = None; channel = `Stderr; raw = "err" };
       Spawn_started
         {
           patch_id;
