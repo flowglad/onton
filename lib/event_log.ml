@@ -232,7 +232,6 @@ let log_conflict_delivery t ~patch_id ~path ~rebase_in_progress ~git_status
                ("path", `String path);
                ("rebase_in_progress", `Bool rebase_in_progress);
                ("git_status", `String git_status);
-               ("git_diff", `String git_diff);
                ("git_diff_len", `Int (String.length git_diff));
              ];
        })
