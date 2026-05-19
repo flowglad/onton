@@ -23,7 +23,14 @@ let parse_stop_reason (raw : string) : Types.Stop_reason.t =
 let map_event (event : Patch_agent_rpc.event) : Types.Stream_event.t =
   match event with
   | Session_init { session_id; _ } ->
-      Types.Stream_event.Session_init { session_id }
+      Types.Stream_event.Session_init
+        {
+          session_id;
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        }
   | Turn_started _ -> Types.Stream_event.Turn_started
   | Text_delta { delta } -> Types.Stream_event.Text_delta delta
   | Tool_call { name; input; _ } ->

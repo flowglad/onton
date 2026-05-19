@@ -229,7 +229,13 @@ module Stream_event : sig
       }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
-    | Session_init of { session_id : string }
+    | Session_init of {
+        session_id : string;
+        api_key_source : string option;
+        model : string option;
+        claude_code_version : string option;
+        permission_mode : string option;
+      }
   [@@deriving show, eq, sexp_of, compare]
 end
 

@@ -348,7 +348,7 @@ let run_with_backend ~session_mode_for_agent
                 Buffer.add_string error_buf msg;
                 log_stream_entry runtime ~patch_id
                   (Activity_log.Stream_entry.Stream_error msg)
-            | Types.Stream_event.Session_init { session_id } ->
+            | Types.Stream_event.Session_init { session_id; _ } ->
                 captured_session_id := Some session_id
           in
           let result =
