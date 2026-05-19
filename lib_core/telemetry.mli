@@ -1,5 +1,3 @@
-open Base
-
 module Event : sig
   type level = Trace | Debug | Info | Warning | Error
   [@@deriving show, eq, yojson]
