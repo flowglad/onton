@@ -21,9 +21,14 @@ let emit event =
           sink.Telemetry.Sink.name (Exn.to_string exn))
 
 let with_sink ~sink body =
-  register_sink sink;
+  let old =
+    Stdlib.Mutex.protect mutex (fun () ->
+        let prev = !registry in
+        registry := sink :: prev;
+        prev)
+  in
   Exn.protect ~f:body ~finally:(fun () ->
-      unregister_sink ~name:sink.Telemetry.Sink.name)
+      Stdlib.Mutex.protect mutex (fun () -> registry := old))
 
 let test_event =
   Telemetry.Event.Free_form
