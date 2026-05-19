@@ -7,6 +7,22 @@ let pluralize ?plural n singular =
   let many = match plural with Some p -> p | None -> singular ^ "s" in
   Printf.sprintf "%d %s" n (if n = 1 then singular else many)
 
+let safe_session_id s =
+  (not (String.is_empty s))
+  && (not (String.is_substring s ~substring:".."))
+  && String.for_all s ~f:(fun c ->
+      Char.is_alphanum c || Char.equal c '-' || Char.equal c '_'
+      || Char.equal c '.')
+
+let%test "safe_session_id accepts ordinary claude ids" =
+  safe_session_id "abc-123_DEF.456"
+
+let%test "safe_session_id rejects traversal and separators" =
+  (not (safe_session_id "../abc"))
+  && (not (safe_session_id "abc/def"))
+  && (not (safe_session_id "abc\\def"))
+  && not (safe_session_id "")
+
 let session_mode (agent : Patch_agent.t) :
     [ `Resume of string | `Fresh | `Give_up ] =
   match agent.Patch_agent.session_fallback with
@@ -220,7 +236,7 @@ let run_with_backend ~session_mode_for_agent
               sync_transcript ())
           in
           let captured_session_id = ref None in
-          let content_gate = Content_gate.create () in
+          let content_gate = ref (Content_gate.create ()) in
           let maybe_persist_session_id () =
             match (snapshot_path_opt, !captured_session_id) with
             | Some snapshot_path, Some session_id -> (
@@ -255,134 +271,144 @@ let run_with_backend ~session_mode_for_agent
                   ())
           in
           let on_event (event : Types.Stream_event.t) =
+            let () =
+              match event with
+              (* Turn_started is the preferred signal; the arms below are
+                 fallbacks for backends that do not emit it. *)
+              | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
+              | Types.Stream_event.Text_delta text ->
+                  mark_backend_accepted_turn ();
+                  let prev_len = Buffer.length text_buf in
+                  Buffer.add_string text_buf text;
+                  maybe_sync_transcript ();
+                  if not !pr_found then
+                    (* Anchor the tail window to [prev_len], NOT [new_len].
+                       We want the window to always cover the ENTIRE new chunk
+                       plus up to [pr_url_lookback] bytes back into the prior
+                       content (to catch a URL/digit run that spanned the
+                       chunk boundary). LLM stream chunks are routinely longer
+                       than [pr_url_lookback] (~62 bytes), so anchoring to
+                       [new_len] would shrink the window to the last
+                       [pr_url_lookback] bytes and miss URLs in the early part
+                       of long chunks. *)
+                    let offset = max 0 (prev_len - pr_url_lookback) in
+                    let tail =
+                      Buffer.To_string.sub text_buf ~pos:offset
+                        ~len:(Buffer.length text_buf - offset)
+                    in
+                    try_extract_pr tail
+              | Types.Stream_event.Tool_use { name; input; status } ->
+                  mark_backend_accepted_turn ();
+                  tool_count := !tool_count + 1;
+                  (* OpenCode emits pending → running → completed for a single
+                     tool call. Track only the latest unresolved status per tool
+                     name: clear on completed, replace on any other status.
+                     Otherwise a normal pending → completed lifecycle would
+                     leave a stale (name, "pending") entry that
+                     [classify_pr_body_respond] would misread as a blocked
+                     Write. *)
+                  (match status with
+                  | Some s when String.equal s "completed" ->
+                      tool_failures :=
+                        List.filter !tool_failures ~f:(fun (n, _) ->
+                            not (String.equal n name))
+                  | Some s ->
+                      let without =
+                        List.filter !tool_failures ~f:(fun (n, _) ->
+                            not (String.equal n name))
+                      in
+                      tool_failures := (name, s) :: without
+                  | None -> ());
+                  let summary =
+                    try
+                      let json = Yojson.Safe.from_string input in
+                      let field key =
+                        Yojson.Safe.Util.(member key json |> to_string_option)
+                      in
+                      let s =
+                        match name with
+                        | "Bash" -> field "command"
+                        | "Read" | "Write" -> field "file_path"
+                        | "Edit" -> field "file_path"
+                        | "Glob" -> field "pattern"
+                        | "Grep" -> field "pattern"
+                        | _ -> None
+                      in
+                      match s with Some v -> truncate v 80 | None -> ""
+                    with _ -> ""
+                  in
+                  let detail =
+                    if not (String.is_empty summary) then
+                      Printf.sprintf " %s" summary
+                    else ""
+                  in
+                  let sep =
+                    let len = Buffer.length text_buf in
+                    if len = 0 then ""
+                    else if
+                      len >= 2
+                      && Char.equal (Buffer.nth text_buf (len - 1)) '\n'
+                      && Char.equal (Buffer.nth text_buf (len - 2)) '\n'
+                    then ""
+                    else if Char.equal (Buffer.nth text_buf (len - 1)) '\n' then
+                      "\n"
+                    else "\n\n"
+                  in
+                  Buffer.add_string text_buf
+                    (Printf.sprintf "%s[tool: %s]%s\n" sep name detail);
+                  sync_transcript ();
+                  log_stream_entry runtime ~patch_id
+                    (Activity_log.Stream_entry.Tool_use (name, summary))
+              | Types.Stream_event.Final_result { stop_reason; _ } ->
+                  mark_backend_accepted_turn ();
+                  sync_transcript ();
+                  (* Final pass with end-of-stream semantics — catches PR URLs
+                     whose digit run terminates exactly at the buffer end (no
+                     trailing newline / next chunk to provide a non-digit
+                     terminator).
+
+                     Restricted to the same [pr_url_lookback] tail window the
+                     per-chunk path uses: scanning the full buffer would
+                     left-to-right match an earlier stub fragment (e.g. an
+                     abandoned [.../pull/12] from a mid-stream digit-boundary
+                     that the per-chunk path correctly returned [None] for),
+                     reporting the wrong PR if the real URL appears later in
+                     the same buffer. The per-chunk path already saw any URL
+                     that had a non-digit terminator during streaming, so the
+                     final pass only needs to cover what the tail window does. *)
+                  (if not !pr_found then
+                     let full = Buffer.contents text_buf in
+                     let len = String.length full in
+                     let offset = max 0 (len - pr_url_lookback) in
+                     let tail =
+                       String.sub full ~pos:offset ~len:(len - offset)
+                     in
+                     try_extract_pr ~at_end_of_stream:true tail);
+                  let reason = Types.Stop_reason.to_display stop_reason in
+                  log_stream_entry runtime ~patch_id
+                    (Activity_log.Stream_entry.Finished reason)
+              | Types.Stream_event.Error msg ->
+                  if Buffer.length error_buf > 0 then
+                    Buffer.add_char error_buf '\n';
+                  Buffer.add_string error_buf msg;
+                  log_stream_entry runtime ~patch_id
+                    (Activity_log.Stream_entry.Stream_error msg)
+              | Types.Stream_event.Session_init { session_id; _ } ->
+                  captured_session_id := Some session_id
+            in
             (* Persist the crash-recovery sidecar lazily: only after claude
                has *committed* a conversation turn to its .jsonl (first
                Final_result event).  Streamed chunks (Text_delta, Tool_use)
                can fire before the turn lands on disk — if the API errors
                mid-turn, the .jsonl stays at its 124-byte header and a
-               sidecar pointing at it would poison every later --resume. *)
-            if Content_gate.should_persist content_gate event then
-              maybe_persist_session_id ();
-            match event with
-            (* Turn_started is the preferred signal; the arms below are
-               fallbacks for backends that do not emit it. *)
-            | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
-            | Types.Stream_event.Text_delta text ->
-                mark_backend_accepted_turn ();
-                let prev_len = Buffer.length text_buf in
-                Buffer.add_string text_buf text;
-                maybe_sync_transcript ();
-                if not !pr_found then
-                  (* Anchor the tail window to [prev_len], NOT [new_len].
-                     We want the window to always cover the ENTIRE new chunk
-                     plus up to [pr_url_lookback] bytes back into the prior
-                     content (to catch a URL/digit run that spanned the
-                     chunk boundary). LLM stream chunks are routinely longer
-                     than [pr_url_lookback] (~62 bytes), so anchoring to
-                     [new_len] would shrink the window to the last
-                     [pr_url_lookback] bytes and miss URLs in the early part
-                     of long chunks. *)
-                  let offset = max 0 (prev_len - pr_url_lookback) in
-                  let tail =
-                    Buffer.To_string.sub text_buf ~pos:offset
-                      ~len:(Buffer.length text_buf - offset)
-                  in
-                  try_extract_pr tail
-            | Types.Stream_event.Tool_use { name; input; status } ->
-                mark_backend_accepted_turn ();
-                tool_count := !tool_count + 1;
-                (* OpenCode emits pending → running → completed for a single
-                   tool call. Track only the latest unresolved status per tool
-                   name: clear on completed, replace on any other status.
-                   Otherwise a normal pending → completed lifecycle would leave
-                   a stale (name, "pending") entry that
-                   [classify_pr_body_respond] would misread as a blocked Write. *)
-                (match status with
-                | Some s when String.equal s "completed" ->
-                    tool_failures :=
-                      List.filter !tool_failures ~f:(fun (n, _) ->
-                          not (String.equal n name))
-                | Some s ->
-                    let without =
-                      List.filter !tool_failures ~f:(fun (n, _) ->
-                          not (String.equal n name))
-                    in
-                    tool_failures := (name, s) :: without
-                | None -> ());
-                let summary =
-                  try
-                    let json = Yojson.Safe.from_string input in
-                    let field key =
-                      Yojson.Safe.Util.(member key json |> to_string_option)
-                    in
-                    let s =
-                      match name with
-                      | "Bash" -> field "command"
-                      | "Read" | "Write" -> field "file_path"
-                      | "Edit" -> field "file_path"
-                      | "Glob" -> field "pattern"
-                      | "Grep" -> field "pattern"
-                      | _ -> None
-                    in
-                    match s with Some v -> truncate v 80 | None -> ""
-                  with _ -> ""
-                in
-                let detail =
-                  if not (String.is_empty summary) then
-                    Printf.sprintf " %s" summary
-                  else ""
-                in
-                let sep =
-                  let len = Buffer.length text_buf in
-                  if len = 0 then ""
-                  else if
-                    len >= 2
-                    && Char.equal (Buffer.nth text_buf (len - 1)) '\n'
-                    && Char.equal (Buffer.nth text_buf (len - 2)) '\n'
-                  then ""
-                  else if Char.equal (Buffer.nth text_buf (len - 1)) '\n' then
-                    "\n"
-                  else "\n\n"
-                in
-                Buffer.add_string text_buf
-                  (Printf.sprintf "%s[tool: %s]%s\n" sep name detail);
-                sync_transcript ();
-                log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Tool_use (name, summary))
-            | Types.Stream_event.Final_result { stop_reason; _ } ->
-                mark_backend_accepted_turn ();
-                sync_transcript ();
-                (* Final pass with end-of-stream semantics — catches PR URLs
-                   whose digit run terminates exactly at the buffer end (no
-                   trailing newline / next chunk to provide a non-digit
-                   terminator).
-
-                   Restricted to the same [pr_url_lookback] tail window the
-                   per-chunk path uses: scanning the full buffer would
-                   left-to-right match an earlier stub fragment (e.g. an
-                   abandoned [.../pull/12] from a mid-stream digit-boundary
-                   that the per-chunk path correctly returned [None] for),
-                   reporting the wrong PR if the real URL appears later in
-                   the same buffer. The per-chunk path already saw any URL
-                   that had a non-digit terminator during streaming, so the
-                   final pass only needs to cover what the tail window does. *)
-                (if not !pr_found then
-                   let full = Buffer.contents text_buf in
-                   let len = String.length full in
-                   let offset = max 0 (len - pr_url_lookback) in
-                   let tail = String.sub full ~pos:offset ~len:(len - offset) in
-                   try_extract_pr ~at_end_of_stream:true tail);
-                let reason = Types.Stop_reason.to_display stop_reason in
-                log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Finished reason)
-            | Types.Stream_event.Error msg ->
-                if Buffer.length error_buf > 0 then
-                  Buffer.add_char error_buf '\n';
-                Buffer.add_string error_buf msg;
-                log_stream_entry runtime ~patch_id
-                  (Activity_log.Stream_entry.Stream_error msg)
-            | Types.Stream_event.Session_init { session_id; _ } ->
-                captured_session_id := Some session_id
+               sidecar pointing at it would poison every later --resume.
+               Run this after the event dispatch so a same-batch Session_init
+               has already updated [captured_session_id]. *)
+            let next_gate, persist =
+              Content_gate.should_persist !content_gate event
+            in
+            content_gate := next_gate;
+            if persist then maybe_persist_session_id ()
           in
           let result =
             try
@@ -447,14 +473,19 @@ let run_with_backend ~session_mode_for_agent
                    filesystem error must not interrupt the retry path. *)
                 (match resume_session with
                 | None -> ()
-                | Some session_id -> (
+                | Some session_id when safe_session_id session_id -> (
                     let path =
                       Spawn_env.claude_session_jsonl_path ~project_name
                         ~patch_id ~worktree_path ~session_id
                     in
                     try Unix.unlink path with
                     | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
-                    | _ -> ()));
+                    | _ -> ())
+                | Some session_id ->
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "Skipping cleanup for unsafe Claude session id %S"
+                         session_id));
                 (Orchestrator.Session_no_resume, `Failed)
             | Timed_out ->
                 let detail =

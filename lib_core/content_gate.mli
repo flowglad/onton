@@ -5,10 +5,10 @@ type t
 
 val create : unit -> t
 
-val should_persist : t -> Types.Stream_event.t -> bool
-(** Returns [true] exactly once — on the first [Text_delta] or [Tool_use] event
-    — and [false] for every other event (including all events after the first
-    persist). *)
+val should_persist : t -> Types.Stream_event.t -> t * bool
+(** Returns the next gate state and whether to persist now. The decision is
+    [true] exactly once — on the first [Final_result] event — and [false] for
+    every other event (including all events after the first persist). *)
 
 val has_persisted : t -> bool
 (** Whether [should_persist] has already returned [true] for this gate. *)

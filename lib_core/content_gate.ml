@@ -14,27 +14,25 @@ open Base
     emits [Error] from the terminating "result" event instead, so the gate stays
     closed.
 
-    [should_persist] returns [true] exactly once — on the first [Final_result]
-    event — and [false] for everything else, including all events after the
-    first persist. *)
+    [should_persist] returns the next gate state plus a decision. The decision
+    is [true] exactly once — on the first [Final_result] event — and [false] for
+    everything else, including all events after the first persist. *)
 
-type t = { mutable persisted : bool }
+type t = Not_persisted | Persisted
 
-let create () = { persisted = false }
+let create () = Not_persisted
 
 let should_persist t (event : Types.Stream_event.t) =
-  if t.persisted then false
-  else
-    match event with
-    | Types.Stream_event.Final_result _ ->
-        t.persisted <- true;
-        true
-    | Types.Stream_event.Turn_started | Types.Stream_event.Session_init _
-    | Types.Stream_event.Text_delta _ | Types.Stream_event.Tool_use _
-    | Types.Stream_event.Error _ ->
-        false
+  match (t, event) with
+  | Persisted, _ -> (Persisted, false)
+  | Not_persisted, Types.Stream_event.Final_result _ -> (Persisted, true)
+  | ( Not_persisted,
+      ( Types.Stream_event.Turn_started | Types.Stream_event.Session_init _
+      | Types.Stream_event.Text_delta _ | Types.Stream_event.Tool_use _
+      | Types.Stream_event.Error _ ) ) ->
+      (Not_persisted, false)
 
-let has_persisted t = t.persisted
+let has_persisted = function Persisted -> true | Not_persisted -> false
 
 let test_session_init =
   Types.Stream_event.Session_init
@@ -48,29 +46,32 @@ let test_session_init =
 
 let%test "Session_init never triggers persist" =
   let g = create () in
-  (not (should_persist g test_session_init)) && not (has_persisted g)
+  let g, persist = should_persist g test_session_init in
+  (not persist) && not (has_persisted g)
 
 let%test "Turn_started never triggers persist" =
   let g = create () in
-  (not (should_persist g Types.Stream_event.Turn_started))
-  && not (has_persisted g)
+  let g, persist = should_persist g Types.Stream_event.Turn_started in
+  (not persist) && not (has_persisted g)
 
 let%test
     "Text_delta never triggers persist (chunks unflushed until Final_result)" =
   let g = create () in
-  (not (should_persist g (Types.Stream_event.Text_delta "hi")))
-  && not (has_persisted g)
+  let g, persist = should_persist g (Types.Stream_event.Text_delta "hi") in
+  (not persist) && not (has_persisted g)
 
 let%test "Tool_use never triggers persist (turn still in progress)" =
   let g = create () in
   let ev =
     Types.Stream_event.Tool_use { name = "Bash"; input = "{}"; status = None }
   in
-  (not (should_persist g ev)) && not (has_persisted g)
+  let g, persist = should_persist g ev in
+  (not persist) && not (has_persisted g)
 
 let%test "Error never triggers persist" =
   let g = create () in
-  not (should_persist g (Types.Stream_event.Error "boom"))
+  let _, persist = should_persist g (Types.Stream_event.Error "boom") in
+  not persist
 
 let%test "first Final_result triggers; subsequent calls return false" =
   let g = create () in
@@ -78,21 +79,23 @@ let%test "first Final_result triggers; subsequent calls return false" =
     Types.Stream_event.Final_result
       { text = "done"; stop_reason = Types.Stop_reason.End_turn }
   in
-  let first = should_persist g ev in
-  let second = should_persist g ev in
+  let g, first = should_persist g ev in
+  let g, second = should_persist g ev in
   first && (not second) && has_persisted g
 
 let%test "Final_result after a flurry of in-flight events triggers" =
   let g = create () in
-  ignore (should_persist g test_session_init);
-  ignore (should_persist g Types.Stream_event.Turn_started);
-  ignore (should_persist g (Types.Stream_event.Text_delta "streamed"));
-  ignore
-    (should_persist g
-       (Types.Stream_event.Tool_use
-          { name = "Bash"; input = "{}"; status = None }));
+  let g, _ = should_persist g test_session_init in
+  let g, _ = should_persist g Types.Stream_event.Turn_started in
+  let g, _ = should_persist g (Types.Stream_event.Text_delta "streamed") in
+  let g, _ =
+    should_persist g
+      (Types.Stream_event.Tool_use
+         { name = "Bash"; input = "{}"; status = None })
+  in
   let ev =
     Types.Stream_event.Final_result
       { text = "done"; stop_reason = Types.Stop_reason.End_turn }
   in
-  should_persist g ev && has_persisted g
+  let g, persist = should_persist g ev in
+  persist && has_persisted g
