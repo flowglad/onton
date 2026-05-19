@@ -70,7 +70,9 @@ let create ~project_name ~patch_id:_ ~session_uuid =
     make_append_file (Stdlib.Filename.concat artifact_dir "stderr.log")
   in
   let meta_path = meta_path ~project_name ~session_uuid in
+  let started_written = ref false in
   let write_started ~prompt ~argv ~env_redacted =
+    started_written := true;
     write_text_file
       ~path:(Stdlib.Filename.concat artifact_dir "prompt.txt")
       ~content:prompt;
@@ -103,7 +105,7 @@ let create ~project_name ~patch_id:_ ~session_uuid =
       (function
       | Telemetry.Event.Spawn_started
           { session_uuid = event_uuid; prompt; argv; env_redacted; _ }
-        when String.equal event_uuid session_uuid ->
+        when String.equal event_uuid session_uuid && not !started_written ->
           write_started ~prompt ~argv ~env_redacted
       | Telemetry.Event.Stream
           { session_uuid = Some event_uuid; channel; raw; _ }
@@ -294,3 +296,34 @@ let%test "env writer preserves pre-redacted entries" =
   String.is_substring env_text ~substring:"ANTHROPIC_API_KEY=<REDACTED>"
   && String.is_substring env_text ~substring:"SAFE_NAME=<REDACTED>"
   && String.is_substring env_text ~substring:"NORMAL=value"
+
+let%test "duplicate Spawn_started does not overwrite sidecar files" =
+  with_temp_data_dir @@ fun () ->
+  let project_name = "Session Artifact Duplicate Start" in
+  let patch_id = Types.Patch_id.of_string "patch-4" in
+  let session_uuid = "session-5" in
+  let sink = create ~project_name ~patch_id ~session_uuid in
+  let started ~prompt ~argv ~env_redacted =
+    Telemetry.Event.Spawn_started
+      { patch_id; session_uuid; prompt; argv; env_redacted }
+  in
+  sink.consume
+    (started ~prompt:"first prompt" ~argv:[ "first"; "argv" ]
+       ~env_redacted:[| "ATTEMPT=first" |]);
+  sink.consume
+    (started ~prompt:"second prompt" ~argv:[ "second"; "argv" ]
+       ~env_redacted:[| "ATTEMPT=second" |]);
+  let dir =
+    Stdlib.Filename.concat
+      (Project_store.sessions_dir project_name)
+      session_uuid
+  in
+  String.equal
+    (read_file (Stdlib.Filename.concat dir "prompt.txt"))
+    "first prompt"
+  && String.equal
+       (read_file (Stdlib.Filename.concat dir "argv.txt"))
+       "first\nargv\n"
+  && String.equal
+       (read_file (Stdlib.Filename.concat dir "env.txt"))
+       "ATTEMPT=first\n"

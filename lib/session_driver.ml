@@ -621,32 +621,54 @@ let run_with_backend ~session_mode_for_agent
                        "Session ended with %d non-completed tool call(s) (%s): \
                         %s"
                        (List.length failures) backend_name rendered));
+              let apply_result_and_emit_complete final_session_result =
+                let agent_before, agent_after =
+                  Runtime.update_orchestrator_returning runtime (fun orch ->
+                      let agent_before = Orchestrator.agent orch patch_id in
+                      (* Store the captured session_id BEFORE applying the session
+                     result. [apply_session_result] clears [llm_session_id] on
+                     start-path fresh failure (via [on_session_failure]) and on
+                     [Session_no_resume] / [Session_give_up]; doing the set
+                     afterwards would overwrite that reset and break the
+                     clean-retry path. *)
+                      let orch =
+                        match !captured_session_id with
+                        | Some _ ->
+                            Orchestrator.set_llm_session_id orch patch_id
+                              !captured_session_id
+                        | None -> orch
+                      in
+                      let orch =
+                        Orchestrator.apply_session_result orch patch_id
+                          final_session_result
+                      in
+                      let agent_after = Orchestrator.agent orch patch_id in
+                      (orch, (agent_before, agent_after)))
+                in
+                Telemetry_dispatch.emit
+                  (Telemetry.Event.Complete
+                     {
+                       patch_id;
+                       session_uuid = Some session_uuid;
+                       subkind;
+                       payload =
+                         `Assoc
+                           [
+                             ( "result",
+                               `String
+                                 (Orchestrator.show_session_result
+                                    final_session_result) );
+                             ( "agent_before",
+                               Persistence.patch_agent_to_yojson agent_before );
+                             ( "agent_after",
+                               Persistence.patch_agent_to_yojson agent_after );
+                           ];
+                     })
+              in
               (match !cancelled with
               | None -> ()
               | Some exn ->
-                  let agent =
-                    Runtime.read runtime (fun snap ->
-                        Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                  in
-                  Telemetry_dispatch.emit
-                    (Telemetry.Event.Complete
-                       {
-                         patch_id;
-                         session_uuid = Some session_uuid;
-                         subkind;
-                         payload =
-                           `Assoc
-                             [
-                               ( "result",
-                                 `String
-                                   (Orchestrator.show_session_result
-                                      session_result) );
-                               ( "agent_before",
-                                 Persistence.patch_agent_to_yojson agent );
-                               ( "agent_after",
-                                 Persistence.patch_agent_to_yojson agent );
-                             ];
-                       });
+                  apply_result_and_emit_complete session_result;
                   raise exn);
               (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
@@ -748,48 +770,7 @@ let run_with_backend ~session_mode_for_agent
                 | Orchestrator.Session_worktree_missing ->
                     `Failed
               in
-              let agent_before, agent_after =
-                Runtime.update_orchestrator_returning runtime (fun orch ->
-                    let agent_before = Orchestrator.agent orch patch_id in
-                    (* Store the captured session_id BEFORE applying the session
-                   result. [apply_session_result] clears [llm_session_id] on
-                   start-path fresh failure (via [on_session_failure]) and on
-                   [Session_no_resume] / [Session_give_up]; doing the set
-                   afterwards would overwrite that reset and break the
-                   clean-retry path. *)
-                    let orch =
-                      match !captured_session_id with
-                      | Some _ ->
-                          Orchestrator.set_llm_session_id orch patch_id
-                            !captured_session_id
-                      | None -> orch
-                    in
-                    let orch =
-                      Orchestrator.apply_session_result orch patch_id
-                        final_session_result
-                    in
-                    let agent_after = Orchestrator.agent orch patch_id in
-                    (orch, (agent_before, agent_after)))
-              in
-              Telemetry_dispatch.emit
-                (Telemetry.Event.Complete
-                   {
-                     patch_id;
-                     session_uuid = Some session_uuid;
-                     subkind;
-                     payload =
-                       `Assoc
-                         [
-                           ( "result",
-                             `String
-                               (Orchestrator.show_session_result
-                                  final_session_result) );
-                           ( "agent_before",
-                             Persistence.patch_agent_to_yojson agent_before );
-                           ( "agent_after",
-                             Persistence.patch_agent_to_yojson agent_after );
-                         ];
-                   });
+              apply_result_and_emit_complete final_session_result;
               (final_user_result, List.rev !tool_failures)))
 
 let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
