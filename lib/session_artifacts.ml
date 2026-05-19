@@ -149,9 +149,7 @@ let default_data_root () =
 let with_temp_data_dir f =
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
   let restore_path_when_unset =
-    match old with
-    | Some _ -> None
-    | None -> Some (default_data_root ())
+    match old with Some _ -> None | None -> Some (default_data_root ())
   in
   let dir = Stdlib.Filename.temp_dir "onton-session-artifacts-" "" in
   Unix.putenv "ONTON_DATA_DIR" dir;
