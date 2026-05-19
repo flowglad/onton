@@ -141,6 +141,15 @@ let run_with_backend ~session_mode_for_agent
           (`Failed, [])
       | Some worktree_path ->
           let cwd = Eio.Path.(fs / worktree_path) in
+          (* Read once at session start so the per-event callback below can
+             persist the session id to the crash-recovery sidecar without
+             repeated env lookups.  When unset, the sidecar write is a no-op:
+             nothing to recover from on restart anyway. *)
+          let snapshot_path_opt =
+            match Stdlib.Sys.getenv_opt "ONTON_SNAPSHOT_PATH" with
+            | Some p when not (String.is_empty (String.strip p)) -> Some p
+            | _ -> None
+          in
           let text_buf =
             let buf = Buffer.create 4096 in
             (match Stdlib.Hashtbl.find_opt transcripts patch_id with
@@ -211,6 +220,22 @@ let run_with_backend ~session_mode_for_agent
               sync_transcript ())
           in
           let captured_session_id = ref None in
+          let content_gate = Content_gate.create () in
+          let maybe_persist_session_id () =
+            match (snapshot_path_opt, !captured_session_id) with
+            | Some snapshot_path, Some session_id -> (
+                match
+                  Persistence.record_session_id ~snapshot_path ~patch_id
+                    ~session_id
+                with
+                | Ok () -> ()
+                | Error msg ->
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "Failed to record session_id sidecar for %s — %s"
+                         session_id msg))
+            | None, _ | _, None -> ()
+          in
           let backend_accepted_turn = ref false in
           let mark_backend_accepted_turn () =
             if not !backend_accepted_turn then (
@@ -230,6 +255,14 @@ let run_with_backend ~session_mode_for_agent
                   ())
           in
           let on_event (event : Types.Stream_event.t) =
+            (* Persist the crash-recovery sidecar lazily: only after claude
+               has *committed* a conversation turn to its .jsonl (first
+               Final_result event).  Streamed chunks (Text_delta, Tool_use)
+               can fire before the turn lands on disk — if the API errors
+               mid-turn, the .jsonl stays at its 124-byte header and a
+               sidecar pointing at it would poison every later --resume. *)
+            if Content_gate.should_persist content_gate event then
+              maybe_persist_session_id ();
             match event with
             (* Turn_started is the preferred signal; the arms below are
                fallbacks for backends that do not emit it. *)
@@ -407,6 +440,21 @@ let run_with_backend ~session_mode_for_agent
                   `Failed )
             | No_session_to_resume ->
                 log_empty_resume ~tail:" — no session to resume, retrying fresh";
+                (* Remove the stub .jsonl that claude refused to resume.
+                   Otherwise it sits in the per-patch projects dir forever and
+                   trips any future attempt that happens to target the same
+                   session id.  Best-effort: a missing file or a transient
+                   filesystem error must not interrupt the retry path. *)
+                (match resume_session with
+                | None -> ()
+                | Some session_id -> (
+                    let path =
+                      Spawn_env.claude_session_jsonl_path ~project_name
+                        ~patch_id ~worktree_path ~session_id
+                    in
+                    try Unix.unlink path with
+                    | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+                    | _ -> ()));
                 (Orchestrator.Session_no_resume, `Failed)
             | Timed_out ->
                 let detail =

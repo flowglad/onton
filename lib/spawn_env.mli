@@ -25,3 +25,15 @@ val merge_env :
   base_env:string array -> overrides:(string * string) list -> string array
 (** Merge [overrides] into [base_env], replacing any existing entries with the
     same variable name. *)
+
+val claude_session_jsonl_path :
+  project_name:string ->
+  patch_id:Types.Patch_id.t ->
+  worktree_path:string ->
+  session_id:string ->
+  string
+(** Absolute path to a claude conversation file:
+    [<per-patch-CLAUDE_CONFIG_DIR>/projects/<cwd-key>/<session-id>.jsonl], where
+    [cwd-key] is [worktree_path] with every ["/"] replaced by ["-"] (claude's
+    internal projects-dir keying). Used to clean up stub files left behind when
+    [claude --resume] fails with "No conversation found". *)

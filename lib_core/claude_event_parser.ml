@@ -71,7 +71,24 @@ let budget_cap_args ~getenv_opt ~warn () =
                raw);
           [])
 
-let bare_args = [ "--bare" ]
+(* [--bare] tells claude to skip hooks/LSP/attribution/auto-memory/keychain
+   reads/CLAUDE.md auto-discovery — the isolation properties onton wants for
+   ephemeral patch-agent spawns.  It *also* restricts authentication to
+   [ANTHROPIC_API_KEY] or [apiKeyHelper] (via [--settings]): OAuth tokens
+   from [claude setup-token] (sk-ant-oat01-…) and macOS Keychain entries
+   are silently ignored.  Most onton users authenticate via subscription
+   OAuth, not API keys, so unconditionally passing [--bare] used to leave
+   every spawned claude reporting "Not logged in".
+
+   Emit [--bare] only when [ANTHROPIC_API_KEY] is present in the parent
+   env (which propagates to the spawned claude unchanged).  Without it,
+   omit [--bare] so claude falls back to its normal OAuth/Keychain path.
+   The cost is some user-state leakage into ephemeral sessions, which is
+   strictly less bad than not running at all. *)
+let bare_args ~getenv_opt =
+  match getenv_opt "ANTHROPIC_API_KEY" with
+  | Some k when not (String.is_empty (String.strip k)) -> [ "--bare" ]
+  | _ -> []
 
 let build_args ~getenv_opt ~warn ~model ~complexity ~prompt ~resume_session =
   let base = [ "claude" ] in
@@ -87,7 +104,7 @@ let build_args ~getenv_opt ~warn ~model ~complexity ~prompt ~resume_session =
       "--exclude-dynamic-system-prompt-sections";
     ]
     @ budget_cap_args ~getenv_opt ~warn ()
-    @ bare_args
+    @ bare_args ~getenv_opt
   in
   base @ model_args model @ prompt_args @ session_args @ flags
 
@@ -119,7 +136,7 @@ let build_stream_args ~getenv_opt ~warn ~model ~complexity ~prompt
       "--exclude-dynamic-system-prompt-sections";
     ]
     @ budget_cap_args ~getenv_opt ~warn ()
-    @ bare_args
+    @ bare_args ~getenv_opt
   in
   base @ model_args model @ minted_session_args @ prompt_args @ session_args
   @ flags
@@ -278,6 +295,13 @@ let parse_stream_event (line : string) : Types.Stream_event.t option =
 let no_env _ = None
 let ignore_warn _ = ()
 
+(* Test helper: model the env of an API-key user.  [bare_args] emits
+   [--bare] iff [ANTHROPIC_API_KEY] is present, so tests that exercise the
+   isolation-mode path use [with_api_key] in place of [no_env]. *)
+let with_api_key = function
+  | "ANTHROPIC_API_KEY" -> Some "sk-ant-api03-test"
+  | _ -> None
+
 let%test "auto_model: complexity 1 -> haiku" =
   Option.equal String.equal (auto_model ~complexity:(Some 1)) (Some "haiku")
 
@@ -307,7 +331,7 @@ let%test "max_turns_for: None -> 200" =
 
 let%test "build_args fresh (no resume, with model)" =
   let args =
-    build_args ~getenv_opt:no_env ~warn:ignore_warn ~model:(Some "sonnet")
+    build_args ~getenv_opt:with_api_key ~warn:ignore_warn ~model:(Some "sonnet")
       ~complexity:(Some 2) ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
@@ -328,7 +352,7 @@ let%test "build_args fresh (no resume, with model)" =
 
 let%test "build_args fresh (no resume, no model)" =
   let args =
-    build_args ~getenv_opt:no_env ~warn:ignore_warn ~model:None
+    build_args ~getenv_opt:with_api_key ~warn:ignore_warn ~model:None
       ~complexity:(Some 1) ~prompt:"do stuff" ~resume_session:None
   in
   List.equal String.equal args
@@ -347,7 +371,7 @@ let%test "build_args fresh (no resume, no model)" =
 
 let%test "build_args with resume session" =
   let args =
-    build_args ~getenv_opt:no_env ~warn:ignore_warn ~model:(Some "opus")
+    build_args ~getenv_opt:with_api_key ~warn:ignore_warn ~model:(Some "opus")
       ~complexity:(Some 3) ~prompt:"do stuff" ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
@@ -375,15 +399,30 @@ let%test "build_args includes --exclude-dynamic-system-prompt-sections" =
   in
   List.mem args "--exclude-dynamic-system-prompt-sections" ~equal:String.equal
 
-let%test "build_args includes --bare" =
+let%test "build_args includes --bare when ANTHROPIC_API_KEY is set" =
   List.mem
-    (build_args ~getenv_opt:no_env ~warn:ignore_warn ~model:None
+    (build_args ~getenv_opt:with_api_key ~warn:ignore_warn ~model:None
        ~complexity:None ~prompt:"do stuff" ~resume_session:None)
     "--bare" ~equal:String.equal
 
+let%test "build_args omits --bare without ANTHROPIC_API_KEY (OAuth path)" =
+  not
+    (List.mem
+       (build_args ~getenv_opt:no_env ~warn:ignore_warn ~model:None
+          ~complexity:None ~prompt:"do stuff" ~resume_session:None)
+       "--bare" ~equal:String.equal)
+
+let%test "build_args omits --bare when ANTHROPIC_API_KEY is empty/whitespace" =
+  let getenv_opt = function "ANTHROPIC_API_KEY" -> Some "   " | _ -> None in
+  not
+    (List.mem
+       (build_args ~getenv_opt ~warn:ignore_warn ~model:None ~complexity:None
+          ~prompt:"do stuff" ~resume_session:None)
+       "--bare" ~equal:String.equal)
+
 let%test "build_stream_args fresh (no resume, with model)" =
   let args =
-    build_stream_args ~getenv_opt:no_env ~warn:ignore_warn
+    build_stream_args ~getenv_opt:with_api_key ~warn:ignore_warn
       ~model:(Some "sonnet") ~complexity:(Some 2) ~prompt:"do stuff"
       ~minted_session_id:None ~resume_session:None
   in
@@ -406,7 +445,7 @@ let%test "build_stream_args fresh (no resume, with model)" =
 
 let%test "build_stream_args fresh (no resume, no model)" =
   let args =
-    build_stream_args ~getenv_opt:no_env ~warn:ignore_warn ~model:None
+    build_stream_args ~getenv_opt:with_api_key ~warn:ignore_warn ~model:None
       ~complexity:None ~prompt:"do stuff" ~minted_session_id:None
       ~resume_session:None
   in
@@ -427,9 +466,9 @@ let%test "build_stream_args fresh (no resume, no model)" =
 
 let%test "build_stream_args with resume session" =
   let args =
-    build_stream_args ~getenv_opt:no_env ~warn:ignore_warn ~model:(Some "opus")
-      ~complexity:(Some 1) ~prompt:"do stuff" ~minted_session_id:None
-      ~resume_session:(Some "abc-123")
+    build_stream_args ~getenv_opt:with_api_key ~warn:ignore_warn
+      ~model:(Some "opus") ~complexity:(Some 1) ~prompt:"do stuff"
+      ~minted_session_id:None ~resume_session:(Some "abc-123")
   in
   List.equal String.equal args
     [
@@ -460,7 +499,7 @@ let%test "build_stream_args includes --exclude-dynamic-system-prompt-sections" =
 
 let%test "build_stream_args emits --session-id when minted_session_id is Some" =
   let args =
-    build_stream_args ~getenv_opt:no_env ~warn:ignore_warn
+    build_stream_args ~getenv_opt:with_api_key ~warn:ignore_warn
       ~model:(Some "sonnet") ~complexity:None ~prompt:"do stuff"
       ~minted_session_id:(Some "123e4567-e89b-42d3-a456-426614174000")
       ~resume_session:None
@@ -493,16 +532,29 @@ let%test "build_stream_args rejects session-id plus resume together" =
   | _ -> false
   | exception Invalid_argument _ -> true
 
-let%test "build_stream_args includes --bare" =
+let%test "build_stream_args includes --bare when ANTHROPIC_API_KEY is set" =
   List.mem
-    (build_stream_args ~getenv_opt:no_env ~warn:ignore_warn ~model:None
+    (build_stream_args ~getenv_opt:with_api_key ~warn:ignore_warn ~model:None
        ~complexity:None ~prompt:"do stuff" ~minted_session_id:None
        ~resume_session:None)
     "--bare" ~equal:String.equal
 
+let%test "build_stream_args omits --bare without ANTHROPIC_API_KEY (OAuth path)"
+    =
+  not
+    (List.mem
+       (build_stream_args ~getenv_opt:no_env ~warn:ignore_warn ~model:None
+          ~complexity:None ~prompt:"do stuff" ~minted_session_id:None
+          ~resume_session:None)
+       "--bare" ~equal:String.equal)
+
 let%test
     "build_stream_args emits --max-budget-usd when ONTON_BUDGET_CAP_USD set" =
-  let getenv_opt = function "ONTON_BUDGET_CAP_USD" -> Some "10" | _ -> None in
+  let getenv_opt = function
+    | "ONTON_BUDGET_CAP_USD" -> Some "10"
+    | "ANTHROPIC_API_KEY" -> Some "sk-ant-api03-test"
+    | _ -> None
+  in
   let args =
     build_stream_args ~getenv_opt ~warn:ignore_warn ~model:(Some "sonnet")
       ~complexity:None ~prompt:"do stuff" ~minted_session_id:None

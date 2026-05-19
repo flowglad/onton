@@ -876,6 +876,55 @@ let () =
         let a = Orchestrator.agent orch pid in
         Option.is_none a.Patch_agent.llm_session_id)
   in
+  (* A7: Session_no_resume from Fresh_available stays Fresh_available.
+     A stub-resume never spoke to the LLM — it must not consume retry budget. *)
+  let prop_a7_no_resume_does_not_escalate_from_fresh =
+    Test.make ~name:"A7: Session_no_resume preserves Fresh_available"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "stub-id") in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_resume
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+          Patch_agent.Fresh_available)
+  in
+  (* A8: Session_no_resume from Tried_fresh stays Tried_fresh (no escalation
+     to Given_up). *)
+  let prop_a8_no_resume_does_not_escalate_from_tried_fresh =
+    Test.make ~name:"A8: Session_no_resume preserves Tried_fresh"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_tried_fresh orch pid in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "stub-id") in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_resume
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+          Patch_agent.Tried_fresh)
+  in
+  (* A9: two consecutive Session_no_resume outcomes never reach Given_up.
+     Pin down the regression scenario: a poisoned sidecar pointing at a stub
+     would otherwise burn the budget on every retry. *)
+  let prop_a9_repeated_no_resume_never_gives_up =
+    Test.make ~name:"A9: repeated Session_no_resume does not reach Given_up"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "stub-a") in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_resume
+        in
+        let orch = Orchestrator.set_llm_session_id orch pid (Some "stub-b") in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_no_resume
+        in
+        let a = Orchestrator.agent orch pid in
+        not
+          (Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+             Patch_agent.Given_up))
+  in
   List.iter
     ~f:(fun t -> QCheck2.Test.check_exn t)
     [
@@ -885,8 +934,11 @@ let () =
       prop_a4_set_session_id_idempotent;
       prop_a5_fresh_failure_preserves_session_id;
       prop_a6_no_resume_clears_session_id;
+      prop_a7_no_resume_does_not_escalate_from_fresh;
+      prop_a8_no_resume_does_not_escalate_from_tried_fresh;
+      prop_a9_repeated_no_resume_never_gives_up;
     ];
-  Stdlib.print_endline "llm_session_id: all properties passed (A1-A6)"
+  Stdlib.print_endline "llm_session_id: all properties passed (A1-A9)"
 
 (* Session_push_failed semantics — distinguishes "LLM ran fine but commits
    didn't ship" from a genuine LLM failure. Pins down the three behaviors

@@ -22,19 +22,18 @@ let build_stream_args ~getenv_opt ~model ~complexity ~prompt ~minted_session_id
     ~complexity ~prompt ~minted_session_id ~resume_session
 
 let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
+  ignore (patch_id : Types.Patch_id.t);
+  (* Mint a session id when [ONTON_MINTED_SESSION_IDS=1] and there is no
+     resume id to fall back to.  The sidecar that lets a crashed supervisor
+     resume an in-flight session is written *deferred* by the stream-event
+     loop in [session_driver.ml] — only after the first [Text_delta] or
+     [Tool_use] proves claude has actually written a real conversation
+     turn.  Persisting eagerly here used to poison every later retry that
+     landed on a stub [.jsonl] (claude exits before content → sidecar
+     restored on startup → [--resume <stub>] → "No conversation found"). *)
   match (resume_session, getenv_opt "ONTON_MINTED_SESSION_IDS") with
   | Some _, _ | _, None | _, Some "" -> Ok None
-  | None, Some "1" -> (
-      match getenv_opt "ONTON_SNAPSHOT_PATH" with
-      | Some snapshot_path
-        when not (String.is_empty (String.strip snapshot_path)) ->
-          let session_id = Session_id.mint () in
-          Result.map
-            (Persistence.record_session_id ~snapshot_path ~patch_id ~session_id)
-            ~f:(fun () -> Some session_id)
-      | _ ->
-          Error
-            "ONTON_MINTED_SESSION_IDS=1 requires ONTON_SNAPSHOT_PATH to be set")
+  | None, Some "1" -> Ok (Some (Session_id.mint ()))
   | None, Some _ -> Ok None
 
 let prepare_minted_session_id =
@@ -128,16 +127,43 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
         ~setsid_exec ~args ~process_line ~on_event
 
-let%test "prepare_minted_session_id errors when flag is on and path missing" =
+let%test
+    "prepare_minted_session_id mints when flag is on (no snapshot path \
+     required)" =
   let patch_id = Types.Patch_id.of_string "5" in
   let getenv_opt = function
     | "ONTON_MINTED_SESSION_IDS" -> Some "1"
-    | "ONTON_SNAPSHOT_PATH" -> None
     | _ -> None
   in
   match
     prepare_minted_session_id_with_env ~getenv_opt ~patch_id
       ~resume_session:None
   with
-  | Error _ -> true
-  | Ok _ -> false
+  | Ok (Some _) -> true
+  | Ok None -> false
+  | Error _ -> false
+
+let%test "prepare_minted_session_id returns None when flag is off" =
+  let patch_id = Types.Patch_id.of_string "5" in
+  let getenv_opt _ = None in
+  match
+    prepare_minted_session_id_with_env ~getenv_opt ~patch_id
+      ~resume_session:None
+  with
+  | Ok None -> true
+  | Ok (Some _) -> false
+  | Error _ -> false
+
+let%test "prepare_minted_session_id returns None when resume_session is set" =
+  let patch_id = Types.Patch_id.of_string "5" in
+  let getenv_opt = function
+    | "ONTON_MINTED_SESSION_IDS" -> Some "1"
+    | _ -> None
+  in
+  match
+    prepare_minted_session_id_with_env ~getenv_opt ~patch_id
+      ~resume_session:(Some "existing-id")
+  with
+  | Ok None -> true
+  | Ok (Some _) -> false
+  | Error _ -> false

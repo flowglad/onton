@@ -150,6 +150,31 @@ let per_patch_env_without_codex_home ~project_name ~patch_id =
     ~project_dir:(Project_store.project_dir project_name)
     ~patch_id
 
+(* Claude Code stores each conversation at
+   [<CLAUDE_CONFIG_DIR>/projects/<cwd-key>/<session-id>.jsonl], where
+   [cwd-key] is the absolute cwd path with every ["/"] replaced by ["-"].
+   When [claude --resume <id>] hits a stub (a session-init header with no
+   conversation turns, left behind by a session that failed before producing
+   content), the file remains on disk forever; this helper lets the caller
+   delete it after a [Session_no_resume] classification. *)
+let claude_project_dir_key ~worktree_path =
+  String.substr_replace_all worktree_path ~pattern:"/" ~with_:"-"
+
+let claude_session_jsonl_path_in_project_dir ~project_dir ~patch_id
+    ~worktree_path ~session_id =
+  let root = patch_root ~project_dir ~patch_id in
+  let claude_dir = backend_dir ~root ~backend:"claude" in
+  let key = claude_project_dir_key ~worktree_path in
+  Stdlib.Filename.concat
+    (Stdlib.Filename.concat (Stdlib.Filename.concat claude_dir "projects") key)
+    (session_id ^ ".jsonl")
+
+let claude_session_jsonl_path ~project_name ~patch_id ~worktree_path ~session_id
+    =
+  claude_session_jsonl_path_in_project_dir
+    ~project_dir:(Project_store.project_dir project_name)
+    ~patch_id ~worktree_path ~session_id
+
 let split_env_entry entry =
   match String.lsplit2 entry ~on:'=' with
   | Some (key, value) -> (key, value)
@@ -231,6 +256,23 @@ let%test "merged env contains per-patch overrides" =
   String.is_substring claude_a ~substring:"spawn-envs/patch-1/claude"
   && String.is_substring codex_a ~substring:"spawn-envs/patch-1/codex"
   && not (String.equal claude_a claude_b)
+
+let%test
+    "claude_session_jsonl_path: composes per-patch claude dir + cwd key + \
+     session id" =
+  let path =
+    claude_session_jsonl_path_in_project_dir ~project_dir:"/proj"
+      ~patch_id:(Types.Patch_id.of_string "42")
+      ~worktree_path:"/Users/x/worktrees/foo/patch-42"
+      ~session_id:"c9f311bc-7e1a-4b36-bc1f-940513fb75f9"
+  in
+  String.equal path
+    "/proj/spawn-envs/42/claude/projects/-Users-x-worktrees-foo-patch-42/c9f311bc-7e1a-4b36-bc1f-940513fb75f9.jsonl"
+
+let%test "claude_project_dir_key: replaces every slash with a dash" =
+  String.equal (claude_project_dir_key ~worktree_path:"/a/b/c") "-a-b-c"
+  && String.equal (claude_project_dir_key ~worktree_path:"/") "-"
+  && String.equal (claude_project_dir_key ~worktree_path:"") ""
 
 let%test "codex home override can be omitted" =
   with_temp_project_dir @@ fun project_dir ->

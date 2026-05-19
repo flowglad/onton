@@ -34,26 +34,29 @@ let session_id_path ~snapshot_path ~patch_id =
     (Patch_id.to_string patch_id ^ ".txt")
 
 let sync_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
-  let ( let* ) r f = Result.bind r ~f in
+  (* Delete-only janitor.  Sidecar *writes* happen in the streaming loop
+     (session_driver.ml) the first time claude emits a Text_delta or
+     Tool_use — proving it wrote a real turn to its .jsonl.  Writing here
+     too would re-poison the resume path: a session that died after
+     Session_init but before any content would otherwise leave a sidecar
+     pointing at a stub .jsonl that future [--resume]s reject. *)
   try
     let dir = session_id_dir ~snapshot_path in
     Project_store.ensure_dir dir;
-    List.fold (Orchestrator.all_agents snap.Runtime.orchestrator) ~init:(Ok ())
-      ~f:(fun acc (agent : Patch_agent.t) ->
-        let* () = acc in
+    List.iter (Orchestrator.all_agents snap.Runtime.orchestrator)
+      ~f:(fun (agent : Patch_agent.t) ->
         let path =
           session_id_path ~snapshot_path ~patch_id:agent.Patch_agent.patch_id
         in
-        match agent.Patch_agent.llm_session_id with
-        | Some session_id -> write_file_atomically ~path ~content:session_id
-        | None ->
-            (* A fresh Claude session may have minted and persisted its ID
-               before the in-memory orchestrator has observed the first
-               stream event. While that session is still marked busy, preserve
-               any existing sidecar rather than deleting the crash-recovery
-               resume key. *)
-            if not agent.Patch_agent.busy then remove_if_exists path;
-            Ok ())
+        match (agent.Patch_agent.llm_session_id, agent.Patch_agent.busy) with
+        | None, false ->
+            (* The patch is idle and has no recorded id; clean up any stale
+               sidecar.  We do NOT delete while the patch is busy: an
+               in-flight session may have already written its sidecar from
+               the event loop. *)
+            remove_if_exists path
+        | None, true | Some _, _ -> ());
+    Ok ()
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
@@ -813,10 +816,39 @@ let%test_module "session_id_sidecars" =
           | None -> false)
       | Error _ -> false
 
-    let%test "save surfaces sidecar write failures" =
+    (* sync_session_id_sidecars is delete-only: the event-loop in
+       session_driver.ml owns writes once claude has produced real content.
+       These two tests pin down the new contract. *)
+    let%test "save does not create sidecar for busy agent with llm_session_id" =
       with_temp_snapshot_path @@ fun snapshot_path ->
-      let blocking_path = session_id_dir ~snapshot_path in
-      ignore (write_file_atomically ~path:blocking_path ~content:"not a dir");
-      Result.is_error
-        (save ~path:snapshot_path (snapshot ~llm_session_id:"id" ()))
+      Result.is_ok
+        (save ~path:snapshot_path
+           (snapshot ~busy:true ~llm_session_id:"freshly-minted" ()))
+      &&
+      let path = session_id_path ~snapshot_path ~patch_id in
+      not (Stdlib.Sys.file_exists path)
+
+    let%test
+        "save deletes stale sidecar for non-busy agent without llm_session_id" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      Result.is_ok (save ~path:snapshot_path (snapshot ()))
+      && Result.is_ok
+           (record_session_id ~snapshot_path ~patch_id ~session_id:"stale")
+      &&
+      let path = session_id_path ~snapshot_path ~patch_id in
+      Stdlib.Sys.file_exists path
+      && Result.is_ok (save ~path:snapshot_path (snapshot ()))
+      && not (Stdlib.Sys.file_exists path)
+
+    let%test
+        "save preserves sidecar for busy agent (event loop writes own copy)" =
+      with_temp_snapshot_path @@ fun snapshot_path ->
+      Result.is_ok (save ~path:snapshot_path (snapshot ~busy:true ()))
+      && Result.is_ok
+           (record_session_id ~snapshot_path ~patch_id ~session_id:"in-flight")
+      &&
+      let path = session_id_path ~snapshot_path ~patch_id in
+      Stdlib.Sys.file_exists path
+      && Result.is_ok (save ~path:snapshot_path (snapshot ~busy:true ()))
+      && Stdlib.Sys.file_exists path
   end)
