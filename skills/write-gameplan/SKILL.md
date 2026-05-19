@@ -53,6 +53,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `problemStatement` | `string` | 2-4 sentences: what problem, why it matters |
 | `solutionSummary` | `string` | 3-5 sentences: high-level approach |
 | `currentStateAnalysis` | `string` | Where the codebase is now vs. where it needs to be |
+| `operationalConsiderations` | `object` | `{ externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy }` — see [Operational Considerations](#operational-considerations) |
 | `mergabilityStrategy` | `object` | `{ featureFlagStrategy, featureFlags, patchOrderingStrategy }` |
 | `requiredChanges` | `array` | `[{ file, line, description, signature }]` |
 | `functionalChanges` | `array` | `[{ id, description, ownedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
@@ -142,6 +143,30 @@ Downstream consumers (notably onton's patch prompt renderer) read `functionalCha
 - Write each entry as the **outcome**, not the mechanism. "Merged patches are skipped instead of queued" is correct; "Add a merged-check branch to disposition" is an implementation step and belongs in `patches[].changes`.
 - Cross-check against `problemStatement`, `solutionSummary`, and `acceptanceCriteria`: every behavioral promise made there must correspond to at least one `functionalChange` entry. If you cannot point at the owning patch for a sentence in the problem statement, the gameplan has a gap.
 - Cross-check against `finalStateSpec`: every behavioral invariant in the spec should map to a functional change that introduces it (the spec says *what is true at the end*; the functional change says *which patch made it true*).
+
+## Operational Considerations
+
+Beyond *what changes*, a gameplan must engage with *how the system behaves operationally* under the change. These concerns share a failure shape: vague descriptions get scattered across patches, every patch author assumes some other patch owns the decision, and the question surfaces in production. The `operationalConsiderations` schema field is required and contains five sub-fields — each is a required string. The schema enforces presence; the rubric below makes each response substantive. A sub-field may state "not applicable" with a brief justification when the gameplan genuinely does not touch that surface, but it must be present and engage with this gameplan's actual code.
+
+### `externalSystemAccess`
+
+When a gameplan newly depends on an external system (object storage, database the runtime doesn't currently reach, third-party API, queue, secret store, internal service), the runtime executing the new code must be able to reach it in production. Audit the existing access posture of that runtime (direct SDK with ambient IAM, presigned URL handed in by another service, broker proxy, VPC endpoint, etc.), pick an access mode, and assign one patch to own the wiring — IAM grant, new endpoint, presigned-URL minting path, network policy, secret rotation. Be especially suspicious of newly-invented `*Client` / `*Transport` interfaces — they are where an undecided access-mode question hides. Sentinel classes whose existence encodes a *lack* of access (e.g. a `PresignedOnly*` adapter) are signals that the runtime cannot hold the underlying credentials. The chosen capability should appear as a `functionalChange` owned by that patch, not just as an interface parameter.
+
+### `crossRuntimeContracts`
+
+Any data format crossing a runtime boundary (queue payloads, DB rows read or written by separate services, S3 object schemas, RPC return types, event payloads) is a contract. When the gameplan changes one side, identify the producer and consumer runtimes, name which side this gameplan touches, and explain how the other side stays in sync — patched in the same gameplan, or made forward/backward-compatible with an explicit migration plan. Failure mode: producer ships, consumer breaks silently, and the gap is not visible from any single patch's `files` array.
+
+### `failureBehavior`
+
+For each new dependency or runtime path, describe behavior under realistic failure: dependency slow/throttling/5xx/garbage, retry storms, partial writes, timeouts, oversized inputs, expired credentials. State which failures are handled deliberately (documented recovery path or error surface) and which are intentionally left to the caller or operator. Failure mode: only the happy path is tested against a fake, and production discovers the rest.
+
+### `concurrencyAndIdempotency`
+
+Any new code path entered concurrently or under retry (queue workers, scheduled jobs, race-able write paths, parallel access to the same DB row or S3 key) has a concurrency contract: locking, idempotency keys, ordering guarantees, deduplication. State it explicitly. Failure mode: a quiet double-write or deadlock that only manifests under production load.
+
+### `rollbackStrategy`
+
+For stateful changes (DB schema, data writes, materialized artifacts, mutations to external systems), describe the rollback story: if a patch must be reverted after data is written, what's the recovery path? Expand/contract migrations, backfill plans, opt-in flags that wind down gracefully, compensating writes. Failure mode: assuming forward-only and stranding data in a half-migrated state.
 
 ## Patch Complexity
 
@@ -276,7 +301,8 @@ After writing the gameplan JSON, verify:
 3. The dependency graph is a valid DAG
 4. All test stubs have corresponding implementations
 5. **Functional change ownership is total and single-valued** — every `functionalChanges[i].id` is unique; every `functionalChanges[i].ownedBy` resolves to an existing `patches[].number`; no functional change appears unowned in prose. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec` and confirm every behavioral promise has a corresponding `functionalChanges` entry pointing at a single patch. Set `mergabilityChecklist.functionalChangesOwnedByExactlyOnePatch` to `true` only when this holds.
-6. The mergability checklist passes
+6. **Operational considerations are substantive** — the schema requires every sub-field of `operationalConsiderations` to be present, but presence is not engagement. For each sub-field, confirm the response names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than generic platitudes. A sub-field may say "not applicable" only when the gameplan genuinely does not touch that surface, and only with a brief justification grounded in the actual changes. See [Operational Considerations](#operational-considerations).
+7. The mergability checklist passes
 
 ## Resolving Open Questions
 

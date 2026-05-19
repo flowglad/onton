@@ -22,6 +22,14 @@
 
   "currentStateAnalysis": "main.ml contains runner_fiber (lines 941-1171) which mixes Eio I/O with pure decision logic: checking if a patch is merged, busy, has conflicts, CI failures, etc. The same patterns repeat across on_poll_result, on_human_message, and on_ci_status handlers. There is no pure decision module — decisions are inline pattern matches inside effectful code.",
 
+  "operationalConsiderations": {
+    "externalSystemAccess": "Not applicable. This refactor moves decision logic between in-process OCaml modules; no new external system is introduced. The decision functions consume record fields (merged, busy, ci_failure_count) that runner_fiber already populates from its existing inputs.",
+    "crossRuntimeContracts": "Not applicable. Patch_decision is internal to the onton binary — its functions are not called from another runtime, its types are not serialized to disk or wire, and its results are consumed within the same OCaml process that invokes them.",
+    "failureBehavior": "Patch_decision functions are total over their input domain (algebraic types and bounded ints), so they introduce no new I/O failure surface. Patch 4's wiring leaves the surrounding error paths in runner_fiber unchanged — replacing inline pattern matches with pure function calls cannot fail in ways the inline code could not.",
+    "concurrencyAndIdempotency": "Not applicable. Patch_decision is a pure module — its functions have no side effects and no shared state. Concurrent or repeated invocation returns identical results for identical inputs. The wiring patch does not change runner_fiber's Eio concurrency structure.",
+    "rollbackStrategy": "Not applicable. No stateful changes are made — no DB schema, no data writes, no external mutations. Rolling back means reverting the commits; runner_fiber returns to its previous inline-decision form with no data consequences."
+  },
+
   "requiredChanges": [
     {
       "file": "lib/patch_decision.ml",
