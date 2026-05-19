@@ -452,7 +452,8 @@
         "dependencyGraphOrdered",
         "behaviorPatchesJustified",
         "functionalChangesOwnedByExactlyOnePatch",
-        "operationalConsiderationsSubstantive"
+        "operationalConsiderationsSubstantive",
+        "gameplanIsAtomicAndAutonomous"
       ],
       "properties": {
         "featureFlagStrategyDocumented": { "type": "boolean" },
@@ -471,6 +472,10 @@
         "operationalConsiderationsSubstantive": {
           "type": "boolean",
           "description": "Each operationalConsiderations sub-field (externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy) engages concretely with this gameplan's specifics rather than issuing generic platitudes. Vague boilerplate like 'not applicable' without a gameplan-specific justification, or phrases like 'monitor for errors' / 'roll back if needed' without naming actual code paths, do not qualify."
+        },
+        "gameplanIsAtomicAndAutonomous": {
+          "type": "boolean",
+          "description": "The gameplan can be executed end-to-end by an autonomous orchestrator with no human pause and no run-time decision between patches. Specifically: (a) no patch is conditional on the outcome (testing result, metric, judgement call) of any other patch — every patch is committed to before execution begins; (b) no patch's changes or description requires a human to act between patches — flip a flag, run a one-time script, copy a value out of a dashboard, or otherwise intervene; (c) no patch description implies an observation, soak, or evaluation window before the next patch may run. If any of those would be needed, the work is a multi-milestone workstream — see write-workstream — not a single gameplan, and the boundary belongs between milestones (with operator instructions), not inside this gameplan. Set to true only when every patch could be executed back-to-back in arbitrary parallel order permitted by dependencyGraph with zero human intervention."
         }
       },
       "additionalProperties": false

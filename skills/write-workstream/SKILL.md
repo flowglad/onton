@@ -26,6 +26,20 @@ A workstream is a collection of gameplans (milestones) that together accomplish 
 - Milestones are sequenced with clear dependencies
 - **Every milestone leaves the codebase in a consistent, functional state** — this is non-negotiable
 
+## Why Workstreams Exist: The Gameplan Atomicity Constraint
+
+A gameplan is, by definition, an **atomic, autonomously parallelizable** bundle of patches — once it begins, an orchestrator runs every patch back-to-back, with no human pause and no run-time decision in between. That constraint is exactly what workstreams unlock space for: anything that *requires* a pause, an observation, a one-time human operation, or a decision based on outcomes cannot live inside a gameplan and must instead be expressed as a **milestone boundary** in a workstream.
+
+Treat the following as positive signals that you need an extra milestone (not a longer gameplan):
+
+- **A decision conditioned on the outcome of prior work.** "If the new query plan looks healthy, proceed with the cutover; otherwise revisit the index." → two milestones, with the decision criteria stated explicitly in the operator instructions between them.
+- **A one-time human operation.** Flipping a feature flag in production, rotating a credential, running a backfill script, copying a value from one dashboard into another config, manually approving a third-party integration. → milestone boundary, with step-by-step instructions for the operator.
+- **An observation or soak window.** "Let the new metric collect data for a week." "Wait for a full billing cycle." "Bake the canary for 24 hours." "Wait for the on-call rotation to validate alerts." → milestone boundary, with the duration, the signals to watch, and the abort criteria specified.
+
+Conversely, if every step of the work could in principle be handed to an autonomous orchestrator that executes patches concurrently with no human in the loop, you do **not** need a workstream — a single gameplan is the right artifact.
+
+When you draft a milestone, write the **operator instructions that come *after* it** as part of the milestone's record (in `Definition of Done`, `Why this is a safe pause point`, or a dedicated "Operator Actions Before Next Milestone" subsection). The handoff from one milestone to the next is a first-class part of the workstream, because that handoff is precisely what cannot exist inside a gameplan.
+
 ## Discovery Process
 
 ### Phase 1: Understand the Vision
@@ -87,6 +101,8 @@ Work with the user to break the work into milestones. For each potential milesto
 2. **Is the scope clear?** Can you articulate what changes are needed?
 3. **What's the definition of done?** What is true about the codebase when this is complete?
 4. **What does it unlock?** What becomes possible after this milestone?
+5. **Could every patch inside this milestone be executed by an autonomous orchestrator with no human in the loop and no run-time decisions?** If not, the milestone is still hiding a sub-pause and must be split further. Gameplans cannot contain inter-patch pauses, observation windows, manual operations, or outcome-conditional decisions — those must each become their own milestone boundary.
+6. **What happens between this milestone and the next?** If the answer is anything other than "nothing — the next gameplan starts immediately," capture the operator instructions (flag flip, observation window, script to run, decision criteria, abort conditions) explicitly so they ship with the milestone.
 
 ### Phase 5: Sequence and Dependencies
 
@@ -111,6 +127,9 @@ Each milestone should have:
 
 **Unlocks**:
 [What becomes possible after this milestone is done?]
+
+**Operator Actions Before Next Milestone** (only if this milestone is followed by another):
+[Anything a human must do between this milestone landing and the next gameplan starting — flag flips, observation windows with duration and signals to watch, manual scripts to run, decisions to make (with criteria), abort conditions. Omit this section only when the next gameplan can begin immediately with no human intervention. This is the section that justifies splitting the work at this boundary instead of folding it into the previous gameplan.]
 
 **Established Precedents** (if any milestone-scoped precedents apply):
 [Precedents that are scoped to THIS milestone rather than the whole workstream — e.g. a library or algorithm that only shows up in one milestone's patches. Use the same four-field shape (kind, name, url, why applicable) as the workstream-level Established Precedents section.]
