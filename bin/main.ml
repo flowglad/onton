@@ -57,6 +57,18 @@ let read_channel_all ic =
    with End_of_file -> ());
   Buffer.contents buf
 
+let close_fd_noerr fd = try Unix.close fd with _ -> ()
+let unlink_noerr path = try Stdlib.Sys.remove path with _ -> ()
+let iter_option opt ~f = match opt with Some x -> f x | None -> ()
+
+let read_file_noerr path =
+  match open_in_bin path with
+  | exception _ -> ""
+  | ic ->
+      Stdlib.Fun.protect
+        ~finally:(fun () -> close_in_noerr ic)
+        (fun () -> read_channel_all ic)
+
 (** Run [git -C repo_root ...] using argv rather than the shell, capture stdout
     and stderr, and close all process pipes on exception paths. *)
 let run_git_capture ~repo_root args =
@@ -121,34 +133,57 @@ let infer_owner_repo ~repo_root =
 let run_git_no_cwd args =
   let argv = Array.of_list ("git" :: args) in
   let env = Git_env.clean_env () in
-  match Unix.open_process_args_full "git" argv env with
+  match Stdlib.Filename.temp_file "onton-git-stderr-" ".log" with
   | exception _ -> None
-  | in_ch, out_ch, err_ch -> (
-      let status = ref None in
-      let capture =
-        match
-          Stdlib.Fun.protect
-            ~finally:(fun () ->
-              if Option.is_none !status then
-                try
-                  status :=
-                    Some (Unix.close_process_full (in_ch, out_ch, err_ch))
-                with _ -> ())
-            (fun () ->
-              close_out_noerr out_ch;
-              let stdout = read_channel_all in_ch in
-              let stderr = read_channel_all err_ch in
-              Some (stdout, stderr))
-        with
-        | result -> result
-        | exception _ -> None
-      in
-      match capture with
-      | None -> None
-      | Some (stdout, stderr) -> (
-          match !status with
-          | Some s -> Some { status = s; stdout; stderr }
-          | None -> None))
+  | err_path -> (
+      let stdin_fd = ref None in
+      let stdout_rd = ref None in
+      let stdout_wr = ref None in
+      let stdout_ic = ref None in
+      let err_fd = ref None in
+      let pid = ref None in
+      match
+        Stdlib.Fun.protect
+          ~finally:(fun () ->
+            iter_option !stdout_ic ~f:close_in_noerr;
+            iter_option !stdout_rd ~f:close_fd_noerr;
+            iter_option !stdout_wr ~f:close_fd_noerr;
+            iter_option !stdin_fd ~f:close_fd_noerr;
+            iter_option !err_fd ~f:close_fd_noerr;
+            iter_option !pid ~f:(fun p ->
+                try ignore (Unix.waitpid [] p) with _ -> ());
+            unlink_noerr err_path)
+          (fun () ->
+            let stdin = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+            stdin_fd := Some stdin;
+            let rd, wr = Unix.pipe () in
+            stdout_rd := Some rd;
+            stdout_wr := Some wr;
+            let err =
+              Unix.openfile err_path [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600
+            in
+            err_fd := Some err;
+            let child = Unix.create_process_env "git" argv env stdin wr err in
+            pid := Some child;
+            close_fd_noerr stdin;
+            stdin_fd := None;
+            close_fd_noerr wr;
+            stdout_wr := None;
+            close_fd_noerr err;
+            err_fd := None;
+            let ic = Unix.in_channel_of_descr rd in
+            stdout_rd := None;
+            stdout_ic := Some ic;
+            let stdout = read_channel_all ic in
+            close_in_noerr ic;
+            stdout_ic := None;
+            let _, status = Unix.waitpid [] child in
+            pid := None;
+            let stderr = read_file_noerr err_path in
+            Some { status; stdout; stderr })
+      with
+      | result -> result
+      | exception _ -> None)
 
 (** Clone [owner/repo] from GitHub into [target_dir] (which must not exist yet).
     Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper, so
