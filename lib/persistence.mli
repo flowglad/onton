@@ -35,3 +35,7 @@ val patch_agent_of_yojson :
   gameplan:Types.Gameplan.t -> Yojson.Safe.t -> (Patch_agent.t, string) result
 (** Parse a patch agent from the current JSON schema. [~gameplan] is used to
     derive the branch for old snapshots that lack a ["branch"] key. *)
+
+val write_file_atomically :
+  path:string -> content:string -> (unit, string) result
+(** Write a file via temp-file + rename for crash-safe replacement. *)
