@@ -59,7 +59,7 @@ let test_event_log_complete () =
                  ];
            }));
   match read_lines path with
-  | [ line ] ->
+  | [ line ] -> (
       let json = Yojson.Safe.from_string line in
       expect_equal_string ~name:"kind" "complete" (string_member "kind" json);
       expect_equal_json ~name:"patch_id"
@@ -69,8 +69,12 @@ let test_event_log_complete () =
         (string_member "result" json);
       expect_equal_string ~name:"onton_session_uuid" "session-uuid"
         (string_member "onton_session_uuid" json);
-      ignore (json_member "ts" json : Yojson.Safe.t);
-      ignore (json_member "subkind" json : Yojson.Safe.t)
+      (match json_member "ts" json with
+      | `Null -> fail "missing field ts"
+      | _ -> ());
+      match json_member "subkind" json with
+      | `Null -> fail "missing field subkind"
+      | _ -> ())
   | lines ->
       fail
         (Printf.sprintf "expected one events.jsonl line, got %d"
