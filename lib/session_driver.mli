@@ -30,7 +30,6 @@ val run :
   hook_mutex:Eio.Mutex.t ->
   backend:Llm_backend.t ->
   complexity:int option ->
-  event_log:Event_log.t ->
   [ `Ok | `Failed | `Retry_push ] * (string * string) list
 (** Returns the supervisor disposition and the list of [(tool_name, status)]
     pairs for any tool calls that did not reach a [completed] state (used by the
@@ -79,7 +78,6 @@ val run_long_lived :
   hook_mutex:Eio.Mutex.t ->
   session:long_lived_session ->
   complexity:int option ->
-  event_log:Event_log.t ->
   [ `Ok | `Failed | `Retry_push ] * (string * string) list
 (** Long-lived backend counterpart to {!run}. It shares the same supervisor
     bookkeeping and delivers the rendered turn over [backend.prompt] instead of

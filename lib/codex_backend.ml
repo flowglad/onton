@@ -64,11 +64,11 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
       events
   in
   let run_once () =
+    Llm_backend.emit_spawn_started ~patch_id ~session_uuid ~prompt ~args ~env;
     Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
       ~setsid_exec ~args ~session_uuid:(Some session_uuid) ~patch_id
       ~process_line ~on_event
   in
-  Llm_backend.emit_spawn_started ~patch_id ~session_uuid ~prompt ~args ~env;
   let result = run_once () in
   if is_likely_auth_refresh_failure result then (
     Eio.Time.sleep clock 2.0;

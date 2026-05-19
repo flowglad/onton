@@ -129,7 +129,7 @@ let run_with_backend ~session_mode_for_agent
     ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
     ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
     ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend_name ~run_backend ~complexity ~event_log =
+    ~backend_name ~run_backend ~complexity =
   let log_event = Runtime_logging.log_event in
   let log_stream_entry = Runtime_logging.log_stream_entry in
   match session_mode_for_agent agent with
@@ -741,7 +741,6 @@ let run_with_backend ~session_mode_for_agent
                     let agent_after = Orchestrator.agent orch patch_id in
                     (orch, (agent_before, agent_after)))
               in
-              ignore event_log;
               Telemetry_dispatch.emit
                 (Telemetry.Event.Complete
                    {
@@ -766,12 +765,12 @@ let run_with_backend ~session_mode_for_agent
 let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
     ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
     ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend ~complexity ~event_log =
+    ~backend ~complexity =
   run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
     ~transcripts ~user_config ~worktree_mutex ~hook_mutex
     ~session_mode_for_agent:session_mode ~backend_name:backend.Llm_backend.name
-    ~run_backend:backend.Llm_backend.run_streaming ~complexity ~event_log
+    ~run_backend:backend.Llm_backend.run_streaming ~complexity
 
 type long_lived_session =
   | Long_lived_session : {
@@ -854,7 +853,7 @@ let shutdown_long_lived_session = function
 let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
     ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
     ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
-    ~user_config ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log =
+    ~user_config ~worktree_mutex ~hook_mutex ~session ~complexity =
   let (Long_lived_session session) = session in
   let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
       ~session_uuid:_ ~complexity:_ ~on_event =
@@ -944,4 +943,4 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
     ~transcripts ~user_config ~worktree_mutex ~hook_mutex
     ~session_mode_for_agent:(fun _ -> `Fresh)
-    ~backend_name:session.name ~run_backend ~complexity ~event_log
+    ~backend_name:session.name ~run_backend ~complexity
