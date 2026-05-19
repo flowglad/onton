@@ -668,6 +668,8 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
         Gameplan.
           {
             project_name = "proj";
+            repo_owner = "";
+            repo_name = "";
             problem_statement = "";
             solution_summary = "";
             final_state_spec = "";
@@ -691,6 +693,8 @@ let%test "reconcile_patch enqueues pr_body after PR creation" =
     Gameplan.
       {
         project_name = "proj";
+        repo_owner = "";
+        repo_name = "";
         problem_statement = "";
         solution_summary = "";
         final_state_spec = "";
@@ -718,6 +722,8 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
         Gameplan.
           {
             project_name = "proj";
+            repo_owner = "";
+            repo_name = "";
             problem_statement = "";
             solution_summary = "";
             final_state_spec = "";
@@ -746,6 +752,8 @@ let%test "reconcile_patch emits no effects for merged agent" =
         Gameplan.
           {
             project_name = "proj";
+            repo_owner = "";
+            repo_name = "";
             problem_statement = "";
             solution_summary = "";
             final_state_spec = "";

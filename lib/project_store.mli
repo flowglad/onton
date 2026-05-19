@@ -13,6 +13,14 @@ val project_dir : string -> string
 val snapshot_path : string -> string
 (** Path to the project's persisted snapshot JSON. *)
 
+val managed_repo_dir : string -> string
+(** Path to the project's onton-managed git checkout ([<project-dir>/repo]).
+    Sessions started via [--gameplan] take their [owner]/[repo] from the
+    gameplan as source-of-truth; onton clones the repo into this directory (or
+    fetches it on resume) and uses it as the source for all worktrees. Sessions
+    started ad-hoc (no [--gameplan]) continue to use a user-provided checkout
+    and do not populate this path. *)
+
 val event_log_path : string -> string
 (** Path to the project's append-only event log (JSONL). *)
 

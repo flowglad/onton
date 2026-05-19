@@ -14,6 +14,8 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
   Gameplan.
     {
       project_name = "t";
+      repo_owner = "";
+      repo_name = "";
       problem_statement = "t";
       solution_summary = "t";
       final_state_spec = "";
@@ -115,6 +117,8 @@ let () =
             Gameplan.
               {
                 project_name = "t";
+                repo_owner = "";
+                repo_name = "";
                 problem_statement = "t";
                 solution_summary = "t";
                 final_state_spec = "";
@@ -248,6 +252,8 @@ let () =
             Gameplan.
               {
                 project_name = "adhoc";
+                repo_owner = "";
+                repo_name = "";
                 problem_statement = "";
                 solution_summary = "";
                 final_state_spec = "";
@@ -299,6 +305,8 @@ let () =
             Gameplan.
               {
                 project_name = "adhoc-stack";
+                repo_owner = "";
+                repo_name = "";
                 problem_statement = "";
                 solution_summary = "";
                 final_state_spec = "";

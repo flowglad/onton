@@ -186,6 +186,20 @@ let parse_json_string input =
       let open Yojson.Safe.Util in
       try
         let project_name = json |> member "projectName" |> to_string in
+        let optional_string key =
+          match json |> member key with
+          | `String s -> Base.String.strip s
+          | `Null -> ""
+          | _ -> raise (Type_error (key ^ " must be a string", json))
+        in
+        (* [repo_owner] and [repo_name] are forge-agnostic at this layer —
+           we only enforce non-empty when present (empty strings are normalised
+           to [""] so legacy gameplans without the keys keep loading; the
+           [--gameplan] CLI path enforces the non-empty constraint at session
+           start, and forge-specific format validation lives in the forge
+           backend, e.g. {!Onton.Github.validate_target}). *)
+        let repo_owner = optional_string "owner" in
+        let repo_name = optional_string "repo" in
         let problem_statement =
           match json |> member "problemStatement" with
           | `String s -> s
@@ -416,6 +430,8 @@ let parse_json_string input =
                         gameplan =
                           {
                             Types.Gameplan.project_name;
+                            repo_owner;
+                            repo_name;
                             problem_statement;
                             solution_summary;
                             final_state_spec;
@@ -908,6 +924,72 @@ let%test_module "Gameplan_parser" =
       | Error msg ->
           String.is_substring msg
             ~substring:"functionalChanges[].id must be a non-empty string"
+
+    let%test "parse_json_string: owner/repo round-trip when present" =
+      let input =
+        {|{
+          "projectName": "p",
+          "owner": "flowglad",
+          "repo": "onton",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result ->
+          String.equal result.gameplan.repo_owner "flowglad"
+          && String.equal result.gameplan.repo_name "onton"
+
+    let%test "parse_json_string: missing owner/repo defaults to empty (legacy)"
+        =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result ->
+          String.is_empty result.gameplan.repo_owner
+          && String.is_empty result.gameplan.repo_name
+
+    let%test
+        "parse_json_string: owner accepts any non-empty string (forge-specific \
+         validation lives in the forge backend)" =
+      let input =
+        {|{
+          "projectName": "p",
+          "owner": "group/subgroup",
+          "repo": "thing.repo",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result ->
+          String.equal result.gameplan.repo_owner "group/subgroup"
+          && String.equal result.gameplan.repo_name "thing.repo"
+
+    let%test "parse_json_string: owner non-string returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "owner": 42,
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg -> String.is_substring msg ~substring:"owner"
 
     let%test "parse_json_string: non-string open question returns Error" =
       let input =

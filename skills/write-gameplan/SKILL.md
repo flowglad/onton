@@ -9,6 +9,14 @@ Create a structured, machine-readable gameplan for a complex codebase change. Th
 
 **Core principle**: It should be 5-10x easier to review a gameplan than the code it produces.
 
+## One Repo Per Gameplan
+
+Every gameplan pertains to **exactly one repository on a git forge** (GitHub, GitLab, Gitea, etc.), declared by the required top-level `owner` and `repo` fields. The orchestrator (e.g. onton) clones that repo and runs every patch's agent inside isolated worktrees off of it — so paths in `patches[].files[].path` and `requiredChanges[].file` are resolved **relative to the repo root** and may not escape it (e.g. `../other-repo/x.ts` is disallowed; the worktree has no notion of "next to my checkout").
+
+`owner` and `repo` are forge-agnostic at this layer — the schema only checks that they are non-empty strings. The forge backend the orchestrator is configured for will enforce any format rules it requires (for example, GitHub rejects handles longer than 39 characters); that validation happens at session start, not at gameplan-authoring time.
+
+**If the change spans multiple repositories**, write **multiple gameplans** — one per repo — each with a distinct `projectName` (e.g. `auth-shared` and `auth-app`) and the appropriate `owner`/`repo`. If the gameplans coordinate (one must merge before another can be implemented), express that coupling at the workstream level: name each gameplan as a separate milestone in the workstream and use `priorMilestones` / `unlocks` to capture the ordering. Never bundle cross-repo work into a single gameplan and never use repo-relative `../sibling-repo/...` paths.
+
 ## Specification File (Optional)
 
 The user may provide a path to a **specification file** (typically a `.pant` file or any text file) containing behavioural invariants that apply to the overall gameplan. These are pre-written formal or informal constraints the implementation must satisfy.
@@ -48,6 +56,8 @@ All of these fields are **required** and must be present in every gameplan:
 | Field | Type | Description |
 |-------|------|-------------|
 | `projectName` | `string` | Kebab-case, used in branch names and PR titles |
+| `owner` | `string` | Repository owner on the git forge (user, org, group). Non-empty; forge-specific format rules are enforced by the orchestrator at session start. See [One Repo Per Gameplan](#one-repo-per-gameplan) |
+| `repo` | `string` | Repository name on the git forge (paired with `owner`). All file paths in this gameplan are interpreted relative to this repo's root |
 | `specFile` | `string \| null` | Path to the specification file the user provided, if any |
 | `workstream` | `object \| null` | `{ name, milestone, priorMilestones, unlocks }` — null if standalone |
 | `problemStatement` | `string` | 2-4 sentences: what problem, why it matters |

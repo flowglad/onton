@@ -1,6 +1,11 @@
 (** GitHub forge implementation.
 
-    Queries the GitHub GraphQL API for PR/world state. Satisfies {!Forge.S}. *)
+    Queries the GitHub GraphQL API for PR/world state. Satisfies {!Forge.S}.
+
+    Pure GitHub-target logic (identifier validation, URL formatting, remote URL
+    parsing) lives in {!Onton_core.Github_target} so the rules can be
+    property-tested without spawning subprocesses; this module owns the
+    effectful HTTP and network surface. *)
 
 type error =
   | Http_error of { meth : string; path : string; status : int; body : string }

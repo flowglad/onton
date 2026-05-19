@@ -1,6 +1,9 @@
 {
   "projectName": "extract-patch-decision",
 
+  "owner": "flowglad",
+  "repo": "onton",
+
   "specFile": "spec/onton.pant",
 
   "workstream": {

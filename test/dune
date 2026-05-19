@@ -41,6 +41,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_github_target_properties)
+ (modules test_github_target_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_backend_parser_totality)
  (modules test_backend_parser_totality)
  (libraries onton_core qcheck-core qcheck-core.runner yojson)

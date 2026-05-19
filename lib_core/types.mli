@@ -262,6 +262,18 @@ end
 module Gameplan : sig
   type t = {
     project_name : string;
+    repo_owner : string; [@yojson.default ""]
+        (** Repository owner on the git forge (user, org, group). A gameplan
+            applies to exactly one repository; cross-repo work requires multiple
+            gameplans. Forge-specific validation (e.g. GitHub's handle format)
+            is performed by the forge backend module — this field is only
+            structurally required to be non-empty. Defaults to [""] for legacy
+            gameplans that predate the field; callers consuming this for a fresh
+            run must reject empties, while the resume path backfills from stored
+            config. *)
+    repo_name : string; [@yojson.default ""]
+        (** Repository name on the git forge (paired with [repo_owner]). See
+            [repo_owner] for the empty-default rationale. *)
     problem_statement : string;
     solution_summary : string;
     final_state_spec : string; [@yojson.default ""]

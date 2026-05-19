@@ -5,6 +5,8 @@
   "type": "object",
   "required": [
     "projectName",
+    "owner",
+    "repo",
     "specFile",
     "workstream",
     "problemStatement",
@@ -29,6 +31,16 @@
       "type": "string",
       "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
       "description": "Short kebab-case identifier. Used in branch names (zax--<projectName>), PR titles ([<projectName>] Patch N: <title>), and file paths (gameplans/<projectName>.json)."
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repository owner on the git forge (user, organization, group). The gameplan applies to exactly one repository — if a change spans repos, write multiple gameplans, one per repo, each with a distinct projectName. Forge-specific format rules (e.g. GitHub's 1–39-character handle pattern) are enforced by the forge backend at session start, not by this schema."
+    },
+    "repo": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Repository name on the git forge (paired with owner). All patches[].files[].path and requiredChanges[].file paths in this gameplan are interpreted relative to this repo's root; paths escaping the root (e.g. '../other-repo/x.ts') are disallowed."
     },
     "specFile": {
       "type": ["string", "null"],
