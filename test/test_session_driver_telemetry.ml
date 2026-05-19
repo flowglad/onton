@@ -61,7 +61,7 @@ let with_data_dir root f =
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
       | None -> unsetenv "ONTON_DATA_DIR")
 
-let run_case ~name ~subkind =
+let run_case ~name ~subkind ~exit_code =
   let root = temp_root () in
   with_data_dir root @@ fun () ->
   let project_name = "Telemetry Test " ^ name in
@@ -78,7 +78,7 @@ let run_case ~name ~subkind =
     Session_meta.create ~onton_session_uuid:session_uuid
       ~claude_session_id:"claude-session"
       ~patch_id:(Types.Patch_id.to_string patch_id)
-      ~started_at:1.0 ~ended_at:2.0 ~exit_code:0 ~subkind ()
+      ~started_at:1.0 ~ended_at:2.0 ~exit_code ~subkind ()
   in
   Telemetry_dispatch.with_sinks
     ~sinks:[ Event_log.sink event_log ]
@@ -155,6 +155,11 @@ let run_case ~name ~subkind =
        (subkind_of_meta meta_json)
        (Some subkind))
     "meta subkind mismatch";
+  expect name
+    (match json_member "exit_code" meta_json with
+    | Some (`Int actual) -> actual = exit_code
+    | _ -> false)
+    "meta exit_code mismatch";
   let stderr = read_file (Stdlib.Filename.concat dir "stderr.log") in
   expect name
     (String.is_substring stderr ~substring:"stderr before unregister")
@@ -182,8 +187,8 @@ let run_case ~name ~subkind =
 
 let () =
   Random.self_init ();
-  run_case ~name:"success" ~subkind:Failure_subkind.Ok;
-  run_case ~name:"auth" ~subkind:Failure_subkind.Auth_unavailable;
-  run_case ~name:"timeout" ~subkind:Failure_subkind.Timed_out;
-  run_case ~name:"process" ~subkind:Failure_subkind.Process_error;
+  run_case ~name:"success" ~subkind:Failure_subkind.Ok ~exit_code:0;
+  run_case ~name:"auth" ~subkind:Failure_subkind.Auth_unavailable ~exit_code:1;
+  run_case ~name:"timeout" ~subkind:Failure_subkind.Timed_out ~exit_code:124;
+  run_case ~name:"process" ~subkind:Failure_subkind.Process_error ~exit_code:1;
   if !failures > 0 then Stdlib.exit 1

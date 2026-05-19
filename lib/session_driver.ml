@@ -439,13 +439,16 @@ let run_with_backend ~session_mode_for_agent
                 content_gate := next_gate;
                 if persist then maybe_persist_session_id ()
               in
+              let cancelled = ref None in
               let result =
                 try
                   Ok
                     (run_backend ~project_name ~cwd ~patch_id ~prompt
                        ~resume_session ~session_uuid ~complexity ~on_event)
                 with
-                | Eio.Cancel.Cancelled _ as exn -> raise exn
+                | Eio.Cancel.Cancelled _ as exn ->
+                    cancelled := Some exn;
+                    Error (Stdlib.Printexc.to_string exn)
                 | exn -> Error (Stdlib.Printexc.to_string exn)
               in
               let open Run_classification in
@@ -618,6 +621,33 @@ let run_with_backend ~session_mode_for_agent
                        "Session ended with %d non-completed tool call(s) (%s): \
                         %s"
                        (List.length failures) backend_name rendered));
+              (match !cancelled with
+              | None -> ()
+              | Some exn ->
+                  let agent =
+                    Runtime.read runtime (fun snap ->
+                        Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                  in
+                  Telemetry_dispatch.emit
+                    (Telemetry.Event.Complete
+                       {
+                         patch_id;
+                         session_uuid = Some session_uuid;
+                         subkind;
+                         payload =
+                           `Assoc
+                             [
+                               ( "result",
+                                 `String
+                                   (Orchestrator.show_session_result
+                                      session_result) );
+                               ( "agent_before",
+                                 Persistence.patch_agent_to_yojson agent );
+                               ( "agent_after",
+                                 Persistence.patch_agent_to_yojson agent );
+                             ];
+                       });
+                  raise exn);
               (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
              is idempotent (Push_up_to_date when nothing new), and lease-safe
