@@ -29,6 +29,16 @@ val resolve_auto_model :
     model mapping). All other model values, including [None] and the empty
     string, pass through unchanged so the backend's own default still wins. *)
 
+val redact_env : string array -> string array
+
+val emit_spawn_started :
+  patch_id:Types.Patch_id.t ->
+  session_uuid:string option ->
+  prompt:string ->
+  args:string list ->
+  env:string array ->
+  unit
+
 val spawn_and_stream :
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
@@ -37,6 +47,8 @@ val spawn_and_stream :
   env:string array ->
   setsid_exec:string option ->
   args:string list ->
+  session_uuid:string option ->
+  patch_id:Types.Patch_id.t ->
   process_line:(string -> Types.Stream_event.t list) ->
   on_event:(Types.Stream_event.t -> unit) ->
   result
@@ -61,6 +73,7 @@ type t = {
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     resume_session:string option ->
+    session_uuid:string option ->
     complexity:int option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;

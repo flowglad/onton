@@ -289,3 +289,8 @@
  (name test_telemetry_migration)
  (modules test_telemetry_migration)
  (libraries onton onton_core unix))
+
+(test
+ (name test_session_driver_telemetry)
+ (modules test_session_driver_telemetry)
+ (libraries onton onton_core unix))

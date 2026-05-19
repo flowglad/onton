@@ -192,6 +192,22 @@ let run_with_backend ~session_mode_for_agent
             buf
           in
           let error_buf = Buffer.create 256 in
+          let session_started_at = Unix.gettimeofday () in
+          let session_uuid = Session_id.mint () in
+          let session_sink =
+            Session_artifacts.create ~project_name ~patch_id ~session_uuid
+          in
+          Telemetry_dispatch.register_sink session_sink;
+          let env_redacted = Llm_backend.redact_env (Unix.environment ()) in
+          Telemetry_dispatch.emit
+            (Telemetry.Event.Spawn_started
+               {
+                 patch_id;
+                 session_uuid;
+                 prompt;
+                 argv = [ backend_name ];
+                 env_redacted;
+               });
           let tool_count = ref 0 in
           (* Accumulates (tool_name, status) for Tool_use events that report a
              non-"completed" status (OpenCode surfaces [pending]/[running] or
@@ -236,6 +252,7 @@ let run_with_backend ~session_mode_for_agent
               sync_transcript ())
           in
           let captured_session_id = ref None in
+          let captured_init = ref Failure_subkind.default_init in
           let content_gate = ref (Content_gate.create ()) in
           let maybe_persist_session_id () =
             match (snapshot_path_opt, !captured_session_id) with
@@ -393,8 +410,21 @@ let run_with_backend ~session_mode_for_agent
                   Buffer.add_string error_buf msg;
                   log_stream_entry runtime ~patch_id
                     (Activity_log.Stream_entry.Stream_error msg)
-              | Types.Stream_event.Session_init { session_id; _ } ->
-                  captured_session_id := Some session_id
+              | Types.Stream_event.Session_init
+                  {
+                    session_id;
+                    api_key_source;
+                    model;
+                    claude_code_version;
+                    permission_mode = _;
+                  } ->
+                  captured_session_id := Some session_id;
+                  captured_init :=
+                    {
+                      Failure_subkind.api_key_source;
+                      model;
+                      claude_code_version;
+                    }
             in
             (* Persist the crash-recovery sidecar lazily: only after claude
                has *committed* a conversation turn to its .jsonl (first
@@ -414,7 +444,8 @@ let run_with_backend ~session_mode_for_agent
             try
               Ok
                 (run_backend ~project_name ~cwd ~patch_id ~prompt
-                   ~resume_session ~complexity ~on_event)
+                   ~resume_session ~session_uuid:(Some session_uuid) ~complexity
+                   ~on_event)
             with exn -> Error (Stdlib.Printexc.to_string exn)
           in
           let open Run_classification in
@@ -452,10 +483,11 @@ let run_with_backend ~session_mode_for_agent
                      (render "stdout" r.Llm_backend.stdout)
                      (render "stderr" r.Llm_backend.stderr))
           in
+          let classification =
+            classify ~is_resume:(Option.is_some resume_session) outcome
+          in
           let session_result, user_result =
-            match
-              classify ~is_resume:(Option.is_some resume_session) outcome
-            with
+            match classification with
             | Process_error msg ->
                 let detail =
                   Printf.sprintf "Process error from %s — %s" backend_name msg
@@ -527,6 +559,38 @@ let run_with_backend ~session_mode_for_agent
                     { is_fresh; detail = Some formatted },
                   `Failed )
           in
+          let tail s =
+            let len = String.length s in
+            let pos = max 0 (len - 4096) in
+            String.sub s ~pos ~len:(len - pos)
+          in
+          let text_tail = tail (Buffer.contents text_buf) in
+          let stderr_tail =
+            match result with
+            | Ok r -> tail r.Llm_backend.stderr
+            | Error msg -> tail msg
+          in
+          let subkind =
+            Failure_subkind.classify ~classification ~init:!captured_init
+              ~text_tail ~stderr_tail
+          in
+          let meta =
+            let init = !captured_init in
+            let exit_code =
+              match result with Ok r -> r.Llm_backend.exit_code | Error _ -> 1
+            in
+            Session_meta.create ~onton_session_uuid:session_uuid
+              ?claude_session_id:!captured_session_id
+              ~patch_id:(Types.Patch_id.to_string patch_id)
+              ~started_at:session_started_at ~ended_at:(Unix.gettimeofday ())
+              ~exit_code ~subkind ?api_key_source:init.api_key_source
+              ?model:init.model ?claude_code_version:init.claude_code_version ()
+          in
+          Telemetry_dispatch.emit
+            (Telemetry.Event.Spawn_finalized
+               { patch_id; session_uuid; meta = Session_meta.yojson_of_t meta });
+          Telemetry_dispatch.unregister_sink
+            ~name:(Session_artifacts.sink_name ~session_uuid);
           (* Observability: if any tool_use events reported a non-"completed"
              status (OpenCode's sandbox/rejection/pending states), summarize
              them so the disconnect is visible in the activity log even when
@@ -666,8 +730,26 @@ let run_with_backend ~session_mode_for_agent
                 let agent_after = Orchestrator.agent orch patch_id in
                 (orch, (agent_before, agent_after)))
           in
-          Event_log.log_complete event_log ~patch_id
-            ~result:final_session_result ~agent_before ~agent_after;
+          ignore event_log;
+          Telemetry_dispatch.emit
+            (Telemetry.Event.Complete
+               {
+                 patch_id;
+                 session_uuid = Some session_uuid;
+                 subkind;
+                 payload =
+                   `Assoc
+                     [
+                       ( "result",
+                         `String
+                           (Orchestrator.show_session_result
+                              final_session_result) );
+                       ( "agent_before",
+                         Persistence.patch_agent_to_yojson agent_before );
+                       ( "agent_after",
+                         Persistence.patch_agent_to_yojson agent_after );
+                     ];
+               });
           (final_user_result, List.rev !tool_failures))
 
 let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
@@ -764,7 +846,7 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
     ~user_config ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log =
   let (Long_lived_session session) = session in
   let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
-      ~complexity:_ ~on_event =
+      ~session_uuid:_ ~complexity:_ ~on_event =
     let failed_result message =
       on_event (Types.Stream_event.Error message);
       {

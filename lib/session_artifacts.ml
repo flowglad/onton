@@ -54,18 +54,21 @@ let redact_env_entry entry =
       name ^ "=" ^ redacted
 
 let event_session_uuid = function
-  | Telemetry.Event.Stream { session_uuid; _ }
-  | Spawn_started { session_uuid; _ }
-  | Spawn_finalized { session_uuid; _ } ->
+  | Telemetry.Event.Stream { session_uuid; _ } -> session_uuid
+  | Spawn_started { session_uuid; _ } | Spawn_finalized { session_uuid; _ } ->
       Some session_uuid
   | Poll _ | Action _ | Complete _ | Free_form _ -> None
 
+let sink_name ~session_uuid = "session_artifacts:" ^ session_uuid
+
+let artifact_dir ~project_name ~session_uuid =
+  Stdlib.Filename.concat (Project_store.sessions_dir project_name) session_uuid
+
+let meta_path ~project_name ~session_uuid =
+  Stdlib.Filename.concat (artifact_dir ~project_name ~session_uuid) "meta.json"
+
 let create ~project_name ~patch_id:_ ~session_uuid =
-  let artifact_dir =
-    Stdlib.Filename.concat
-      (Project_store.sessions_dir project_name)
-      session_uuid
-  in
+  let artifact_dir = artifact_dir ~project_name ~session_uuid in
   Project_store.ensure_dir artifact_dir;
   let stdout_file =
     make_append_file (Stdlib.Filename.concat artifact_dir "stdout.jsonl")
@@ -73,7 +76,7 @@ let create ~project_name ~patch_id:_ ~session_uuid =
   let stderr_file =
     make_append_file (Stdlib.Filename.concat artifact_dir "stderr.log")
   in
-  let meta_path = Stdlib.Filename.concat artifact_dir "meta.json" in
+  let meta_path = meta_path ~project_name ~session_uuid in
   let write_started ~prompt ~argv ~env_redacted =
     write_text_file
       ~path:(Stdlib.Filename.concat artifact_dir "prompt.txt")
@@ -101,7 +104,7 @@ let create ~project_name ~patch_id:_ ~session_uuid =
     close_file stderr_file
   in
   {
-    Telemetry.Sink.name = "session_artifacts:" ^ session_uuid;
+    Telemetry.Sink.name = sink_name ~session_uuid;
     interested_in =
       (fun event ->
         Option.value_map (event_session_uuid event) ~default:false
@@ -112,7 +115,8 @@ let create ~project_name ~patch_id:_ ~session_uuid =
           { session_uuid = event_uuid; prompt; argv; env_redacted; _ }
         when String.equal event_uuid session_uuid ->
           write_started ~prompt ~argv ~env_redacted
-      | Telemetry.Event.Stream { session_uuid = event_uuid; channel; raw; _ }
+      | Telemetry.Event.Stream
+          { session_uuid = Some event_uuid; channel; raw; _ }
         when String.equal event_uuid session_uuid ->
           append_line
             (match channel with
@@ -227,10 +231,20 @@ let%test "Stream events append lines in order to stdout.jsonl" =
   let sink = create ~project_name ~patch_id ~session_uuid in
   sink.consume
     (Telemetry.Event.Stream
-       { patch_id; session_uuid; channel = `Stdout; raw = "{\"a\":1}" });
+       {
+         patch_id;
+         session_uuid = Some session_uuid;
+         channel = `Stdout;
+         raw = "{\"a\":1}";
+       });
   sink.consume
     (Telemetry.Event.Stream
-       { patch_id; session_uuid; channel = `Stdout; raw = "{\"b\":2}" });
+       {
+         patch_id;
+         session_uuid = Some session_uuid;
+         channel = `Stdout;
+         raw = "{\"b\":2}";
+       });
   sink.consume (spawn_finalized_event ~patch_id ~session_uuid);
   let stdout_path =
     Stdlib.Filename.concat
@@ -250,7 +264,12 @@ let%test "interested_in returns false for events with different session_uuid" =
   (not
      (sink.interested_in
         (Telemetry.Event.Stream
-           { patch_id; session_uuid = "other"; channel = `Stdout; raw = "x" })))
+           {
+             patch_id;
+             session_uuid = Some "other";
+             channel = `Stdout;
+             raw = "x";
+           })))
   && (not
         (sink.interested_in
            (spawn_started_event ~patch_id ~session_uuid:"other"

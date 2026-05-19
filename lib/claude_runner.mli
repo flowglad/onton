@@ -53,6 +53,7 @@ val run_streaming :
   patch_id:Types.Patch_id.t ->
   prompt:string ->
   resume_session:string option ->
+  session_uuid:string option ->
   complexity:int option ->
   on_event:(Types.Stream_event.t -> unit) ->
   Llm_backend.result
