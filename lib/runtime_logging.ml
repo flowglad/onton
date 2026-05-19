@@ -41,4 +41,4 @@ let log_stream_entry _runtime ~patch_id kind =
         `Stdout
   in
   Telemetry_dispatch.emit
-    (Telemetry.Event.Stream { patch_id; session_uuid = ""; channel; raw })
+    (Telemetry.Event.Stream { patch_id; session_uuid = None; channel; raw })

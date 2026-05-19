@@ -19,7 +19,7 @@ module Event : sig
       }
     | Stream of {
         patch_id : Types.Patch_id.t;
-        session_uuid : string;
+        session_uuid : string option;
         channel : [ `Stdout | `Stderr ];
         raw : string;
       }

@@ -30,7 +30,7 @@ module Event = struct
       }
     | Stream of {
         patch_id : Types.Patch_id.t;
-        session_uuid : string;
+        session_uuid : string option;
         channel : channel;
         raw : string;
       }
@@ -113,8 +113,9 @@ let%test "Event.t yojson roundtrip preserves every variant" =
           subkind = Failure_subkind.Network_error;
           payload = `Bool true;
         };
-      Stream { patch_id; session_uuid = "uuid"; channel = `Stdout; raw = "{}" };
-      Stream { patch_id; session_uuid = "uuid"; channel = `Stderr; raw = "err" };
+      Stream
+        { patch_id; session_uuid = Some "uuid"; channel = `Stdout; raw = "{}" };
+      Stream { patch_id; session_uuid = None; channel = `Stderr; raw = "err" };
       Spawn_started
         {
           patch_id;

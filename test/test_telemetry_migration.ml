@@ -31,6 +31,13 @@ let expect_equal_string ~name expected actual =
   if not (String.equal expected actual) then
     fail (Printf.sprintf "%s: expected %S, got %S" name expected actual)
 
+let expect_equal_json ~name expected actual =
+  if not (Yojson.Safe.equal expected actual) then
+    fail
+      (Printf.sprintf "%s: expected %s, got %s" name
+         (Yojson.Safe.to_string expected)
+         (Yojson.Safe.to_string actual))
+
 let test_event_log_complete () =
   let path = temp_path "onton-event-log" in
   let event_log = Onton.Event_log.create ~path in
@@ -55,8 +62,9 @@ let test_event_log_complete () =
   | [ line ] ->
       let json = Yojson.Safe.from_string line in
       expect_equal_string ~name:"kind" "complete" (string_member "kind" json);
-      expect_equal_string ~name:"patch_id" "patch-5"
-        (string_member "patch_id" json);
+      expect_equal_json ~name:"patch_id"
+        (Types.Patch_id.yojson_of_t patch_id)
+        (json_member "patch_id" json);
       expect_equal_string ~name:"result" "Session_failed"
         (string_member "result" json);
       expect_equal_string ~name:"onton_session_uuid" "session-uuid"
@@ -73,7 +81,7 @@ let test_activity_log_free_form () =
   let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
   Onton.Telemetry_dispatch.with_sink
-    ~sink:(Activity_log.activity_log_sink ~update ()) (fun () ->
+    ~sink:(Onton.Activity_log_sink.sink ~update ()) (fun () ->
       Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Free_form
            {
@@ -95,12 +103,12 @@ let test_activity_log_stream () =
   let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
   Onton.Telemetry_dispatch.with_sink
-    ~sink:(Activity_log.activity_log_sink ~update ()) (fun () ->
+    ~sink:(Onton.Activity_log_sink.sink ~update ()) (fun () ->
       Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Stream
            {
              patch_id;
-             session_uuid = "session-uuid";
+             session_uuid = Some "session-uuid";
              channel = `Stdout;
              raw = "chunk";
            }));

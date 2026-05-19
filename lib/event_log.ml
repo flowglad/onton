@@ -75,8 +75,23 @@ let entry ?kind_override t ~default_kind ~patch_id ~payload extra =
        @ drop_internal_fields payload_fields))
 
 let interested_in = function
-  | Telemetry.Event.Poll _ | Action _ | Complete _ | Free_form _ -> true
-  | Stream _ | Spawn_started _ | Spawn_finalized _ -> false
+  | Telemetry.Event.Poll _ | Action _ | Complete _ -> true
+  | Free_form _ | Stream _ | Spawn_started _ | Spawn_finalized _ -> false
+
+let failure_subkind_of_session_result (result : Orchestrator.session_result) =
+  match result with
+  | Session_ok -> Failure_subkind.Ok
+  | Session_process_error _ -> Failure_subkind.Process_error
+  | Session_no_resume -> Failure_subkind.No_session_to_resume
+  | Session_failed { detail = None; _ } -> Failure_subkind.Empty_response
+  | Session_failed { detail = Some detail; _ }
+    when String.is_empty detail || String.equal detail "(no error details)" ->
+      Failure_subkind.Empty_response
+  | Session_failed { detail = Some detail; _ } -> Failure_subkind.Other detail
+  | Session_give_up -> Failure_subkind.Other "session_give_up"
+  | Session_worktree_missing -> Failure_subkind.Process_error
+  | Session_push_failed -> Failure_subkind.Process_error
+  | Session_no_commits -> Failure_subkind.Other "session_no_commits"
 
 let sink t =
   {
@@ -103,15 +118,7 @@ let sink t =
           in
           entry t ~default_kind:"complete" ~patch_id:(Some patch_id) ~payload
             extra
-      | Free_form { patch_id; level; message } ->
-          entry t ~default_kind:"free_form" ~patch_id
-            ~payload:
-              (`Assoc
-                 [
-                   ("level", Telemetry.Event.yojson_of_level level);
-                   ("message", `String message);
-                 ])
-            []
+      | Free_form _ -> ()
       | Stream _ | Spawn_started _ | Spawn_finalized _ -> ());
   }
 
@@ -156,7 +163,7 @@ let log_complete t ~patch_id ~result ~agent_before ~agent_after =
        {
          patch_id;
          session_uuid = None;
-         subkind = Failure_subkind.Ok;
+         subkind = failure_subkind_of_session_result result;
          payload =
            `Assoc
              [

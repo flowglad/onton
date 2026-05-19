@@ -85,6 +85,8 @@ val trim : t -> max:int -> t
     keeping the most recent. Use periodically to bound memory in long-running
     sessions. *)
 
-val activity_log_sink : update:((t -> t) -> unit) -> unit -> Telemetry.Sink.t
-(** Telemetry sink that appends free-form events and stream entries through
-    [update]. The callback should apply its function to the current live log. *)
+val stream_kind_of_raw :
+  channel:[ `Stdout | `Stderr ] -> string -> Stream_entry.kind
+(** Decode a raw telemetry stream line into the activity-log entry kind, falling
+    back to channel-specific text/error entries when the line is not one of the
+    activity-log JSON envelopes. *)
