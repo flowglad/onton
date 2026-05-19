@@ -4400,27 +4400,33 @@ let run_prune () =
           errors :=
             (project_name, Printf.sprintf "lock error: %s" msg) :: !errors
       | Ok lock -> (
-          let status =
-            Fun.protect
-              ~finally:(fun () -> Project_lock.release lock)
-              (fun () -> classify_project ~slug)
-          in
           let project_name = recover_project_name ~slug in
-          match status with
-          | All_merged -> (
+          match
+            try
+              Ok
+                (Fun.protect
+                   ~finally:(fun () -> Project_lock.release lock)
+                   (fun () -> classify_project ~slug))
+            with exn -> Error (Printexc.to_string exn)
+          with
+          | Error msg ->
+              errors :=
+                (project_name, Printf.sprintf "snapshot classify failed: %s" msg)
+                :: !errors
+          | Ok All_merged -> (
               try
                 remove_path project_dir;
                 removed :=
                   (project_name, worktree_root_for ~project_name) :: !removed
               with exn ->
                 errors := (project_name, Printexc.to_string exn) :: !errors)
-          | Not_merged ->
+          | Ok Not_merged ->
               kept := (project_name, "has unmerged patches") :: !kept
-          | No_patches ->
+          | Ok No_patches ->
               kept := (project_name, "gameplan has no patches") :: !kept
-          | No_snapshot ->
+          | Ok No_snapshot ->
               kept := (project_name, "no snapshot — never ran") :: !kept
-          | Load_error msg ->
+          | Ok (Load_error msg) ->
               errors :=
                 (project_name, Printf.sprintf "snapshot load failed: %s" msg)
                 :: !errors));
