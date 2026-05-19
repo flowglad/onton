@@ -262,9 +262,7 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
         [ Types.Stream_event.Error err ]
     | Some "system" -> (
         let subtype = member "subtype" json |> to_string_option in
-        match subtype with
-        | Some "init" -> session_init_of_json json
-        | _ -> [])
+        match subtype with Some "init" -> session_init_of_json json | _ -> [])
     | _ -> []
   with
   | Yojson.Json_error _ -> []
@@ -605,8 +603,8 @@ let%test "parse_stream_event result with empty errors uses result text" =
   Option.equal Types.Stream_event.equal (parse_stream_event line)
     (Some (Types.Stream_event.Error "auth unavailable"))
 
-let%test
-    "parse_stream_event result with non-empty errors prefers errors array" =
+let%test "parse_stream_event result with non-empty errors prefers errors array"
+    =
   let line =
     {|{"type":"result","is_error":true,"errors":["first","second"],"result":"ignored"}|}
   in
