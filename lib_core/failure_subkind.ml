@@ -30,7 +30,11 @@ let t_of_yojson json =
   | `String "Empty_response" -> Empty_response
   | `String "Process_error" -> Process_error
   | `Assoc [ ("Api_error", payload) ] ->
-      let status = payload |> member "status" |> to_int_option in
+      let status =
+        match payload with
+        | `Assoc _ -> payload |> member "status" |> to_int_option
+        | _ -> None
+      in
       Api_error { status }
   | `Assoc [ ("Other", `String detail) ] -> Other detail
   | _ -> Other "invalid_failure_subkind"
