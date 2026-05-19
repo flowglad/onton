@@ -117,7 +117,7 @@ let sink t =
 
 let log_poll t ~patch_id ~poll_result ~agent_before ~agent_after ~logs =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Poll
        {
          patch_id;
@@ -136,7 +136,7 @@ let action_patch_id (action : Orchestrator.action) =
 
 let log_action t ~action ~agent_before =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Action
        {
          patch_id = action_patch_id action;
@@ -151,12 +151,12 @@ let log_action t ~action ~agent_before =
 
 let log_complete t ~patch_id ~result ~agent_before ~agent_after =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Complete
        {
          patch_id;
          session_uuid = None;
-         subkind = Failure_subkind.Other "complete";
+         subkind = Failure_subkind.Ok;
          payload =
            `Assoc
              [
@@ -168,7 +168,7 @@ let log_complete t ~patch_id ~result ~agent_before ~agent_after =
 
 let log_force_complete t ~patch_id ~reason ~agent_before ~agent_after =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Complete
        {
          patch_id;
@@ -188,7 +188,7 @@ let log_force_complete t ~patch_id ~reason ~agent_before ~agent_after =
 let log_conflict_rebase t ~patch_id ~result ~decision ~agent_before ~agent_after
     =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Action
        {
          patch_id;
@@ -209,7 +209,7 @@ let log_conflict_rebase t ~patch_id ~result ~decision ~agent_before ~agent_after
 let log_conflict_delivery t ~patch_id ~path ~rebase_in_progress ~git_status
     ~git_diff =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Action
        {
          patch_id;
@@ -227,7 +227,7 @@ let log_conflict_delivery t ~patch_id ~path ~rebase_in_progress ~git_status
 
 let log_rebase t ~patch_id ~result ~agent_before ~agent_after =
   ignore t;
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Action
        {
          patch_id;

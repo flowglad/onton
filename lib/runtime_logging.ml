@@ -1,5 +1,5 @@
 let log_event _runtime ?patch_id msg =
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Free_form
        { patch_id; level = Telemetry.Event.Info; message = msg })
 
@@ -40,5 +40,5 @@ let log_stream_entry _runtime ~patch_id kind =
     | Activity_log.Stream_entry.Finished _ ->
         `Stdout
   in
-  Telemetry.emit
+  Telemetry_dispatch.emit
     (Telemetry.Event.Stream { patch_id; session_uuid = ""; channel; raw })

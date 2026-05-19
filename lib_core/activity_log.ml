@@ -42,8 +42,8 @@ end
 
 type t = {
   transitions : Transition_entry.t list;
-  mutable events : Event.t list;
-  mutable stream_entries : Stream_entry.t list;
+  events : Event.t list;
+  stream_entries : Stream_entry.t list;
 }
 [@@deriving show, eq, sexp_of, compare]
 
@@ -54,13 +54,14 @@ let add_event t event = { t with events = event :: t.events }
 let add_stream_entry t entry =
   { t with stream_entries = entry :: t.stream_entries }
 
-let prepend_event_in_place t event = t.events <- event :: t.events
-
-let prepend_stream_entry_in_place t entry =
-  t.stream_entries <- entry :: t.stream_entries
-
 let stream_kind_of_raw ~channel raw =
+  let fallback () =
+    match channel with
+    | `Stdout -> Stream_entry.Text_chunk raw
+    | `Stderr -> Stream_entry.Stream_error raw
+  in
   match Yojson.Safe.from_string raw with
+  | exception _ -> fallback ()
   | `Assoc fields -> (
       let find_string name =
         List.find_map fields ~f:(function
@@ -81,18 +82,8 @@ let stream_kind_of_raw ~channel raw =
       | Some "stream_error" ->
           Stream_entry.Stream_error
             (Option.value (find_string "message") ~default:"")
-      | _ -> (
-          match channel with
-          | `Stdout -> Stream_entry.Text_chunk raw
-          | `Stderr -> Stream_entry.Stream_error raw))
-  | _ -> (
-      match channel with
-      | `Stdout -> Stream_entry.Text_chunk raw
-      | `Stderr -> Stream_entry.Stream_error raw)
-  | exception _ -> (
-      match channel with
-      | `Stdout -> Stream_entry.Text_chunk raw
-      | `Stderr -> Stream_entry.Stream_error raw)
+      | _ -> fallback ())
+  | _ -> fallback ()
 
 let recent_transitions t ~limit = List.take t.transitions limit
 let recent_events t ~limit = List.take t.events limit
@@ -105,15 +96,16 @@ let trim t ~max =
     stream_entries = List.take t.stream_entries max;
   }
 
-let activity_log_sink ~log () =
+let activity_log_sink ~update () =
   let consume = function
     | Telemetry.Event.Free_form { patch_id; message; _ } ->
-        prepend_event_in_place log
-          (Event.create ~timestamp:0. ?patch_id message)
+        update (fun log ->
+            add_event log (Event.create ~timestamp:0. ?patch_id message))
     | Stream { patch_id; raw; channel; _ } ->
         let kind = stream_kind_of_raw ~channel raw in
-        prepend_stream_entry_in_place log
-          (Stream_entry.create ~timestamp:0. ~patch_id ~kind)
+        update (fun log ->
+            add_stream_entry log
+              (Stream_entry.create ~timestamp:0. ~patch_id ~kind))
     | Poll _ | Action _ | Complete _ | Spawn_started _ | Spawn_finalized _ -> ()
   in
   {

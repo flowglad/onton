@@ -1,6 +1,7 @@
-(** Tiny convenience wrappers around [Telemetry.emit] for the two most common
-    activity-log shapes. The [Runtime.t] argument is retained so callers do not
-    need to know that activity logging is routed through Telemetry sinks. *)
+(** Tiny convenience wrappers around [Telemetry_dispatch.emit] for the two most
+    common activity-log shapes. The [Runtime.t] argument is retained so callers
+    do not need to know that activity logging is routed through Telemetry sinks.
+*)
 
 val log_event : Runtime.t -> ?patch_id:Types.Patch_id.t -> string -> unit
 (** Append a free-form event message. [patch_id] is optional because some events

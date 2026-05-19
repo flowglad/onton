@@ -85,5 +85,6 @@ val trim : t -> max:int -> t
     keeping the most recent. Use periodically to bound memory in long-running
     sessions. *)
 
-val activity_log_sink : log:t -> unit -> Telemetry.Sink.t
-(** Telemetry sink that appends free-form events and stream entries to [log]. *)
+val activity_log_sink : update:((t -> t) -> unit) -> unit -> Telemetry.Sink.t
+(** Telemetry sink that appends free-form events and stream entries through
+    [update]. The callback should apply its function to the current live log. *)

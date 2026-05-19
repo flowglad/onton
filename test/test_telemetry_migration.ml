@@ -35,8 +35,9 @@ let test_event_log_complete () =
   let path = temp_path "onton-event-log" in
   let event_log = Onton.Event_log.create ~path in
   let patch_id = Types.Patch_id.of_string "patch-5" in
-  Telemetry.with_sink ~sink:(Onton.Event_log.sink event_log) (fun () ->
-      Telemetry.emit
+  Onton.Telemetry_dispatch.with_sink ~sink:(Onton.Event_log.sink event_log)
+    (fun () ->
+      Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Complete
            {
              patch_id;
@@ -68,17 +69,19 @@ let test_event_log_complete () =
            (List.length lines))
 
 let test_activity_log_free_form () =
-  let log = Activity_log.empty in
+  let log = ref Activity_log.empty in
+  let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
-  Telemetry.with_sink ~sink:(Activity_log.activity_log_sink ~log ()) (fun () ->
-      Telemetry.emit
+  Onton.Telemetry_dispatch.with_sink
+    ~sink:(Activity_log.activity_log_sink ~update ()) (fun () ->
+      Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Free_form
            {
              patch_id = Some patch_id;
              level = Telemetry.Event.Info;
              message = "hello";
            }));
-  match Activity_log.recent_events log ~limit:1 with
+  match Activity_log.recent_events !log ~limit:1 with
   | [ event ] ->
       expect_equal_string ~name:"message" "hello"
         event.Activity_log.Event.message
@@ -88,10 +91,12 @@ let test_activity_log_free_form () =
            (List.length events))
 
 let test_activity_log_stream () =
-  let log = Activity_log.empty in
+  let log = ref Activity_log.empty in
+  let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
-  Telemetry.with_sink ~sink:(Activity_log.activity_log_sink ~log ()) (fun () ->
-      Telemetry.emit
+  Onton.Telemetry_dispatch.with_sink
+    ~sink:(Activity_log.activity_log_sink ~update ()) (fun () ->
+      Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Stream
            {
              patch_id;
@@ -99,7 +104,7 @@ let test_activity_log_stream () =
              channel = `Stdout;
              raw = "chunk";
            }));
-  match Activity_log.recent_stream_entries log ~limit:1 with
+  match Activity_log.recent_stream_entries !log ~limit:1 with
   | [ entry ] -> (
       match entry.Activity_log.Stream_entry.kind with
       | Activity_log.Stream_entry.Text_chunk "chunk" -> ()
