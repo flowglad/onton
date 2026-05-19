@@ -11,6 +11,7 @@
     "solutionSummary",
     "mergabilityStrategy",
     "currentStateAnalysis",
+    "operationalConsiderations",
     "requiredChanges",
     "functionalChanges",
     "acceptanceCriteria",
@@ -51,6 +52,9 @@
     "currentStateAnalysis": {
       "type": "string",
       "description": "Where the codebase is now vs. where it needs to be."
+    },
+    "operationalConsiderations": {
+      "$ref": "#/$defs/operationalConsiderations"
     },
     "requiredChanges": {
       "type": "array",
@@ -113,6 +117,40 @@
           "items": { "type": "string" }
         },
         "unlocks": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "operationalConsiderations": {
+      "type": "object",
+      "required": [
+        "externalSystemAccess",
+        "crossRuntimeContracts",
+        "failureBehavior",
+        "concurrencyAndIdempotency",
+        "rollbackStrategy"
+      ],
+      "description": "Operational/architectural concerns the gameplan must explicitly engage with. Each sub-field is a required string and may state 'not applicable' with a brief justification when this gameplan does not touch that surface — but the field must be present. The intent is to defeat the failure mode where a consequential decision (access mode, concurrency contract, rollback path, etc.) is elided in prose and surfaces only when an implementing agent hits it under deadline. See the 'Operational Considerations' section of SKILL.md for the failure pattern and authoring rubric for each sub-field.",
+      "properties": {
+        "externalSystemAccess": {
+          "type": "string",
+          "description": "For every external system (object storage, database the runtime doesn't currently reach, third-party API, queue, secret store, internal service) the gameplan newly depends on: name the runtime(s) executing the new code, the current access posture of those runtimes (direct SDK with ambient IAM, presigned URL from another service, broker proxy, VPC endpoint, etc.), the chosen access mode for this gameplan, and the patch that owns bringing that capability online (IAM grant, new endpoint, presigned-URL minting path, network policy). Be especially suspicious of newly-invented *Client/*Transport interfaces — they are exactly where an undecided access-mode question hides. Look for sentinel classes whose existence encodes a lack of access (e.g. a PresignedOnly* adapter). State 'not applicable' only if the gameplan adds no new external dependency."
+        },
+        "crossRuntimeContracts": {
+          "type": "string",
+          "description": "For every data format crossing a runtime boundary (queue payloads, DB rows read/written by separate services, S3 object schemas, RPC return types, event payloads) that this gameplan changes or introduces: name the producer and consumer runtimes, identify which side this gameplan touches, and explain how the other side stays in sync — either patched in the same gameplan, or made forward/backward-compatible with an explicit migration/deprecation plan. Failure mode: the producer ships, the consumer breaks silently."
+        },
+        "failureBehavior": {
+          "type": "string",
+          "description": "For each new dependency or runtime path the gameplan introduces, describe behavior under realistic failure modes: dependency slow/throttling/5xx/garbage, retry storms, partial writes, timeouts, oversized inputs, expired credentials. State which failures the gameplan handles deliberately (with a documented recovery path or error surface) and which it leaves to the caller or operator. Failure mode: only the happy path is tested, and production discovers the rest."
+        },
+        "concurrencyAndIdempotency": {
+          "type": "string",
+          "description": "For any new code path that can be entered concurrently or under retry (queue workers, scheduled jobs, race-able write paths, parallel access to the same DB row or S3 key), specify the concurrency contract: locking discipline, idempotency keys, ordering guarantees, deduplication strategy. Failure mode: a quiet double-write or deadlock that only manifests under production load. State 'not applicable' only if no new code path can be entered concurrently or retried."
+        },
+        "rollbackStrategy": {
+          "type": "string",
+          "description": "For stateful changes (DB schema, data writes, materialized artifacts, mutations to external systems), describe the rollback story: if a patch must be reverted after data is written, what is the recovery path? Expand/contract migrations, backfill plans, opt-in flags that wind down gracefully, compensating writes, etc. Failure mode: assuming forward-only and stranding data in a half-migrated state. State 'not applicable' only if no patch makes a stateful change."
+        }
       },
       "additionalProperties": false
     },
@@ -401,7 +439,8 @@
         "behaviorPatchesMinimal",
         "dependencyGraphOrdered",
         "behaviorPatchesJustified",
-        "functionalChangesOwnedByExactlyOnePatch"
+        "functionalChangesOwnedByExactlyOnePatch",
+        "operationalConsiderationsSubstantive"
       ],
       "properties": {
         "featureFlagStrategyDocumented": { "type": "boolean" },
@@ -416,6 +455,10 @@
         "functionalChangesOwnedByExactlyOnePatch": {
           "type": "boolean",
           "description": "Every entry in functionalChanges has exactly one ownedBy patch, that patch exists, and the union of described behaviors covers every observable change implied by problemStatement/solutionSummary/acceptanceCriteria. No behavioral outcome is described in prose without a single named owner."
+        },
+        "operationalConsiderationsSubstantive": {
+          "type": "boolean",
+          "description": "Each operationalConsiderations sub-field (externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy) engages concretely with this gameplan's specifics rather than issuing generic platitudes. Vague boilerplate like 'not applicable' without a gameplan-specific justification, or phrases like 'monitor for errors' / 'roll back if needed' without naming actual code paths, do not qualify."
         }
       },
       "additionalProperties": false
