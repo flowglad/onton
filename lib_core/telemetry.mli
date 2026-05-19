@@ -52,7 +52,3 @@ module Sink : sig
 end
 
 val route : sinks:Sink.t list -> Event.t -> Sink.t list
-val register_sink : Sink.t -> unit
-val unregister_sink : name:string -> unit
-val emit : Event.t -> unit
-val with_sink : sink:Sink.t -> (unit -> 'a) -> 'a
