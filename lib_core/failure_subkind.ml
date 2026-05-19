@@ -20,6 +20,7 @@ type init_info = {
 [@@deriving show, eq]
 
 let t_of_yojson json =
+  let open Yojson.Safe.Util in
   match json with
   | `String "Ok" -> (Ok : t)
   | `String "Auth_unavailable" -> Auth_unavailable
@@ -31,9 +32,7 @@ let t_of_yojson json =
   | `Assoc [ ("Api_error", payload) ] ->
       let status =
         match payload with
-        | `Assoc fields ->
-            List.Assoc.find fields ~equal:String.equal "status"
-            |> Option.bind ~f:(function `Int n -> Some n | _ -> None)
+        | `Assoc _ -> payload |> member "status" |> to_int_option
         | _ -> None
       in
       Api_error { status }
@@ -61,9 +60,8 @@ let init_info_of_yojson json =
   let open Yojson.Safe.Util in
   let read_opt_string field =
     match member field json with
-    | `String s -> Some s
     | `Null -> None
-    | _ -> None
+    | value -> to_string_option value
   in
   {
     api_key_source = read_opt_string "api_key_source";

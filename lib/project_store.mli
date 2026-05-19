@@ -24,6 +24,9 @@ val managed_repo_dir : string -> string
 val event_log_path : string -> string
 (** Path to the project's append-only event log (JSONL). *)
 
+val sessions_dir : string -> string
+(** Path to the project's per-session artifact directory root. *)
+
 val config_path : string -> string
 (** Path to the project's persisted config JSON. *)
 
