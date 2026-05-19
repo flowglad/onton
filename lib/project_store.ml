@@ -76,11 +76,12 @@ type stored_config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  start_mode : string;
 }
 [@@deriving yojson]
 
 let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
-    ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency =
+    ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency ~start_mode =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
@@ -95,6 +96,7 @@ let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
       poll_interval;
       repo_root;
       max_concurrency;
+      start_mode;
     }
   in
   let json = yojson_of_stored_config config in
@@ -134,6 +136,12 @@ let migrate_backend_model fields =
   in
   ("backend", `String backend) :: ("model", `String model) :: without
 
+let migrate_start_mode fields =
+  let assoc = List.Assoc.find fields ~equal:String.equal in
+  match assoc "start_mode" with
+  | Some _ -> fields
+  | None -> ("start_mode", `String "greedy") :: fields
+
 let load_config ~project_name =
   let path = config_path project_name in
   try
@@ -146,7 +154,9 @@ let load_config ~project_name =
     let json = Yojson.Safe.from_string content in
     match json with
     | `Assoc fields ->
-        Ok (stored_config_of_yojson (`Assoc (migrate_backend_model fields)))
+        Ok
+          (stored_config_of_yojson
+             (`Assoc (fields |> migrate_backend_model |> migrate_start_mode)))
     | _ -> Ok (stored_config_of_yojson json)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
