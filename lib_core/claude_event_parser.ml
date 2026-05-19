@@ -605,14 +605,16 @@ let%test "parse_stream_event result with empty errors uses result text" =
   Option.equal Types.Stream_event.equal (parse_stream_event line)
     (Some (Types.Stream_event.Error "auth unavailable"))
 
-let%test "parse_stream_event result with non-empty errors prefers errors array" =
+let%test
+    "parse_stream_event result with non-empty errors prefers errors array" =
   let line =
     {|{"type":"result","is_error":true,"errors":["first","second"],"result":"ignored"}|}
   in
   Option.equal Types.Stream_event.equal (parse_stream_event line)
     (Some (Types.Stream_event.Error "first; second"))
 
-let%test "parse_stream_event result with both absent falls back to unknown error" =
+let%test
+    "parse_stream_event result with both absent falls back to unknown error" =
   let line = {|{"type":"result","is_error":true,"errors":[]}|} in
   Option.equal Types.Stream_event.equal (parse_stream_event line)
     (Some (Types.Stream_event.Error "unknown error"))
@@ -639,8 +641,9 @@ let%test "parse_stream_events extracts session_id from system/init" =
         };
     ]
 
-let%test "parse_stream_events Session_init carries apiKeySource/model/version/permissionMode"
-    =
+let%test
+    "parse_stream_events Session_init carries \
+     apiKeySource/model/version/permissionMode" =
   let line =
     {|{"type":"system","subtype":"init","session_id":"abc-123","apiKeySource":"project","model":"sonnet","claude_code_version":"2.1.144","permissionMode":"bypassPermissions"}|}
   in
