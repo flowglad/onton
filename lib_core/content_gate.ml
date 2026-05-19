@@ -36,11 +36,19 @@ let should_persist t (event : Types.Stream_event.t) =
 
 let has_persisted t = t.persisted
 
+let test_session_init =
+  Types.Stream_event.Session_init
+    {
+      session_id = "x";
+      api_key_source = None;
+      model = None;
+      claude_code_version = None;
+      permission_mode = None;
+    }
+
 let%test "Session_init never triggers persist" =
   let g = create () in
-  (not
-     (should_persist g (Types.Stream_event.Session_init { session_id = "x" })))
-  && not (has_persisted g)
+  (not (should_persist g test_session_init)) && not (has_persisted g)
 
 let%test "Turn_started never triggers persist" =
   let g = create () in
@@ -76,8 +84,7 @@ let%test "first Final_result triggers; subsequent calls return false" =
 
 let%test "Final_result after a flurry of in-flight events triggers" =
   let g = create () in
-  ignore
-    (should_persist g (Types.Stream_event.Session_init { session_id = "x" }));
+  ignore (should_persist g test_session_init);
   ignore (should_persist g Types.Stream_event.Turn_started);
   ignore (should_persist g (Types.Stream_event.Text_delta "streamed"));
   ignore

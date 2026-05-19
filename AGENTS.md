@@ -27,7 +27,7 @@
 
 The codebase is split into two dune libraries:
 
-- `lib_core/` — pure decision logic. Modules here are total functions of their inputs (parsers, state algebras, predicates, decision functions). `lib_core/dune` lists only `base`, `yojson`, `ppx_yojson_conv_lib` in `(libraries ...)`. The linker rejects any pure module that reaches for `eio`, `unix`, `cohttp-eio`, `tls-eio`, `mirage-crypto-rng.unix`, `ca-certs`, `lwt`, or any other effectful library.
+- `lib_core/` — pure decision logic. Modules here are total functions of their inputs (parsers, state algebras, predicates, decision functions). The split is about excluding effects, not about avoiding non-Base libraries: pure support libraries such as `re` are fine in `lib_core/dune`. The linker rejects any pure module that reaches for `eio`, `unix`, `cohttp-eio`, `tls-eio`, `mirage-crypto-rng.unix`, `ca-certs`, `lwt`, or any other effectful library.
 - `lib/` — effectful handlers. Process spawning, Eio fibers, FS, HTTP, locks. Handlers decode inputs from the effect world, call pure decisions, thread the returned state, and emit effects.
 
 Reference example: `Codex_cost` (pure, in `lib_core/`) plus `Codex_backend` (handler, in `lib/`). The handler reads `codex exec --json` lines, calls `Codex_cost.on_turn_completed`, threads the returned state, and emits stream events.
@@ -35,7 +35,7 @@ Reference example: `Codex_cost` (pure, in `lib_core/`) plus `Codex_backend` (han
 ### Rules for new code
 
 - Anything that is a pure function of its inputs — parsing, state transitions, predicates, decisions, classifications — goes in `lib_core/`. Default to the pure side; only put code in `lib/` when it needs an effect.
-- Do NOT add `eio`, `unix`, `cohttp-eio`, `tls-eio`, `mirage-crypto-rng.unix`, `ca-certs`, `lwt`, or any process/IO library to `lib_core/dune`. If a pure decision needs an effectful input (clock, env var, file contents), the handler in `lib/` reads it and passes it as an argument.
+- Do NOT add `eio`, `unix`, `cohttp-eio`, `tls-eio`, `mirage-crypto-rng.unix`, `ca-certs`, `lwt`, or any process/IO library to `lib_core/dune`. Pure helper dependencies are allowed when they keep decision logic total and testable. If a pure decision needs an effectful input (clock, env var, file contents), the handler in `lib/` reads it and passes it as an argument.
 - Pure modules must be **total** — decoders return zero/default values on malformed input, never raise. Use private types and `.mli` files to make invariants explicit (e.g. `cost_state` is private so monotonicity is enforced at construction).
 - Handler modules in `lib/` are thin: decode → call pure decision → thread state → emit. Resist putting decision logic inline in the handler; extract it into the pure module instead.
 
