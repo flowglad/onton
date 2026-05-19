@@ -138,19 +138,36 @@ let rm_rf path =
          (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote path)))
   with _ -> ()
 
+let default_data_root () =
+  match Stdlib.Sys.getenv_opt "XDG_DATA_HOME" with
+  | Some xdg -> Stdlib.Filename.concat xdg "onton"
+  | None ->
+      Stdlib.Filename.concat
+        (Stdlib.Filename.concat (Stdlib.Sys.getenv "HOME") ".local/share")
+        "onton"
+
 let with_temp_data_dir f =
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  let restore_path_when_unset =
+    match old with
+    | Some _ -> None
+    | None -> Some (default_data_root ())
+  in
   let dir = Stdlib.Filename.temp_dir "onton-session-artifacts-" "" in
   Unix.putenv "ONTON_DATA_DIR" dir;
   Stdlib.Fun.protect
     ~finally:(fun () ->
       (match old with
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
-      | None ->
-          (* Keep a unique isolated value rather than relying on a C unsetenv
-             stub from test code. *)
-          Unix.putenv "ONTON_DATA_DIR"
-            (Stdlib.Filename.temp_dir "onton-session-artifacts-restore-" ""));
+      | None -> (
+          match restore_path_when_unset with
+          | None -> ()
+          | Some path ->
+              (* Tests do not have an unsetenv binding. Restore the resolved
+                 default data root so later tests never inherit a deleted temp
+                 directory through ONTON_DATA_DIR. *)
+              Project_store.ensure_dir path;
+              Unix.putenv "ONTON_DATA_DIR" path));
       rm_rf dir)
     (fun () -> f ())
 
