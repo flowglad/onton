@@ -1,7 +1,5 @@
 open Base
 
-external unsetenv_stub : string -> unit = "caml_onton_unsetenv"
-
 type append_file = {
   path : string;
   mutable channel : Stdlib.out_channel option;
@@ -140,7 +138,11 @@ let with_temp_data_dir f =
     ~finally:(fun () ->
       (match old with
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
-      | None -> unsetenv_stub "ONTON_DATA_DIR");
+      | None ->
+          (* Keep a unique isolated value rather than relying on a C unsetenv
+             stub from test code. *)
+          Unix.putenv "ONTON_DATA_DIR"
+            (Stdlib.Filename.temp_dir "onton-session-artifacts-restore-" ""));
       rm_rf dir)
     (fun () -> f ())
 
