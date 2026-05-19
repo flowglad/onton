@@ -9,6 +9,30 @@ Create a structured, machine-readable gameplan for a complex codebase change. Th
 
 **Core principle**: It should be 5-10x easier to review a gameplan than the code it produces.
 
+## Atomicity Constraint (Read This First)
+
+A gameplan is, by definition, a bundle of work with two non-negotiable properties:
+
+1. **Atomic.** Either every patch lands or the gameplan is reverted as a unit. There are no partial outcomes the team is supposed to evaluate and then decide whether to continue.
+2. **Autonomously parallelizable.** Once the gameplan is approved, an orchestrator (or a swarm of agents) can execute the patches concurrently, respecting only the `dependencyGraph`. No human is in the loop between patches.
+
+The following structures are therefore **prohibited inside a single gameplan**:
+
+- **Conditional patches.** A patch that "only happens if the previous patch's behavior looks right in staging" is not a patch — it's a separate milestone. Every patch in a gameplan is committed to before execution begins.
+- **Inter-patch human operations.** Anything that asks an operator to flip a flag, run a one-time script, query a dashboard, copy a value out of one system into another, or otherwise *act* between patches. The only human action a gameplan permits is the eventual review/merge of the patches themselves.
+- **Inter-patch observation windows.** "Let the new metric soak for 24 hours after Patch 3 before applying Patch 4" is a milestone boundary, not a patch boundary. So is "wait for the next billing cycle," "wait for the canary to bake," or "wait until next Monday."
+- **Inter-patch decisions based on outcomes.** "If the query plan looks fine after Patch 2, do A; otherwise do B" cannot live inside one gameplan — neither branch can be planned formally, and the dependency graph cannot encode the conditional.
+
+If you find yourself drafting *any* of those — **stop and use [[write-workstream]] instead**. The work you are describing is a multi-milestone workstream, not a gameplan. Each side of the pause/decision/observation becomes its own milestone with:
+
+- a clear Definition of Done,
+- explicit instructions for the human operator(s) to follow between milestones (the flag flip, the dashboard check, the manual backfill, the decision criteria),
+- and a separate gameplan generated per milestone once the prior milestone is complete.
+
+It is **expected and healthy** that real projects contain soaking, observation, flag flips, and judgement calls. The error is not that those things exist; the error is trying to encode them inside a gameplan. They live at milestone boundaries.
+
+**Practical test, applied while drafting**: read your patch sequence and ask, "could a fully autonomous orchestrator execute every one of these back-to-back, with no human pause and no run-time choice, and would the outcome still be correct?" If the answer is no — for any reason — you are looking at a workstream, not a gameplan. Stop drafting and switch to `/write-workstream`.
+
 ## One Repo Per Gameplan
 
 Every gameplan pertains to **exactly one repository on a git forge** (GitHub, GitLab, Gitea, etc.), declared by the required top-level `owner` and `repo` fields. The orchestrator (e.g. onton) clones that repo and runs every patch's agent inside isolated worktrees off of it — so paths in `patches[].files[].path` and `requiredChanges[].file` are resolved **relative to the repo root** and may not escape it (e.g. `../other-repo/x.ts` is disallowed; the worktree has no notion of "next to my checkout").
@@ -73,7 +97,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `patches` | `array` | See Patch Object in schema |
 | `testMap` | `array` | `[{ testName, file, stubPatch, implPatch }]` |
 | `dependencyGraph` | `array` | `[{ patch, classification, dependsOn }]` |
-| `mergabilityChecklist` | `object` | 9 boolean fields (see schema) |
+| `mergabilityChecklist` | `object` | boolean fields including `gameplanIsAtomicAndAutonomous` (see schema for full list) |
 | `mergabilityInsight` | `string` | E.g. "X of Y patches are INFRA/GATED…" |
 | `finalStateSpec` | `string` | Formal specification source for the completed gameplan |
 
@@ -312,7 +336,8 @@ After writing the gameplan JSON, verify:
 4. All test stubs have corresponding implementations
 5. **Functional change ownership is total and single-valued** — every `functionalChanges[i].id` is unique; every `functionalChanges[i].ownedBy` resolves to an existing `patches[].number`; no functional change appears unowned in prose. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec` and confirm every behavioral promise has a corresponding `functionalChanges` entry pointing at a single patch. Set `mergabilityChecklist.functionalChangesOwnedByExactlyOnePatch` to `true` only when this holds.
 6. **Operational considerations are substantive** — the schema requires every sub-field of `operationalConsiderations` to be present, but presence is not engagement. For each sub-field, confirm the response names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than generic platitudes. A sub-field may say "not applicable" only when the gameplan genuinely does not touch that surface, and only with a brief justification grounded in the actual changes. See [Operational Considerations](#operational-considerations).
-7. The mergability checklist passes
+7. **Atomicity holds** — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm that no patch is conditional on the outcome of another, no patch description or `changes` step expects a human to act between patches (flip a flag, run a script, observe a metric, decide a branch), and no patch implies an observation/soak window before the next one runs. If any of these slipped in, the work must be re-decomposed as a multi-milestone workstream via [[write-workstream]] — do not patch around it inside the gameplan. Set `mergabilityChecklist.gameplanIsAtomicAndAutonomous` to `true` only when this check passes.
+8. The mergability checklist passes
 
 ## Resolving Open Questions
 
