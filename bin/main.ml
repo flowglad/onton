@@ -4343,8 +4343,8 @@ type prune_status =
   | No_snapshot
   | Load_error of string
 
-let classify_project ~project_name =
-  let snap_path = Project_store.snapshot_path project_name in
+let classify_project ~slug =
+  let snap_path = Project_store.snapshot_path slug in
   if not (Stdlib.Sys.file_exists snap_path) then No_snapshot
   else
     match Persistence.load ~path:snap_path with
@@ -4389,44 +4389,46 @@ let run_prune () =
       (* [list_projects] returns slugs (already valid path components); the
          data dir is keyed by slug and slugifying a slug is a no-op, so passing
          the slug back through [project_dir] is correct. The recovered
-         [project_name] is only used for the worktree hint. *)
-      let project_name = recover_project_name ~slug in
+         [project_name] is only used for reporting and the worktree hint. *)
       let project_dir = Project_store.project_dir slug in
       let acquired =
         Project_lock.acquire ~project_dir ~on_stale:(fun pid ->
             Printf.eprintf
-              "onton prune: reclaimed stale lock for %s (PID %d)\n%!"
-              project_name pid)
+              "onton prune: reclaimed stale lock for %s (PID %d)\n%!" slug pid)
       in
       match acquired with
       | Error (Project_lock.Held_by { pid; _ }) ->
+          let project_name = recover_project_name ~slug in
           kept := (project_name, Printf.sprintf "in use (PID %d)" pid) :: !kept
       | Error (Project_lock.Io_error msg) ->
+          let project_name = recover_project_name ~slug in
           errors :=
             (project_name, Printf.sprintf "lock error: %s" msg) :: !errors
-      | Ok lock ->
-          Fun.protect
-            ~finally:(fun () -> Project_lock.release lock)
-            (fun () ->
-              match classify_project ~project_name with
-              | All_merged -> (
-                  try
-                    remove_path project_dir;
-                    removed :=
-                      (project_name, worktree_root_for ~project_name)
-                      :: !removed
-                  with exn ->
-                    errors := (project_name, Printexc.to_string exn) :: !errors)
-              | Not_merged ->
-                  kept := (project_name, "has unmerged patches") :: !kept
-              | No_patches ->
-                  kept := (project_name, "gameplan has no patches") :: !kept
-              | No_snapshot ->
-                  kept := (project_name, "no snapshot — never ran") :: !kept
-              | Load_error msg ->
-                  kept :=
-                    (project_name, Printf.sprintf "snapshot load failed: %s" msg)
-                    :: !kept));
+      | Ok lock -> (
+          let status =
+            Fun.protect
+              ~finally:(fun () -> Project_lock.release lock)
+              (fun () -> classify_project ~slug)
+          in
+          let project_name = recover_project_name ~slug in
+          match status with
+          | All_merged -> (
+              try
+                remove_path project_dir;
+                removed :=
+                  (project_name, worktree_root_for ~project_name) :: !removed
+              with exn ->
+                errors := (project_name, Printexc.to_string exn) :: !errors)
+          | Not_merged ->
+              kept := (project_name, "has unmerged patches") :: !kept
+          | No_patches ->
+              kept := (project_name, "gameplan has no patches") :: !kept
+          | No_snapshot ->
+              kept := (project_name, "no snapshot — never ran") :: !kept
+          | Load_error msg ->
+              errors :=
+                (project_name, Printf.sprintf "snapshot load failed: %s" msg)
+                :: !errors));
   Base.List.iter (List.rev !removed) ~f:(fun (n, _) ->
       Printf.printf "removed %s\n" n);
   Base.List.iter (List.rev !kept) ~f:(fun (n, reason) ->
