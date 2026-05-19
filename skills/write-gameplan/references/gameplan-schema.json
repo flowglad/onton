@@ -458,7 +458,7 @@
         },
         "operationalConsiderationsSubstantive": {
           "type": "boolean",
-          "description": "Each operationalConsiderations sub-field (rolloutNotes, observability, rollbackPlan) engages concretely with this gameplan's specifics rather than issuing generic platitudes. Vague boilerplate like 'monitor for errors' or 'roll back if needed' without gameplan-specific detail does not qualify."
+          "description": "Each operationalConsiderations sub-field (externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy) engages concretely with this gameplan's specifics rather than issuing generic platitudes. Vague boilerplate like 'not applicable' without a gameplan-specific justification, or phrases like 'monitor for errors' / 'roll back if needed' without naming actual code paths, do not qualify."
         }
       },
       "additionalProperties": false
