@@ -4406,16 +4406,20 @@ let run_prune () =
               Ok
                 (Fun.protect
                    ~finally:(fun () -> Project_lock.release lock)
-                   (fun () -> classify_project ~slug))
+                   (fun () ->
+                     let status = classify_project ~slug in
+                     (match status with
+                     | All_merged -> remove_path project_dir
+                     | Not_merged | No_patches | No_snapshot | Load_error _ ->
+                         ());
+                     status))
             with exn -> Error (Printexc.to_string exn)
           with
           | Error msg ->
               errors :=
-                (project_name, Printf.sprintf "snapshot classify failed: %s" msg)
-                :: !errors
+                (project_name, Printf.sprintf "prune failed: %s" msg) :: !errors
           | Ok All_merged -> (
               try
-                remove_path project_dir;
                 removed :=
                   (project_name, worktree_root_for ~project_name) :: !removed
               with exn ->
