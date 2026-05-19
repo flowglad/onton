@@ -229,7 +229,7 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
           in
           let result_text =
             member "result" json |> to_string_option
-            |> Option.map ~f:String.strip
+            |> Option.map ~f:(fun text -> String.strip text)
           in
           let msg =
             match errors with
