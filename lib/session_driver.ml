@@ -474,13 +474,13 @@ let run_with_backend ~session_mode_for_agent
                 (match resume_session with
                 | None -> ()
                 | Some session_id when safe_session_id session_id -> (
-                    let path =
-                      Spawn_env.claude_session_jsonl_path ~project_name
-                        ~patch_id ~worktree_path ~session_id
-                    in
-                    try Unix.unlink path with
-                    | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
-                    | _ -> ())
+                    try
+                      let path =
+                        Spawn_env.claude_session_jsonl_path ~project_name
+                          ~patch_id ~worktree_path ~session_id
+                      in
+                      Unix.unlink path
+                    with _ -> ())
                 | Some session_id ->
                     log_event runtime ~patch_id
                       (Printf.sprintf
