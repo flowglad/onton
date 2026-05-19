@@ -139,8 +139,29 @@ let test_pre_migration_events_jsonl_loads () =
     (fun () ->
       Stdlib.output_string oc line;
       Stdlib.output_char oc '\n');
+  let event_log = Onton.Event_log.create ~path in
+  let patch_id = Types.Patch_id.of_string "patch-5" in
+  Onton.Telemetry_dispatch.with_sink ~sink:(Onton.Event_log.sink event_log)
+    (fun () ->
+      Onton.Telemetry_dispatch.emit
+        (Telemetry.Event.Complete
+           {
+             patch_id;
+             session_uuid = None;
+             subkind = Failure_subkind.Ok;
+             payload =
+               `Assoc
+                 [
+                   ("result", `String "Session_ok");
+                   ("agent_before", `Assoc []);
+                   ("agent_after", `Assoc []);
+                 ];
+           }));
   match read_lines path with
-  | [ loaded ] ->
+  | [ loaded; _new_line ] ->
+      if not (String.equal loaded line) then
+        fail
+          (Printf.sprintf "legacy line changed: expected %S, got %S" line loaded);
       let json = Yojson.Safe.from_string loaded in
       expect_equal_string ~name:"old kind" "complete"
         (string_member "kind" json);
@@ -148,7 +169,7 @@ let test_pre_migration_events_jsonl_loads () =
         (string_member "result" json)
   | lines ->
       fail
-        (Printf.sprintf "expected one pre-migration line, got %d"
+        (Printf.sprintf "expected legacy plus appended line, got %d lines"
            (List.length lines))
 
 let () =

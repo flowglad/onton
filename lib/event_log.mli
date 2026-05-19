@@ -38,7 +38,9 @@ val log_complete :
   agent_before:Patch_agent.t ->
   agent_after:Patch_agent.t ->
   unit
-(** Log a session completion with before/after state. *)
+(** Log a session completion with before/after state. This facade receives only
+    [session_result], so it records a coarse subkind; richer backend-tail
+    classification is emitted by lower-level telemetry events. *)
 
 val log_force_complete :
   t ->
