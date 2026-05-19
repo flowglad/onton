@@ -44,10 +44,6 @@ val update_orchestrator_returning :
 val update_activity_log : t -> (Activity_log.t -> Activity_log.t) -> unit
 (** Convenience: update only the activity log. *)
 
-val activity_log : t -> Activity_log.t
-(** Return the current activity log object for process-lifetime telemetry sinks.
-*)
-
 val snapshot_unsync : t -> snapshot
 (** Read the snapshot without acquiring the mutex. Safe only when all fibers
     have terminated (e.g. in a [Fun.protect ~finally] cleanup block after
