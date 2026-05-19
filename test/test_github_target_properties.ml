@@ -3,12 +3,12 @@ open Onton_core
 
 (** Property + interleaving tests for {!Github_target}.
 
-    The functions under test are total and pure: validators consume any
-    string and never raise; [clone_url] is a string formatter; and
+    The functions under test are total and pure: validators consume any string
+    and never raise; [clone_url] is a string formatter; and
     [infer_owner_repo_from_url] is a parser. Properties pin down the rules
-    (regex consistency, totality, round-trip with [clone_url], idempotence
-    of [validate_target] on validated input) so future refactors don't
-    silently drift away from them. *)
+    (regex consistency, totality, round-trip with [clone_url], idempotence of
+    [validate_target] on validated input) so future refactors don't silently
+    drift away from them. *)
 
 (* ---------- Generators ---------- *)
 
@@ -18,7 +18,21 @@ open Onton_core
 let gen_ident_char =
   QCheck2.Gen.oneof_list
     [
-      'a'; 'b'; 'c'; 'z'; 'A'; 'Z'; '0'; '5'; '9'; '-'; '.'; '_'; ' '; '/'; ':';
+      'a';
+      'b';
+      'c';
+      'z';
+      'A';
+      'Z';
+      '0';
+      '5';
+      '9';
+      '-';
+      '.';
+      '_';
+      ' ';
+      '/';
+      ':';
       '&';
     ]
 
@@ -40,17 +54,55 @@ let gen_valid_owner =
   let first =
     oneof_list
       [
-        'a'; 'b'; 'c'; 'd'; 'e'; 'f'; 'g'; 'h'; 'i'; 'j'; 'k'; 'l'; 'm'; 'n';
-        'o'; 'p'; 'q'; 'r'; 's'; 't'; 'u'; 'v'; 'w'; 'x'; 'y'; 'z'; 'A'; 'B';
-        'C'; 'D'; 'E'; 'F'; 'G'; 'H'; '0'; '1'; '2'; '3'; '4'; '5'; '6'; '7';
-        '8'; '9';
+        'a';
+        'b';
+        'c';
+        'd';
+        'e';
+        'f';
+        'g';
+        'h';
+        'i';
+        'j';
+        'k';
+        'l';
+        'm';
+        'n';
+        'o';
+        'p';
+        'q';
+        'r';
+        's';
+        't';
+        'u';
+        'v';
+        'w';
+        'x';
+        'y';
+        'z';
+        'A';
+        'B';
+        'C';
+        'D';
+        'E';
+        'F';
+        'G';
+        'H';
+        '0';
+        '1';
+        '2';
+        '3';
+        '4';
+        '5';
+        '6';
+        '7';
+        '8';
+        '9';
       ]
   in
   let rest_char =
     oneof_list
-      [
-        'a'; 'b'; 'c'; 'd'; 'e'; 'z'; 'A'; 'M'; 'Z'; '0'; '1'; '5'; '9'; '-';
-      ]
+      [ 'a'; 'b'; 'c'; 'd'; 'e'; 'z'; 'A'; 'M'; 'Z'; '0'; '1'; '5'; '9'; '-' ]
   in
   let* len_minus_one = int_range 0 38 in
   let* head = first in
@@ -62,16 +114,44 @@ let gen_valid_repo =
   let first =
     oneof_list
       [
-        'a'; 'b'; 'c'; 'd'; 'e'; 'f'; 'g'; 'h'; 'i'; 'j'; 'k'; 'l'; 'm'; 'n';
-        'o'; 'p'; 'q'; 'r'; 's'; 't'; 'u'; 'v'; 'w'; 'x'; 'y'; 'z'; 'A'; 'B';
-        'M'; '0'; '1'; '5'; '9';
+        'a';
+        'b';
+        'c';
+        'd';
+        'e';
+        'f';
+        'g';
+        'h';
+        'i';
+        'j';
+        'k';
+        'l';
+        'm';
+        'n';
+        'o';
+        'p';
+        'q';
+        'r';
+        's';
+        't';
+        'u';
+        'v';
+        'w';
+        'x';
+        'y';
+        'z';
+        'A';
+        'B';
+        'M';
+        '0';
+        '1';
+        '5';
+        '9';
       ]
   in
   let rest_char =
     oneof_list
-      [
-        'a'; 'b'; 'c'; 'm'; 'z'; 'Q'; 'Z'; '0'; '5'; '9'; '-'; '.'; '_';
-      ]
+      [ 'a'; 'b'; 'c'; 'm'; 'z'; 'Q'; 'Z'; '0'; '5'; '9'; '-'; '.'; '_' ]
   in
   let* len_minus_one = int_range 0 99 in
   let* head = first in
@@ -82,14 +162,12 @@ let gen_valid_repo =
 
 let prop_validate_owner_total =
   QCheck2.Test.make ~name:"validate_owner: total on arbitrary input"
-    gen_arbitrary_string
-    (fun s ->
+    gen_arbitrary_string (fun s ->
       match Github_target.validate_owner s with Ok _ | Error _ -> true)
 
 let prop_validate_repo_total =
   QCheck2.Test.make ~name:"validate_repo: total on arbitrary input"
-    gen_arbitrary_string
-    (fun s ->
+    gen_arbitrary_string (fun s ->
       match Github_target.validate_repo s with Ok _ | Error _ -> true)
 
 let prop_validate_target_total =
@@ -101,8 +179,7 @@ let prop_validate_target_total =
 
 let prop_infer_url_total =
   QCheck2.Test.make ~name:"infer_owner_repo_from_url: total on arbitrary input"
-    gen_arbitrary_string
-    (fun s ->
+    gen_arbitrary_string (fun s ->
       match Github_target.infer_owner_repo_from_url s with
       | Some _ | None -> true)
 
@@ -117,32 +194,29 @@ let prop_clone_url_total =
 
 let prop_valid_owner_accepted =
   QCheck2.Test.make ~name:"validate_owner: accepts every valid handle shape"
-    gen_valid_owner
-    (fun s -> Result.is_ok (Github_target.validate_owner s))
+    gen_valid_owner (fun s -> Result.is_ok (Github_target.validate_owner s))
 
 let prop_valid_repo_accepted =
   QCheck2.Test.make ~name:"validate_repo: accepts every valid repo shape"
-    gen_valid_repo
-    (fun s -> Result.is_ok (Github_target.validate_repo s))
+    gen_valid_repo (fun s -> Result.is_ok (Github_target.validate_repo s))
 
 (* ---------- Rejection properties: structural negatives ---------- *)
 
 let prop_empty_owner_rejected =
-  QCheck2.Test.make ~name:"validate_owner: rejects whitespace-only" QCheck2.Gen.unit
-    (fun () ->
+  QCheck2.Test.make ~name:"validate_owner: rejects whitespace-only"
+    QCheck2.Gen.unit (fun () ->
       Result.is_error (Github_target.validate_owner "")
       && Result.is_error (Github_target.validate_owner "   ")
       && Result.is_error (Github_target.validate_owner "\t\n "))
 
 let prop_empty_repo_rejected =
-  QCheck2.Test.make ~name:"validate_repo: rejects whitespace-only" QCheck2.Gen.unit
-    (fun () ->
+  QCheck2.Test.make ~name:"validate_repo: rejects whitespace-only"
+    QCheck2.Gen.unit (fun () ->
       Result.is_error (Github_target.validate_repo "")
       && Result.is_error (Github_target.validate_repo "   "))
 
 let prop_owner_with_slash_rejected =
-  QCheck2.Test.make
-    ~name:"validate_owner: rejects any handle containing '/'"
+  QCheck2.Test.make ~name:"validate_owner: rejects any handle containing '/'"
     QCheck2.Gen.(triple gen_valid_owner gen_valid_owner (int_range 1 5))
     (fun (a, b, n) ->
       let s = a ^ String.make n '/' ^ b in
@@ -157,16 +231,14 @@ let prop_owner_with_space_rejected =
       Result.is_error (Github_target.validate_owner s))
 
 let prop_owner_too_long_rejected =
-  QCheck2.Test.make
-    ~name:"validate_owner: rejects strings longer than 39 chars"
+  QCheck2.Test.make ~name:"validate_owner: rejects strings longer than 39 chars"
     QCheck2.Gen.(int_range 40 200)
     (fun n ->
       let s = String.make n 'a' in
       Result.is_error (Github_target.validate_owner s))
 
 let prop_repo_too_long_rejected =
-  QCheck2.Test.make
-    ~name:"validate_repo: rejects strings longer than 100 chars"
+  QCheck2.Test.make ~name:"validate_repo: rejects strings longer than 100 chars"
     QCheck2.Gen.(int_range 101 300)
     (fun n ->
       let s = String.make n 'a' in
@@ -254,9 +326,7 @@ let prop_validate_target_idempotent =
       | Ok () -> (
           let owner' = String.strip owner in
           let repo' = String.strip repo in
-          match
-            Github_target.validate_target ~owner:owner' ~repo:repo'
-          with
+          match Github_target.validate_target ~owner:owner' ~repo:repo' with
           | Ok () -> true
           | Error _ -> false)
       | Error _ -> false)

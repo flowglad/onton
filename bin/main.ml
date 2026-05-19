@@ -101,8 +101,9 @@ let format_git_failure { stdout; stderr; _ } =
   if Base.String.is_empty detail then "no output" else detail
 
 (** Infer the forge owner/repo from [git remote get-url origin] in [repo_root].
-    Delegates URL parsing to {!Onton_core.Github_target.infer_owner_repo_from_url}
-    so the regex that pins the host stays in the forge module. *)
+    Delegates URL parsing to
+    {!Onton_core.Github_target.infer_owner_repo_from_url} so the regex that pins
+    the host stays in the forge module. *)
 let infer_owner_repo ~repo_root =
   try
     match run_git_capture ~repo_root [ "remote"; "get-url"; "origin" ] with
@@ -137,18 +138,16 @@ let run_git_no_cwd args =
           status := Some s;
           Some { status = s; stdout; stderr })
 
-(** Clone [owner/repo] from GitHub into [target_dir] (which must not exist
-    yet). Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS]
-    helper, so [Git_env.set_github_token] must have been called first if the
-    repo is private. Uses [--filter=blob:none] for a partial clone — only
-    fetched objects are downloaded lazily, which is the right tradeoff for
-    onton's worktree-per-patch usage pattern. *)
+(** Clone [owner/repo] from GitHub into [target_dir] (which must not exist yet).
+    Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper, so
+    [Git_env.set_github_token] must have been called first if the repo is
+    private. Uses [--filter=blob:none] for a partial clone — only fetched
+    objects are downloaded lazily, which is the right tradeoff for onton's
+    worktree-per-patch usage pattern. *)
 let clone_managed_repo ~owner ~repo ~target_dir =
   Project_store.ensure_dir (Stdlib.Filename.dirname target_dir);
   let url = Github_target.clone_url ~owner ~repo in
-  match
-    run_git_no_cwd [ "clone"; "--filter=blob:none"; url; target_dir ]
-  with
+  match run_git_no_cwd [ "clone"; "--filter=blob:none"; url; target_dir ] with
   | Some { status = Unix.WEXITED 0; _ } -> Ok ()
   | Some ({ status = Unix.WEXITED _; _ } as cap)
   | Some ({ status = Unix.WSIGNALED _; _ } as cap)
@@ -158,8 +157,8 @@ let clone_managed_repo ~owner ~repo ~target_dir =
            (format_git_failure cap))
   | None -> Error (Printf.sprintf "git clone %s/%s: could not spawn" owner repo)
 
-(** Fetch the [origin] remote in an existing onton-managed repo. Best-effort —
-    a network-down resume should not fail the whole session. *)
+(** Fetch the [origin] remote in an existing onton-managed repo. Best-effort — a
+    network-down resume should not fail the whole session. *)
 let fetch_managed_repo ~repo_root =
   match run_git_capture ~repo_root [ "fetch"; "--prune"; "origin" ] with
   | Some { status = Unix.WEXITED 0; _ } -> Ok ()
@@ -180,7 +179,7 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
   if
     Stdlib.Sys.file_exists repo_root
     && Stdlib.Sys.is_directory (Stdlib.Filename.concat repo_root ".git")
-  then
+  then (
     match fetch_managed_repo ~repo_root with
     | Ok () -> Ok repo_root
     | Error msg ->
@@ -188,7 +187,7 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
            local clone may already have everything they need. *)
         Printf.eprintf
           "onton: warning: %s (continuing with existing local clone)\n%!" msg;
-        Ok repo_root
+        Ok repo_root)
   else
     match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
     | Ok () -> Ok repo_root
@@ -3911,9 +3910,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
               Some
                 (Printf.sprintf
                    "Gameplan %s is missing required top-level `owner` and/or \
-                    `repo`. Every gameplan must declare exactly one \
-                    repository — see skills/write-gameplan/SKILL.md §\"One \
-                    Repo Per Gameplan\"."
+                    `repo`. Every gameplan must declare exactly one repository \
+                    — see skills/write-gameplan/SKILL.md §\"One Repo Per \
+                    Gameplan\"."
                    gp_path)
             else
               match Github_target.validate_target ~owner ~repo with
@@ -3927,58 +3926,56 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           match target_error with
           | Some msg -> Error [ msg ]
           | None -> (
-            (* [--repo] is ignored when [--gameplan] is passed: the gameplan
+              (* [--repo] is ignored when [--gameplan] is passed: the gameplan
                itself is the source of truth for which repo to operate on, and
                onton manages its own checkout under the project data dir. *)
-            (match repo_root with
-            | Some user_repo when not (Base.String.is_empty user_repo) ->
-                Printf.eprintf
-                  "onton: --repo %s ignored when --gameplan is set; using \
-                   onton-managed checkout for %s/%s\n\
-                   %!"
-                  user_repo owner repo
-            | _ -> ());
-            let token =
-              let t = Base.String.strip github_token in
-              if Base.String.is_empty t then infer_github_token () else t
-            in
-            match
-              ensure_managed_repo ~project_name ~token ~owner ~repo
-            with
-            | Error msg ->
-                Error
-                  [
-                    Printf.sprintf
-                      "Could not prepare onton-managed checkout for %s/%s: %s"
-                      owner repo msg;
-                  ]
-            | Ok repo_root ->
-                let backend, model = resolve_backend_model ~backend ~model in
-                let main_branch = resolve_branch ~repo_root main_branch in
-                Project_store.save_config ~project_name ~github_token:token
-                  ~github_owner:owner ~github_repo:repo ~backend ~model
-                  ~main_branch:(Branch.to_string main_branch)
-                  ~poll_interval ~repo_root ~max_concurrency;
-                Project_store.save_gameplan_source ~project_name
-                  ~source_path:gp_path;
-                let config =
-                  {
-                    project = Some project_name;
-                    backend;
-                    model;
-                    github_token = token;
-                    github_owner = owner;
-                    github_repo = repo;
-                    main_branch;
-                    poll_interval;
-                    repo_root;
-                    max_concurrency;
-                    headless;
-                    user_config =
-                      User_config.load ~github_owner:owner ~github_repo:repo;
-                  }
-                in
-                with_snapshot_load ~project_name config gameplan)))
+              (match repo_root with
+              | Some user_repo when not (Base.String.is_empty user_repo) ->
+                  Printf.eprintf
+                    "onton: --repo %s ignored when --gameplan is set; using \
+                     onton-managed checkout for %s/%s\n\
+                     %!"
+                    user_repo owner repo
+              | _ -> ());
+              let token =
+                let t = Base.String.strip github_token in
+                if Base.String.is_empty t then infer_github_token () else t
+              in
+              match ensure_managed_repo ~project_name ~token ~owner ~repo with
+              | Error msg ->
+                  Error
+                    [
+                      Printf.sprintf
+                        "Could not prepare onton-managed checkout for %s/%s: %s"
+                        owner repo msg;
+                    ]
+              | Ok repo_root ->
+                  let backend, model = resolve_backend_model ~backend ~model in
+                  let main_branch = resolve_branch ~repo_root main_branch in
+                  Project_store.save_config ~project_name ~github_token:token
+                    ~github_owner:owner ~github_repo:repo ~backend ~model
+                    ~main_branch:(Branch.to_string main_branch)
+                    ~poll_interval ~repo_root ~max_concurrency;
+                  Project_store.save_gameplan_source ~project_name
+                    ~source_path:gp_path;
+                  let config =
+                    {
+                      project = Some project_name;
+                      backend;
+                      model;
+                      github_token = token;
+                      github_owner = owner;
+                      github_repo = repo;
+                      main_branch;
+                      poll_interval;
+                      repo_root;
+                      max_concurrency;
+                      headless;
+                      user_config =
+                        User_config.load ~github_owner:owner ~github_repo:repo;
+                    }
+                  in
+                  with_snapshot_load ~project_name config gameplan)))
   | Some proj, None -> (
       if not (Project_store.project_exists proj) then
         Error
@@ -4058,9 +4055,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                   (* If the stored repo_root is the onton-managed checkout for
                      this project, refresh it from origin before continuing.
                      Best-effort: an offline resume should still proceed. *)
-                  (if String.equal repo_root
+                  (if
+                     String.equal repo_root
                        (Project_store.managed_repo_dir proj)
-                  then
+                   then
                      match
                        ensure_managed_repo ~project_name:proj ~token ~owner
                          ~repo

@@ -942,7 +942,8 @@ let%test_module "Gameplan_parser" =
           String.equal result.gameplan.repo_owner "flowglad"
           && String.equal result.gameplan.repo_name "onton"
 
-    let%test "parse_json_string: missing owner/repo defaults to empty (legacy)" =
+    let%test "parse_json_string: missing owner/repo defaults to empty (legacy)"
+        =
       let input =
         {|{
           "projectName": "p",
@@ -957,8 +958,9 @@ let%test_module "Gameplan_parser" =
           String.is_empty result.gameplan.repo_owner
           && String.is_empty result.gameplan.repo_name
 
-    let%test "parse_json_string: owner accepts any non-empty string \
-              (forge-specific validation lives in the forge backend)" =
+    let%test
+        "parse_json_string: owner accepts any non-empty string (forge-specific \
+         validation lives in the forge backend)" =
       let input =
         {|{
           "projectName": "p",

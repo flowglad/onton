@@ -1,10 +1,7 @@
 open Base
 
-let owner_re =
-  Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9-]{0,38}$|} |> Re.compile
-
-let repo_re =
-  Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$|} |> Re.compile
+let owner_re = Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9-]{0,38}$|} |> Re.compile
+let repo_re = Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$|} |> Re.compile
 
 let remote_url_re =
   Re.Pcre.re {|github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?/?$|} |> Re.compile
@@ -58,11 +55,8 @@ let%test "validate_owner rejects leading dash" =
 let%test "validate_owner rejects slash" =
   Result.is_error (validate_owner "foo/bar")
 
-let%test "validate_owner rejects empty" =
-  Result.is_error (validate_owner "")
-
-let%test "validate_repo accepts onton" =
-  Result.is_ok (validate_repo "onton")
+let%test "validate_owner rejects empty" = Result.is_error (validate_owner "")
+let%test "validate_repo accepts onton" = Result.is_ok (validate_repo "onton")
 
 let%test "validate_repo accepts dots and dashes" =
   Result.is_ok (validate_repo "my.repo-name_v2")
