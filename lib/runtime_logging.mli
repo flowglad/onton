@@ -1,7 +1,6 @@
-(** Tiny convenience wrappers around [Runtime.update_activity_log] for the two
-    most common log-line shapes. Both stamp [Unix.gettimeofday ()] internally so
-    callers don't need to thread a clock just to drop a line into the activity
-    log. *)
+(** Tiny convenience wrappers around [Telemetry.emit] for the two most common
+    activity-log shapes. The [Runtime.t] argument is retained so callers do not
+    need to know that activity logging is routed through Telemetry sinks. *)
 
 val log_event : Runtime.t -> ?patch_id:Types.Patch_id.t -> string -> unit
 (** Append a free-form event message. [patch_id] is optional because some events

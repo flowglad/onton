@@ -40,95 +40,204 @@ let write_entry t (json : Yojson.Safe.t) =
   with Sys_error _ | Unix.Unix_error _ -> ()
 
 let patch_id_json pid = Patch_id.yojson_of_t pid
+let string_list_json strings = `List (List.map strings ~f:(fun s -> `String s))
 
-let log_poll t ~patch_id ~poll_result ~agent_before ~agent_after ~logs =
+let assoc_fields = function
+  | `Assoc fields -> fields
+  | payload -> [ ("payload", payload) ]
+
+let field_string fields name =
+  List.find_map fields ~f:(function
+    | key, `String value when String.equal key name -> Some value
+    | _ -> None)
+
+let drop_internal_fields fields =
+  List.filter fields ~f:(fun (key, _) ->
+      not (String.equal key "event_log_kind"))
+
+let entry ?kind_override t ~default_kind ~patch_id ~payload extra =
+  let payload_fields = assoc_fields payload in
+  let kind =
+    match kind_override with
+    | Some kind -> kind
+    | None ->
+        Option.value
+          (field_string payload_fields "event_log_kind")
+          ~default:default_kind
+  in
   write_entry t
     (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "poll");
-         ("patch_id", patch_id_json patch_id);
-         ("poll_result", poll_json poll_result);
-         ("agent_before", agent_json agent_before);
-         ("agent_after", agent_json agent_after);
-         ("logs", `List (List.map logs ~f:(fun s -> `String s)));
-       ])
+       ([ ("ts", `String (timestamp ())); ("kind", `String kind) ]
+       @ (match patch_id with
+         | Some patch_id -> [ ("patch_id", patch_id_json patch_id) ]
+         | None -> [])
+       @ extra
+       @ drop_internal_fields payload_fields))
+
+let interested_in = function
+  | Telemetry.Event.Poll _ | Action _ | Complete _ | Free_form _ -> true
+  | Stream _ | Spawn_started _ | Spawn_finalized _ -> false
+
+let sink t =
+  {
+    Telemetry.Sink.name = "event_log";
+    interested_in;
+    consume =
+      (function
+      | Telemetry.Event.Poll { patch_id; payload } ->
+          entry t ~default_kind:"poll" ~patch_id:(Some patch_id) ~payload []
+      | Action { patch_id; session_uuid; payload } ->
+          let extra =
+            match session_uuid with
+            | Some uuid -> [ ("onton_session_uuid", `String uuid) ]
+            | None -> []
+          in
+          entry t ~default_kind:"action" ~patch_id:(Some patch_id) ~payload
+            extra
+      | Complete { patch_id; session_uuid; subkind; payload } ->
+          let extra =
+            (match session_uuid with
+              | Some uuid -> [ ("onton_session_uuid", `String uuid) ]
+              | None -> [])
+            @ [ ("subkind", Failure_subkind.yojson_of_t subkind) ]
+          in
+          entry t ~default_kind:"complete" ~patch_id:(Some patch_id) ~payload
+            extra
+      | Free_form { patch_id; level; message } ->
+          entry t ~default_kind:"free_form" ~patch_id
+            ~payload:
+              (`Assoc
+                 [
+                   ("level", Telemetry.Event.yojson_of_level level);
+                   ("message", `String message);
+                 ])
+            []
+      | Stream _ | Spawn_started _ | Spawn_finalized _ -> ());
+  }
+
+let log_poll t ~patch_id ~poll_result ~agent_before ~agent_after ~logs =
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Poll
+       {
+         patch_id;
+         payload =
+           `Assoc
+             [
+               ("poll_result", poll_json poll_result);
+               ("agent_before", agent_json agent_before);
+               ("agent_after", agent_json agent_after);
+               ("logs", string_list_json logs);
+             ];
+       })
 
 let action_patch_id (action : Orchestrator.action) =
   match action with Start (pid, _) | Respond (pid, _) | Rebase (pid, _) -> pid
 
 let log_action t ~action ~agent_before =
-  write_entry t
-    (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "action");
-         ("patch_id", patch_id_json (action_patch_id action));
-         ("action", `String (Orchestrator.show_action action));
-         ("agent_before", agent_json agent_before);
-       ])
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Action
+       {
+         patch_id = action_patch_id action;
+         session_uuid = None;
+         payload =
+           `Assoc
+             [
+               ("action", `String (Orchestrator.show_action action));
+               ("agent_before", agent_json agent_before);
+             ];
+       })
 
 let log_complete t ~patch_id ~result ~agent_before ~agent_after =
-  write_entry t
-    (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "complete");
-         ("patch_id", patch_id_json patch_id);
-         ("result", `String (Orchestrator.show_session_result result));
-         ("agent_before", agent_json agent_before);
-         ("agent_after", agent_json agent_after);
-       ])
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Complete
+       {
+         patch_id;
+         session_uuid = None;
+         subkind = Failure_subkind.Other "complete";
+         payload =
+           `Assoc
+             [
+               ("result", `String (Orchestrator.show_session_result result));
+               ("agent_before", agent_json agent_before);
+               ("agent_after", agent_json agent_after);
+             ];
+       })
 
 let log_force_complete t ~patch_id ~reason ~agent_before ~agent_after =
-  write_entry t
-    (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "force_complete");
-         ("patch_id", patch_id_json patch_id);
-         ("reason", `String (Orchestrator.show_force_complete_reason reason));
-         ("agent_before", agent_json agent_before);
-         ("agent_after", agent_json agent_after);
-       ])
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Complete
+       {
+         patch_id;
+         session_uuid = None;
+         subkind = Failure_subkind.Process_error;
+         payload =
+           `Assoc
+             [
+               ("event_log_kind", `String "force_complete");
+               ( "reason",
+                 `String (Orchestrator.show_force_complete_reason reason) );
+               ("agent_before", agent_json agent_before);
+               ("agent_after", agent_json agent_after);
+             ];
+       })
 
 let log_conflict_rebase t ~patch_id ~result ~decision ~agent_before ~agent_after
     =
-  write_entry t
-    (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "conflict_rebase");
-         ("patch_id", patch_id_json patch_id);
-         ("result", `String (Worktree.show_rebase_result result));
-         ( "decision",
-           `String (Orchestrator.show_conflict_rebase_decision decision) );
-         ("agent_before", agent_json agent_before);
-         ("agent_after", agent_json agent_after);
-       ])
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Action
+       {
+         patch_id;
+         session_uuid = None;
+         payload =
+           `Assoc
+             [
+               ("event_log_kind", `String "conflict_rebase");
+               ("result", `String (Worktree.show_rebase_result result));
+               ( "decision",
+                 `String (Orchestrator.show_conflict_rebase_decision decision)
+               );
+               ("agent_before", agent_json agent_before);
+               ("agent_after", agent_json agent_after);
+             ];
+       })
 
 let log_conflict_delivery t ~patch_id ~path ~rebase_in_progress ~git_status
     ~git_diff =
-  write_entry t
-    (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "conflict_delivery");
-         ("patch_id", patch_id_json patch_id);
-         ("path", `String path);
-         ("rebase_in_progress", `Bool rebase_in_progress);
-         ("git_status", `String git_status);
-         ("git_diff_len", `Int (String.length git_diff));
-       ])
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Action
+       {
+         patch_id;
+         session_uuid = None;
+         payload =
+           `Assoc
+             [
+               ("event_log_kind", `String "conflict_delivery");
+               ("path", `String path);
+               ("rebase_in_progress", `Bool rebase_in_progress);
+               ("git_status", `String git_status);
+               ("git_diff_len", `Int (String.length git_diff));
+             ];
+       })
 
 let log_rebase t ~patch_id ~result ~agent_before ~agent_after =
-  write_entry t
-    (`Assoc
-       [
-         ("ts", `String (timestamp ()));
-         ("kind", `String "rebase");
-         ("patch_id", patch_id_json patch_id);
-         ("result", `String (Worktree.show_rebase_result result));
-         ("agent_before", agent_json agent_before);
-         ("agent_after", agent_json agent_after);
-       ])
+  ignore t;
+  Telemetry.emit
+    (Telemetry.Event.Action
+       {
+         patch_id;
+         session_uuid = None;
+         payload =
+           `Assoc
+             [
+               ("event_log_kind", `String "rebase");
+               ("result", `String (Worktree.show_rebase_result result));
+               ("agent_before", agent_json agent_before);
+               ("agent_after", agent_json agent_after);
+             ];
+       })

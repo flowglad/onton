@@ -84,3 +84,6 @@ val trim : t -> max:int -> t
 (** Truncate transitions, events, and stream entries to at most [max] entries,
     keeping the most recent. Use periodically to bound memory in long-running
     sessions. *)
+
+val activity_log_sink : log:t -> unit -> Telemetry.Sink.t
+(** Telemetry sink that appends free-form events and stream entries to [log]. *)

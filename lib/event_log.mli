@@ -13,6 +13,9 @@ val create : path:string -> t
 (** Create an event log that appends to the given file path. If the file exceeds
     50 MB, it is rotated to [path.1] before returning. *)
 
+val sink : t -> Telemetry.Sink.t
+(** Telemetry sink that appends interested events to this JSONL log. *)
+
 val log_poll :
   t ->
   patch_id:Patch_id.t ->

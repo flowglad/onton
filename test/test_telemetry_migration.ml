@@ -1,0 +1,145 @@
+open Base
+open Onton_core
+
+let fail msg = Stdlib.failwith msg
+
+let temp_path name =
+  let path = Stdlib.Filename.temp_file name ".jsonl" in
+  Stdlib.Sys.remove path;
+  path
+
+let read_lines path =
+  let ic = Stdlib.open_in path in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_in_noerr ic)
+    (fun () ->
+      let rec loop acc =
+        match Stdlib.input_line ic with
+        | line -> loop (line :: acc)
+        | exception End_of_file -> List.rev acc
+      in
+      loop [])
+
+let json_member name json = Yojson.Safe.Util.member name json
+
+let string_member name json =
+  match json_member name json with
+  | `String value -> value
+  | _ -> fail ("missing string field " ^ name)
+
+let expect_equal_string ~name expected actual =
+  if not (String.equal expected actual) then
+    fail (Printf.sprintf "%s: expected %S, got %S" name expected actual)
+
+let test_event_log_complete () =
+  let path = temp_path "onton-event-log" in
+  let event_log = Onton.Event_log.create ~path in
+  let patch_id = Types.Patch_id.of_string "patch-5" in
+  Telemetry.with_sink ~sink:(Onton.Event_log.sink event_log) (fun () ->
+      Telemetry.emit
+        (Telemetry.Event.Complete
+           {
+             patch_id;
+             session_uuid = Some "session-uuid";
+             subkind = Failure_subkind.Other "test";
+             payload =
+               `Assoc
+                 [
+                   ("result", `String "Session_failed");
+                   ("agent_before", `Assoc []);
+                   ("agent_after", `Assoc []);
+                 ];
+           }));
+  match read_lines path with
+  | [ line ] ->
+      let json = Yojson.Safe.from_string line in
+      expect_equal_string ~name:"kind" "complete" (string_member "kind" json);
+      expect_equal_string ~name:"patch_id" "patch-5"
+        (string_member "patch_id" json);
+      expect_equal_string ~name:"result" "Session_failed"
+        (string_member "result" json);
+      expect_equal_string ~name:"onton_session_uuid" "session-uuid"
+        (string_member "onton_session_uuid" json);
+      ignore (json_member "ts" json : Yojson.Safe.t);
+      ignore (json_member "subkind" json : Yojson.Safe.t)
+  | lines ->
+      fail
+        (Printf.sprintf "expected one events.jsonl line, got %d"
+           (List.length lines))
+
+let test_activity_log_free_form () =
+  let log = Activity_log.empty in
+  let patch_id = Types.Patch_id.of_string "patch-5" in
+  Telemetry.with_sink ~sink:(Activity_log.activity_log_sink ~log ()) (fun () ->
+      Telemetry.emit
+        (Telemetry.Event.Free_form
+           {
+             patch_id = Some patch_id;
+             level = Telemetry.Event.Info;
+             message = "hello";
+           }));
+  match Activity_log.recent_events log ~limit:1 with
+  | [ event ] ->
+      expect_equal_string ~name:"message" "hello"
+        event.Activity_log.Event.message
+  | events ->
+      fail
+        (Printf.sprintf "expected one activity event, got %d"
+           (List.length events))
+
+let test_activity_log_stream () =
+  let log = Activity_log.empty in
+  let patch_id = Types.Patch_id.of_string "patch-5" in
+  Telemetry.with_sink ~sink:(Activity_log.activity_log_sink ~log ()) (fun () ->
+      Telemetry.emit
+        (Telemetry.Event.Stream
+           {
+             patch_id;
+             session_uuid = "session-uuid";
+             channel = `Stdout;
+             raw = "chunk";
+           }));
+  match Activity_log.recent_stream_entries log ~limit:1 with
+  | [ entry ] -> (
+      match entry.Activity_log.Stream_entry.kind with
+      | Activity_log.Stream_entry.Text_chunk "chunk" -> ()
+      | Activity_log.Stream_entry.Text_chunk _
+      | Activity_log.Stream_entry.Tool_use _
+      | Activity_log.Stream_entry.Finished _
+      | Activity_log.Stream_entry.Stream_error _ ->
+          fail
+            (Printf.sprintf "unexpected stream entry %s"
+               (Activity_log.Stream_entry.show entry)))
+  | entries ->
+      fail
+        (Printf.sprintf "expected one stream entry, got %d"
+           (List.length entries))
+
+let test_pre_migration_events_jsonl_loads () =
+  let line =
+    {|{"ts":"2026-05-19T00:00:00Z","kind":"complete","patch_id":"patch-5","result":"Session_succeeded","agent_before":{},"agent_after":{}}|}
+  in
+  let path = temp_path "onton-old-event-log" in
+  let oc = Stdlib.open_out path in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_out_noerr oc)
+    (fun () ->
+      Stdlib.output_string oc line;
+      Stdlib.output_char oc '\n');
+  match read_lines path with
+  | [ loaded ] ->
+      let json = Yojson.Safe.from_string loaded in
+      expect_equal_string ~name:"old kind" "complete"
+        (string_member "kind" json);
+      expect_equal_string ~name:"old result" "Session_succeeded"
+        (string_member "result" json)
+  | lines ->
+      fail
+        (Printf.sprintf "expected one pre-migration line, got %d"
+           (List.length lines))
+
+let () =
+  test_event_log_complete ();
+  test_activity_log_free_form ();
+  test_activity_log_stream ();
+  test_pre_migration_events_jsonl_loads ()

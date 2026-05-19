@@ -277,3 +277,8 @@
  (name test_rlimit)
  (modules test_rlimit)
  (libraries onton onton_core))
+
+(test
+ (name test_telemetry_migration)
+ (modules test_telemetry_migration)
+ (libraries onton onton_core unix))
