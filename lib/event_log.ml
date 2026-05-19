@@ -87,7 +87,11 @@ let failure_subkind_of_session_result (result : Orchestrator.session_result) =
   | Session_failed { detail = Some detail; _ }
     when String.is_empty detail || String.equal detail "(no error details)" ->
       Failure_subkind.Empty_response
-  | Session_failed { detail = Some detail; _ } -> Failure_subkind.Other detail
+  | Session_failed { detail = Some _; _ } ->
+      (* This facade does not receive the init/stdout/stderr tails needed for
+         detailed Failure_subkind.classify_session_failed classification.
+         Keep the subkind structured and put raw detail only in the payload. *)
+      Failure_subkind.Other "session_failed"
   | Session_give_up -> Failure_subkind.Other "session_give_up"
   | Session_worktree_missing -> Failure_subkind.Process_error
   | Session_push_failed -> Failure_subkind.Process_error
