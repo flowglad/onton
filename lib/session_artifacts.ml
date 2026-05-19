@@ -46,13 +46,6 @@ let write_text_file ~path ~content =
 let join_lines lines =
   match lines with [] -> "" | _ -> String.concat ~sep:"\n" lines ^ "\n"
 
-let redact_env_entry entry =
-  match String.lsplit2 entry ~on:'=' with
-  | None -> Token_scrub.scrub_token_patterns entry
-  | Some (name, value) ->
-      let redacted = Token_scrub.redact_env_value_by_name ~name ~value in
-      name ^ "=" ^ redacted
-
 let event_session_uuid = function
   | Telemetry.Event.Stream { session_uuid; _ } -> session_uuid
   | Spawn_started { session_uuid; _ } | Spawn_finalized { session_uuid; _ } ->
@@ -86,10 +79,7 @@ let create ~project_name ~patch_id:_ ~session_uuid =
       ~content:(join_lines argv);
     write_text_file
       ~path:(Stdlib.Filename.concat artifact_dir "env.txt")
-      ~content:
-        (env_redacted |> Array.to_list
-        |> List.map ~f:redact_env_entry
-        |> join_lines)
+      ~content:(env_redacted |> Array.to_list |> join_lines)
   in
   let write_finalized ~meta =
     (match
@@ -278,7 +268,7 @@ let%test "interested_in returns false for events with different session_uuid" =
        (sink.interested_in
           (spawn_finalized_event ~patch_id ~session_uuid:"other"))
 
-let%test "env redaction masks values for sensitive names and token formats" =
+let%test "env writer preserves pre-redacted entries" =
   with_temp_data_dir @@ fun () ->
   let project_name = "Session Artifact Env" in
   let patch_id = Types.Patch_id.of_string "patch-4" in
@@ -288,8 +278,8 @@ let%test "env redaction masks values for sensitive names and token formats" =
     (spawn_started_event ~patch_id ~session_uuid
        ~env_redacted:
          [|
-           "ANTHROPIC_API_KEY=plain-secret";
-           "SAFE_NAME=ghp_abcdef123";
+           "ANTHROPIC_API_KEY=<REDACTED>";
+           "SAFE_NAME=<REDACTED>";
            "NORMAL=value";
          |]);
   sink.consume (spawn_finalized_event ~patch_id ~session_uuid);
@@ -304,5 +294,3 @@ let%test "env redaction masks values for sensitive names and token formats" =
   String.is_substring env_text ~substring:"ANTHROPIC_API_KEY=<REDACTED>"
   && String.is_substring env_text ~substring:"SAFE_NAME=<REDACTED>"
   && String.is_substring env_text ~substring:"NORMAL=value"
-  && (not (String.is_substring env_text ~substring:"plain-secret"))
-  && not (String.is_substring env_text ~substring:"ghp_abcdef123")
