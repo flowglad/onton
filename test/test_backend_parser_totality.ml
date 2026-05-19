@@ -69,6 +69,33 @@ let totality ~name f =
         true
       with _ -> false)
 
+let strip_ansi_does_not_grow =
+  QCheck2.Test.make ~name:"claude strip_ansi does not grow output" ~count:1000
+    gen_string (fun line ->
+      try
+        String.length (Claude_event_parser.strip_ansi line)
+        <= String.length line
+      with _ -> false)
+
+let strip_ansi_removes_stray_controls =
+  QCheck2.Test.make ~name:"claude strip_ansi removes stray controls" ~count:1000
+    gen_string (fun line ->
+      try
+        Claude_event_parser.strip_ansi line
+        |> String.for_all ~f:(fun c ->
+            match Char.to_int c with
+            | 0x09 | 0x0a | 0x1b -> true
+            | n -> n > 0x1f)
+      with _ -> false)
+
+let strip_ansi_known_sequences =
+  QCheck2.Test.make ~name:"claude strip_ansi removes known ANSI sequences"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      let raw =
+        "\x1b[31mred\x1b[0m\r\n\x00plain\t\x1b]0;title\x07body\x1b(0x"
+      in
+      String.equal (Claude_event_parser.strip_ansi raw) "red\nplain\tbody")
+
 (* ─────────────────────────────────────────────────────────────────────────
    Tests
    ───────────────────────────────────────────────────────────────────────── *)
@@ -95,6 +122,9 @@ let () =
       totality ~name:"claude parse_stream_events total" claude_events;
       totality ~name:"claude strip_ansi total" claude_strip;
       totality ~name:"claude find_json_start total" claude_find_json;
+      strip_ansi_does_not_grow;
+      strip_ansi_removes_stray_controls;
+      strip_ansi_known_sequences;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

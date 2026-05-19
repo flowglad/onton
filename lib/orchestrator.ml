@@ -651,7 +651,12 @@ let apply_session_result t patch_id result =
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
       complete_failed t patch_id
   | Session_no_resume ->
-      let t = on_session_failure t patch_id ~is_fresh:false in
+      (* A resume that produced zero events ("No conversation found with
+         session ID …" against a stub .jsonl) is observationally equivalent
+         to "we never spoke to the LLM" — do NOT escalate the retry-budget
+         ladder.  Clearing [llm_session_id] forces the next iteration to
+         Fresh ([session_mode]), and a Fresh attempt can never produce
+         [Session_no_resume] (classifier requires [is_resume]), so no loop. *)
       let t =
         update_agent t patch_id ~f:(fun a ->
             Patch_agent.set_llm_session_id a None)

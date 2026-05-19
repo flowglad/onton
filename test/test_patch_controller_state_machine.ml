@@ -499,12 +499,14 @@ let () =
             Orchestrator.apply_session_result orch pid
               Orchestrator.Session_no_resume
           in
-          (* Assert session_id cleared and fallback is Tried_fresh *)
+          (* Assert session_id cleared.  Fallback must remain
+             [Fresh_available]: a stub-resume that produced zero events did
+             not consume retry budget (Fix 1). *)
           let agent = Orchestrator.agent orch pid in
           Option.is_none agent.Patch_agent.llm_session_id
           && Onton_core.Patch_agent.equal_session_fallback
                agent.Patch_agent.session_fallback
-               Onton_core.Patch_agent.Tried_fresh
+               Onton_core.Patch_agent.Fresh_available
         with _ -> false
         end)
   in
