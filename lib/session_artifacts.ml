@@ -86,9 +86,14 @@ let create ~project_name ~patch_id:_ ~session_uuid =
         |> join_lines)
   in
   let write_finalized ~meta =
-    ignore
-      (Persistence.write_file_atomically ~path:meta_path
-         ~content:(Yojson.Safe.pretty_to_string meta));
+    (match
+       Persistence.write_file_atomically ~path:meta_path
+         ~content:(Yojson.Safe.pretty_to_string meta)
+     with
+    | Ok () -> ()
+    | Error msg ->
+        Stdlib.prerr_endline
+          ("session_artifacts: failed to write " ^ meta_path ^ ": " ^ msg));
     close_file stdout_file;
     close_file stderr_file
   in
