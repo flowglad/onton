@@ -61,8 +61,9 @@ let init_info_of_yojson json =
   let open Yojson.Safe.Util in
   let read_opt_string field =
     match member field json with
+    | `String s -> Some s
     | `Null -> None
-    | value -> to_string_option value
+    | _ -> None
   in
   {
     api_key_source = read_opt_string "api_key_source";
