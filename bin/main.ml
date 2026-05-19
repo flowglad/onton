@@ -224,11 +224,18 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
   Git_env.set_github_token token;
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
+  let repo_root_exists = Stdlib.Sys.file_exists repo_root in
   let has_git_dir =
     try Stdlib.Sys.file_exists git_dir && Stdlib.Sys.is_directory git_dir
     with _ -> false
   in
-  if Stdlib.Sys.file_exists repo_root && has_git_dir then (
+  let repo_root_is_dir =
+    try Stdlib.Sys.is_directory repo_root with _ -> false
+  in
+  let repo_root_is_empty =
+    try Array.length (Stdlib.Sys.readdir repo_root) = 0 with _ -> false
+  in
+  if repo_root_exists && has_git_dir then (
     match fetch_managed_repo ~repo_root with
     | Ok () -> Ok repo_root
     | Error msg ->
@@ -237,6 +244,18 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
         Printf.eprintf
           "onton: warning: %s (continuing with existing local clone)\n%!" msg;
         Ok repo_root)
+  else if repo_root_exists && not repo_root_is_dir then
+    Error
+      (Printf.sprintf
+         "Managed checkout path %s exists but is not a directory; remove it \
+          and retry"
+         repo_root)
+  else if repo_root_exists && not repo_root_is_empty then
+    Error
+      (Printf.sprintf
+         "Managed checkout path %s exists but is not a git checkout and is not \
+          empty; remove it and retry"
+         repo_root)
   else
     match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
     | Ok () -> Ok repo_root
@@ -4108,15 +4127,26 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                      String.equal repo_root
                        (Project_store.managed_repo_dir proj)
                    then
-                     match
-                       ensure_managed_repo ~project_name:proj ~token ~owner
-                         ~repo
-                     with
-                     | Ok _ -> ()
-                     | Error msg ->
-                         Printf.eprintf
-                           "onton: warning: %s (resuming with local state)\n%!"
-                           msg);
+                     if
+                       Base.String.is_empty (Base.String.strip owner)
+                       || Base.String.is_empty (Base.String.strip repo)
+                     then
+                       Printf.eprintf
+                         "onton: warning: stored project %S has no GitHub \
+                          owner/repo; skipping managed checkout refresh\n\
+                          %!"
+                         proj
+                     else
+                       match
+                         ensure_managed_repo ~project_name:proj ~token ~owner
+                           ~repo
+                       with
+                       | Ok _ -> ()
+                       | Error msg ->
+                           Printf.eprintf
+                             "onton: warning: %s (resuming with local state)\n\
+                              %!"
+                             msg);
                   let branch =
                     match main_branch with
                     | Some b -> b
