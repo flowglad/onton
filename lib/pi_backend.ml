@@ -25,7 +25,8 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
   in
   Llm_backend.emit_spawn_started ~patch_id ~session_uuid ~prompt ~args ~env;
   Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
-    ~setsid_exec ~args ~session_uuid ~patch_id ~process_line ~on_event
+    ~setsid_exec ~args ~session_uuid:(Some session_uuid) ~patch_id ~process_line
+    ~on_event
 
 let create ~model ~process_mgr ~clock ~timeout ~setsid_exec : Llm_backend.t =
   {

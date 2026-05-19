@@ -227,7 +227,7 @@ type t = {
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     resume_session:string option ->
-    session_uuid:string option ->
+    session_uuid:string ->
     complexity:int option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;
@@ -289,15 +289,12 @@ let%test "resolve_auto_model: 'auto' with no complexity hits fallback tier" =
 let redact_env env = Array.map env ~f:Token_scrub.redact_env_entry
 
 let emit_spawn_started ~patch_id ~session_uuid ~prompt ~args ~env =
-  match session_uuid with
-  | None -> ()
-  | Some session_uuid ->
-      Telemetry_dispatch.emit
-        (Telemetry.Event.Spawn_started
-           {
-             patch_id;
-             session_uuid;
-             prompt;
-             argv = args;
-             env_redacted = redact_env env;
-           })
+  Telemetry_dispatch.emit
+    (Telemetry.Event.Spawn_started
+       {
+         patch_id;
+         session_uuid;
+         prompt;
+         argv = args;
+         env_redacted = redact_env env;
+       })

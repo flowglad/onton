@@ -33,7 +33,7 @@ val redact_env : string array -> string array
 
 val emit_spawn_started :
   patch_id:Types.Patch_id.t ->
-  session_uuid:string option ->
+  session_uuid:string ->
   prompt:string ->
   args:string list ->
   env:string array ->
@@ -73,7 +73,7 @@ type t = {
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     resume_session:string option ->
-    session_uuid:string option ->
+    session_uuid:string ->
     complexity:int option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;
