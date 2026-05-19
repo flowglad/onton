@@ -246,7 +246,13 @@ module Stream_event = struct
     | Tool_use of { name : string; input : string; status : string option }
     | Final_result of { text : string; stop_reason : Stop_reason.t }
     | Error of string
-    | Session_init of { session_id : string }
+    | Session_init of {
+        session_id : string;
+        api_key_source : string option; [@yojson.default None]
+        model : string option; [@yojson.default None]
+        claude_code_version : string option; [@yojson.default None]
+        permission_mode : string option; [@yojson.default None]
+      }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
 

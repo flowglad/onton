@@ -131,6 +131,23 @@ let find_json_start s =
   | Some 0 | None -> s
   | Some n -> String.drop_prefix s n
 
+let session_init_of_json json =
+  let open Yojson.Safe.Util in
+  match member "session_id" json |> to_string_option with
+  | None -> []
+  | Some session_id ->
+      [
+        Types.Stream_event.Session_init
+          {
+            session_id;
+            api_key_source = member "apiKeySource" json |> to_string_option;
+            model = member "model" json |> to_string_option;
+            claude_code_version =
+              member "claude_code_version" json |> to_string_option;
+            permission_mode = member "permissionMode" json |> to_string_option;
+          };
+      ]
+
 let parse_stream_events (line : string) : Types.Stream_event.t list =
   try
     let json = Yojson.Safe.from_string (find_json_start line) in
@@ -202,11 +219,7 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
           member "is_error" json |> to_bool_option
           |> Option.value ~default:false
         in
-        let session_init =
-          match member "session_id" json |> to_string_option with
-          | Some sid -> [ Types.Stream_event.Session_init { session_id = sid } ]
-          | None -> []
-        in
+        let session_init = session_init_of_json json in
         if is_error then
           let errors =
             match member "errors" json with
@@ -214,10 +227,17 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
                 List.filter_map items ~f:(fun item -> to_string_option item)
             | _ -> []
           in
+          let result_text =
+            member "result" json |> to_string_option
+            |> Option.map ~f:String.strip
+          in
           let msg =
             match errors with
-            | [] -> "unknown error"
-            | errs -> String.concat ~sep:"; " errs
+            | _ :: _ as errs -> String.concat ~sep:"; " errs
+            | [] -> (
+                match result_text with
+                | Some text when not (String.is_empty text) -> text
+                | _ -> "unknown error")
           in
           session_init @ [ Types.Stream_event.Error msg ]
         else
@@ -243,11 +263,7 @@ let parse_stream_events (line : string) : Types.Stream_event.t list =
     | Some "system" -> (
         let subtype = member "subtype" json |> to_string_option in
         match subtype with
-        | Some "init" -> (
-            match member "session_id" json |> to_string_option with
-            | Some session_id ->
-                [ Types.Stream_event.Session_init { session_id } ]
-            | None -> [])
+        | Some "init" -> session_init_of_json json
         | _ -> [])
     | _ -> []
   with
@@ -582,6 +598,25 @@ let%test "parse_stream_event error result" =
   Option.equal Types.Stream_event.equal (parse_stream_event line)
     (Some (Types.Stream_event.Error "bad session ID"))
 
+let%test "parse_stream_event result with empty errors uses result text" =
+  let line =
+    {|{"type":"result","is_error":true,"errors":[],"result":"auth unavailable"}|}
+  in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Error "auth unavailable"))
+
+let%test "parse_stream_event result with non-empty errors prefers errors array" =
+  let line =
+    {|{"type":"result","is_error":true,"errors":["first","second"],"result":"ignored"}|}
+  in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Error "first; second"))
+
+let%test "parse_stream_event result with both absent falls back to unknown error" =
+  let line = {|{"type":"result","is_error":true,"errors":[]}|} in
+  Option.equal Types.Stream_event.equal (parse_stream_event line)
+    (Some (Types.Stream_event.Error "unknown error"))
+
 let%test "parse_stream_event invalid json returns None" =
   Option.is_none (parse_stream_event "not json at all")
 
@@ -595,7 +630,30 @@ let%test "parse_stream_events extracts session_id from system/init" =
   List.equal Types.Stream_event.equal (parse_stream_events line)
     [
       Types.Stream_event.Session_init
-        { session_id = "d3c2d71e-0399-4ed3-810a-9c1edce7dd00" };
+        {
+          session_id = "d3c2d71e-0399-4ed3-810a-9c1edce7dd00";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
+    ]
+
+let%test "parse_stream_events Session_init carries apiKeySource/model/version/permissionMode"
+    =
+  let line =
+    {|{"type":"system","subtype":"init","session_id":"abc-123","apiKeySource":"project","model":"sonnet","claude_code_version":"2.1.144","permissionMode":"bypassPermissions"}|}
+  in
+  List.equal Types.Stream_event.equal (parse_stream_events line)
+    [
+      Types.Stream_event.Session_init
+        {
+          session_id = "abc-123";
+          api_key_source = Some "project";
+          model = Some "sonnet";
+          claude_code_version = Some "2.1.144";
+          permission_mode = Some "bypassPermissions";
+        };
     ]
 
 let%test "parse_stream_events ignores system events without init subtype" =
@@ -611,7 +669,16 @@ let%test "parse_stream_events tolerates leading garbage before JSON" =
     "^D\x08\x08{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"abc-123\",\"tools\":[]}"
   in
   List.equal Types.Stream_event.equal (parse_stream_events line)
-    [ Types.Stream_event.Session_init { session_id = "abc-123" } ]
+    [
+      Types.Stream_event.Session_init
+        {
+          session_id = "abc-123";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
+    ]
 
 let%test "parse_stream_events extracts session_id from result event" =
   let line =
@@ -619,7 +686,14 @@ let%test "parse_stream_events extracts session_id from result event" =
   in
   List.equal Types.Stream_event.equal (parse_stream_events line)
     [
-      Types.Stream_event.Session_init { session_id = "def-456" };
+      Types.Stream_event.Session_init
+        {
+          session_id = "def-456";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
       Types.Stream_event.Final_result
         { text = "done"; stop_reason = Types.Stop_reason.End_turn };
     ]

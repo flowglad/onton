@@ -66,7 +66,16 @@ let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
         | Some "thread.started" -> (
             match member "thread_id" json |> to_string_option with
             | Some id when not (String.is_empty id) ->
-                ( [ Types.Stream_event.Session_init { session_id = id } ],
+                ( [
+                    Types.Stream_event.Session_init
+                      {
+                        session_id = id;
+                        api_key_source = None;
+                        model = None;
+                        claude_code_version = None;
+                        permission_mode = None;
+                      };
+                  ],
                   cost_state )
             | _ -> ([], cost_state))
         | Some "turn.started" ->
@@ -194,7 +203,13 @@ let%test "parse_event thread.started emits Session_init" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Session_init
-        { session_id = "019d91e0-5731-7182-ac68-19922a243e95" };
+        {
+          session_id = "019d91e0-5731-7182-ac68-19922a243e95";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
     ]
 
 let%test "parse_event thread.started without thread_id is ignored" =

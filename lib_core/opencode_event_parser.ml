@@ -57,7 +57,14 @@ let parse_event (line : string) : Types.Stream_event.t list =
             | Some id when not (String.is_empty id) ->
                 [
                   Types.Stream_event.Turn_started;
-                  Types.Stream_event.Session_init { session_id = id };
+                  Types.Stream_event.Session_init
+                    {
+                      session_id = id;
+                      api_key_source = None;
+                      model = None;
+                      claude_code_version = None;
+                      permission_mode = None;
+                    };
                 ]
             | _ -> [])
         | Some "text" ->
@@ -265,7 +272,14 @@ let%test "parse_event step_start emits session_init" =
   List.equal Types.Stream_event.equal (parse_event line)
     [
       Types.Stream_event.Turn_started;
-      Types.Stream_event.Session_init { session_id = "ses_abc" };
+      Types.Stream_event.Session_init
+        {
+          session_id = "ses_abc";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
     ]
 
 let%test "parse_event step_finish stop" =

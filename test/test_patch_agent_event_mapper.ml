@@ -69,7 +69,14 @@ let prop_session_id_preserved =
         (Patch_agent_event_mapper.map_event
            (Patch_agent_rpc.Session_init
               { session_id; model_id = "model"; provider = "provider" }))
-        (Types.Stream_event.Session_init { session_id }))
+        (Types.Stream_event.Session_init
+           {
+             session_id;
+             api_key_source = None;
+             model = None;
+             claude_code_version = None;
+             permission_mode = None;
+           }))
 
 let prop_tool_call_preserved =
   QCheck2.Test.make

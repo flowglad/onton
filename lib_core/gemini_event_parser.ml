@@ -30,7 +30,16 @@ let parse_event (line : string) : Types.Stream_event.t list =
         | Some "init" -> (
             match member "session_id" json |> to_string_option with
             | Some id when not (String.is_empty id) ->
-                [ Types.Stream_event.Session_init { session_id = id } ]
+                [
+                  Types.Stream_event.Session_init
+                    {
+                      session_id = id;
+                      api_key_source = None;
+                      model = None;
+                      claude_code_version = None;
+                      permission_mode = None;
+                    };
+                ]
             | _ -> [])
         | Some "message" -> (
             let role = member "role" json |> to_string_option in
@@ -151,7 +160,16 @@ let%test "parse_event init" =
     {|{"type":"init","timestamp":"2026-04-13T14:16:47.453Z","session_id":"abc-123","model":"gemini-3-flash-preview"}|}
   in
   List.equal Types.Stream_event.equal (parse_event line)
-    [ Types.Stream_event.Session_init { session_id = "abc-123" } ]
+    [
+      Types.Stream_event.Session_init
+        {
+          session_id = "abc-123";
+          api_key_source = None;
+          model = None;
+          claude_code_version = None;
+          permission_mode = None;
+        };
+    ]
 
 let%test "parse_event assistant message" =
   let line =
