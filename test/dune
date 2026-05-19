@@ -294,3 +294,8 @@
  (name test_session_driver_telemetry)
  (modules test_session_driver_telemetry)
  (libraries onton onton_core unix))
+
+(test
+ (name test_debug_upload)
+ (modules test_debug_upload)
+ (libraries onton onton_core unix))
