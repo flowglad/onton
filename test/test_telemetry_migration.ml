@@ -102,7 +102,10 @@ let test_activity_log_free_form () =
         (Printf.sprintf "expected one activity event, got %d"
            (List.length events))
 
-let test_activity_log_stream () =
+let test_activity_log_stream_drops_untagged () =
+  (* Raw child-process stdout/stderr lines (codex envelopes, "Tool Bash …", …)
+     are emitted by Llm_backend for replay diagnostics. They must not reach the
+     user-facing Activity pane. *)
   let log = ref Activity_log.empty in
   let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
@@ -114,15 +117,52 @@ let test_activity_log_stream () =
              patch_id;
              session_uuid = Some "session-uuid";
              channel = `Stdout;
-             raw = "chunk";
+             raw = {|{"type":"turn.completed"}|};
+           });
+      Onton.Telemetry_dispatch.emit
+        (Telemetry.Event.Stream
+           {
+             patch_id;
+             session_uuid = Some "session-uuid";
+             channel = `Stderr;
+             raw = "Tool Bash — /bin/zsh -lc 'ls'";
+           }));
+  match Activity_log.recent_stream_entries !log ~limit:1 with
+  | [] -> ()
+  | entries ->
+      fail
+        (Printf.sprintf "expected zero stream entries, got %d"
+           (List.length entries))
+
+let test_activity_log_stream_accepts_tagged () =
+  let log = ref Activity_log.empty in
+  let update f = log := f !log in
+  let patch_id = Types.Patch_id.of_string "patch-5" in
+  let tagged =
+    Yojson.Safe.to_string
+      (`Assoc
+         [
+           ("activity_log_kind", `String "finished");
+           ("reason", `String "ended turn");
+         ])
+  in
+  Onton.Telemetry_dispatch.with_sink
+    ~sink:(Onton.Activity_log_sink.sink ~update ()) (fun () ->
+      Onton.Telemetry_dispatch.emit
+        (Telemetry.Event.Stream
+           {
+             patch_id;
+             session_uuid = Some "session-uuid";
+             channel = `Stdout;
+             raw = tagged;
            }));
   match Activity_log.recent_stream_entries !log ~limit:1 with
   | [ entry ] -> (
       match entry.Activity_log.Stream_entry.kind with
-      | Activity_log.Stream_entry.Text_chunk "chunk" -> ()
+      | Activity_log.Stream_entry.Finished "ended turn" -> ()
+      | Activity_log.Stream_entry.Finished _
       | Activity_log.Stream_entry.Text_chunk _
       | Activity_log.Stream_entry.Tool_use _
-      | Activity_log.Stream_entry.Finished _
       | Activity_log.Stream_entry.Stream_error _ ->
           fail
             (Printf.sprintf "unexpected stream entry %s"
@@ -179,5 +219,6 @@ let test_pre_migration_events_jsonl_loads () =
 let () =
   test_event_log_complete ();
   test_activity_log_free_form ();
-  test_activity_log_stream ();
+  test_activity_log_stream_drops_untagged ();
+  test_activity_log_stream_accepts_tagged ();
   test_pre_migration_events_jsonl_loads ()
