@@ -42,6 +42,7 @@ let read_channel_all ic =
 let close_fd_noerr fd = try Unix.close fd with _ -> ()
 let unlink_noerr path = try Stdlib.Sys.remove path with _ -> ()
 let iter_option opt ~f = match opt with Some x -> f x | None -> ()
+let unix_error_message exn = Base.Exn.to_string exn
 
 let read_file_noerr path =
   match Stdlib.open_in_bin path with
@@ -92,7 +93,9 @@ let run_git_no_cwd args =
             stdout_rd := Some rd;
             stdout_wr := Some wr;
             let err =
-              Unix.openfile err_path [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600
+              Unix.openfile err_path
+                [ Unix.O_WRONLY; Unix.O_TRUNC; Unix.O_CREAT ]
+                0o600
             in
             err_fd := Some err;
             let child = Unix.create_process_env "git" argv env stdin wr err in
@@ -151,8 +154,15 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
   let repo_root_is_dir =
     try Stdlib.Sys.is_directory repo_root with _ -> false
   in
-  let repo_root_is_empty =
-    try Array.length (Stdlib.Sys.readdir repo_root) = 0 with _ -> false
+  let repo_root_emptiness =
+    if repo_root_exists && repo_root_is_dir then
+      try Ok (Array.length (Stdlib.Sys.readdir repo_root) = 0)
+      with exn ->
+        Error
+          (Printf.sprintf
+             "Managed checkout path %s exists but could not be inspected: %s"
+             repo_root (unix_error_message exn))
+    else Ok false
   in
   if repo_root_exists && has_git_dir then (
     let module Repo = (val Repo_git.make ~repo_root) in
@@ -170,12 +180,19 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
          "Managed checkout path %s exists but is not a directory; remove it \
           and retry"
          repo_root)
-  else if repo_root_exists && not repo_root_is_empty then
-    Error
-      (Printf.sprintf
-         "Managed checkout path %s exists but is not a git checkout and is not \
-          empty; remove it and retry"
-         repo_root)
+  else if repo_root_exists then
+    match repo_root_emptiness with
+    | Error msg -> Error msg
+    | Ok false ->
+        Error
+          (Printf.sprintf
+             "Managed checkout path %s exists but is not a git checkout and is \
+              not empty; remove it and retry"
+             repo_root)
+    | Ok true -> (
+        match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
+        | Ok () -> Ok repo_root
+        | Error msg -> Error msg)
   else
     match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
     | Ok () -> Ok repo_root
