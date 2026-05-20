@@ -303,10 +303,85 @@ let pluralize ?plural n singular =
   let many = match plural with Some p -> p | None -> singular ^ "s" in
   Printf.sprintf "%d %s" n (if n = 1 then singular else many)
 
+let build_branch_map (gameplan : Gameplan.t) ~default =
+  let map =
+    Base.List.fold gameplan.Gameplan.patches
+      ~init:(Base.Map.empty (module Patch_id))
+      ~f:(fun acc (p : Patch.t) ->
+        match Base.Map.add acc ~key:p.Patch.id ~data:p.Patch.branch with
+        | `Ok acc -> acc
+        | `Duplicate ->
+            failwith
+              (Printf.sprintf "Duplicate patch id in gameplan: %s"
+                 (Patch_id.to_string p.Patch.id)))
+  in
+  fun pid -> Base.Option.value (Base.Map.find map pid) ~default
+
+let patch_complexity ~(gameplan : Gameplan.t) ~patch_id =
+  Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+      Patch_id.equal p.Patch.id patch_id)
+  |> Base.Option.bind ~f:(fun (p : Patch.t) -> p.Patch.complexity)
+
+let log_event runtime ?patch_id msg =
+  Runtime_logging.log_event runtime ?patch_id msg
+
+module type FIBER_ENV = sig
+  val runtime : Runtime.t
+  val clock : float Eio.Time.clock_ty Eio.Time.clock
+  val fs : Eio.Fs.dir_ty Eio.Path.t
+  val process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t
+  val config : config
+  val project_name : string
+  val pr_registry : Pr_registry.t
+  val findings_registry : Findings_registry.t
+
+  val review_clients :
+    (module Review_service_client.S
+       with type error = Review_service_client.error)
+    list
+
+  val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+  val event_log : Event_log.t
+  val branch_of : Patch_id.t -> Branch.t
+
+  val pick_backend :
+    complexity:int option -> Backend_registry.kind * Backend_routing.decision
+
+  val worktree_mutex : Eio.Mutex.t
+  val hook_mutex : Eio.Mutex.t
+end
+
 module Make_fibers
     (Forge : Onton.Forge.S with type error = Github.error)
-    (W : Worktree.S) =
+    (W : Worktree.S)
+    (Env : FIBER_ENV) =
 struct
+  module WS_Env : Worktree_setup.ENV = struct
+    let runtime = Env.runtime
+    let clock = Env.clock
+    let fs = Env.fs
+    let project_name = Env.project_name
+    let user_config = Env.config.user_config
+    let worktree_mutex = Env.worktree_mutex
+    let hook_mutex = Env.hook_mutex
+  end
+
+  module SD_Env : Session_driver.ENV = struct
+    let runtime = Env.runtime
+    let clock = Env.clock
+    let fs = Env.fs
+    let project_name = Env.project_name
+    let owner = Env.config.github_owner
+    let repo = Env.config.github_repo
+    let transcripts = Env.transcripts
+    let user_config = Env.config.user_config
+    let worktree_mutex = Env.worktree_mutex
+    let hook_mutex = Env.hook_mutex
+  end
+
+  module WS = Worktree_setup.Make (W) (WS_Env)
+  module Session_driver = Session_driver.Make (W) (SD_Env)
+
   (** Execute declarative GitHub effects and record successful observations back
       into durable state. *)
   let execute_github_effects ~runtime effects =
@@ -409,27 +484,6 @@ struct
           })
     |> Base.List.map ~f:snd
 
-  (** {1 Branch lookup map}
-
-      Built once at startup to avoid O(n) linear scans per [branch_of] call. *)
-
-  let build_branch_map (gameplan : Gameplan.t) ~default =
-    let map =
-      Base.List.fold gameplan.Gameplan.patches
-        ~init:(Base.Map.empty (module Patch_id))
-        ~f:(fun acc (p : Patch.t) ->
-          Base.Map.set acc ~key:p.Patch.id ~data:p.Patch.branch)
-    in
-    fun pid -> Base.Option.value (Base.Map.find map pid) ~default
-
-  (** Look up the gameplan-author's 1/2/3 complexity for a patch. [None] when
-      the patch is missing or the gameplan didn't specify — backends running
-      under [--model auto] should treat that as the highest tier. *)
-  let patch_complexity ~(gameplan : Gameplan.t) ~patch_id =
-    Base.List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
-        Patch_id.equal p.Patch.id patch_id)
-    |> Base.Option.bind ~f:(fun (p : Patch.t) -> p.Patch.complexity)
-
   (** {1 Shared helpers} *)
 
   (** Pluralize a count for inline rendering: [pluralize 1 "comment"] →
@@ -438,9 +492,6 @@ struct
   let pluralize ?plural n singular =
     let many = match plural with Some p -> p | None -> singular ^ "s" in
     Printf.sprintf "%d %s" n (if n = 1 then singular else many)
-
-  let log_event runtime ?patch_id msg =
-    Runtime_logging.log_event runtime ?patch_id msg
 
   (** Reconcile per-patch automerge deadlines. For each deadline that has
       elapsed, merge the PR on GitHub and mark the patch merged on success. On
@@ -1740,10 +1791,17 @@ struct
     | Error (Github.Graphql_error msgs) -> Poll_outcome.Graphql_failed msgs
     | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
 
-  let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) ~runtime
-      ~clock ~process_mgr ~config ~project_name ~pr_registry ~branch_of
-      ~event_log ~review_clients ~findings_registry ~ws =
-    let module WS = (val ws : Worktree_setup.S) in
+  let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) =
+    let runtime = Env.runtime in
+    let clock = Env.clock in
+    let process_mgr = Env.process_mgr in
+    let config = Env.config in
+    let project_name = Env.project_name in
+    let pr_registry = Env.pr_registry in
+    let branch_of = Env.branch_of in
+    let event_log = Env.event_log in
+    let review_clients = Env.review_clients in
+    let findings_registry = Env.findings_registry in
     let main = config.main_branch in
     let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
     let skip_logged_mutex = Eio.Mutex.create () in
@@ -2032,13 +2090,17 @@ struct
 
   (** Runner fiber — executes orchestrator actions by driving backend sessions
       concurrently. *)
-  let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-      ~pr_registry ~findings_registry ~review_clients ~transcripts ~event_log
-      ~worktree_mutex ~hook_mutex ~ws ?status_msg () =
-    let module WS = (val ws : Worktree_setup.S) in
+  let runner_fiber ?status_msg () =
+    let runtime = Env.runtime in
+    let clock = Env.clock in
+    let config = Env.config in
+    let pick_backend = Env.pick_backend in
+    let project_name = Env.project_name in
+    let pr_registry = Env.pr_registry in
+    let findings_registry = Env.findings_registry in
+    let review_clients = Env.review_clients in
+    let event_log = Env.event_log in
     let main = config.main_branch in
-    let clock = Eio.Stdenv.clock env in
-    let fs = Eio.Stdenv.fs env in
     let set_status ~level ~text ?expires_at () =
       match status_msg with
       | Some r -> r := Some { Tui.level; text; expires_at }
@@ -2052,19 +2114,6 @@ struct
     (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
      the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
     let fetch_mutex = Eio.Mutex.create () in
-    let module SD_Env = struct
-      let runtime = runtime
-      let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
-      let fs = fs
-      let project_name = project_name
-      let owner = config.github_owner
-      let repo = config.github_repo
-      let transcripts = transcripts
-      let user_config = config.user_config
-      let worktree_mutex = worktree_mutex
-      let hook_mutex = hook_mutex
-    end in
-    let module Session_driver = Session_driver.Make (W) (SD_Env) in
     let execute_worktree_plan ~patch_id ~(agent : Patch_agent.t) ~fetch_lock
         ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
       let default_path = Worktree.worktree_dir ~project_name ~patch_id in
@@ -4217,8 +4266,6 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           Stdlib.exit 1);
       let module Reconciler = Startup_reconciler.Make (Forge) (WorktreeClient)
       in
-      let module Fibers = Make_fibers (Forge) (WorktreeClient) in
-      let open Fibers in
       let pr_registry = Pr_registry.create () in
       (* Seed registry from any agents that already have a PR number — covers
          both gameplan patches restored from a snapshot and ad-hoc agents. The
@@ -4230,7 +4277,6 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
               Pr_registry.register pr_registry
                 ~patch_id:agent.Patch_agent.patch_id ~pr_number));
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
-      let clock = Eio.Stdenv.clock env in
       let session_timeout = 1800.0 in
       let setsid_exec =
         let candidate =
@@ -4396,25 +4442,29 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       let findings_registry = Findings_registry.create () in
       let worktree_mutex = Eio.Mutex.create () in
       let hook_mutex = Eio.Mutex.create () in
-      let module Wt_env = struct
+      let module Fiber_env : FIBER_ENV = struct
         let runtime = runtime
-        let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+        let clock = clock
         let fs = Eio.Stdenv.fs env
+        let process_mgr = process_mgr
+        let config = config
         let project_name = project_name
-        let user_config = config.user_config
+        let pr_registry = pr_registry
+        let findings_registry = findings_registry
+        let review_clients = review_clients
+        let transcripts = transcripts
+        let event_log = event_log
+        let branch_of = branch_of
+        let pick_backend = pick_backend
         let worktree_mutex = worktree_mutex
         let hook_mutex = hook_mutex
       end in
-      let module WS = Worktree_setup.Make (WorktreeClient) (Wt_env) in
+      let module Fibers = Make_fibers (Forge) (WorktreeClient) (Fiber_env) in
+      let open Fibers in
       let common_fibers =
         [
           reconciliation_fiber;
-          (fun () ->
-            poller_fiber
-              (module Reconciler : STARTUP_RECONCILER)
-              ~runtime ~clock ~process_mgr ~config ~project_name ~pr_registry
-              ~branch_of ~event_log ~review_clients ~findings_registry
-              ~ws:(module WS : Worktree_setup.S));
+          (fun () -> poller_fiber (module Reconciler : STARTUP_RECONCILER));
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
@@ -4422,12 +4472,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       if config.headless then
         Eio.Fiber.all
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
-          :: (fun () ->
-            runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-              ~pr_registry ~findings_registry ~review_clients ~transcripts
-              ~event_log ~worktree_mutex ~hook_mutex
-              ~ws:(module WS : Worktree_setup.S)
-              ())
+          :: (fun () -> runner_fiber ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -4477,12 +4522,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~prompt_line ~patches_start_row ~patches_scroll_offset
                     ~patches_visible_count ~owner:config.github_owner
                     ~repo:config.github_repo ~resolve_routing)
-                :: (fun () ->
-                  runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-                    ~pr_registry ~findings_registry ~review_clients ~transcripts
-                    ~event_log ~worktree_mutex ~hook_mutex
-                    ~ws:(module WS : Worktree_setup.S)
-                    ~status_msg ())
+                :: (fun () -> runner_fiber ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 
