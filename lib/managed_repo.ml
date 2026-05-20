@@ -42,7 +42,6 @@ let read_channel_all ic =
 let close_fd_noerr fd = try Unix.close fd with _ -> ()
 let unlink_noerr path = try Stdlib.Sys.remove path with _ -> ()
 let iter_option opt ~f = match opt with Some x -> f x | None -> ()
-let unix_error_message exn = Base.Exn.to_string exn
 
 let read_file_noerr path =
   match Stdlib.open_in_bin path with
@@ -161,7 +160,7 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
         Error
           (Printf.sprintf
              "Managed checkout path %s exists but could not be inspected: %s"
-             repo_root (unix_error_message exn))
+             repo_root (Base.Exn.to_string exn))
     else Ok false
   in
   if repo_root_exists && has_git_dir then (
