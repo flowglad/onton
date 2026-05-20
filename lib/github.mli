@@ -166,9 +166,11 @@ val owner : t -> string
 
 val make :
   net:_ Eio.Net.t ->
+  clock:_ Eio.Time.clock ->
   token:string ->
   owner:string ->
   repo:string ->
   (module Forge.S with type error = error)
-(** [make ~net ~token ~owner ~repo] packages a GitHub-backed forge module that
-    closes over the network capability and client configuration. *)
+(** [make ~net ~clock ~token ~owner ~repo] packages a GitHub-backed forge
+    module that closes over the network and time capabilities plus client
+    configuration. *)

@@ -884,7 +884,8 @@ let%expect_test "show_error transport error includes endpoint" =
   Stdlib.print_endline (show_error err);
   [%expect {| GitHub API POST /graphql → transport error: connection refused |}]
 
-let make ~net ~token ~owner ~repo : (module Forge.S with type error = error) =
+let make ~net ~clock ~token ~owner ~repo :
+    (module Forge.S with type error = error) =
   let client = create ~token ~owner ~repo in
   let module M = struct
     type nonrec error = error
@@ -897,27 +898,29 @@ let make ~net ~token ~owner ~repo : (module Forge.S with type error = error) =
       | Merge_queued of string
       | Merge_unconfirmed
 
-    let pr_state pr_number = pr_state ~net client pr_number
+    let pr_state pr_number = pr_state ~net ~clock client pr_number
 
     let list_prs ~branch ?base ~state () =
       match base with
-      | None -> list_prs ~net client ~branch ~state ()
-      | Some base -> list_prs ~net client ~branch ~base:(Some base) ~state ()
+      | None -> list_prs ~net ~clock client ~branch ~state ()
+      | Some base ->
+          list_prs ~net ~clock client ~branch ~base:(Some base) ~state ()
 
     let update_pr_body ~pr_number ~body =
-      update_pr_body ~net client ~pr_number ~body
+      update_pr_body ~net ~clock client ~pr_number ~body
 
     let create_pull_request ~title ~head ~base ~body ~draft =
-      create_pull_request ~net client ~title ~head ~base ~body ~draft
+      create_pull_request ~net ~clock client ~title ~head ~base ~body ~draft
 
     let update_pr_base ~pr_number ~base =
-      update_pr_base ~net client ~pr_number ~base
+      update_pr_base ~net ~clock client ~pr_number ~base
 
-    let set_draft ~pr_number ~draft = set_draft ~net client ~pr_number ~draft
+    let set_draft ~pr_number ~draft =
+      set_draft ~net ~clock client ~pr_number ~draft
 
     let merge_pr ~pr_number ~merge_method =
-      merge_pr ~net client ~pr_number ~merge_method
+      merge_pr ~net ~clock client ~pr_number ~merge_method
 
-    let check_repo_access () = check_repo_access ~net client
+    let check_repo_access () = check_repo_access ~net ~clock client
   end in
   (module M)
