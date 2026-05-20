@@ -277,5 +277,16 @@ let () =
         backend:_ ->
         complexity:_ ->
         _);
+  ignore
+    (SD3.run_long_lived
+      : sw:_ ->
+        kind:_ ->
+        patch_id:_ ->
+        prompt:_ ->
+        agent:_ ->
+        on_pr_detected:_ ->
+        session:_ ->
+        complexity:_ ->
+        _);
   print_endline
     "Patch 3: Make_fibers env derivation (WS + SD from shared fiber env): OK"
