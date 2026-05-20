@@ -127,6 +127,7 @@ let%test_module "extract_pr_number_from_text" =
 
 module type ENV = sig
   include Run_env.S
+
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
