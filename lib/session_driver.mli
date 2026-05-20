@@ -10,95 +10,97 @@
     several modules. The backend below is already abstracted; this is the single
     place where "run a session for this patch" lives. *)
 
-val run :
-  kind:Types.Operation_kind.t option ->
-  runtime:Runtime.t ->
-  process_mgr:_ Eio.Process.mgr ->
-  clock:_ Eio.Time.clock ->
-  fs:Eio.Fs.dir_ty Eio.Path.t ->
-  project_name:string ->
-  patch_id:Types.Patch_id.t ->
-  repo_root:string ->
-  prompt:string ->
-  agent:Patch_agent.t ->
-  owner:string ->
-  repo:string ->
-  on_pr_detected:(Types.Pr_number.t -> unit) ->
-  transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
-  user_config:User_config.t ->
-  worktree_mutex:Eio.Mutex.t ->
-  hook_mutex:Eio.Mutex.t ->
-  backend:Llm_backend.t ->
-  complexity:int option ->
-  [ `Ok | `Failed | `Retry_push ] * (string * string) list
-(** Returns the supervisor disposition and the list of [(tool_name, status)]
-    pairs for any tool calls that did not reach a [completed] state (used by the
-    Pr_body classifier to disambiguate "agent chose not to write" from "Write
-    was blocked"). Callers may also produce a [`Stale] variant from pre-flight
-    checks before invoking this function — the polymorphic-variant union widens
-    at the call site. *)
+module Make (_ : Worktree.S) : sig
+  val run :
+    kind:Types.Operation_kind.t option ->
+    runtime:Runtime.t ->
+    process_mgr:_ Eio.Process.mgr ->
+    clock:_ Eio.Time.clock ->
+    fs:Eio.Fs.dir_ty Eio.Path.t ->
+    project_name:string ->
+    patch_id:Types.Patch_id.t ->
+    repo_root:string ->
+    prompt:string ->
+    agent:Patch_agent.t ->
+    owner:string ->
+    repo:string ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
+    user_config:User_config.t ->
+    worktree_mutex:Eio.Mutex.t ->
+    hook_mutex:Eio.Mutex.t ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    [ `Ok | `Failed | `Retry_push ] * (string * string) list
+  (** Returns the supervisor disposition and the list of [(tool_name, status)]
+      pairs for any tool calls that did not reach a [completed] state (used by
+      the Pr_body classifier to disambiguate "agent chose not to write" from
+      "Write was blocked"). Callers may also produce a [`Stale] variant from
+      pre-flight checks before invoking this function — the polymorphic-variant
+      union widens at the call site. *)
 
-type long_lived_session
-(** Mutable per-patch long-lived backend session state. The backend's
-    existential handle type remains tied to the backend that created it. *)
+  type long_lived_session
+  (** Mutable per-patch long-lived backend session state. The backend's
+      existential handle type remains tied to the backend that created it. *)
 
-val create_long_lived_session :
-  backend:Llm_backend_long_lived.t ->
-  provider:string ->
-  model:string ->
-  effort:string ->
-  gameplan_prompt:string ->
-  patch_prompt:string ->
-  long_lived_session
+  val create_long_lived_session :
+    backend:Llm_backend_long_lived.t ->
+    provider:string ->
+    model:string ->
+    effort:string ->
+    gameplan_prompt:string ->
+    patch_prompt:string ->
+    long_lived_session
 
-val update_long_lived_session_prompts :
-  long_lived_session -> gameplan_prompt:string -> patch_prompt:string -> unit
+  val update_long_lived_session_prompts :
+    long_lived_session -> gameplan_prompt:string -> patch_prompt:string -> unit
 
-val long_lived_session_failed : long_lived_session -> bool
-val shutdown_long_lived_session : long_lived_session -> unit
+  val long_lived_session_failed : long_lived_session -> bool
+  val shutdown_long_lived_session : long_lived_session -> unit
 
-val run_long_lived :
-  sw:Eio.Switch.t ->
-  kind:Types.Operation_kind.t option ->
-  runtime:Runtime.t ->
-  process_mgr:_ Eio.Process.mgr ->
-  clock:_ Eio.Time.clock ->
-  fs:Eio.Fs.dir_ty Eio.Path.t ->
-  project_name:string ->
-  patch_id:Types.Patch_id.t ->
-  repo_root:string ->
-  prompt:string ->
-  agent:Patch_agent.t ->
-  owner:string ->
-  repo:string ->
-  on_pr_detected:(Types.Pr_number.t -> unit) ->
-  transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
-  user_config:User_config.t ->
-  worktree_mutex:Eio.Mutex.t ->
-  hook_mutex:Eio.Mutex.t ->
-  session:long_lived_session ->
-  complexity:int option ->
-  [ `Ok | `Failed | `Retry_push ] * (string * string) list
-(** Long-lived backend counterpart to {!run}. It shares the same supervisor
-    bookkeeping and delivers the rendered turn over [backend.prompt] instead of
-    spawning a fresh backend process. *)
+  val run_long_lived :
+    sw:Eio.Switch.t ->
+    kind:Types.Operation_kind.t option ->
+    runtime:Runtime.t ->
+    process_mgr:_ Eio.Process.mgr ->
+    clock:_ Eio.Time.clock ->
+    fs:Eio.Fs.dir_ty Eio.Path.t ->
+    project_name:string ->
+    patch_id:Types.Patch_id.t ->
+    repo_root:string ->
+    prompt:string ->
+    agent:Patch_agent.t ->
+    owner:string ->
+    repo:string ->
+    on_pr_detected:(Types.Pr_number.t -> unit) ->
+    transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
+    user_config:User_config.t ->
+    worktree_mutex:Eio.Mutex.t ->
+    hook_mutex:Eio.Mutex.t ->
+    session:long_lived_session ->
+    complexity:int option ->
+    [ `Ok | `Failed | `Retry_push ] * (string * string) list
+  (** Long-lived backend counterpart to {!run}. It shares the same supervisor
+      bookkeeping and delivers the rendered turn over [backend.prompt] instead
+      of spawning a fresh backend process. *)
 
-val session_mode : Patch_agent.t -> [ `Resume of string | `Fresh | `Give_up ]
-(** Inspect the agent's session-fallback state to decide whether the next
-    invocation should resume an existing session, start fresh, or give up. *)
+  val session_mode : Patch_agent.t -> [ `Resume of string | `Fresh | `Give_up ]
+  (** Inspect the agent's session-fallback state to decide whether the next
+      invocation should resume an existing session, start fresh, or give up. *)
 
-val extract_pr_number_from_text :
-  ?at_end_of_stream:bool ->
-  owner:string ->
-  repo:string ->
-  string ->
-  Types.Pr_number.t option
-(** Scan [text] for a [github.com/<owner>/<repo>/pull/N] URL and return the
-    first [N] found. Used to sniff PR creation from the agent's stdout stream.
+  val extract_pr_number_from_text :
+    ?at_end_of_stream:bool ->
+    owner:string ->
+    repo:string ->
+    string ->
+    Types.Pr_number.t option
+  (** Scan [text] for a [github.com/<owner>/<repo>/pull/N] URL and return the
+      first [N] found. Used to sniff PR creation from the agent's stdout stream.
 
-    A digit run terminating at the end of [text] is treated as
-    potentially-incomplete by default, so this function will return [None] for
-    [".../pull/12"] when the next stream chunk could turn it into
-    [.../pull/1234]. Pass [~at_end_of_stream:true] when calling on a complete
-    buffer (e.g. on [Final_result]) to treat end-of-buffer as a valid
-    terminator. *)
+      A digit run terminating at the end of [text] is treated as
+      potentially-incomplete by default, so this function will return [None] for
+      [".../pull/12"] when the next stream chunk could turn it into
+      [.../pull/1234]. Pass [~at_end_of_stream:true] when calling on a complete
+      buffer (e.g. on [Final_result]) to treat end-of-buffer as a valid
+      terminator. *)
+end

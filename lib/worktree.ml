@@ -659,3 +659,99 @@ let exists t = Stdlib.Sys.file_exists t.path
 let path t = t.path
 let patch_id t = t.patch_id
 let branch t = t.branch
+
+module type S = sig
+  val resolve_main_root : unit -> string
+  val is_checked_out_in_repo_root : Types.Branch.t -> bool
+  val remote_branch_exists : string -> bool
+
+  val create :
+    project_name:string ->
+    patch_id:Types.Patch_id.t ->
+    branch:Types.Branch.t ->
+    base_ref:string ->
+    t
+
+  val remove : t -> unit
+  val detect_branch : path:string -> Types.Branch.t
+  val list_with_branches : unit -> (string * Types.Branch.t) list
+  val find_for_branch : Types.Branch.t -> string option
+  val prune_admin : unit -> unit
+
+  val run_hook :
+    clock:_ Eio.Time.clock ->
+    script:string ->
+    cwd:Eio.Fs.dir_ty Eio.Path.t ->
+    env:(string * string) list ->
+    unit ->
+    (unit, string) Result.t
+
+  val fetch_origin :
+    fetch_lock:Eio.Mutex.t -> path:string -> (unit, string) Result.t
+
+  val git_status : path:string -> string
+  val conflict_diff : path:string -> string
+
+  val rebase_onto :
+    path:string ->
+    target:Types.Branch.t ->
+    project_name:string ->
+    ancestor_ids:Types.Patch_id.t list ->
+    rebase_result
+
+  val read_in_progress_conflict_info :
+    path:string ->
+    target:Types.Branch.t ->
+    project_name:string ->
+    ancestor_ids:Types.Patch_id.t list ->
+    conflict_info option
+
+  val force_push_with_lease :
+    path:string -> branch:Types.Branch.t -> base:Types.Branch.t -> push_result
+
+  val rebase_in_progress : path:string -> bool
+end
+
+type client = (module S)
+
+let make ~process_mgr ~repo_root =
+  (module struct
+    let resolve_main_root () = resolve_main_root ~process_mgr ~repo_root
+
+    let is_checked_out_in_repo_root branch =
+      is_checked_out_in_repo_root ~process_mgr ~repo_root branch
+
+    let remote_branch_exists branch_str =
+      remote_branch_exists ~process_mgr ~repo_root branch_str
+
+    let create ~project_name ~patch_id ~branch ~base_ref =
+      create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
+
+    let remove t = remove ~process_mgr ~repo_root t
+    let detect_branch ~path = detect_branch ~process_mgr ~path
+    let list_with_branches () = list_with_branches ~process_mgr ~repo_root
+    let find_for_branch branch = find_for_branch ~process_mgr ~repo_root branch
+    let prune_admin () = prune_admin ~process_mgr ~repo_root
+
+    let run_hook ~clock ~script ~cwd ~env () =
+      User_config.run_hook ~process_mgr ~clock ~script ~cwd ~env ()
+
+    let fetch_origin ~fetch_lock ~path =
+      fetch_origin ~fetch_lock ~process_mgr ~path
+
+    let git_status ~path = git_status ~process_mgr ~path
+    let conflict_diff ~path = conflict_diff ~process_mgr ~path
+
+    let rebase_onto ~path ~target ~project_name ~ancestor_ids =
+      rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids
+
+    let read_in_progress_conflict_info ~path ~target ~project_name ~ancestor_ids
+        =
+      read_in_progress_conflict_info ~process_mgr ~path ~target ~project_name
+        ~ancestor_ids
+
+    let force_push_with_lease ~path ~branch ~base =
+      force_push_with_lease ~process_mgr ~path ~branch ~base
+
+    let rebase_in_progress ~path = rebase_in_progress ~process_mgr ~path
+  end : S)

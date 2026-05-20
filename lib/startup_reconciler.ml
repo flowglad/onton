@@ -26,9 +26,9 @@ type t = {
 
 (** Discover existing worktrees and match them to patches by branch name.
     Returns matched worktrees and an optional error string if listing failed. *)
-let recover_worktrees ~process_mgr ~repo_root ~patches =
+let recover_worktrees_with (module W : Worktree.S) ~patches =
   let worktrees, list_error =
-    try (Worktree.list_with_branches ~process_mgr ~repo_root, None) with
+    try (W.list_with_branches (), None) with
     | Eio.Exn.Io _ as exn ->
         ( [],
           Some
@@ -57,7 +57,7 @@ let find_stale_busy ~agents =
   List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
       if agent.busy then Some agent.patch_id else None)
 
-module Make (F : Forge.S) = struct
+module Make (F : Forge.S) (W : Worktree.S) = struct
   (** Query GitHub REST API for a branch, returning discovery info for the first
       non-CLOSED PR. *)
   let discover_pr ~branch =
@@ -67,8 +67,9 @@ module Make (F : Forge.S) = struct
         Ok (Some (pr_number, base_branch, merged))
     | Error err -> Error (F.show_error err)
 
-  let reconcile ~patches ?(repo_root = ".") ?process_mgr ?(agents = [])
-      ?pre_recovered_worktrees () =
+  let recover_worktrees ~patches = recover_worktrees_with (module W) ~patches
+
+  let reconcile ~patches ?(agents = []) ?pre_recovered_worktrees () =
     let results =
       Eio.Fiber.List.map ~max_fibers:8
         (fun (patch : Patch.t) ->
@@ -88,11 +89,9 @@ module Make (F : Forge.S) = struct
           | Error err -> (discovered, (patch.Patch.id, err) :: errors))
     in
     let recovered_worktrees, worktree_error =
-      match (pre_recovered_worktrees, process_mgr) with
-      | Some wts, _ -> (wts, None)
-      | None, Some pm -> recover_worktrees ~process_mgr:pm ~repo_root ~patches
-      | None, None ->
-          ([], Some "worktree recovery skipped: no process_mgr provided")
+      match pre_recovered_worktrees with
+      | Some wts -> (wts, None)
+      | None -> recover_worktrees ~patches
     in
     let reset_pending = find_stale_busy ~agents in
     {
