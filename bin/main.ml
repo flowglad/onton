@@ -1902,9 +1902,7 @@ struct
                       if Option.is_some agent.Patch_agent.worktree_path then
                         None
                       else
-                        let path =
-                          resolve_worktree_path ~patch_id ~agent ()
-                        in
+                        let path = resolve_worktree_path ~patch_id ~agent () in
                         let default =
                           Worktree.worktree_dir ~project_name ~patch_id
                         in
@@ -2606,8 +2604,8 @@ struct
                         in
                         let rebase_result, wt_path =
                           execute_worktree_plan ~patch_id ~agent
-                            ~fetch_lock:fetch_mutex
-                            ~fail_label:"rebase" ~ancestor_ids
+                            ~fetch_lock:fetch_mutex ~fail_label:"rebase"
+                            ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
                         in
                         (match rebase_result with

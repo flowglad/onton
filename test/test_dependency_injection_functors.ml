@@ -14,17 +14,13 @@ module Fake_worktree : Worktree.S = struct
   let resolve_main_root () = assert false
   let is_checked_out_in_repo_root _ = assert false
   let remote_branch_exists _ = assert false
-
   let create ~project_name:_ ~patch_id:_ ~branch:_ ~base_ref:_ = assert false
-
   let remove _ = assert false
   let detect_branch ~path:_ = assert false
   let list_with_branches () = assert false
   let find_for_branch _ = assert false
   let prune_admin () = assert false
-
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
-
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
   let git_status ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
@@ -66,4 +62,5 @@ let _check_narrowed :
 
 let () =
   print_endline
-    "Patch 1: Worktree_setup.Make(W)(Env).ensure_worktree narrowed signature: OK"
+    "Patch 1: Worktree_setup.Make(W)(Env).ensure_worktree narrowed signature: \
+     OK"

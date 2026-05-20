@@ -5,6 +5,8 @@
     owns that logic so both callers go through the same code path — same
     persistence, same hook invocation, same logging. *)
 
+(** Construction-time environment for worktree provisioning. Values here are
+    fixed for the lifetime of the module instance and never vary per call. *)
 module type ENV = sig
   val runtime : Runtime.t
   val clock : float Eio.Time.clock_ty Eio.Time.clock
@@ -14,8 +16,6 @@ module type ENV = sig
   val worktree_mutex : Eio.Mutex.t
   val hook_mutex : Eio.Mutex.t
 end
-(** Construction-time environment for worktree provisioning. Values here are
-    fixed for the lifetime of the module instance and never vary per call. *)
 
 module Make (_ : Worktree.S) (_ : ENV) : sig
   val resolve_worktree_path :
