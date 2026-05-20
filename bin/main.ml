@@ -453,8 +453,13 @@ let pluralize ?plural n singular =
   let many = match plural with Some p -> p | None -> singular ^ "s" in
   Printf.sprintf "%d %s" n (if n = 1 then singular else many)
 
-module Make_fibers (Forge : Onton.Forge.S with type error = Github.error) =
+module Make_fibers
+    (Forge : Onton.Forge.S with type error = Github.error)
+    (W : Worktree.S) =
 struct
+  module Worktree_setup = Worktree_setup.Make (W)
+  module Session_driver = Session_driver.Make (W)
+
   (** Execute declarative GitHub effects and record successful observations back
       into durable state. *)
   let execute_github_effects ~runtime effects =
@@ -859,18 +864,16 @@ struct
 
       Returns the final result paired with the worktree path so callers can use
       it for follow-on effects like [Worktree.force_push_with_lease]. *)
-  let execute_worktree_plan ~runtime ~process_mgr ~clock ~fs ~repo_root
-      ~project_name ~patch_id ~(agent : Patch_agent.t) ~user_config
-      ~worktree_mutex ~hook_mutex ~fetch_lock ~fail_label ~ancestor_ids
-      (plan : Worktree_plan.t) =
+  let execute_worktree_plan ~runtime ~clock ~fs ~project_name ~patch_id
+      ~(agent : Patch_agent.t) ~user_config ~worktree_mutex ~hook_mutex
+      ~fetch_lock ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
     let default_path = Worktree.worktree_dir ~project_name ~patch_id in
     let rec loop ~path = function
       | [] -> (Worktree.Ok, path)
       | Worktree_plan.Ensure_worktree :: rest -> (
           match
-            ensure_worktree ~runtime ~process_mgr ~clock ~fs ~repo_root
-              ~project_name ~patch_id ~agent ~user_config ~worktree_mutex
-              ~hook_mutex ()
+            ensure_worktree ~runtime ~clock ~fs ~project_name ~patch_id ~agent
+              ~user_config ~worktree_mutex ~hook_mutex ()
           with
           | Some p -> loop ~path:p rest
           | None ->
@@ -882,7 +885,7 @@ struct
                   (Printf.sprintf "%s failed: worktree missing" fail_label),
                 path ))
       | Worktree_plan.Fetch_origin :: rest -> (
-          match Worktree.fetch_origin ~fetch_lock ~process_mgr ~path with
+          match W.fetch_origin ~fetch_lock ~path with
           | Result.Ok () -> loop ~path rest
           | Result.Error msg ->
               log_event runtime ~patch_id
@@ -891,10 +894,7 @@ struct
                   (Printf.sprintf "fetch before rebase failed: %s" msg),
                 path ))
       | Worktree_plan.Rebase_onto target :: rest -> (
-          match
-            Worktree.rebase_onto ~process_mgr ~path ~target ~project_name
-              ~ancestor_ids
-          with
+          match W.rebase_onto ~path ~target ~project_name ~ancestor_ids with
           | Worktree.Ok -> loop ~path rest
           | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->
               (r, path))
@@ -2108,9 +2108,8 @@ struct
                         None
                       else
                         let path =
-                          resolve_worktree_path ~process_mgr
-                            ~repo_root:config.repo_root ~project_name ~patch_id
-                            ~agent ()
+                          resolve_worktree_path ~project_name ~patch_id ~agent
+                            ()
                         in
                         let default =
                           Worktree.worktree_dir ~project_name ~patch_id
@@ -2220,10 +2219,7 @@ struct
                    | Some a -> Branch.to_string a.Patch_agent.branch
                    | None -> "unknown")
              in
-             let main_root =
-               Worktree.resolve_main_root ~process_mgr
-                 ~repo_root:config.repo_root
-             in
+             let main_root = W.resolve_main_root () in
              log_event runtime ~patch_id
                (Printf.sprintf
                   "Cannot work on patch — branch %s is checked out in the main \
@@ -2247,7 +2243,6 @@ struct
       ~pr_registry ~findings_registry ~review_clients ~transcripts ~event_log
       ?status_msg () =
     let main = config.main_branch in
-    let process_mgr = Eio.Stdenv.process_mgr env in
     let clock = Eio.Stdenv.clock env in
     let fs = Eio.Stdenv.fs env in
     let set_status ~level ~text ?expires_at () =
@@ -2290,11 +2285,10 @@ struct
         ~prompt ~agent ~on_pr_detected ~complexity =
       match pick_backend ~complexity with
       | Backend_registry.Ephemeral backend, _decision ->
-          Session_driver.run ~kind ~runtime ~process_mgr ~clock ~fs
-            ~project_name ~patch_id ~repo_root:config.repo_root ~prompt ~agent
-            ~owner:config.github_owner ~repo:config.github_repo ~on_pr_detected
-            ~transcripts ~user_config:config.user_config ~worktree_mutex
-            ~hook_mutex ~backend ~complexity
+          Session_driver.run ~kind ~runtime ~clock ~fs ~project_name ~patch_id
+            ~prompt ~agent ~owner:config.github_owner ~repo:config.github_repo
+            ~on_pr_detected ~transcripts ~user_config:config.user_config
+            ~worktree_mutex ~hook_mutex ~backend ~complexity
       | Backend_registry.Long_lived backend, decision -> (
           let patch_agent_model_result =
             match
@@ -2330,12 +2324,11 @@ struct
                     Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
                     session
               in
-              Session_driver.run_long_lived ~sw ~kind ~runtime ~process_mgr
-                ~clock ~fs ~project_name ~patch_id ~repo_root:config.repo_root
-                ~prompt ~agent ~owner:config.github_owner
-                ~repo:config.github_repo ~on_pr_detected ~transcripts
-                ~user_config:config.user_config ~worktree_mutex ~hook_mutex
-                ~session ~complexity)
+              Session_driver.run_long_lived ~sw ~kind ~runtime ~clock ~fs
+                ~project_name ~patch_id ~prompt ~agent
+                ~owner:config.github_owner ~repo:config.github_repo
+                ~on_pr_detected ~transcripts ~user_config:config.user_config
+                ~worktree_mutex ~hook_mutex ~session ~complexity)
     in
     let shutdown_finished_long_lived_sessions ~sw () =
       let finished =
@@ -2546,8 +2539,7 @@ struct
                                       (fun orch ->
                                         Orchestrator.mark_running orch patch_id);
                                     match
-                                      ensure_worktree ~runtime ~process_mgr
-                                        ~clock ~fs ~repo_root:config.repo_root
+                                      ensure_worktree ~runtime ~clock ~fs
                                         ~project_name ~patch_id ~agent
                                         ~user_config:config.user_config
                                         ~worktree_mutex ~hook_mutex
@@ -2786,10 +2778,10 @@ struct
                                 patch_id)
                         in
                         let rebase_result, wt_path =
-                          execute_worktree_plan ~runtime ~process_mgr ~clock ~fs
-                            ~repo_root:config.repo_root ~project_name ~patch_id
-                            ~agent ~user_config:config.user_config
-                            ~worktree_mutex ~hook_mutex ~fetch_lock:fetch_mutex
+                          execute_worktree_plan ~runtime ~clock ~fs
+                            ~project_name ~patch_id ~agent
+                            ~user_config:config.user_config ~worktree_mutex
+                            ~hook_mutex ~fetch_lock:fetch_mutex
                             ~fail_label:"rebase" ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
                         in
@@ -2827,8 +2819,8 @@ struct
                             ~f:(fun Orchestrator.Push_branch ->
                               let branch = agent.Patch_agent.branch in
                               let result =
-                                Worktree.force_push_with_lease ~process_mgr
-                                  ~path:wt_path ~branch ~base:new_base
+                                W.force_push_with_lease ~path:wt_path ~branch
+                                  ~base:new_base
                               in
                               (match result with
                               | Worktree.Push_ok ->
@@ -3058,8 +3050,7 @@ struct
                                         render_base_changed_prefix base_change
                                       in
                                       let wt_path_opt =
-                                        ensure_worktree ~runtime ~process_mgr
-                                          ~clock ~fs ~repo_root:config.repo_root
+                                        ensure_worktree ~runtime ~clock ~fs
                                           ~project_name ~patch_id ~agent
                                           ~user_config:config.user_config
                                           ~worktree_mutex ~hook_mutex ()
@@ -3078,16 +3069,13 @@ struct
                                           agent.Patch_agent.pr_number
                                         in
                                         let rebase_still_in_progress =
-                                          Worktree.rebase_in_progress
-                                            ~process_mgr ~path:wt_path
+                                          W.rebase_in_progress ~path:wt_path
                                         in
                                         let git_status =
-                                          Worktree.git_status ~process_mgr
-                                            ~path:wt_path
+                                          W.git_status ~path:wt_path
                                         in
                                         let git_diff =
-                                          Worktree.conflict_diff ~process_mgr
-                                            ~path:wt_path
+                                          W.conflict_diff ~path:wt_path
                                         in
                                         Event_log.log_conflict_delivery
                                           event_log ~patch_id ~path:wt_path
@@ -3174,10 +3162,7 @@ struct
                                                  snap.Runtime.orchestrator)
                                               patch_id)
                                       in
-                                      if
-                                        Worktree.rebase_in_progress ~process_mgr
-                                          ~path:wt_path
-                                      then (
+                                      if W.rebase_in_progress ~path:wt_path then (
                                         log_event runtime ~patch_id
                                           "Delivering merge-conflict — rebase \
                                            already in progress";
@@ -3186,9 +3171,8 @@ struct
                                          (possibly stale) local tracking ref.
                                          See Worktree_plan.for_merge_conflict. *)
                                         let conflict_info =
-                                          Worktree
-                                          .read_in_progress_conflict_info
-                                            ~process_mgr ~path:wt_path
+                                          W.read_in_progress_conflict_info
+                                            ~path:wt_path
                                             ~target:
                                               (Types.Branch.of_string
                                                  ("origin/" ^ base))
@@ -3204,10 +3188,8 @@ struct
                                      against fresh refs, not the stale
                                      local tracking ref. *)
                                         let rebase_result, _wt_path =
-                                          execute_worktree_plan ~runtime
-                                            ~process_mgr ~clock ~fs
-                                            ~repo_root:config.repo_root
-                                            ~project_name ~patch_id ~agent
+                                          execute_worktree_plan ~runtime ~clock
+                                            ~fs ~project_name ~patch_id ~agent
                                             ~user_config:config.user_config
                                             ~worktree_mutex ~hook_mutex
                                             ~fetch_lock:fetch_mutex
@@ -3278,9 +3260,8 @@ struct
                                                 agent.Patch_agent.branch
                                               in
                                               let result =
-                                                Worktree.force_push_with_lease
-                                                  ~process_mgr ~path:wt_path
-                                                  ~branch
+                                                W.force_push_with_lease
+                                                  ~path:wt_path ~branch
                                                   ~base:
                                                     (Types.Branch.of_string base)
                                               in
@@ -3381,9 +3362,8 @@ struct
                                           ~f:Branch.to_string
                                       in
                                       let wt_path =
-                                        resolve_worktree_path ~process_mgr
-                                          ~repo_root:config.repo_root
-                                          ~project_name ~patch_id ~agent ()
+                                        resolve_worktree_path ~project_name
+                                          ~patch_id ~agent ()
                                       in
                                       let agents_md =
                                         read_optional_file
@@ -4415,8 +4395,14 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           ~owner:config.github_owner ~repo:config.github_repo
       in
       let module Forge = (val forge) in
-      let module Reconciler = Startup_reconciler.Make (Forge) in
-      let module Fibers = Make_fibers (Forge) in
+      let process_mgr = Eio.Stdenv.process_mgr env in
+      let worktree_client =
+        Worktree.make ~process_mgr ~repo_root:config.repo_root
+      in
+      let module WorktreeClient = (val worktree_client) in
+      let module Reconciler = Startup_reconciler.Make (Forge) (WorktreeClient)
+      in
+      let module Fibers = Make_fibers (Forge) (WorktreeClient) in
       let open Fibers in
       let pr_registry = Pr_registry.create () in
       (* Seed registry from any agents that already have a PR number — covers
@@ -4429,7 +4415,6 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
               Pr_registry.register pr_registry
                 ~patch_id:agent.Patch_agent.patch_id ~pr_number));
       let branch_of = build_branch_map gameplan ~default:config.main_branch in
-      let process_mgr = Eio.Stdenv.process_mgr env in
       let clock = Eio.Stdenv.clock env in
       let session_timeout = 1800.0 in
       let setsid_exec =
@@ -4520,14 +4505,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             Orchestrator.all_agents snap.Runtime.orchestrator)
       in
       let pre_worktrees, pre_wt_error =
-        Startup_reconciler.recover_worktrees ~process_mgr
-          ~repo_root:config.repo_root ~patches:gameplan.Gameplan.patches
+        Reconciler.recover_worktrees ~patches:gameplan.Gameplan.patches
       in
       let reconciliation_fiber () =
         let startup =
           Reconciler.reconcile ~patches:gameplan.Gameplan.patches
-            ~repo_root:config.repo_root ~process_mgr ~agents:pre_agents
-            ~pre_recovered_worktrees:pre_worktrees ()
+            ~agents:pre_agents ~pre_recovered_worktrees:pre_worktrees ()
         in
         let errored_ids =
           Base.List.map startup.Startup_reconciler.errors

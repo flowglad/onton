@@ -270,6 +270,62 @@ val rebase_in_progress : process_mgr:_ Eio.Process.mgr -> path:string -> bool
 (** Returns [true] if there is a rebase currently in progress in the worktree at
     [path] (checks for [rebase-merge] or [rebase-apply] in the gitdir). *)
 
+module type S = sig
+  val resolve_main_root : unit -> string
+  val is_checked_out_in_repo_root : Types.Branch.t -> bool
+  val remote_branch_exists : string -> bool
+
+  val create :
+    project_name:string ->
+    patch_id:Types.Patch_id.t ->
+    branch:Types.Branch.t ->
+    base_ref:string ->
+    t
+
+  val remove : t -> unit
+  val detect_branch : path:string -> Types.Branch.t
+  val list_with_branches : unit -> (string * Types.Branch.t) list
+  val find_for_branch : Types.Branch.t -> string option
+  val prune_admin : unit -> unit
+
+  val run_hook :
+    clock:_ Eio.Time.clock ->
+    script:string ->
+    cwd:Eio.Fs.dir_ty Eio.Path.t ->
+    env:(string * string) list ->
+    unit ->
+    (unit, string) Result.t
+
+  val fetch_origin :
+    fetch_lock:Eio.Mutex.t -> path:string -> (unit, string) Result.t
+
+  val git_status : path:string -> string
+  val conflict_diff : path:string -> string
+
+  val rebase_onto :
+    path:string ->
+    target:Types.Branch.t ->
+    project_name:string ->
+    ancestor_ids:Types.Patch_id.t list ->
+    rebase_result
+
+  val read_in_progress_conflict_info :
+    path:string ->
+    target:Types.Branch.t ->
+    project_name:string ->
+    ancestor_ids:Types.Patch_id.t list ->
+    conflict_info option
+
+  val force_push_with_lease :
+    path:string -> branch:Types.Branch.t -> base:Types.Branch.t -> push_result
+
+  val rebase_in_progress : path:string -> bool
+end
+
+type client = (module S)
+
+val make : process_mgr:_ Eio.Process.mgr -> repo_root:string -> client
+
 val find_for_branch :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->

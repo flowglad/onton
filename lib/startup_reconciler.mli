@@ -46,34 +46,28 @@ type t = {
     contains per-patch PR discovery failures. [worktree_errors] contains global
     worktree listing failures (not per-patch). *)
 
-val recover_worktrees :
-  process_mgr:_ Eio.Process.mgr ->
-  repo_root:string ->
-  patches:Patch.t list ->
-  worktree_recovery list * string option
-(** Discover existing worktrees and match them to patches by branch name.
-    Returns matched worktrees and an optional error string if listing failed.
-    Can be called before [reconcile] to capture worktree state early. *)
-
-module Make (_ : Forge.S) : sig
+module Make (_ : Forge.S) (_ : Worktree.S) : sig
   val discover_pr :
     branch:Branch.t -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
   (** Query the GitHub REST API for a branch, returning the first non-CLOSED PR
       as [(pr_number, base_branch, merged)] or [None]. *)
 
+  val recover_worktrees :
+    patches:Patch.t list -> worktree_recovery list * string option
+  (** Discover existing worktrees and match them to patches by branch name.
+      Returns matched worktrees and an optional error string if listing failed.
+      Can be called before [reconcile] to capture worktree state early. *)
+
   val reconcile :
     patches:Patch.t list ->
-    ?repo_root:string ->
-    ?process_mgr:_ Eio.Process.mgr ->
     ?agents:Patch_agent.t list ->
     ?pre_recovered_worktrees:worktree_recovery list ->
     unit ->
     t
-  (** [reconcile ~patches ?repo_root ?process_mgr ?agents
-       ?pre_recovered_worktrees ()] queries GitHub REST API for each patch's
-      branch to find existing PRs and identifies stale busy agents from [agents]
-      (default [[]]). When [pre_recovered_worktrees] is provided, uses it
-      directly instead of scanning the filesystem (avoids racing with concurrent
-      worktree creation). Otherwise discovers worktrees under [repo_root]
-      (default ["."]) using [process_mgr]. *)
+  (** [reconcile ~patches ?agents ?pre_recovered_worktrees ()] queries GitHub
+      REST API for each patch's branch to find existing PRs and identifies stale
+      busy agents from [agents] (default [[]]). When [pre_recovered_worktrees]
+      is provided, uses it directly instead of scanning the filesystem (avoids
+      racing with concurrent worktree creation). Otherwise discovers worktrees
+      through the injected [Worktree.S]. *)
 end
