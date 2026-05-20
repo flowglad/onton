@@ -9,7 +9,7 @@ module Make (Env : ENV) = struct
   let run ~patch_id f =
     let cancelled = ref false in
     let exception_raised = ref false in
-    Exn.protect
+    Stdlib.Fun.protect
       ~finally:(fun () ->
         let reason =
           if !cancelled then Orchestrator.Cancelled
@@ -36,7 +36,7 @@ module Make (Env : ENV) = struct
               (Printf.sprintf
                  "Forced complete (%s) — runner fiber exited with busy=true"
                  (Orchestrator.show_force_complete_reason reason))))
-      ~f:(fun () ->
+      (fun () ->
         try f () with
         | Eio.Cancel.Cancelled _ as exn ->
             cancelled := true;

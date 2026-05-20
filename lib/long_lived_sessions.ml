@@ -17,6 +17,8 @@ module Make (Session_driver : SESSION_DRIVER) = struct
   let shutdown_all t =
     Stdlib.Hashtbl.iter
       (fun _patch_id session ->
-        Session_driver.shutdown_long_lived_session session)
+        try Session_driver.shutdown_long_lived_session session with
+        | Eio.Cancel.Cancelled _ -> ()
+        | _ -> ())
       t
 end
