@@ -39,7 +39,17 @@ module Make
     (W : Worktree.S)
     (Env : Poller_env.S) =
 struct
-  module WS = Worktree_setup.Make (W) (Env)
+  module WS_Env : Worktree_setup.ENV = struct
+    let runtime = Env.runtime
+    let clock = Env.clock
+    let fs = Env.fs
+    let project_name = Env.project_name
+    let user_config = Env.user_config
+    let worktree_mutex = Env.worktree_mutex
+    let hook_mutex = Env.hook_mutex
+  end
+
+  module WS = Worktree_setup.Make (W) (WS_Env)
 
   (** Per-agent poll intent, collected inside [read] and executed outside. *)
   type poll_intent =
