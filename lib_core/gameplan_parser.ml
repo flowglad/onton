@@ -242,6 +242,22 @@ let json_string_list json key =
       List.filter_map items ~f:(function `String s -> Some s | _ -> None)
   | _ -> []
 
+let json_required_string_list json key =
+  let open Yojson.Safe.Util in
+  match json |> member key with
+  | `Null -> []
+  | `List items ->
+      List.map items ~f:(fun item ->
+          match item with
+          | `String s -> s
+          | _ ->
+              raise
+                (Type_error
+                   (Printf.sprintf "%s[] must contain only strings" key, item)))
+  | value ->
+      raise
+        (Type_error (Printf.sprintf "%s must be an array of strings" key, value))
+
 let json_patch_id_list json key =
   let open Yojson.Safe.Util in
   match json |> member key with
@@ -527,7 +543,9 @@ let parse_json_string input =
                 | _ -> []
               in
               let precedents = json_precedents p in
-              let required_context = json_string_list p "requiredContext" in
+              let required_context =
+                json_required_string_list p "requiredContext"
+              in
               {
                 Types.Patch.id;
                 title;
