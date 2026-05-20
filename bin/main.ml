@@ -307,7 +307,6 @@ module Make_fibers
     (Forge : Onton.Forge.S with type error = Github.error)
     (W : Worktree.S) =
 struct
-
   (** Execute declarative GitHub effects and record successful observations back
       into durable state. *)
   let execute_github_effects ~runtime effects =
