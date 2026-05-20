@@ -3298,7 +3298,6 @@ struct
         in
         amloop ());
     loop sw
-
 end
 
 (** {1 Main entry point} *)
@@ -3937,14 +3936,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         [
           reconciliation_fiber;
           (fun () -> poller_fiber (module Reconciler : STARTUP_RECONCILER));
-          (Persistence_fiber_runner.run ~transcripts);
+          Persistence_fiber_runner.run ~transcripts;
         ]
       in
       if config.headless then
         Eio.Fiber.all
-          ((Headless.run ~stdout)
-          :: (fun () -> runner_fiber ())
-          :: common_fibers)
+          (Headless.run ~stdout :: (fun () -> runner_fiber ()) :: common_fibers)
       else
         let tui_state = Tui_state.create () in
         let raw_state = Term.Raw.enter () in

@@ -77,7 +77,8 @@ module Make (Env : Headless_env.S) = struct
               stdout));
       if Stdlib.Hashtbl.length seen > 2000 then (
         let current = Stdlib.Hashtbl.create 256 in
-        List.iter entries ~f:(fun key -> Stdlib.Hashtbl.replace current key true);
+        List.iter entries ~f:(fun key ->
+            Stdlib.Hashtbl.replace current key true);
         Stdlib.Hashtbl.reset seen;
         Stdlib.Hashtbl.iter (fun k v -> Stdlib.Hashtbl.replace seen k v) current);
       Eio.Time.sleep Env.clock 1.0;

@@ -7,5 +7,6 @@ module Persistence_env : sig
 end
 
 module Make (_ : Persistence_env.S) : sig
-  val run : transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t -> unit -> unit
+  val run :
+    transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t -> unit -> unit
 end
