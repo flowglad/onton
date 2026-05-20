@@ -14,7 +14,7 @@ module Make (_ : Worktree.S) : sig
   val run :
     kind:Types.Operation_kind.t option ->
     runtime:Runtime.t ->
-    clock:_ Eio.Time.clock ->
+    clock:float Eio.Time.clock_ty Eio.Time.clock ->
     fs:Eio.Fs.dir_ty Eio.Path.t ->
     project_name:string ->
     patch_id:Types.Patch_id.t ->
@@ -60,7 +60,7 @@ module Make (_ : Worktree.S) : sig
     sw:Eio.Switch.t ->
     kind:Types.Operation_kind.t option ->
     runtime:Runtime.t ->
-    clock:_ Eio.Time.clock ->
+    clock:float Eio.Time.clock_ty Eio.Time.clock ->
     fs:Eio.Fs.dir_ty Eio.Path.t ->
     project_name:string ->
     patch_id:Types.Patch_id.t ->

@@ -1,8 +1,34 @@
 open Base
 
-module Make (W : Worktree.S) = struct
-  let resolve_worktree_path ~project_name ~patch_id ~(agent : Patch_agent.t)
-      ?branch () =
+module type ENV = sig
+  val runtime : Runtime.t
+  val clock : float Eio.Time.clock_ty Eio.Time.clock
+  val fs : Eio.Fs.dir_ty Eio.Path.t
+  val project_name : string
+  val user_config : User_config.t
+  val worktree_mutex : Eio.Mutex.t
+  val hook_mutex : Eio.Mutex.t
+end
+
+module type S = sig
+  val resolve_worktree_path :
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    ?branch:Types.Branch.t ->
+    unit ->
+    string
+
+  val ensure_worktree :
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    ?branch:Types.Branch.t ->
+    ?base_ref:string ->
+    unit ->
+    string option
+end
+
+module Make (W : Worktree.S) (Env : ENV) : S = struct
+  let resolve_worktree_path ~patch_id ~(agent : Patch_agent.t) ?branch () =
     (* When the caller passes [?branch], they're asking for that branch's
      worktree specifically — the agent's stored [worktree_path] may be from
      a previous branch and would be stale. Only short-circuit on the stored
@@ -17,17 +43,21 @@ module Make (W : Worktree.S) = struct
         let path =
           match found with
           | Some p -> p
-          | None -> Worktree.worktree_dir ~project_name ~patch_id
+          | None ->
+              Worktree.worktree_dir ~project_name:Env.project_name ~patch_id
         in
         path
 
-  let ensure_worktree ~runtime ~clock ~fs ~project_name ~patch_id
-      ~(agent : Patch_agent.t) ~(user_config : User_config.t) ~worktree_mutex
-      ~hook_mutex ?branch ?base_ref () =
+  let ensure_worktree ~patch_id ~(agent : Patch_agent.t) ?branch ?base_ref () =
+    let runtime = Env.runtime in
+    let clock = Env.clock in
+    let fs = Env.fs in
+    let project_name = Env.project_name in
+    let user_config = Env.user_config in
+    let worktree_mutex = Env.worktree_mutex in
+    let hook_mutex = Env.hook_mutex in
     let log_event = Runtime_logging.log_event in
-    let path =
-      resolve_worktree_path ~project_name ~patch_id ~agent ?branch ()
-    in
+    let path = resolve_worktree_path ~patch_id ~agent ?branch () in
     if Stdlib.Sys.file_exists path then (
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);

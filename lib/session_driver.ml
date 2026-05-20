@@ -126,8 +126,6 @@ let%test_module "extract_pr_number_from_text" =
   end)
 
 module Make (W : Worktree.S) = struct
-  module Worktree_setup = Worktree_setup.Make (W)
-
   let session_mode = session_mode
   let extract_pr_number_from_text = extract_pr_number_from_text
 
@@ -153,10 +151,17 @@ module Make (W : Worktree.S) = struct
           | `Resume id -> (Some id, false)
           | `Fresh -> (None, true)
         in
-        match
-          Worktree_setup.ensure_worktree ~runtime ~clock ~fs ~project_name
-            ~patch_id ~agent ~user_config ~worktree_mutex ~hook_mutex ()
-        with
+        let module Env = struct
+          let runtime = runtime
+          let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+          let fs = fs
+          let project_name = project_name
+          let user_config = user_config
+          let worktree_mutex = worktree_mutex
+          let hook_mutex = hook_mutex
+        end in
+        let module WS = Worktree_setup.Make (W) (Env) in
+        match WS.ensure_worktree ~patch_id ~agent () with
         | None ->
             Runtime.update_orchestrator runtime (fun orch ->
                 Orchestrator.apply_session_result orch patch_id
