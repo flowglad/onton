@@ -115,9 +115,10 @@ let make ~repo_root =
         git_success ~repo_root [ "rev-parse"; "--verify"; ref_name ]
       in
       let head_probes () =
-        if resolves "refs/heads/main" then "main"
-        else if resolves "refs/heads/master" then "master"
-        else "main"
+        if resolves "refs/heads/main" then Types.Branch.of_string "main"
+        else if resolves "refs/heads/master" then
+          Types.Branch.of_string "master"
+        else Types.Branch.of_string "main"
       in
       match
         git_stdout ~repo_root [ "symbolic-ref"; "refs/remotes/origin/HEAD" ]
@@ -129,9 +130,9 @@ let make ~repo_root =
               Base.String.chop_prefix_exn ref_path ~prefix
             else ref_path
           in
-          Types.Branch.of_string
-            (if resolves (prefix ^ candidate) then candidate else head_probes ())
-      | None -> Types.Branch.of_string (head_probes ())
+          if resolves (prefix ^ candidate) then Types.Branch.of_string candidate
+          else head_probes ()
+      | None -> head_probes ()
 
     (** Verify that the configured [main_branch] resolves as
         [refs/remotes/origin/<branch>] in the local clone. If the local tracking
