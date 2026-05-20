@@ -7,11 +7,15 @@ let token_pattern_strings =
     "github_pat_[A-Za-z0-9_]+";
     "ghp_[A-Za-z0-9_]+";
     "gho_[A-Za-z0-9_]+";
+    "ghu_[A-Za-z0-9_]+";
     "ghs_[A-Za-z0-9_]+";
+    "glpat-[A-Za-z0-9_-]+";
     "sk-ant-oat01-[A-Za-z0-9_-]+";
     "sk-ant-api03-[A-Za-z0-9_-]+";
+    "sk-ant-[A-Za-z0-9_-]+";
     "sk-[A-Za-z0-9_-]{20,}";
-    "xoxb-[A-Za-z0-9-]+";
+    "xox[baprs]-[A-Za-z0-9-]+";
+    "xapp-[A-Za-z0-9-]+";
     "AKIA[0-9A-Z]+";
   ]
 
@@ -47,12 +51,16 @@ let%test "scrub_token_patterns redacts known token formats" =
       [
         "ghp_abcdef123";
         "gho_abcdef123";
+        "ghu_abcdef123";
         "ghs_abcdef123";
         "github_pat_abcdef123";
+        "glpat-abcdef123";
         "sk-ant-oat01-secret";
         "sk-ant-api03-secret";
+        "sk-ant-secret";
         "sk-abcdefghijklmnopqrstuvwxyz123456";
         "xoxb-123-456";
+        "xapp-123-456";
         "AKIAABCDEF123456";
       ]
   in
@@ -60,14 +68,18 @@ let%test "scrub_token_patterns redacts known token formats" =
   String.is_substring output ~substring:redacted
   && (not (String.is_substring output ~substring:"ghp_abcdef123"))
   && (not (String.is_substring output ~substring:"gho_abcdef123"))
+  && (not (String.is_substring output ~substring:"ghu_abcdef123"))
   && (not (String.is_substring output ~substring:"ghs_abcdef123"))
   && (not (String.is_substring output ~substring:"github_pat_abcdef123"))
+  && (not (String.is_substring output ~substring:"glpat-abcdef123"))
   && (not (String.is_substring output ~substring:"sk-ant-oat01-secret"))
   && (not (String.is_substring output ~substring:"sk-ant-api03-secret"))
+  && (not (String.is_substring output ~substring:"sk-ant-secret"))
   && (not
         (String.is_substring output
            ~substring:"sk-abcdefghijklmnopqrstuvwxyz123456"))
   && (not (String.is_substring output ~substring:"xoxb-123-456"))
+  && (not (String.is_substring output ~substring:"xapp-123-456"))
   && not (String.is_substring output ~substring:"AKIAABCDEF123456")
 
 let%test "scrub_token_patterns leaves non-token sk-prefix strings alone" =
@@ -82,3 +94,6 @@ let%test "redact_env_entry masks values by sensitive env name" =
   String.equal
     (redact_env_entry "CLAUDE_CODE_OAUTH_TOKEN=plain")
     ("CLAUDE_CODE_OAUTH_TOKEN=" ^ redacted)
+
+let%test "leaves ordinary env values intact" =
+  String.equal (redact_env_entry "PATH=/bin") "PATH=/bin"

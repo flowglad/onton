@@ -24,9 +24,6 @@ val managed_repo_dir : string -> string
 val event_log_path : string -> string
 (** Path to the project's append-only event log (JSONL). *)
 
-val sessions_dir : string -> string
-(** Path to the project's per-session artifact directory root. *)
-
 val config_path : string -> string
 (** Path to the project's persisted config JSON. *)
 
@@ -78,6 +75,9 @@ val gameplan_json_path : string -> string
 val stored_gameplan_path : string -> string
 (** Returns the path to whichever stored gameplan file exists ([gameplan.md]
     takes precedence; falls back to [gameplan.json]). *)
+
+val sessions_dir : string -> string
+(** Path to the per-session artifact directory root ([sessions/]). *)
 
 val pr_body_artifact_path :
   project_name:string -> patch_id:Types.Patch_id.t -> string
