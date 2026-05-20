@@ -82,3 +82,67 @@ let _check_narrowed :
     unit ->
     string option =
   WS.ensure_worktree
+
+(** Patch 2 compile-time signature check.
+
+    Verifies that [Session_driver.Make(W)(Env)] exposes [run] and
+    [run_long_lived] with only per-session inputs after the stable session
+    environment is captured as a functor argument. *)
+
+module Fake_sd_env : Session_driver.ENV = struct
+  let runtime = Fake_env.runtime
+
+  (* Eio resources cannot be created outside Eio_main.run. Obj.magic () is
+     safe here because both Worktree_setup.Make and Session_driver.Make consist
+     entirely of [let f = ...] definitions with no top-level side-effects, so
+     these values are never dereferenced at functor-application time. If either
+     Make body gains a top-level expression that dereferences Env.clock or
+     Env.fs, this test will segfault — that is the intended alarm. *)
+  let clock : float Eio.Time.clock_ty Eio.Time.clock = Obj.magic ()
+  let fs : Eio.Fs.dir_ty Eio.Path.t = Obj.magic ()
+  let worktree_mutex : Eio.Mutex.t = Obj.magic ()
+  let hook_mutex : Eio.Mutex.t = Obj.magic ()
+  let project_name = ""
+  let owner = ""
+  let repo = ""
+  let transcripts = Stdlib.Hashtbl.create 0
+  let user_config = { User_config.on_worktree_create = None }
+end
+
+module SD = Session_driver.Make (Fake_worktree) (Fake_sd_env)
+
+(* Compile-time assertion: run accepts only per-session inputs.
+   Runtime, clock, fs, project_name, owner, repo, transcripts, user_config,
+   and mutexes are gone from the call surface — they live in Fake_sd_env now. *)
+let _check_narrowed_run :
+    kind:Operation_kind.t option ->
+    patch_id:Patch_id.t ->
+    prompt:string ->
+    agent:Patch_agent.t ->
+    on_pr_detected:(Pr_number.t -> unit) ->
+    backend:Llm_backend.t ->
+    complexity:int option ->
+    [ `Ok | `Failed | `Retry_push ] * (string * string) list =
+  SD.run
+
+(* Compile-time assertion: run_long_lived accepts only per-session inputs. *)
+let _check_narrowed_run_long_lived :
+    sw:Eio.Switch.t ->
+    kind:Operation_kind.t option ->
+    patch_id:Patch_id.t ->
+    prompt:string ->
+    agent:Patch_agent.t ->
+    on_pr_detected:(Pr_number.t -> unit) ->
+    session:SD.long_lived_session ->
+    complexity:int option ->
+    [ `Ok | `Failed | `Retry_push ] * (string * string) list =
+  SD.run_long_lived
+
+let () =
+  print_endline
+    "Patch 1: Worktree_setup.Make(W)(Env).ensure_worktree narrowed signature: \
+     OK";
+  print_endline
+    "Patch 2: Session_driver.Make(W)(Env).run narrowed signature: OK";
+  print_endline
+    "Patch 2: Session_driver.Make(W)(Env).run_long_lived narrowed signature: OK"

@@ -10,23 +10,28 @@
     several modules. The backend below is already abstracted; this is the single
     place where "run a session for this patch" lives. *)
 
-module Make (_ : Worktree.S) : sig
+(** Construction-time environment for session driving. Values here are fixed for
+    the lifetime of the module instance and never vary per call. *)
+module type ENV = sig
+  val runtime : Runtime.t
+  val clock : float Eio.Time.clock_ty Eio.Time.clock
+  val fs : Eio.Fs.dir_ty Eio.Path.t
+  val project_name : string
+  val owner : string
+  val repo : string
+  val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
+  val user_config : User_config.t
+  val worktree_mutex : Eio.Mutex.t
+  val hook_mutex : Eio.Mutex.t
+end
+
+module Make (_ : Worktree.S) (_ : ENV) : sig
   val run :
     kind:Types.Operation_kind.t option ->
-    runtime:Runtime.t ->
-    clock:float Eio.Time.clock_ty Eio.Time.clock ->
-    fs:Eio.Fs.dir_ty Eio.Path.t ->
-    project_name:string ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
-    owner:string ->
-    repo:string ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
-    transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
-    user_config:User_config.t ->
-    worktree_mutex:Eio.Mutex.t ->
-    hook_mutex:Eio.Mutex.t ->
     backend:Llm_backend.t ->
     complexity:int option ->
     [ `Ok | `Failed | `Retry_push ] * (string * string) list
@@ -59,20 +64,10 @@ module Make (_ : Worktree.S) : sig
   val run_long_lived :
     sw:Eio.Switch.t ->
     kind:Types.Operation_kind.t option ->
-    runtime:Runtime.t ->
-    clock:float Eio.Time.clock_ty Eio.Time.clock ->
-    fs:Eio.Fs.dir_ty Eio.Path.t ->
-    project_name:string ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
-    owner:string ->
-    repo:string ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
-    transcripts:(Types.Patch_id.t, string) Stdlib.Hashtbl.t ->
-    user_config:User_config.t ->
-    worktree_mutex:Eio.Mutex.t ->
-    hook_mutex:Eio.Mutex.t ->
     session:long_lived_session ->
     complexity:int option ->
     [ `Ok | `Failed | `Retry_push ] * (string * string) list

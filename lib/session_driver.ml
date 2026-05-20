@@ -125,15 +125,35 @@ let%test_module "extract_pr_number_from_text" =
         (pr 12)
   end)
 
-module Make (W : Worktree.S) = struct
+module type ENV = sig
+  val runtime : Runtime.t
+  val clock : float Eio.Time.clock_ty Eio.Time.clock
+  val fs : Eio.Fs.dir_ty Eio.Path.t
+  val project_name : string
+  val owner : string
+  val repo : string
+  val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
+  val user_config : User_config.t
+  val worktree_mutex : Eio.Mutex.t
+  val hook_mutex : Eio.Mutex.t
+end
+
+module Make (W : Worktree.S) (Env : ENV) = struct
   let session_mode = session_mode
   let extract_pr_number_from_text = extract_pr_number_from_text
 
+  module WS = Worktree_setup.Make (W) (Env)
+
   let run_with_backend ~session_mode_for_agent
-      ~(kind : Types.Operation_kind.t option) ~runtime ~clock ~fs ~project_name
-      ~patch_id ~prompt ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected
-      ~transcripts ~user_config ~worktree_mutex ~hook_mutex ~backend_name
-      ~run_backend ~complexity =
+      ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
+      ~(agent : Patch_agent.t) ~on_pr_detected ~backend_name ~run_backend
+      ~complexity =
+    let runtime = Env.runtime in
+    let fs = Env.fs in
+    let project_name = Env.project_name in
+    let owner = Env.owner in
+    let repo = Env.repo in
+    let transcripts = Env.transcripts in
     let log_event = Runtime_logging.log_event in
     let log_stream_entry = Runtime_logging.log_stream_entry in
     match session_mode_for_agent agent with
@@ -151,16 +171,6 @@ module Make (W : Worktree.S) = struct
           | `Resume id -> (Some id, false)
           | `Fresh -> (None, true)
         in
-        let module Env = struct
-          let runtime = runtime
-          let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
-          let fs = fs
-          let project_name = project_name
-          let user_config = user_config
-          let worktree_mutex = worktree_mutex
-          let hook_mutex = hook_mutex
-        end in
-        let module WS = Worktree_setup.Make (W) (Env) in
         match WS.ensure_worktree ~patch_id ~agent () with
         | None ->
             Runtime.update_orchestrator runtime (fun orch ->
@@ -789,13 +799,10 @@ module Make (W : Worktree.S) = struct
                 apply_result_and_emit_complete final_session_result;
                 (final_user_result, List.rev !tool_failures)))
 
-  let run ~(kind : Types.Operation_kind.t option) ~runtime ~clock ~fs
-      ~project_name ~patch_id ~prompt ~(agent : Patch_agent.t) ~owner ~repo
-      ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-      ~backend ~complexity =
-    run_with_backend ~kind ~runtime ~clock ~fs ~project_name ~patch_id ~prompt
-      ~agent ~owner ~repo ~on_pr_detected ~transcripts ~user_config
-      ~worktree_mutex ~hook_mutex ~session_mode_for_agent:session_mode
+  let run ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
+      ~(agent : Patch_agent.t) ~on_pr_detected ~backend ~complexity =
+    run_with_backend ~kind ~patch_id ~prompt ~agent ~on_pr_detected
+      ~session_mode_for_agent:session_mode
       ~backend_name:backend.Llm_backend.name
       ~run_backend:backend.Llm_backend.run_streaming ~complexity
 
@@ -878,10 +885,8 @@ module Make (W : Worktree.S) = struct
         | Some handle -> session.shutdown handle);
         match handle with None -> () | Some handle -> session.shutdown handle)
 
-  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime ~clock
-      ~fs ~project_name ~patch_id ~prompt ~(agent : Patch_agent.t) ~owner ~repo
-      ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-      ~session ~complexity =
+  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~patch_id
+      ~prompt ~(agent : Patch_agent.t) ~on_pr_detected ~session ~complexity =
     let (Long_lived_session session) = session in
     let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
         ~session_uuid:_ ~complexity:_ ~on_event =
@@ -969,9 +974,7 @@ module Make (W : Worktree.S) = struct
                 session.failure_reason <- Some message;
                 failed_result message)
     in
-    run_with_backend ~kind ~runtime ~clock ~fs ~project_name ~patch_id ~prompt
-      ~agent ~owner ~repo ~on_pr_detected ~transcripts ~user_config
-      ~worktree_mutex ~hook_mutex
+    run_with_backend ~kind ~patch_id ~prompt ~agent ~on_pr_detected
       ~session_mode_for_agent:(fun _ -> `Fresh)
       ~backend_name:session.name ~run_backend ~complexity
 end
