@@ -1892,10 +1892,10 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
                 };
               { f with Review_service.id = key }))
 
-(** Translate a [Github] result into a [Poll_outcome.t]. Pure-modulo-show;
-    the boundary lets [Poll_cycle.classify] reason about timeouts the same
-    way it reasons about other failures, which is the invariant the
-    interleaving property tests exercise. *)
+(** Translate a [Github] result into a [Poll_outcome.t]. Pure-modulo-show; the
+    boundary lets [Poll_cycle.classify] reason about timeouts the same way it
+    reasons about other failures, which is the invariant the interleaving
+    property tests exercise. *)
 let poll_outcome_of_github_result ~timeout = function
   | Ok pr_state -> Poll_outcome.Ok_pr_state pr_state
   | Error (Github.Transport_error { msg; _ })
@@ -1989,8 +1989,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
           | Poll_cycle.Skip_fork _ ->
               if mark_skip_logged patch_id then
                 log_event runtime ~patch_id
-                  (Printf.sprintf
-                     "Skipping PR #%d — fork PRs are not supported"
+                  (Printf.sprintf "Skipping PR #%d — fork PRs are not supported"
                      (Pr_number.to_int pr_number));
               None
           | Poll_cycle.Rediscover_pr { head_branch } ->
@@ -2022,8 +2021,8 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         ~pr_number:new_pr ~base_branch ~merged)
               | Ok None ->
                   log_event runtime ~patch_id
-                    "No open PR found — cleared stale PR state, will create \
-                     on next session";
+                    "No open PR found — cleared stale PR state, will create on \
+                     next session";
                   Pr_registry.unregister pr_registry ~patch_id;
                   Runtime.update_orchestrator runtime (fun orch ->
                       Orchestrator.clear_pr orch patch_id)
@@ -2061,8 +2060,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
               let worktree_candidate =
                 let agent =
                   Runtime.read runtime (fun snap ->
-                      Orchestrator.find_agent snap.Runtime.orchestrator
-                        patch_id)
+                      Orchestrator.find_agent snap.Runtime.orchestrator patch_id)
                 in
                 match agent with
                 | None -> None

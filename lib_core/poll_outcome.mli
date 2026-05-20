@@ -1,9 +1,9 @@
 (** Per-patch terminal outcome of a single GitHub poll attempt.
 
-    The effectful poll driver translates [Github.error] and the success
-    case into this typed variant before handing off to the pure
-    [Poll_cycle.classify]. Modeling timeouts as a normal variant lets
-    the planning layer reason about hangs as bounded events.
+    The effectful poll driver translates [Github.error] and the success case
+    into this typed variant before handing off to the pure
+    [Poll_cycle.classify]. Modeling timeouts as a normal variant lets the
+    planning layer reason about hangs as bounded events.
 
     See {!Poll_cycle} for the pure consumer and the per-patch isolation
     properties that this typing enables. *)

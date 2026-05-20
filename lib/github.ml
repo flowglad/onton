@@ -461,8 +461,8 @@ let meth_to_string = function
   | `PATCH -> "PATCH"
   | `PUT -> "PUT"
 
-let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path
-    ?(query = []) ?body () =
+let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
+    ?body () =
   let meth_s = meth_to_string meth in
   let do_request () : (string, error) Result.t =
     try
@@ -543,7 +543,9 @@ let check_repo_access ~net ~clock ?timeout t =
 
 let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in
-  match request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body () with
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
+  with
   | Ok resp_str -> parse_response ~owner:t.owner resp_str
   | Error _ as e -> e
 
@@ -608,9 +610,7 @@ let update_pr_body ~net ~clock ?timeout t ~pr_number ~body =
       (Types.Pr_number.to_int pr_number)
   in
   let req_body = `Assoc [ ("body", `String body) ] |> Yojson.Safe.to_string in
-  match
-    request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body ()
-  with
+  match request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
@@ -649,9 +649,7 @@ let update_pr_base ~net ~clock ?timeout t ~pr_number ~base =
     `Assoc [ ("base", `String (Types.Branch.to_string base)) ]
     |> Yojson.Safe.to_string
   in
-  match
-    request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body ()
-  with
+  match request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
 

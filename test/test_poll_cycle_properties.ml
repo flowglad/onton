@@ -7,16 +7,15 @@ open Onton_core.Types
 
     The poll cycle is split into:
     - an effectful per-patch driver (one fiber per patch, with
-      [Eio.Time.with_timeout] around the HTTPS call) that translates the
-      result into a {!Poll_outcome.t};
-    - a pure [Poll_cycle.classify] / [Poll_cycle.plan] that turns the
-      outcome into a [classification].
+      [Eio.Time.with_timeout] around the HTTPS call) that translates the result
+      into a {!Poll_outcome.t};
+    - a pure [Poll_cycle.classify] / [Poll_cycle.plan] that turns the outcome
+      into a [classification].
 
-    These properties exercise the pure side under arbitrary
-    {!Poll_outcome.t} interleavings to assert the guarantees the production
-    bug exploited: a hang on one patch cannot leak into another patch's
-    state, and the planning layer is total over the entire outcome
-    variant. *)
+    These properties exercise the pure side under arbitrary {!Poll_outcome.t}
+    interleavings to assert the guarantees the production bug exploited: a hang
+    on one patch cannot leak into another patch's state, and the planning layer
+    is total over the entire outcome variant. *)
 
 (* -- Generators -- *)
 
@@ -25,26 +24,34 @@ let gen_patch_id =
 
 let gen_pr_number = QCheck2.Gen.(map Pr_number.of_int (int_range 1 9999))
 let gen_was_merged = QCheck2.Gen.bool
-
 let gen_pr_state = Onton_test_support.Test_generators.gen_pr_state
 
 let gen_outcome =
   let open QCheck2.Gen in
-  let timed_out = map (fun s -> Poll_outcome.Timed_out { seconds = s })
-    (float_range 1.0 60.0) in
+  let timed_out =
+    map (fun s -> Poll_outcome.Timed_out { seconds = s }) (float_range 1.0 60.0)
+  in
   let transport =
-    map (fun msg -> Poll_outcome.Transport_failed { msg })
-      (string_size (int_range 0 32)) in
+    map
+      (fun msg -> Poll_outcome.Transport_failed { msg })
+      (string_size (int_range 0 32))
+  in
   let http =
-    map2 (fun status msg -> Poll_outcome.Http_failed { status; msg })
+    map2
+      (fun status msg -> Poll_outcome.Http_failed { status; msg })
       (oneof_list [ 400; 401; 403; 404; 422; 500; 502; 503 ])
-      (string_size (int_range 0 32)) in
+      (string_size (int_range 0 32))
+  in
   let graphql =
-    map (fun msgs -> Poll_outcome.Graphql_failed msgs)
-      (list_size (int_range 0 4) (string_size (int_range 0 16))) in
+    map
+      (fun msgs -> Poll_outcome.Graphql_failed msgs)
+      (list_size (int_range 0 4) (string_size (int_range 0 16)))
+  in
   let parse =
-    map (fun msg -> Poll_outcome.Json_parse_failed msg)
-      (string_size (int_range 0 32)) in
+    map
+      (fun msg -> Poll_outcome.Json_parse_failed msg)
+      (string_size (int_range 0 32))
+  in
   let ok = map (fun pr -> Poll_outcome.Ok_pr_state pr) gen_pr_state in
   oneof [ ok; timed_out; transport; http; graphql; parse ]
 
@@ -106,9 +113,7 @@ let prop_plan_preserves_order =
   let open QCheck2 in
   Test.make ~name:"Poll_cycle.plan preserves input ordering by patch_id"
     ~count:500 ~print:print_inputs gen_inputs (fun inputs ->
-      let input_ids =
-        List.map inputs ~f:(fun i -> i.Poll_cycle.patch_id)
-      in
+      let input_ids = List.map inputs ~f:(fun i -> i.Poll_cycle.patch_id) in
       let plan_ids =
         List.map (Poll_cycle.plan inputs) ~f:(fun (pid, _, _) -> pid)
       in
@@ -132,10 +137,12 @@ let prop_classify_per_input_only =
     (Gen.pair gen_input gen_inputs)
     (fun (input, surrounding) ->
       let plans_with =
-        Poll_cycle.plan (input :: List.filter surrounding ~f:(fun i ->
-                                       not
-                                         (Patch_id.equal i.Poll_cycle.patch_id
-                                            input.Poll_cycle.patch_id)))
+        Poll_cycle.plan
+          (input
+          :: List.filter surrounding ~f:(fun i ->
+              not
+                (Patch_id.equal i.Poll_cycle.patch_id input.Poll_cycle.patch_id))
+          )
       in
       let plans_alone = Poll_cycle.plan [ input ] in
       match (plans_with, plans_alone) with
@@ -216,9 +223,7 @@ let prop_permutation_invariance =
         List.map plans ~f:(fun (pid, _, cls) ->
             (Patch_id.to_string pid, Poll_cycle.show_classification cls))
         |> List.sort ~compare:(fun (a1, b1) (a2, b2) ->
-               match String.compare a1 a2 with
-               | 0 -> String.compare b1 b2
-               | n -> n)
+            match String.compare a1 a2 with 0 -> String.compare b1 b2 | n -> n)
       in
       List.equal
         (fun (a1, b1) (a2, b2) -> String.equal a1 a2 && String.equal b1 b2)

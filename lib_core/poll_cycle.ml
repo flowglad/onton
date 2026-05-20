@@ -6,11 +6,11 @@ open Types
 
     The poll cycle has a hard separation between an effectful side (per-patch
     HTTPS call, with [Eio.Time.with_timeout]) and a pure side (turning each
-    patch's outcome into an orchestrator action). This module is the pure
-    side. It exists so the per-patch-isolation guarantee can be property-
-    tested without an event loop: if one patch's poll times out, every other
-    patch's classification must be identical to the run where that patch was
-    excluded. *)
+    patch's outcome into an orchestrator action). This module is the pure side.
+    It exists so the per-patch-isolation guarantee can be property tested
+    without an event loop: if one patch's poll times out, every other patch's
+    classification must be identical to the run where that patch was excluded.
+*)
 
 type input = {
   patch_id : Patch_id.t;
@@ -31,15 +31,15 @@ type classification =
           worktree_path from effectful checks) and apply via
           [Patch_controller.apply_poll_result]. *)
   | Skip_fork of { head_branch : Branch.t option }
-      (** [pr_state.is_fork] was true. The driver should log once per patch
-          and do nothing else. *)
+      (** [pr_state.is_fork] was true. The driver should log once per patch and
+          do nothing else. *)
   | Rediscover_pr of { head_branch : Branch.t option }
-      (** [pr_state.closed] was true. The driver must call [discover_pr] to
-          find a replacement PR (effectful — separate I/O path). *)
+      (** [pr_state.closed] was true. The driver must call [discover_pr] to find
+          a replacement PR (effectful — separate I/O path). *)
   | Log_error of { message : string }
-      (** Transport / timeout / HTTP / GraphQL / parse error. The driver
-          logs the message; the orchestrator state for this patch is
-          unchanged this tick. *)
+      (** Transport / timeout / HTTP / GraphQL / parse error. The driver logs
+          the message; the orchestrator state for this patch is unchanged this
+          tick. *)
 [@@deriving show, eq]
 
 let classify (input : input) : classification =
@@ -77,8 +77,7 @@ let classify (input : input) : classification =
               (String.concat ~sep:"; " msgs);
         }
   | Poll_outcome.Json_parse_failed msg ->
-      Log_error
-        { message = Printf.sprintf "Poll error — JSON parse: %s" msg }
+      Log_error { message = Printf.sprintf "Poll error — JSON parse: %s" msg }
 
 let plan inputs : (Patch_id.t * Pr_number.t * classification) list =
   List.map inputs ~f:(fun input ->
@@ -133,9 +132,7 @@ let%test "plan preserves input order" =
   let ids = List.map (plan inputs) ~f:(fun (pid, _, _) -> pid) in
   List.equal Patch_id.equal ids
     [
-      Patch_id.of_string "p1";
-      Patch_id.of_string "p2";
-      Patch_id.of_string "p3";
+      Patch_id.of_string "p1"; Patch_id.of_string "p2"; Patch_id.of_string "p3";
     ]
 
 let%test "classify ignores other patches in the list" =
