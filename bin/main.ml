@@ -1509,15 +1509,6 @@ struct
     in
     loop ()
 
-  (** Per-agent poll intent, collected inside [read] and executed outside. *)
-  type poll_intent =
-    | Skip_no_pr of Patch_id.t
-    | Poll of {
-        patch_id : Patch_id.t;
-        pr_number : Pr_number.t;
-        was_merged : bool;
-      }
-
   (** Poller fiber — periodically polls GitHub for PR state changes and
       reconciles. *)
   let poll_review_backends ~runtime ~patch_id ~findings_registry ~review_clients
