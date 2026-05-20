@@ -308,7 +308,12 @@ let build_branch_map (gameplan : Gameplan.t) ~default =
     Base.List.fold gameplan.Gameplan.patches
       ~init:(Base.Map.empty (module Patch_id))
       ~f:(fun acc (p : Patch.t) ->
-        Base.Map.set acc ~key:p.Patch.id ~data:p.Patch.branch)
+        match Base.Map.add acc ~key:p.Patch.id ~data:p.Patch.branch with
+        | `Ok acc -> acc
+        | `Duplicate ->
+            failwith
+              (Printf.sprintf "Duplicate patch id in gameplan: %s"
+                 (Patch_id.to_string p.Patch.id)))
   in
   fun pid -> Base.Option.value (Base.Map.find map pid) ~default
 
