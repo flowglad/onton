@@ -5,9 +5,9 @@
     owns that logic so both callers go through the same code path — same
     persistence, same hook invocation, same logging. *)
 
-module type ENV = Run_env.S
 (** Construction-time environment for worktree provisioning. Values here are
     fixed for the lifetime of the module instance and never vary per call. *)
+module type ENV = Run_env.S
 
 module type S = sig
   val resolve_worktree_path :
