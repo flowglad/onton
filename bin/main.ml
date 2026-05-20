@@ -74,41 +74,7 @@ let read_file_noerr path =
         ~finally:(fun () -> close_in_noerr ic)
         (fun () -> read_channel_all ic)
 
-(** Run [git -C repo_root ...] using argv rather than the shell, capture stdout
-    and stderr, and close all process pipes on exception paths. *)
-let run_git_capture ~repo_root args =
-  let argv = Array.of_list ("git" :: "-C" :: repo_root :: args) in
-  let env = Git_env.clean_env () in
-  match Unix.open_process_args_full "git" argv env with
-  | exception _ -> None
-  | in_ch, out_ch, err_ch ->
-      let status = ref None in
-      Stdlib.Fun.protect
-        ~finally:(fun () ->
-          if Option.is_none !status then
-            try ignore (Unix.close_process_full (in_ch, out_ch, err_ch))
-            with _ -> ())
-        (fun () ->
-          close_out_noerr out_ch;
-          let stdout = read_channel_all in_ch in
-          let stderr = read_channel_all err_ch in
-          let s = Unix.close_process_full (in_ch, out_ch, err_ch) in
-          status := Some s;
-          Some { status = s; stdout; stderr })
-
-let git_stdout ~repo_root args =
-  match run_git_capture ~repo_root args with
-  | Some { status = Unix.WEXITED 0; stdout; _ } ->
-      Some (Base.String.strip stdout)
-  | Some { status = Unix.WEXITED _; _ }
-  | Some { status = Unix.WSIGNALED _; _ }
-  | Some { status = Unix.WSTOPPED _; _ }
-  | None ->
-      None
-
-let git_success ~repo_root args = Option.is_some (git_stdout ~repo_root args)
-
-let format_git_failure { stdout; stderr; _ } =
+let format_process_failure { stdout; stderr; _ } =
   let detail =
     [ stderr; stdout ]
     |> Base.List.map ~f:(fun s -> Base.String.strip s)
@@ -116,22 +82,6 @@ let format_git_failure { stdout; stderr; _ } =
     |> String.concat "\n"
   in
   if Base.String.is_empty detail then "no output" else detail
-
-(** Infer the forge owner/repo from [git remote get-url origin] in [repo_root].
-    Delegates URL parsing to
-    {!Onton_core.Github_target.infer_owner_repo_from_url} so the regex that pins
-    the host stays in the forge module. *)
-let infer_owner_repo ~repo_root =
-  try
-    match run_git_capture ~repo_root [ "remote"; "get-url"; "origin" ] with
-    | Some { status = Unix.WEXITED 0; stdout; _ } ->
-        Github_target.infer_owner_repo_from_url stdout
-    | Some { status = Unix.WEXITED _; _ }
-    | Some { status = Unix.WSIGNALED _; _ }
-    | Some { status = Unix.WSTOPPED _; _ }
-    | None ->
-        None
-  with _ -> None
 
 (** Spawn [git] (not [git -C ...]) with a clean environment, capture stdout and
     stderr. Used for [git clone] before any working tree exists. *)
@@ -206,21 +156,8 @@ let clone_managed_repo ~owner ~repo ~target_dir =
   | Some ({ status = Unix.WSTOPPED _; _ } as cap) ->
       Error
         (Printf.sprintf "git clone %s/%s failed: %s" owner repo
-           (format_git_failure cap))
+           (format_process_failure cap))
   | None -> Error (Printf.sprintf "git clone %s/%s: could not spawn" owner repo)
-
-(** Fetch the [origin] remote in an existing onton-managed repo. Best-effort — a
-    network-down resume should not fail the whole session. *)
-let fetch_managed_repo ~repo_root =
-  match run_git_capture ~repo_root [ "fetch"; "--prune"; "origin" ] with
-  | Some { status = Unix.WEXITED 0; _ } -> Ok ()
-  | Some ({ status = Unix.WEXITED _; _ } as cap)
-  | Some ({ status = Unix.WSIGNALED _; _ } as cap)
-  | Some ({ status = Unix.WSTOPPED _; _ } as cap) ->
-      Error
-        (Printf.sprintf "git fetch in %s failed: %s" repo_root
-           (format_git_failure cap))
-  | None -> Error (Printf.sprintf "git fetch in %s: could not spawn" repo_root)
 
 (** Ensure the onton-managed checkout for [project_name] is present and
     up-to-date. Clones if absent, fetches if present. Authenticates via
@@ -241,7 +178,8 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
     try Array.length (Stdlib.Sys.readdir repo_root) = 0 with _ -> false
   in
   if repo_root_exists && has_git_dir then (
-    match fetch_managed_repo ~repo_root with
+    let module Repo = (val Repo_git.make ~repo_root) in
+    match Repo.fetch_managed_repo () with
     | Ok () -> Ok repo_root
     | Error msg ->
         (* Log to stderr but don't abort — the user may be offline and the
@@ -288,35 +226,6 @@ let infer_github_token () =
             ""
       with _ -> "")
 
-(** Detect the default branch of a git repository. Tries: 1.
-    [git symbolic-ref refs/remotes/origin/HEAD], verifying the target tracking
-    ref actually resolves (origin/HEAD is set at clone time and is NOT refreshed
-    by [git fetch] — a stale value can point at a branch that has since been
-    renamed or deleted upstream). 2. [git rev-parse --verify refs/heads/main] →
-    "main" 3. [git rev-parse --verify refs/heads/master] → "master" 4. Fallback:
-    "main" *)
-let infer_default_branch ~repo_root =
-  let resolves ref_name =
-    git_success ~repo_root [ "rev-parse"; "--verify"; ref_name ]
-  in
-  let head_probes () =
-    if resolves "refs/heads/main" then "main"
-    else if resolves "refs/heads/master" then "master"
-    else "main"
-  in
-  match
-    git_stdout ~repo_root [ "symbolic-ref"; "refs/remotes/origin/HEAD" ]
-  with
-  | Some ref_path ->
-      let prefix = "refs/remotes/origin/" in
-      let candidate =
-        if Base.String.is_prefix ref_path ~prefix then
-          Base.String.chop_prefix_exn ref_path ~prefix
-        else ref_path
-      in
-      if resolves (prefix ^ candidate) then candidate else head_probes ()
-  | None -> head_probes ()
-
 let default_backend = "claude"
 
 let known_backends =
@@ -360,65 +269,6 @@ let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
   match errors with [] -> Ok () | errs -> Error errs
-
-(** Verify that the configured [main_branch] resolves as
-    [refs/remotes/origin/<branch>] in the local clone. If the local tracking ref
-    is missing, attempt one [git fetch origin] and re-check. That best-effort
-    fetch runs during startup and may block on a network round-trip when origin
-    is slow or unreachable. Returns an actionable error when the branch cannot
-    be resolved — e.g., when it was renamed or deleted upstream and the stored
-    config still names the old branch. Without this guard the rebase loop in
-    [Worktree.rebase_onto] would fail every poll with
-    [merge-base --is-ancestor: Not a valid object name] and silently retry
-    forever. *)
-let validate_branch_resolves ~repo_root ~main_branch =
-  let branch_str = Branch.to_string main_branch in
-  let ref_name = "refs/remotes/origin/" ^ branch_str in
-  let resolves () =
-    git_success ~repo_root [ "rev-parse"; "--verify"; ref_name ]
-  in
-  if resolves () then Ok ()
-  else
-    let () = Printf.eprintf "onton: fetching origin to verify branch...\n%!" in
-    match run_git_capture ~repo_root [ "fetch"; "origin"; "--quiet" ] with
-    | Some { status = Unix.WEXITED 0; _ } ->
-        if resolves () then Ok ()
-        else
-          Error
-            (Printf.sprintf
-               "configured main branch %S does not resolve as origin/%s in %s\n\
-               \  (the branch may have been renamed or deleted upstream, or \
-                the local clone has not fetched it).\n\
-               \  Refresh the local default and retry:\n\
-               \    git -C %s remote set-head origin -a\n\
-               \    git -C %s fetch --prune\n\
-               \  Or override at launch with --main-branch <name>."
-               branch_str branch_str repo_root repo_root repo_root)
-    | Some ({ status = Unix.WEXITED _; _ } as failed)
-    | Some ({ status = Unix.WSIGNALED _; _ } as failed)
-    | Some ({ status = Unix.WSTOPPED _; _ } as failed) ->
-        Error
-          (Printf.sprintf
-             "configured main branch %S does not resolve as origin/%s in %s, \
-              and git fetch origin failed:\n\
-             \  %s\n\
-             \  Refresh the local default and retry:\n\
-             \    git -C %s remote set-head origin -a\n\
-             \    git -C %s fetch --prune\n\
-             \  Or override at launch with --main-branch <name>."
-             branch_str branch_str repo_root
-             (format_git_failure failed)
-             repo_root repo_root)
-    | None ->
-        Error
-          (Printf.sprintf
-             "configured main branch %S does not resolve as origin/%s in %s, \
-              and git fetch origin could not be started.\n\
-             \  Refresh the local default and retry:\n\
-             \    git -C %s remote set-head origin -a\n\
-             \    git -C %s fetch --prune\n\
-             \  Or override at launch with --main-branch <name>."
-             branch_str branch_str repo_root repo_root repo_root)
 
 (** {1 PR number registry}
 
@@ -4007,7 +3857,8 @@ let resolve_github_credentials ~github_token ~repo_root =
     if Base.String.is_empty t then infer_github_token () else t
   in
   let owner, repo =
-    match infer_owner_repo ~repo_root with
+    let module Repo = (val Repo_git.make ~repo_root) in
+    match Repo.infer_owner_repo () with
     | Some (o, r) -> (o, r)
     | None -> ("", "")
   in
@@ -4038,7 +3889,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
   let resolve_branch ~repo_root mb_opt =
     match mb_opt with
     | Some b -> b
-    | None -> Branch.of_string (infer_default_branch ~repo_root)
+    | None ->
+        let module Repo = (val Repo_git.make ~repo_root) in
+        Repo.infer_default_branch ()
   in
   match (project, gameplan_path) with
   | None, None ->
@@ -4323,10 +4176,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       Stdlib.exit 1
   | Ok () ->
       Git_env.set_github_token config.github_token;
-      (match
-         validate_branch_resolves ~repo_root:config.repo_root
-           ~main_branch:config.main_branch
-       with
+      let module Repo = (val Repo_git.make ~repo_root:config.repo_root) in
+      (match Repo.validate_branch_resolves ~main_branch:config.main_branch with
       | Ok () -> ()
       | Error msg ->
           Printf.eprintf "Error: %s\n" msg;
