@@ -80,7 +80,8 @@ let scrub_env_contents raw =
 let scrub_file_contents ~name raw =
   let first_pass =
     if String.equal name "config.json" then scrub_config_json raw
-    else if String.is_suffix name ~suffix:"env.txt" then scrub_env_contents raw
+    else if String.equal (Stdlib.Filename.basename name) "env.txt" then
+      scrub_env_contents raw
     else raw
   in
   Token_scrub.scrub_token_patterns first_pass
@@ -240,7 +241,9 @@ let collect_files ~project_name ~version =
       ~meta_summaries:session_files.meta_summaries
   in
   let manifest_json =
-    manifest_to_yojson manifest |> Yojson.Safe.to_string ~std:true
+    manifest_to_yojson manifest
+    |> Yojson.Safe.to_string ~std:true
+    |> Token_scrub.scrub_token_patterns
   in
   {
     timestamp;
