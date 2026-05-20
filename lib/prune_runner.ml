@@ -62,7 +62,7 @@ let run_prune () =
   if List.is_empty slugs then (
     Stdlib.Printf.printf "No stored projects to consider.\n";
     0)
-  else
+  else (
     let removed = ref [] in
     let kept = ref [] in
     let errors = ref [] in
@@ -147,4 +147,4 @@ let run_prune () =
          Remove them manually once they are no longer needed:\n";
       List.iter (List.rev leftover_worktrees) ~f:(fun (_, p) ->
           Stdlib.Printf.printf "  rm -rf %s\n" p));
-    if not (List.is_empty !errors) then 1 else 0
+    if not (List.is_empty !errors) then 1 else 0)
