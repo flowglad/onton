@@ -26,8 +26,8 @@ type t = {
 
 (** Query GitHub REST API for a branch, returning discovery info for the first
     non-CLOSED PR. *)
-let discover_pr ~net ~github ~branch =
-  match Github.list_prs ~net github ~branch ~state:`All () with
+let discover_pr ~net ~clock ~github ~branch =
+  match Github.list_prs ~net ~clock github ~branch ~state:`All () with
   | Ok [] -> Ok None
   | Ok ((pr_number, base_branch, merged) :: _) ->
       Ok (Some (pr_number, base_branch, merged))
@@ -66,12 +66,12 @@ let find_stale_busy ~agents =
   List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
       if agent.busy then Some agent.patch_id else None)
 
-let reconcile ~net ~github ~patches ?(repo_root = ".") ?process_mgr
+let reconcile ~net ~clock ~github ~patches ?(repo_root = ".") ?process_mgr
     ?(agents = []) ?pre_recovered_worktrees () =
   let results =
     Eio.Fiber.List.map ~max_fibers:8
       (fun (patch : Patch.t) ->
-        let r = discover_pr ~net ~github ~branch:patch.branch in
+        let r = discover_pr ~net ~clock ~github ~branch:patch.branch in
         (patch, r))
       patches
   in

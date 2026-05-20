@@ -48,6 +48,7 @@ type t = {
 
 val discover_pr :
   net:_ Eio.Net.t ->
+  clock:_ Eio.Time.clock ->
   github:Github.t ->
   branch:Branch.t ->
   ((Pr_number.t * Branch.t * bool) option, string) Result.t
@@ -65,6 +66,7 @@ val recover_worktrees :
 
 val reconcile :
   net:_ Eio.Net.t ->
+  clock:_ Eio.Time.clock ->
   github:Github.t ->
   patches:Patch.t list ->
   ?repo_root:string ->

@@ -443,7 +443,7 @@ end
 
 (** Execute declarative GitHub effects and record successful observations back
     into durable state. *)
-let execute_github_effects ~runtime ~net ~github effects =
+let execute_github_effects ~runtime ~net ~clock ~github effects =
   Base.List.iter effects ~f:(fun github_effect ->
       let label =
         match github_effect with
@@ -460,9 +460,9 @@ let execute_github_effects ~runtime ~net ~github effects =
         let result =
           match github_effect with
           | Patch_controller.Set_pr_draft { patch_id = _; pr_number; draft } ->
-              Github.set_draft ~net github ~pr_number ~draft
+              Github.set_draft ~net ~clock github ~pr_number ~draft
           | Patch_controller.Set_pr_base { patch_id = _; pr_number; base } ->
-              Github.update_pr_base ~net github ~pr_number ~base
+              Github.update_pr_base ~net ~clock github ~pr_number ~base
         in
         match result with
         | Ok () ->
@@ -579,7 +579,7 @@ let log_event runtime ?patch_id msg =
     runner tick fires. Retries continue until the consecutive failure cap is
     reached, at which point reconciliation stops issuing merge calls until the
     user toggles automerge off/on. *)
-let reconcile_and_execute_automerge ~runtime ~net ~github =
+let reconcile_and_execute_automerge ~runtime ~net ~clock ~github =
   let now = Unix.gettimeofday () in
   let decisions =
     Runtime.update_orchestrator_returning runtime (fun orch ->
@@ -689,7 +689,8 @@ let reconcile_and_execute_automerge ~runtime ~net ~github =
           else
             try
               match
-                Github.merge_pr ~net github ~pr_number ~merge_method:`Squash
+                Github.merge_pr ~net ~clock github ~pr_number
+                  ~merge_method:`Squash
               with
               | Ok Github.Merge_succeeded ->
                   inflight_cleared := true;
@@ -759,7 +760,7 @@ let read_artifact_file = read_optional_file
     session-level signals (e.g. a Missing artifact alongside a failed Write tool
     call indicates the agent was blocked mid-call, not that it chose to skip
     notes). *)
-let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
+let apply_pr_body_artifact ~runtime ~net ~clock ~github ~project_name ~patch_id
     ~pr_number ~patch ~gameplan : [ `Ok | `Missing | `Empty | `Patch_failed ] =
   let artifact_path =
     Project_store.pr_body_artifact_path ~project_name ~patch_id
@@ -784,7 +785,7 @@ let apply_pr_body_artifact ~runtime ~net ~github ~project_name ~patch_id
         Printf.sprintf "%s%s\n\n## Implementation Notes\n\n%s" description
           spec_suffix (String.trim notes)
       in
-      match Github.update_pr_body ~net github ~pr_number ~body with
+      match Github.update_pr_body ~net ~clock github ~pr_number ~body with
       | Ok () ->
           log_event runtime ~patch_id
             (Printf.sprintf "pr-body: PATCHed PR #%d"
@@ -1015,10 +1016,10 @@ let normalize_paste text =
   let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
   Base.String.tr text ~target:'\r' ~replacement:' '
 
-let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
-    ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
-    ~project_name ~show_help ~status_msg ~sorted_patch_ids ~input_mode
-    ~prompt_line ~patches_start_row ~patches_scroll_offset
+let input_fiber ~runtime ~process_mgr ~net ~clock ~github ~list_selected
+    ~detail_scroll ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode
+    ~pr_registry ~project_name ~show_help ~status_msg ~sorted_patch_ids
+    ~input_mode ~prompt_line ~patches_start_row ~patches_scroll_offset
     ~patches_visible_count ~owner ~repo ~resolve_routing =
   let buf = Tui_input.Edit_buffer.create () in
   let selected_pid () =
@@ -1234,7 +1235,7 @@ let input_fiber ~runtime ~process_mgr ~net ~github ~list_selected ~detail_scroll
                               text = Printf.sprintf "Fetching PR #%d…" n;
                               expires_at = None;
                             };
-                        match Github.pr_state ~net github pr_number with
+                        match Github.pr_state ~net ~clock github pr_number with
                         | Error err ->
                             status_msg := None;
                             log_event runtime ~patch_id
@@ -1891,10 +1892,32 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
                 };
               { f with Review_service.id = key }))
 
+(** Translate a [Github] result into a [Poll_outcome.t]. Pure-modulo-show; the
+    boundary lets [Poll_cycle.classify] reason about timeouts the same way it
+    reasons about other failures, which is the invariant the interleaving
+    property tests exercise. *)
+let poll_outcome_of_github_result = function
+  | Ok pr_state -> Poll_outcome.Ok_pr_state pr_state
+  | Error (Github.Timeout { seconds; _ }) -> Poll_outcome.Timed_out { seconds }
+  | Error (Github.Transport_error { msg; _ }) ->
+      Poll_outcome.Transport_failed { msg }
+  | Error (Github.Http_error { status; body; _ }) ->
+      Poll_outcome.Http_failed { status; msg = body }
+  | Error (Github.Graphql_error msgs) -> Poll_outcome.Graphql_failed msgs
+  | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
+
 let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
     ~pr_registry ~branch_of ~event_log ~review_backends ~findings_registry =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
+  let skip_logged_mutex = Eio.Mutex.create () in
+  let mark_skip_logged patch_id =
+    Eio.Mutex.use_rw ~protect:true skip_logged_mutex (fun () ->
+        if Hashtbl.mem skip_logged patch_id then false
+        else (
+          Hashtbl.replace skip_logged patch_id true;
+          true))
+  in
   let rec loop () =
     let intents =
       Runtime.read runtime (fun snap ->
@@ -1916,138 +1939,153 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                          })
               else None))
     in
-    (* Phase 1: I/O — collect poll observations outside the lock *)
+    (* Handle Skip_no_pr intents up front — they need no network I/O. *)
+    let poll_intents =
+      Base.List.filter_map intents ~f:(function
+        | Skip_no_pr patch_id ->
+            if mark_skip_logged patch_id then
+              log_event runtime ~patch_id
+                "Skipping poll — no PR number registered";
+            None
+        | Poll { patch_id; pr_number; was_merged } ->
+            Some (patch_id, pr_number, was_merged))
+    in
+    (* Phase 1a: parallel per-patch [Github.pr_state] fetch.
+
+       This is the head-of-line-blocking fix: when one patch's TCP connect
+       is wedged in [SYN_SENT], [Github.pr_state] returns [Timeout] after
+       [Github.default_timeout] — and every other patch's fiber proceeds
+       independently. *)
+    let outcomes =
+      Eio.Fiber.List.map ~max_fibers:16
+        (fun (patch_id, pr_number, was_merged) ->
+          let outcome =
+            poll_outcome_of_github_result
+              (Github.pr_state ~net ~clock github pr_number)
+          in
+          (patch_id, pr_number, was_merged, outcome))
+        poll_intents
+    in
+    (* Phase 1b: pure classification. *)
+    let plans =
+      Base.List.map outcomes
+        ~f:(fun (patch_id, pr_number, was_merged, outcome) ->
+          let cls =
+            Poll_cycle.classify { patch_id; pr_number; was_merged; outcome }
+          in
+          (patch_id, pr_number, cls))
+    in
+    (* Phase 1c: per-patch effectful tail. Builds observations from
+       [Apply_pr_state] plans, handles [Rediscover_pr] / [Skip_fork] /
+       [Log_error]. *)
     let observations =
-      Base.List.filter_map intents ~f:(fun intent ->
-          match intent with
-          | Skip_no_pr patch_id ->
-              if not (Hashtbl.mem skip_logged patch_id) then (
-                Hashtbl.replace skip_logged patch_id true;
-                log_event runtime ~patch_id
-                  "Skipping poll — no PR number registered");
+      Base.List.filter_map plans ~f:(fun (patch_id, pr_number, cls) ->
+          match cls with
+          | Poll_cycle.Log_error { message } ->
+              log_event runtime ~patch_id message;
               None
-          | Poll { patch_id; pr_number; was_merged } -> (
-              match Github.pr_state ~net github pr_number with
-              | Error err ->
+          | Poll_cycle.Skip_fork _ ->
+              if mark_skip_logged patch_id then
+                log_event runtime ~patch_id
+                  (Printf.sprintf "Skipping PR #%d — fork PRs are not supported"
+                     (Pr_number.to_int pr_number));
+              None
+          | Poll_cycle.Rediscover_pr { head_branch } ->
+              log_event runtime ~patch_id
+                (Printf.sprintf "PR #%d closed — looking for replacement"
+                   (Pr_number.to_int pr_number));
+              let branch =
+                match head_branch with
+                | Some b -> b
+                | None ->
+                    Runtime.read runtime (fun snap ->
+                        match
+                          Orchestrator.find_agent snap.Runtime.orchestrator
+                            patch_id
+                        with
+                        | Some agent -> agent.Patch_agent.branch
+                        | None -> branch_of patch_id)
+              in
+              (match
+                 Startup_reconciler.discover_pr ~net ~clock ~github ~branch
+               with
+              | Ok (Some (new_pr, base_branch, merged)) ->
                   log_event runtime ~patch_id
-                    (Printf.sprintf "Poll error — %s" (Github.show_error err));
-                  None
-              | Ok pr_state when Pr_state.is_fork pr_state ->
-                  if not (Hashtbl.mem skip_logged patch_id) then (
-                    Hashtbl.replace skip_logged patch_id true;
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Skipping PR #%d — fork PRs are not supported"
-                         (Pr_number.to_int pr_number)));
-                  None
-              | Ok pr_state ->
-                  (* Augment the GitHub-derived [pr_state] with findings from
-                     every configured review backend. Failures are logged
-                     but non-fatal — a flaky review service shouldn't stop
-                     the rest of the poll cycle. *)
-                  let findings =
-                    if Base.List.is_empty review_backends then []
+                    (Printf.sprintf "Switched to PR #%d"
+                       (Pr_number.to_int new_pr));
+                  Pr_registry.register pr_registry ~patch_id ~pr_number:new_pr;
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Patch_controller.apply_replacement_pr orch patch_id
+                        ~pr_number:new_pr ~base_branch ~merged)
+              | Ok None ->
+                  log_event runtime ~patch_id
+                    "No open PR found — cleared stale PR state, will create on \
+                     next session";
+                  Pr_registry.unregister pr_registry ~patch_id;
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.clear_pr orch patch_id)
+              | Error msg ->
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "PR re-discovery failed — %s" msg));
+              None
+          | Poll_cycle.Apply_pr_state
+              { pr_state; poll_result; ci_checks_truncated } ->
+              (* Augment with findings from every configured review backend.
+                 Failures inside [poll_review_backends] are logged but
+                 non-fatal. *)
+              let findings =
+                if Base.List.is_empty review_backends then []
+                else
+                  poll_review_backends ~net ~clock ~runtime ~patch_id
+                    ~findings_registry ~review_backends
+                    ~owner:config.github_owner ~repo:config.github_repo
+                    ~pr_number:(Pr_number.to_int pr_number)
+              in
+              let pr_state = { pr_state with Pr_state.findings } in
+              let branch_in_root =
+                match pr_state.Pr_state.head_branch with
+                | Some b ->
+                    Worktree.is_checked_out_in_repo_root ~process_mgr
+                      ~repo_root:config.repo_root b
+                | None -> false
+              in
+              let failed_ci =
+                Base.List.filter poll_result.Poller.ci_checks
+                  ~f:(fun (c : Ci_check.t) ->
+                    Base.List.mem Patch_decision.failure_conclusions
+                      c.Ci_check.conclusion ~equal:Base.String.equal)
+              in
+              let worktree_candidate =
+                let agent =
+                  Runtime.read runtime (fun snap ->
+                      Orchestrator.find_agent snap.Runtime.orchestrator patch_id)
+                in
+                match agent with
+                | None -> None
+                | Some agent ->
+                    if Option.is_some agent.Patch_agent.worktree_path then None
                     else
-                      poll_review_backends ~net ~clock ~runtime ~patch_id
-                        ~findings_registry ~review_backends
-                        ~owner:config.github_owner ~repo:config.github_repo
-                        ~pr_number:(Pr_number.to_int pr_number)
-                  in
-                  let pr_state = { pr_state with Pr_state.findings } in
-                  let poll_result = Poller.poll ~was_merged pr_state in
-                  (* PR was closed — re-discover the current open PR.
-                     This path does its own I/O and separate atomic update;
-                     it doesn't participate in the batched update below. *)
-                  if poll_result.Poller.closed then (
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "PR #%d closed — looking for replacement"
-                         (Pr_number.to_int pr_number));
-                    let branch =
-                      match pr_state.Pr_state.head_branch with
-                      | Some b -> b
-                      | None ->
-                          Runtime.read runtime (fun snap ->
-                              match
-                                Orchestrator.find_agent
-                                  snap.Runtime.orchestrator patch_id
-                              with
-                              | Some agent -> agent.Patch_agent.branch
-                              | None -> branch_of patch_id)
-                    in
-                    (match
-                       Startup_reconciler.discover_pr ~net ~github ~branch
-                     with
-                    | Ok (Some (new_pr, base_branch, merged)) ->
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "Switched to PR #%d"
-                             (Pr_number.to_int new_pr));
-                        Pr_registry.register pr_registry ~patch_id
-                          ~pr_number:new_pr;
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Patch_controller.apply_replacement_pr orch patch_id
-                              ~pr_number:new_pr ~base_branch ~merged)
-                    | Ok None ->
-                        log_event runtime ~patch_id
-                          "No open PR found — cleared stale PR state, will \
-                           create on next session";
-                        Pr_registry.unregister pr_registry ~patch_id;
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.clear_pr orch patch_id)
-                    | Error msg ->
-                        log_event runtime ~patch_id
-                          (Printf.sprintf "PR re-discovery failed — %s" msg));
-                    None)
-                  else
-                    let branch_in_root =
-                      match pr_state.Pr_state.head_branch with
-                      | Some b ->
-                          Worktree.is_checked_out_in_repo_root ~process_mgr
-                            ~repo_root:config.repo_root b
-                      | None -> false
-                    in
-                    let failed_ci =
-                      Base.List.filter poll_result.Poller.ci_checks
-                        ~f:(fun (c : Ci_check.t) ->
-                          Base.List.mem Patch_decision.failure_conclusions
-                            c.Ci_check.conclusion ~equal:Base.String.equal)
-                    in
-                    let worktree_candidate =
-                      let agent =
-                        Runtime.read runtime (fun snap ->
-                            Orchestrator.find_agent snap.Runtime.orchestrator
-                              patch_id)
+                      let path =
+                        resolve_worktree_path ~process_mgr
+                          ~repo_root:config.repo_root ~project_name ~patch_id
+                          ~agent ()
                       in
-                      match agent with
-                      | None -> None
-                      | Some agent ->
-                          if Option.is_some agent.Patch_agent.worktree_path then
-                            None
-                          else
-                            let path =
-                              resolve_worktree_path ~process_mgr
-                                ~repo_root:config.repo_root ~project_name
-                                ~patch_id ~agent ()
-                            in
-                            let default =
-                              Worktree.worktree_dir ~project_name ~patch_id
-                            in
-                            if not (String.equal path default) then Some path
-                            else None
-                    in
-                    let observation =
-                      Patch_controller.
-                        {
-                          poll_result;
-                          base_branch = pr_state.Pr_state.base_branch;
-                          branch_in_root;
-                          worktree_path = worktree_candidate;
-                        }
-                    in
-                    Some
-                      ( patch_id,
-                        observation,
-                        failed_ci,
-                        pr_state.Pr_state.ci_checks_truncated )))
+                      let default =
+                        Worktree.worktree_dir ~project_name ~patch_id
+                      in
+                      if not (String.equal path default) then Some path
+                      else None
+              in
+              let observation =
+                Patch_controller.
+                  {
+                    poll_result;
+                    base_branch = pr_state.Pr_state.base_branch;
+                    branch_in_root;
+                    worktree_path = worktree_candidate;
+                  }
+              in
+              Some (patch_id, observation, failed_ci, ci_checks_truncated))
     in
     (* Phase 2: Single atomic update — apply all poll results + reconcile.
        This prevents the runner from seeing an intermediate state where
@@ -2397,7 +2435,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
           in
           (orch, (effects, List.rev dispatched, pre_fire_agents)))
     in
-    execute_github_effects ~runtime ~net ~github lifecycle_effects;
+    execute_github_effects ~runtime ~net ~clock ~github lifecycle_effects;
     (* Log dispatched actions to event log *)
     Base.List.iter messages ~f:(fun (msg : Orchestrator.patch_agent_message) ->
         let action = Orchestrator.message_action msg in
@@ -2589,7 +2627,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                 ^ Prompt.render_spec_suffix patch gameplan
                               in
                               (match
-                                 Github.create_pull_request ~net github
+                                 Github.create_pull_request ~net ~clock github
                                    ~title:pr_title ~head:patch.Patch.branch
                                    ~base:fresh_base ~body:pr_body ~draft:true
                                with
@@ -2617,7 +2655,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                          etc.) propagate with the original
                                          error message. *)
                                       match
-                                        Github.list_prs ~net github
+                                        Github.list_prs ~net ~clock github
                                           ~branch:patch.Patch.branch ~base:None
                                           ~state:`Open ()
                                       with
@@ -2657,7 +2695,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                                 patch_id))
                                   | Github.Http_error _
                                   | Github.Json_parse_error _
-                                  | Github.Graphql_error _
+                                  | Github.Graphql_error _ | Github.Timeout _
                                   | Github.Transport_error _ ->
                                       log_event runtime ~patch_id
                                         (Printf.sprintf
@@ -2809,7 +2847,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                           log_event runtime ~patch_id
                             (if is_ci then "Fetching fresh CI state from GitHub"
                              else "Fetching fresh review comments from GitHub");
-                          match Github.pr_state ~net github pr_num with
+                          match Github.pr_state ~net ~clock github pr_num with
                           | Ok pr_state -> Some pr_state
                           | Error _err ->
                               log_event runtime ~patch_id
@@ -3545,8 +3583,9 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                           in
                                           let artifact_outcome =
                                             apply_pr_body_artifact ~runtime ~net
-                                              ~github ~project_name ~patch_id
-                                              ~pr_number:pr ~patch ~gameplan
+                                              ~clock ~github ~project_name
+                                              ~patch_id ~pr_number:pr ~patch
+                                              ~gameplan
                                           in
                                           match
                                             Patch_decision
@@ -3670,9 +3709,10 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                           | Some patch ->
                                               Some
                                                 (apply_pr_body_artifact ~runtime
-                                                   ~net ~github ~project_name
-                                                   ~patch_id ~pr_number:pr
-                                                   ~patch ~gameplan)
+                                                   ~net ~clock ~github
+                                                   ~project_name ~patch_id
+                                                   ~pr_number:pr ~patch
+                                                   ~gameplan)
                                           | None ->
                                               log_event runtime ~patch_id
                                                 "pr-body: skipping \
@@ -3816,7 +3856,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
            switch teardown propagates normally; swallow any other exception
            to the activity log so a single bad tick can't kill the fiber
            permanently and leave automerge silently disabled. *)
-        (try reconcile_and_execute_automerge ~runtime ~net ~github with
+        (try reconcile_and_execute_automerge ~runtime ~net ~clock ~github with
         | Eio.Cancel.Cancelled _ as exn -> raise exn
         | exn ->
             log_event runtime
@@ -4275,7 +4315,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           ~repo:config.github_repo
       in
       let net = Eio.Stdenv.net env in
-      (match Github.check_repo_access ~net github with
+      let clock = Eio.Stdenv.clock env in
+      (match Github.check_repo_access ~net ~clock github with
       | Ok () -> ()
       | Error err ->
           Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
@@ -4388,7 +4429,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       in
       let reconciliation_fiber () =
         let startup =
-          Startup_reconciler.reconcile ~net ~github
+          Startup_reconciler.reconcile ~net ~clock ~github
             ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
             ~process_mgr ~agents:pre_agents
             ~pre_recovered_worktrees:pre_worktrees ()
@@ -4517,13 +4558,14 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                      ~backend_name:(backend_name (fst default_backend))
                      ~resolve_routing)
                 :: (fun () ->
-                  input_fiber ~runtime ~process_mgr ~net ~github ~list_selected
-                    ~detail_scroll ~detail_follow ~timeline_scroll
-                    ~detail_scrolls ~view_mode ~pr_registry ~project_name
-                    ~show_help ~status_msg ~sorted_patch_ids ~input_mode
-                    ~prompt_line ~patches_start_row ~patches_scroll_offset
-                    ~patches_visible_count ~owner:config.github_owner
-                    ~repo:config.github_repo ~resolve_routing)
+                  input_fiber ~runtime ~process_mgr ~net ~clock ~github
+                    ~list_selected ~detail_scroll ~detail_follow
+                    ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
+                    ~project_name ~show_help ~status_msg ~sorted_patch_ids
+                    ~input_mode ~prompt_line ~patches_start_row
+                    ~patches_scroll_offset ~patches_visible_count
+                    ~owner:config.github_owner ~repo:config.github_repo
+                    ~resolve_routing)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~findings_registry ~review_backends

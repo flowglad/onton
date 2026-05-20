@@ -4,6 +4,7 @@ type error =
   | Http_error of { meth : string; path : string; status : int; body : string }
   | Json_parse_error of string
   | Graphql_error of string list
+  | Timeout of { meth : string; path : string; seconds : float }
   | Transport_error of { meth : string; path : string; msg : string }
 
 (* Extract GitHub's "message" field and validation details from a JSON error
@@ -114,6 +115,9 @@ let show_error = function
         (permission_hint status)
   | Transport_error { meth; path; msg } ->
       Printf.sprintf "GitHub API %s %s → transport error: %s" meth path msg
+  | Timeout { meth; path; seconds } ->
+      Printf.sprintf "GitHub API %s %s → request timed out after %.0fs" meth
+        path seconds
   | Json_parse_error msg -> Printf.sprintf "GitHub API JSON parse error: %s" msg
   | Graphql_error msgs ->
       Printf.sprintf "GitHub GraphQL error: %s" (String.concat ~sep:"; " msgs)
@@ -448,6 +452,11 @@ let https_fun tls_config uri flow =
 
 let max_response_size = 1_000_000
 
+(** Default per-request timeout, in seconds. Matches review_service_client.
+    Without a timeout, a TCP connect stuck in SYN_SENT can block the calling
+    fiber indefinitely — which is how the poll loop wedged in production. *)
+let default_timeout = 30.0
+
 (** Internal: execute an HTTP request against api.github.com. Returns the raw
     response body on 2xx, [Http_error] otherwise. *)
 let meth_to_string = function
@@ -456,70 +465,84 @@ let meth_to_string = function
   | `PATCH -> "PATCH"
   | `PUT -> "PUT"
 
-let request ~net t ~meth ~path ?(query = []) ?body () =
+let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
+    ?body () =
   let meth_s = meth_to_string meth in
-  try
-    Mirage_crypto_rng_unix.use_default ();
-    Result.bind
-      (Result.map_error (https_config ()) ~f:(fun msg ->
-           Transport_error { meth = meth_s; path; msg }))
-      ~f:(fun tls_config ->
-        let client =
-          Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
-        in
-        let uri =
-          Uri.of_string ("https://api.github.com" ^ path) |> fun u ->
-          Uri.add_query_params u query
-        in
-        let headers =
-          Http.Header.of_list
-            [
-              ("Authorization", "Bearer " ^ t.token);
-              ("Content-Type", "application/json");
-              ("Accept", "application/vnd.github+json");
-              ("User-Agent", "onton/0.1.0");
-              ("X-GitHub-Api-Version", "2022-11-28");
-            ]
-        in
-        Eio.Switch.run @@ fun sw ->
-        let resp, resp_body =
-          match meth with
-          | `GET -> Cohttp_eio.Client.get client ~sw ~headers uri
-          | `POST ->
-              let body =
-                Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
-              in
-              Cohttp_eio.Client.post client ~sw ~headers ~body uri
-          | `PATCH ->
-              let body =
-                Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
-              in
-              Cohttp_eio.Client.patch client ~sw ~headers ~body uri
-          | `PUT ->
-              let body =
-                Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
-              in
-              Cohttp_eio.Client.put client ~sw ~headers ~body uri
-        in
-        let status = Http.Response.status resp |> Http.Status.to_int in
-        let resp_str =
-          Eio.Buf_read.(
-            of_flow ~max_size:max_response_size resp_body |> take_all)
-        in
-        if status >= 200 && status < 300 then Ok resp_str
-        else Error (Http_error { meth = meth_s; path; status; body = resp_str }))
-  with exn ->
-    Error (Transport_error { meth = meth_s; path; msg = Exn.to_string exn })
+  let do_request () : (string, error) Result.t =
+    try
+      Mirage_crypto_rng_unix.use_default ();
+      Result.bind
+        (Result.map_error (https_config ()) ~f:(fun msg ->
+             Transport_error { meth = meth_s; path; msg }))
+        ~f:(fun tls_config ->
+          let client =
+            Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
+          in
+          let uri =
+            Uri.of_string ("https://api.github.com" ^ path) |> fun u ->
+            Uri.add_query_params u query
+          in
+          let headers =
+            Http.Header.of_list
+              [
+                ("Authorization", "Bearer " ^ t.token);
+                ("Content-Type", "application/json");
+                ("Accept", "application/vnd.github+json");
+                ("User-Agent", "onton/0.1.0");
+                ("X-GitHub-Api-Version", "2022-11-28");
+              ]
+          in
+          Eio.Switch.run @@ fun sw ->
+          let resp, resp_body =
+            match meth with
+            | `GET -> Cohttp_eio.Client.get client ~sw ~headers uri
+            | `POST ->
+                let body =
+                  Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
+                in
+                Cohttp_eio.Client.post client ~sw ~headers ~body uri
+            | `PATCH ->
+                let body =
+                  Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
+                in
+                Cohttp_eio.Client.patch client ~sw ~headers ~body uri
+            | `PUT ->
+                let body =
+                  Cohttp_eio.Body.of_string (Option.value body ~default:"{}")
+                in
+                Cohttp_eio.Client.put client ~sw ~headers ~body uri
+          in
+          let status = Http.Response.status resp |> Http.Status.to_int in
+          let resp_str =
+            Eio.Buf_read.(
+              of_flow ~max_size:max_response_size resp_body |> take_all)
+          in
+          if status >= 200 && status < 300 then Ok resp_str
+          else
+            Error (Http_error { meth = meth_s; path; status; body = resp_str }))
+    with
+    | Eio.Cancel.Cancelled _ as exn ->
+        (* Don't swallow cancellation — let [with_timeout] convert it to a
+           [`Timeout] result so the caller sees a proper timeout error. *)
+        raise exn
+    | exn ->
+        Error (Transport_error { meth = meth_s; path; msg = Exn.to_string exn })
+  in
+  match Eio.Time.with_timeout clock timeout (fun () -> Ok (do_request ())) with
+  | Ok inner -> inner
+  | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
 
-let check_repo_access ~net t =
+let check_repo_access ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
-  match request ~net t ~meth:`GET ~path () with
+  match request ~net ~clock ?timeout t ~meth:`GET ~path () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
-let pr_state ~net t pr =
+let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in
-  match request ~net t ~meth:`POST ~path:"/graphql" ~body () with
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
+  with
   | Ok resp_str -> parse_response ~owner:t.owner resp_str
   | Error _ as e -> e
 
@@ -559,7 +582,7 @@ let parse_rest_pr_list body =
   | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
 
 (** List PRs for a branch via REST API. Returns non-CLOSED PRs. *)
-let list_prs ~net t ~branch ?(base = None) ~state () =
+let list_prs ~net ~clock ?timeout t ~branch ?(base = None) ~state () =
   let state_str = match state with `Open -> "open" | `All -> "all" in
   let query =
     [
@@ -573,23 +596,23 @@ let list_prs ~net t ~branch ?(base = None) ~state () =
     | None -> []
   in
   let path = Printf.sprintf "/repos/%s/%s/pulls" t.owner t.repo in
-  match request ~net t ~meth:`GET ~path ~query () with
+  match request ~net ~clock ?timeout t ~meth:`GET ~path ~query () with
   | Ok body -> parse_rest_pr_list body
   | Error _ as e -> e
 
 (** Update the body (description) of a PR via REST API. *)
-let update_pr_body ~net t ~pr_number ~body =
+let update_pr_body ~net ~clock ?timeout t ~pr_number ~body =
   let path =
     Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
       (Types.Pr_number.to_int pr_number)
   in
   let req_body = `Assoc [ ("body", `String body) ] |> Yojson.Safe.to_string in
-  match request ~net t ~meth:`PATCH ~path ~body:req_body () with
+  match request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
 (** Create a draft pull request via REST API. Returns the new PR number. *)
-let create_pull_request ~net t ~title ~head ~base ~body ~draft =
+let create_pull_request ~net ~clock ?timeout t ~title ~head ~base ~body ~draft =
   let path = Printf.sprintf "/repos/%s/%s/pulls" t.owner t.repo in
   let req_body =
     `Assoc
@@ -602,7 +625,7 @@ let create_pull_request ~net t ~title ~head ~base ~body ~draft =
       ]
     |> Yojson.Safe.to_string
   in
-  match request ~net t ~meth:`POST ~path ~body:req_body () with
+  match request ~net ~clock ?timeout t ~meth:`POST ~path ~body:req_body () with
   | Error _ as e -> e
   | Ok resp_str -> (
       try
@@ -614,7 +637,7 @@ let create_pull_request ~net t ~title ~head ~base ~body ~draft =
       | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg))
 
 (** Update the base (target) branch of a PR via REST API. *)
-let update_pr_base ~net t ~pr_number ~base =
+let update_pr_base ~net ~clock ?timeout t ~pr_number ~base =
   let path =
     Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
       (Types.Pr_number.to_int pr_number)
@@ -623,17 +646,17 @@ let update_pr_base ~net t ~pr_number ~base =
     `Assoc [ ("base", `String (Types.Branch.to_string base)) ]
     |> Yojson.Safe.to_string
   in
-  match request ~net t ~meth:`PATCH ~path ~body:req_body () with
+  match request ~net ~clock ?timeout t ~meth:`PATCH ~path ~body:req_body () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
 (** Fetch the GraphQL node ID for a PR via REST API. *)
-let pr_node_id ~net t ~pr_number =
+let pr_node_id ~net ~clock ?timeout t ~pr_number =
   let path =
     Printf.sprintf "/repos/%s/%s/pulls/%d" t.owner t.repo
       (Types.Pr_number.to_int pr_number)
   in
-  match request ~net t ~meth:`GET ~path () with
+  match request ~net ~clock ?timeout t ~meth:`GET ~path () with
   | Error _ as e -> e
   | Ok body -> (
       try
@@ -648,8 +671,8 @@ let pr_node_id ~net t ~pr_number =
 
 (** Set or unset draft status on a PR via GraphQL mutation. REST API does not
     support changing the draft field. *)
-let set_draft ~net t ~pr_number ~draft =
-  Result.bind (pr_node_id ~net t ~pr_number) ~f:(fun node_id ->
+let set_draft ~net ~clock ?timeout t ~pr_number ~draft =
+  Result.bind (pr_node_id ~net ~clock ?timeout t ~pr_number) ~f:(fun node_id ->
       let mutation =
         if draft then "convertPullRequestToDraft"
         else "markPullRequestReadyForReview"
@@ -667,7 +690,10 @@ let set_draft ~net t ~pr_number ~draft =
           ]
         |> Yojson.Safe.to_string
       in
-      match request ~net t ~meth:`POST ~path:"/graphql" ~body:req_body () with
+      match
+        request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql"
+          ~body:req_body ()
+      with
       | Ok resp -> (
           try
             let json = Yojson.Safe.from_string resp in
@@ -727,7 +753,7 @@ let interpret_merge_response body =
 (** Merge a pull request via the REST API. Maps to
     [PUT /repos/:owner/:repo/pulls/:number/merge]. Returns the parsed
     [merge_result] on 2xx or an [error] on transport/4xx/5xx failures. *)
-let merge_pr ~net t ~pr_number ~merge_method =
+let merge_pr ~net ~clock ?timeout t ~pr_number ~merge_method =
   let path =
     Printf.sprintf "/repos/%s/%s/pulls/%d/merge" t.owner t.repo
       (Types.Pr_number.to_int pr_number)
@@ -741,7 +767,7 @@ let merge_pr ~net t ~pr_number ~merge_method =
   let req_body =
     `Assoc [ ("merge_method", `String method_str) ] |> Yojson.Safe.to_string
   in
-  match request ~net t ~meth:`PUT ~path ~body:req_body () with
+  match request ~net ~clock ?timeout t ~meth:`PUT ~path ~body:req_body () with
   | Ok body -> Ok (interpret_merge_response body)
   | Error _ as e -> e
 
