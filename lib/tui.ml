@@ -1265,7 +1265,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           if List.is_empty activity || activity_budget < 3 then []
           else
             let raw = render_activity activity in
-            let max_raw = activity_budget - 1 (* reserve 1 for separator *) in
+            let max_raw = activity_budget - 1 in
             "" :: List.take raw (Int.min (List.length raw) max_raw)
         in
         let lines =
