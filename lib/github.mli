@@ -163,3 +163,12 @@ val merge_pr :
 
 val owner : t -> string
 (** [owner t] returns the repository owner. *)
+
+val make :
+  net:_ Eio.Net.t ->
+  token:string ->
+  owner:string ->
+  repo:string ->
+  (module Forge.S with type error = error)
+(** [make ~net ~token ~owner ~repo] packages a GitHub-backed forge module that
+    closes over the network capability and client configuration. *)
