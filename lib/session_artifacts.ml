@@ -46,26 +46,22 @@ let write_text_file ~path ~content =
 let join_lines lines =
   match lines with [] -> "" | _ -> String.concat ~sep:"\n" lines ^ "\n"
 
-let redact_env_entry entry =
-  match String.lsplit2 entry ~on:'=' with
-  | None -> Token_scrub.scrub_token_patterns entry
-  | Some (name, value) ->
-      let redacted = Token_scrub.redact_env_value_by_name ~name ~value in
-      name ^ "=" ^ redacted
-
 let event_session_uuid = function
-  | Telemetry.Event.Stream { session_uuid; _ }
-  | Spawn_started { session_uuid; _ }
-  | Spawn_finalized { session_uuid; _ } ->
+  | Telemetry.Event.Stream { session_uuid; _ } -> session_uuid
+  | Spawn_started { session_uuid; _ } | Spawn_finalized { session_uuid; _ } ->
       Some session_uuid
   | Poll _ | Action _ | Complete _ | Free_form _ -> None
 
+let sink_name ~session_uuid = "session_artifacts:" ^ session_uuid
+
+let artifact_dir ~project_name ~session_uuid =
+  Stdlib.Filename.concat (Project_store.sessions_dir project_name) session_uuid
+
+let meta_path ~project_name ~session_uuid =
+  Stdlib.Filename.concat (artifact_dir ~project_name ~session_uuid) "meta.json"
+
 let create ~project_name ~patch_id:_ ~session_uuid =
-  let artifact_dir =
-    Stdlib.Filename.concat
-      (Project_store.sessions_dir project_name)
-      session_uuid
-  in
+  let artifact_dir = artifact_dir ~project_name ~session_uuid in
   Project_store.ensure_dir artifact_dir;
   let stdout_file =
     make_append_file (Stdlib.Filename.concat artifact_dir "stdout.jsonl")
@@ -73,8 +69,10 @@ let create ~project_name ~patch_id:_ ~session_uuid =
   let stderr_file =
     make_append_file (Stdlib.Filename.concat artifact_dir "stderr.log")
   in
-  let meta_path = Stdlib.Filename.concat artifact_dir "meta.json" in
+  let meta_path = meta_path ~project_name ~session_uuid in
+  let started_written = ref false in
   let write_started ~prompt ~argv ~env_redacted =
+    started_written := true;
     write_text_file
       ~path:(Stdlib.Filename.concat artifact_dir "prompt.txt")
       ~content:prompt;
@@ -83,10 +81,7 @@ let create ~project_name ~patch_id:_ ~session_uuid =
       ~content:(join_lines argv);
     write_text_file
       ~path:(Stdlib.Filename.concat artifact_dir "env.txt")
-      ~content:
-        (env_redacted |> Array.to_list
-        |> List.map ~f:redact_env_entry
-        |> join_lines)
+      ~content:(env_redacted |> Array.to_list |> join_lines)
   in
   let write_finalized ~meta =
     (match
@@ -101,7 +96,7 @@ let create ~project_name ~patch_id:_ ~session_uuid =
     close_file stderr_file
   in
   {
-    Telemetry.Sink.name = "session_artifacts:" ^ session_uuid;
+    Telemetry.Sink.name = sink_name ~session_uuid;
     interested_in =
       (fun event ->
         Option.value_map (event_session_uuid event) ~default:false
@@ -110,9 +105,10 @@ let create ~project_name ~patch_id:_ ~session_uuid =
       (function
       | Telemetry.Event.Spawn_started
           { session_uuid = event_uuid; prompt; argv; env_redacted; _ }
-        when String.equal event_uuid session_uuid ->
+        when String.equal event_uuid session_uuid && not !started_written ->
           write_started ~prompt ~argv ~env_redacted
-      | Telemetry.Event.Stream { session_uuid = event_uuid; channel; raw; _ }
+      | Telemetry.Event.Stream
+          { session_uuid = Some event_uuid; channel; raw; _ }
         when String.equal event_uuid session_uuid ->
           append_line
             (match channel with
@@ -227,10 +223,20 @@ let%test "Stream events append lines in order to stdout.jsonl" =
   let sink = create ~project_name ~patch_id ~session_uuid in
   sink.consume
     (Telemetry.Event.Stream
-       { patch_id; session_uuid; channel = `Stdout; raw = "{\"a\":1}" });
+       {
+         patch_id;
+         session_uuid = Some session_uuid;
+         channel = `Stdout;
+         raw = "{\"a\":1}";
+       });
   sink.consume
     (Telemetry.Event.Stream
-       { patch_id; session_uuid; channel = `Stdout; raw = "{\"b\":2}" });
+       {
+         patch_id;
+         session_uuid = Some session_uuid;
+         channel = `Stdout;
+         raw = "{\"b\":2}";
+       });
   sink.consume (spawn_finalized_event ~patch_id ~session_uuid);
   let stdout_path =
     Stdlib.Filename.concat
@@ -250,7 +256,12 @@ let%test "interested_in returns false for events with different session_uuid" =
   (not
      (sink.interested_in
         (Telemetry.Event.Stream
-           { patch_id; session_uuid = "other"; channel = `Stdout; raw = "x" })))
+           {
+             patch_id;
+             session_uuid = Some "other";
+             channel = `Stdout;
+             raw = "x";
+           })))
   && (not
         (sink.interested_in
            (spawn_started_event ~patch_id ~session_uuid:"other"
@@ -259,7 +270,7 @@ let%test "interested_in returns false for events with different session_uuid" =
        (sink.interested_in
           (spawn_finalized_event ~patch_id ~session_uuid:"other"))
 
-let%test "env redaction masks values for sensitive names and token formats" =
+let%test "env writer preserves pre-redacted entries" =
   with_temp_data_dir @@ fun () ->
   let project_name = "Session Artifact Env" in
   let patch_id = Types.Patch_id.of_string "patch-4" in
@@ -269,8 +280,8 @@ let%test "env redaction masks values for sensitive names and token formats" =
     (spawn_started_event ~patch_id ~session_uuid
        ~env_redacted:
          [|
-           "ANTHROPIC_API_KEY=plain-secret";
-           "SAFE_NAME=ghp_abcdef123";
+           "ANTHROPIC_API_KEY=<REDACTED>";
+           "SAFE_NAME=<REDACTED>";
            "NORMAL=value";
          |]);
   sink.consume (spawn_finalized_event ~patch_id ~session_uuid);
@@ -285,5 +296,34 @@ let%test "env redaction masks values for sensitive names and token formats" =
   String.is_substring env_text ~substring:"ANTHROPIC_API_KEY=<REDACTED>"
   && String.is_substring env_text ~substring:"SAFE_NAME=<REDACTED>"
   && String.is_substring env_text ~substring:"NORMAL=value"
-  && (not (String.is_substring env_text ~substring:"plain-secret"))
-  && not (String.is_substring env_text ~substring:"ghp_abcdef123")
+
+let%test "duplicate Spawn_started does not overwrite sidecar files" =
+  with_temp_data_dir @@ fun () ->
+  let project_name = "Session Artifact Duplicate Start" in
+  let patch_id = Types.Patch_id.of_string "patch-4" in
+  let session_uuid = "session-5" in
+  let sink = create ~project_name ~patch_id ~session_uuid in
+  let started ~prompt ~argv ~env_redacted =
+    Telemetry.Event.Spawn_started
+      { patch_id; session_uuid; prompt; argv; env_redacted }
+  in
+  sink.consume
+    (started ~prompt:"first prompt" ~argv:[ "first"; "argv" ]
+       ~env_redacted:[| "ATTEMPT=first" |]);
+  sink.consume
+    (started ~prompt:"second prompt" ~argv:[ "second"; "argv" ]
+       ~env_redacted:[| "ATTEMPT=second" |]);
+  let dir =
+    Stdlib.Filename.concat
+      (Project_store.sessions_dir project_name)
+      session_uuid
+  in
+  String.equal
+    (read_file (Stdlib.Filename.concat dir "prompt.txt"))
+    "first prompt"
+  && String.equal
+       (read_file (Stdlib.Filename.concat dir "argv.txt"))
+       "first\nargv\n"
+  && String.equal
+       (read_file (Stdlib.Filename.concat dir "env.txt"))
+       "ATTEMPT=first\n"

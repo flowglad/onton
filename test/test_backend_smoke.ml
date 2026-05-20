@@ -16,9 +16,10 @@ let smoke ?setsid_exec ~process_mgr ~clock ~cwd ~ndjson ~process_line () =
   let payload = String.concat ~sep:"\n" ndjson in
   let args = [ "printf"; "%s"; payload ] in
   let env = Unix.environment () in
+  let patch_id = Types.Patch_id.of_string "smoke" in
   let result =
     Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd ~env
-      ~setsid_exec ~args ~process_line ~on_event
+      ~setsid_exec ~args ~session_uuid:None ~patch_id ~process_line ~on_event
   in
   (result, List.rev !events)
 
@@ -107,7 +108,8 @@ let () =
     in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
-        ~env:(Unix.environment ()) ~setsid_exec:None ~args
+        ~env:(Unix.environment ()) ~setsid_exec:None ~args ~session_uuid:None
+        ~patch_id:(Types.Patch_id.of_string "smoke")
         ~process_line:(process_line_strip Codex_backend.parse_event)
         ~on_event
     in
@@ -147,6 +149,8 @@ let () =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:60.0 ~cwd
         ~env:(Unix.environment ()) ~setsid_exec:None
         ~args:[ "printf"; "%s"; "not-json\n" ]
+        ~session_uuid:None
+        ~patch_id:(Types.Patch_id.of_string "smoke")
         ~process_line:(fun _ -> [])
         ~on_event
     in
@@ -259,7 +263,8 @@ let () =
     let started = Unix.gettimeofday () in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
-        ~env:(Unix.environment ()) ~setsid_exec:None ~args
+        ~env:(Unix.environment ()) ~setsid_exec:None ~args ~session_uuid:None
+        ~patch_id:(Types.Patch_id.of_string "smoke")
         ~process_line:process_line_claude ~on_event
     in
     let elapsed = Unix.gettimeofday () -. started in
@@ -284,7 +289,8 @@ let () =
     let started = Unix.gettimeofday () in
     let result =
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:1.0 ~cwd
-        ~env:(Unix.environment ()) ~setsid_exec:None ~args
+        ~env:(Unix.environment ()) ~setsid_exec:None ~args ~session_uuid:None
+        ~patch_id:(Types.Patch_id.of_string "smoke")
         ~process_line:process_line_claude ~on_event
     in
     let elapsed = Unix.gettimeofday () -. started in
@@ -339,6 +345,8 @@ exit 0|}
         let result =
           Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout:30.0 ~cwd
             ~env:(Unix.environment ()) ~setsid_exec:(Some shim) ~args
+            ~session_uuid:None
+            ~patch_id:(Types.Patch_id.of_string "smoke")
             ~process_line:process_line_claude ~on_event
         in
         if not result.Llm_backend.saw_final_result then (

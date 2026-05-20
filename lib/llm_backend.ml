@@ -20,6 +20,7 @@ let kill_group ~pid ~signal =
   with Unix.Unix_error ((ESRCH | EPERM), _, _) -> ()
 
 let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
+    ~session_uuid ~patch_id
     ~(process_line : string -> Types.Stream_event.t list) ~on_event =
   let args =
     match setsid_exec with Some path -> path :: args | None -> args
@@ -42,6 +43,13 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
       else (
         Buffer.add_substring stdout_capture text ~pos:0 ~len:remaining;
         stdout_capture_truncated := true)
+  in
+  let emit_stream channel raw =
+    match session_uuid with
+    | None -> ()
+    | Some _ ->
+        Telemetry_dispatch.emit
+          (Telemetry.Event.Stream { patch_id; session_uuid; channel; raw })
   in
   let captured_stdout () =
     let s = Buffer.contents stdout_capture in
@@ -88,6 +96,7 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
             match Eio.Buf_read.line stdout_buf with
             | line ->
                 capture_stdout_line line;
+                emit_stream `Stdout line;
                 let events = process_line line in
                 if not (List.is_empty events) then got_events_ref := true;
                 List.iter events ~f:on_event;
@@ -136,9 +145,21 @@ let spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env ~setsid_exec ~args
              stderr_r out from under us. Letting anything else propagate —
              in particular Eio.Cancel.Cancelled — is required so this fiber
              can honour cancellation and release Eio.Fiber.both. *)
-          try err_ref := Eio.Buf_read.take_all stderr_buf with
+          let add_stderr_line line =
+            if not (String.is_empty !err_ref) then err_ref := !err_ref ^ "\n";
+            err_ref := !err_ref ^ line;
+            emit_stream `Stderr line
+          in
+          let rec read_stderr_lines () =
+            match Eio.Buf_read.line stderr_buf with
+            | line ->
+                add_stderr_line line;
+                read_stderr_lines ()
+            | exception End_of_file -> ()
+          in
+          try read_stderr_lines () with
           | Eio.Buf_read.Buffer_limit_exceeded -> (
-              err_ref := "<stderr exceeded 1MB limit, truncated>";
+              add_stderr_line "<stderr exceeded 1MB limit, truncated>";
               let drain_buf = Bytes.create 4096 in
               try
                 while true do
@@ -206,6 +227,7 @@ type t = {
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     resume_session:string option ->
+    session_uuid:string ->
     complexity:int option ->
     on_event:(Types.Stream_event.t -> unit) ->
     result;
@@ -263,3 +285,16 @@ let%test "resolve_auto_model: 'auto' with no complexity hits fallback tier" =
   Option.equal Base.String.equal
     (resolve_auto_model ~model:(Some "auto") ~complexity:None ~auto_model)
     (Some "strong")
+
+let redact_env env = Array.map env ~f:Token_scrub.redact_env_entry
+
+let emit_spawn_started ~patch_id ~session_uuid ~prompt ~args ~env =
+  Telemetry_dispatch.emit
+    (Telemetry.Event.Spawn_started
+       {
+         patch_id;
+         session_uuid;
+         prompt;
+         argv = args;
+         env_redacted = redact_env env;
+       })

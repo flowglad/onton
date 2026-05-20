@@ -129,7 +129,7 @@ let run_with_backend ~session_mode_for_agent
     ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
     ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
     ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend_name ~run_backend ~complexity ~event_log =
+    ~backend_name ~run_backend ~complexity =
   let log_event = Runtime_logging.log_event in
   let log_stream_entry = Runtime_logging.log_stream_entry in
   match session_mode_for_agent agent with
@@ -192,97 +192,112 @@ let run_with_backend ~session_mode_for_agent
             buf
           in
           let error_buf = Buffer.create 256 in
-          let tool_count = ref 0 in
-          (* Accumulates (tool_name, status) for Tool_use events that report a
+          let session_started_at = Unix.gettimeofday () in
+          let session_uuid = Session_id.mint () in
+          let session_sink =
+            Session_artifacts.create ~project_name ~patch_id ~session_uuid
+          in
+          Telemetry_dispatch.register_sink session_sink;
+          Exn.protect
+            ~finally:(fun () ->
+              Telemetry_dispatch.unregister_sink
+                ~name:(Session_artifacts.sink_name ~session_uuid))
+            ~f:(fun () ->
+              let tool_count = ref 0 in
+              (* Accumulates (tool_name, status) for Tool_use events that report a
              non-"completed" status (OpenCode surfaces [pending]/[running] or
              error states; other backends do not populate [status] and so never
              contribute here). Propagated to the caller so artifact-backed
              phases like Pr_body can tell "agent chose not to write" apart
              from "a tool call was announced but never executed". *)
-          let tool_failures = ref [] in
-          let pr_found = ref false in
-          let needle_len =
-            String.length (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
-          in
-          (* Lookback window for the per-chunk tail scan. We need to re-scan
+              let tool_failures = ref [] in
+              let pr_found = ref false in
+              let needle_len =
+                String.length
+                  (Printf.sprintf "github.com/%s/%s/pull/" owner repo)
+              in
+              (* Lookback window for the per-chunk tail scan. We need to re-scan
              far enough back to include both the URL prefix and the digit run
              that may have started in a previous chunk; 32 digits covers any
              realistic PR number even if split across many tiny chunks. *)
-          let pr_url_lookback = needle_len + 32 in
-          let try_extract_pr ?(at_end_of_stream = false) text =
-            if !pr_found then ()
-            else
-              match
-                extract_pr_number_from_text ~at_end_of_stream ~owner ~repo text
-              with
-              | Some pr_number ->
-                  pr_found := true;
-                  log_stream_entry runtime ~patch_id
-                    (Activity_log.Stream_entry.Text_chunk
-                       (Printf.sprintf "PR #%d detected"
-                          (Types.Pr_number.to_int pr_number)));
-                  on_pr_detected pr_number
-              | None -> ()
-          in
-          let last_sync = ref (Unix.gettimeofday ()) in
-          let sync_transcript () =
-            Stdlib.Hashtbl.replace transcripts patch_id
-              (Buffer.contents text_buf)
-          in
-          let maybe_sync_transcript () =
-            let now = Unix.gettimeofday () in
-            if Float.( >= ) (now -. !last_sync) 0.2 then (
-              last_sync := now;
-              sync_transcript ())
-          in
-          let captured_session_id = ref None in
-          let content_gate = ref (Content_gate.create ()) in
-          let maybe_persist_session_id () =
-            match (snapshot_path_opt, !captured_session_id) with
-            | Some snapshot_path, Some session_id -> (
-                match
-                  Persistence.record_session_id ~snapshot_path ~patch_id
-                    ~session_id
-                with
-                | Ok () -> ()
-                | Error msg ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Failed to record session_id sidecar for %s — %s"
-                         session_id msg))
-            | None, _ | _, None -> ()
-          in
-          let backend_accepted_turn = ref false in
-          let mark_backend_accepted_turn () =
-            if not !backend_accepted_turn then (
-              backend_accepted_turn := true;
-              match kind with
-              | Some Types.Operation_kind.Human ->
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      Orchestrator.mark_inflight_human_messages_delivered orch
-                        patch_id)
-              | Some Types.Operation_kind.Ci
-              | Some Types.Operation_kind.Review_comments
-              | Some Types.Operation_kind.Findings
-              | Some Types.Operation_kind.Pr_body
-              | Some Types.Operation_kind.Merge_conflict
-              | Some Types.Operation_kind.Rebase
-              | None ->
-                  ())
-          in
-          let on_event (event : Types.Stream_event.t) =
-            let () =
-              match event with
-              (* Turn_started is the preferred signal; the arms below are
+              let pr_url_lookback = needle_len + 32 in
+              let try_extract_pr ?(at_end_of_stream = false) text =
+                if !pr_found then ()
+                else
+                  match
+                    extract_pr_number_from_text ~at_end_of_stream ~owner ~repo
+                      text
+                  with
+                  | Some pr_number ->
+                      pr_found := true;
+                      log_stream_entry runtime ~patch_id
+                        (Activity_log.Stream_entry.Text_chunk
+                           (Printf.sprintf "PR #%d detected"
+                              (Types.Pr_number.to_int pr_number)));
+                      on_pr_detected pr_number
+                  | None -> ()
+              in
+              let last_sync = ref (Unix.gettimeofday ()) in
+              let sync_transcript () =
+                Stdlib.Hashtbl.replace transcripts patch_id
+                  (Buffer.contents text_buf)
+              in
+              let maybe_sync_transcript () =
+                let now = Unix.gettimeofday () in
+                if Float.( >= ) (now -. !last_sync) 0.2 then (
+                  last_sync := now;
+                  sync_transcript ())
+              in
+              let captured_session_id = ref None in
+              let captured_init = ref Failure_subkind.default_init in
+              let content_gate = ref (Content_gate.create ()) in
+              let maybe_persist_session_id () =
+                match (snapshot_path_opt, !captured_session_id) with
+                | Some snapshot_path, Some session_id -> (
+                    match
+                      Persistence.record_session_id ~snapshot_path ~patch_id
+                        ~session_id
+                    with
+                    | Ok () -> ()
+                    | Error msg ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Failed to record session_id sidecar for %s — %s"
+                             session_id msg))
+                | None, _ | _, None -> ()
+              in
+              let backend_accepted_turn = ref false in
+              let mark_backend_accepted_turn () =
+                if not !backend_accepted_turn then (
+                  backend_accepted_turn := true;
+                  match kind with
+                  | Some Types.Operation_kind.Human ->
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_inflight_human_messages_delivered
+                            orch patch_id)
+                  | Some Types.Operation_kind.Ci
+                  | Some Types.Operation_kind.Review_comments
+                  | Some Types.Operation_kind.Findings
+                  | Some Types.Operation_kind.Pr_body
+                  | Some Types.Operation_kind.Merge_conflict
+                  | Some Types.Operation_kind.Rebase
+                  | None ->
+                      ())
+              in
+              let on_event (event : Types.Stream_event.t) =
+                let () =
+                  match event with
+                  (* Turn_started is the preferred signal; the arms below are
                  fallbacks for backends that do not emit it. *)
-              | Types.Stream_event.Turn_started -> mark_backend_accepted_turn ()
-              | Types.Stream_event.Text_delta text ->
-                  mark_backend_accepted_turn ();
-                  let prev_len = Buffer.length text_buf in
-                  Buffer.add_string text_buf text;
-                  maybe_sync_transcript ();
-                  if not !pr_found then
-                    (* Anchor the tail window to [prev_len], NOT [new_len].
+                  | Types.Stream_event.Turn_started ->
+                      mark_backend_accepted_turn ()
+                  | Types.Stream_event.Text_delta text ->
+                      mark_backend_accepted_turn ();
+                      let prev_len = Buffer.length text_buf in
+                      Buffer.add_string text_buf text;
+                      maybe_sync_transcript ();
+                      if not !pr_found then
+                        (* Anchor the tail window to [prev_len], NOT [new_len].
                        We want the window to always cover the ENTIRE new chunk
                        plus up to [pr_url_lookback] bytes back into the prior
                        content (to catch a URL/digit run that spanned the
@@ -291,78 +306,79 @@ let run_with_backend ~session_mode_for_agent
                        [new_len] would shrink the window to the last
                        [pr_url_lookback] bytes and miss URLs in the early part
                        of long chunks. *)
-                    let offset = max 0 (prev_len - pr_url_lookback) in
-                    let tail =
-                      Buffer.To_string.sub text_buf ~pos:offset
-                        ~len:(Buffer.length text_buf - offset)
-                    in
-                    try_extract_pr tail
-              | Types.Stream_event.Tool_use { name; input; status } ->
-                  mark_backend_accepted_turn ();
-                  tool_count := !tool_count + 1;
-                  (* OpenCode emits pending → running → completed for a single
+                        let offset = max 0 (prev_len - pr_url_lookback) in
+                        let tail =
+                          Buffer.To_string.sub text_buf ~pos:offset
+                            ~len:(Buffer.length text_buf - offset)
+                        in
+                        try_extract_pr tail
+                  | Types.Stream_event.Tool_use { name; input; status } ->
+                      mark_backend_accepted_turn ();
+                      tool_count := !tool_count + 1;
+                      (* OpenCode emits pending → running → completed for a single
                      tool call. Track only the latest unresolved status per tool
                      name: clear on completed, replace on any other status.
                      Otherwise a normal pending → completed lifecycle would
                      leave a stale (name, "pending") entry that
                      [classify_pr_body_respond] would misread as a blocked
                      Write. *)
-                  (match status with
-                  | Some s when String.equal s "completed" ->
-                      tool_failures :=
-                        List.filter !tool_failures ~f:(fun (n, _) ->
-                            not (String.equal n name))
-                  | Some s ->
-                      let without =
-                        List.filter !tool_failures ~f:(fun (n, _) ->
-                            not (String.equal n name))
+                      (match status with
+                      | Some s when String.equal s "completed" ->
+                          tool_failures :=
+                            List.filter !tool_failures ~f:(fun (n, _) ->
+                                not (String.equal n name))
+                      | Some s ->
+                          let without =
+                            List.filter !tool_failures ~f:(fun (n, _) ->
+                                not (String.equal n name))
+                          in
+                          tool_failures := (name, s) :: without
+                      | None -> ());
+                      let summary =
+                        try
+                          let json = Yojson.Safe.from_string input in
+                          let field key =
+                            Yojson.Safe.Util.(
+                              member key json |> to_string_option)
+                          in
+                          let s =
+                            match name with
+                            | "Bash" -> field "command"
+                            | "Read" | "Write" -> field "file_path"
+                            | "Edit" -> field "file_path"
+                            | "Glob" -> field "pattern"
+                            | "Grep" -> field "pattern"
+                            | _ -> None
+                          in
+                          match s with Some v -> truncate v 80 | None -> ""
+                        with _ -> ""
                       in
-                      tool_failures := (name, s) :: without
-                  | None -> ());
-                  let summary =
-                    try
-                      let json = Yojson.Safe.from_string input in
-                      let field key =
-                        Yojson.Safe.Util.(member key json |> to_string_option)
+                      let detail =
+                        if not (String.is_empty summary) then
+                          Printf.sprintf " %s" summary
+                        else ""
                       in
-                      let s =
-                        match name with
-                        | "Bash" -> field "command"
-                        | "Read" | "Write" -> field "file_path"
-                        | "Edit" -> field "file_path"
-                        | "Glob" -> field "pattern"
-                        | "Grep" -> field "pattern"
-                        | _ -> None
+                      let sep =
+                        let len = Buffer.length text_buf in
+                        if len = 0 then ""
+                        else if
+                          len >= 2
+                          && Char.equal (Buffer.nth text_buf (len - 1)) '\n'
+                          && Char.equal (Buffer.nth text_buf (len - 2)) '\n'
+                        then ""
+                        else if Char.equal (Buffer.nth text_buf (len - 1)) '\n'
+                        then "\n"
+                        else "\n\n"
                       in
-                      match s with Some v -> truncate v 80 | None -> ""
-                    with _ -> ""
-                  in
-                  let detail =
-                    if not (String.is_empty summary) then
-                      Printf.sprintf " %s" summary
-                    else ""
-                  in
-                  let sep =
-                    let len = Buffer.length text_buf in
-                    if len = 0 then ""
-                    else if
-                      len >= 2
-                      && Char.equal (Buffer.nth text_buf (len - 1)) '\n'
-                      && Char.equal (Buffer.nth text_buf (len - 2)) '\n'
-                    then ""
-                    else if Char.equal (Buffer.nth text_buf (len - 1)) '\n' then
-                      "\n"
-                    else "\n\n"
-                  in
-                  Buffer.add_string text_buf
-                    (Printf.sprintf "%s[tool: %s]%s\n" sep name detail);
-                  sync_transcript ();
-                  log_stream_entry runtime ~patch_id
-                    (Activity_log.Stream_entry.Tool_use (name, summary))
-              | Types.Stream_event.Final_result { stop_reason; _ } ->
-                  mark_backend_accepted_turn ();
-                  sync_transcript ();
-                  (* Final pass with end-of-stream semantics — catches PR URLs
+                      Buffer.add_string text_buf
+                        (Printf.sprintf "%s[tool: %s]%s\n" sep name detail);
+                      sync_transcript ();
+                      log_stream_entry runtime ~patch_id
+                        (Activity_log.Stream_entry.Tool_use (name, summary))
+                  | Types.Stream_event.Final_result { stop_reason; _ } ->
+                      mark_backend_accepted_turn ();
+                      sync_transcript ();
+                      (* Final pass with end-of-stream semantics — catches PR URLs
                      whose digit run terminates exactly at the buffer end (no
                      trailing newline / next chunk to provide a non-digit
                      terminator).
@@ -376,27 +392,40 @@ let run_with_backend ~session_mode_for_agent
                      the same buffer. The per-chunk path already saw any URL
                      that had a non-digit terminator during streaming, so the
                      final pass only needs to cover what the tail window does. *)
-                  (if not !pr_found then
-                     let full = Buffer.contents text_buf in
-                     let len = String.length full in
-                     let offset = max 0 (len - pr_url_lookback) in
-                     let tail =
-                       String.sub full ~pos:offset ~len:(len - offset)
-                     in
-                     try_extract_pr ~at_end_of_stream:true tail);
-                  let reason = Types.Stop_reason.to_display stop_reason in
-                  log_stream_entry runtime ~patch_id
-                    (Activity_log.Stream_entry.Finished reason)
-              | Types.Stream_event.Error msg ->
-                  if Buffer.length error_buf > 0 then
-                    Buffer.add_char error_buf '\n';
-                  Buffer.add_string error_buf msg;
-                  log_stream_entry runtime ~patch_id
-                    (Activity_log.Stream_entry.Stream_error msg)
-              | Types.Stream_event.Session_init { session_id; _ } ->
-                  captured_session_id := Some session_id
-            in
-            (* Persist the crash-recovery sidecar lazily: only after claude
+                      (if not !pr_found then
+                         let full = Buffer.contents text_buf in
+                         let len = String.length full in
+                         let offset = max 0 (len - pr_url_lookback) in
+                         let tail =
+                           String.sub full ~pos:offset ~len:(len - offset)
+                         in
+                         try_extract_pr ~at_end_of_stream:true tail);
+                      let reason = Types.Stop_reason.to_display stop_reason in
+                      log_stream_entry runtime ~patch_id
+                        (Activity_log.Stream_entry.Finished reason)
+                  | Types.Stream_event.Error msg ->
+                      if Buffer.length error_buf > 0 then
+                        Buffer.add_char error_buf '\n';
+                      Buffer.add_string error_buf msg;
+                      log_stream_entry runtime ~patch_id
+                        (Activity_log.Stream_entry.Stream_error msg)
+                  | Types.Stream_event.Session_init
+                      {
+                        session_id;
+                        api_key_source;
+                        model;
+                        claude_code_version;
+                        permission_mode = _;
+                      } ->
+                      captured_session_id := Some session_id;
+                      captured_init :=
+                        {
+                          Failure_subkind.api_key_source;
+                          model;
+                          claude_code_version;
+                        }
+                in
+                (* Persist the crash-recovery sidecar lazily: only after claude
                has *committed* a conversation turn to its .jsonl (first
                Final_result event).  Streamed chunks (Text_delta, Tool_use)
                can fire before the turn lands on disk — if the API errors
@@ -404,188 +433,286 @@ let run_with_backend ~session_mode_for_agent
                sidecar pointing at it would poison every later --resume.
                Run this after the event dispatch so a same-batch Session_init
                has already updated [captured_session_id]. *)
-            let next_gate, persist =
-              Content_gate.should_persist !content_gate event
-            in
-            content_gate := next_gate;
-            if persist then maybe_persist_session_id ()
-          in
-          let result =
-            try
-              Ok
-                (run_backend ~project_name ~cwd ~patch_id ~prompt
-                   ~resume_session ~complexity ~on_event)
-            with exn -> Error (Stdlib.Printexc.to_string exn)
-          in
-          let open Run_classification in
-          let outcome =
-            Result.map
-              ~f:(fun (r : Llm_backend.result) ->
-                {
-                  exit_code = r.Llm_backend.exit_code;
-                  got_events = r.Llm_backend.got_events;
-                  saw_final_result = r.Llm_backend.saw_final_result;
-                  stderr = r.Llm_backend.stderr;
-                  stream_errors = String.strip (Buffer.contents error_buf);
-                  timed_out = r.Llm_backend.timed_out;
-                })
-              result
-          in
-          (* classify routes Error outcomes to Process_error, so the
+                let next_gate, persist =
+                  Content_gate.should_persist !content_gate event
+                in
+                content_gate := next_gate;
+                if persist then maybe_persist_session_id ()
+              in
+              let cancelled = ref None in
+              let result =
+                try
+                  Ok
+                    (run_backend ~project_name ~cwd ~patch_id ~prompt
+                       ~resume_session ~session_uuid ~complexity ~on_event)
+                with
+                | Eio.Cancel.Cancelled _ as exn ->
+                    cancelled := Some exn;
+                    Error (Stdlib.Printexc.to_string exn)
+                | exn -> Error (Stdlib.Printexc.to_string exn)
+              in
+              let open Run_classification in
+              let outcome =
+                Result.map
+                  ~f:(fun (r : Llm_backend.result) ->
+                    {
+                      exit_code = r.Llm_backend.exit_code;
+                      got_events = r.Llm_backend.got_events;
+                      saw_final_result = r.Llm_backend.saw_final_result;
+                      stderr = r.Llm_backend.stderr;
+                      stream_errors = String.strip (Buffer.contents error_buf);
+                      timed_out = r.Llm_backend.timed_out;
+                    })
+                  result
+              in
+              (* classify routes Error outcomes to Process_error, so the
              empty-events arms below only ever see Ok. *)
-          let log_empty_resume ~tail =
-            match result with
-            | Error _ -> ()
-            | Ok r ->
-                let render label s =
-                  let s = String.strip s in
-                  if String.is_empty s then label ^ "=empty"
-                  else
-                    Printf.sprintf "%s=%d chars: %s" label (String.length s)
-                      (truncate s 500)
-                in
-                log_event runtime ~patch_id
-                  (Printf.sprintf
-                     "Resume exited %d (%s) with no parsed stream events%s — \
-                      %s %s"
-                     r.Llm_backend.exit_code backend_name tail
-                     (render "stdout" r.Llm_backend.stdout)
-                     (render "stderr" r.Llm_backend.stderr))
-          in
-          let session_result, user_result =
-            match
-              classify ~is_resume:(Option.is_some resume_session) outcome
-            with
-            | Process_error msg ->
-                let detail =
-                  Printf.sprintf "Process error from %s — %s" backend_name msg
-                in
-                log_event runtime ~patch_id detail;
-                ( Orchestrator.Session_process_error
-                    { is_fresh; detail = Some detail },
-                  `Failed )
-            | No_session_to_resume ->
-                log_empty_resume ~tail:" — no session to resume, retrying fresh";
-                (* Remove the stub .jsonl that claude refused to resume.
+              let log_empty_resume ~tail =
+                match result with
+                | Error _ -> ()
+                | Ok r ->
+                    let render label s =
+                      let s = String.strip s in
+                      if String.is_empty s then label ^ "=empty"
+                      else
+                        Printf.sprintf "%s=%d chars: %s" label (String.length s)
+                          (truncate s 500)
+                    in
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "Resume exited %d (%s) with no parsed stream events%s \
+                          — %s %s"
+                         r.Llm_backend.exit_code backend_name tail
+                         (render "stdout" r.Llm_backend.stdout)
+                         (render "stderr" r.Llm_backend.stderr))
+              in
+              let classification =
+                classify ~is_resume:(Option.is_some resume_session) outcome
+              in
+              let session_result, user_result =
+                match classification with
+                | Process_error msg ->
+                    let detail =
+                      Printf.sprintf "Process error from %s — %s" backend_name
+                        msg
+                    in
+                    log_event runtime ~patch_id detail;
+                    ( Orchestrator.Session_process_error
+                        { is_fresh; detail = Some detail },
+                      `Failed )
+                | No_session_to_resume ->
+                    log_empty_resume
+                      ~tail:" — no session to resume, retrying fresh";
+                    (* Remove the stub .jsonl that claude refused to resume.
                    Otherwise it sits in the per-patch projects dir forever and
                    trips any future attempt that happens to target the same
                    session id.  Best-effort: a missing file or a transient
                    filesystem error must not interrupt the retry path. *)
-                (match resume_session with
-                | None -> ()
-                | Some session_id when safe_session_id session_id -> (
-                    try
-                      let path =
-                        Spawn_env.claude_session_jsonl_path ~project_name
-                          ~patch_id ~worktree_path ~session_id
-                      in
-                      Unix.unlink path
-                    with _ -> ())
-                | Some session_id ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Skipping cleanup for unsafe Claude session id %S"
-                         session_id));
-                (Orchestrator.Session_no_resume, `Failed)
-            | Timed_out ->
-                let detail =
-                  Printf.sprintf "Session timed out (%s) — marking failed"
-                    backend_name
+                    (match resume_session with
+                    | None -> ()
+                    | Some session_id when safe_session_id session_id -> (
+                        try
+                          let path =
+                            Spawn_env.claude_session_jsonl_path ~project_name
+                              ~patch_id ~worktree_path ~session_id
+                          in
+                          Unix.unlink path
+                        with _ -> ())
+                    | Some session_id ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Skipping cleanup for unsafe Claude session id %S"
+                             session_id));
+                    (Orchestrator.Session_no_resume, `Failed)
+                | Timed_out ->
+                    let detail =
+                      Printf.sprintf "Session timed out (%s) — marking failed"
+                        backend_name
+                    in
+                    log_event runtime ~patch_id detail;
+                    ( Orchestrator.Session_failed
+                        { is_fresh; detail = Some detail },
+                      `Failed )
+                | Success { stream_errors } ->
+                    (match (resume_session, result) with
+                    | Some _, Ok r when not r.Llm_backend.got_events ->
+                        log_empty_resume ~tail:""
+                    | Some _, (Ok _ | Error _) | None, _ -> ());
+                    if String.length stream_errors > 0 then
+                      log_event runtime ~patch_id
+                        (Printf.sprintf
+                           "Session exited 0 (%s) with stream errors — %s"
+                           backend_name
+                           (truncate stream_errors 500));
+                    let text_len = Buffer.length text_buf in
+                    let tools = !tool_count in
+                    if tools = 0 && text_len < 200 then
+                      log_event runtime ~patch_id
+                        (Printf.sprintf
+                           "Session exited 0 (%s) with no tool use and %s of \
+                            text — %s"
+                           backend_name
+                           (pluralize text_len "char")
+                           (truncate
+                              (String.strip (Buffer.contents text_buf))
+                              200));
+                    (Orchestrator.Session_ok, `Ok)
+                | Session_failed { exit_code; detail } ->
+                    let formatted =
+                      Printf.sprintf "Session failed (%s) — exit %d: %s"
+                        backend_name exit_code detail
+                    in
+                    log_event runtime ~patch_id formatted;
+                    ( Orchestrator.Session_failed
+                        { is_fresh; detail = Some formatted },
+                      `Failed )
+              in
+              let tail s =
+                let len = String.length s in
+                let pos = max 0 (len - 4096) in
+                String.sub s ~pos ~len:(len - pos)
+              in
+              let text_tail = tail (Buffer.contents text_buf) in
+              let stderr_tail =
+                match result with
+                | Ok r -> tail r.Llm_backend.stderr
+                | Error msg -> tail msg
+              in
+              let subkind =
+                Failure_subkind.classify ~classification ~init:!captured_init
+                  ~text_tail ~stderr_tail
+              in
+              let meta =
+                let init = !captured_init in
+                let exit_code =
+                  match result with
+                  | Ok r -> r.Llm_backend.exit_code
+                  | Error _ -> 1
                 in
-                log_event runtime ~patch_id detail;
-                ( Orchestrator.Session_failed { is_fresh; detail = Some detail },
-                  `Failed )
-            | Success { stream_errors } ->
-                (match (resume_session, result) with
-                | Some _, Ok r when not r.Llm_backend.got_events ->
-                    log_empty_resume ~tail:""
-                | Some _, (Ok _ | Error _) | None, _ -> ());
-                if String.length stream_errors > 0 then
-                  log_event runtime ~patch_id
-                    (Printf.sprintf
-                       "Session exited 0 (%s) with stream errors — %s"
-                       backend_name
-                       (truncate stream_errors 500));
-                let text_len = Buffer.length text_buf in
-                let tools = !tool_count in
-                if tools = 0 && text_len < 200 then
-                  log_event runtime ~patch_id
-                    (Printf.sprintf
-                       "Session exited 0 (%s) with no tool use and %s of text \
-                        — %s"
-                       backend_name
-                       (pluralize text_len "char")
-                       (truncate (String.strip (Buffer.contents text_buf)) 200));
-                (Orchestrator.Session_ok, `Ok)
-            | Session_failed { exit_code; detail } ->
-                let formatted =
-                  Printf.sprintf "Session failed (%s) — exit %d: %s"
-                    backend_name exit_code detail
-                in
-                log_event runtime ~patch_id formatted;
-                ( Orchestrator.Session_failed
-                    { is_fresh; detail = Some formatted },
-                  `Failed )
-          in
-          (* Observability: if any tool_use events reported a non-"completed"
+                Session_meta.create ~onton_session_uuid:session_uuid
+                  ?claude_session_id:!captured_session_id
+                  ~patch_id:(Types.Patch_id.to_string patch_id)
+                  ~started_at:session_started_at
+                  ~ended_at:(Unix.gettimeofday ()) ~exit_code ~subkind
+                  ?api_key_source:init.api_key_source ?model:init.model
+                  ?claude_code_version:init.claude_code_version ()
+              in
+              Telemetry_dispatch.emit
+                (Telemetry.Event.Spawn_finalized
+                   {
+                     patch_id;
+                     session_uuid;
+                     meta = Session_meta.yojson_of_t meta;
+                   });
+              (* Observability: if any tool_use events reported a non-"completed"
              status (OpenCode's sandbox/rejection/pending states), summarize
              them so the disconnect is visible in the activity log even when
              the session otherwise looks healthy. *)
-          (match !tool_failures with
-          | [] -> ()
-          | failures ->
-              let rendered =
-                List.rev failures
-                |> List.map ~f:(fun (n, s) -> Printf.sprintf "%s[%s]" n s)
-                |> String.concat ~sep:", "
+              (match !tool_failures with
+              | [] -> ()
+              | failures ->
+                  let rendered =
+                    List.rev failures
+                    |> List.map ~f:(fun (n, s) -> Printf.sprintf "%s[%s]" n s)
+                    |> String.concat ~sep:", "
+                  in
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "Session ended with %d non-completed tool call(s) (%s): \
+                        %s"
+                       (List.length failures) backend_name rendered));
+              let apply_result_and_emit_complete final_session_result =
+                let agent_before, agent_after =
+                  Runtime.update_orchestrator_returning runtime (fun orch ->
+                      let agent_before = Orchestrator.agent orch patch_id in
+                      (* Store the captured session_id BEFORE applying the session
+                     result. [apply_session_result] clears [llm_session_id] on
+                     start-path fresh failure (via [on_session_failure]) and on
+                     [Session_no_resume] / [Session_give_up]; doing the set
+                     afterwards would overwrite that reset and break the
+                     clean-retry path. *)
+                      let orch =
+                        match !captured_session_id with
+                        | Some _ ->
+                            Orchestrator.set_llm_session_id orch patch_id
+                              !captured_session_id
+                        | None -> orch
+                      in
+                      let orch =
+                        Orchestrator.apply_session_result orch patch_id
+                          final_session_result
+                      in
+                      let agent_after = Orchestrator.agent orch patch_id in
+                      (orch, (agent_before, agent_after)))
+                in
+                Telemetry_dispatch.emit
+                  (Telemetry.Event.Complete
+                     {
+                       patch_id;
+                       session_uuid = Some session_uuid;
+                       subkind;
+                       payload =
+                         `Assoc
+                           [
+                             ( "result",
+                               `String
+                                 (Orchestrator.show_session_result
+                                    final_session_result) );
+                             ( "agent_before",
+                               Persistence.patch_agent_to_yojson agent_before );
+                             ( "agent_after",
+                               Persistence.patch_agent_to_yojson agent_after );
+                           ];
+                     })
               in
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Session ended with %d non-completed tool call(s) (%s): %s"
-                   (List.length failures) backend_name rendered));
-          (* Supervisor-owned push: agent commits locally; we push every
+              (match !cancelled with
+              | None -> ()
+              | Some exn ->
+                  apply_result_and_emit_complete session_result;
+                  raise exn);
+              (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
              is idempotent (Push_up_to_date when nothing new), and lease-safe
              against concurrent remote updates. Runs regardless of the LLM's
              session result so commits made before a partial failure still
              reach the remote. *)
-          let branch = agent.Patch_agent.branch in
-          let base =
-            match agent.Patch_agent.base_branch with
-            | Some b -> b
-            | None ->
-                (* Invariant: a running session always has a base_branch set
+              let branch = agent.Patch_agent.branch in
+              let base =
+                match agent.Patch_agent.base_branch with
+                | Some b -> b
+                | None ->
+                    (* Invariant: a running session always has a base_branch set
                    by start/respond/rebase. Fall back to main just in case. *)
-                Runtime.read runtime (fun snap ->
-                    Orchestrator.main_branch snap.Runtime.orchestrator)
-          in
-          let push_outcome =
-            Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
-              ~branch ~base
-          in
-          (match push_outcome with
-          | Worktree.Push_ok ->
-              log_event runtime ~patch_id "runner: pushed after session"
-          | Worktree.Push_up_to_date ->
-              log_event runtime ~patch_id
-                "runner: push up-to-date after session (no new commits)"
-          | Worktree.Push_no_commits ->
-              log_event runtime ~patch_id
-                "runner: session ended with no commits on branch — push \
-                 skipped, PR creation deferred"
-          | Worktree.Push_rejected ->
-              log_event runtime ~patch_id
-                "runner: push rejected after session (lease)"
-          | Worktree.Push_worktree_missing ->
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "runner: worktree disappeared mid-session (%s) — local \
-                    commits are lost; will reconstruct on next attempt"
-                   worktree_path)
-          | Worktree.Push_error msg ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "runner: push error after session: %s" msg));
-          (* Combine LLM session outcome with push outcome into a single
+                    Runtime.read runtime (fun snap ->
+                        Orchestrator.main_branch snap.Runtime.orchestrator)
+              in
+              let push_outcome =
+                Worktree.force_push_with_lease ~process_mgr ~path:worktree_path
+                  ~branch ~base
+              in
+              (match push_outcome with
+              | Worktree.Push_ok ->
+                  log_event runtime ~patch_id "runner: pushed after session"
+              | Worktree.Push_up_to_date ->
+                  log_event runtime ~patch_id
+                    "runner: push up-to-date after session (no new commits)"
+              | Worktree.Push_no_commits ->
+                  log_event runtime ~patch_id
+                    "runner: session ended with no commits on branch — push \
+                     skipped, PR creation deferred"
+              | Worktree.Push_rejected ->
+                  log_event runtime ~patch_id
+                    "runner: push rejected after session (lease)"
+              | Worktree.Push_worktree_missing ->
+                  log_event runtime ~patch_id
+                    (Printf.sprintf
+                       "runner: worktree disappeared mid-session (%s) — local \
+                        commits are lost; will reconstruct on next attempt"
+                       worktree_path)
+              | Worktree.Push_error msg ->
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "runner: push error after session: %s" msg));
+              (* Combine LLM session outcome with push outcome into a single
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:
              same Ok/Failed disposition unless the combination promoted us
@@ -597,88 +724,64 @@ let run_with_backend ~session_mode_for_agent
              not a failure — override Session_no_commits to Session_ok so
              the no_commits_push_count counter does not march toward
              needs_intervention and the operation completes cleanly. *)
-          let no_commits_is_ok =
-            match kind with
-            | Some Types.Operation_kind.Human -> true
-            | Some Types.Operation_kind.Findings -> true
-            | Some Types.Operation_kind.Ci
-            | Some Types.Operation_kind.Review_comments
-            | Some Types.Operation_kind.Pr_body
-            | Some Types.Operation_kind.Merge_conflict
-            | Some Types.Operation_kind.Rebase
-            | None ->
-                false
-          in
-          let final_session_result =
-            let combined =
-              Orchestrator.combine_session_and_push ~session:session_result
-                ~push:push_outcome
-            in
-            match combined with
-            | Orchestrator.Session_no_commits when no_commits_is_ok ->
-                Orchestrator.Session_ok
-            | Orchestrator.Session_ok | Orchestrator.Session_no_commits
-            | Orchestrator.Session_process_error _
-            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
-            | Orchestrator.Session_give_up
-            | Orchestrator.Session_worktree_missing
-            | Orchestrator.Session_push_failed ->
-                combined
-          in
-          let final_user_result =
-            match final_session_result with
-            | Orchestrator.Session_ok -> user_result
-            | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits
-              ->
-                (* LLM session ran fine but commits didn't ship (push failed
+              let no_commits_is_ok =
+                match kind with
+                | Some Types.Operation_kind.Human -> true
+                | Some Types.Operation_kind.Findings -> true
+                | Some Types.Operation_kind.Ci
+                | Some Types.Operation_kind.Review_comments
+                | Some Types.Operation_kind.Pr_body
+                | Some Types.Operation_kind.Merge_conflict
+                | Some Types.Operation_kind.Rebase
+                | None ->
+                    false
+              in
+              let final_session_result =
+                let combined =
+                  Orchestrator.combine_session_and_push ~session:session_result
+                    ~push:push_outcome
+                in
+                match combined with
+                | Orchestrator.Session_no_commits when no_commits_is_ok ->
+                    Orchestrator.Session_ok
+                | Orchestrator.Session_ok | Orchestrator.Session_no_commits
+                | Orchestrator.Session_process_error _
+                | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
+                | Orchestrator.Session_give_up
+                | Orchestrator.Session_worktree_missing
+                | Orchestrator.Session_push_failed ->
+                    combined
+              in
+              let final_user_result =
+                match final_session_result with
+                | Orchestrator.Session_ok -> user_result
+                | Orchestrator.Session_push_failed
+                | Orchestrator.Session_no_commits ->
+                    (* LLM session ran fine but commits didn't ship (push failed
                    or the agent made no commits) — signal retry so the
                    Respond path uses Respond_retry_push (clean complete) and
                    the reconciler re-enqueues the operation naturally. After
                    2 consecutive no-commit sessions, needs_intervention fires
                    and the scheduler stops re-enqueueing. *)
-                `Retry_push
-            | Orchestrator.Session_process_error _
-            | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
-            | Orchestrator.Session_give_up
-            | Orchestrator.Session_worktree_missing ->
-                `Failed
-          in
-          let agent_before, agent_after =
-            Runtime.update_orchestrator_returning runtime (fun orch ->
-                let agent_before = Orchestrator.agent orch patch_id in
-                (* Store the captured session_id BEFORE applying the session
-                   result. [apply_session_result] clears [llm_session_id] on
-                   start-path fresh failure (via [on_session_failure]) and on
-                   [Session_no_resume] / [Session_give_up]; doing the set
-                   afterwards would overwrite that reset and break the
-                   clean-retry path. *)
-                let orch =
-                  match !captured_session_id with
-                  | Some _ ->
-                      Orchestrator.set_llm_session_id orch patch_id
-                        !captured_session_id
-                  | None -> orch
-                in
-                let orch =
-                  Orchestrator.apply_session_result orch patch_id
-                    final_session_result
-                in
-                let agent_after = Orchestrator.agent orch patch_id in
-                (orch, (agent_before, agent_after)))
-          in
-          Event_log.log_complete event_log ~patch_id
-            ~result:final_session_result ~agent_before ~agent_after;
-          (final_user_result, List.rev !tool_failures))
+                    `Retry_push
+                | Orchestrator.Session_process_error _
+                | Orchestrator.Session_no_resume | Orchestrator.Session_failed _
+                | Orchestrator.Session_give_up
+                | Orchestrator.Session_worktree_missing ->
+                    `Failed
+              in
+              apply_result_and_emit_complete final_session_result;
+              (final_user_result, List.rev !tool_failures)))
 
 let run ~(kind : Types.Operation_kind.t option) ~runtime ~process_mgr ~clock ~fs
     ~project_name ~patch_id ~repo_root ~prompt ~(agent : Patch_agent.t) ~owner
     ~repo ~on_pr_detected ~transcripts ~user_config ~worktree_mutex ~hook_mutex
-    ~backend ~complexity ~event_log =
+    ~backend ~complexity =
   run_with_backend ~kind ~runtime ~process_mgr ~clock ~fs ~project_name
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
     ~transcripts ~user_config ~worktree_mutex ~hook_mutex
     ~session_mode_for_agent:session_mode ~backend_name:backend.Llm_backend.name
-    ~run_backend:backend.Llm_backend.run_streaming ~complexity ~event_log
+    ~run_backend:backend.Llm_backend.run_streaming ~complexity
 
 type long_lived_session =
   | Long_lived_session : {
@@ -761,10 +864,10 @@ let shutdown_long_lived_session = function
 let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
     ~process_mgr ~clock ~fs ~project_name ~patch_id ~repo_root ~prompt
     ~(agent : Patch_agent.t) ~owner ~repo ~on_pr_detected ~transcripts
-    ~user_config ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log =
+    ~user_config ~worktree_mutex ~hook_mutex ~session ~complexity =
   let (Long_lived_session session) = session in
   let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
-      ~complexity:_ ~on_event =
+      ~session_uuid:_ ~complexity:_ ~on_event =
     let failed_result message =
       on_event (Types.Stream_event.Error message);
       {
@@ -851,4 +954,4 @@ let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~runtime
     ~patch_id ~repo_root ~prompt ~agent ~owner ~repo ~on_pr_detected
     ~transcripts ~user_config ~worktree_mutex ~hook_mutex
     ~session_mode_for_agent:(fun _ -> `Fresh)
-    ~backend_name:session.name ~run_backend ~complexity ~event_log
+    ~backend_name:session.name ~run_backend ~complexity

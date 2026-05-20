@@ -32,3 +32,4 @@ val classify :
   t
 
 val to_string : t -> string
+val default_init : init_info

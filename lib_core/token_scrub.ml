@@ -36,6 +36,11 @@ let redact_env_value_by_name ~name ~value =
   then redacted
   else scrub_token_patterns value
 
+let redact_env_entry entry =
+  match String.lsplit2 entry ~on:'=' with
+  | None -> scrub_token_patterns entry
+  | Some (name, value) -> name ^ "=" ^ redact_env_value_by_name ~name ~value
+
 let%test "scrub_token_patterns redacts known token formats" =
   let input =
     String.concat ~sep:" "
@@ -72,3 +77,8 @@ let%test "redact_env_value_by_name masks values by sensitive env name" =
   String.equal
     (redact_env_value_by_name ~name:"ANTHROPIC_API_KEY" ~value:"plain")
     redacted
+
+let%test "redact_env_entry masks values by sensitive env name" =
+  String.equal
+    (redact_env_entry "CLAUDE_CODE_OAUTH_TOKEN=plain")
+    ("CLAUDE_CODE_OAUTH_TOKEN=" ^ redacted)

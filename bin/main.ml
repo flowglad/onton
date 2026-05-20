@@ -2211,7 +2211,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
           ~patch_id ~repo_root:config.repo_root ~prompt ~agent
           ~owner:config.github_owner ~repo:config.github_repo ~on_pr_detected
           ~transcripts ~user_config:config.user_config ~worktree_mutex
-          ~hook_mutex ~backend ~complexity ~event_log
+          ~hook_mutex ~backend ~complexity
     | Backend_registry.Long_lived backend, decision -> (
         let patch_agent_model_result =
           match
@@ -2250,7 +2250,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
               ~fs ~project_name ~patch_id ~repo_root:config.repo_root ~prompt
               ~agent ~owner:config.github_owner ~repo:config.github_repo
               ~on_pr_detected ~transcripts ~user_config:config.user_config
-              ~worktree_mutex ~hook_mutex ~session ~complexity ~event_log)
+              ~worktree_mutex ~hook_mutex ~session ~complexity)
   in
   let shutdown_finished_long_lived_sessions ~sw () =
     let finished =

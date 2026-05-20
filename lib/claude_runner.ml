@@ -99,7 +99,7 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
   }
 
 let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
-    ~cwd ~patch_id ~prompt ~resume_session ~complexity ~on_event =
+    ~cwd ~patch_id ~prompt ~resume_session ~session_uuid ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
@@ -124,8 +124,10 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
         let trimmed = strip_ansi (String.strip line) in
         if String.is_empty trimmed then [] else parse_stream_events trimmed
       in
+      Llm_backend.emit_spawn_started ~patch_id ~session_uuid ~prompt ~args ~env;
       Llm_backend.spawn_and_stream ~process_mgr ~clock ~timeout ~cwd ~env
-        ~setsid_exec ~args ~process_line ~on_event
+        ~setsid_exec ~args ~session_uuid:(Some session_uuid) ~patch_id
+        ~process_line ~on_event
 
 let%test
     "prepare_minted_session_id mints when flag is on (no snapshot path \
