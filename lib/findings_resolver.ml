@@ -86,7 +86,8 @@ let resolve_after_session ~review_clients ~log ~findings_registry ~artifact_path
                   (Printf.sprintf
                      "Skipping resolve for finding %s — review backend %s is \
                       no longer configured"
-                     f.id backend_name)
+                     f.id backend_name);
+                Findings_registry.forget findings_registry ~key:f.id
             | Some
                 (module R : Review_service_client.S
                   with type error = Review_service_client.error) -> (
