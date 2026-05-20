@@ -571,11 +571,26 @@ struct
 
       [list_selected], [detail_scroll], [timeline_scroll], and [view_mode] are
       shared mutable refs updated by the input fiber. *)
-  let tui_fiber ~runtime ~clock ~stdout ~list_selected ~detail_scroll
-      ~detail_follow ~timeline_scroll ~view_mode ~show_help ~status_msg
-      ~transcripts ~sorted_patch_ids ~input_mode ~prompt_line ~patches_start_row
-      ~patches_scroll_offset ~patches_visible_count ~backend_name
+  let tui_fiber ~runtime ~clock ~stdout ~tui_state ~transcripts ~backend_name
       ~resolve_routing =
+    let {
+      Tui_state.list_selected;
+      detail_scroll;
+      detail_follow;
+      timeline_scroll;
+      view_mode;
+      sorted_patch_ids;
+      input_mode;
+      prompt_line;
+      show_help;
+      status_msg;
+      patches_start_row;
+      patches_scroll_offset;
+      patches_visible_count;
+      _;
+    } =
+      tui_state
+    in
     Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
     let first = ref true in
     let prev_output = ref "" in
@@ -671,11 +686,26 @@ struct
     let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
     Base.String.tr text ~target:'\r' ~replacement:' '
 
-  let input_fiber ~runtime ~process_mgr ~list_selected ~detail_scroll
-      ~detail_follow ~timeline_scroll ~detail_scrolls ~view_mode ~pr_registry
-      ~project_name ~show_help ~status_msg ~sorted_patch_ids ~input_mode
-      ~prompt_line ~patches_start_row ~patches_scroll_offset
-      ~patches_visible_count ~owner ~repo ~resolve_routing =
+  let input_fiber ~runtime ~process_mgr ~tui_state ~pr_registry ~project_name
+      ~owner ~repo ~resolve_routing =
+    let {
+      Tui_state.list_selected;
+      detail_scroll;
+      detail_follow;
+      timeline_scroll;
+      detail_scrolls;
+      view_mode;
+      sorted_patch_ids;
+      input_mode;
+      prompt_line;
+      show_help;
+      status_msg;
+      patches_start_row;
+      patches_scroll_offset;
+      patches_visible_count;
+    } =
+      tui_state
+    in
     let buf = Tui_input.Edit_buffer.create () in
     let selected_pid () =
       let pids = !sorted_patch_ids in
@@ -4272,22 +4302,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           :: (fun () -> runner_fiber ())
           :: common_fibers)
       else
-        let list_selected = ref 0 in
-        let detail_scroll = ref 0 in
-        let detail_follow = ref false in
-        let timeline_scroll = ref 0 in
-        let detail_scrolls : (Patch_id.t, int * bool) Hashtbl.t =
-          Hashtbl.create 16
-        in
-        let view_mode = ref Tui.List_view in
-        let sorted_patch_ids = ref [] in
-        let input_mode = ref Tui_input.Normal in
-        let prompt_line = ref None in
-        let show_help = ref false in
-        let status_msg : Tui.status_msg option ref = ref None in
-        let patches_start_row = ref 0 in
-        let patches_scroll_offset = ref 0 in
-        let patches_visible_count = ref 0 in
+        let tui_state = Tui_state.create () in
         let raw_state = Term.Raw.enter () in
         Fun.protect
           ~finally:(fun () ->
@@ -4304,22 +4319,14 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             try
               Eio.Fiber.all
                 ((fun () ->
-                   tui_fiber ~runtime ~clock ~stdout ~list_selected
-                     ~detail_scroll ~detail_follow ~timeline_scroll ~view_mode
-                     ~show_help ~status_msg ~transcripts ~sorted_patch_ids
-                     ~input_mode ~prompt_line ~patches_start_row
-                     ~patches_scroll_offset ~patches_visible_count
+                   tui_fiber ~runtime ~clock ~stdout ~tui_state ~transcripts
                      ~backend_name:(backend_name (fst default_backend))
                      ~resolve_routing)
                 :: (fun () ->
-                  input_fiber ~runtime ~process_mgr ~list_selected
-                    ~detail_scroll ~detail_follow ~timeline_scroll
-                    ~detail_scrolls ~view_mode ~pr_registry ~project_name
-                    ~show_help ~status_msg ~sorted_patch_ids ~input_mode
-                    ~prompt_line ~patches_start_row ~patches_scroll_offset
-                    ~patches_visible_count ~owner:config.github_owner
+                  input_fiber ~runtime ~process_mgr ~tui_state ~pr_registry
+                    ~project_name ~owner:config.github_owner
                     ~repo:config.github_repo ~resolve_routing)
-                :: (fun () -> runner_fiber ~status_msg ())
+                :: (fun () -> runner_fiber ~status_msg:tui_state.status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 
