@@ -19,7 +19,7 @@ module type S = sig
 
   val list_prs :
     branch:Types.Branch.t ->
-    ?base:Types.Branch.t option ->
+    ?base:Types.Branch.t ->
     state:[ `Open | `All ] ->
     unit ->
     ((Types.Pr_number.t * Types.Branch.t * bool) list, error) Result.t
