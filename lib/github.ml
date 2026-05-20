@@ -125,7 +125,6 @@ let show_error = function
 type t = { token : string; owner : string; repo : string }
 
 let create ~token ~owner ~repo = { token; owner; repo }
-let with_client ~token ~owner ~repo ~f = f (create ~token ~owner ~repo)
 
 let graphql_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
@@ -538,10 +537,6 @@ let check_repo_access_internal ~net ~clock ?timeout t =
   match request ~net ~clock ?timeout t ~meth:`GET ~path () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
-
-let check_repo_access ~net ~clock ?timeout ~token ~owner ~repo () =
-  with_client ~token ~owner ~repo ~f:(fun client ->
-      check_repo_access_internal ~net ~clock ?timeout client)
 
 let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in

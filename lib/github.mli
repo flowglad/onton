@@ -32,20 +32,6 @@ val default_timeout : float
     stuck in [SYN_SENT] (e.g. dropped packets, dead route) can block the calling
     fiber indefinitely. *)
 
-val check_repo_access :
-  net:_ Eio.Net.t ->
-  clock:_ Eio.Time.clock ->
-  ?timeout:float ->
-  token:string ->
-  owner:string ->
-  repo:string ->
-  unit ->
-  (unit, error) Result.t
-(** [check_repo_access ~net ~clock ~token ~owner ~repo] verifies that the
-    configured token can access [owner/repo] via [GET /repos/:owner/:repo]. This
-    is a startup preflight so missing tokens, expired credentials, SSO gaps, and
-    wrong repository names fail before long-running orchestration starts. *)
-
 val parse_response_json :
   owner:string -> Yojson.Safe.t -> (Pr_state.t, error) Result.t
 (** Parse a GitHub GraphQL response JSON value into a [Pr_state.t]. Pure

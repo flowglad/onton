@@ -4232,15 +4232,6 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         (Project_store.snapshot_path project_name);
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.clock env in
-      (match
-         Github.check_repo_access ~net ~clock ~token:config.github_token
-           ~owner:config.github_owner ~repo:config.github_repo ()
-       with
-      | Ok () -> ()
-      | Error err ->
-          Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
-            config.github_owner config.github_repo (Github.show_error err);
-          Stdlib.exit 1);
       let forge =
         Github.make ~net ~clock ~token:config.github_token
           ~owner:config.github_owner ~repo:config.github_repo
@@ -4251,6 +4242,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         Worktree.make ~process_mgr ~repo_root:config.repo_root
       in
       let module WorktreeClient = (val worktree_client) in
+      (match Forge.check_repo_access () with
+      | Ok () -> ()
+      | Error err ->
+          Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
+            config.github_owner config.github_repo (Github.show_error err);
+          Stdlib.exit 1);
       let module Reconciler = Startup_reconciler.Make (Forge) (WorktreeClient)
       in
       let module Fibers = Make_fibers (Forge) (WorktreeClient) in
