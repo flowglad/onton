@@ -257,8 +257,7 @@ let collect_files ~project_name ~version =
     meta_summaries = session_files.meta_summaries;
   }
 
-let build_bundle ~project_name ~version =
-  let collected = collect_files ~project_name ~version in
+let build_bundle_from_collected ~project_name ~version ~collected =
   let file_assoc =
     List.map collected.files ~f:(fun (name, contents) ->
         (name, `String contents))
@@ -272,6 +271,10 @@ let build_bundle ~project_name ~version =
       ("files", `Assoc file_assoc);
     ]
   |> Yojson.Safe.to_string ~std:true
+
+let build_bundle ~project_name ~version =
+  let collected = collect_files ~project_name ~version in
+  build_bundle_from_collected ~project_name ~version ~collected
 
 (** Set up TLS for HTTPS — same pattern as [Github]. *)
 let https_config () =
@@ -340,7 +343,7 @@ let run ~net ~project_name ~version =
   if List.is_empty files_without_manifest then (
     eprintf "Error: no state files found for project %S.\n%!" project_name;
     Stdlib.exit 1);
-  let bundle = build_bundle ~project_name ~version in
+  let bundle = build_bundle_from_collected ~project_name ~version ~collected in
   let bundle_size = String.length bundle in
   printf "Bundle size: %s\n%!"
     (if bundle_size > 1_000_000 then
