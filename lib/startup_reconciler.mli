@@ -46,15 +46,6 @@ type t = {
     contains per-patch PR discovery failures. [worktree_errors] contains global
     worktree listing failures (not per-patch). *)
 
-val discover_pr :
-  net:_ Eio.Net.t ->
-  clock:_ Eio.Time.clock ->
-  github:Github.t ->
-  branch:Branch.t ->
-  ((Pr_number.t * Branch.t * bool) option, string) Result.t
-(** Query the GitHub REST API for a branch, returning the first non-CLOSED PR as
-    [(pr_number, base_branch, merged)] or [None]. *)
-
 val recover_worktrees :
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
@@ -64,21 +55,25 @@ val recover_worktrees :
     Returns matched worktrees and an optional error string if listing failed.
     Can be called before [reconcile] to capture worktree state early. *)
 
-val reconcile :
-  net:_ Eio.Net.t ->
-  clock:_ Eio.Time.clock ->
-  github:Github.t ->
-  patches:Patch.t list ->
-  ?repo_root:string ->
-  ?process_mgr:_ Eio.Process.mgr ->
-  ?agents:Patch_agent.t list ->
-  ?pre_recovered_worktrees:worktree_recovery list ->
-  unit ->
-  t
-(** [reconcile ~net ~github ~patches ?repo_root ?process_mgr ?agents
-     ?pre_recovered_worktrees ()] queries GitHub REST API for each patch's
-    branch to find existing PRs and identifies stale busy agents from [agents]
-    (default [[]]). When [pre_recovered_worktrees] is provided, uses it directly
-    instead of scanning the filesystem (avoids racing with concurrent worktree
-    creation). Otherwise discovers worktrees under [repo_root] (default ["."])
-    using [process_mgr]. *)
+module Make (_ : Forge.S) : sig
+  val discover_pr :
+    branch:Branch.t -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
+  (** Query the GitHub REST API for a branch, returning the first non-CLOSED PR
+      as [(pr_number, base_branch, merged)] or [None]. *)
+
+  val reconcile :
+    patches:Patch.t list ->
+    ?repo_root:string ->
+    ?process_mgr:_ Eio.Process.mgr ->
+    ?agents:Patch_agent.t list ->
+    ?pre_recovered_worktrees:worktree_recovery list ->
+    unit ->
+    t
+  (** [reconcile ~patches ?repo_root ?process_mgr ?agents
+       ?pre_recovered_worktrees ()] queries GitHub REST API for each patch's
+      branch to find existing PRs and identifies stale busy agents from [agents]
+      (default [[]]). When [pre_recovered_worktrees] is provided, uses it
+      directly instead of scanning the filesystem (avoids racing with concurrent
+      worktree creation). Otherwise discovers worktrees under [repo_root]
+      (default ["."]) using [process_mgr]. *)
+end

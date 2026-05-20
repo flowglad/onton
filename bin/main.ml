@@ -19,6 +19,11 @@ type config = {
   user_config : User_config.t;
 }
 
+module type STARTUP_RECONCILER = sig
+  val discover_pr :
+    branch:Branch.t -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
+end
+
 (** Run a subprocess, capture stdout, and guarantee the pipe is closed on any
     exception path. Returns the exit status and captured output, or [None] if
     opening the pipe itself raised. *)
@@ -1906,8 +1911,9 @@ let poll_outcome_of_github_result = function
   | Error (Github.Graphql_error msgs) -> Poll_outcome.Graphql_failed msgs
   | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
 
-let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
-    ~pr_registry ~branch_of ~event_log ~review_backends ~findings_registry =
+let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) ~runtime ~clock
+    ~net ~process_mgr ~github ~config ~project_name ~pr_registry ~branch_of
+    ~event_log ~review_backends ~findings_registry =
   let main = config.main_branch in
   let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
   let skip_logged_mutex = Eio.Mutex.create () in
@@ -2006,9 +2012,7 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
                         | Some agent -> agent.Patch_agent.branch
                         | None -> branch_of patch_id)
               in
-              (match
-                 Startup_reconciler.discover_pr ~net ~clock ~github ~branch
-               with
+              (match StartupReconciler.discover_pr ~branch with
               | Ok (Some (new_pr, base_branch, merged)) ->
                   log_event runtime ~patch_id
                     (Printf.sprintf "Switched to PR #%d"
@@ -4322,6 +4326,16 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
             config.github_owner config.github_repo (Github.show_error err);
           Stdlib.exit 1);
+      (* Patch 3 still keeps the raw [github] client for direct GitHub calls
+         migrated in Patch 4. [Github.t] is currently immutable config, so this
+         temporary duplicate is benign; once those calls move behind Forge,
+         this composition root should construct only the Forge-backed client. *)
+      let forge =
+        Github.make ~net ~clock ~token:config.github_token
+          ~owner:config.github_owner ~repo:config.github_repo
+      in
+      let module Forge = (val forge) in
+      let module Reconciler = Startup_reconciler.Make (Forge) in
       let pr_registry = Pr_registry.create () in
       (* Seed registry from any agents that already have a PR number — covers
          both gameplan patches restored from a snapshot and ad-hoc agents. The
@@ -4429,9 +4443,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       in
       let reconciliation_fiber () =
         let startup =
-          Startup_reconciler.reconcile ~net ~clock ~github
-            ~patches:gameplan.Gameplan.patches ~repo_root:config.repo_root
-            ~process_mgr ~agents:pre_agents
+          Reconciler.reconcile ~patches:gameplan.Gameplan.patches
+            ~repo_root:config.repo_root ~process_mgr ~agents:pre_agents
             ~pre_recovered_worktrees:pre_worktrees ()
         in
         let errored_ids =
@@ -4502,8 +4515,10 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         [
           reconciliation_fiber;
           (fun () ->
-            poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config
-              ~project_name ~pr_registry ~branch_of ~event_log ~review_backends
+            poller_fiber
+              (module Reconciler : STARTUP_RECONCILER)
+              ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
+              ~pr_registry ~branch_of ~event_log ~review_backends
               ~findings_registry);
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
