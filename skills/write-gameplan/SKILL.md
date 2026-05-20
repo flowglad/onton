@@ -351,25 +351,33 @@ Write test stubs with skip/pending markers BEFORE implementation:
 
 ## Verification
 
-After writing the gameplan JSON, verify:
+Run the validator before finalising:
 
-1. **Schema compliance** — Validate the output against the JSON Schema in `references/gameplan-schema.json`. If `ajv` or another JSON Schema validator is available, run it programmatically. Otherwise, re-read the schema and manually confirm:
-   - All `required` fields are present at every level (top-level, patch, featureFlag, etc.)
-   - `additionalProperties: false` is enforced — no extra fields anywhere
-   - Enum values match exactly (`INFRA`/`GATED`/`BEHAVIOR`, `create`/`modify`/`delete`, etc.)
-   - `oneOf` discriminants are correct (feature flag `type`, nullable `workstream`)
-   - Patch numbers are positive integers (`minimum: 1`)
-   - `projectName` matches the kebab-case `pattern`
-   - Do NOT use non-schema field names (e.g. `project` instead of `projectName`, `summary` instead of `solutionSummary`, `id` instead of `number`, `description` instead of `changes`)
-2. **Each spec MUST parse cleanly** — extract `spec`/`finalStateSpec` strings to temp files and validate them with the spec language's toolchain (see [Specification Language](#specification-language)). Fix any parse errors before finalizing. If the toolchain is not installed, flag it as a blocker — do NOT skip validation or fall back to manual review
-3. The dependency graph is a valid DAG
-4. All test stubs have corresponding implementations
-5. **Functional change ownership is total and single-valued** — every `functionalChanges[i].id` is unique; every `functionalChanges[i].ownedBy` resolves to an existing `patches[].number`; no functional change appears unowned in prose. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec` and confirm every behavioral promise has a corresponding `functionalChanges` entry pointing at a single patch. Set `mergabilityChecklist.functionalChangesOwnedByExactlyOnePatch` to `true` only when this holds.
-6. **Context routing is exact** — every `contextResources[i].id` is unique and non-empty; every `requiredContext` entry resolves to an existing resource; every `consumedBy` patch exists; and each resource's `consumedBy` list exactly matches the patches whose `requiredContext` includes that resource ID. Confirm docs/evals/reference patches name the implementation or contract they describe.
-7. **Spec/evidence mapping is complete where applicable** — for each functional change, identify the spec or acceptance criterion it satisfies, the patch that implements it, the required context resource consulted (if any), and the test/static check expected to prove it.
-8. **Operational considerations are substantive** — the schema requires every sub-field of `operationalConsiderations` to be present, but presence is not engagement. For each sub-field, confirm the response names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than generic platitudes. A sub-field may say "not applicable" only when the gameplan genuinely does not touch that surface, and only with a brief justification grounded in the actual changes. See [Operational Considerations](#operational-considerations).
-9. **Atomicity holds** — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm that no patch is conditional on the outcome of another, no patch description or `changes` step expects a human to act between patches (flip a flag, run a script, observe a metric, decide a branch), and no patch implies an observation/soak window before the next one runs. If any of these slipped in, the work must be re-decomposed as a multi-milestone workstream via [[write-workstream]] — do not patch around it inside the gameplan. Set `mergabilityChecklist.gameplanIsAtomicAndAutonomous` to `true` only when this check passes.
-10. The mergability checklist passes
+```
+python3 scripts/validate.py <path/to/gameplan.json>
+```
+
+It exits 0 on PASS and 1 with explicit error lines on FAIL. Fix every reported error; do not ship a gameplan that has validator failures or WARNs.
+
+Soft dependencies — install both so nothing is skipped:
+- `jsonschema` (pip) — enables JSON Schema shape validation. Without it, only semantic checks run.
+- `pant` 0.22+ — enables Pantagruel spec parsing. Install: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`.
+
+The validator covers everything mechanisable: schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, dependency-graph DAG correctness and classification consistency, testMap consistency, and repo-relative path safety. See `scripts/validate.py` for the exact set.
+
+The rest is human judgement. Walk these before setting the relevant `mergabilityChecklist` booleans to `true`:
+
+1. **Functional-change coverage** (`functionalChangesOwnedByExactlyOnePatch`) — the validator confirms each FC has a single resolving `ownedBy`. It cannot confirm the *set* of FCs covers every observable change. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec`; every behavioural promise there must map to an FC.
+
+2. **Context-resource fit** — the validator confirms routing is bidirectional and references resolve. Manually confirm that docs/evals/reference patches actually name the implementation or contract they describe — a resource attached to a patch that never reads it is dead weight.
+
+3. **Spec/evidence completeness** — for each functional change, confirm a spec or acceptance criterion expresses it, a patch implements it, the required context (if any) is attached, and a test/static check is expected to prove it.
+
+4. **Operational considerations are substantive** (`operationalConsiderationsSubstantive`) — every `operationalConsiderations` sub-field is required by the schema, but presence ≠ engagement. Confirm each sub-field names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than platitudes. "Not applicable" only with a brief gameplan-specific justification. See [Operational Considerations](#operational-considerations).
+
+5. **Atomicity** (`gameplanIsAtomicAndAutonomous`) — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm no patch is conditional on another's outcome, no `changes` step expects a human between patches (flag flip, manual script, dashboard check, decision branch), and no patch implies an observation/soak window. If any slipped in, re-decompose as a multi-milestone workstream via [[write-workstream]].
+
+6. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
 
 ## Resolving Open Questions
 
@@ -391,7 +399,7 @@ For each open question, in order:
    - Removing the question from `openQuestions`.
 5. **Move to the next question.** Do not batch — questions are presented sequentially because later questions often depend on earlier answers, and batching prevents the programmer from reasoning about each decision in isolation.
 
-After the last question is resolved, **re-run verification** (schema validation and spec parsing) since edits made during this dialogue may have introduced regressions.
+After the last question is resolved, **re-run `scripts/validate.py`** since edits made during this dialogue may have introduced regressions.
 
 The end state is a gameplan with `openQuestions: []` and an `explicitOpinions` array that captures every decision made during the dialogue.
 
@@ -404,8 +412,8 @@ The `spec` and `finalStateSpec` fields contain source code in a formal specifica
 We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for writing formal specifications with domains, rules, and invariants organized into progressive-disclosure chapters.
 
 - **Language reference**: `https://raw.githubusercontent.com/subsetpark/pantagruel/refs/heads/master/REFERENCE.md` — fetch this for syntax details
-- **Validation (parse + type-check)**: extract spec strings to `.pant` files and run `pant <file.pant>`. Bare `pant` type-checks; exit code 0 means the spec is well-formed. On pant 0.22, success produces no output. If `pant` is not installed, install via Homebrew: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`
-- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver
+- **Parse validation**: covered by `scripts/validate.py` (see [Verification](#verification)). Bare `pant <file.pant>` type-checks; exit 0 = well-formed; on 0.22, success is silent.
+- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
 - **Module naming**: final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_DECISION`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
 - **Style**:
   - Progressive disclosure (top-down chapter structure); keep per-patch specs self-contained (redeclare referenced domains/rules rather than importing)
@@ -437,3 +445,4 @@ V2 JSON gameplans are consumed programmatically via the `patches` and `dependenc
 
 - `references/gameplan-schema.json` — Formal JSON Schema (draft 2020-12)
 - `references/example.json` — Complete real-world example (uses Pantagruel for specs)
+- `scripts/validate.py` — End-to-end validator (schema + pant + routing + DAG + testMap + paths). Run `python3 scripts/validate.py <gameplan.json>` before finalising.
