@@ -1,14 +1,6 @@
 open Base
 
-module type ENV = sig
-  val runtime : Runtime.t
-  val clock : float Eio.Time.clock_ty Eio.Time.clock
-  val fs : Eio.Fs.dir_ty Eio.Path.t
-  val project_name : string
-  val user_config : User_config.t
-  val worktree_mutex : Eio.Mutex.t
-  val hook_mutex : Eio.Mutex.t
-end
+module type ENV = Run_env.S
 
 module type S = sig
   val resolve_worktree_path :

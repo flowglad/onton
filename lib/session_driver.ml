@@ -126,16 +126,10 @@ let%test_module "extract_pr_number_from_text" =
   end)
 
 module type ENV = sig
-  val runtime : Runtime.t
-  val clock : float Eio.Time.clock_ty Eio.Time.clock
-  val fs : Eio.Fs.dir_ty Eio.Path.t
-  val project_name : string
+  include Run_env.S
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
-  val user_config : User_config.t
-  val worktree_mutex : Eio.Mutex.t
-  val hook_mutex : Eio.Mutex.t
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
