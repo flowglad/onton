@@ -170,6 +170,15 @@ struct
 
   module WS = Worktree_setup.Make (W) (WS_Env)
   module Session_driver = Session_driver.Make (W) (SD_Env)
+  module Long_lived_sessions = Long_lived_sessions.Make (Session_driver)
+
+  module Busy_guard_env = struct
+    let runtime = Env.runtime
+    let event_log = Env.event_log
+  end
+
+  module With_busy_guard = With_busy_guard.Make (Busy_guard_env)
+  module Worktree_plan_executor = Worktree_plan_executor.Make (W) (WS_Env)
 
   module Env_poller : Poller_fiber.Poller_env.S = struct
     let runtime = Env.runtime
@@ -1637,43 +1646,7 @@ struct
     (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
      the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
     let fetch_mutex = Eio.Mutex.create () in
-    let execute_worktree_plan ~patch_id ~(agent : Patch_agent.t) ~fetch_lock
-        ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
-      let default_path = Worktree.worktree_dir ~project_name ~patch_id in
-      let rec loop ~path = function
-        | [] -> (Worktree.Ok, path)
-        | Worktree_plan.Ensure_worktree :: rest -> (
-            match WS.ensure_worktree ~patch_id ~agent () with
-            | Some p -> loop ~path:p rest
-            | None ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf
-                     "Cannot %s — worktree missing and could not be created"
-                     fail_label);
-                ( Worktree.Error
-                    (Printf.sprintf "%s failed: worktree missing" fail_label),
-                  path ))
-        | Worktree_plan.Fetch_origin :: rest -> (
-            match W.fetch_origin ~fetch_lock ~path with
-            | Result.Ok () -> loop ~path rest
-            | Result.Error msg ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "Fetch failed before %s — %s" fail_label msg);
-                ( Worktree.Error
-                    (Printf.sprintf "fetch before rebase failed: %s" msg),
-                  path ))
-        | Worktree_plan.Rebase_onto target :: rest -> (
-            match W.rebase_onto ~path ~target ~project_name ~ancestor_ids with
-            | Worktree.Ok -> loop ~path rest
-            | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->
-                (r, path))
-      in
-      loop ~path:default_path plan
-    in
-    let long_lived_sessions :
-        (Patch_id.t, Session_driver.long_lived_session) Stdlib.Hashtbl.t =
-      Stdlib.Hashtbl.create 16
-    in
+    let long_lived_sessions = Long_lived_sessions.create () in
     let patch_agent_provider =
       match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
       | Some s when not (Base.String.is_empty (Base.String.strip s)) ->
@@ -1712,7 +1685,7 @@ struct
               (`Failed, [])
           | Ok patch_agent_model ->
               let session =
-                match Stdlib.Hashtbl.find_opt long_lived_sessions patch_id with
+                match Long_lived_sessions.find long_lived_sessions patch_id with
                 | Some session ->
                     Session_driver.update_long_lived_session_prompts session
                       ~gameplan_prompt ~patch_prompt;
@@ -1724,7 +1697,8 @@ struct
                         ~effort:patch_agent_effort ~gameplan_prompt
                         ~patch_prompt
                     in
-                    Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
+                    Long_lived_sessions.register long_lived_sessions patch_id
+                      session;
                     session
               in
               Session_driver.run_long_lived ~sw ~kind ~patch_id ~prompt ~agent
@@ -1733,8 +1707,8 @@ struct
     let shutdown_finished_long_lived_sessions ~sw () =
       let finished =
         Runtime.read runtime (fun snap ->
-            Stdlib.Hashtbl.fold
-              (fun patch_id session acc ->
+            Base.List.fold (Long_lived_sessions.to_alist long_lived_sessions)
+              ~init:[] ~f:(fun acc (patch_id, session) ->
                 if Session_driver.long_lived_session_failed session then
                   (patch_id, session) :: acc
                 else
@@ -1746,11 +1720,10 @@ struct
                     when agent.Patch_agent.merged && not agent.Patch_agent.busy
                     ->
                       (patch_id, session) :: acc
-                  | Some _ -> acc)
-              long_lived_sessions [])
+                  | Some _ -> acc))
       in
       Base.List.iter finished ~f:(fun (patch_id, session) ->
-          Stdlib.Hashtbl.remove long_lived_sessions patch_id;
+          Long_lived_sessions.remove long_lived_sessions patch_id;
           Eio.Fiber.fork_daemon ~sw (fun () ->
               (try Session_driver.shutdown_long_lived_session session with
               | Eio.Cancel.Cancelled _ -> ()
@@ -1759,65 +1732,6 @@ struct
                     (Printf.sprintf "long-lived backend shutdown error — %s"
                        (Printexc.to_string exn)));
               `Stop_daemon))
-    in
-    let with_busy_guard ~patch_id f =
-      let cancelled = ref false in
-      let exception_raised = ref false in
-      Fun.protect
-        ~finally:(fun () ->
-          (* Three exit modes:
-           - cancelled: f raised [Eio.Cancel.Cancelled]; clean teardown.
-           - exception_raised: f raised any other exception; session
-             fallback must advance.
-           - neither: f returned normally (already called [complete]
-             itself, so the busy=false guard below skips the rest). The
-             reason value is unused in that case, but [Cancelled] is the
-             safe default — it leaves [session_fallback] untouched if a
-             future code path in [f] ever exits normally with [busy=true]. *)
-          let reason =
-            if !cancelled then Orchestrator.Cancelled
-            else if !exception_raised then Orchestrator.Unexpected_exception
-            else Orchestrator.Cancelled
-          in
-          (* Check-and-complete must be atomic to avoid racing with another
-           fiber that completes the same patch between read and update.
-           Routes through the pure [apply_force_complete] decision so any
-           inflight human messages are restored to the inbox rather than
-           silently dropped — a regression that previously cost a delivered
-           Brand.refined instruction in the id-brands run. *)
-          let snapshot = ref None in
-          Runtime.update_orchestrator runtime (fun orch ->
-              match Orchestrator.find_agent orch patch_id with
-              | None -> orch
-              | Some before ->
-                  if before.Patch_agent.busy then (
-                    let orch' =
-                      Orchestrator.apply_force_complete orch patch_id reason
-                    in
-                    let after = Orchestrator.agent orch' patch_id in
-                    snapshot := Some (before, after);
-                    orch')
-                  else orch);
-          Base.Option.iter !snapshot ~f:(fun (before, after) ->
-              Event_log.log_force_complete event_log ~patch_id ~reason
-                ~agent_before:before ~agent_after:after;
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Forced complete (%s) — runner fiber exited with busy=true"
-                   (Orchestrator.show_force_complete_reason reason))))
-        (fun () ->
-          try f () with
-          | Eio.Cancel.Cancelled _ as exn ->
-              cancelled := true;
-              raise exn
-          | exn ->
-              exception_raised := true;
-              log_event runtime ~patch_id
-                (Printf.sprintf "Unexpected action exception — %s"
-                   (Printexc.to_string exn))
-          (* Do not call [mark_session_failed] here — the [finally] block
-           routes through [apply_force_complete ~reason:Unexpected_exception]
-           which subsumes its effect. *))
     in
     let rec loop sw =
       shutdown_finished_long_lived_sessions ~sw ();
@@ -1916,7 +1830,7 @@ struct
                 | Some patch ->
                     Some
                       (fun () ->
-                        with_busy_guard ~patch_id (fun () ->
+                        With_busy_guard.run ~patch_id (fun () ->
                             let result =
                               with_session_slot (fun () ->
                                   let agent =
@@ -2158,7 +2072,7 @@ struct
             | Orchestrator.Rebase (patch_id, new_base) ->
                 Some
                   (fun () ->
-                    with_busy_guard ~patch_id (fun () ->
+                    With_busy_guard.run ~patch_id (fun () ->
                         (* Rebase is orchestrator-executed (no session slot), so
                          work begins immediately under the busy guard. *)
                         Runtime.update_orchestrator runtime (fun orch ->
@@ -2175,7 +2089,7 @@ struct
                                 patch_id)
                         in
                         let rebase_result, wt_path =
-                          execute_worktree_plan ~patch_id ~agent
+                          Worktree_plan_executor.execute ~patch_id ~agent
                             ~fetch_lock:fetch_mutex ~fail_label:"rebase"
                             ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
@@ -2355,7 +2269,7 @@ struct
                               Some "no current failures")
                       else None
                     in
-                    with_busy_guard ~patch_id (fun () ->
+                    With_busy_guard.run ~patch_id (fun () ->
                         let result =
                           match ci_skip_reason with
                           | Some reason ->
@@ -2580,7 +2494,8 @@ struct
                                      against fresh refs, not the stale
                                      local tracking ref. *)
                                         let rebase_result, _wt_path =
-                                          execute_worktree_plan ~patch_id ~agent
+                                          Worktree_plan_executor.execute
+                                            ~patch_id ~agent
                                             ~fetch_lock:fetch_mutex
                                             ~fail_label:"merge-conflict rebase"
                                             ~ancestor_ids
