@@ -609,7 +609,7 @@ struct
       patches_start_row;
       patches_scroll_offset;
       patches_visible_count;
-      _;
+      detail_scrolls = _;
     } =
       tui_state
     in
