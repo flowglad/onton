@@ -245,6 +245,7 @@ let json_string_list json key =
 let json_patch_id_list json key =
   let open Yojson.Safe.Util in
   match json |> member key with
+  | `Null -> []
   | `List items ->
       List.map items ~f:(fun item ->
           match patch_id_of_json item with
@@ -253,7 +254,10 @@ let json_patch_id_list json key =
               raise
                 (Type_error
                    (Printf.sprintf "%s[] must contain only patch IDs" key, item)))
-  | _ -> []
+  | value ->
+      raise
+        (Type_error
+           (Printf.sprintf "%s must be an array of patch IDs" key, value))
 
 let json_precedents json =
   let open Yojson.Safe.Util in
@@ -389,7 +393,7 @@ let parse_json_string input =
               List.map items ~f:(fun obj ->
                   let id =
                     match obj |> member "id" with
-                    | `String s -> s
+                    | `String s -> String.strip s
                     | _ ->
                         raise
                           (Type_error
