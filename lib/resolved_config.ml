@@ -71,7 +71,8 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
                 (Base.List.mem known_patch_agent_providers provider
                    ~equal:String.equal)
           | None -> false),
-          Printf.sprintf "--patch-agent-provider / PATCH_AGENT_PROVIDER must be one of: %s"
+          Printf.sprintf
+            "--patch-agent-provider / PATCH_AGENT_PROVIDER must be one of: %s"
             (String.concat ", " known_patch_agent_providers) );
         ( (match patch_agent_effort with
           | Some effort ->
@@ -79,7 +80,8 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
                 (Base.List.mem known_patch_agent_efforts effort
                    ~equal:String.equal)
           | None -> false),
-          Printf.sprintf "--patch-agent-effort / PATCH_AGENT_EFFORT must be one of: %s"
+          Printf.sprintf
+            "--patch-agent-effort / PATCH_AGENT_EFFORT must be one of: %s"
             (String.concat ", " known_patch_agent_efforts) );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
