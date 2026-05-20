@@ -98,6 +98,7 @@ let () =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         };
     ]
   in

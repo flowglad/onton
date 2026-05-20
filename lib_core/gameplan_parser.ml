@@ -62,6 +62,98 @@ let validate_functional_changes ~patches ~functional_changes =
   in
   loop (Set.empty (module String)) functional_changes
 
+let valid_context_resource_kinds =
+  [
+    "existing-implementation";
+    "contract";
+    "predecessor";
+    "reference-doc";
+    "test-or-static-check";
+    "external-reference";
+  ]
+
+let validate_context_resources ~patches ~context_resources =
+  let patch_ids =
+    List.map patches ~f:(fun p -> p.Types.Patch.id)
+    |> Set.of_list (module Types.Patch_id)
+  in
+  let resource_ids =
+    List.map context_resources ~f:(fun r -> r.Types.Context_resource.id)
+  in
+  let rec check_ids seen = function
+    | [] -> Ok ()
+    | id :: rest ->
+        let stripped = String.strip id in
+        if String.is_empty stripped then
+          Error "contextResources[].id must be a non-empty string"
+        else if Set.mem seen stripped then
+          Error (Printf.sprintf "Duplicate contextResource id: %s" stripped)
+        else check_ids (Set.add seen stripped) rest
+  in
+  match check_ids (Set.empty (module String)) resource_ids with
+  | Error e -> Error e
+  | Ok () -> (
+      let resource_id_set = Set.of_list (module String) resource_ids in
+      match
+        List.find_map context_resources ~f:(fun r ->
+            if
+              not
+                (List.mem valid_context_resource_kinds r.kind
+                   ~equal:String.equal)
+            then
+              Some
+                (Printf.sprintf "contextResource %s has invalid kind %S" r.id
+                   r.kind)
+            else
+              List.find_map r.consumed_by ~f:(fun patch_id ->
+                  if Set.mem patch_ids patch_id then None
+                  else
+                    Some
+                      (Printf.sprintf
+                         "contextResource %s consumedBy nonexistent patch %s"
+                         r.id
+                         (Types.Patch_id.to_string patch_id))))
+      with
+      | Some e -> Error e
+      | None -> (
+          match
+            List.find_map patches ~f:(fun p ->
+                List.find_map p.Types.Patch.required_context ~f:(fun id ->
+                    if Set.mem resource_id_set id then None
+                    else
+                      Some
+                        (Printf.sprintf
+                           "Patch %s requiredContext references nonexistent \
+                            contextResource %s"
+                           (Types.Patch_id.to_string p.id)
+                           id)))
+          with
+          | Some e -> Error e
+          | None -> (
+              match
+                List.find_map patches ~f:(fun p ->
+                    List.find_map context_resources ~f:(fun r ->
+                        let patch_id = p.Types.Patch.id in
+                        let listed_in_patch =
+                          List.mem p.required_context r.id ~equal:String.equal
+                        in
+                        let listed_in_resource =
+                          List.mem r.consumed_by patch_id
+                            ~equal:Types.Patch_id.equal
+                        in
+                        if Bool.equal listed_in_patch listed_in_resource then
+                          None
+                        else
+                          Some
+                            (Printf.sprintf
+                               "Patch %s requiredContext must match \
+                                contextResource %s consumedBy"
+                               (Types.Patch_id.to_string patch_id)
+                               r.id)))
+              with
+              | Some e -> Error e
+              | None -> Ok ())))
+
 let validate ~patches ~dep_graph =
   (* Check for invalid patch IDs *)
   let invalid_ids =
@@ -149,6 +241,39 @@ let json_string_list json key =
   | `List items ->
       List.filter_map items ~f:(function `String s -> Some s | _ -> None)
   | _ -> []
+
+let json_required_string_list json key =
+  let open Yojson.Safe.Util in
+  match json |> member key with
+  | `Null -> []
+  | `List items ->
+      List.map items ~f:(fun item ->
+          match item with
+          | `String s -> s
+          | _ ->
+              raise
+                (Type_error
+                   (Printf.sprintf "%s[] must contain only strings" key, item)))
+  | value ->
+      raise
+        (Type_error (Printf.sprintf "%s must be an array of strings" key, value))
+
+let json_patch_id_list json key =
+  let open Yojson.Safe.Util in
+  match json |> member key with
+  | `Null -> []
+  | `List items ->
+      List.map items ~f:(fun item ->
+          match patch_id_of_json item with
+          | Some id -> id
+          | None ->
+              raise
+                (Type_error
+                   (Printf.sprintf "%s[] must contain only patch IDs" key, item)))
+  | value ->
+      raise
+        (Type_error
+           (Printf.sprintf "%s must be an array of patch IDs" key, value))
 
 let json_precedents json =
   let open Yojson.Safe.Util in
@@ -277,6 +402,38 @@ let parse_json_string input =
                 (Type_error
                    ("functionalChanges must be an array of objects", json))
         in
+        let context_resources =
+          match json |> member "contextResources" with
+          | `Null -> []
+          | `List items ->
+              List.map items ~f:(fun obj ->
+                  let id =
+                    match obj |> member "id" with
+                    | `String s -> String.strip s
+                    | _ ->
+                        raise
+                          (Type_error
+                             ("contextResources[].id must be a string", obj))
+                  in
+                  let kind =
+                    match obj |> member "kind" with
+                    | `String s -> s
+                    | _ ->
+                        raise
+                          (Type_error
+                             ("contextResources[].kind must be a string", obj))
+                  in
+                  let paths = json_string_list obj "paths" in
+                  let why =
+                    match obj |> member "why" with `String s -> s | _ -> ""
+                  in
+                  let consumed_by = json_patch_id_list obj "consumedBy" in
+                  { Types.Context_resource.id; kind; paths; why; consumed_by })
+          | _ ->
+              raise
+                (Type_error
+                   ("contextResources must be an array of objects", json))
+        in
         let open_questions =
           match json |> member "openQuestions" with
           | `Null -> []
@@ -386,6 +543,9 @@ let parse_json_string input =
                 | _ -> []
               in
               let precedents = json_precedents p in
+              let required_context =
+                json_required_string_list p "requiredContext"
+              in
               {
                 Types.Patch.id;
                 title;
@@ -401,6 +561,7 @@ let parse_json_string input =
                 test_stubs_implemented;
                 complexity;
                 precedents;
+                required_context;
               })
         in
         match open_questions with
@@ -424,26 +585,32 @@ let parse_json_string input =
                   validate_functional_changes ~patches ~functional_changes
                 with
                 | Error e -> Error e
-                | Ok () ->
-                    Ok
-                      {
-                        gameplan =
+                | Ok () -> (
+                    match
+                      validate_context_resources ~patches ~context_resources
+                    with
+                    | Error e -> Error e
+                    | Ok () ->
+                        Ok
                           {
-                            Types.Gameplan.project_name;
-                            repo_owner;
-                            repo_name;
-                            problem_statement;
-                            solution_summary;
-                            final_state_spec;
-                            patches;
-                            functional_changes;
-                            current_state_analysis;
-                            explicit_opinions;
-                            acceptance_criteria;
-                            open_questions;
-                          };
-                        dependency_graph = dep_graph;
-                      }))
+                            gameplan =
+                              {
+                                Types.Gameplan.project_name;
+                                repo_owner;
+                                repo_name;
+                                problem_statement;
+                                solution_summary;
+                                final_state_spec;
+                                patches;
+                                functional_changes;
+                                context_resources;
+                                current_state_analysis;
+                                explicit_opinions;
+                                acceptance_criteria;
+                                open_questions;
+                              };
+                            dependency_graph = dep_graph;
+                          })))
       with Type_error (msg, _) ->
         Error (Printf.sprintf "JSON structure error: %s" msg))
 
@@ -521,6 +688,7 @@ let%test_module "Gameplan_parser" =
               test_stubs_implemented = [];
               complexity = None;
               precedents = [];
+              required_context = [];
             };
         ]
       in
@@ -548,6 +716,7 @@ let%test_module "Gameplan_parser" =
             test_stubs_implemented = [];
             complexity = None;
             precedents = [];
+            required_context = [];
           }
       in
       let dep_graph = Map.of_alist_exn (module Types.Patch_id) [ (pid, []) ] in
@@ -741,6 +910,147 @@ let%test_module "Gameplan_parser" =
       | Ok result ->
           let p = List.hd_exn result.gameplan.patches in
           List.is_empty p.Types.Patch.precedents
+
+    let%test
+        "parse_json_string: contextResources and requiredContext round-trip" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "contextResources": [
+            {
+              "id": "parser-contract",
+              "kind": "contract",
+              "paths": ["lib_core/gameplan_parser.mli", "docs/gameplan.md"],
+              "why": "Defines parser compatibility guarantees.",
+              "consumedBy": [1]
+            }
+          ],
+          "patches": [
+            {
+              "number": 1,
+              "title": "A",
+              "changes": [],
+              "requiredContext": ["parser-contract"]
+            }
+          ],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error msg ->
+          Stdlib.Printf.eprintf "parse error: %s\n" msg;
+          false
+      | Ok result -> (
+          match
+            (result.gameplan.context_resources, result.gameplan.patches)
+          with
+          | [ resource ], [ patch ] ->
+              String.equal resource.Types.Context_resource.id "parser-contract"
+              && String.equal resource.kind "contract"
+              && List.equal String.equal resource.paths
+                   [ "lib_core/gameplan_parser.mli"; "docs/gameplan.md" ]
+              && String.equal resource.why
+                   "Defines parser compatibility guarantees."
+              && List.equal Types.Patch_id.equal resource.consumed_by
+                   [ Types.Patch_id.of_string "1" ]
+              && List.equal String.equal patch.Types.Patch.required_context
+                   [ "parser-contract" ]
+          | _ -> false)
+
+    let%test
+        "parse_json_string: missing context fields default to empty for legacy"
+        =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Error _ -> false
+      | Ok result -> (
+          match result.gameplan.patches with
+          | [ patch ] ->
+              List.is_empty result.gameplan.context_resources
+              && List.is_empty patch.Types.Patch.required_context
+          | _ -> false)
+
+    let%test "parse_json_string: duplicate contextResource id returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "contextResources": [
+            {"id": "ctx", "kind": "contract", "paths": [], "why": "", "consumedBy": []},
+            {"id": "ctx", "kind": "contract", "paths": [], "why": "", "consumedBy": []}
+          ],
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg ~substring:"Duplicate contextResource"
+
+    let%test
+        "parse_json_string: missing requiredContext reference returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "contextResources": [],
+          "patches": [
+            {"number": 1, "title": "A", "changes": [], "requiredContext": ["missing"]}
+          ],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg
+            ~substring:"requiredContext references nonexistent"
+
+    let%test "parse_json_string: nonexistent consumedBy patch returns Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "contextResources": [
+            {"id": "ctx", "kind": "contract", "paths": [], "why": "", "consumedBy": [2]}
+          ],
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg ~substring:"consumedBy nonexistent patch"
+
+    let%test
+        "parse_json_string: requiredContext and consumedBy mismatch returns \
+         Error" =
+      let input =
+        {|{
+          "projectName": "p",
+          "solutionSummary": "s",
+          "contextResources": [
+            {"id": "ctx", "kind": "contract", "paths": [], "why": "", "consumedBy": [1]}
+          ],
+          "patches": [{"number": 1, "title": "A", "changes": []}],
+          "dependencyGraph": [{"patch": 1, "dependsOn": []}]
+        }|}
+      in
+      match parse_json_string input with
+      | Ok _ -> false
+      | Error msg ->
+          String.is_substring msg
+            ~substring:"requiredContext must match contextResource"
 
     let%test "parse_json_string: precedent without kind or name is skipped" =
       let input =

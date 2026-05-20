@@ -649,6 +649,7 @@ let make_orchestrator ~patch_id ~main_branch =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
   in
   (patch, Orchestrator.create ~patches:[ patch ] ~main_branch)
@@ -679,6 +680,7 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
             acceptance_criteria = [];
             open_questions = [];
             functional_changes = [];
+            context_resources = [];
           }
       ~patch
   in
@@ -704,6 +706,7 @@ let%test "reconcile_patch enqueues pr_body after PR creation" =
         acceptance_criteria = [];
         open_questions = [];
         functional_changes = [];
+        context_resources = [];
       }
   in
   let t, _ = reconcile_patch t ~project_name:"proj" ~gameplan:gp ~patch in
@@ -733,6 +736,7 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
             acceptance_criteria = [];
             open_questions = [];
             functional_changes = [];
+            context_resources = [];
           }
       ~patch
   in
@@ -763,6 +767,7 @@ let%test "reconcile_patch emits no effects for merged agent" =
             acceptance_criteria = [];
             open_questions = [];
             functional_changes = [];
+            context_resources = [];
           }
       ~patch
   in

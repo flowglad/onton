@@ -20,6 +20,7 @@ let () =
       acceptance_criteria = [];
       open_questions = [];
       functional_changes = [];
+      context_resources = [];
     }
   in
   let snapshot =
@@ -55,6 +56,7 @@ let () =
       acceptance_criteria = [];
       open_questions = [];
       functional_changes = [];
+      context_resources = [];
     }
   in
   let snapshot =

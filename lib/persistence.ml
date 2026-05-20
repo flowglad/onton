@@ -722,6 +722,7 @@ let%test_module "session_id_sidecars" =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         }
 
     let gameplan =
@@ -739,6 +740,7 @@ let%test_module "session_id_sidecars" =
           acceptance_criteria = [];
           open_questions = [];
           functional_changes = [];
+          context_resources = [];
         }
 
     let snapshot ?(busy = false) ?llm_session_id () =

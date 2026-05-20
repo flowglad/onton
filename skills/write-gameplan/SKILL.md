@@ -91,6 +91,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `mergabilityStrategy` | `object` | `{ featureFlagStrategy, featureFlags, patchOrderingStrategy }` |
 | `requiredChanges` | `array` | `[{ file, line, description, signature }]` |
 | `functionalChanges` | `array` | `[{ id, description, ownedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
+| `contextResources` | `array` | `[{ id, kind, paths, why, consumedBy }]` — authoritative context specific patches must read before editing. See [Context Resources](#context-resources). |
 | `acceptanceCriteria` | `string[]` | Each is a "done" condition |
 | `openQuestions` | `string[]` | Decisions for the team (empty array if none) |
 | `explicitOpinions` | `array` | `[{ opinion, rationale }]` |
@@ -103,9 +104,36 @@ All of these fields are **required** and must be present in every gameplan:
 
 ### Required Patch Fields
 
-Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string). Patches may also include an optional `precedents` array citing established libraries, algorithms, or patterns the patch should adopt — see [Leveraging Established Precedents](#leveraging-established-precedents).
+Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR), `complexity` (1\|2\|3), `title`, `files` (array of `{ path, action, description }`), `changes` (string array), `requiredContext` (string array), `testStubsIntroduced` (string array or null), `testStubsImplemented` (string array or null), `spec` (string). Patches may also include an optional `precedents` array citing established libraries, algorithms, or patterns the patch should adopt — see [Leveraging Established Precedents](#leveraging-established-precedents).
 
 The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
+
+## Context Resources
+
+`contextResources` names authoritative context that an implementing patch agent must read before editing. This is for existing code, contracts, docs, tests, or predecessor surfaces that constrain implementation. It is not a dumping ground for general background.
+
+Allowed `kind` values:
+
+- `existing-implementation` — current code path or helper whose behavior should be reused or preserved.
+- `contract` — API, protocol, schema, interface, spec clause, or cross-runtime contract the patch must honor.
+- `predecessor` — old surface being retired, replaced, or migrated away from.
+- `reference-doc` — repo documentation or canonical maintainer docs describing the intended behavior.
+- `test-or-static-check` — tests, fixtures, evals, linters, or static checks that define expected behavior.
+- `external-reference` — external URL, standard, or vendor document that is authoritative for this patch.
+
+Each resource has `id`, `kind`, `paths`, `why`, and `consumedBy`. Each patch has `requiredContext`, an array of resource IDs. The routing must match in both directions: if `contextResources[].consumedBy` includes patch `3`, then patch `3` must include that resource ID in `requiredContext`, and vice versa. Attach resources only to patches that actually consume them.
+
+### When context is required
+
+Require context resources for patches that:
+
+- write docs, evals, test harnesses, adapters, replacement implementations, or policy logic;
+- retire, replace, or preserve behavior from an old surface;
+- describe an implementation or contract in documentation;
+- implement one side of a cross-runtime/API/schema contract;
+- depend on an existing test/static check as the source of truth.
+
+Docs, evals, and reference patches must name the implementation or contract they describe. Adapter/replacement patches must name the predecessor and the target contract. If a context resource defines a contract that a patch preserves, the relevant per-patch `spec` should cite that contract in its invariants.
 
 ## Formal Specifications
 
@@ -129,6 +157,8 @@ Each patch has a spec module describing the invariants that must hold after THAT
 - Preconditions that the patch assumes (from prior patches)
 
 **Spec-writing guidance**: Use progressive disclosure (top-down structure). Never guess domain details — if something is unclear, note it in `openQuestions`.
+
+Every functional change should map to at least one per-patch or final-state spec clause when the chosen spec language can express it. If a context resource defines a contract the patch preserves, name that contract in the spec prose/invariant so implementers and reviewers can trace the resource to the code obligation.
 
 ## Patch Classification
 
@@ -335,9 +365,11 @@ After writing the gameplan JSON, verify:
 3. The dependency graph is a valid DAG
 4. All test stubs have corresponding implementations
 5. **Functional change ownership is total and single-valued** — every `functionalChanges[i].id` is unique; every `functionalChanges[i].ownedBy` resolves to an existing `patches[].number`; no functional change appears unowned in prose. Re-read `problemStatement`, `solutionSummary`, `acceptanceCriteria`, and `finalStateSpec` and confirm every behavioral promise has a corresponding `functionalChanges` entry pointing at a single patch. Set `mergabilityChecklist.functionalChangesOwnedByExactlyOnePatch` to `true` only when this holds.
-6. **Operational considerations are substantive** — the schema requires every sub-field of `operationalConsiderations` to be present, but presence is not engagement. For each sub-field, confirm the response names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than generic platitudes. A sub-field may say "not applicable" only when the gameplan genuinely does not touch that surface, and only with a brief justification grounded in the actual changes. See [Operational Considerations](#operational-considerations).
-7. **Atomicity holds** — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm that no patch is conditional on the outcome of another, no patch description or `changes` step expects a human to act between patches (flip a flag, run a script, observe a metric, decide a branch), and no patch implies an observation/soak window before the next one runs. If any of these slipped in, the work must be re-decomposed as a multi-milestone workstream via [[write-workstream]] — do not patch around it inside the gameplan. Set `mergabilityChecklist.gameplanIsAtomicAndAutonomous` to `true` only when this check passes.
-8. The mergability checklist passes
+6. **Context routing is exact** — every `contextResources[i].id` is unique and non-empty; every `requiredContext` entry resolves to an existing resource; every `consumedBy` patch exists; and each resource's `consumedBy` list exactly matches the patches whose `requiredContext` includes that resource ID. Confirm docs/evals/reference patches name the implementation or contract they describe.
+7. **Spec/evidence mapping is complete where applicable** — for each functional change, identify the spec or acceptance criterion it satisfies, the patch that implements it, the required context resource consulted (if any), and the test/static check expected to prove it.
+8. **Operational considerations are substantive** — the schema requires every sub-field of `operationalConsiderations` to be present, but presence is not engagement. For each sub-field, confirm the response names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than generic platitudes. A sub-field may say "not applicable" only when the gameplan genuinely does not touch that surface, and only with a brief justification grounded in the actual changes. See [Operational Considerations](#operational-considerations).
+9. **Atomicity holds** — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm that no patch is conditional on the outcome of another, no patch description or `changes` step expects a human to act between patches (flip a flag, run a script, observe a metric, decide a branch), and no patch implies an observation/soak window before the next one runs. If any of these slipped in, the work must be re-decomposed as a multi-milestone workstream via [[write-workstream]] — do not patch around it inside the gameplan. Set `mergabilityChecklist.gameplanIsAtomicAndAutonomous` to `true` only when this check passes.
+10. The mergability checklist passes
 
 ## Resolving Open Questions
 

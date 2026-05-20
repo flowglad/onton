@@ -4066,6 +4066,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           acceptance_criteria = [];
           open_questions = [];
           functional_changes = [];
+          context_resources = [];
         }
       in
       let backend, model = resolve_backend_model ~backend ~model in

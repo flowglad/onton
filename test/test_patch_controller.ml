@@ -22,6 +22,7 @@ let make_patch pid branch =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
 
 let make_gameplan patch =
@@ -39,6 +40,7 @@ let make_gameplan patch =
       acceptance_criteria = [];
       open_questions = [];
       functional_changes = [];
+      context_resources = [];
     }
 
 let make_orch patch agent =

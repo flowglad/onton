@@ -124,6 +124,27 @@ module Precedent : sig
       agent can prefer proven libraries / algorithms / patterns. *)
 end
 
+module Context_resource : sig
+  type t = {
+    id : string;
+        (** Stable non-empty identifier referenced by patches'
+            [required_context] arrays. *)
+    kind : string;
+        (** One of ["existing-implementation"], ["contract"], ["predecessor"],
+            ["reference-doc"], ["test-or-static-check"], or
+            ["external-reference"]. *)
+    paths : string list; [@yojson.default []]
+        (** Repo-relative paths or external references the implementing agent
+            must read before editing. *)
+    why : string; [@yojson.default ""]
+        (** Why this resource is authoritative for consuming patches. *)
+    consumed_by : Patch_id.t list; [@yojson.default []]
+        (** Patches that must receive this resource in their prompt. Must agree
+            with each consuming patch's [required_context]. *)
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+end
+
 module Patch : sig
   type t = {
     id : Patch_id.t;
@@ -147,6 +168,9 @@ module Patch : sig
         (** Established prior art for this patch (libraries, algorithms,
             patterns, papers). Empty list when the patch is bespoke project glue
             with no relevant precedent. *)
+    required_context : string list; [@yojson.default []]
+        (** IDs from [Gameplan.context_resources] that this patch must read
+            before editing. Defaults to [[]] for legacy gameplans. *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
@@ -283,6 +307,10 @@ module Gameplan : sig
             gameplan introduces, each assigned to exactly one owning patch.
             Defaults to [[]] for legacy gameplans that predate the field — in
             that case no per-patch change list is surfaced. *)
+    context_resources : Context_resource.t list; [@yojson.default []]
+        (** Authoritative existing code, contracts, docs, tests, or external
+            references that patch agents must consult before editing. Defaults
+            to [[]] for legacy gameplans. *)
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

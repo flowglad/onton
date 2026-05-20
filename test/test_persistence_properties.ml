@@ -36,6 +36,7 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
             test_stubs_implemented = [];
             complexity = None;
             precedents = [];
+            required_context = [];
           };
         ];
       current_state_analysis = "";
@@ -43,6 +44,7 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
       acceptance_criteria = [];
       open_questions = [];
       functional_changes = [];
+      context_resources = [];
     }
 
 (** Compare two snapshots field by field. Orchestrator.t is opaque without [eq],
@@ -128,6 +130,7 @@ let () =
                 acceptance_criteria = [];
                 open_questions = [];
                 functional_changes = [];
+                context_resources = [];
               }
           in
           let orchestrator =
@@ -263,6 +266,7 @@ let () =
                 acceptance_criteria = [];
                 open_questions = [];
                 functional_changes = [];
+                context_resources = [];
               }
           in
           let main_branch = Branch.of_string "main" in
@@ -316,6 +320,7 @@ let () =
                 acceptance_criteria = [];
                 open_questions = [];
                 functional_changes = [];
+                context_resources = [];
               }
           in
           let main_branch = Branch.of_string "main" in

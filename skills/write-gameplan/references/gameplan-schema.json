@@ -16,6 +16,7 @@
     "operationalConsiderations",
     "requiredChanges",
     "functionalChanges",
+    "contextResources",
     "acceptanceCriteria",
     "openQuestions",
     "explicitOpinions",
@@ -76,6 +77,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/functionalChange" },
       "description": "Exhaustive enumeration of the functional/behavioural changes this gameplan introduces, each assigned to exactly one owning patch. Use this to defeat the failure mode where a change is described prose-only in the problem/solution narrative and every patch implementer assumes some other patch owns it. The mapping is total on changes: every entry has an `ownedBy` patch. Multiple changes may map to the same patch; INFRA-only patches that introduce no observable change need not appear here. Downstream consumers (e.g. onton's patch prompt renderer) MUST surface the subset of functionalChanges ownedBy each patch in that patch's agent prompt, so the implementing agent knows exactly which user-visible behaviors are its responsibility."
+    },
+    "contextResources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/contextResource" },
+      "description": "Authoritative existing implementations, contracts, predecessor surfaces, reference docs, tests/static checks, or external references that specific patches must read before editing. Attach resources only to patches that consume them: each resource's consumedBy list must match those patches' requiredContext arrays."
     },
     "acceptanceCriteria": {
       "type": "array",
@@ -286,7 +292,7 @@
     },
     "patch": {
       "type": "object",
-      "required": ["number", "classification", "complexity", "title", "files", "changes", "spec"],
+      "required": ["number", "classification", "complexity", "title", "files", "changes", "requiredContext", "spec"],
       "properties": {
         "number": {
           "$ref": "#/$defs/patchId"
@@ -310,6 +316,11 @@
           "items": { "type": "string" },
           "description": "Each item is a specific change to make."
         },
+        "requiredContext": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "IDs from top-level contextResources this patch must read before editing. Use an empty array when the patch has no authoritative context beyond the patch prose. Must match contextResources[].consumedBy routing."
+        },
         "testStubsIntroduced": {
           "type": ["array", "null"],
           "items": { "type": "string" },
@@ -328,6 +339,37 @@
           "type": ["array", "null"],
           "items": { "$ref": "#/$defs/precedent" },
           "description": "Established prior art (libraries, algorithms, patterns, papers, RFCs, canonical docs) that informs this patch. Cite concrete proven techniques the implementing agent should adopt rather than rolling its own. Null or omitted means no specific precedent applies (e.g. the patch is bespoke project glue). See SKILL.md's 'Leveraging Established Precedents' section for when and how to populate this."
+        }
+      },
+      "additionalProperties": false
+    },
+    "contextResource": {
+      "type": "object",
+      "required": ["id", "kind", "paths", "why", "consumedBy"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier referenced by patches[].requiredContext."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["existing-implementation", "contract", "predecessor", "reference-doc", "test-or-static-check", "external-reference"],
+          "description": "Why this resource is authoritative."
+        },
+        "paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Repo-relative paths or external references the patch agent should read. For external references, use stable URLs or canonical identifiers."
+        },
+        "why": {
+          "type": "string",
+          "description": "Why this resource is authoritative and what contract, behavior, or precedent it constrains."
+        },
+        "consumedBy": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/patchId" },
+          "description": "Patch IDs that consume this resource. Must match each consuming patch's requiredContext array."
         }
       },
       "additionalProperties": false
