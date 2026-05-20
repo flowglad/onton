@@ -76,17 +76,19 @@ let run_prune () =
         let acquired =
           Project_lock.acquire ~project_dir ~on_stale:(fun pid ->
               Stdlib.Printf.eprintf
-                "onton prune: reclaimed stale lock for %s (PID %d)\n%!" slug
-                pid)
+                "onton prune: reclaimed stale lock for %s (PID %d)\n%!" slug pid)
         in
         match acquired with
         | Error (Project_lock.Held_by { pid; _ }) ->
             let project_name = recover_project_name ~slug in
-            kept := (project_name, Stdlib.Printf.sprintf "in use (PID %d)" pid) :: !kept
+            kept :=
+              (project_name, Stdlib.Printf.sprintf "in use (PID %d)" pid)
+              :: !kept
         | Error (Project_lock.Io_error msg) ->
             let project_name = recover_project_name ~slug in
             errors :=
-              (project_name, Stdlib.Printf.sprintf "lock error: %s" msg) :: !errors
+              (project_name, Stdlib.Printf.sprintf "lock error: %s" msg)
+              :: !errors
         | Ok lock -> (
             let project_name = recover_project_name ~slug in
             match
@@ -121,9 +123,11 @@ let run_prune () =
                 kept := (project_name, "no snapshot — never ran") :: !kept
             | Ok (Load_error msg) ->
                 errors :=
-                  (project_name, Stdlib.Printf.sprintf "snapshot load failed: %s" msg)
+                  ( project_name,
+                    Stdlib.Printf.sprintf "snapshot load failed: %s" msg )
                   :: !errors));
-    List.iter (List.rev !removed) ~f:(fun (n, _) -> Stdlib.Printf.printf "removed %s\n" n);
+    List.iter (List.rev !removed) ~f:(fun (n, _) ->
+        Stdlib.Printf.printf "removed %s\n" n);
     List.iter (List.rev !kept) ~f:(fun (n, reason) ->
         Stdlib.Printf.printf "kept    %s — %s\n" n reason);
     List.iter (List.rev !errors) ~f:(fun (n, msg) ->
