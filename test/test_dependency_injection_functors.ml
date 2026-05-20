@@ -139,10 +139,143 @@ let _check_narrowed_run_long_lived :
   SD.run_long_lived
 
 let () =
+  Eio_main.run @@ fun env ->
+  let clock = Eio.Stdenv.clock env in
+  let fs = Eio.Stdenv.fs env in
+  let gameplan =
+    {
+      Gameplan.project_name = "test";
+      repo_owner = "";
+      repo_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "";
+      patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+      functional_changes = [];
+      context_resources = [];
+    }
+  in
+  let runtime =
+    Runtime.create ~gameplan ~main_branch:(Branch.of_string "main") ()
+  in
+  let module Env : Worktree_setup.ENV = struct
+    let runtime = runtime
+    let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+    let fs = fs
+    let project_name = "test"
+    let user_config = { User_config.on_worktree_create = None }
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+  end in
+  let module WS = Worktree_setup.Make (Fake_worktree) (Env) in
+  (* Compile-time assertion: ensure_worktree accepts only patch-specific inputs.
+     Runtime, clock, fs, project_name, user_config, and mutexes are gone from
+     the call surface — they live in Env now. *)
+  let check_narrowed :
+      patch_id:Patch_id.t ->
+      agent:Patch_agent.t ->
+      ?branch:Branch.t ->
+      ?base_ref:string ->
+      unit ->
+      string option =
+    WS.ensure_worktree
+  in
+  ignore check_narrowed;
   print_endline
     "Patch 1: Worktree_setup.Make(W)(Env).ensure_worktree narrowed signature: \
      OK";
+  (* Patch 2: Session_driver.Make(W)(Env) signature checks. *)
+  let transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t =
+    Stdlib.Hashtbl.create 0
+  in
+  let module SD_Env : Session_driver.ENV = struct
+    let runtime = runtime
+    let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+    let fs = fs
+    let project_name = "test"
+    let owner = "test-owner"
+    let repo = "test-repo"
+    let transcripts = transcripts
+    let user_config = { User_config.on_worktree_create = None }
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+  end in
+  let module SD = Session_driver.Make (Fake_worktree) (SD_Env) in
+  (* Compile-time assertion: run accepts only per-session inputs.
+     Runtime, clock, fs, project_name, owner, repo, transcripts, user_config,
+     and mutexes are gone from the call surface — they live in SD_Env now. *)
+  let check_narrowed_run :
+      kind:Operation_kind.t option ->
+      patch_id:Patch_id.t ->
+      prompt:string ->
+      agent:Patch_agent.t ->
+      on_pr_detected:(Pr_number.t -> unit) ->
+      backend:Llm_backend.t ->
+      complexity:int option ->
+      [ `Ok | `Failed | `Retry_push ] * (string * string) list =
+    SD.run
+  in
+  ignore check_narrowed_run;
   print_endline
     "Patch 2: Session_driver.Make(W)(Env).run narrowed signature: OK";
   print_endline
-    "Patch 2: Session_driver.Make(W)(Env).run_long_lived narrowed signature: OK"
+    "Patch 2: Session_driver.Make(W)(Env).run_long_lived narrowed signature: OK";
+  (* Patch 3: Make_fibers environment derivation.
+     Both Worktree_setup.ENV and Session_driver.ENV are derived from a single
+     fiber-level environment, mirroring what Make_fibers(Forge)(W)(Fiber_env)
+     does in bin/main.ml.  The compile-time constraint is: given one struct of
+     run-level values, both sub-envs type-check without any extra parameters. *)
+  let module Fake_fiber_env = struct
+    let runtime = runtime
+    let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+    let fs = fs
+    let project_name = "test"
+    let owner = "test-owner"
+    let repo = "test-repo"
+    let user_config = { User_config.on_worktree_create = None }
+    let worktree_mutex = Eio.Mutex.create ()
+    let hook_mutex = Eio.Mutex.create ()
+    let transcripts = transcripts
+  end in
+  let module WS3_Env : Worktree_setup.ENV = struct
+    let runtime = Fake_fiber_env.runtime
+    let clock = Fake_fiber_env.clock
+    let fs = Fake_fiber_env.fs
+    let project_name = Fake_fiber_env.project_name
+    let user_config = Fake_fiber_env.user_config
+    let worktree_mutex = Fake_fiber_env.worktree_mutex
+    let hook_mutex = Fake_fiber_env.hook_mutex
+  end in
+  let module SD3_Env : Session_driver.ENV = struct
+    let runtime = Fake_fiber_env.runtime
+    let clock = Fake_fiber_env.clock
+    let fs = Fake_fiber_env.fs
+    let project_name = Fake_fiber_env.project_name
+    let owner = Fake_fiber_env.owner
+    let repo = Fake_fiber_env.repo
+    let transcripts = Fake_fiber_env.transcripts
+    let user_config = Fake_fiber_env.user_config
+    let worktree_mutex = Fake_fiber_env.worktree_mutex
+    let hook_mutex = Fake_fiber_env.hook_mutex
+  end in
+  let module WS3 = Worktree_setup.Make (Fake_worktree) (WS3_Env) in
+  let module SD3 = Session_driver.Make (Fake_worktree) (SD3_Env) in
+  ignore
+    (WS3.ensure_worktree
+      : patch_id:_ -> agent:_ -> ?branch:_ -> ?base_ref:_ -> unit -> _);
+  ignore
+    (SD3.run
+      : kind:_ ->
+        patch_id:_ ->
+        prompt:_ ->
+        agent:_ ->
+        on_pr_detected:_ ->
+        backend:_ ->
+        complexity:_ ->
+        _);
+  print_endline
+    "Patch 3: Make_fibers env derivation (WS + SD from shared fiber env): OK"
