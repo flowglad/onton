@@ -37,6 +37,8 @@ module Fake_worktree : Worktree.S = struct
 end
 
 module Fake_env : Worktree_setup.ENV = struct
+  (* Runtime.create is Eio-free: test_runtime_create.ml verifies it can be
+     called outside Eio_main.run without raising an Unhandled effect. *)
   let runtime =
     Runtime.create
       ~gameplan:
@@ -57,8 +59,8 @@ module Fake_env : Worktree_setup.ENV = struct
         }
       ~main_branch:(Branch.of_string "main") ()
 
-  (* Eio resources cannot be created outside Eio_main.run; they are never
-     dereferenced because Worktree_setup.Make defines functions only. *)
+  (* Eio resources require the scheduler; they are never dereferenced here
+     because Worktree_setup.Make defines functions only. *)
   let clock : float Eio.Time.clock_ty Eio.Time.clock = Obj.magic ()
   let fs : Eio.Fs.dir_ty Eio.Path.t = Obj.magic ()
   let worktree_mutex : Eio.Mutex.t = Obj.magic ()

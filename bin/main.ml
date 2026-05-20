@@ -1744,7 +1744,8 @@ struct
 
   let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) ~runtime
       ~clock ~process_mgr ~config ~project_name ~pr_registry ~branch_of
-      ~event_log ~review_clients ~findings_registry ~resolve_worktree_path =
+      ~event_log ~review_clients ~findings_registry ~ws =
+    let module WS = (val ws : Worktree_setup.S) in
     let main = config.main_branch in
     let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
     let skip_logged_mutex = Eio.Mutex.create () in
@@ -1902,7 +1903,9 @@ struct
                       if Option.is_some agent.Patch_agent.worktree_path then
                         None
                       else
-                        let path = resolve_worktree_path ~patch_id ~agent () in
+                        let path =
+                          WS.resolve_worktree_path ~patch_id ~agent ()
+                        in
                         let default =
                           Worktree.worktree_dir ~project_name ~patch_id
                         in
@@ -4405,8 +4408,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
               (module Reconciler : STARTUP_RECONCILER)
               ~runtime ~clock ~process_mgr ~config ~project_name ~pr_registry
               ~branch_of ~event_log ~review_clients ~findings_registry
-              ~resolve_worktree_path:(fun ~patch_id ~agent () ->
-                WS.resolve_worktree_path ~patch_id ~agent ()));
+              ~ws:(module WS : Worktree_setup.S));
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
