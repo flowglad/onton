@@ -1995,11 +1995,11 @@ struct
           | Poll { patch_id; pr_number; was_merged } ->
               Some (patch_id, pr_number, was_merged))
       in
-      (* Phase 1a: parallel per-patch [Github.pr_state] fetch.
+      (* Phase 1a: parallel per-patch PR state fetch.
 
        This is the head-of-line-blocking fix: when one patch's TCP connect
-       is wedged in [SYN_SENT], [Github.pr_state] returns [Timeout] after
-       [Github.default_timeout] — and every other patch's fiber proceeds
+       is wedged in [SYN_SENT], the forge returns [Timeout] after the default
+       GitHub request timeout — and every other patch's fiber proceeds
        independently. *)
       let outcomes =
         Eio.Fiber.List.map ~max_fibers:16
@@ -2583,7 +2583,7 @@ struct
                                         in
                                         (* PR detection from stream text is a hint
                                      only — always confirmed via the GitHub
-                                     REST API (Github.list_prs) after the
+                                     REST API after the
                                      backend session finishes *)
                                         let on_pr_detected _pr_number = () in
                                         let complexity =
@@ -4400,22 +4400,17 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       in
       Unix.putenv "ONTON_SNAPSHOT_PATH"
         (Project_store.snapshot_path project_name);
-      let github =
-        Github.create ~token:config.github_token ~owner:config.github_owner
-          ~repo:config.github_repo
-      in
       let net = Eio.Stdenv.net env in
       let clock = Eio.Stdenv.clock env in
-      (match Github.check_repo_access ~net ~clock github with
+      (match
+         Github.check_repo_access ~net ~clock ~token:config.github_token
+           ~owner:config.github_owner ~repo:config.github_repo ()
+       with
       | Ok () -> ()
       | Error err ->
           Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
             config.github_owner config.github_repo (Github.show_error err);
           Stdlib.exit 1);
-      (* Patch 3 still keeps the raw [github] client for direct GitHub calls
-         migrated in Patch 4. [Github.t] is currently immutable config, so this
-         temporary duplicate is benign; once those calls move behind Forge,
-         this composition root should construct only the Forge-backed client. *)
       let forge =
         Github.make ~net ~clock ~token:config.github_token
           ~owner:config.github_owner ~repo:config.github_repo

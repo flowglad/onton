@@ -125,6 +125,7 @@ let show_error = function
 type t = { token : string; owner : string; repo : string }
 
 let create ~token ~owner ~repo = { token; owner; repo }
+let with_client ~token ~owner ~repo ~f = f (create ~token ~owner ~repo)
 
 let graphql_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
@@ -532,11 +533,15 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
   | Ok inner -> inner
   | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
 
-let check_repo_access ~net ~clock ?timeout t =
+let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
   match request ~net ~clock ?timeout t ~meth:`GET ~path () with
   | Ok _ -> Ok ()
   | Error _ as e -> e
+
+let check_repo_access ~net ~clock ?timeout ~token ~owner ~repo () =
+  with_client ~token ~owner ~repo ~f:(fun client ->
+      check_repo_access_internal ~net ~clock ?timeout client)
 
 let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in
@@ -771,8 +776,6 @@ let merge_pr ~net ~clock ?timeout t ~pr_number ~merge_method =
   | Ok body -> Ok (interpret_merge_response body)
   | Error _ as e -> e
 
-let owner t = t.owner
-
 (* ── Inline tests ── *)
 
 let%test "parse_rest_pr_list open PR" =
@@ -921,6 +924,6 @@ let make ~net ~clock ~token ~owner ~repo :
     let merge_pr ~pr_number ~merge_method =
       merge_pr ~net ~clock client ~pr_number ~merge_method
 
-    let check_repo_access () = check_repo_access ~net ~clock client
+    let check_repo_access () = check_repo_access_internal ~net ~clock client
   end in
   (module M)
