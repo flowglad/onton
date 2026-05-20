@@ -461,14 +461,36 @@ type frame = {
 }
 [@@warning "-69"]
 
-let render_header ~project_name ~width =
-  let title =
-    Term.styled
-      [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
-      (Printf.sprintf " %s " project_name)
+(** Build the header row: project name on the left, backend on the right.
+
+    Both segments are truncated when [width] is constrained. The backend segment
+    is sacrificed first (collapsed to empty) so the project name is always
+    visible — a saturated TUI still tells the user which session they are
+    looking at. *)
+let render_header ~project_name ~backend_name ~width =
+  let title_raw = Printf.sprintf " %s " project_name in
+  let backend_raw =
+    if String.is_empty backend_name then ""
+    else Printf.sprintf " %s " backend_name
+  in
+  let title_w = Term.visible_length title_raw in
+  let backend_w = Term.visible_length backend_raw in
+  let style_title s = Term.styled [ Term.Sgr.bold; Term.Sgr.fg_cyan ] s in
+  let style_backend s = Term.styled [ Term.Sgr.dim ] s in
+  let header_line =
+    if width <= 0 then ""
+    else if title_w + backend_w + 1 <= width then
+      let pad = width - title_w - backend_w in
+      style_title title_raw ^ String.make pad ' ' ^ style_backend backend_raw
+    else if title_w <= width then
+      (* Backend doesn't fit — keep the project name and pad to width. *)
+      style_title title_raw ^ String.make (width - title_w) ' '
+    else
+      (* Project name itself overflows — truncate it. *)
+      style_title (Term.fit_width width title_raw)
   in
   let rule = Term.hrule width in
-  [ title; rule ]
+  [ header_line; rule ]
 
 let short_op_name = function
   | Operation_kind.Ci -> "ci"
@@ -591,34 +613,6 @@ let render_patches ~width ~selected ~max_visible ~now (views : patch_view list)
       header_lines,
       offset,
       vis_count )
-
-let render_summary ~backend_name (views : patch_view list) =
-  let count status =
-    List.count views ~f:(fun v -> equal_display_status v.status status)
-  in
-  let total = List.length views in
-  let merged = count Merged in
-  let busy_views = List.filter views ~f:(fun v -> is_running_status v.status) in
-  let queued =
-    List.count busy_views ~f:(fun v ->
-        Patch_agent.equal_op_state v.current_op_state Patch_agent.Queued)
-  in
-  let running = List.length busy_views - queued in
-  let needs_help = count Needs_help in
-  let parts =
-    [
-      backend_name;
-      Printf.sprintf "%d/%d merged" merged total;
-      (if running > 0 then Printf.sprintf "%d running" running else "");
-      (if queued > 0 then Printf.sprintf "%d queued" queued else "");
-      (if needs_help > 0 then
-         Term.styled [ Term.Sgr.fg_red ]
-           (Printf.sprintf "%d need help" needs_help)
-       else "");
-    ]
-    |> List.filter ~f:(fun s -> not (String.is_empty s))
-  in
-  Term.styled [ Term.Sgr.dim ] (" " ^ String.concat ~sep:" │ " parts)
 
 let format_activity_ts ts =
   match try Some (Unix.localtime ts) with _ -> None with
@@ -1173,8 +1167,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     let overlay = render_manage_overlay ~width ~height ~automerge_enabled in
     { no_patches with lines = overlay; detail_scroll_offset = scroll_offset }
   else
-    let header = render_header ~project_name ~width in
-    let summary = [ render_summary ~backend_name views ] in
+    let header = render_header ~project_name ~backend_name ~width in
     let footer = render_footer ~width ~view_mode ?prompt_line () in
     let status_line =
       let rendered = render_status_msg ~width status_msg in
@@ -1187,11 +1180,10 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
         with
         | Some pv ->
             let info_h = detail_info_height pv in
-            (* Chrome: header(2) + blank + summary(1) + blank + info + blank
-               before footer + footer *)
+            (* Chrome: header(2) + blank + info + blank before footer + status +
+               footer *)
             let fixed =
-              2 + 1 + 1 + 1 + info_h + 1 + List.length status_line
-              + List.length footer
+              2 + 1 + info_h + 1 + List.length status_line + List.length footer
             in
             let max_section = Int.max 0 (height - fixed) in
             let scroll =
@@ -1201,8 +1193,8 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
               render_detail pv ~width ~scroll ~now ~transcript ()
             in
             let lines =
-              header @ [ "" ] @ summary @ [ "" ] @ info @ transcript_section
-              @ [ "" ] @ status_line @ footer
+              header @ [ "" ] @ info @ transcript_section @ [ "" ] @ status_line
+              @ footer
             in
             {
               no_patches with
@@ -1212,16 +1204,15 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
             }
         | None ->
             let lines =
-              header @ [ "" ] @ summary @ [ "" ] @ [ " (patch not found)" ]
-              @ [ "" ] @ status_line @ footer
+              header @ [ "" ] @ [ " (patch not found)" ] @ [ "" ] @ status_line
+              @ footer
             in
             { no_patches with lines })
     | Timeline_view ->
-        (* Budget: header(2) + blank + summary(1) + blank + "Timeline" header(1)
-         + scroll indicators(2) + blank before footer + footer *)
+        (* Budget: header(2) + blank + "Timeline" header(1) + scroll
+           indicators(2) + blank before footer + status + footer *)
         let reserved =
-          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line
-          + List.length footer
+          2 + 1 + 1 + 2 + 1 + List.length status_line + List.length footer
         in
         let max_rows = Int.max 0 (height - reserved) in
         let scroll =
@@ -1229,30 +1220,46 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
         in
         let timeline = render_timeline ~width ~scroll activity in
         let lines =
-          header @ [ "" ] @ summary @ [ "" ] @ timeline @ [ "" ] @ status_line
-          @ footer
+          header @ [ "" ] @ timeline @ [ "" ] @ status_line @ footer
         in
         { no_patches with lines }
     | List_view ->
-        let activity_lines = render_activity activity in
-        let activity_height =
-          if List.is_empty activity_lines then 0
-          else 1 + List.length activity_lines
+        (* Patches get priority. Reserve only the non-patch, non-activity
+           chrome: header(2) + blank after header + up to 2 scroll indicators
+           + blank before footer + status + footer. Activity is rendered into
+           whatever space is left after the patch block, and collapses
+           entirely when there is no room. *)
+        let chrome_reserved =
+          2 + 1 + 2 + 1 + List.length status_line + List.length footer
         in
-        (* Budget: header(2) + blank + summary(1) + blank + "Patches" header(1)
-         + scroll indicators(2) + blank before footer + footer +
-         activity block *)
-        let reserved =
-          2 + 1 + 1 + 1 + 1 + 2 + 1 + List.length status_line
-          + List.length footer + activity_height
+        let max_patch_rows =
+          Int.max 0 (height - chrome_reserved - 1 (* "Patches" header *))
         in
-        let max_patch_rows = Int.max 0 (height - reserved) in
         let patches, patch_header_lines, scroll_off, visible_rows =
           render_patches ~width ~selected ~max_visible:max_patch_rows ~now views
         in
-        let patches_start_row = 5 + patch_header_lines + 1 in
+        let patches_start_row = 3 + patch_header_lines + 1 in
+        let lines_before_activity =
+          2 (* header *) + 1 (* blank *) + List.length patches
+        in
+        let lines_after_activity =
+          1 (* blank before footer *) + List.length status_line
+          + List.length footer
+        in
+        let activity_budget =
+          (* Need at least 2 lines (Activity header + 1 entry) plus a blank
+             separator, so check against 3 total. *)
+          height - lines_before_activity - lines_after_activity - 1
+        in
+        let activity_lines =
+          if List.is_empty activity || activity_budget < 2 then []
+          else
+            let raw = render_activity activity in
+            if List.length raw <= activity_budget then raw
+            else List.take raw activity_budget
+        in
         let lines =
-          header @ [ "" ] @ summary @ [ "" ] @ patches
+          header @ [ "" ] @ patches
           @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
           @ [ "" ] @ status_line @ footer
         in

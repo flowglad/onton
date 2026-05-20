@@ -1521,7 +1521,7 @@ struct
                           | None -> 24
                         in
                         (* Keep in sync with render_frame Timeline_view reserved *)
-                        let reserved = 11 in
+                        let reserved = 9 in
                         let max_rows = Base.Int.max 0 (height - reserved) in
                         let max_offset = Base.Int.max 0 (total - max_rows) in
                         timeline_scroll :=
