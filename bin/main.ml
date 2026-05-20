@@ -30,7 +30,6 @@ let known_backends =
   [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
 
 let known_patch_agent_providers = [ "anthropic"; "openai" ]
-
 let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
 (** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
