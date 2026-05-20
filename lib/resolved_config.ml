@@ -89,34 +89,32 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
   match errors with [] -> Ok () | errs -> Error errs
 
 let of_config (config : config) =
-  match config.project with
-  | None -> Error [ "project name is required" ]
-  | Some project_name -> (
-      match
-        validate_resolved_config ~project_name ~backend:config.backend
-          ~github_token:config.github_token ~github_owner:config.github_owner
-          ~github_repo:config.github_repo ~main_branch:config.main_branch
-          ~poll_interval:config.poll_interval
-          ~max_concurrency:config.max_concurrency
-          ~patch_agent_provider:config.patch_agent_provider
-          ~patch_agent_effort:config.patch_agent_effort
-      with
-      | Error errs -> Error errs
-      | Ok () ->
-          Ok
-            {
-              project_name;
-              backend = config.backend;
-              model = config.model;
-              github_token = config.github_token;
-              github_owner = config.github_owner;
-              github_repo = config.github_repo;
-              main_branch = config.main_branch;
-              poll_interval = config.poll_interval;
-              repo_root = config.repo_root;
-              max_concurrency = config.max_concurrency;
-              headless = config.headless;
-              patch_agent_provider = config.patch_agent_provider;
-              patch_agent_effort = config.patch_agent_effort;
-              user_config = config.user_config;
-            })
+  let project_name = Option.value config.project ~default:"" in
+  match
+    validate_resolved_config ~project_name ~backend:config.backend
+      ~github_token:config.github_token ~github_owner:config.github_owner
+      ~github_repo:config.github_repo ~main_branch:config.main_branch
+      ~poll_interval:config.poll_interval
+      ~max_concurrency:config.max_concurrency
+      ~patch_agent_provider:config.patch_agent_provider
+      ~patch_agent_effort:config.patch_agent_effort
+  with
+  | Error errs -> Error errs
+  | Ok () ->
+      Ok
+        {
+          project_name;
+          backend = config.backend;
+          model = config.model;
+          github_token = config.github_token;
+          github_owner = config.github_owner;
+          github_repo = config.github_repo;
+          main_branch = config.main_branch;
+          poll_interval = config.poll_interval;
+          repo_root = config.repo_root;
+          max_concurrency = config.max_concurrency;
+          headless = config.headless;
+          patch_agent_provider = config.patch_agent_provider;
+          patch_agent_effort = config.patch_agent_effort;
+          user_config = config.user_config;
+        }
