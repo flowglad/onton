@@ -900,7 +900,9 @@ let make ~net ~token ~owner ~repo : (module Forge.S with type error = error) =
     let pr_state pr_number = pr_state ~net client pr_number
 
     let list_prs ~branch ?base ~state () =
-      list_prs ~net client ~branch ?base ~state ()
+      match base with
+      | None -> list_prs ~net client ~branch ~state ()
+      | Some base -> list_prs ~net client ~branch ~base:(Some base) ~state ()
 
     let update_pr_body ~pr_number ~body =
       update_pr_body ~net client ~pr_number ~body
