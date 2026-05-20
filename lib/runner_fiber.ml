@@ -765,11 +765,14 @@ struct
                                           .Patch_agent.merged
                                       in
                                       let branch_of pid =
-                                        (Base.List.find_exn
-                                           gameplan.Gameplan.patches
-                                           ~f:(fun (p : Patch.t) ->
-                                             Patch_id.equal p.Patch.id pid))
-                                          .Patch.branch
+                                        match
+                                          Base.List.find
+                                            gameplan.Gameplan.patches
+                                            ~f:(fun (p : Patch.t) ->
+                                              Patch_id.equal p.Patch.id pid)
+                                        with
+                                        | Some p -> p.Patch.branch
+                                        | None -> Orchestrator.main_branch orch
                                       in
                                       Graph.initial_base
                                         (Orchestrator.graph orch) patch_id
@@ -1440,7 +1443,7 @@ struct
                                           | Patch_decision.Pr_body_payload ) as
                                           payload;
                                         base_change;
-                                      } ->
+                                      } -> (
                                       let pr_number =
                                         agent.Patch_agent.pr_number
                                       in
@@ -1502,96 +1505,113 @@ struct
                                           ->
                                             Printf.sprintf "Delivering %s"
                                               (Operation_kind.to_label kind));
-                                      let prompt =
-                                        match payload with
-                                        | Patch_decision.Ci_payload
-                                            { failed_checks } ->
-                                            if Base.List.is_empty failed_checks
-                                            then
-                                              Prompt
-                                              .render_ci_failure_unknown_prompt
+                                      let exception Skip_delivery in
+                                      try
+                                        let prompt =
+                                          match payload with
+                                          | Patch_decision.Ci_payload
+                                              { failed_checks } ->
+                                              if
+                                                Base.List.is_empty failed_checks
+                                              then
+                                                Prompt
+                                                .render_ci_failure_unknown_prompt
+                                                  ~project_name ?agents_md
+                                                  ?pr_number
+                                                  ?patch:patch_for_layer
+                                                  ~gameplan
+                                                  ~base_branch:
+                                                    base_branch_for_layer ()
+                                              else
+                                                Prompt.render_ci_failure_prompt
+                                                  ~project_name ?agents_md
+                                                  ?pr_number
+                                                  ?patch:patch_for_layer
+                                                  ~gameplan
+                                                  ~base_branch:
+                                                    base_branch_for_layer
+                                                  failed_checks
+                                          | Patch_decision.Review_payload
+                                              { comments } ->
+                                              let current_head_sha =
+                                                Base.Option.bind fresh_pr_state
+                                                  ~f:(fun ps ->
+                                                    ps.Pr_state.head_oid)
+                                              in
+                                              Prompt.render_review_prompt
                                                 ~project_name ?agents_md
-                                                ?pr_number
+                                                ?pr_number ?current_head_sha
                                                 ?patch:patch_for_layer ~gameplan
                                                 ~base_branch:
-                                                  base_branch_for_layer ()
-                                            else
-                                              Prompt.render_ci_failure_prompt
+                                                  base_branch_for_layer comments
+                                          | Patch_decision.Findings_payload
+                                              { findings } ->
+                                              let current_head_sha =
+                                                Base.Option.bind fresh_pr_state
+                                                  ~f:(fun ps ->
+                                                    ps.Pr_state.head_oid)
+                                              in
+                                              let artifact_path =
+                                                Project_store
+                                                .findings_wontfix_artifact_path
+                                                  ~project_name ~patch_id
+                                              in
+                                              Project_store.ensure_dir
+                                                (Stdlib.Filename.dirname
+                                                   artifact_path);
+                                              (try Unix.unlink artifact_path
+                                               with
+                                               | Unix.Unix_error
+                                                   (Unix.ENOENT, _, _)
+                                               ->
+                                                 ());
+                                              Prompt.render_findings_prompt
                                                 ~project_name ?agents_md
-                                                ?pr_number
+                                                ?pr_number ?current_head_sha
                                                 ?patch:patch_for_layer ~gameplan
                                                 ~base_branch:
                                                   base_branch_for_layer
-                                                failed_checks
-                                        | Patch_decision.Review_payload
-                                            { comments } ->
-                                            let current_head_sha =
-                                              Base.Option.bind fresh_pr_state
-                                                ~f:(fun ps ->
-                                                  ps.Pr_state.head_oid)
-                                            in
-                                            Prompt.render_review_prompt
-                                              ~project_name ?agents_md
-                                              ?pr_number ?current_head_sha
-                                              ?patch:patch_for_layer ~gameplan
-                                              ~base_branch:base_branch_for_layer
-                                              comments
-                                        | Patch_decision.Findings_payload
-                                            { findings } ->
-                                            let current_head_sha =
-                                              Base.Option.bind fresh_pr_state
-                                                ~f:(fun ps ->
-                                                  ps.Pr_state.head_oid)
-                                            in
-                                            let artifact_path =
-                                              Project_store
-                                              .findings_wontfix_artifact_path
-                                                ~project_name ~patch_id
-                                            in
-                                            Project_store.ensure_dir
-                                              (Stdlib.Filename.dirname
-                                                 artifact_path);
-                                            (try Unix.unlink artifact_path
-                                             with
-                                             | Unix.Unix_error
-                                                 (Unix.ENOENT, _, _)
-                                             ->
-                                               ());
-                                            Prompt.render_findings_prompt
-                                              ~project_name ?agents_md
-                                              ?pr_number ?current_head_sha
-                                              ?patch:patch_for_layer ~gameplan
-                                              ~base_branch:base_branch_for_layer
-                                              ~artifact_path findings
-                                        | Patch_decision.Human_payload
-                                            { messages } ->
-                                            Prompt.render_human_message_prompt
-                                              ~project_name messages
-                                        | Patch_decision.Pr_body_payload ->
-                                            let patch =
-                                              Base.List.find_exn
-                                                gameplan.Gameplan.patches
-                                                ~f:(fun (p : Patch.t) ->
-                                                  Patch_id.equal p.Patch.id
-                                                    patch_id)
-                                            in
-                                            let pr_body =
-                                              Prompt.render_pr_description
-                                                ~project_name patch gameplan
-                                            in
-                                            let spec_suffix =
-                                              Prompt.render_spec_suffix patch
-                                                gameplan
-                                            in
-                                            let artifact_path =
-                                              Project_store
-                                              .pr_body_artifact_path
-                                                ~project_name ~patch_id
-                                            in
-                                            Project_store.ensure_dir
-                                              (Stdlib.Filename.dirname
-                                                 artifact_path);
-                                            (* Clear any stale artifact from a
+                                                ~artifact_path findings
+                                          | Patch_decision.Human_payload
+                                              { messages } ->
+                                              Prompt.render_human_message_prompt
+                                                ~project_name messages
+                                          | Patch_decision.Pr_body_payload ->
+                                              let pr, patch =
+                                                match
+                                                  (pr_number, patch_for_layer)
+                                                with
+                                                | Some pr, Some patch ->
+                                                    (pr, patch)
+                                                | None, _ ->
+                                                    log_event runtime ~patch_id
+                                                      "pr-body: no PR number \
+                                                       yet — skipping";
+                                                    raise Skip_delivery
+                                                | _, None ->
+                                                    log_event runtime ~patch_id
+                                                      "pr-body: skipping — \
+                                                       patch has no gameplan \
+                                                       entry (likely ad-hoc)";
+                                                    raise Skip_delivery
+                                              in
+                                              let pr_body =
+                                                Prompt.render_pr_description
+                                                  ~project_name patch gameplan
+                                              in
+                                              let spec_suffix =
+                                                Prompt.render_spec_suffix patch
+                                                  gameplan
+                                              in
+                                              let artifact_path =
+                                                Project_store
+                                                .pr_body_artifact_path
+                                                  ~project_name ~patch_id
+                                              in
+                                              Project_store.ensure_dir
+                                                (Stdlib.Filename.dirname
+                                                   artifact_path);
+                                              (* Clear any stale artifact from a
                                              prior Pr_body session. The path
                                              is stable per-patch, so without
                                              this the classifier could read
@@ -1599,119 +1619,121 @@ struct
                                              session doesn't write (blocked,
                                              no-op, or legitimately chose not
                                              to). *)
-                                            (try Unix.unlink artifact_path
-                                             with
-                                             | Unix.Unix_error
-                                                 (Unix.ENOENT, _, _)
-                                             ->
-                                               ());
-                                            Prompt.render_pr_body_prompt
-                                              ~project_name
-                                              ~pr_number:
-                                                (Base.Option.value_exn pr_number)
-                                              ~pr_body ~spec_suffix
-                                              ~artifact_path
-                                        | Patch_decision.Merge_conflict_payload
-                                          ->
-                                            (* Invariant: Merge_conflict is handled
+                                              (try Unix.unlink artifact_path
+                                               with
+                                               | Unix.Unix_error
+                                                   (Unix.ENOENT, _, _)
+                                               ->
+                                                 ());
+                                              Prompt.render_pr_body_prompt
+                                                ~project_name ~pr_number:pr
+                                                ~pr_body ~spec_suffix
+                                                ~artifact_path
+                                          | Patch_decision
+                                            .Merge_conflict_payload ->
+                                              (* Invariant: Merge_conflict is handled
                                          in the dedicated match arm above *)
-                                            assert false
-                                      in
-                                      let prompt =
-                                        if String.equal base_changed_prefix ""
-                                        then prompt
-                                        else base_changed_prefix ^ "\n" ^ prompt
-                                      in
-                                      let on_pr_detected _pr_number = () in
-                                      let base =
-                                        Base.Option.value_map
-                                          agent.Patch_agent.base_branch
-                                          ~default:(Branch.to_string main)
-                                          ~f:Branch.to_string
-                                      in
-                                      (* Lock in CI run dedup before firing the
+                                              assert false
+                                        in
+                                        let prompt =
+                                          if String.equal base_changed_prefix ""
+                                          then prompt
+                                          else
+                                            base_changed_prefix ^ "\n" ^ prompt
+                                        in
+                                        let on_pr_detected _pr_number = () in
+                                        let base =
+                                          Base.Option.value_map
+                                            agent.Patch_agent.base_branch
+                                            ~default:(Branch.to_string main)
+                                            ~f:Branch.to_string
+                                        in
+                                        (* Lock in CI run dedup before firing the
                                        session. Recording pre-flight (rather
                                        than post-) means a session that starts
                                        but later fails still counts as
                                        "delivered", so we don't re-nag the
                                        agent with the same failing run on the
                                        next tick. *)
-                                      (match payload with
-                                      | Patch_decision.Ci_payload
-                                          { failed_checks } ->
-                                          let ids =
-                                            Base.List.filter_map failed_checks
-                                              ~f:(fun (c : Ci_check.t) ->
-                                                c.Ci_check.id)
-                                          in
-                                          if not (Base.List.is_empty ids) then
-                                            Runtime.update_orchestrator runtime
-                                              (fun orch ->
-                                                Orchestrator
-                                                .record_delivered_ci_run_ids
-                                                  orch patch_id ids)
-                                      | Patch_decision.Human_payload _
-                                      | Patch_decision.Review_payload _
-                                      | Patch_decision.Findings_payload _
-                                      | Patch_decision.Pr_body_payload
-                                      | Patch_decision.Merge_conflict_payload ->
-                                          ());
-                                      (* Snapshot the pr-body artifact before
+                                        (match payload with
+                                        | Patch_decision.Ci_payload
+                                            { failed_checks } ->
+                                            let ids =
+                                              Base.List.filter_map failed_checks
+                                                ~f:(fun (c : Ci_check.t) ->
+                                                  c.Ci_check.id)
+                                            in
+                                            if not (Base.List.is_empty ids) then
+                                              Runtime.update_orchestrator
+                                                runtime (fun orch ->
+                                                  Orchestrator
+                                                  .record_delivered_ci_run_ids
+                                                    orch patch_id ids)
+                                        | Patch_decision.Human_payload _
+                                        | Patch_decision.Review_payload _
+                                        | Patch_decision.Findings_payload _
+                                        | Patch_decision.Pr_body_payload
+                                        | Patch_decision.Merge_conflict_payload
+                                          ->
+                                            ());
+                                        (* Snapshot the pr-body artifact before
                                        the session so the post-session sync
                                        step (after Session_driver.run) can
                                        detect content changes from any kind
                                        of session, not only Pr_body. For
                                        Pr_body the artifact was just unlinked
                                        above, so the snapshot is None. *)
-                                      let pr_body_pre_snapshot =
-                                        read_artifact_file
-                                          (Project_store.pr_body_artifact_path
-                                             ~project_name ~patch_id)
-                                      in
-                                      let complexity =
-                                        patch_complexity ~gameplan ~patch_id
-                                      in
-                                      let gameplan_prompt =
-                                        Prompt.render_gameplan_layer
-                                          ~project_name gameplan
-                                      in
-                                      let patch_prompt =
-                                        match patch_for_layer with
-                                        | Some p ->
-                                            let functional_changes =
-                                              Prompt.owned_functional_changes
-                                                gameplan p
-                                            in
-                                            Prompt.render_patch_layer
-                                              ~project_name p ?pr_number
-                                              ~functional_changes
-                                              ~base_branch:base_branch_for_layer
-                                              ()
-                                        | None -> ""
-                                      in
-                                      let result, tool_failures =
-                                        run_llm_session ~sw ~gameplan_prompt
-                                          ~patch_prompt ~kind:(Some kind)
-                                          ~patch_id ~prompt ~agent
-                                          ~on_pr_detected ~complexity
-                                      in
-                                      let result =
-                                        (result
-                                          :> [ `Failed
-                                             | `Ok
-                                             | `Pr_body_miss
-                                             | `Retry_push ])
-                                      in
-                                      (match result with
-                                      | `Ok when Base.Option.is_some base_change
-                                        ->
-                                          Runtime.update_orchestrator runtime
-                                            (fun orch ->
-                                              Orchestrator
-                                              .set_notified_base_branch orch
-                                                patch_id (Branch.of_string base))
-                                      | _ -> ());
-                                      (* Artifact-driven phase (Pr_body): read
+                                        let pr_body_pre_snapshot =
+                                          read_artifact_file
+                                            (Project_store.pr_body_artifact_path
+                                               ~project_name ~patch_id)
+                                        in
+                                        let complexity =
+                                          patch_complexity ~gameplan ~patch_id
+                                        in
+                                        let gameplan_prompt =
+                                          Prompt.render_gameplan_layer
+                                            ~project_name gameplan
+                                        in
+                                        let patch_prompt =
+                                          match patch_for_layer with
+                                          | Some p ->
+                                              let functional_changes =
+                                                Prompt.owned_functional_changes
+                                                  gameplan p
+                                              in
+                                              Prompt.render_patch_layer
+                                                ~project_name p ?pr_number
+                                                ~functional_changes
+                                                ~base_branch:
+                                                  base_branch_for_layer ()
+                                          | None -> ""
+                                        in
+                                        let result, tool_failures =
+                                          run_llm_session ~sw ~gameplan_prompt
+                                            ~patch_prompt ~kind:(Some kind)
+                                            ~patch_id ~prompt ~agent
+                                            ~on_pr_detected ~complexity
+                                        in
+                                        let result =
+                                          (result
+                                            :> [ `Failed
+                                               | `Ok
+                                               | `Pr_body_miss
+                                               | `Retry_push ])
+                                        in
+                                        (match result with
+                                        | `Ok
+                                          when Base.Option.is_some base_change
+                                          ->
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                Orchestrator
+                                                .set_notified_base_branch orch
+                                                  patch_id
+                                                  (Branch.of_string base))
+                                        | _ -> ());
+                                        (* Artifact-driven phase (Pr_body): read
                                    the agent's artifact and PATCH the PR body.
                                    When the artifact is missing AND we saw a
                                    Write tool call that did not complete, the
@@ -1723,93 +1745,108 @@ struct
                                    missing but we saw no Write failure, the
                                    agent legitimately chose not to add notes:
                                    fall through to Respond_ok as before. *)
-                                      let session_ok =
-                                        match result with
-                                        | `Ok -> true
-                                        | _ -> false
-                                      in
-                                      let result =
-                                        match payload with
-                                        | Patch_decision.Pr_body_payload
-                                          when session_ok -> (
-                                            let pr =
-                                              Base.Option.value_exn pr_number
-                                            in
-                                            let patch =
-                                              Base.List.find_exn
-                                                gameplan.Gameplan.patches
-                                                ~f:(fun (p : Patch.t) ->
-                                                  Patch_id.equal p.Patch.id
-                                                    patch_id)
-                                            in
-                                            let artifact_outcome =
-                                              apply_pr_body_artifact ~runtime
-                                                ~project_name ~patch_id
-                                                ~pr_number:pr ~patch ~gameplan
-                                            in
-                                            match
-                                              Patch_decision
-                                              .classify_pr_body_respond
-                                                ~artifact_outcome ~tool_failures
-                                            with
-                                            | `Pr_body_miss -> `Pr_body_miss
-                                            | `Ok -> result)
-                                        | Patch_decision.Findings_payload
-                                            { findings } ->
-                                            if session_ok then (
-                                              let artifact_path =
-                                                Project_store
-                                                .findings_wontfix_artifact_path
-                                                  ~project_name ~patch_id
-                                              in
-                                              Findings_resolver
-                                              .resolve_after_session
-                                                ~review_clients
-                                                ~log:(fun msg ->
+                                        let session_ok =
+                                          match result with
+                                          | `Ok -> true
+                                          | _ -> false
+                                        in
+                                        let result =
+                                          match payload with
+                                          | Patch_decision.Pr_body_payload
+                                            when session_ok -> (
+                                              match
+                                                ( pr_number,
+                                                  Base.List.find
+                                                    gameplan.Gameplan.patches
+                                                    ~f:(fun (p : Patch.t) ->
+                                                      Patch_id.equal p.Patch.id
+                                                        patch_id) )
+                                              with
+                                              | Some pr, Some patch -> (
+                                                  let artifact_outcome =
+                                                    apply_pr_body_artifact
+                                                      ~runtime ~project_name
+                                                      ~patch_id ~pr_number:pr
+                                                      ~patch ~gameplan
+                                                  in
+                                                  match
+                                                    Patch_decision
+                                                    .classify_pr_body_respond
+                                                      ~artifact_outcome
+                                                      ~tool_failures
+                                                  with
+                                                  | `Pr_body_miss ->
+                                                      `Pr_body_miss
+                                                  | `Ok -> result)
+                                              | None, _ ->
                                                   log_event runtime ~patch_id
-                                                    msg)
-                                                ~findings_registry
-                                                ~artifact_path
-                                                ~delivered:findings
-                                                ~actor:
-                                                  (Printf.sprintf "onton:%s"
-                                                     (Patch_id.to_string
-                                                        patch_id))
-                                                ();
-                                              result)
-                                            else
-                                              let ids =
-                                                Base.List.map findings
+                                                    "pr-body: no PR number yet \
+                                                     — skipping artifact apply";
+                                                  result
+                                              | _, None ->
+                                                  log_event runtime ~patch_id
+                                                    "pr-body: skipping \
+                                                     artifact apply — patch \
+                                                     has no gameplan entry \
+                                                     (likely ad-hoc)";
+                                                  result)
+                                          | Patch_decision.Findings_payload
+                                              { findings } ->
+                                              if session_ok then (
+                                                let artifact_path =
+                                                  Project_store
+                                                  .findings_wontfix_artifact_path
+                                                    ~project_name ~patch_id
+                                                in
+                                                Findings_resolver
+                                                .resolve_after_session
+                                                  ~review_clients
+                                                  ~log:(fun msg ->
+                                                    log_event runtime ~patch_id
+                                                      msg)
+                                                  ~findings_registry
+                                                  ~artifact_path
+                                                  ~delivered:findings
+                                                  ~actor:
+                                                    (Printf.sprintf "onton:%s"
+                                                       (Patch_id.to_string
+                                                          patch_id))
+                                                  ();
+                                                result)
+                                              else
+                                                let ids =
+                                                  Base.List.map findings
+                                                    ~f:(fun
+                                                        (f :
+                                                          Review_service.finding)
+                                                      -> f.Review_service.id)
+                                                in
+                                                log_event runtime ~patch_id
+                                                  (Printf.sprintf
+                                                     "Session failed before \
+                                                      resolving findings; \
+                                                      forgetting delivered \
+                                                      finding registry \
+                                                      entries: %s"
+                                                     (String.concat ", " ids));
+                                                Base.List.iter findings
                                                   ~f:(fun
                                                       (f :
                                                         Review_service.finding)
-                                                    -> f.Review_service.id)
-                                              in
-                                              log_event runtime ~patch_id
-                                                (Printf.sprintf
-                                                   "Session failed before \
-                                                    resolving findings; \
-                                                    forgetting delivered \
-                                                    finding registry entries: \
-                                                    %s"
-                                                   (String.concat ", " ids));
-                                              Base.List.iter findings
-                                                ~f:(fun
-                                                    (f : Review_service.finding)
-                                                  ->
-                                                  Findings_registry.forget
-                                                    findings_registry
-                                                    ~key:f.Review_service.id);
+                                                    ->
+                                                    Findings_registry.forget
+                                                      findings_registry
+                                                      ~key:f.Review_service.id);
+                                                result
+                                          | Patch_decision.Human_payload _
+                                          | Patch_decision.Ci_payload _
+                                          | Patch_decision.Review_payload _
+                                          | Patch_decision.Pr_body_payload
+                                          | Patch_decision
+                                            .Merge_conflict_payload ->
                                               result
-                                        | Patch_decision.Human_payload _
-                                        | Patch_decision.Ci_payload _
-                                        | Patch_decision.Review_payload _
-                                        | Patch_decision.Pr_body_payload
-                                        | Patch_decision.Merge_conflict_payload
-                                          ->
-                                            result
-                                      in
-                                      (* Opportunistic pr-body sync. If the
+                                        in
+                                        (* Opportunistic pr-body sync. If the
                                        agent updated the artifact during a
                                        non-Pr_body session, PATCH the PR.
                                        Pure planner returns Sync_skip for
@@ -1817,48 +1854,40 @@ struct
                                        owned by classify_pr_body_respond),
                                        so this block is a no-op for that
                                        kind and never double-PATCHes. *)
-                                      (* Re-derive session_ok from the (possibly
+                                        (* Re-derive session_ok from the (possibly
                                        rebound) result so the planner sees the
                                        final outcome — the Pr_body_payload arm
                                        above can flip result to Pr_body_miss. *)
-                                      let session_ok =
-                                        match result with
-                                        | `Ok -> true
-                                        | _ -> false
-                                      in
-                                      let pr_body_post_snapshot =
-                                        read_artifact_file
-                                          (Project_store.pr_body_artifact_path
-                                             ~project_name ~patch_id)
-                                      in
-                                      let plan =
-                                        Patch_decision.plan_artifact_sync ~kind
-                                          ~session_ok ~pre:pr_body_pre_snapshot
-                                          ~post:pr_body_post_snapshot
-                                      in
-                                      let patch_result =
-                                        match plan with
-                                        | Patch_decision.Sync_skip -> None
-                                        | Patch_decision.Sync_attempt_pr_body
-                                          -> (
-                                            let pr =
+                                        let session_ok =
+                                          match result with
+                                          | `Ok -> true
+                                          | _ -> false
+                                        in
+                                        let pr_body_post_snapshot =
+                                          read_artifact_file
+                                            (Project_store.pr_body_artifact_path
+                                               ~project_name ~patch_id)
+                                        in
+                                        let plan =
+                                          Patch_decision.plan_artifact_sync
+                                            ~kind ~session_ok
+                                            ~pre:pr_body_pre_snapshot
+                                            ~post:pr_body_post_snapshot
+                                        in
+                                        let patch_result =
+                                          match plan with
+                                          | Patch_decision.Sync_skip -> None
+                                          | Patch_decision.Sync_attempt_pr_body
+                                            -> (
                                               match pr_number with
-                                              | Some n -> n
                                               | None ->
-                                                  (* Invariant: Sync_attempt_pr_body
-                                                   is only reachable inside the
-                                                   Deliver arm, which requires a
-                                                   PR to exist. *)
-                                                  failwith
-                                                    (Printf.sprintf
-                                                       "BUG: \
-                                                        Sync_attempt_pr_body \
-                                                        reached with no \
-                                                        pr_number for %s"
-                                                       (Patch_id.to_string
-                                                          patch_id))
-                                            in
-                                            (* Ad-hoc agents (added via
+                                                  log_event runtime ~patch_id
+                                                    "pr-body: skipping \
+                                                     opportunistic sync — no \
+                                                     PR number yet";
+                                                  None
+                                              | Some pr -> (
+                                                  (* Ad-hoc agents (added via
                                              Orchestrator.add_agent) have a
                                              pr_number but no gameplan entry,
                                              so a missing patch here is not a
@@ -1867,62 +1896,66 @@ struct
                                              classify_artifact_sync_outcome
                                              map patch_result=None to
                                              Sync_no_op. *)
-                                            match
-                                              Base.List.find
-                                                gameplan.Gameplan.patches
-                                                ~f:(fun (p : Patch.t) ->
-                                                  Patch_id.equal p.Patch.id
-                                                    patch_id)
-                                            with
-                                            | Some patch ->
-                                                Some
-                                                  (apply_pr_body_artifact
-                                                     ~runtime ~project_name
-                                                     ~patch_id ~pr_number:pr
-                                                     ~patch ~gameplan)
-                                            | None ->
-                                                log_event runtime ~patch_id
-                                                  "pr-body: skipping \
-                                                   opportunistic sync — patch \
-                                                   has no gameplan entry \
-                                                   (likely ad-hoc)";
-                                                None)
-                                      in
-                                      (match
-                                         Patch_decision
-                                         .classify_artifact_sync_outcome ~plan
-                                           ~patch_result
-                                       with
-                                      | Patch_decision.Sync_no_op -> ()
-                                      | Patch_decision.Sync_delivered ->
-                                          log_event runtime ~patch_id
-                                            (Printf.sprintf
-                                               "pr-body: synced \
-                                                opportunistically from %s \
-                                                session"
-                                               (Operation_kind.to_label kind));
-                                          Runtime.update_orchestrator runtime
-                                            (fun orch ->
-                                              let orch =
+                                                  match
+                                                    Base.List.find
+                                                      gameplan.Gameplan.patches
+                                                      ~f:(fun (p : Patch.t) ->
+                                                        Patch_id.equal
+                                                          p.Patch.id patch_id)
+                                                  with
+                                                  | Some patch ->
+                                                      Some
+                                                        (apply_pr_body_artifact
+                                                           ~runtime
+                                                           ~project_name
+                                                           ~patch_id
+                                                           ~pr_number:pr ~patch
+                                                           ~gameplan)
+                                                  | None ->
+                                                      log_event runtime
+                                                        ~patch_id
+                                                        "pr-body: skipping \
+                                                         opportunistic sync — \
+                                                         patch has no gameplan \
+                                                         entry (likely ad-hoc)";
+                                                      None))
+                                        in
+                                        (match
+                                           Patch_decision
+                                           .classify_artifact_sync_outcome ~plan
+                                             ~patch_result
+                                         with
+                                        | Patch_decision.Sync_no_op -> ()
+                                        | Patch_decision.Sync_delivered ->
+                                            log_event runtime ~patch_id
+                                              (Printf.sprintf
+                                                 "pr-body: synced \
+                                                  opportunistically from %s \
+                                                  session"
+                                                 (Operation_kind.to_label kind));
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                let orch =
+                                                  Orchestrator
+                                                  .set_pr_body_delivered orch
+                                                    patch_id true
+                                                in
                                                 Orchestrator
-                                                .set_pr_body_delivered orch
-                                                  patch_id true
-                                              in
-                                              Orchestrator
-                                              .reset_pr_body_artifact_miss_count
-                                                orch patch_id)
-                                      | Patch_decision.Sync_patch_failed ->
-                                          log_event runtime ~patch_id
-                                            "pr-body: opportunistic sync PATCH \
-                                             failed; leaving state — next \
-                                             Pr_body cycle will retry");
-                                      (result
-                                        :> [ `Failed
-                                           | `Ok
-                                           | `Pr_body_miss
-                                           | `Retry_push
-                                           | `Skip_empty
-                                           | `Stale ]))
+                                                .reset_pr_body_artifact_miss_count
+                                                  orch patch_id)
+                                        | Patch_decision.Sync_patch_failed ->
+                                            log_event runtime ~patch_id
+                                              "pr-body: opportunistic sync \
+                                               PATCH failed; leaving state — \
+                                               next Pr_body cycle will retry");
+                                        (result
+                                          :> [ `Failed
+                                             | `Ok
+                                             | `Pr_body_miss
+                                             | `Retry_push
+                                             | `Skip_empty
+                                             | `Stale ])
+                                      with Skip_delivery -> `Skip_empty))
                         in
                         let respond_outcome =
                           match result with
