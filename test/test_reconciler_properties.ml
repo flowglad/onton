@@ -551,6 +551,7 @@ let prop_reconcile_e2e_catches_drift =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         }
       in
       let graph = Graph.of_patches [ patch ] in
@@ -592,6 +593,7 @@ let prop_reconcile_dedup_rebase =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         }
       in
       let graph = Graph.of_patches [ patch ] in

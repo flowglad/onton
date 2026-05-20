@@ -142,6 +142,17 @@ module Precedent = struct
       patch prompt so it can prefer proven techniques over rolling its own. *)
 end
 
+module Context_resource = struct
+  type t = {
+    id : string;
+    kind : string;
+    paths : string list; [@yojson.default []]
+    why : string; [@yojson.default ""]
+    consumed_by : Patch_id.t list; [@yojson.default []]
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+end
+
 module Patch = struct
   type t = {
     id : Patch_id.t;
@@ -158,6 +169,7 @@ module Patch = struct
     test_stubs_implemented : string list; [@yojson.default []]
     complexity : int option; [@yojson.default None]
     precedents : Precedent.t list; [@yojson.default []]
+    required_context : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 end
@@ -276,6 +288,7 @@ module Gameplan = struct
     final_state_spec : string; [@yojson.default ""]
     patches : Patch.t list;
     functional_changes : Functional_change.t list; [@yojson.default []]
+    context_resources : Context_resource.t list; [@yojson.default []]
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

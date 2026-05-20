@@ -120,6 +120,31 @@ let format_precedents (ps : Precedent.t list) : string =
      pattern, paper, RFC, doc, or blog post; the trailing sentence explains \
      how it applies to this specific patch.\n\n" ^ body ^ "\n"
 
+let format_context_resources (resources : Context_resource.t list) : string =
+  if List.is_empty resources then ""
+  else
+    let body =
+      List.map resources ~f:(fun r ->
+          let paths =
+            match r.Context_resource.paths with
+            | [] -> "Paths/references: none listed"
+            | paths -> "Paths/references: " ^ String.concat paths ~sep:", "
+          in
+          let why =
+            if String.is_empty r.why then "Why authoritative: not specified"
+            else "Why authoritative: " ^ r.why
+          in
+          Printf.sprintf "- **%s** (`%s`)\n  - %s\n  - %s" r.id r.kind paths why)
+      |> String.concat ~sep:"\n"
+    in
+    "\n\
+     ## Required Context Before Editing\n\n\
+     Read these authoritative resources before making code changes. Trust this \
+     named context over stale or ambiguous patch prose. Search and read the \
+     listed paths/references before choosing an implementation approach, and \
+     avoid starting a parallel implementation until you have checked them.\n\n"
+    ^ body ^ "\n"
+
 let agents_md_section = function
   | Some content when not (String.is_empty (String.strip content)) ->
       "## Project Conventions (AGENTS.md)\n\n" ^ String.rstrip content ^ "\n\n"
@@ -212,7 +237,8 @@ let format_functional_changes_section (fcs : Functional_change.t list) : string
      appears here, no sibling patch will pick it up.\n\n" ^ body ^ "\n"
 
 let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
-    ?(functional_changes = []) ~(base_branch : string) () : string =
+    ?(functional_changes = []) ?(context_resources = []) ~(base_branch : string)
+    () : string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -278,6 +304,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
       ("files", format_list patch.Patch.files);
       ( "functional_changes_section",
         format_functional_changes_section functional_changes );
+      ("context_resources_section", format_context_resources context_resources);
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ( "spec_section",
         if String.is_empty patch.spec then ""
@@ -346,7 +373,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 ## Your Task
 
 {{base_branch_note}}{{description}}
-{{functional_changes_section}}{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
+{{functional_changes_section}}{{context_resources_section}}{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
@@ -362,6 +389,12 @@ let owned_functional_changes (gameplan : Gameplan.t) (patch : Patch.t) :
     ~f:(fun (fc : Functional_change.t) ->
       Patch_id.equal fc.Functional_change.owned_by patch.Patch.id)
 
+let required_context_resources (gameplan : Gameplan.t) (patch : Patch.t) :
+    Context_resource.t list =
+  List.filter gameplan.Gameplan.context_resources
+    ~f:(fun (r : Context_resource.t) ->
+      List.mem patch.Patch.required_context r.id ~equal:String.equal)
+
 (* When all of [patch], [gameplan], [base_branch] are supplied, returns
    the gameplan+patch prefix; otherwise returns the empty string. Used by
    the layered turn-prompt composers to support callers that don't have a
@@ -371,12 +404,13 @@ let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
   match (patch, gameplan, base_branch) with
   | Some p, Some g, Some b ->
       let functional_changes = owned_functional_changes g p in
+      let context_resources = required_context_resources g p in
       render_gameplan_layer ~project_name g
       ^ (match agents_md with
         | Some content -> agents_md_section (Some content)
         | None -> "")
       ^ render_patch_layer ~project_name p ?pr_number ~functional_changes
-          ~base_branch:b ()
+          ~context_resources ~base_branch:b ()
   | _ -> ""
 
 let render_turn_layer_start ~(project_name : string) : string =
@@ -387,10 +421,11 @@ let render_turn_layer_start ~(project_name : string) : string =
 let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
     (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
   let functional_changes = owned_functional_changes gameplan patch in
+  let context_resources = required_context_resources gameplan patch in
   render_gameplan_layer ~project_name gameplan
   ^ agents_md_section agents_md
   ^ render_patch_layer ~project_name patch ?pr_number ~functional_changes
-      ~base_branch ()
+      ~context_resources ~base_branch ()
   ^ render_turn_layer_start ~project_name
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
@@ -422,6 +457,7 @@ let%test "render_spec_suffix: both empty" =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
   in
   let gameplan =
@@ -434,6 +470,7 @@ let%test "render_spec_suffix: both empty" =
       final_state_spec = "";
       patches = [];
       functional_changes = [];
+      context_resources = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -459,6 +496,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
   in
   let gameplan =
@@ -471,6 +509,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       final_state_spec = "module FOO.\nsome spec";
       patches = [];
       functional_changes = [];
+      context_resources = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -499,6 +538,7 @@ let%test "render_spec_suffix: patch spec only" =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
   in
   let gameplan =
@@ -511,6 +551,7 @@ let%test "render_spec_suffix: patch spec only" =
       final_state_spec = "";
       patches = [];
       functional_changes = [];
+      context_resources = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -539,6 +580,7 @@ let%test "render_spec_suffix: both present" =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
   in
   let gameplan =
@@ -551,6 +593,7 @@ let%test "render_spec_suffix: both present" =
       final_state_spec = "module FOO.\ngameplan spec";
       patches = [];
       functional_changes = [];
+      context_resources = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -636,6 +679,7 @@ What to include:
 - Anything surprising or non-obvious about the approach.
 - Deviations from the original plan (if any).
 - Important details a reviewer should know.
+- A short `Spec/Evidence Mapping` when applicable: spec clause or acceptance criterion satisfied, code path implementing it, required context resource consulted, and test/static check proving it if available.
 
 Do not repeat information already in the description or specs above — add only what's new.
 
@@ -1167,6 +1211,7 @@ let%test "patch prompt includes title and deps" =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1199,10 +1244,12 @@ let%test "patch prompt includes title and deps" =
               test_stubs_implemented = [];
               complexity = None;
               precedents = [];
+              required_context = [];
             };
             patch;
           ];
         functional_changes = [];
+        context_resources = [];
       }
   in
   let result =
@@ -1243,6 +1290,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
           ];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let patch_2 : Patch.t =
@@ -1262,6 +1310,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1280,6 +1329,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         open_questions = [];
         patches = [ patch_1; patch_2 ];
         functional_changes = [];
+        context_resources = [];
       }
   in
   let prompt_1 =
@@ -1315,6 +1365,7 @@ let%test "agents_md content appears in static prefix when Some" =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1332,6 +1383,7 @@ let%test "agents_md content appears in static prefix when Some" =
         open_questions = [];
         patches = [ patch ];
         functional_changes = [];
+        context_resources = [];
       }
   in
   let prompt =
@@ -1363,6 +1415,7 @@ let%test "agents_md section is omitted when None" =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1380,6 +1433,7 @@ let%test "agents_md section is omitted when None" =
         open_questions = [];
         patches = [ patch ];
         functional_changes = [];
+        context_resources = [];
       }
   in
   let prompt =
@@ -1417,6 +1471,7 @@ let make_layer_test_fixture () =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let patch_b : Patch.t =
@@ -1436,6 +1491,7 @@ let make_layer_test_fixture () =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
   let gameplan : Gameplan.t =
@@ -1462,6 +1518,7 @@ let make_layer_test_fixture () =
               owned_by = patch_a.Patch.id;
             };
           ];
+        context_resources = [];
       }
   in
   (patch_a, patch_b, gameplan)
@@ -1636,6 +1693,62 @@ let%test
       ~base_branch:"main" ()
   in
   not (String.is_substring rendered ~substring:"Functional Changes You Own")
+
+let%test
+    "render_patch_prompt surfaces only required context resources for patch" =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let patch_a = { patch_a with required_context = [ "ctx-a" ] } in
+  let patch_b = { patch_b with required_context = [ "ctx-b" ] } in
+  let gameplan : Gameplan.t =
+    {
+      gameplan with
+      patches = [ patch_a; patch_b ];
+      context_resources =
+        [
+          {
+            Context_resource.id = "ctx-a";
+            kind = "existing-implementation";
+            paths = [ "lib/current.ml"; "test/test_current.ml" ];
+            why = "This is the behavior Patch A must preserve.";
+            consumed_by = [ patch_a.Patch.id ];
+          };
+          {
+            Context_resource.id = "ctx-b";
+            kind = "reference-doc";
+            paths = [ "docs/reference.md" ];
+            why = "This belongs only to Patch B.";
+            consumed_by = [ patch_b.Patch.id ];
+          };
+        ];
+    }
+  in
+  let prompt_a =
+    render_patch_prompt ~project_name:"onton" patch_a gameplan
+      ~base_branch:"main"
+  in
+  String.is_substring prompt_a ~substring:"## Required Context Before Editing"
+  && String.is_substring prompt_a ~substring:"**ctx-a**"
+  && String.is_substring prompt_a ~substring:"lib/current.ml"
+  && String.is_substring prompt_a
+       ~substring:"This is the behavior Patch A must preserve."
+  && String.is_substring prompt_a
+       ~substring:
+         "Read these authoritative resources before making code changes"
+  && String.is_substring prompt_a
+       ~substring:"Trust this named context over stale or ambiguous patch prose"
+  && String.is_substring prompt_a
+       ~substring:"avoid starting a parallel implementation"
+  && not (String.is_substring prompt_a ~substring:"**ctx-b**")
+
+let%test
+    "render_patch_layer omits Required Context section when no resources apply"
+    =
+  let patch, _, _ = make_layer_test_fixture () in
+  let rendered =
+    render_patch_layer ~project_name:"onton" patch ~base_branch:"main" ()
+  in
+  not
+    (String.is_substring rendered ~substring:"Required Context Before Editing")
 
 let%test "render_pr_description surfaces precedents when present" =
   let patch, _, gameplan = make_layer_test_fixture () in

@@ -19,6 +19,7 @@ let patch i =
       test_stubs_implemented = [];
       complexity = None;
       precedents = [];
+      required_context = [];
     }
 
 let agent_for_patch ?(merged = false) (p : Patch.t) =

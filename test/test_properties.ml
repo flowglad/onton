@@ -17,6 +17,7 @@ let make_gameplan patches =
       acceptance_criteria = [];
       open_questions = [];
       functional_changes = [];
+      context_resources = [];
     }
 
 let tick orch ~patches =
@@ -159,6 +160,7 @@ let () =
          test_stubs_implemented = [];
          complexity = None;
          precedents = [];
+         required_context = [];
        }
    in
    let a = Types.Patch_id.of_string "A" in
@@ -400,6 +402,7 @@ let () =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         };
     ]
   in
@@ -461,6 +464,7 @@ let () =
         test_stubs_implemented = [];
         complexity = None;
         precedents = [];
+        required_context = [];
       }
   in
 
@@ -573,6 +577,7 @@ let () =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         };
       Types.Patch.
         {
@@ -590,6 +595,7 @@ let () =
           test_stubs_implemented = [];
           complexity = None;
           precedents = [];
+          required_context = [];
         };
     ]
   in
@@ -639,6 +645,7 @@ let () =
             test_stubs_implemented = [];
             complexity = None;
             precedents = [];
+            required_context = [];
           };
       ]
     in
@@ -668,6 +675,7 @@ let () =
                 test_stubs_implemented = [];
                 complexity = None;
                 precedents = [];
+                required_context = [];
               };
           ]
         in
@@ -775,6 +783,7 @@ let () =
             test_stubs_implemented = [];
             complexity = None;
             precedents = [];
+            required_context = [];
           };
       ]
     in
@@ -841,6 +850,7 @@ let () =
                   test_stubs_implemented = [];
                   complexity = None;
                   precedents = [];
+                  required_context = [];
                 };
             ]
           in
@@ -970,6 +980,7 @@ let () =
             test_stubs_implemented = [];
             complexity = None;
             precedents = [];
+            required_context = [];
           };
       ]
     in

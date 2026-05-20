@@ -88,6 +88,23 @@
     }
   ],
 
+  "contextResources": [
+    {
+      "id": "current-runner-fiber-decisions",
+      "kind": "existing-implementation",
+      "paths": ["bin/main.ml"],
+      "why": "runner_fiber currently contains the inline lifecycle decisions that Patch_decision must preserve and Patch 4 must replace.",
+      "consumedBy": [3, 4]
+    },
+    {
+      "id": "patch-decision-property-contract",
+      "kind": "contract",
+      "paths": ["spec/onton.pant", "test/test_patch_decision.ml"],
+      "why": "The formal spec and property tests define the decision invariants that Patch 3 implements.",
+      "consumedBy": [2, 3]
+    }
+  ],
+
   "acceptanceCriteria": [
     "Patch_decision module exists with pure functions for all decision points",
     "All decision functions are covered by QCheck2 property tests",
@@ -139,6 +156,7 @@
         "Add val disposition : merged:bool -> busy:bool -> disposition (placeholder)",
         "Add val needs_intervention : ci_failure_count:int -> bool (placeholder)"
       ],
+      "requiredContext": [],
       "testStubsIntroduced": null,
       "testStubsImplemented": null,
       "spec": "module EXTRACT_DECISION_PATCH_1.\n\n> Patch 1 introduces type declarations only.\n> No behavioral invariants — the contribution is the type structure itself.\n\nDisposition.\nskip => Disposition.\nqueue => Disposition.\ndeliver => Disposition.\n---\ntrue.\n"
@@ -165,6 +183,7 @@
         "Add pending test: busy patch is never delivered (spec: busy? p -> disposition p ~= deliver)",
         "Add pending test: CI failure count >= 3 requires intervention (spec: ci-failure-count p >= 3 -> needs-intervention? p)"
       ],
+      "requiredContext": ["patch-decision-property-contract"],
       "testStubsIntroduced": [
         "Patch_decision > merged patch is always skipped",
         "Patch_decision > busy patch is never delivered",
@@ -209,6 +228,7 @@
         "Implement needs_intervention: ci_failure_count >= 3 -> true, else -> false",
         "Enable all QCheck2 tests from Patch 2"
       ],
+      "requiredContext": ["current-runner-fiber-decisions", "patch-decision-property-contract"],
       "testStubsIntroduced": null,
       "testStubsImplemented": [
         "Patch_decision > merged patch is always skipped",
@@ -234,6 +254,7 @@
         "In CI failure handler (~line 1050): replace inline ci_failure_count >= 3 check with Patch_decision.needs_intervention",
         "Remove now-dead local helper functions that duplicated decision logic"
       ],
+      "requiredContext": ["current-runner-fiber-decisions"],
       "testStubsIntroduced": null,
       "testStubsImplemented": null,
       "spec": "module EXTRACT_DECISION_PATCH_4.\n\n> Patch 4 wires the pure decision module into main.ml.\n> The behavioral invariant: main.ml delegates all lifecycle\n> decisions to Patch_decision — no inline decision logic remains.\n\nPatch.\nRunnerFiber.\ninline-decisions rf: RunnerFiber, p: Patch => Nat0.\n---\n> All decision points in runner_fiber use Patch_decision.\nall rf: RunnerFiber, p: Patch | inline-decisions rf p = 0.\n"

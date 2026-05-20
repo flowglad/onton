@@ -70,7 +70,8 @@ let run_git ~cwd args =
 let init_repo dir =
   run_git ~cwd:dir [ "init"; "-q"; "-b"; "main" ];
   run_git ~cwd:dir [ "config"; "user.email"; "test@example.com" ];
-  run_git ~cwd:dir [ "config"; "user.name"; "test" ]
+  run_git ~cwd:dir [ "config"; "user.name"; "test" ];
+  run_git ~cwd:dir [ "config"; "commit.gpgsign"; "false" ]
 
 let rm_rf dir =
   let cmd = Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir) in

@@ -38,6 +38,7 @@ val render_patch_layer :
   Patch.t ->
   ?pr_number:Pr_number.t ->
   ?functional_changes:Functional_change.t list ->
+  ?context_resources:Context_resource.t list ->
   base_branch:string ->
   unit ->
   string
@@ -46,12 +47,18 @@ val render_patch_layer :
     files, test stubs, specification (with Pantagruel guide), acceptance
     criteria, git identifiers, and PR instructions. Ends with a trailing blank
     line. [functional_changes] should contain only the entries from
-    [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id]. *)
+    [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id].
+    [context_resources] should contain only resources whose IDs appear in this
+    patch's [required_context]. *)
 
 val owned_functional_changes : Gameplan.t -> Patch.t -> Functional_change.t list
 (** Returns the functional changes in the gameplan owned by this patch. Use this
     when constructing patch layers directly, so composed and manually layered
     prompts carry the same patch-stable content. *)
+
+val required_context_resources :
+  Gameplan.t -> Patch.t -> Context_resource.t list
+(** Returns the authoritative context resources required by this patch. *)
 
 val render_turn_layer_start : project_name:string -> string
 
