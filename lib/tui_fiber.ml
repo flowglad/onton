@@ -860,7 +860,14 @@ module Make (Env : Tui_env.S) = struct
                           | Some s -> s.Term.rows
                           | None -> 24
                         in
-                        let reserved = 11 in
+                        (* Keep in sync with Tui.render_frame Timeline_view:
+                           header(2) + blank + timeline header(1)
+                           + scroll indicators(2) + blank before footer
+                           + optional status line + footer(2). *)
+                        let status_rows =
+                          match !status_msg with Some _ -> 1 | None -> 0
+                        in
+                        let reserved = 9 + status_rows in
                         let max_rows = Base.Int.max 0 (height - reserved) in
                         let max_offset = Base.Int.max 0 (total - max_rows) in
                         timeline_scroll :=
