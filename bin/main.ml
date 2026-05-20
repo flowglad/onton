@@ -5,22 +5,7 @@ module Managed_repo = Onton.Managed_repo
 
 (** {1 Configuration} *)
 
-type config = {
-  project : string option;
-  backend : string;
-  model : string;
-  github_token : string;
-  github_owner : string;
-  github_repo : string;
-  main_branch : Branch.t;
-  poll_interval : float;
-  repo_root : string;
-  max_concurrency : int;
-  headless : bool;
-  patch_agent_provider : string option;
-  patch_agent_effort : string option;
-  user_config : User_config.t;
-}
+type config = Resolved_config.config
 
 module type STARTUP_RECONCILER = Poller_fiber.STARTUP_RECONCILER
 
@@ -28,9 +13,6 @@ let default_backend = "claude"
 
 let known_backends =
   [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
-
-let known_patch_agent_providers = [ "anthropic"; "openai" ]
-let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
 (** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
     canonical [(backend, model)] tuple used internally. Empty [backend] falls
@@ -43,50 +25,6 @@ let resolve_backend_model ~backend ~model =
     else Base.String.strip backend
   in
   (backend, Base.String.strip model)
-
-let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
-    ~main_branch ~poll_interval ~max_concurrency ~patch_agent_provider
-    ~patch_agent_effort =
-  let errors =
-    Base.List.filter_map
-      [
-        ( not (Base.List.mem known_backends backend ~equal:String.equal),
-          Printf.sprintf "--backend must be one of: %s (got %S)"
-            (String.concat ", " known_backends)
-            backend );
-        ( Base.String.is_empty (Base.String.strip github_token),
-          "--token / GITHUB_TOKEN is required" );
-        ( Base.String.is_empty (Base.String.strip github_owner),
-          "--owner / GITHUB_OWNER is required" );
-        ( Base.String.is_empty (Base.String.strip github_repo),
-          "--repo / GITHUB_REPO is required" );
-        ( Base.String.is_empty (Base.String.strip (Branch.to_string main_branch)),
-          "--main-branch cannot be empty" );
-        ( Float.compare poll_interval 0.0 <= 0,
-          Printf.sprintf "--poll-interval must be > 0 (got %g)" poll_interval );
-        ( max_concurrency < 1,
-          Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
-            max_concurrency );
-        ( (match patch_agent_provider with
-          | Some provider ->
-              not
-                (Base.List.mem known_patch_agent_providers provider
-                   ~equal:String.equal)
-          | None -> false),
-          Printf.sprintf "PATCH_AGENT_PROVIDER must be one of: %s"
-            (String.concat ", " known_patch_agent_providers) );
-        ( (match patch_agent_effort with
-          | Some effort ->
-              not
-                (Base.List.mem known_patch_agent_efforts effort
-                   ~equal:String.equal)
-          | None -> false),
-          Printf.sprintf "PATCH_AGENT_EFFORT must be one of: %s"
-            (String.concat ", " known_patch_agent_efforts) );
-      ]
-      ~f:(fun (cond, msg) -> if cond then Some msg else None)
-  in
-  match errors with [] -> Ok () | errs -> Error errs
 
 (** {1 PR number registry}
 
@@ -136,9 +74,9 @@ module type FIBER_ENV = sig
   val clock : float Eio.Time.clock_ty Eio.Time.clock
   val fs : Eio.Fs.dir_ty Eio.Path.t
   val process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t
-  val config : config
+  val stdout : Eio_unix.sink_ty Eio.Resource.t
+  val config : Resolved_config.t
   val project_name : string
-  val pr_registry : Pr_registry.t
   val findings_registry : Findings_registry.t
 
   val review_clients :
@@ -149,14 +87,18 @@ module type FIBER_ENV = sig
   val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
   val event_log : Event_log.t
   val branch_of : Patch_id.t -> Branch.t
+  val resolve_routing : complexity:int option -> Backend_routing.decision
+  val backend_name : string
 
   val pick_backend :
     complexity:int option -> Backend_registry.kind * Backend_routing.decision
 
-  val resolve_routing : complexity:int option -> Backend_routing.decision
-  val backend_name : string
+  val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
+  val register_pr_number : patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
+  val unregister_pr_number : patch_id:Patch_id.t -> unit
   val worktree_mutex : Eio.Mutex.t
   val hook_mutex : Eio.Mutex.t
+  val tui_state : Tui_state.t
 end
 
 module Make_fibers
@@ -164,97 +106,94 @@ module Make_fibers
     (W : Worktree.S)
     (Env : FIBER_ENV) =
 struct
-  module Env_runner : Runner_fiber.Runner_env.S = struct
-    let runtime = Env.runtime
-    let clock = Env.clock
-    let fs = Env.fs
-    let project_name = Env.project_name
-    let user_config = Env.config.user_config
-    let worktree_mutex = Env.worktree_mutex
-    let hook_mutex = Env.hook_mutex
-    let owner = Env.config.github_owner
-    let repo = Env.config.github_repo
-    let main_branch = Env.config.main_branch
-    let max_concurrency = Env.config.max_concurrency
-    let patch_agent_provider = Env.config.patch_agent_provider
-    let patch_agent_effort = Env.config.patch_agent_effort
-    let findings_registry = Env.findings_registry
-    let review_clients = Env.review_clients
-    let transcripts = Env.transcripts
-    let event_log = Env.event_log
-    let pick_backend = Env.pick_backend
+  module Runner =
+    Runner_fiber.Make (Forge) (W)
+      (struct
+        let runtime = Env.runtime
+        let clock = Env.clock
+        let fs = Env.fs
+        let project_name = Env.project_name
+        let user_config = Env.config.user_config
+        let worktree_mutex = Env.worktree_mutex
+        let hook_mutex = Env.hook_mutex
+        let owner = Env.config.github_owner
+        let repo = Env.config.github_repo
+        let main_branch = Env.config.main_branch
+        let max_concurrency = Env.config.max_concurrency
+        let patch_agent_provider = Env.config.patch_agent_provider
+        let patch_agent_effort = Env.config.patch_agent_effort
+        let findings_registry = Env.findings_registry
+        let review_clients = Env.review_clients
+        let transcripts = Env.transcripts
+        let event_log = Env.event_log
+        let pick_backend = Env.pick_backend
+        let register_pr = Env.register_pr_number
+      end)
 
-    let register_pr ~patch_id ~pr_number =
-      Pr_registry.register Env.pr_registry ~patch_id ~pr_number
-  end
+  module Poller =
+    Poller_fiber.Make (Forge) (W)
+      (struct
+        let runtime = Env.runtime
+        let clock = Env.clock
+        let fs = Env.fs
+        let project_name = Env.project_name
+        let user_config = Env.config.user_config
+        let worktree_mutex = Env.worktree_mutex
+        let hook_mutex = Env.hook_mutex
+        let process_mgr = Env.process_mgr
+        let github_owner = Env.config.github_owner
+        let github_repo = Env.config.github_repo
+        let main_branch = Env.config.main_branch
+        let poll_interval = Env.config.poll_interval
+        let repo_root = Env.config.repo_root
+        let find_pr_number = Env.find_pr_number
+        let register_pr_number = Env.register_pr_number
+        let unregister_pr_number = Env.unregister_pr_number
+        let findings_registry = Env.findings_registry
+        let review_clients = Env.review_clients
+        let event_log = Env.event_log
+        let branch_of = Env.branch_of
+      end)
 
-  module Runner = Runner_fiber.Make (Forge) (W) (Env_runner)
+  module Tui =
+    Tui_fiber.Make (Forge) (W)
+      (struct
+        let runtime = Env.runtime
+        let clock = Env.clock
+        let fs = Env.fs
+        let project_name = Env.project_name
+        let user_config = Env.config.user_config
+        let worktree_mutex = Env.worktree_mutex
+        let hook_mutex = Env.hook_mutex
+        let process_mgr = Env.process_mgr
+        let stdout = Env.stdout
+        let owner = Env.config.github_owner
+        let repo = Env.config.github_repo
+        let transcripts = Env.transcripts
+        let tui_state = Env.tui_state
+        let backend_name = Env.backend_name
+        let resolve_routing = Env.resolve_routing
+        let find_pr_number = Env.find_pr_number
+        let register_pr_number = Env.register_pr_number
+        let unregister_pr_number = Env.unregister_pr_number
+      end)
 
-  module Env_poller : Poller_fiber.Poller_env.S = struct
-    let runtime = Env.runtime
-    let clock = Env.clock
-    let fs = Env.fs
-    let project_name = Env.project_name
-    let user_config = Env.config.user_config
-    let worktree_mutex = Env.worktree_mutex
-    let hook_mutex = Env.hook_mutex
-    let process_mgr = Env.process_mgr
-    let github_owner = Env.config.github_owner
-    let github_repo = Env.config.github_repo
-    let main_branch = Env.config.main_branch
-    let poll_interval = Env.config.poll_interval
-    let repo_root = Env.config.repo_root
-    let find_pr_number = Pr_registry.find Env.pr_registry
-    let register_pr_number = Pr_registry.register Env.pr_registry
-    let unregister_pr_number = Pr_registry.unregister Env.pr_registry
-    let findings_registry = Env.findings_registry
-    let review_clients = Env.review_clients
-    let event_log = Env.event_log
-    let branch_of = Env.branch_of
-  end
+  module Headless =
+    Headless_fiber.Make (Forge) (W)
+      (struct
+        let runtime = Env.runtime
+        let clock = Env.clock
+        let stdout = Env.stdout
+      end)
 
-  module Poller = Poller_fiber.Make (Forge) (W) (Env_poller)
-
-  module Headless_Env : Headless_fiber.Headless_env.S = struct
-    let runtime = Env.runtime
-    let clock = Env.clock
-  end
-
-  module Persistence_Env : Persistence_fiber.Persistence_env.S = struct
-    let runtime = Env.runtime
-    let clock = Env.clock
-    let project_name = Env.project_name
-  end
-
-  module Headless = Headless_fiber.Make (Headless_Env)
-  module Persistence_fiber_runner = Persistence_fiber.Make (Persistence_Env)
-
-  module Env_tui : Onton.Tui_fiber.Tui_env.S = struct
-    let runtime = Env.runtime
-    let clock = Env.clock
-    let project_name = Env.project_name
-    let github_owner = Env.config.github_owner
-    let github_repo = Env.config.github_repo
-    let backend_name = Env.backend_name
-    let transcripts = Env.transcripts
-    let resolve_routing = Env.resolve_routing
-    let find_pr_number ~patch_id = Pr_registry.find Env.pr_registry ~patch_id
-
-    let register_pr ~patch_id ~pr_number =
-      Pr_registry.register Env.pr_registry ~patch_id ~pr_number
-
-    let unregister_pr ~patch_id =
-      Pr_registry.unregister Env.pr_registry ~patch_id
-
-    let pr_state pr_number =
-      match Forge.pr_state pr_number with
-      | Ok pr_state -> Ok pr_state
-      | Error err -> Error (Forge.show_error err)
-  end
-
-  module Tui_fibers = Onton.Tui_fiber.Make (Env_tui)
-
-  let poller_fiber startup_reconciler = Poller.run startup_reconciler
+  module Persistence =
+    Persistence_fiber.Make (Forge) (W)
+      (struct
+        let runtime = Env.runtime
+        let clock = Env.clock
+        let project_name = Env.project_name
+        let transcripts = Env.transcripts
+      end)
 end
 
 (** {1 Main entry point} *)
@@ -360,22 +299,23 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
         ~main_branch:(Branch.to_string main_branch)
         ~poll_interval ~repo_root ~max_concurrency;
       let config =
-        {
-          project = Some project_name;
-          backend;
-          model;
-          github_token = token;
-          github_owner = owner;
-          github_repo = repo;
-          main_branch;
-          poll_interval;
-          repo_root;
-          max_concurrency;
-          headless;
-          patch_agent_provider;
-          patch_agent_effort;
-          user_config = User_config.load ~github_owner:owner ~github_repo:repo;
-        }
+        Resolved_config.
+          {
+            project = Some project_name;
+            backend;
+            model;
+            github_token = token;
+            github_owner = owner;
+            github_repo = repo;
+            main_branch;
+            poll_interval;
+            repo_root;
+            max_concurrency;
+            headless;
+            patch_agent_provider;
+            patch_agent_effort;
+            user_config = User_config.load ~github_owner:owner ~github_repo:repo;
+          }
       in
       with_snapshot_load ~project_name config gameplan
   | _, Some gp_path -> (
@@ -449,23 +389,24 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                   Project_store.save_gameplan_source ~project_name
                     ~source_path:gp_path;
                   let config =
-                    {
-                      project = Some project_name;
-                      backend;
-                      model;
-                      github_token = token;
-                      github_owner = owner;
-                      github_repo = repo;
-                      main_branch;
-                      poll_interval;
-                      repo_root;
-                      max_concurrency;
-                      headless;
-                      patch_agent_provider;
-                      patch_agent_effort;
-                      user_config =
-                        User_config.load ~github_owner:owner ~github_repo:repo;
-                    }
+                    Resolved_config.
+                      {
+                        project = Some project_name;
+                        backend;
+                        model;
+                        github_token = token;
+                        github_owner = owner;
+                        github_repo = repo;
+                        main_branch;
+                        poll_interval;
+                        repo_root;
+                        max_concurrency;
+                        headless;
+                        patch_agent_provider;
+                        patch_agent_effort;
+                        user_config =
+                          User_config.load ~github_owner:owner ~github_repo:repo;
+                      }
                   in
                   with_snapshot_load ~project_name config gameplan)))
   | Some proj, None -> (
@@ -584,368 +525,431 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                     ~poll_interval:stored.Project_store.poll_interval ~repo_root
                     ~max_concurrency:stored.Project_store.max_concurrency;
                   let config =
-                    {
-                      project = Some proj;
-                      backend;
-                      model;
-                      github_token = token;
-                      github_owner = owner;
-                      github_repo = repo;
-                      main_branch = branch;
-                      poll_interval = stored.Project_store.poll_interval;
-                      repo_root;
-                      max_concurrency = stored.Project_store.max_concurrency;
-                      headless;
-                      patch_agent_provider;
-                      patch_agent_effort;
-                      user_config =
-                        User_config.load ~github_owner:owner ~github_repo:repo;
-                    }
+                    Resolved_config.
+                      {
+                        project = Some proj;
+                        backend;
+                        model;
+                        github_token = token;
+                        github_owner = owner;
+                        github_repo = repo;
+                        main_branch = branch;
+                        poll_interval = stored.Project_store.poll_interval;
+                        repo_root;
+                        max_concurrency = stored.Project_store.max_concurrency;
+                        headless;
+                        patch_agent_provider;
+                        patch_agent_effort;
+                        user_config =
+                          User_config.load ~github_owner:owner ~github_repo:repo;
+                      }
                   in
                   with_snapshot_load ~project_name:proj config gameplan))
 
-let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
-  let project_name =
-    match config.project with Some p -> p | None -> assert false
-  in
-  match
-    validate_resolved_config ~backend:config.backend
-      ~github_token:config.github_token ~github_owner:config.github_owner
-      ~github_repo:config.github_repo ~main_branch:config.main_branch
-      ~poll_interval:config.poll_interval
-      ~max_concurrency:config.max_concurrency
-      ~patch_agent_provider:config.patch_agent_provider
-      ~patch_agent_effort:config.patch_agent_effort
-  with
+let ok_or_exit = function
+  | Ok x -> x
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
-  | Ok () ->
-      Git_env.set_github_token config.github_token;
-      let module Repo = (val Repo_git.make ~repo_root:config.repo_root) in
-      (match Repo.validate_branch_resolves ~main_branch:config.main_branch with
-      | Ok () -> ()
-      | Error msg ->
-          Printf.eprintf "Error: %s\n" msg;
-          Stdlib.exit 1);
-      (* Preflight: ensure RLIMIT_NOFILE is high enough for [max_concurrency]
-         long-lived backend subprocesses (each holding 3 pipes = 6 FDs),
-         parallel git subprocesses, HTTPS connections, the activity log,
-         snapshot files, and the project lock. Budget 256 FDs/slot plus 512
-         headroom. Auto-raise the soft limit to the hard cap silently; fail
-         fast with an actionable [ulimit -n] message only if the effective
-         limit is still insufficient. See issue #209. *)
-      let () =
-        let open Onton.Rlimit in
-        let required = (config.max_concurrency * 256) + 512 in
-        let cur = get_nofile () in
-        if cur.soft < required then begin
-          let after = try_raise_nofile_soft ~target:required in
-          if after.soft < required then begin
-            Printf.eprintf
-              "onton: soft FD limit %d is below the required %d (hard cap %d).\n\
-              \       Raise it with: ulimit -n %d\n\
-              \       macOS system ceiling: sudo launchctl limit maxfiles \
-               <soft> <hard>.\n\
-               %!"
-              after.soft required after.hard required;
-            Stdlib.exit 1
-          end
-        end
-      in
-      let lock =
-        if no_lock then None
-        else
-          let project_dir = Project_store.project_dir project_name in
-          match
-            Project_lock.acquire ~project_dir ~on_stale:(fun stale_pid ->
-                if stale_pid > 0 then
-                  Printf.eprintf "onton: reclaiming stale lock from pid %d\n%!"
-                    stale_pid)
-          with
-          | Ok l -> Some l
-          | Error e ->
-              Printf.eprintf "onton: %s\n"
-                (Format.asprintf "%a" Project_lock.pp_error e);
-              Printf.eprintf
-                "       pass --no-lock (or set ONTON_NO_LOCK=1) to bypass.\n%!";
-              (* 75 = EX_TEMPFAIL from sysexits(3): transient, try again. *)
-              Stdlib.exit 75
-      in
-      Stdlib.Fun.protect ~finally:(fun () ->
-          Base.Option.iter lock ~f:Project_lock.release)
-      @@ fun () ->
-      Eio_main.run @@ fun env ->
-      if config.headless then
-        Sys.set_signal Sys.sigint
-          (Sys.Signal_handle
-             (fun _ ->
-               Printf.eprintf "\nInterrupted.\n%!";
-               (try Unix.kill 0 Sys.sigterm with Unix.Unix_error _ -> ());
-               Stdlib.exit 130));
-      let runtime =
-        match existing_snapshot with
-        | Some snap ->
-            Printf.eprintf "Resuming project %S from saved state.\n%!"
-              project_name;
-            Runtime.create ~gameplan ~main_branch:config.main_branch
-              ~snapshot:snap ()
-        | None ->
-            Printf.eprintf "Starting new project %S.\n%!" project_name;
-            Runtime.create ~gameplan ~main_branch:config.main_branch ()
-      in
-      Unix.putenv "ONTON_SNAPSHOT_PATH"
-        (Project_store.snapshot_path project_name);
-      let net = Eio.Stdenv.net env in
-      let clock = Eio.Stdenv.clock env in
-      let forge =
-        Github.make ~net ~clock ~token:config.github_token
-          ~owner:config.github_owner ~repo:config.github_repo
-      in
-      let module Forge = (val forge) in
-      let process_mgr = Eio.Stdenv.process_mgr env in
-      let worktree_client =
-        Worktree.make ~process_mgr ~repo_root:config.repo_root
-      in
-      let module WorktreeClient = (val worktree_client) in
-      (match Forge.check_repo_access () with
-      | Ok () -> ()
-      | Error err ->
-          Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
-            config.github_owner config.github_repo (Github.show_error err);
-          Stdlib.exit 1);
-      let module Reconciler = Startup_reconciler.Make (Forge) (WorktreeClient)
-      in
-      let pr_registry = Pr_registry.create () in
-      (* Seed registry from any agents that already have a PR number — covers
-         both gameplan patches restored from a snapshot and ad-hoc agents. The
-         reconciliation fiber and poller will overwrite/extend this as needed. *)
-      Runtime.read runtime (fun snap ->
-          Orchestrator.all_agents snap.Runtime.orchestrator)
-      |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
+
+type runtime_setup = {
+  config : Resolved_config.t;
+  gameplan : Gameplan.t;
+  runtime : Runtime.t;
+  clock : float Eio.Time.clock_ty Eio.Time.clock;
+  fs : Eio.Fs.dir_ty Eio.Path.t;
+  process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t;
+  stdout : Eio_unix.sink_ty Eio.Resource.t;
+}
+
+type constructed_capabilities = {
+  forge : (module Onton.Forge.S with type error = Github.error);
+  worktree_client : (module Worktree.S);
+  startup_reconciler : (module STARTUP_RECONCILER);
+  branch_of : Patch_id.t -> Branch.t;
+  pick_backend :
+    complexity:int option -> Backend_registry.kind * Backend_routing.decision;
+  resolve_routing : complexity:int option -> Backend_routing.decision;
+  backend_name : string;
+  find_pr_number : patch_id:Patch_id.t -> Pr_number.t option;
+  register_pr_number : patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit;
+  unregister_pr_number : patch_id:Patch_id.t -> unit;
+  findings_registry : Findings_registry.t;
+  review_clients :
+    (module Review_service_client.S
+       with type error = Review_service_client.error)
+    list;
+  transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t;
+  event_log : Event_log.t;
+  worktree_mutex : Eio.Mutex.t;
+  hook_mutex : Eio.Mutex.t;
+  reconciliation_fiber : unit -> unit;
+}
+
+type built_fiber_env = (module FIBER_ENV)
+
+let setup_runtime env ~config ~gameplan ~existing_snapshot =
+  let { Resolved_config.headless; project_name; main_branch; _ } = config in
+  if headless then
+    Sys.set_signal Sys.sigint
+      (Sys.Signal_handle
+         (fun _ ->
+           Printf.eprintf "\nInterrupted.\n%!";
+           (try Unix.kill 0 Sys.sigterm with Unix.Unix_error _ -> ());
+           Stdlib.exit 130));
+  let runtime =
+    match existing_snapshot with
+    | Some snap ->
+        Printf.eprintf "Resuming project %S from saved state.\n%!" project_name;
+        Runtime.create ~gameplan ~main_branch ~snapshot:snap ()
+    | None ->
+        Printf.eprintf "Starting new project %S.\n%!" project_name;
+        Runtime.create ~gameplan ~main_branch ()
+  in
+  Unix.putenv "ONTON_SNAPSHOT_PATH" (Project_store.snapshot_path project_name);
+  {
+    config;
+    gameplan;
+    runtime;
+    clock = Eio.Stdenv.clock env;
+    fs = Eio.Stdenv.fs env;
+    process_mgr = Eio.Stdenv.process_mgr env;
+    stdout = Eio.Stdenv.stdout env;
+  }
+
+let construct_capabilities ~net (setup : runtime_setup) =
+  let config = setup.config in
+  let {
+    Resolved_config.github_token;
+    github_owner;
+    github_repo;
+    main_branch;
+    repo_root;
+    model;
+    backend;
+    project_name;
+    _;
+  } =
+    config
+  in
+  let forge =
+    Github.make ~net ~clock:setup.clock ~token:github_token ~owner:github_owner
+      ~repo:github_repo
+  in
+  let module Forge = (val forge) in
+  let worktree_client =
+    Worktree.make ~process_mgr:setup.process_mgr ~repo_root
+  in
+  let module WorktreeClient = (val worktree_client) in
+  (match Forge.check_repo_access () with
+  | Ok () -> ()
+  | Error err ->
+      Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n" github_owner
+        github_repo (Github.show_error err);
+      Stdlib.exit 1);
+  let module Reconciler = Startup_reconciler.Make (Forge) (WorktreeClient) in
+  let pr_registry = Pr_registry.create () in
+  Runtime.read setup.runtime (fun snap ->
+      Orchestrator.all_agents snap.Runtime.orchestrator)
+  |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
+      Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
+          Pr_registry.register pr_registry ~patch_id:agent.Patch_agent.patch_id
+            ~pr_number));
+  let branch_of = build_branch_map setup.gameplan ~default:main_branch in
+  let session_timeout = 1800.0 in
+  let setsid_exec =
+    let candidate =
+      match Sys.getenv_opt "ONTON_SETSID_EXEC" with
+      | Some "" -> None
+      | Some p -> Some p
+      | None ->
+          Some
+            (Filename.concat
+               (Filename.dirname Sys.executable_name)
+               "onton-setsid-exec")
+    in
+    match candidate with
+    | Some p when Sys.file_exists p -> Some p
+    | Some p ->
+        Eio.traceln
+          "onton-setsid-exec not found at %s; grandchildren will reparent to \
+           PID 1 on teardown"
+          p;
+        None
+    | None -> None
+  in
+  let cli_model_opt = if Base.String.is_empty model then None else Some model in
+  let repo_config =
+    let config_dir = User_config.config_dir ~github_owner ~github_repo in
+    match Repo_config.load ~config_dir ~known_backends () with
+    | Ok t -> t
+    | Error msg ->
+        Printf.eprintf "Error: %s\n" msg;
+        Stdlib.exit 1
+  in
+  (match
+     Backend_preflight.validate ~default_backend:backend
+       ~cli_model:cli_model_opt ~repo_config ()
+   with
+  | Ok () -> ()
+  | Error errs ->
+      Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
+      Stdlib.exit 1);
+  let registry =
+    Backend_registry.create ~process_mgr:setup.process_mgr ~clock:setup.clock
+      ~timeout:session_timeout ~setsid_exec
+  in
+  let pick_backend ~complexity =
+    let ({ Backend_routing.backend; model } as decision) =
+      Backend_routing.decide ~repo_config ~default_backend:backend
+        ~cli_model:cli_model_opt ~complexity
+    in
+    (Backend_registry.get registry ~backend ~model, decision)
+  in
+  let backend_name = function
+    | Backend_registry.Ephemeral backend -> backend.Llm_backend.name
+    | Backend_registry.Long_lived (Llm_backend_long_lived.T { name; _ }) -> name
+  in
+  let resolve_routing ~complexity : Backend_routing.decision =
+    let dec : Backend_routing.decision =
+      Backend_routing.decide ~repo_config ~default_backend:backend
+        ~cli_model:cli_model_opt ~complexity
+    in
+    {
+      dec with
+      model =
+        Backend_registry.resolve_model ~backend:dec.Backend_routing.backend
+          ~model:dec.Backend_routing.model ~complexity;
+    }
+  in
+  let pre_agents =
+    Runtime.read setup.runtime (fun snap ->
+        Orchestrator.all_agents snap.Runtime.orchestrator)
+  in
+  let pre_worktrees, pre_wt_error =
+    Reconciler.recover_worktrees ~patches:setup.gameplan.Gameplan.patches
+  in
+  let reconciliation_fiber () =
+    let startup =
+      Reconciler.reconcile ~patches:setup.gameplan.Gameplan.patches
+        ~agents:pre_agents ~pre_recovered_worktrees:pre_worktrees ()
+    in
+    let errored_ids =
+      Base.List.map startup.Startup_reconciler.errors ~f:(fun (patch_id, err) ->
+          log_event setup.runtime ~patch_id
+            (Printf.sprintf "Startup discovery failed — %s" err);
+          patch_id)
+      |> Base.Hash_set.of_list (module Patch_id)
+    in
+    Runtime.read setup.runtime (fun snap ->
+        Orchestrator.all_agents snap.Runtime.orchestrator)
+    |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
+        if Base.Hash_set.mem errored_ids agent.Patch_agent.patch_id then
           Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
               Pr_registry.register pr_registry
                 ~patch_id:agent.Patch_agent.patch_id ~pr_number));
-      let branch_of = build_branch_map gameplan ~default:config.main_branch in
-      let session_timeout = 1800.0 in
-      let setsid_exec =
-        let candidate =
-          match Sys.getenv_opt "ONTON_SETSID_EXEC" with
-          | Some "" -> None
-          | Some p -> Some p
-          | None ->
-              Some
-                (Filename.concat
-                   (Filename.dirname Sys.executable_name)
-                   "onton-setsid-exec")
-        in
-        match candidate with
-        | Some p when Sys.file_exists p -> Some p
-        | Some p ->
-            Eio.traceln
-              "onton-setsid-exec not found at %s; grandchildren will reparent \
-               to PID 1 on teardown"
-              p;
-            None
-        | None -> None
-      in
-      let cli_model_opt =
-        if Base.String.is_empty config.model then None else Some config.model
-      in
-      let repo_config =
-        let config_dir =
-          User_config.config_dir ~github_owner:config.github_owner
-            ~github_repo:config.github_repo
-        in
-        match Repo_config.load ~config_dir ~known_backends () with
-        | Ok t -> t
-        | Error msg ->
-            Printf.eprintf "Error: %s\n" msg;
-            Stdlib.exit 1
-      in
-      (match
-         Backend_preflight.validate ~default_backend:config.backend
-           ~cli_model:cli_model_opt ~repo_config ()
-       with
-      | Ok () -> ()
-      | Error errs ->
-          Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
-          Stdlib.exit 1);
-      let registry =
-        Backend_registry.create ~process_mgr ~clock ~timeout:session_timeout
-          ~setsid_exec
-      in
-      (* [pick_backend ~complexity] resolves a per-patch (backend, model)
-         tuple via the pure [Backend_routing.decide] and looks it up in the
-         registry. Calling with [~complexity:None] yields the run's default
-         backend (used for ad-hoc sessions and for the TUI display name). *)
-      let pick_backend ~complexity =
-        let ({ Backend_routing.backend; model } as decision) =
-          Backend_routing.decide ~repo_config ~default_backend:config.backend
-            ~cli_model:cli_model_opt ~complexity
-        in
-        (Backend_registry.get registry ~backend ~model, decision)
-      in
-      let default_backend = pick_backend ~complexity:None in
-      let backend_name = function
-        | Backend_registry.Ephemeral backend -> backend.Llm_backend.name
-        | Backend_registry.Long_lived (Llm_backend_long_lived.T { name; _ }) ->
-            name
-      in
-      (* Display-side counterpart to [pick_backend]: returns the routing
-         decision with the [auto] sentinel resolved to the concrete model
-         name, so the TUI shows what will actually run. *)
-      let resolve_routing ~complexity : Backend_routing.decision =
-        let dec : Backend_routing.decision =
-          Backend_routing.decide ~repo_config ~default_backend:config.backend
-            ~cli_model:cli_model_opt ~complexity
-        in
-        {
-          dec with
-          model =
-            Backend_registry.resolve_model ~backend:dec.Backend_routing.backend
-              ~model:dec.Backend_routing.model ~complexity;
-        }
-      in
-      let stdout = Eio.Stdenv.stdout env in
-      (* Capture agent state and worktree list BEFORE launching concurrent
-         fibers, so the reconciler sees the pre-session state rather than racing
-         with the runner which creates worktrees and sets agents busy. *)
-      let pre_agents =
-        Runtime.read runtime (fun snap ->
-            Orchestrator.all_agents snap.Runtime.orchestrator)
-      in
-      let pre_worktrees, pre_wt_error =
-        Reconciler.recover_worktrees ~patches:gameplan.Gameplan.patches
-      in
-      let reconciliation_fiber () =
-        let startup =
-          Reconciler.reconcile ~patches:gameplan.Gameplan.patches
-            ~agents:pre_agents ~pre_recovered_worktrees:pre_worktrees ()
-        in
-        let errored_ids =
-          Base.List.map startup.Startup_reconciler.errors
-            ~f:(fun (patch_id, err) ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "Startup discovery failed — %s" err);
-              patch_id)
-          |> Base.Hash_set.of_list (module Patch_id)
-        in
-        (* For errored patches, preserve any PR numbers from the persisted snapshot *)
-        Runtime.read runtime (fun snap ->
-            Orchestrator.all_agents snap.Runtime.orchestrator)
-        |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
-            if Base.Hash_set.mem errored_ids agent.Patch_agent.patch_id then
-              Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
-                  Pr_registry.register pr_registry
-                    ~patch_id:agent.Patch_agent.patch_id ~pr_number));
-        let open Startup_reconciler in
-        Base.List.iter startup.discovered
-          ~f:(fun
-              { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
-            Runtime.update_orchestrator runtime (fun orch ->
-                match Orchestrator.find_agent orch pid with
-                | Some agent when Patch_agent.has_pr agent ->
-                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                    if merged then Orchestrator.mark_merged orch pid else orch
-                | Some _ ->
-                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                    let orch =
-                      Orchestrator.fire orch (Orchestrator.Start (pid, base))
-                    in
-                    let orch = Orchestrator.set_pr_number orch pid pr in
-                    let orch = Orchestrator.complete orch pid in
-                    if merged then Orchestrator.mark_merged orch pid else orch
-                | None -> orch));
-        Base.List.iter startup.reset_pending ~f:(fun patch_id ->
-            log_event runtime ~patch_id
-              "Reset stale busy agent from crashed session";
-            Runtime.update_orchestrator runtime (fun orch ->
-                Orchestrator.reset_busy orch patch_id));
-        Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
-            log_event runtime ~patch_id:wr.worktree_patch_id
-              (Printf.sprintf "Recovered worktree at %s" wr.worktree_path));
-        Base.List.iter
-          (startup.worktree_errors @ Base.Option.to_list pre_wt_error)
-          ~f:(fun err ->
-            log_event runtime (Printf.sprintf "Startup worktree error — %s" err))
-      in
-      let transcripts =
-        let t = Hashtbl.create 16 in
-        Runtime.read runtime (fun snap ->
-            Base.Hashtbl.iteri snap.Runtime.transcripts ~f:(fun ~key ~data ->
-                Hashtbl.replace t key data));
-        t
-      in
-      let event_log =
-        Event_log.create ~path:(Project_store.event_log_path project_name)
-      in
-      Telemetry_dispatch.register_sink (Event_log.sink event_log);
-      Telemetry_dispatch.register_sink
-        (Activity_log_sink.sink
-           ~update:(Runtime.update_activity_log runtime)
-           ());
-      let review_clients =
-        Base.List.map repo_config.Repo_config.review_backends ~f:(fun backend ->
-            Review_service_client.make ~net ~clock ~backend)
-      in
-      let findings_registry = Findings_registry.create () in
-      let worktree_mutex = Eio.Mutex.create () in
-      let hook_mutex = Eio.Mutex.create () in
-      let module Fiber_env : FIBER_ENV = struct
-        let runtime = runtime
-        let clock = clock
-        let fs = Eio.Stdenv.fs env
-        let process_mgr = process_mgr
-        let config = config
-        let project_name = project_name
-        let pr_registry = pr_registry
-        let findings_registry = findings_registry
-        let review_clients = review_clients
-        let transcripts = transcripts
-        let event_log = event_log
-        let branch_of = branch_of
-        let pick_backend = pick_backend
-        let resolve_routing = resolve_routing
-        let backend_name = backend_name (fst default_backend)
-        let worktree_mutex = worktree_mutex
-        let hook_mutex = hook_mutex
-      end in
-      let module Fibers = Make_fibers (Forge) (WorktreeClient) (Fiber_env) in
-      let open Fibers in
-      let common_fibers =
-        [
-          reconciliation_fiber;
-          (fun () -> poller_fiber (module Reconciler : STARTUP_RECONCILER));
-          (fun () -> Persistence_fiber_runner.run ~transcripts ());
-        ]
-      in
-      if config.headless then
-        Eio.Fiber.all
-          (Headless.run ~stdout :: (fun () -> Runner.run ()) :: common_fibers)
-      else
-        let tui_state = Tui_state.create () in
-        let raw_state = Term.Raw.enter () in
-        Fun.protect
-          ~finally:(fun () ->
-            Term.Raw.clear_suspend_handlers ();
-            Term.Raw.leave raw_state;
-            Eio.Flow.copy_string (Tui.exit_tui ()) stdout;
-            let snap = Runtime.snapshot_unsync runtime in
-            ignore
-              (Persistence.save
-                 ~path:(Project_store.snapshot_path project_name)
-                 snap))
-          (fun () ->
-            Term.Raw.install_suspend_handlers raw_state;
-            try
-              Eio.Fiber.all
-                ((fun () -> Tui_fibers.tui_fiber ~state:tui_state ~stdout ())
-                :: (fun () ->
-                  Tui_fibers.input_fiber ~state:tui_state ~process_mgr ())
-                :: (fun () -> Runner.run ~status_msg:tui_state.status_msg ())
-                :: common_fibers)
-            with Tui_fibers.Quit_tui -> ())
+    let open Startup_reconciler in
+    Base.List.iter startup.discovered
+      ~f:(fun { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
+        Runtime.update_orchestrator setup.runtime (fun orch ->
+            match Orchestrator.find_agent orch pid with
+            | Some agent when Patch_agent.has_pr agent ->
+                Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                if merged then Orchestrator.mark_merged orch pid else orch
+            | Some _ ->
+                Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                let orch =
+                  Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                in
+                let orch = Orchestrator.set_pr_number orch pid pr in
+                let orch = Orchestrator.complete orch pid in
+                if merged then Orchestrator.mark_merged orch pid else orch
+            | None -> orch));
+    Base.List.iter startup.reset_pending ~f:(fun patch_id ->
+        log_event setup.runtime ~patch_id
+          "Reset stale busy agent from crashed session";
+        Runtime.update_orchestrator setup.runtime (fun orch ->
+            Orchestrator.reset_busy orch patch_id));
+    Base.List.iter startup.recovered_worktrees ~f:(fun wr ->
+        log_event setup.runtime ~patch_id:wr.worktree_patch_id
+          (Printf.sprintf "Recovered worktree at %s" wr.worktree_path));
+    Base.List.iter
+      (startup.worktree_errors @ Base.Option.to_list pre_wt_error)
+      ~f:(fun err ->
+        log_event setup.runtime
+          (Printf.sprintf "Startup worktree error — %s" err))
+  in
+  let transcripts =
+    let t = Hashtbl.create 16 in
+    Runtime.read setup.runtime (fun snap ->
+        Base.Hashtbl.iteri snap.Runtime.transcripts ~f:(fun ~key ~data ->
+            Hashtbl.replace t key data));
+    t
+  in
+  let event_log =
+    Event_log.create ~path:(Project_store.event_log_path project_name)
+  in
+  Telemetry_dispatch.register_sink (Event_log.sink event_log);
+  Telemetry_dispatch.register_sink
+    (Activity_log_sink.sink
+       ~update:(Runtime.update_activity_log setup.runtime)
+       ());
+  let review_clients =
+    Base.List.map repo_config.Repo_config.review_backends ~f:(fun backend ->
+        Review_service_client.make ~net ~clock:setup.clock ~backend)
+  in
+  let default_backend_pair = pick_backend ~complexity:None in
+  {
+    forge;
+    worktree_client;
+    startup_reconciler = (module Reconciler : STARTUP_RECONCILER);
+    branch_of;
+    pick_backend;
+    resolve_routing;
+    backend_name = backend_name (fst default_backend_pair);
+    find_pr_number = Pr_registry.find pr_registry;
+    register_pr_number = Pr_registry.register pr_registry;
+    unregister_pr_number = Pr_registry.unregister pr_registry;
+    findings_registry = Findings_registry.create ();
+    review_clients;
+    transcripts;
+    event_log;
+    worktree_mutex = Eio.Mutex.create ();
+    hook_mutex = Eio.Mutex.create ();
+    reconciliation_fiber;
+  }
+
+let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
+    ~(tui_state : Tui_state.t) : built_fiber_env =
+  let module Fiber_env : FIBER_ENV = struct
+    let runtime = setup.runtime
+    let clock = setup.clock
+    let fs = setup.fs
+    let process_mgr = setup.process_mgr
+    let stdout = setup.stdout
+    let config = setup.config
+    let project_name = setup.config.project_name
+    let findings_registry = cap.findings_registry
+    let review_clients = cap.review_clients
+    let transcripts = cap.transcripts
+    let event_log = cap.event_log
+    let branch_of = cap.branch_of
+    let resolve_routing = cap.resolve_routing
+    let backend_name = cap.backend_name
+    let pick_backend = cap.pick_backend
+    let find_pr_number = cap.find_pr_number
+    let register_pr_number = cap.register_pr_number
+    let unregister_pr_number = cap.unregister_pr_number
+    let worktree_mutex = cap.worktree_mutex
+    let hook_mutex = cap.hook_mutex
+    let tui_state = tui_state
+  end in
+  (module Fiber_env : FIBER_ENV)
+
+let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
+    ((module Fiber_env) : built_fiber_env) ~(tui_state : Tui_state.t) =
+  let module Forge = (val cap.forge) in
+  let module WorktreeClient = (val cap.worktree_client) in
+  let module Fibers = Make_fibers (Forge) (WorktreeClient) (Fiber_env) in
+  let { Resolved_config.headless; project_name; _ } = setup.config in
+  let common_fibers =
+    [
+      cap.reconciliation_fiber;
+      (fun () -> Fibers.Poller.run cap.startup_reconciler);
+      (fun () -> Fibers.Persistence.run ());
+    ]
+  in
+  if headless then
+    Eio.Fiber.all
+      ((fun () -> Fibers.Headless.run ())
+      :: (fun () -> Fibers.Runner.run ())
+      :: common_fibers)
+  else
+    let raw_state = Term.Raw.enter () in
+    Fun.protect
+      ~finally:(fun () ->
+        Term.Raw.clear_suspend_handlers ();
+        Term.Raw.leave raw_state;
+        Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
+        let snap = Runtime.snapshot_unsync setup.runtime in
+        ignore
+          (Persistence.save
+             ~path:(Project_store.snapshot_path project_name)
+             snap))
+      (fun () ->
+        Term.Raw.install_suspend_handlers raw_state;
+        try
+          Eio.Fiber.all
+            ((fun () -> Fibers.Tui.run ())
+            :: (fun () -> Fibers.Tui.run_input ())
+            :: (fun () -> Fibers.Runner.run ~status_msg:tui_state.status_msg ())
+            :: common_fibers)
+        with Fibers.Tui.Quit -> ())
+
+let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
+  let resolved = Resolved_config.of_config config |> ok_or_exit in
+  let {
+    Resolved_config.github_token;
+    repo_root;
+    main_branch;
+    max_concurrency;
+    project_name;
+    _;
+  } =
+    resolved
+  in
+  Git_env.set_github_token github_token;
+  let module Repo = (val Repo_git.make ~repo_root) in
+  (match Repo.validate_branch_resolves ~main_branch with
+  | Ok () -> ()
+  | Error msg ->
+      Printf.eprintf "Error: %s\n" msg;
+      Stdlib.exit 1);
+  let () =
+    let open Onton.Rlimit in
+    let required = (max_concurrency * 256) + 512 in
+    let cur = get_nofile () in
+    if cur.soft < required then begin
+      let after = try_raise_nofile_soft ~target:required in
+      if after.soft < required then begin
+        Printf.eprintf
+          "onton: soft FD limit %d is below the required %d (hard cap %d).\n\
+          \       Raise it with: ulimit -n %d\n\
+          \       macOS system ceiling: sudo launchctl limit maxfiles <soft> \
+           <hard>.\n\
+           %!"
+          after.soft required after.hard required;
+        Stdlib.exit 1
+      end
+    end
+  in
+  let lock =
+    if no_lock then None
+    else
+      let project_dir = Project_store.project_dir project_name in
+      match
+        Project_lock.acquire ~project_dir ~on_stale:(fun stale_pid ->
+            if stale_pid > 0 then
+              Printf.eprintf "onton: reclaiming stale lock from pid %d\n%!"
+                stale_pid)
+      with
+      | Ok l -> Some l
+      | Error e ->
+          Printf.eprintf "onton: %s\n"
+            (Format.asprintf "%a" Project_lock.pp_error e);
+          Printf.eprintf
+            "       pass --no-lock (or set ONTON_NO_LOCK=1) to bypass.\n%!";
+          Stdlib.exit 75
+  in
+  Stdlib.Fun.protect ~finally:(fun () ->
+      Base.Option.iter lock ~f:Project_lock.release)
+  @@ fun () ->
+  Eio_main.run @@ fun env ->
+  let setup = setup_runtime env ~config:resolved ~gameplan ~existing_snapshot in
+  let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
+  let tui_state = Tui_state.create () in
+  let fiber_env = build_fiber_env setup capabilities ~tui_state in
+  run_main_loop setup capabilities fiber_env ~tui_state
 
 (** {1 Prune}
 

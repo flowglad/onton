@@ -1,125 +1,129 @@
 open Base
 open Types
 
+let log_event runtime ?patch_id msg =
+  Runtime_logging.log_event runtime ?patch_id msg
+
+let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
+    ~(map_event : Activity_log.Event.t -> 'a)
+    ~(map_transition : Activity_log.Transition_entry.t -> 'a)
+    ~(map_stream : Activity_log.Stream_entry.t -> 'a) =
+  let events =
+    List.map (Activity_log.recent_events log ~limit) ~f:(fun e ->
+        (e.Activity_log.Event.timestamp, map_event e))
+  in
+  let transitions =
+    List.map (Activity_log.recent_transitions log ~limit) ~f:(fun t ->
+        (t.Activity_log.Transition_entry.timestamp, map_transition t))
+  in
+  let stream =
+    List.map (Activity_log.recent_stream_entries log ~limit) ~f:(fun s ->
+        (s.Activity_log.Stream_entry.timestamp, map_stream s))
+  in
+  List.sort (events @ transitions @ stream) ~compare
+
+let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
+  match kind with
+  | Activity_log.Stream_entry.Tool_use (name, input) ->
+      if String.length input > 0 then Printf.sprintf "Tool %s — %s" name input
+      else Printf.sprintf "Tool %s" name
+  | Activity_log.Stream_entry.Text_chunk text -> text
+  | Activity_log.Stream_entry.Finished reason ->
+      Printf.sprintf "Finished — %s" reason
+  | Activity_log.Stream_entry.Stream_error msg ->
+      Printf.sprintf "Stream error — %s" msg
+
+let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
+  merged_log_entries ~log ~limit
+    ~compare:(fun (t1, _) (t2, _) -> Float.descending t1 t2)
+    ~map_event:(fun (e : Activity_log.Event.t) ->
+      Tui.Event
+        {
+          patch_id =
+            Option.map e.Activity_log.Event.patch_id ~f:Patch_id.to_string;
+          message = e.Activity_log.Event.message;
+          timestamp = e.Activity_log.Event.timestamp;
+        })
+    ~map_transition:(fun (t : Activity_log.Transition_entry.t) ->
+      Tui.Transition
+        {
+          patch_id = Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
+          from_label = Tui.label t.Activity_log.Transition_entry.from_status;
+          to_status = t.Activity_log.Transition_entry.to_status;
+          to_label = Tui.label t.Activity_log.Transition_entry.to_status;
+          action = t.Activity_log.Transition_entry.action;
+          timestamp = t.Activity_log.Transition_entry.timestamp;
+        })
+    ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
+      Tui.Event
+        {
+          patch_id =
+            Some (Patch_id.to_string s.Activity_log.Stream_entry.patch_id);
+          message = format_stream_kind s.Activity_log.Stream_entry.kind;
+          timestamp = s.Activity_log.Stream_entry.timestamp;
+        })
+  |> List.map ~f:snd
+
+let pluralize ?plural n singular =
+  let many = match plural with Some p -> p | None -> singular ^ "s" in
+  Printf.sprintf "%d %s" n (if n = 1 then singular else many)
+
+let intervention_reasons_of_log (log : Activity_log.t)
+    ~(orchestrator : Orchestrator.t) =
+  let agents = Orchestrator.all_agents orchestrator in
+  let needs =
+    List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
+        if Patch_agent.needs_intervention a || a.Patch_agent.branch_blocked then
+          Some a.Patch_agent.patch_id
+        else None)
+    |> Hash_set.of_list (module Patch_id)
+  in
+  if Hash_set.is_empty needs then Map.Poly.empty
+  else
+    let events = Activity_log.recent_events log ~limit:1000 in
+    List.fold events ~init:Map.Poly.empty ~f:(fun acc e ->
+        match e.Activity_log.Event.patch_id with
+        | Some pid when Hash_set.mem needs pid ->
+            if Map.Poly.mem acc pid then acc
+            else Map.Poly.set acc ~key:pid ~data:e.Activity_log.Event.message
+        | _ -> acc)
+
+let normalize_paste text =
+  let text =
+    String.rstrip text ~drop:(fun c -> Char.equal c '\n' || Char.equal c '\r')
+  in
+  let text = String.tr text ~target:'\n' ~replacement:' ' in
+  String.tr text ~target:'\r' ~replacement:' '
+
 module Tui_env = struct
   module type S = sig
-    val runtime : Runtime.t
-    val clock : float Eio.Time.clock_ty Eio.Time.clock
-    val project_name : string
-    val github_owner : string
-    val github_repo : string
-    val backend_name : string
+    include Run_env.S
+
+    val process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t
+    val stdout : Eio_unix.sink_ty Eio.Resource.t
+    val owner : string
+    val repo : string
     val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
+    val tui_state : Tui_state.t
+    val backend_name : string
     val resolve_routing : complexity:int option -> Backend_routing.decision
     val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
-    val register_pr : patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
-    val unregister_pr : patch_id:Patch_id.t -> unit
-    val pr_state : Pr_number.t -> (Pr_state.t, string) Result.t
+
+    val register_pr_number :
+      patch_id:Patch_id.t -> pr_number:Pr_number.t -> unit
+
+    val unregister_pr_number : patch_id:Patch_id.t -> unit
   end
 end
 
-module Make (Env : Tui_env.S) = struct
-  exception Quit_tui
+module Make
+    (Forge : Forge.S with type error = Github.error)
+    (_ : Worktree.S)
+    (Env : Tui_env.S) =
+struct
+  exception Quit
 
-  let log_event = Runtime_logging.log_event
-
-  let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
-      ~(map_event : Activity_log.Event.t -> 'a)
-      ~(map_transition : Activity_log.Transition_entry.t -> 'a)
-      ~(map_stream : Activity_log.Stream_entry.t -> 'a) =
-    let events =
-      List.map (Activity_log.recent_events log ~limit) ~f:(fun e ->
-          (e.Activity_log.Event.timestamp, map_event e))
-    in
-    let transitions =
-      List.map (Activity_log.recent_transitions log ~limit) ~f:(fun t ->
-          (t.Activity_log.Transition_entry.timestamp, map_transition t))
-    in
-    let stream =
-      List.map (Activity_log.recent_stream_entries log ~limit) ~f:(fun s ->
-          (s.Activity_log.Stream_entry.timestamp, map_stream s))
-    in
-    List.sort (events @ transitions @ stream) ~compare
-
-  let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
-    match kind with
-    | Activity_log.Stream_entry.Tool_use (name, input) ->
-        if String.length input > 0 then Printf.sprintf "Tool %s — %s" name input
-        else Printf.sprintf "Tool %s" name
-    | Activity_log.Stream_entry.Text_chunk text -> text
-    | Activity_log.Stream_entry.Finished reason ->
-        Printf.sprintf "Finished — %s" reason
-    | Activity_log.Stream_entry.Stream_error msg ->
-        Printf.sprintf "Stream error — %s" msg
-
-  let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
-    merged_log_entries ~log ~limit
-      ~compare:(fun (t1, _) (t2, _) -> Float.descending t1 t2)
-      ~map_event:(fun (e : Activity_log.Event.t) ->
-        Tui.Event
-          {
-            patch_id =
-              Option.map e.Activity_log.Event.patch_id ~f:Patch_id.to_string;
-            message = e.Activity_log.Event.message;
-            timestamp = e.Activity_log.Event.timestamp;
-          })
-      ~map_transition:(fun (t : Activity_log.Transition_entry.t) ->
-        Tui.Transition
-          {
-            patch_id =
-              Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
-            from_label = Tui.label t.Activity_log.Transition_entry.from_status;
-            to_status = t.Activity_log.Transition_entry.to_status;
-            to_label = Tui.label t.Activity_log.Transition_entry.to_status;
-            action = t.Activity_log.Transition_entry.action;
-            timestamp = t.Activity_log.Transition_entry.timestamp;
-          })
-      ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
-        Tui.Event
-          {
-            patch_id =
-              Some (Patch_id.to_string s.Activity_log.Stream_entry.patch_id);
-            message = format_stream_kind s.Activity_log.Stream_entry.kind;
-            timestamp = s.Activity_log.Stream_entry.timestamp;
-          })
-    |> List.map ~f:snd
-
-  let intervention_reasons_of_log (log : Activity_log.t)
-      ~(orchestrator : Orchestrator.t) =
-    let agents = Orchestrator.all_agents orchestrator in
-    let needs =
-      List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-          if Patch_agent.needs_intervention a || a.Patch_agent.branch_blocked
-          then Some a.Patch_agent.patch_id
-          else None)
-      |> Hash_set.of_list (module Patch_id)
-    in
-    if Hash_set.is_empty needs then Map.Poly.empty
-    else
-      let events = Activity_log.recent_events log ~limit:1000 in
-      List.fold events ~init:Map.Poly.empty ~f:(fun acc e ->
-          match e.Activity_log.Event.patch_id with
-          | Some pid when Hash_set.mem needs pid ->
-              if Map.Poly.mem acc pid then acc
-              else Map.Poly.set acc ~key:pid ~data:e.Activity_log.Event.message
-          | _ -> acc)
-
-  let normalize_paste text =
-    let text =
-      Base.String.rstrip text ~drop:(fun c ->
-          Char.equal c '\n' || Char.equal c '\r')
-    in
-    let text = Base.String.tr text ~target:'\n' ~replacement:' ' in
-    Base.String.tr text ~target:'\r' ~replacement:' '
-
-  let pluralize ?plural n singular =
-    let many = match plural with Some p -> p | None -> singular ^ "s" in
-    Printf.sprintf "%d %s" n (if n = 1 then singular else many)
-
-  let tui_fiber ~state ~stdout () =
-    let runtime = Env.runtime in
-    let clock = Env.clock in
-    let transcripts = Env.transcripts in
+  let run () =
     let {
       Tui_state.list_selected;
       detail_scroll;
@@ -134,19 +138,19 @@ module Make (Env : Tui_env.S) = struct
       patches_start_row;
       patches_scroll_offset;
       patches_visible_count;
-      detail_scrolls = _;
+      _;
     } =
-      state
+      Env.tui_state
     in
-    Eio.Flow.copy_string (Tui.enter_tui ()) stdout;
+    Eio.Flow.copy_string (Tui.enter_tui ()) Env.stdout;
     let first = ref true in
     let prev_output = ref "" in
     let rec loop () =
       if !first then first := false
       else if Atomic.exchange Term.Raw.redraw_needed false then ()
-      else Eio.Time.sleep clock 0.1;
+      else Eio.Time.sleep Env.clock 0.1;
       let orch, gp, log =
-        Runtime.read runtime (fun snap ->
+        Runtime.read Env.runtime (fun snap ->
             ( snap.Runtime.orchestrator,
               snap.Runtime.gameplan,
               snap.Runtime.activity_log ))
@@ -156,8 +160,7 @@ module Make (Env : Tui_env.S) = struct
       let height = match size with Some s -> s.Term.rows | None -> 24 in
       let limit =
         match !view_mode with
-        | Tui.Timeline_view -> 100
-        | Tui.Detail_view _ -> 100
+        | Tui.Timeline_view | Tui.Detail_view _ -> 100
         | Tui.List_view -> 10
       in
       let activity = activity_entries_of_log ~limit log in
@@ -172,13 +175,13 @@ module Make (Env : Tui_env.S) = struct
         List.map views ~f:(fun (pv : Tui.patch_view) -> pv.Tui.patch_id);
       let transcript =
         match !view_mode with
-        | Tui.Detail_view pid -> (
-            match Stdlib.Hashtbl.find_opt transcripts pid with
-            | Some t -> t
-            | None -> "")
+        | Tui.Detail_view pid ->
+            Option.value
+              (Stdlib.Hashtbl.find_opt Env.transcripts pid)
+              ~default:""
         | Tui.List_view | Tui.Timeline_view -> ""
       in
-      let now = Eio.Time.now clock in
+      let now = Unix.gettimeofday () in
       (match !status_msg with
       | Some msg when Tui.msg_expired ~now msg -> status_msg := None
       | Some _ | None -> ());
@@ -191,7 +194,7 @@ module Make (Env : Tui_env.S) = struct
       in
       let frame =
         Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
-          ~view_mode:!view_mode ~activity ~project_name:gp.Gameplan.project_name
+          ~view_mode:!view_mode ~activity ~project_name:Env.project_name
           ~backend_name:Env.backend_name ~show_help:!show_help
           ~show_manage:
             (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
@@ -205,17 +208,13 @@ module Make (Env : Tui_env.S) = struct
       patches_visible_count := Tui.patch_count frame;
       let output = Tui.paint_frame frame in
       if not (String.equal output !prev_output) then (
-        Eio.Flow.copy_string output stdout;
+        Eio.Flow.copy_string output Env.stdout;
         prev_output := output);
       loop ()
     in
     loop ()
 
-  let input_fiber ~state ~process_mgr () =
-    let runtime = Env.runtime in
-    let project_name = Env.project_name in
-    let owner = Env.github_owner in
-    let repo = Env.github_repo in
+  let run_input () =
     let {
       Tui_state.list_selected;
       detail_scroll;
@@ -232,7 +231,7 @@ module Make (Env : Tui_env.S) = struct
       patches_scroll_offset;
       patches_visible_count;
     } =
-      state
+      Env.tui_state
     in
     let buf = Tui_input.Edit_buffer.create () in
     let selected_pid () =
@@ -241,7 +240,7 @@ module Make (Env : Tui_env.S) = struct
       if count = 0 || !list_selected < 0 then None
       else
         let idx = Int.max 0 (Int.min !list_selected (count - 1)) in
-        Some (List.nth_exn pids idx)
+        List.nth pids idx
     in
     let sync_input () =
       match !input_mode with
@@ -253,8 +252,8 @@ module Make (Env : Tui_env.S) = struct
           let cursor_col =
             Term.visible_length prefix
             + Term.visible_length
-                (Stdlib.String.sub contents 0
-                   (Tui_input.Edit_buffer.cursor buf))
+                (String.sub contents ~pos:0
+                   ~len:(Tui_input.Edit_buffer.cursor buf))
           in
           prompt_line :=
             Some { Tui.prompt_text = prefix ^ contents; cursor_col };
@@ -271,7 +270,7 @@ module Make (Env : Tui_env.S) = struct
       | None ->
           eof_count := !eof_count + 1;
           if !eof_count >= 10 then
-            log_event runtime
+            log_event Env.runtime
               "Stdin closed — input fiber giving up after 10 consecutive EOFs"
           else (
             Eio.Fiber.yield ();
@@ -296,7 +295,7 @@ module Make (Env : Tui_env.S) = struct
                 match target_patch_id with
                 | Some patch_id ->
                     let busy, has_pr =
-                      Runtime.read runtime (fun snap ->
+                      Runtime.read Env.runtime (fun snap ->
                           let agent =
                             Orchestrator.agent snap.Runtime.orchestrator
                               patch_id
@@ -304,15 +303,15 @@ module Make (Env : Tui_env.S) = struct
                           (agent.Patch_agent.busy, Patch_agent.has_pr agent))
                     in
                     if busy then
-                      log_event runtime ~patch_id
+                      log_event Env.runtime ~patch_id
                         "Cannot force-mark as merged — patch is currently busy"
                     else if not has_pr then
-                      log_event runtime ~patch_id
+                      log_event Env.runtime ~patch_id
                         "Cannot force-mark as merged — patch has no PR"
                     else (
-                      Runtime.update_orchestrator runtime (fun orch ->
+                      Runtime.update_orchestrator Env.runtime (fun orch ->
                           Orchestrator.mark_merged orch patch_id);
-                      log_event runtime ~patch_id "Force-marked as merged")
+                      log_event Env.runtime ~patch_id "Force-marked as merged")
                 | None -> ())
             | Term.Key.Char 'a' -> (
                 input_mode := Tui_input.Normal;
@@ -324,8 +323,9 @@ module Make (Env : Tui_env.S) = struct
                 in
                 match target_patch_id with
                 | Some patch_id -> (
-                    let enabled_after =
-                      Runtime.update_orchestrator_returning runtime (fun orch ->
+                    match
+                      Runtime.update_orchestrator_returning Env.runtime
+                        (fun orch ->
                           match Orchestrator.find_agent orch patch_id with
                           | None -> (orch, None)
                           | Some agent ->
@@ -335,12 +335,11 @@ module Make (Env : Tui_env.S) = struct
                                   v
                               in
                               (orch, Some v))
-                    in
-                    match enabled_after with
+                    with
                     | Some true ->
-                        log_event runtime ~patch_id "Automerge enabled"
+                        log_event Env.runtime ~patch_id "Automerge enabled"
                     | Some false ->
-                        log_event runtime ~patch_id "Automerge disabled"
+                        log_event Env.runtime ~patch_id "Automerge disabled"
                     | None -> ())
                 | None -> ())
             | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
@@ -370,42 +369,42 @@ module Make (Env : Tui_env.S) = struct
                 Tui_input.Edit_buffer.clear buf;
                 saved_draft := "";
                 input_mode := Tui_input.Normal;
-                let line = Base.String.strip line in
+                let line = String.strip line in
                 (match mode with
                 | Tui_input.Prompt_message -> (
-                    if not (Base.String.is_empty line) then
+                    if not (String.is_empty line) then
                       match !view_mode with
                       | Tui.Detail_view patch_id ->
                           let patch_exists =
-                            Runtime.read runtime (fun snap ->
-                                Base.Map.mem
+                            Runtime.read Env.runtime (fun snap ->
+                                Map.mem
                                   (Orchestrator.agents_map
                                      snap.Runtime.orchestrator)
                                   patch_id)
                           in
                           if patch_exists then (
-                            Runtime.update_orchestrator runtime (fun orch ->
+                            Runtime.update_orchestrator Env.runtime (fun orch ->
                                 Orchestrator.send_human_message orch patch_id
                                   line);
-                            log_event runtime ~patch_id
+                            log_event Env.runtime ~patch_id
                               (Printf.sprintf "Sent human message — %s" line))
                           else
-                            log_event runtime
+                            log_event Env.runtime
                               (Printf.sprintf
                                  "Cannot send human message — unknown patch %s"
                                  (Patch_id.to_string patch_id))
                       | Tui.List_view | Tui.Timeline_view -> ())
                 | Tui_input.Prompt_broadcast ->
-                    if not (Base.String.is_empty line) then begin
+                    if not (String.is_empty line) then begin
                       let views =
-                        Runtime.read runtime (fun snap ->
+                        Runtime.read Env.runtime (fun snap ->
                             Tui.views_of_orchestrator
                               ~orchestrator:snap.Runtime.orchestrator
                               ~gameplan:snap.Runtime.gameplan ~activity:[]
                               ~resolve_routing:Env.resolve_routing ())
                       in
                       let active =
-                        Base.List.filter views ~f:(fun (pv : Tui.patch_view) ->
+                        List.filter views ~f:(fun (pv : Tui.patch_view) ->
                             (not
                                (Tui.equal_display_status pv.Tui.status
                                   Tui.Merged))
@@ -419,30 +418,30 @@ module Make (Env : Tui_env.S) = struct
                                  (Tui.equal_display_status pv.Tui.status
                                     Tui.Blocked_by_dep))
                       in
-                      let count = Base.List.length active in
-                      Base.List.iter active ~f:(fun (pv : Tui.patch_view) ->
-                          Runtime.update_orchestrator runtime (fun orch ->
+                      let count = List.length active in
+                      List.iter active ~f:(fun (pv : Tui.patch_view) ->
+                          Runtime.update_orchestrator Env.runtime (fun orch ->
                               Orchestrator.send_human_message orch
                                 pv.Tui.patch_id line));
-                      log_event runtime
+                      log_event Env.runtime
                         (Printf.sprintf "Broadcast to %s — %s"
                            (pluralize count "active patch"
                               ~plural:"active patches")
                            line)
                     end
                 | Tui_input.Prompt_pr -> (
-                    match Base.Int.of_string_opt line with
+                    match Int.of_string_opt line with
                     | Some n when n > 0 ->
                         let pr_number = Pr_number.of_int n in
                         let patch_id = Patch_id.of_string (Int.to_string n) in
                         let already_exists =
-                          Runtime.read runtime (fun snap ->
-                              Base.Option.is_some
+                          Runtime.read Env.runtime (fun snap ->
+                              Option.is_some
                                 (Orchestrator.find_agent
                                    snap.Runtime.orchestrator patch_id))
                         in
                         if already_exists then
-                          log_event runtime ~patch_id
+                          log_event Env.runtime ~patch_id
                             (Printf.sprintf "Ad-hoc PR #%d already registered" n)
                         else (
                           status_msg :=
@@ -452,15 +451,15 @@ module Make (Env : Tui_env.S) = struct
                                 text = Printf.sprintf "Fetching PR #%d…" n;
                                 expires_at = None;
                               };
-                          match Env.pr_state pr_number with
+                          match Forge.pr_state pr_number with
                           | Error err ->
                               status_msg := None;
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 (Printf.sprintf "Cannot add ad-hoc PR #%d — %s"
-                                   n err)
+                                   n (Forge.show_error err))
                           | Ok pr_state when Pr_state.is_fork pr_state ->
                               status_msg := None;
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 (Printf.sprintf
                                    "Cannot add ad-hoc PR #%d — fork PRs not \
                                     supported"
@@ -469,14 +468,14 @@ module Make (Env : Tui_env.S) = struct
                               status_msg := None;
                               match pr_state.Pr_state.head_branch with
                               | None ->
-                                  log_event runtime ~patch_id
+                                  log_event Env.runtime ~patch_id
                                     (Printf.sprintf
                                        "Cannot add ad-hoc PR #%d — no head \
                                         branch"
                                        n)
                               | Some branch ->
-                                  Env.register_pr ~patch_id ~pr_number;
-                                  Runtime.update_orchestrator runtime
+                                  Env.register_pr_number ~patch_id ~pr_number;
+                                  Runtime.update_orchestrator Env.runtime
                                     (fun orch ->
                                       let base_branch =
                                         Option.value
@@ -486,33 +485,34 @@ module Make (Env : Tui_env.S) = struct
                                       in
                                       Orchestrator.add_agent orch ~patch_id
                                         ~branch ~base_branch ~pr_number);
-                                  log_event runtime ~patch_id
+                                  log_event Env.runtime ~patch_id
                                     (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
                                        (Branch.to_string branch))))
                     | _ ->
-                        if not (Base.String.is_empty line) then
-                          log_event runtime
+                        if not (String.is_empty line) then
+                          log_event Env.runtime
                             (Printf.sprintf "Invalid PR number — %s" line))
                 | Tui_input.Prompt_worktree -> (
-                    if not (Base.String.is_empty line) then
+                    if not (String.is_empty line) then
                       let path = line in
                       match selected_pid () with
                       | None ->
-                          log_event runtime
+                          log_event Env.runtime
                             "Cannot add worktree — no selectable patch"
                       | Some patch_id -> (
                           let busy =
-                            Runtime.read runtime (fun snap ->
+                            Runtime.read Env.runtime (fun snap ->
                                 (Orchestrator.agent snap.Runtime.orchestrator
                                    patch_id)
                                   .Patch_agent.busy)
                           in
                           if busy then
-                            log_event runtime ~patch_id
+                            log_event Env.runtime ~patch_id
                               "Warning — patch is currently running, changing \
                                worktree may affect the live session";
                           let expected =
-                            Worktree.worktree_dir ~project_name ~patch_id
+                            Worktree.worktree_dir ~project_name:Env.project_name
+                              ~patch_id
                           in
                           try
                             let raw_path = Worktree.normalize_path path in
@@ -563,7 +563,7 @@ module Make (Env : Tui_env.S) = struct
                                        "Cannot overwrite non-symlink at %s"
                                        expected));
                               Unix.symlink canonical_real expected);
-                            Runtime.update_orchestrator runtime (fun orch ->
+                            Runtime.update_orchestrator Env.runtime (fun orch ->
                                 let orch =
                                   Orchestrator.reset_intervention_state orch
                                     patch_id
@@ -573,12 +573,12 @@ module Make (Env : Tui_env.S) = struct
                             status_msg := None;
                             if String.equal canonical_real canonical_expected
                             then
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 (Printf.sprintf
                                    "Worktree already at expected path %s"
                                    canonical_real)
                             else
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 (Printf.sprintf
                                    "Registered worktree — symlinked %s → %s"
                                    expected canonical_real)
@@ -591,7 +591,7 @@ module Make (Env : Tui_env.S) = struct
                                     text = msg;
                                     expires_at = None;
                                   };
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 (Printf.sprintf "Failed to add worktree — %s"
                                    msg)
                           | exn ->
@@ -605,7 +605,7 @@ module Make (Env : Tui_env.S) = struct
                                         "Failed to add worktree: %s" msg;
                                     expires_at = None;
                                   };
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 (Printf.sprintf "Failed to add worktree — %s"
                                    msg)))
                 | Tui_input.Normal | Tui_input.Manage_patch -> ());
@@ -691,7 +691,7 @@ module Make (Env : Tui_env.S) = struct
                     let screen_idx = row - start in
                     let abs_idx = !patches_scroll_offset + screen_idx in
                     if start > 0 && screen_idx >= 0 && screen_idx < count then (
-                      let now = Eio.Time.now Env.clock in
+                      let now = Unix.gettimeofday () in
                       let is_double =
                         Float.compare (now -. !last_click_time) 0.3 <= 0
                         && !last_click_row = abs_idx
@@ -700,10 +700,10 @@ module Make (Env : Tui_env.S) = struct
                       last_click_row := abs_idx;
                       if is_double then (
                         let pids = !sorted_patch_ids in
-                        let pid_count = Base.List.length pids in
+                        let pid_count = List.length pids in
                         if abs_idx < pid_count then (
                           list_selected := abs_idx;
-                          let pid = Base.List.nth_exn pids abs_idx in
+                          let pid = List.nth_exn pids abs_idx in
                           view_mode := Tui.Detail_view pid;
                           match Stdlib.Hashtbl.find_opt detail_scrolls pid with
                           | Some (offset, follow) ->
@@ -727,25 +727,25 @@ module Make (Env : Tui_env.S) = struct
                       view_mode := Tui.List_view);
                     loop ()
                 | Term_key.Scroll { dir; _ }, Tui.List_view ->
-                    let count = Base.List.length !sorted_patch_ids in
+                    let count = List.length !sorted_patch_ids in
                     let delta =
                       match dir with Term_key.Up -> -1 | Term_key.Down -> 1
                     in
                     list_selected :=
-                      Base.Int.max (-1)
-                        (Base.Int.min (count - 1) (!list_selected + delta));
+                      Int.max (-1)
+                        (Int.min (count - 1) (!list_selected + delta));
                     loop ()
                 | Term_key.Scroll { dir; _ }, Tui.Detail_view _ ->
                     let delta =
                       match dir with Term_key.Up -> -3 | Term_key.Down -> 3
                     in
-                    detail_scroll := Base.Int.max 0 (!detail_scroll + delta);
+                    detail_scroll := Int.max 0 (!detail_scroll + delta);
                     loop ()
                 | Term_key.Scroll { dir; _ }, Tui.Timeline_view ->
                     let delta =
                       match dir with Term_key.Up -> -3 | Term_key.Down -> 3
                     in
-                    timeline_scroll := Base.Int.max 0 (!timeline_scroll + delta);
+                    timeline_scroll := Int.max 0 (!timeline_scroll + delta);
                     loop ()
                 | ( Term_key.Click
                       {
@@ -787,14 +787,16 @@ module Make (Env : Tui_env.S) = struct
                     | Some pr_number -> (
                         let url =
                           Printf.sprintf "https://github.com/%s/%s/pull/%d"
-                            owner repo
+                            Env.owner Env.repo
                             (Pr_number.to_int pr_number)
                         in
                         let open_cmd =
                           if Stdlib.Sys.file_exists "/usr/bin/open" then "open"
                           else "xdg-open"
                         in
-                        match Eio.Process.run process_mgr [ open_cmd; url ] with
+                        match
+                          Eio.Process.run Env.process_mgr [ open_cmd; url ]
+                        with
                         | () -> (
                             match !status_msg with
                             | Some
@@ -838,21 +840,21 @@ module Make (Env : Tui_env.S) = struct
             | Term.Key.F _ | Term.Key.Ctrl _ | Term.Key.Unknown _ -> (
                 let cmd = Tui_input.of_key key in
                 match cmd with
-                | Tui_input.Quit -> raise Quit_tui
+                | Tui_input.Quit -> raise Quit
                 | Tui_input.Move_up | Tui_input.Move_down | Tui_input.Page_up
                 | Tui_input.Page_down | Tui_input.Scroll_top
                 | Tui_input.Scroll_bottom ->
                     (match !view_mode with
                     | Tui.List_view ->
-                        let count = Base.List.length !sorted_patch_ids in
+                        let count = List.length !sorted_patch_ids in
                         list_selected :=
                           Tui_input.apply_move ~count ~selected:!list_selected
                             cmd
                     | Tui.Timeline_view ->
                         let total =
-                          Runtime.read runtime (fun snap ->
+                          Runtime.read Env.runtime (fun snap ->
                               let log = snap.Runtime.activity_log in
-                              Base.List.length
+                              List.length
                                 (activity_entries_of_log ~limit:100 log))
                         in
                         let height =
@@ -860,19 +862,15 @@ module Make (Env : Tui_env.S) = struct
                           | Some s -> s.Term.rows
                           | None -> 24
                         in
-                        (* Keep in sync with Tui.render_frame Timeline_view:
-                           header(2) + blank + timeline header(1)
-                           + scroll indicators(2) + blank before footer
-                           + optional status line + footer(2). *)
                         let status_rows =
                           match !status_msg with Some _ -> 1 | None -> 0
                         in
                         let reserved = 9 + status_rows in
-                        let max_rows = Base.Int.max 0 (height - reserved) in
-                        let max_offset = Base.Int.max 0 (total - max_rows) in
+                        let max_rows = Int.max 0 (height - reserved) in
+                        let max_offset = Int.max 0 (total - max_rows) in
                         timeline_scroll :=
                           Tui_input.apply_move ~count:(max_offset + 1)
-                            ~selected:(Base.Int.min !timeline_scroll max_offset)
+                            ~selected:(Int.min !timeline_scroll max_offset)
                             cmd
                     | Tui.Detail_view _ -> (
                         match cmd with
@@ -904,18 +902,17 @@ module Make (Env : Tui_env.S) = struct
                                   0
                             in
                             if delta <> 0 then detail_follow := false;
-                            detail_scroll :=
-                              Base.Int.max 0 (!detail_scroll + delta)));
+                            detail_scroll := Int.max 0 (!detail_scroll + delta)));
                     loop ()
                 | Tui_input.Select -> (
                     match !view_mode with
                     | Tui.List_view ->
                         let pids = !sorted_patch_ids in
-                        let count = Base.List.length pids in
+                        let count = List.length pids in
                         if count > 0 && !list_selected >= 0 then (
-                          let idx = Base.Int.min !list_selected (count - 1) in
+                          let idx = Int.min !list_selected (count - 1) in
                           list_selected := idx;
-                          let pid = Base.List.nth_exn pids idx in
+                          let pid = List.nth_exn pids idx in
                           view_mode := Tui.Detail_view pid;
                           match Stdlib.Hashtbl.find_opt detail_scrolls pid with
                           | Some (offset, follow) ->
@@ -962,17 +959,17 @@ module Make (Env : Tui_env.S) = struct
                     | Tui.List_view -> (
                         match selected_pid () with
                         | None ->
-                            log_event runtime
+                            log_event Env.runtime
                               "Cannot remove patch — no selectable patch"
                         | Some patch_id ->
                             let busy, in_gameplan =
-                              Runtime.read runtime (fun snap ->
+                              Runtime.read Env.runtime (fun snap ->
                                   let agent =
                                     Orchestrator.agent snap.Runtime.orchestrator
                                       patch_id
                                   in
                                   let in_gp =
-                                    Base.List.exists
+                                    List.exists
                                       snap.Runtime.gameplan.Gameplan.patches
                                       ~f:(fun (p : Patch.t) ->
                                         Patch_id.equal p.Patch.id patch_id)
@@ -980,19 +977,20 @@ module Make (Env : Tui_env.S) = struct
                                   (agent.Patch_agent.busy, in_gp))
                             in
                             if in_gameplan then
-                              log_event runtime ~patch_id
+                              log_event Env.runtime ~patch_id
                                 "Cannot remove gameplan patch — only ad-hoc \
                                  patches can be removed"
                             else (
                               if busy then
-                                log_event runtime ~patch_id
+                                log_event Env.runtime ~patch_id
                                   "Warning — patch is currently running, it \
                                    may create a GitHub PR before stopping";
-                              Runtime.update_orchestrator runtime (fun orch ->
+                              Runtime.update_orchestrator Env.runtime
+                                (fun orch ->
                                   Orchestrator.remove_agent orch patch_id);
-                              Env.unregister_pr ~patch_id;
-                              log_event runtime ~patch_id "Removed ad-hoc patch")
-                        )
+                              Env.unregister_pr_number ~patch_id;
+                              log_event Env.runtime ~patch_id
+                                "Removed ad-hoc patch"))
                     | Tui.Detail_view _ | Tui.Timeline_view -> ());
                     loop ()
                 | Tui_input.Noop | Tui_input.Send_message _ | Tui_input.Add_pr _
