@@ -86,7 +86,10 @@ val trim : t -> max:int -> t
     sessions. *)
 
 val stream_kind_of_raw :
-  channel:[ `Stdout | `Stderr ] -> string -> Stream_entry.kind
-(** Decode a raw telemetry stream line into the activity-log entry kind, falling
-    back to channel-specific text/error entries when the line is not one of the
-    activity-log JSON envelopes. *)
+  channel:[ `Stdout | `Stderr ] -> string -> Stream_entry.kind option
+(** Decode a raw telemetry stream line into the activity-log entry kind. Returns
+    [None] for lines that are not [activity_log_kind]-tagged envelopes — those
+    are the raw child-process stdout/stderr lines emitted by [Llm_backend] for
+    replay diagnostics, and must not leak into the user-facing activity pane.
+    [channel] is currently unused but kept in the signature so the sink can
+    route in the future without another API churn. *)

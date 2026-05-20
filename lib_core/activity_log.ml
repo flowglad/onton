@@ -54,14 +54,9 @@ let add_event t event = { t with events = event :: t.events }
 let add_stream_entry t entry =
   { t with stream_entries = entry :: t.stream_entries }
 
-let stream_kind_of_raw ~channel raw =
-  let fallback () =
-    match channel with
-    | `Stdout -> Stream_entry.Text_chunk raw
-    | `Stderr -> Stream_entry.Stream_error raw
-  in
+let stream_kind_of_raw ~channel:_ raw =
   match Yojson.Safe.from_string raw with
-  | exception _ -> fallback ()
+  | exception _ -> None
   | `Assoc fields -> (
       let find_string name =
         List.find_map fields ~f:(function
@@ -70,20 +65,24 @@ let stream_kind_of_raw ~channel raw =
       in
       match find_string "activity_log_kind" with
       | Some "tool_use" ->
-          Stream_entry.Tool_use
-            ( Option.value (find_string "name") ~default:"",
-              Option.value (find_string "input") ~default:"" )
+          Some
+            (Stream_entry.Tool_use
+               ( Option.value (find_string "name") ~default:"",
+                 Option.value (find_string "input") ~default:"" ))
       | Some "text_chunk" ->
-          Stream_entry.Text_chunk
-            (Option.value (find_string "text") ~default:"")
+          Some
+            (Stream_entry.Text_chunk
+               (Option.value (find_string "text") ~default:""))
       | Some "finished" ->
-          Stream_entry.Finished
-            (Option.value (find_string "reason") ~default:"")
+          Some
+            (Stream_entry.Finished
+               (Option.value (find_string "reason") ~default:""))
       | Some "stream_error" ->
-          Stream_entry.Stream_error
-            (Option.value (find_string "message") ~default:"")
-      | _ -> fallback ())
-  | _ -> fallback ()
+          Some
+            (Stream_entry.Stream_error
+               (Option.value (find_string "message") ~default:""))
+      | _ -> None)
+  | _ -> None
 
 let recent_transitions t ~limit = List.take t.transitions limit
 let recent_events t ~limit = List.take t.events limit
