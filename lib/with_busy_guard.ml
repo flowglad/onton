@@ -34,8 +34,8 @@ module Make (Env : ENV) = struct
               ~agent_before:before ~agent_after:after;
             Runtime_logging.log_event Env.runtime ~patch_id
               (Printf.sprintf
-                  "Forced complete (%s) — runner fiber exited with busy=true"
-                  (Orchestrator.show_force_complete_reason reason))))
+                 "Forced complete (%s) — runner fiber exited with busy=true"
+                 (Orchestrator.show_force_complete_reason reason))))
       (fun () ->
         try f () with
         | Eio.Cancel.Cancelled _ as exn ->
