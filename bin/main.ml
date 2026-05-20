@@ -1896,11 +1896,9 @@ let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
     boundary lets [Poll_cycle.classify] reason about timeouts the same way it
     reasons about other failures, which is the invariant the interleaving
     property tests exercise. *)
-let poll_outcome_of_github_result ~timeout = function
+let poll_outcome_of_github_result = function
   | Ok pr_state -> Poll_outcome.Ok_pr_state pr_state
-  | Error (Github.Transport_error { msg; _ })
-    when Base.String.is_substring msg ~substring:"timed out after" ->
-      Poll_outcome.Timed_out { seconds = timeout }
+  | Error (Github.Timeout { seconds; _ }) -> Poll_outcome.Timed_out { seconds }
   | Error (Github.Transport_error { msg; _ }) ->
       Poll_outcome.Transport_failed { msg }
   | Error (Github.Http_error { status; body; _ }) ->
@@ -1955,14 +1953,14 @@ let poller_fiber ~runtime ~clock ~net ~process_mgr ~github ~config ~project_name
     (* Phase 1a: parallel per-patch [Github.pr_state] fetch.
 
        This is the head-of-line-blocking fix: when one patch's TCP connect
-       is wedged in [SYN_SENT], [Github.pr_state] returns
-       [Transport_error "timed out after Ns"] after [Github.default_timeout]
-       — and every other patch's fiber proceeds independently. *)
+       is wedged in [SYN_SENT], [Github.pr_state] returns [Timeout] after
+       [Github.default_timeout] — and every other patch's fiber proceeds
+       independently. *)
     let outcomes =
       Eio.Fiber.List.map ~max_fibers:16
         (fun (patch_id, pr_number, was_merged) ->
           let outcome =
-            poll_outcome_of_github_result ~timeout:Github.default_timeout
+            poll_outcome_of_github_result
               (Github.pr_state ~net ~clock github pr_number)
           in
           (patch_id, pr_number, was_merged, outcome))
@@ -2697,7 +2695,7 @@ let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name ~pr_registry
                                                 patch_id))
                                   | Github.Http_error _
                                   | Github.Json_parse_error _
-                                  | Github.Graphql_error _
+                                  | Github.Graphql_error _ | Github.Timeout _
                                   | Github.Transport_error _ ->
                                       log_event runtime ~patch_id
                                         (Printf.sprintf

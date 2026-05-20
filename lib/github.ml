@@ -4,6 +4,7 @@ type error =
   | Http_error of { meth : string; path : string; status : int; body : string }
   | Json_parse_error of string
   | Graphql_error of string list
+  | Timeout of { meth : string; path : string; seconds : float }
   | Transport_error of { meth : string; path : string; msg : string }
 
 (* Extract GitHub's "message" field and validation details from a JSON error
@@ -114,6 +115,9 @@ let show_error = function
         (permission_hint status)
   | Transport_error { meth; path; msg } ->
       Printf.sprintf "GitHub API %s %s → transport error: %s" meth path msg
+  | Timeout { meth; path; seconds } ->
+      Printf.sprintf "GitHub API %s %s → request timed out after %.0fs" meth
+        path seconds
   | Json_parse_error msg -> Printf.sprintf "GitHub API JSON parse error: %s" msg
   | Graphql_error msgs ->
       Printf.sprintf "GitHub GraphQL error: %s" (String.concat ~sep:"; " msgs)
@@ -526,14 +530,7 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
   in
   match Eio.Time.with_timeout clock timeout (fun () -> Ok (do_request ())) with
   | Ok inner -> inner
-  | Error `Timeout ->
-      Error
-        (Transport_error
-           {
-             meth = meth_s;
-             path;
-             msg = Printf.sprintf "request timed out after %.0fs" timeout;
-           })
+  | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
 
 let check_repo_access ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in

@@ -11,14 +11,15 @@ type error =
   | Http_error of { meth : string; path : string; status : int; body : string }
   | Json_parse_error of string
   | Graphql_error of string list
+  | Timeout of { meth : string; path : string; seconds : float }
   | Transport_error of { meth : string; path : string; msg : string }
 
 val show_error : error -> string
 (** Render an error as a human-readable string. Includes the HTTP method and
-    path for [Http_error]/[Transport_error], extracts GitHub's "message" field
-    and validation details from the response body, and appends a hint about PAT
-    scopes for 401/403/404 so users can fix permission problems without
-    guesswork. *)
+    path for [Http_error]/[Timeout]/[Transport_error], extracts GitHub's
+    "message" field and validation details from the response body, and appends a
+    hint about PAT scopes for 401/403/404 so users can fix permission problems
+    without guesswork. *)
 
 val response_error_message_contains : string -> substring:string -> bool
 (** Returns [true] if any human-meaningful field in a GitHub error response body

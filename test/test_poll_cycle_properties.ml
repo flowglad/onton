@@ -1,5 +1,4 @@
 open Base
-open Onton
 open Onton_core
 open Onton_core.Types
 
@@ -178,9 +177,8 @@ let prop_timeout_substitution_isolates =
             (Int.max 0 (List.length inputs - List.length mask))
             ~f:(fun _ -> false)
       in
-      let timeout =
-        Poll_outcome.Timed_out { seconds = Github.default_timeout }
-      in
+      let timeout_s = 30.0 in
+      let timeout = Poll_outcome.Timed_out { seconds = timeout_s } in
       let substituted =
         List.map2_exn inputs mask ~f:(fun input replace ->
             if replace then { input with Poll_cycle.outcome = timeout }
