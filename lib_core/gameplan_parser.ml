@@ -197,7 +197,7 @@ let parse_json_string input =
            to [""] so legacy gameplans without the keys keep loading; the
            [--gameplan] CLI path enforces the non-empty constraint at session
            start, and forge-specific format validation lives in the forge
-           backend, e.g. {!Onton.Github.validate_target}). *)
+           backend, e.g. {!Onton_core.Github_target.validate_target}). *)
         let repo_owner = optional_string "owner" in
         let repo_name = optional_string "repo" in
         let problem_statement =

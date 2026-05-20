@@ -225,7 +225,7 @@ let respond_delivery ~(agent : Patch_agent.t) ~(kind : Operation_kind.t)
       (e.g. OpenCode's [--dir] sandbox rejecting a write to a path outside the
       worktree);
     - artifact outcome [`Patch_failed] — the notes were authored but the
-      subsequent [Github.update_pr_body] call failed, so the PR body is stale.
+      subsequent forge PR-body update failed, so the PR body is stale.
       Returning [`Pr_body_miss] lets the reconciler re-enqueue Pr_body; at cap
       ([>=2]) the agent surfaces via [needs_intervention] so a persistent
       delivery failure does not silently leave the PR description wrong.
