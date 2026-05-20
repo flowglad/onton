@@ -884,12 +884,5 @@ let%expect_test "show_error transport error includes endpoint" =
   Stdlib.print_endline (show_error err);
   [%expect {| GitHub API POST /graphql → transport error: connection refused |}]
 
-(* Static assertion: Github satisfies Forge.S *)
-let (_ : (module Forge.S)) =
-  (module struct
-    type nonrec t = t
-    type nonrec error = error
-
-    let show_error = show_error
-    let pr_state = pr_state
-  end)
+(* Forge.S no longer exposes the raw client or network capability, so the
+   conformance check moves to patch 2 when [make] can package them up. *)
