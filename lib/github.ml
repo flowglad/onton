@@ -125,7 +125,6 @@ let show_error = function
 type t = { token : string; owner : string; repo : string }
 
 let create ~token ~owner ~repo = { token; owner; repo }
-
 let with_client ~token ~owner ~repo ~f = f (create ~token ~owner ~repo)
 
 let graphql_query =

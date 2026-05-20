@@ -42,10 +42,9 @@ val check_repo_access :
   unit ->
   (unit, error) Result.t
 (** [check_repo_access ~net ~clock ~token ~owner ~repo] verifies that the
-    configured token can access [owner/repo] via [GET /repos/:owner/:repo].
-    This is a startup preflight so missing tokens, expired credentials, SSO
-    gaps, and wrong repository names fail before long-running orchestration
-    starts. *)
+    configured token can access [owner/repo] via [GET /repos/:owner/:repo]. This
+    is a startup preflight so missing tokens, expired credentials, SSO gaps, and
+    wrong repository names fail before long-running orchestration starts. *)
 
 val parse_response_json :
   owner:string -> Yojson.Safe.t -> (Pr_state.t, error) Result.t
