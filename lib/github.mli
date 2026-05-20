@@ -171,6 +171,6 @@ val make :
   owner:string ->
   repo:string ->
   (module Forge.S with type error = error)
-(** [make ~net ~clock ~token ~owner ~repo] packages a GitHub-backed forge module
-    that closes over the network and time capabilities plus client
+(** [make ~net ~clock ~token ~owner ~repo] packages a GitHub-backed forge
+    module that closes over the network and time capabilities plus client
     configuration. *)
