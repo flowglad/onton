@@ -126,13 +126,12 @@ let meta_summary_of_file ~path ~raw =
   | json -> (
       match (extract_patch_id json, extract_subkind json) with
       | Some patch_id, Some subkind ->
-          Some
-            {
-              patch_id;
-              subkind;
-              ended_at = extract_ended_at json;
-              mtime = (Unix_.stat path).st_mtime;
-            }
+          let mtime =
+            match (Unix_.stat path).st_mtime with
+            | v -> v
+            | exception Unix_.Unix_error _ -> 0.0
+          in
+          Some { patch_id; subkind; ended_at = extract_ended_at json; mtime }
       | _ -> None)
   | exception Yojson.Json_error _ -> None
 
