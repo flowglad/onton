@@ -798,6 +798,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     Base.List.map repo_config.Repo_config.review_backends ~f:(fun backend ->
         Review_service_client.make ~net ~clock:setup.clock ~backend)
   in
+  let default_backend_pair = pick_backend ~complexity:None in
   {
     forge;
     worktree_client;
@@ -805,7 +806,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     branch_of;
     pick_backend;
     resolve_routing;
-    backend_name = backend_name (fst (pick_backend ~complexity:None));
+    backend_name = backend_name (fst default_backend_pair);
     find_pr_number = Pr_registry.find pr_registry;
     register_pr_number = Pr_registry.register pr_registry;
     unregister_pr_number = Pr_registry.unregister pr_registry;
