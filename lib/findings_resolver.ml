@@ -9,7 +9,14 @@ let read_artifact path =
            (fun () -> Stdlib.In_channel.input_all ic))
     with Sys_error msg -> Error msg
 
-let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
+let find_review_client review_clients ~backend_name =
+  List.find_opt
+    (fun (module R : Review_service_client.S
+           with type error = Review_service_client.error) ->
+      String.equal R.name backend_name)
+    review_clients
+
+let resolve_after_session ~review_clients ~log ~findings_registry ~artifact_path
     ~delivered ?actor () =
   (* Parse the wontfix artifact. Missing means "no wontfix entries"; read or
      parse failures fail closed so we do not accidentally mark findings as
@@ -72,25 +79,35 @@ let resolve_after_session ~net ~clock ~log ~findings_registry ~artifact_path
               | Some r -> (Onton_core.Review_service.Resolve_wontfix, Some r)
               | None -> (Onton_core.Review_service.Resolve_addressed, None)
             in
-            match
-              Review_service_client.mark_resolved ~net ~clock
-                ~backend:entry.Findings_registry.backend
-                ~owner:entry.Findings_registry.owner
-                ~repo:entry.Findings_registry.repo
-                ~pr_number:entry.Findings_registry.pr_number
-                ~finding_id:entry.Findings_registry.finding_id ~kind ?actor
-                ?reason ()
-            with
-            | Ok response ->
+            let backend_name = entry.Findings_registry.backend_name in
+            match find_review_client review_clients ~backend_name with
+            | None ->
                 log
-                  (Printf.sprintf "Resolved finding %s as %s (server: %s)" f.id
-                     (Onton_core.Review_service.resolve_kind_to_string kind)
-                     (Onton_core.Review_service.outcome_kind_to_string
-                        response.Onton_core.Review_service.outcome.kind));
-                Findings_registry.forget findings_registry ~key:f.id
-            | Error err ->
-                log
-                  (Printf.sprintf "Failed to resolve finding %s — %s" f.id
-                     (Review_service_client.show_error err));
-                Findings_registry.forget findings_registry ~key:f.id))
+                  (Printf.sprintf
+                     "Skipping resolve for finding %s — review backend %s is \
+                      no longer configured"
+                     f.id backend_name)
+            | Some
+                (module R : Review_service_client.S
+                  with type error = Review_service_client.error) -> (
+                match
+                  R.mark_resolved ~owner:entry.Findings_registry.owner
+                    ~repo:entry.Findings_registry.repo
+                    ~pr_number:entry.Findings_registry.pr_number
+                    ~finding_id:entry.Findings_registry.finding_id ~kind ?actor
+                    ?reason ()
+                with
+                | Ok response ->
+                    log
+                      (Printf.sprintf "Resolved finding %s as %s (server: %s)"
+                         f.id
+                         (Onton_core.Review_service.resolve_kind_to_string kind)
+                         (Onton_core.Review_service.outcome_kind_to_string
+                            response.Onton_core.Review_service.outcome.kind));
+                    Findings_registry.forget findings_registry ~key:f.id
+                | Error err ->
+                    log
+                      (Printf.sprintf "Failed to resolve finding %s — %s" f.id
+                         (R.show_error err));
+                    Findings_registry.forget findings_registry ~key:f.id)))
       delivered

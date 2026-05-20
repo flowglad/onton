@@ -13,14 +13,15 @@
 type t
 
 type entry = {
-  backend : Onton_core.Review_backend.t;
+  backend_name : string;
   owner : string;
   repo : string;
   pr_number : int;
   finding_id : string;
 }
 (** The information needed to address a resolve verb back to the originating
-    backend, on the same PR coordinates Onton observed. [finding_id] is the raw
+    backend, on the same PR coordinates Onton observed. [backend_name] selects
+    the configured review-service client, and [finding_id] is the raw
     backend-local id used in the review-service API path. *)
 
 val create : unit -> t

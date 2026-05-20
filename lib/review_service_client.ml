@@ -185,3 +185,47 @@ let mark_resolved ~net ~clock ~backend ~owner ~repo ~pr_number ~finding_id ~kind
       match Onton_core.Review_service.parse_resolve_response_string body with
       | Ok r -> Ok r
       | Error msg -> Error (Parse_error msg))
+
+module type S = sig
+  type error
+
+  val show_error : error -> string
+  val name : string
+
+  val list_findings :
+    owner:string ->
+    repo:string ->
+    pr_number:int ->
+    unit ->
+    (Onton_core.Review_service.findings_response, error) Result.t
+
+  val mark_resolved :
+    owner:string ->
+    repo:string ->
+    pr_number:int ->
+    finding_id:string ->
+    kind:Onton_core.Review_service.resolve_kind ->
+    ?actor:string ->
+    ?reason:string ->
+    unit ->
+    (Onton_core.Review_service.resolve_response, error) Result.t
+end
+
+type client = (module S with type error = error)
+
+let make ~net ~clock ~(backend : Onton_core.Review_backend.t) : client =
+  let module M = struct
+    type nonrec error = error
+
+    let show_error = show_error
+    let name = backend.Onton_core.Review_backend.name
+
+    let list_findings ~owner ~repo ~pr_number () =
+      list_findings ~net ~clock ~backend ~owner ~repo ~pr_number ()
+
+    let mark_resolved ~owner ~repo ~pr_number ~finding_id ~kind ?actor ?reason
+        () =
+      mark_resolved ~net ~clock ~backend ~owner ~repo ~pr_number ~finding_id
+        ~kind ?actor ?reason ()
+  end in
+  (module M)

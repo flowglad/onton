@@ -1,5 +1,5 @@
 type entry = {
-  backend : Onton_core.Review_backend.t;
+  backend_name : string;
   owner : string;
   repo : string;
   pr_number : int;
@@ -23,8 +23,7 @@ let remove_stale_for_scope t ~backend_name ~owner ~repo ~pr_number ~keep_keys =
       Hashtbl.iter
         (fun key (entry : entry) ->
           let same_scope =
-            String.equal entry.backend.Onton_core.Review_backend.name
-              backend_name
+            String.equal entry.backend_name backend_name
             && String.equal entry.owner owner
             && String.equal entry.repo repo
             && entry.pr_number = pr_number

@@ -4,7 +4,7 @@ version: "0.6.0"
 synopsis: "OCaml orchestrator for parallel Claude Code agents"
 maintainer: ["flowglad"]
 depends: [
-  "ocaml" {= "5.4.0"}
+  "ocaml" {= "5.4.1"}
   "dune" {>= "3.21" & < "3.22"}
   "base" {>= "v0.17.0"}
   "eio" {>= "1.3"}
