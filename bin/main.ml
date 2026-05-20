@@ -196,6 +196,20 @@ struct
 
   module Poller = Poller_fiber.Make (Forge) (W) (Env_poller)
 
+  module Headless_Env : Headless_fiber.Headless_env.S = struct
+    let runtime = Env.runtime
+    let clock = Env.clock
+  end
+
+  module Persistence_Env : Persistence_fiber.Persistence_env.S = struct
+    let runtime = Env.runtime
+    let clock = Env.clock
+    let project_name = Env.project_name
+  end
+
+  module Headless = Headless_fiber.Make (Headless_Env)
+  module Persistence_fiber_runner = Persistence_fiber.Make (Persistence_Env)
+
   (** Execute declarative GitHub effects and record successful observations back
       into durable state. *)
   let execute_github_effects ~runtime effects =
@@ -1495,63 +1509,17 @@ struct
     in
     loop ()
 
-  (** Format a Unix timestamp as HH:MM:SS for headless log lines. *)
-  let format_time ts =
-    let t = Unix.localtime ts in
-    Printf.sprintf "%02d:%02d:%02d" t.Unix.tm_hour t.Unix.tm_min t.Unix.tm_sec
+  (** Per-agent poll intent, collected inside [read] and executed outside. *)
+  type poll_intent =
+    | Skip_no_pr of Patch_id.t
+    | Poll of {
+        patch_id : Patch_id.t;
+        pr_number : Pr_number.t;
+        was_merged : bool;
+      }
 
-  let format_event (e : Activity_log.Event.t) =
-    let pid_str =
-      match e.Activity_log.Event.patch_id with
-      | Some pid -> Printf.sprintf "[%s] " (Patch_id.to_string pid)
-      | None -> ""
-    in
-    pid_str ^ e.Activity_log.Event.message
-
-  let format_transition (t : Activity_log.Transition_entry.t) =
-    Printf.sprintf "[%s] %s -> %s"
-      (Patch_id.to_string t.Activity_log.Transition_entry.patch_id)
-      (Tui.label t.Activity_log.Transition_entry.from_status)
-      (Tui.label t.Activity_log.Transition_entry.to_status)
-
-  (** Headless logging fiber — prints events and transitions to stdout as plain
-      text, without TUI escape codes. Uses a count-based cursor to avoid losing
-      entries with identical timestamps. *)
-  let headless_fiber ~runtime ~clock ~stdout =
-    (* Track seen entries by set of (timestamp, message) to handle entries that
-     sort before previously-displayed ones (e.g. an event logged just before
-     a stream entry but displayed in the next poll cycle). *)
-    let seen = Hashtbl.create 256 in
-    let rec loop () =
-      let entries =
-        Runtime.read runtime (fun snap ->
-            merged_log_entries ~log:snap.Runtime.activity_log ~limit:500
-              ~compare:(fun (t1, _) (t2, _) -> Base.Float.ascending t1 t2)
-              ~map_event:format_event ~map_transition:format_transition
-              ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
-                Printf.sprintf "[%s] %s"
-                  (Patch_id.to_string s.Activity_log.Stream_entry.patch_id)
-                  (format_stream_kind s.Activity_log.Stream_entry.kind)))
-      in
-      Base.List.iter entries ~f:(fun (ts, msg) ->
-          let key = (ts, msg) in
-          if not (Hashtbl.mem seen key) then (
-            Hashtbl.replace seen key true;
-            Eio.Flow.copy_string
-              (Printf.sprintf "%s %s\n" (format_time ts) msg)
-              stdout));
-      (* Bound the seen set: rebuild from current entries so it never grows
-       beyond the merged_log_entries window (~1500 entries max). *)
-      if Hashtbl.length seen > 2000 then (
-        let current = Hashtbl.create 256 in
-        Base.List.iter entries ~f:(fun key -> Hashtbl.replace current key true);
-        Hashtbl.reset seen;
-        Hashtbl.iter (fun k v -> Hashtbl.replace seen k v) current);
-      Eio.Time.sleep clock 1.0;
-      loop ()
-    in
-    loop ()
-
+  (** Poller fiber — periodically polls GitHub for PR state changes and
+      reconciles. *)
   let poll_review_backends ~runtime ~patch_id ~findings_registry ~review_clients
       ~owner ~repo ~pr_number : Review_service.finding list =
     Base.List.concat_map review_clients
@@ -3331,30 +3299,6 @@ struct
         amloop ());
     loop sw
 
-  (** {1 Persistence fiber} *)
-
-  (** Periodic persistence fiber — saves runtime snapshot every 5 seconds. *)
-  let persistence_fiber ~runtime ~clock ~project_name ~transcripts =
-    let path = Project_store.snapshot_path project_name in
-    Project_store.ensure_dir (Stdlib.Filename.dirname path);
-    let rec loop () =
-      Eio.Time.sleep clock 5.0;
-      (* Sync transcripts into the snapshot before saving *)
-      Runtime.update runtime (fun snap ->
-          let t = snap.Runtime.transcripts in
-          Base.Hashtbl.clear t;
-          Hashtbl.iter
-            (fun k v -> Base.Hashtbl.set t ~key:k ~data:v)
-            transcripts;
-          snap);
-      let snap = Runtime.snapshot_unsync runtime in
-      (match Persistence.save ~path snap with
-      | Ok () -> ()
-      | Error msg ->
-          log_event runtime (Printf.sprintf "Persistence save failed — %s" msg));
-      loop ()
-    in
-    loop ()
 end
 
 (** {1 Main entry point} *)
@@ -3993,13 +3937,12 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         [
           reconciliation_fiber;
           (fun () -> poller_fiber (module Reconciler : STARTUP_RECONCILER));
-          (fun () ->
-            persistence_fiber ~runtime ~clock ~project_name ~transcripts);
+          (Persistence_fiber_runner.run ~transcripts);
         ]
       in
       if config.headless then
         Eio.Fiber.all
-          ((fun () -> headless_fiber ~runtime ~clock ~stdout)
+          ((Headless.run ~stdout)
           :: (fun () -> runner_fiber ())
           :: common_fibers)
       else
