@@ -86,9 +86,9 @@ let validate_context_resources ~patches ~context_resources =
         let stripped = String.strip id in
         if String.is_empty stripped then
           Error "contextResources[].id must be a non-empty string"
-        else if Set.mem seen id then
-          Error (Printf.sprintf "Duplicate contextResource id: %s" id)
-        else check_ids (Set.add seen id) rest
+        else if Set.mem seen stripped then
+          Error (Printf.sprintf "Duplicate contextResource id: %s" stripped)
+        else check_ids (Set.add seen stripped) rest
   in
   match check_ids (Set.empty (module String)) resource_ids with
   | Error e -> Error e
