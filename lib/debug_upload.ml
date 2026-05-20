@@ -80,7 +80,7 @@ let scrub_env_contents raw =
 let scrub_file_contents ~name raw =
   let first_pass =
     if String.equal name "config.json" then scrub_config_json raw
-    else if String.is_suffix name ~suffix:"/env.txt" then scrub_env_contents raw
+    else if String.is_suffix name ~suffix:"env.txt" then scrub_env_contents raw
     else raw
   in
   Token_scrub.scrub_token_patterns first_pass
