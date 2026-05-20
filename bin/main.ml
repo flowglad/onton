@@ -1875,17 +1875,17 @@ struct
 
   (** Poller fiber — periodically polls GitHub for PR state changes and
       reconciles. *)
-  let poll_review_backends ~net ~clock ~runtime ~patch_id ~findings_registry
-      ~review_backends ~owner ~repo ~pr_number : Review_service.finding list =
-    Base.List.concat_map review_backends ~f:(fun (b : Review_backend.t) ->
-        match
-          Review_service_client.list_findings ~net ~clock ~backend:b ~owner
-            ~repo ~pr_number ()
-        with
+  let poll_review_backends ~runtime ~patch_id ~findings_registry ~review_clients
+      ~owner ~repo ~pr_number : Review_service.finding list =
+    Base.List.concat_map review_clients
+      ~f:(fun
+          (module R : Review_service_client.S
+            with type error = Review_service_client.error)
+        ->
+        match R.list_findings ~owner ~repo ~pr_number () with
         | Error err ->
             log_event runtime ~patch_id
-              (Printf.sprintf "Poll error — %s"
-                 (Review_service_client.show_error err));
+              (Printf.sprintf "Poll error — %s" (R.show_error err));
             []
         | Ok response ->
             let parsed_count =
@@ -1896,8 +1896,7 @@ struct
                 (Printf.sprintf
                    "Review backend %s declared %d finding(s) but parsed %d — \
                     possible review-service schema drift"
-                   b.Review_backend.name response.Review_service.count
-                   parsed_count);
+                   R.name response.Review_service.count parsed_count);
             Base.List.iter response.Review_service.dropped_findings
               ~f:(fun (e : Review_service.finding_parse_error) ->
                 let json =
@@ -1909,25 +1908,23 @@ struct
                   (Printf.sprintf
                      "Review backend %s dropped finding at index %d while \
                       parsing: %s; json=%s"
-                     b.Review_backend.name e.Review_service.index
-                     e.Review_service.error json));
+                     R.name e.Review_service.index e.Review_service.error json));
             let keyed_findings =
               Base.List.map response.Review_service.findings
                 ~f:(fun (f : Review_service.finding) ->
                   let key =
-                    Findings_registry.make_key
-                      ~backend_name:b.Review_backend.name ~owner ~repo
+                    Findings_registry.make_key ~backend_name:R.name ~owner ~repo
                       ~pr_number ~finding_id:f.Review_service.id
                   in
                   (key, f))
             in
             Findings_registry.remove_stale_for_scope findings_registry
-              ~backend_name:b.Review_backend.name ~owner ~repo ~pr_number
+              ~backend_name:R.name ~owner ~repo ~pr_number
               ~keep_keys:(Base.List.map keyed_findings ~f:fst);
             Base.List.map keyed_findings ~f:(fun (key, f) ->
                 Findings_registry.register findings_registry ~key
                   {
-                    Findings_registry.backend = b;
+                    Findings_registry.backend_name = R.name;
                     owner;
                     repo;
                     pr_number;
@@ -1951,8 +1948,8 @@ struct
     | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
 
   let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) ~runtime
-      ~clock ~net ~process_mgr ~config ~project_name ~pr_registry ~branch_of
-      ~event_log ~review_backends ~findings_registry =
+      ~clock ~process_mgr ~config ~project_name ~pr_registry ~branch_of
+      ~event_log ~review_clients ~findings_registry =
     let main = config.main_branch in
     let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
     let skip_logged_mutex = Eio.Mutex.create () in
@@ -2077,11 +2074,11 @@ struct
                  Failures inside [poll_review_backends] are logged but
                  non-fatal. *)
                 let findings =
-                  if Base.List.is_empty review_backends then []
+                  if Base.List.is_empty review_clients then []
                   else
-                    poll_review_backends ~net ~clock ~runtime ~patch_id
-                      ~findings_registry ~review_backends
-                      ~owner:config.github_owner ~repo:config.github_repo
+                    poll_review_backends ~runtime ~patch_id ~findings_registry
+                      ~review_clients ~owner:config.github_owner
+                      ~repo:config.github_repo
                       ~pr_number:(Pr_number.to_int pr_number)
                 in
                 let pr_state = { pr_state with Pr_state.findings } in
@@ -2247,8 +2244,8 @@ struct
   (** Runner fiber — executes orchestrator actions by driving backend sessions
       concurrently. *)
   let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-      ~pr_registry ~findings_registry ~review_backends ~transcripts ~net
-      ~event_log ?status_msg () =
+      ~pr_registry ~findings_registry ~review_clients ~transcripts ~event_log
+      ?status_msg () =
     let main = config.main_branch in
     let process_mgr = Eio.Stdenv.process_mgr env in
     let clock = Eio.Stdenv.clock env in
@@ -2936,11 +2933,11 @@ struct
                       if Operation_kind.equal kind Operation_kind.Findings then
                         match pr_number with
                         | Some pr_num
-                          when not (Base.List.is_empty review_backends) ->
+                          when not (Base.List.is_empty review_clients) ->
                             log_event runtime ~patch_id
                               "Fetching fresh findings from review backends";
-                            poll_review_backends ~net ~clock ~runtime ~patch_id
-                              ~findings_registry ~review_backends
+                            poll_review_backends ~runtime ~patch_id
+                              ~findings_registry ~review_clients
                               ~owner:config.github_owner
                               ~repo:config.github_repo
                               ~pr_number:(Pr_number.to_int pr_num)
@@ -3683,7 +3680,8 @@ struct
                                                   ~project_name ~patch_id
                                               in
                                               Findings_resolver
-                                              .resolve_after_session ~net ~clock
+                                              .resolve_after_session
+                                                ~review_clients
                                                 ~log:(fun msg ->
                                                   log_event runtime ~patch_id
                                                     msg)
@@ -4593,7 +4591,10 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         (Activity_log_sink.sink
            ~update:(Runtime.update_activity_log runtime)
            ());
-      let review_backends = repo_config.Repo_config.review_backends in
+      let review_clients =
+        Base.List.map repo_config.Repo_config.review_backends ~f:(fun backend ->
+            Review_service_client.make ~net ~clock ~backend)
+      in
       let findings_registry = Findings_registry.create () in
       let common_fibers =
         [
@@ -4601,9 +4602,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           (fun () ->
             poller_fiber
               (module Reconciler : STARTUP_RECONCILER)
-              ~runtime ~clock ~net ~process_mgr ~config ~project_name
-              ~pr_registry ~branch_of ~event_log ~review_backends
-              ~findings_registry);
+              ~runtime ~clock ~process_mgr ~config ~project_name ~pr_registry
+              ~branch_of ~event_log ~review_clients ~findings_registry);
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
@@ -4613,7 +4613,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           ((fun () -> headless_fiber ~runtime ~clock ~stdout)
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-              ~pr_registry ~findings_registry ~review_backends ~transcripts ~net
+              ~pr_registry ~findings_registry ~review_clients ~transcripts
               ~event_log ())
           :: common_fibers)
       else
@@ -4666,8 +4666,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                     ~repo:config.github_repo ~resolve_routing)
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
-                    ~pr_registry ~findings_registry ~review_backends
-                    ~transcripts ~net ~event_log ~status_msg ())
+                    ~pr_registry ~findings_registry ~review_clients ~transcripts
+                    ~event_log ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

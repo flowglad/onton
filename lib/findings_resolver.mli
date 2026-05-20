@@ -9,8 +9,7 @@
     the rest of the session pipeline. *)
 
 val resolve_after_session :
-  net:_ Eio.Net.t ->
-  clock:_ Eio.Time.clock ->
+  review_clients:Review_service_client.client list ->
   log:(string -> unit) ->
   findings_registry:Findings_registry.t ->
   artifact_path:string ->

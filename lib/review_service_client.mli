@@ -23,6 +23,43 @@ type error =
 
 val show_error : error -> string
 
+(** Consumer-facing review-service capability. Implementations capture network,
+    clock, and backend configuration at construction time. *)
+module type S = sig
+  type error
+
+  val show_error : error -> string
+  val name : string
+
+  val list_findings :
+    owner:string ->
+    repo:string ->
+    pr_number:int ->
+    unit ->
+    (Onton_core.Review_service.findings_response, error) Stdlib.Result.t
+
+  val mark_resolved :
+    owner:string ->
+    repo:string ->
+    pr_number:int ->
+    finding_id:string ->
+    kind:Onton_core.Review_service.resolve_kind ->
+    ?actor:string ->
+    ?reason:string ->
+    unit ->
+    (Onton_core.Review_service.resolve_response, error) Stdlib.Result.t
+end
+
+type client = (module S with type error = error)
+
+val make :
+  net:_ Eio.Net.t ->
+  clock:_ Eio.Time.clock ->
+  backend:Onton_core.Review_backend.t ->
+  client
+(** [make ~net ~clock ~backend] packages a review-service backend as a
+    capability module whose calls no longer need per-call effect arguments. *)
+
 val list_findings :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->

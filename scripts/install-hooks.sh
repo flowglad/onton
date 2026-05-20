@@ -5,7 +5,7 @@
 #   - post-checkout: runs sync-skills.sh after branch switches so ~/.agents/skills
 #     always points at the current checkout
 #   - pre-commit: runs dune build / runtest / fmt against the project's local
-#     opam switch (5.4.0), not whatever the user's default switch happens to be
+#     opam switch (5.4.1), not whatever the user's default switch happens to be
 #
 # Safe to run repeatedly. Refuses to overwrite a pre-existing hook that isn't
 # onton's own (detected via a sentinel comment). Also runs sync-skills.sh once
@@ -84,7 +84,7 @@ install_hook pre-commit <<'HOOK'
 # to detect that this hook is owned by onton and may be safely overwritten.
 set -e
 
-# Activate the project's local opam switch (5.4.0) rather than whatever the
+# Activate the project's local opam switch (5.4.1) rather than whatever the
 # user's default switch happens to be. git-common-dir resolves to the main
 # repo's .git from any worktree; its parent is the project root that holds _opam.
 PROJECT_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
