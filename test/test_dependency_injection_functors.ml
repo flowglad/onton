@@ -92,8 +92,12 @@ let _check_narrowed :
 module Fake_sd_env : Session_driver.ENV = struct
   let runtime = Fake_env.runtime
 
-  (* Eio resources cannot be created outside Eio_main.run; they are never
-     dereferenced because Session_driver.Make defines functions only. *)
+  (* Eio resources cannot be created outside Eio_main.run. Obj.magic () is
+     safe here because both Worktree_setup.Make and Session_driver.Make consist
+     entirely of [let f = ...] definitions with no top-level side-effects, so
+     these values are never dereferenced at functor-application time. If either
+     Make body gains a top-level expression that dereferences Env.clock or
+     Env.fs, this test will segfault — that is the intended alarm. *)
   let clock : float Eio.Time.clock_ty Eio.Time.clock = Obj.magic ()
   let fs : Eio.Fs.dir_ty Eio.Path.t = Obj.magic ()
   let worktree_mutex : Eio.Mutex.t = Obj.magic ()
