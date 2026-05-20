@@ -307,7 +307,6 @@ module Make_fibers
     (Forge : Onton.Forge.S with type error = Github.error)
     (W : Worktree.S) =
 struct
-  module Session_driver = Session_driver.Make (W)
 
   (** Execute declarative GitHub effects and record successful observations back
       into durable state. *)
@@ -2054,6 +2053,19 @@ struct
     (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
      the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
     let fetch_mutex = Eio.Mutex.create () in
+    let module SD_Env = struct
+      let runtime = runtime
+      let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+      let fs = fs
+      let project_name = project_name
+      let owner = config.github_owner
+      let repo = config.github_repo
+      let transcripts = transcripts
+      let user_config = config.user_config
+      let worktree_mutex = worktree_mutex
+      let hook_mutex = hook_mutex
+    end in
+    let module Session_driver = Session_driver.Make (W) (SD_Env) in
     let execute_worktree_plan ~patch_id ~(agent : Patch_agent.t) ~fetch_lock
         ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
       let default_path = Worktree.worktree_dir ~project_name ~patch_id in
@@ -2107,10 +2119,8 @@ struct
         ~prompt ~agent ~on_pr_detected ~complexity =
       match pick_backend ~complexity with
       | Backend_registry.Ephemeral backend, _decision ->
-          Session_driver.run ~kind ~runtime ~clock ~fs ~project_name ~patch_id
-            ~prompt ~agent ~owner:config.github_owner ~repo:config.github_repo
-            ~on_pr_detected ~transcripts ~user_config:config.user_config
-            ~worktree_mutex ~hook_mutex ~backend ~complexity
+          Session_driver.run ~kind ~patch_id ~prompt ~agent ~on_pr_detected
+            ~backend ~complexity
       | Backend_registry.Long_lived backend, decision -> (
           let patch_agent_model_result =
             match
@@ -2146,11 +2156,8 @@ struct
                     Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
                     session
               in
-              Session_driver.run_long_lived ~sw ~kind ~runtime ~clock ~fs
-                ~project_name ~patch_id ~prompt ~agent
-                ~owner:config.github_owner ~repo:config.github_repo
-                ~on_pr_detected ~transcripts ~user_config:config.user_config
-                ~worktree_mutex ~hook_mutex ~session ~complexity)
+              Session_driver.run_long_lived ~sw ~kind ~patch_id ~prompt ~agent
+                ~on_pr_detected ~session ~complexity)
     in
     let shutdown_finished_long_lived_sessions ~sw () =
       let finished =
