@@ -141,35 +141,35 @@ def validate_dependency_graph(inst: dict, patches_by_id: dict[str, dict], errors
             if dep not in patches_by_id:
                 errors.append(f"patch {p} depends on unknown patch {dep}")
 
-    # DFS cycle detection
+    # DFS cycle detection: cover every node referenced by an edge (not just
+    # dg keys) and report every distinct cycle.
     UNVISITED, VISITING, DONE = 0, 1, 2
-    color: dict[str, int] = {n: UNVISITED for n in deps}
-    cycle_found = [False]
+    all_nodes = set(deps) | {d for ds in deps.values() for d in ds}
+    color: dict[str, int] = {n: UNVISITED for n in all_nodes}
+    seen_cycles: set[tuple[str, ...]] = set()
+
+    def canon(cycle: list[str]) -> tuple[str, ...]:
+        k = min(range(len(cycle)), key=lambda i: cycle[i:] + cycle[:i])
+        return tuple(cycle[k:] + cycle[:k])
 
     def dfs(node: str, stack: list[str]) -> None:
-        if cycle_found[0]:
-            return
         color[node] = VISITING
         for nxt in deps.get(node, []):
-            if nxt not in color:
-                continue
             if color[nxt] == VISITING:
-                idx = stack.index(nxt) if nxt in stack else 0
-                cycle = stack[idx:] + [nxt]
-                errors.append(f"dependency cycle: {' -> '.join(cycle)}")
-                cycle_found[0] = True
-                return
-            if color[nxt] == UNVISITED:
+                # VISITING is only set by an active dfs frame, so nxt is on stack.
+                idx = stack.index(nxt)
+                cycle_nodes = stack[idx:]
+                key = canon(cycle_nodes)
+                if key not in seen_cycles:
+                    seen_cycles.add(key)
+                    errors.append(f"dependency cycle: {' -> '.join(cycle_nodes + [nxt])}")
+            elif color[nxt] == UNVISITED:
                 dfs(nxt, stack + [nxt])
-                if cycle_found[0]:
-                    return
         color[node] = DONE
 
-    for n in list(deps):
-        if color.get(n) == UNVISITED:
+    for n in sorted(all_nodes):
+        if color[n] == UNVISITED:
             dfs(n, [n])
-            if cycle_found[0]:
-                break
 
 
 def validate_test_map(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
