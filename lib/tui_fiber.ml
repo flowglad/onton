@@ -198,8 +198,8 @@ struct
           ~backend_name:Env.backend_name ~show_help:!show_help
           ~show_manage:
             (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
-          ~now:(Unix.gettimeofday ()) ~transcript ?status_msg:!status_msg
-          ?prompt_line:!prompt_line views
+          ~now ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line
+          views
       in
       detail_scroll := Tui.detail_scroll_offset frame;
       if Tui.detail_at_bottom frame then detail_follow := true;
@@ -862,7 +862,10 @@ struct
                           | Some s -> s.Term.rows
                           | None -> 24
                         in
-                        let reserved = 9 in
+                        let status_rows =
+                          match !status_msg with Some _ -> 1 | None -> 0
+                        in
+                        let reserved = 9 + status_rows in
                         let max_rows = Int.max 0 (height - reserved) in
                         let max_offset = Int.max 0 (total - max_rows) in
                         timeline_scroll :=
