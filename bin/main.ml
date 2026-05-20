@@ -4326,6 +4326,10 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           Printf.eprintf "Error: cannot access GitHub repo %s/%s: %s\n"
             config.github_owner config.github_repo (Github.show_error err);
           Stdlib.exit 1);
+      (* Patch 3 still keeps the raw [github] client for direct GitHub calls
+         migrated in Patch 4. [Github.t] is currently immutable config, so this
+         temporary duplicate is benign; once those calls move behind Forge,
+         this composition root should construct only the Forge-backed client. *)
       let forge =
         Github.make ~net ~clock ~token:config.github_token
           ~owner:config.github_owner ~repo:config.github_repo
