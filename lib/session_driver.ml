@@ -141,6 +141,7 @@ end
 module Make (W : Worktree.S) (Env : ENV) = struct
   let session_mode = session_mode
   let extract_pr_number_from_text = extract_pr_number_from_text
+
   module WS = Worktree_setup.Make (W) (Env)
 
   module WS = Worktree_setup.Make (W) (Env)
