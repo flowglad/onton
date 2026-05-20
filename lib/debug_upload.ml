@@ -5,7 +5,7 @@ type manifest = {
   schema_version : int;
   onton_version : string;
   os : string;
-  arch : string option;
+  arch : string;
   timestamp : string;
   project_name : string;
   latest_subkinds_by_patch : (string * Failure_subkind.t) list;
@@ -20,6 +20,7 @@ type meta_summary = {
 }
 
 type collected = {
+  timestamp : string;
   files : (string * string) list;
   artifact_paths : string list;
   meta_summaries : meta_summary list;
@@ -152,29 +153,29 @@ let collect_session_files ~project_name =
   let session_root = Project_store.sessions_dir project_name in
   let files = walk_files ~root:session_root ~relative:"" in
   let folder name = Stdlib.Filename.concat "sessions" name in
-  List.fold files ~init:{ files = []; artifact_paths = []; meta_summaries = [] }
-    ~f:(fun acc (relative, path) ->
-      match read_file_opt path with
-      | None -> acc
-      | Some raw ->
-          let name = folder relative in
-          let meta_summaries =
-            if String.is_suffix relative ~suffix:"meta.json" then
-              match meta_summary_of_file ~path ~raw with
-              | Some summary -> summary :: acc.meta_summaries
-              | None -> acc.meta_summaries
-            else acc.meta_summaries
-          in
-          {
-            files = (name, scrub_file_contents ~name raw) :: acc.files;
-            artifact_paths = name :: acc.artifact_paths;
-            meta_summaries;
-          })
-  |> fun collected ->
+  let files, artifact_paths, meta_summaries =
+    List.fold files ~init:([], [], [])
+      ~f:(fun (acc_files, acc_paths, acc_meta_summaries) (relative, path) ->
+        match read_file_opt path with
+        | None -> (acc_files, acc_paths, acc_meta_summaries)
+        | Some raw ->
+            let name = folder relative in
+            let meta_summaries =
+              if String.is_suffix relative ~suffix:"meta.json" then
+                match meta_summary_of_file ~path ~raw with
+                | Some summary -> summary :: acc_meta_summaries
+                | None -> acc_meta_summaries
+              else acc_meta_summaries
+            in
+            ( (name, scrub_file_contents ~name raw) :: acc_files,
+              name :: acc_paths,
+              meta_summaries ))
+  in
   {
-    files = List.rev collected.files;
-    artifact_paths = List.rev collected.artifact_paths;
-    meta_summaries = List.rev collected.meta_summaries;
+    timestamp = "";
+    files = List.rev files;
+    artifact_paths = List.rev artifact_paths;
+    meta_summaries = List.rev meta_summaries;
   }
 
 let is_more_recent left right =
@@ -195,17 +196,15 @@ let latest_subkinds_by_patch meta_summaries =
   |> Map.to_alist
   |> List.map ~f:(fun (patch_id, summary) -> (patch_id, summary.subkind))
 
-let detect_arch () =
-  if Stdlib.Sys.word_size > 0 then
-    Some (Int.to_string Stdlib.Sys.word_size ^ "-bit")
-  else None
+let detect_arch () = Int.to_string Stdlib.Sys.word_size ^ "-bit"
 
 let manifest_to_yojson manifest =
-  let base_fields =
+  `Assoc
     [
       ("schema_version", `Int manifest.schema_version);
       ("onton_version", `String manifest.onton_version);
       ("os", `String manifest.os);
+      ("arch", `String manifest.arch);
       ("timestamp", `String manifest.timestamp);
       ("project_name", `String manifest.project_name);
       ( "latest_subkinds_by_patch",
@@ -217,13 +216,6 @@ let manifest_to_yojson manifest =
         `List (List.map manifest.artifact_paths ~f:(fun path -> `String path))
       );
     ]
-  in
-  let fields =
-    match manifest.arch with
-    | None -> base_fields
-    | Some arch -> ("arch", `String arch) :: base_fields
-  in
-  `Assoc fields
 
 let build_manifest ~project_name ~version ~timestamp ~artifact_paths
     ~meta_summaries =
@@ -251,6 +243,7 @@ let collect_files ~project_name ~version =
     manifest_to_yojson manifest |> Yojson.Safe.to_string ~std:true
   in
   {
+    timestamp;
     files =
       ("manifest.json", manifest_json) :: (base_files @ session_files.files);
     artifact_paths = session_files.artifact_paths;
@@ -267,7 +260,7 @@ let build_bundle_from_collected ~project_name ~version ~collected =
       ("version", `Int 1);
       ("project_name", `String project_name);
       ("onton_version", `String version);
-      ("timestamp", `String (iso8601_now ()));
+      ("timestamp", `String collected.timestamp);
       ("files", `Assoc file_assoc);
     ]
   |> Yojson.Safe.to_string ~std:true
