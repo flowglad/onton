@@ -20,10 +20,7 @@ type config = {
   user_config : User_config.t;
 }
 
-module type STARTUP_RECONCILER = sig
-  val discover_pr :
-    branch:Branch.t -> ((Pr_number.t * Branch.t * bool) option, string) Result.t
-end
+module type STARTUP_RECONCILER = Poller_fiber.STARTUP_RECONCILER
 
 let default_backend = "claude"
 
@@ -173,6 +170,31 @@ struct
 
   module WS = Worktree_setup.Make (W) (WS_Env)
   module Session_driver = Session_driver.Make (W) (SD_Env)
+
+  module Env_poller : Poller_fiber.Poller_env.S = struct
+    let runtime = Env.runtime
+    let clock = Env.clock
+    let fs = Env.fs
+    let project_name = Env.project_name
+    let user_config = Env.config.user_config
+    let worktree_mutex = Env.worktree_mutex
+    let hook_mutex = Env.hook_mutex
+    let process_mgr = Env.process_mgr
+    let github_owner = Env.config.github_owner
+    let github_repo = Env.config.github_repo
+    let main_branch = Env.config.main_branch
+    let poll_interval = Env.config.poll_interval
+    let repo_root = Env.config.repo_root
+    let find_pr_number = Pr_registry.find Env.pr_registry
+    let register_pr_number = Pr_registry.register Env.pr_registry
+    let unregister_pr_number = Pr_registry.unregister Env.pr_registry
+    let findings_registry = Env.findings_registry
+    let review_clients = Env.review_clients
+    let event_log = Env.event_log
+    let branch_of = Env.branch_of
+  end
+
+  module Poller = Poller_fiber.Make (Forge) (W) (Env_poller)
 
   (** Execute declarative GitHub effects and record successful observations back
       into durable state. *)
@@ -1530,17 +1552,6 @@ struct
     in
     loop ()
 
-  (** Per-agent poll intent, collected inside [read] and executed outside. *)
-  type poll_intent =
-    | Skip_no_pr of Patch_id.t
-    | Poll of {
-        patch_id : Patch_id.t;
-        pr_number : Pr_number.t;
-        was_merged : bool;
-      }
-
-  (** Poller fiber — periodically polls GitHub for PR state changes and
-      reconciles. *)
   let poll_review_backends ~runtime ~patch_id ~findings_registry ~review_clients
       ~owner ~repo ~pr_number : Review_service.finding list =
     Base.List.concat_map review_clients
@@ -1598,317 +1609,7 @@ struct
                   };
                 { f with Review_service.id = key }))
 
-  (** Translate a [Github] result into a [Poll_outcome.t]. Pure-modulo-show; the
-      boundary lets [Poll_cycle.classify] reason about timeouts the same way it
-      reasons about other failures, which is the invariant the interleaving
-      property tests exercise. *)
-  let poll_outcome_of_github_result = function
-    | Ok pr_state -> Poll_outcome.Ok_pr_state pr_state
-    | Error (Github.Timeout { seconds; _ }) ->
-        Poll_outcome.Timed_out { seconds }
-    | Error (Github.Transport_error { msg; _ }) ->
-        Poll_outcome.Transport_failed { msg }
-    | Error (Github.Http_error { status; body; _ }) ->
-        Poll_outcome.Http_failed { status; msg = body }
-    | Error (Github.Graphql_error msgs) -> Poll_outcome.Graphql_failed msgs
-    | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
-
-  let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) =
-    let runtime = Env.runtime in
-    let clock = Env.clock in
-    let process_mgr = Env.process_mgr in
-    let config = Env.config in
-    let project_name = Env.project_name in
-    let pr_registry = Env.pr_registry in
-    let branch_of = Env.branch_of in
-    let event_log = Env.event_log in
-    let review_clients = Env.review_clients in
-    let findings_registry = Env.findings_registry in
-    let main = config.main_branch in
-    let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
-    let skip_logged_mutex = Eio.Mutex.create () in
-    let mark_skip_logged patch_id =
-      Eio.Mutex.use_rw ~protect:true skip_logged_mutex (fun () ->
-          if Hashtbl.mem skip_logged patch_id then false
-          else (
-            Hashtbl.replace skip_logged patch_id true;
-            true))
-    in
-    let rec loop () =
-      let intents =
-        Runtime.read runtime (fun snap ->
-            let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
-            Base.List.filter_map agents ~f:(fun (agent : Patch_agent.t) ->
-                if Patch_agent.has_pr agent && not agent.Patch_agent.merged then
-                  match
-                    Pr_registry.find pr_registry
-                      ~patch_id:agent.Patch_agent.patch_id
-                  with
-                  | None -> Some (Skip_no_pr agent.Patch_agent.patch_id)
-                  | Some pr_number ->
-                      Some
-                        (Poll
-                           {
-                             patch_id = agent.Patch_agent.patch_id;
-                             pr_number;
-                             was_merged = agent.Patch_agent.merged;
-                           })
-                else None))
-      in
-      (* Handle Skip_no_pr intents up front — they need no network I/O. *)
-      let poll_intents =
-        Base.List.filter_map intents ~f:(function
-          | Skip_no_pr patch_id ->
-              if mark_skip_logged patch_id then
-                log_event runtime ~patch_id
-                  "Skipping poll — no PR number registered";
-              None
-          | Poll { patch_id; pr_number; was_merged } ->
-              Some (patch_id, pr_number, was_merged))
-      in
-      (* Phase 1a: parallel per-patch PR state fetch.
-
-       This is the head-of-line-blocking fix: when one patch's TCP connect
-       is wedged in [SYN_SENT], the forge returns [Timeout] after the default
-       GitHub request timeout — and every other patch's fiber proceeds
-       independently. *)
-      let outcomes =
-        Eio.Fiber.List.map ~max_fibers:16
-          (fun (patch_id, pr_number, was_merged) ->
-            let outcome =
-              poll_outcome_of_github_result (Forge.pr_state pr_number)
-            in
-            (patch_id, pr_number, was_merged, outcome))
-          poll_intents
-      in
-      (* Phase 1b: pure classification. *)
-      let plans =
-        Base.List.map outcomes
-          ~f:(fun (patch_id, pr_number, was_merged, outcome) ->
-            let cls =
-              Poll_cycle.classify { patch_id; pr_number; was_merged; outcome }
-            in
-            (patch_id, pr_number, cls))
-      in
-      (* Phase 1c: per-patch effectful tail. Builds observations from
-       [Apply_pr_state] plans, handles [Rediscover_pr] / [Skip_fork] /
-       [Log_error]. *)
-      let observations =
-        Base.List.filter_map plans ~f:(fun (patch_id, pr_number, cls) ->
-            match cls with
-            | Poll_cycle.Log_error { message } ->
-                log_event runtime ~patch_id message;
-                None
-            | Poll_cycle.Skip_fork _ ->
-                if mark_skip_logged patch_id then
-                  log_event runtime ~patch_id
-                    (Printf.sprintf
-                       "Skipping PR #%d — fork PRs are not supported"
-                       (Pr_number.to_int pr_number));
-                None
-            | Poll_cycle.Rediscover_pr { head_branch } ->
-                log_event runtime ~patch_id
-                  (Printf.sprintf "PR #%d closed — looking for replacement"
-                     (Pr_number.to_int pr_number));
-                let branch =
-                  match head_branch with
-                  | Some b -> b
-                  | None ->
-                      Runtime.read runtime (fun snap ->
-                          match
-                            Orchestrator.find_agent snap.Runtime.orchestrator
-                              patch_id
-                          with
-                          | Some agent -> agent.Patch_agent.branch
-                          | None -> branch_of patch_id)
-                in
-                (match StartupReconciler.discover_pr ~branch with
-                | Ok (Some (new_pr, base_branch, merged)) ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Switched to PR #%d"
-                         (Pr_number.to_int new_pr));
-                    Pr_registry.register pr_registry ~patch_id ~pr_number:new_pr;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Patch_controller.apply_replacement_pr orch patch_id
-                          ~pr_number:new_pr ~base_branch ~merged)
-                | Ok None ->
-                    log_event runtime ~patch_id
-                      "No open PR found — cleared stale PR state, will create \
-                       on next session";
-                    Pr_registry.unregister pr_registry ~patch_id;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.clear_pr orch patch_id)
-                | Error msg ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "PR re-discovery failed — %s" msg));
-                None
-            | Poll_cycle.Apply_pr_state
-                { pr_state; poll_result; ci_checks_truncated } ->
-                (* Augment with findings from every configured review backend.
-                 Failures inside [poll_review_backends] are logged but
-                 non-fatal. *)
-                let findings =
-                  if Base.List.is_empty review_clients then []
-                  else
-                    poll_review_backends ~runtime ~patch_id ~findings_registry
-                      ~review_clients ~owner:config.github_owner
-                      ~repo:config.github_repo
-                      ~pr_number:(Pr_number.to_int pr_number)
-                in
-                let pr_state = { pr_state with Pr_state.findings } in
-                let branch_in_root =
-                  match pr_state.Pr_state.head_branch with
-                  | Some b ->
-                      Worktree.is_checked_out_in_repo_root ~process_mgr
-                        ~repo_root:config.repo_root b
-                  | None -> false
-                in
-                let failed_ci =
-                  Base.List.filter poll_result.Poller.ci_checks
-                    ~f:(fun (c : Ci_check.t) ->
-                      Base.List.mem Patch_decision.failure_conclusions
-                        c.Ci_check.conclusion ~equal:Base.String.equal)
-                in
-                let worktree_candidate =
-                  let agent =
-                    Runtime.read runtime (fun snap ->
-                        Orchestrator.find_agent snap.Runtime.orchestrator
-                          patch_id)
-                  in
-                  match agent with
-                  | None -> None
-                  | Some agent ->
-                      if Option.is_some agent.Patch_agent.worktree_path then
-                        None
-                      else
-                        let path =
-                          WS.resolve_worktree_path ~patch_id ~agent ()
-                        in
-                        let default =
-                          Worktree.worktree_dir ~project_name ~patch_id
-                        in
-                        if not (String.equal path default) then Some path
-                        else None
-                in
-                let observation =
-                  Patch_controller.
-                    {
-                      poll_result;
-                      base_branch = pr_state.Pr_state.base_branch;
-                      branch_in_root;
-                      worktree_path = worktree_candidate;
-                    }
-                in
-                Some (patch_id, observation, failed_ci, ci_checks_truncated))
-      in
-      (* Phase 2: Single atomic update — apply all poll results + reconcile.
-       This prevents the runner from seeing an intermediate state where
-       poll results are applied but the reconciler hasn't run yet. *)
-      let per_patch_sides, reconcile_logs =
-        Runtime.update_orchestrator_returning runtime (fun orch ->
-            (* Apply all poll results *)
-            let orch, sides =
-              Base.List.fold observations ~init:(orch, [])
-                ~f:(fun
-                    (orch, sides) (patch_id, obs, failed_ci, ci_truncated) ->
-                  match Orchestrator.find_agent orch patch_id with
-                  | None -> (orch, sides)
-                  | Some agent_before ->
-                      let orch, log_entries, newly_blocked =
-                        Patch_controller.apply_poll_result orch patch_id obs
-                      in
-                      let agent_after = Orchestrator.agent orch patch_id in
-                      Event_log.log_poll event_log ~patch_id
-                        ~poll_result:obs.Patch_controller.poll_result
-                        ~agent_before ~agent_after
-                        ~logs:
-                          (Base.List.map log_entries
-                             ~f:(fun (e : Patch_controller.poll_log_entry) ->
-                               e.Patch_controller.message));
-                      ( orch,
-                        ( patch_id,
-                          log_entries,
-                          newly_blocked,
-                          failed_ci,
-                          ci_truncated )
-                        :: sides ))
-            in
-            (* Reconcile — detect merges and enqueue rebases *)
-            let agents = Orchestrator.all_agents orch in
-            let patch_views =
-              Base.List.map agents ~f:(fun (a : Patch_agent.t) ->
-                  Reconciler.
-                    {
-                      id = a.Patch_agent.patch_id;
-                      has_pr = Patch_agent.has_pr a;
-                      merged = a.Patch_agent.merged;
-                      busy = a.Patch_agent.busy;
-                      needs_intervention = Patch_agent.needs_intervention a;
-                      branch_blocked = a.Patch_agent.branch_blocked;
-                      queue = a.Patch_agent.queue;
-                      base_branch =
-                        Base.Option.value a.Patch_agent.base_branch
-                          ~default:main;
-                      branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
-                    })
-            in
-            let merged_patches =
-              Base.List.filter_map agents ~f:(fun (a : Patch_agent.t) ->
-                  if a.Patch_agent.merged then Some a.Patch_agent.patch_id
-                  else None)
-            in
-            let actions =
-              Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
-                ~merged_pr_patches:merged_patches ~branch_of patch_views
-            in
-            let rec_logs = ref [] in
-            let orch =
-              Base.List.fold actions ~init:orch ~f:(fun orch action ->
-                  match action with
-                  | Reconciler.Mark_merged pid ->
-                      Orchestrator.mark_merged orch pid
-                  | Reconciler.Enqueue_rebase pid ->
-                      rec_logs :=
-                        ("rebase enqueued by reconciler", pid) :: !rec_logs;
-                      Orchestrator.enqueue orch pid Operation_kind.Rebase
-                  | Reconciler.Start_operation _ -> orch)
-            in
-            (orch, (Base.List.rev sides, Base.List.rev !rec_logs)))
-      in
-      (* Phase 3: Side effects — outside the lock *)
-      Base.List.iter per_patch_sides
-        ~f:(fun
-            (patch_id, log_entries, newly_blocked, _failed_ci, ci_truncated) ->
-          Base.List.iter log_entries
-            ~f:(fun (entry : Patch_controller.poll_log_entry) ->
-              log_event runtime ~patch_id:entry.Patch_controller.patch_id
-                entry.Patch_controller.message);
-          (if newly_blocked then
-             let b =
-               Runtime.read runtime (fun snap ->
-                   match
-                     Orchestrator.find_agent snap.Runtime.orchestrator patch_id
-                   with
-                   | Some a -> Branch.to_string a.Patch_agent.branch
-                   | None -> "unknown")
-             in
-             let main_root = W.resolve_main_root () in
-             log_event runtime ~patch_id
-               (Printf.sprintf
-                  "Cannot work on patch — branch %s is checked out in the main \
-                   working tree (%s); release it (e.g. `git -C %s checkout \
-                   <default-branch>`) before continuing"
-                  b main_root main_root));
-          if ci_truncated then
-            log_event runtime ~patch_id
-              "Warning — CI check list was truncated (>100 checks); some \
-               failures may not appear in the prompt");
-      Base.List.iter reconcile_logs ~f:(fun (msg, pid) ->
-          log_event runtime ~patch_id:pid msg);
-      Eio.Time.sleep clock config.poll_interval;
-      loop ()
-    in
-    loop ()
+  let poller_fiber startup_reconciler = Poller.run startup_reconciler
 
   (** Runner fiber — executes orchestrator actions by driving backend sessions
       concurrently. *)
