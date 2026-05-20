@@ -14,12 +14,10 @@ module Make (_ : Worktree.S) : sig
   val run :
     kind:Types.Operation_kind.t option ->
     runtime:Runtime.t ->
-    process_mgr:_ Eio.Process.mgr ->
     clock:_ Eio.Time.clock ->
     fs:Eio.Fs.dir_ty Eio.Path.t ->
     project_name:string ->
     patch_id:Types.Patch_id.t ->
-    repo_root:string ->
     prompt:string ->
     agent:Patch_agent.t ->
     owner:string ->
@@ -62,12 +60,10 @@ module Make (_ : Worktree.S) : sig
     sw:Eio.Switch.t ->
     kind:Types.Operation_kind.t option ->
     runtime:Runtime.t ->
-    process_mgr:_ Eio.Process.mgr ->
     clock:_ Eio.Time.clock ->
     fs:Eio.Fs.dir_ty Eio.Path.t ->
     project_name:string ->
     patch_id:Types.Patch_id.t ->
-    repo_root:string ->
     prompt:string ->
     agent:Patch_agent.t ->
     owner:string ->

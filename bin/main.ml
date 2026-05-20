@@ -2246,7 +2246,6 @@ struct
       ~pr_registry ~findings_registry ~review_backends ~transcripts ~net
       ~event_log ?status_msg () =
     let main = config.main_branch in
-    let process_mgr = Eio.Stdenv.process_mgr env in
     let clock = Eio.Stdenv.clock env in
     let fs = Eio.Stdenv.fs env in
     let set_status ~level ~text ?expires_at () =
@@ -2289,11 +2288,10 @@ struct
         ~prompt ~agent ~on_pr_detected ~complexity =
       match pick_backend ~complexity with
       | Backend_registry.Ephemeral backend, _decision ->
-          Session_driver.run ~kind ~runtime ~process_mgr ~clock ~fs
-            ~project_name ~patch_id ~repo_root:config.repo_root ~prompt ~agent
-            ~owner:config.github_owner ~repo:config.github_repo ~on_pr_detected
-            ~transcripts ~user_config:config.user_config ~worktree_mutex
-            ~hook_mutex ~backend ~complexity
+          Session_driver.run ~kind ~runtime ~clock ~fs ~project_name ~patch_id
+            ~prompt ~agent ~owner:config.github_owner ~repo:config.github_repo
+            ~on_pr_detected ~transcripts ~user_config:config.user_config
+            ~worktree_mutex ~hook_mutex ~backend ~complexity
       | Backend_registry.Long_lived backend, decision -> (
           let patch_agent_model_result =
             match
@@ -2329,12 +2327,11 @@ struct
                     Stdlib.Hashtbl.replace long_lived_sessions patch_id session;
                     session
               in
-              Session_driver.run_long_lived ~sw ~kind ~runtime ~process_mgr
-                ~clock ~fs ~project_name ~patch_id ~repo_root:config.repo_root
-                ~prompt ~agent ~owner:config.github_owner
-                ~repo:config.github_repo ~on_pr_detected ~transcripts
-                ~user_config:config.user_config ~worktree_mutex ~hook_mutex
-                ~session ~complexity)
+              Session_driver.run_long_lived ~sw ~kind ~runtime ~clock ~fs
+                ~project_name ~patch_id ~prompt ~agent
+                ~owner:config.github_owner ~repo:config.github_repo
+                ~on_pr_detected ~transcripts ~user_config:config.user_config
+                ~worktree_mutex ~hook_mutex ~session ~complexity)
     in
     let shutdown_finished_long_lived_sessions ~sw () =
       let finished =
