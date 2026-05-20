@@ -1250,9 +1250,14 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           1 (* blank before footer *) + List.length status_line
           + List.length footer
         in
-        (* Space available for the activity section, which includes its own
-           blank separator from the patch block. Need at least 3 lines
-           (separator + "Activity" header + 1 entry) to be worth rendering. *)
+        (* [activity_budget] is the total space available for the activity
+           block, which when rendered is: 1 blank separator + render_activity
+           output ("Activity" header + one line per entry). Need ≥ 3 to fit
+           separator + header + 1 entry. The separator is folded into
+           [activity_lines] itself so the budget accounting is local: the
+           sole invariant is [List.length activity_lines ≤ activity_budget],
+           and there is no separate prepend at the concat site that could
+           drift from the budget. *)
         let activity_budget =
           height - lines_before_activity - lines_after_activity
         in
@@ -1260,13 +1265,12 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           if List.is_empty activity || activity_budget < 3 then []
           else
             let raw = render_activity activity in
-            let take = Int.min (List.length raw) (activity_budget - 1) in
-            List.take raw take
+            let max_raw = activity_budget - 1 (* reserve 1 for separator *) in
+            "" :: List.take raw (Int.min (List.length raw) max_raw)
         in
         let lines =
-          header @ [ "" ] @ patches
-          @ (if List.is_empty activity_lines then [] else "" :: activity_lines)
-          @ [ "" ] @ status_line @ footer
+          header @ [ "" ] @ patches @ activity_lines @ [ "" ] @ status_line
+          @ footer
         in
         {
           no_patches with
