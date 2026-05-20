@@ -19,7 +19,6 @@ end
 
 module Make (_ : Worktree.S) (_ : ENV) : sig
   val resolve_worktree_path :
-    project_name:string ->
     patch_id:Types.Patch_id.t ->
     agent:Patch_agent.t ->
     ?branch:Types.Branch.t ->

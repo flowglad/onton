@@ -696,19 +696,6 @@ struct
             ~reason:Orchestrator.Unexpected_exception ~agent_before:before
             ~agent_after:after)
 
-  let resolve_worktree_path ~project_name ~patch_id
-      ~(agent : Patch_agent.t) ?branch () =
-    match (branch, agent.Patch_agent.worktree_path) with
-    | None, Some p -> p
-    | _ ->
-        let search_branch =
-          match branch with Some b -> b | None -> agent.Patch_agent.branch
-        in
-        let found = W.find_for_branch search_branch in
-        (match found with
-        | Some p -> p
-        | None -> Worktree.worktree_dir ~project_name ~patch_id)
-
   (** {1 Fibers} *)
 
   exception Quit_tui
@@ -1757,7 +1744,7 @@ struct
 
   let poller_fiber (module StartupReconciler : STARTUP_RECONCILER) ~runtime
       ~clock ~process_mgr ~config ~project_name ~pr_registry ~branch_of
-      ~event_log ~review_clients ~findings_registry =
+      ~event_log ~review_clients ~findings_registry ~resolve_worktree_path =
     let main = config.main_branch in
     let skip_logged : (Patch_id.t, bool) Hashtbl.t = Hashtbl.create 16 in
     let skip_logged_mutex = Eio.Mutex.create () in
@@ -1916,8 +1903,7 @@ struct
                         None
                       else
                         let path =
-                          resolve_worktree_path ~project_name ~patch_id ~agent
-                            ()
+                          resolve_worktree_path ~patch_id ~agent ()
                         in
                         let default =
                           Worktree.worktree_dir ~project_name ~patch_id
@@ -2049,7 +2035,7 @@ struct
       concurrently. *)
   let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
       ~pr_registry ~findings_registry ~review_clients ~transcripts ~event_log
-      ?status_msg () =
+      ~worktree_mutex ~hook_mutex ?status_msg () =
     let main = config.main_branch in
     let clock = Eio.Stdenv.clock env in
     let fs = Eio.Stdenv.fs env in
@@ -2063,16 +2049,9 @@ struct
       Eio.Semaphore.acquire semaphore;
       Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
     in
-    let worktree_mutex = Eio.Mutex.create () in
     (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
      the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
     let fetch_mutex = Eio.Mutex.create () in
-    (* Serializes [on_worktree_create] invocations across patch fibers. The
-     hook runs user build commands ([npm install], [dune build], …) which
-     aren't parallelism-safe across shared caches AND fan out into dozens
-     of short-lived children. Running 10 hooks in parallel is how issue
-     #209 blew through the system FD table. *)
-    let hook_mutex = Eio.Mutex.create () in
     let module Env = struct
       let runtime = runtime
       let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
@@ -3202,8 +3181,8 @@ struct
                                           ~f:Branch.to_string
                                       in
                                       let wt_path =
-                                        resolve_worktree_path ~project_name
-                                          ~patch_id ~agent ()
+                                        WS.resolve_worktree_path ~patch_id
+                                          ~agent ()
                                       in
                                       let agents_md =
                                         read_optional_file
@@ -4417,6 +4396,18 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             Review_service_client.make ~net ~clock ~backend)
       in
       let findings_registry = Findings_registry.create () in
+      let worktree_mutex = Eio.Mutex.create () in
+      let hook_mutex = Eio.Mutex.create () in
+      let module Wt_env = struct
+        let runtime = runtime
+        let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+        let fs = Eio.Stdenv.fs env
+        let project_name = project_name
+        let user_config = config.user_config
+        let worktree_mutex = worktree_mutex
+        let hook_mutex = hook_mutex
+      end in
+      let module WS = Worktree_setup.Make (WorktreeClient) (Wt_env) in
       let common_fibers =
         [
           reconciliation_fiber;
@@ -4424,7 +4415,9 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
             poller_fiber
               (module Reconciler : STARTUP_RECONCILER)
               ~runtime ~clock ~process_mgr ~config ~project_name ~pr_registry
-              ~branch_of ~event_log ~review_clients ~findings_registry);
+              ~branch_of ~event_log ~review_clients ~findings_registry
+              ~resolve_worktree_path:(fun ~patch_id ~agent () ->
+                WS.resolve_worktree_path ~patch_id ~agent ()));
           (fun () ->
             persistence_fiber ~runtime ~clock ~project_name ~transcripts);
         ]
@@ -4435,7 +4428,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
               ~pr_registry ~findings_registry ~review_clients ~transcripts
-              ~event_log ())
+              ~event_log ~worktree_mutex ~hook_mutex ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -4488,7 +4481,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~findings_registry ~review_clients ~transcripts
-                    ~event_log ~status_msg ())
+                    ~event_log ~worktree_mutex ~hook_mutex ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

@@ -11,8 +11,7 @@ module type ENV = sig
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
-  let resolve_worktree_path ~project_name ~patch_id ~(agent : Patch_agent.t)
-      ?branch () =
+  let resolve_worktree_path ~patch_id ~(agent : Patch_agent.t) ?branch () =
     (* When the caller passes [?branch], they're asking for that branch's
      worktree specifically — the agent's stored [worktree_path] may be from
      a previous branch and would be stale. Only short-circuit on the stored
@@ -27,7 +26,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         let path =
           match found with
           | Some p -> p
-          | None -> Worktree.worktree_dir ~project_name ~patch_id
+          | None ->
+              Worktree.worktree_dir ~project_name:Env.project_name ~patch_id
         in
         path
 
@@ -40,9 +40,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
     let worktree_mutex = Env.worktree_mutex in
     let hook_mutex = Env.hook_mutex in
     let log_event = Runtime_logging.log_event in
-    let path =
-      resolve_worktree_path ~project_name ~patch_id ~agent ?branch ()
-    in
+    let path = resolve_worktree_path ~patch_id ~agent ?branch () in
     if Stdlib.Sys.file_exists path then (
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);

@@ -310,4 +310,4 @@
 (test
  (name test_dependency_injection_functors)
  (modules test_dependency_injection_functors)
- (libraries onton onton_core eio eio_main eio.unix))
+ (libraries onton onton_core eio))
