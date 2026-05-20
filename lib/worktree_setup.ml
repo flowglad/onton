@@ -10,7 +10,24 @@ module type ENV = sig
   val hook_mutex : Eio.Mutex.t
 end
 
-module Make (W : Worktree.S) (Env : ENV) = struct
+module type S = sig
+  val resolve_worktree_path :
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    ?branch:Types.Branch.t ->
+    unit ->
+    string
+
+  val ensure_worktree :
+    patch_id:Types.Patch_id.t ->
+    agent:Patch_agent.t ->
+    ?branch:Types.Branch.t ->
+    ?base_ref:string ->
+    unit ->
+    string option
+end
+
+module Make (W : Worktree.S) (Env : ENV) : S = struct
   let resolve_worktree_path ~patch_id ~(agent : Patch_agent.t) ?branch () =
     (* When the caller passes [?branch], they're asking for that branch's
      worktree specifically — the agent's stored [worktree_path] may be from

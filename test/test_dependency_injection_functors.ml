@@ -37,13 +37,34 @@ module Fake_worktree : Worktree.S = struct
 end
 
 module Fake_env : Worktree_setup.ENV = struct
-  let runtime : Runtime.t = Obj.magic ()
+  let runtime =
+    Runtime.create
+      ~gameplan:
+        {
+          Gameplan.project_name = "";
+          repo_owner = "";
+          repo_name = "";
+          problem_statement = "";
+          solution_summary = "";
+          final_state_spec = "";
+          patches = [];
+          current_state_analysis = "";
+          explicit_opinions = "";
+          acceptance_criteria = [];
+          open_questions = [];
+          functional_changes = [];
+          context_resources = [];
+        }
+      ~main_branch:(Branch.of_string "main") ()
+
+  (* Eio resources cannot be created outside Eio_main.run; they are never
+     dereferenced because Worktree_setup.Make defines functions only. *)
   let clock : float Eio.Time.clock_ty Eio.Time.clock = Obj.magic ()
   let fs : Eio.Fs.dir_ty Eio.Path.t = Obj.magic ()
-  let project_name : string = Obj.magic ()
-  let user_config : User_config.t = Obj.magic ()
   let worktree_mutex : Eio.Mutex.t = Obj.magic ()
   let hook_mutex : Eio.Mutex.t = Obj.magic ()
+  let project_name = ""
+  let user_config = { User_config.on_worktree_create = None }
 end
 
 module WS = Worktree_setup.Make (Fake_worktree) (Fake_env)
@@ -59,8 +80,3 @@ let _check_narrowed :
     unit ->
     string option =
   WS.ensure_worktree
-
-let () =
-  print_endline
-    "Patch 1: Worktree_setup.Make(W)(Env).ensure_worktree narrowed signature: \
-     OK"

@@ -2033,7 +2033,8 @@ struct
       concurrently. *)
   let runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
       ~pr_registry ~findings_registry ~review_clients ~transcripts ~event_log
-      ~worktree_mutex ~hook_mutex ?status_msg () =
+      ~worktree_mutex ~hook_mutex ~ws ?status_msg () =
+    let module WS = (val ws : Worktree_setup.S) in
     let main = config.main_branch in
     let clock = Eio.Stdenv.clock env in
     let fs = Eio.Stdenv.fs env in
@@ -2050,16 +2051,6 @@ struct
     (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
      the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
     let fetch_mutex = Eio.Mutex.create () in
-    let module Env = struct
-      let runtime = runtime
-      let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
-      let fs = fs
-      let project_name = project_name
-      let user_config = config.user_config
-      let worktree_mutex = worktree_mutex
-      let hook_mutex = hook_mutex
-    end in
-    let module WS = Worktree_setup.Make (W) (Env) in
     let execute_worktree_plan ~patch_id ~(agent : Patch_agent.t) ~fetch_lock
         ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
       let default_path = Worktree.worktree_dir ~project_name ~patch_id in
@@ -4426,7 +4417,9 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
           :: (fun () ->
             runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
               ~pr_registry ~findings_registry ~review_clients ~transcripts
-              ~event_log ~worktree_mutex ~hook_mutex ())
+              ~event_log ~worktree_mutex ~hook_mutex
+              ~ws:(module WS : Worktree_setup.S)
+              ())
           :: common_fibers)
       else
         let list_selected = ref 0 in
@@ -4479,7 +4472,9 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
                 :: (fun () ->
                   runner_fiber ~runtime ~env ~config ~pick_backend ~project_name
                     ~pr_registry ~findings_registry ~review_clients ~transcripts
-                    ~event_log ~worktree_mutex ~hook_mutex ~status_msg ())
+                    ~event_log ~worktree_mutex ~hook_mutex
+                    ~ws:(module WS : Worktree_setup.S)
+                    ~status_msg ())
                 :: common_fibers)
             with Quit_tui -> ())
 

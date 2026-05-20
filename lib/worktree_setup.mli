@@ -17,7 +17,7 @@ module type ENV = sig
   val hook_mutex : Eio.Mutex.t
 end
 
-module Make (_ : Worktree.S) (_ : ENV) : sig
+module type S = sig
   val resolve_worktree_path :
     patch_id:Types.Patch_id.t ->
     agent:Patch_agent.t ->
@@ -42,3 +42,5 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
       serialised through [Env.hook_mutex] and persists the path on the agent
       record. All log lines go through [Runtime_logging.log_event]. *)
 end
+
+module Make (_ : Worktree.S) (_ : ENV) : S
