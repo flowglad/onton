@@ -307,7 +307,6 @@ module Make_fibers
     (Forge : Onton.Forge.S with type error = Github.error)
     (W : Worktree.S) =
 struct
-  module Worktree_setup = Worktree_setup.Make (W)
   module Session_driver = Session_driver.Make (W)
 
   (** Execute declarative GitHub effects and record successful observations back
@@ -697,59 +696,18 @@ struct
             ~reason:Orchestrator.Unexpected_exception ~agent_before:before
             ~agent_after:after)
 
-  let resolve_worktree_path = Worktree_setup.resolve_worktree_path
-  let ensure_worktree = Worktree_setup.ensure_worktree
-
-  (** Execute a [Worktree_plan.t] against the live filesystem. The plan is built
-      purely (see [Worktree_plan.for_rebase] / [for_merge_conflict]); this
-      function is the single place that turns its ops into git invocations.
-
-      Short-circuits on the first failing op:
-      - [Ensure_worktree] failure →
-        [Worktree.Error "<label> failed: worktree missing"]
-      - [Fetch_origin] error →
-        [Worktree.Error "fetch before rebase failed: ..."] (this exact prefix
-        matches the historical log/event format)
-      - [Rebase_onto] returns its result verbatim; only [Worktree.Ok] continues.
-
-      Returns the final result paired with the worktree path so callers can use
-      it for follow-on effects like [Worktree.force_push_with_lease]. *)
-  let execute_worktree_plan ~runtime ~clock ~fs ~project_name ~patch_id
-      ~(agent : Patch_agent.t) ~user_config ~worktree_mutex ~hook_mutex
-      ~fetch_lock ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
-    let default_path = Worktree.worktree_dir ~project_name ~patch_id in
-    let rec loop ~path = function
-      | [] -> (Worktree.Ok, path)
-      | Worktree_plan.Ensure_worktree :: rest -> (
-          match
-            ensure_worktree ~runtime ~clock ~fs ~project_name ~patch_id ~agent
-              ~user_config ~worktree_mutex ~hook_mutex ()
-          with
-          | Some p -> loop ~path:p rest
-          | None ->
-              log_event runtime ~patch_id
-                (Printf.sprintf
-                   "Cannot %s — worktree missing and could not be created"
-                   fail_label);
-              ( Worktree.Error
-                  (Printf.sprintf "%s failed: worktree missing" fail_label),
-                path ))
-      | Worktree_plan.Fetch_origin :: rest -> (
-          match W.fetch_origin ~fetch_lock ~path with
-          | Result.Ok () -> loop ~path rest
-          | Result.Error msg ->
-              log_event runtime ~patch_id
-                (Printf.sprintf "Fetch failed before %s — %s" fail_label msg);
-              ( Worktree.Error
-                  (Printf.sprintf "fetch before rebase failed: %s" msg),
-                path ))
-      | Worktree_plan.Rebase_onto target :: rest -> (
-          match W.rebase_onto ~path ~target ~project_name ~ancestor_ids with
-          | Worktree.Ok -> loop ~path rest
-          | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->
-              (r, path))
-    in
-    loop ~path:default_path plan
+  let resolve_worktree_path ~project_name ~patch_id
+      ~(agent : Patch_agent.t) ?branch () =
+    match (branch, agent.Patch_agent.worktree_path) with
+    | None, Some p -> p
+    | _ ->
+        let search_branch =
+          match branch with Some b -> b | None -> agent.Patch_agent.branch
+        in
+        let found = W.find_for_branch search_branch in
+        (match found with
+        | Some p -> p
+        | None -> Worktree.worktree_dir ~project_name ~patch_id)
 
   (** {1 Fibers} *)
 
@@ -2115,6 +2073,49 @@ struct
      of short-lived children. Running 10 hooks in parallel is how issue
      #209 blew through the system FD table. *)
     let hook_mutex = Eio.Mutex.create () in
+    let module Env = struct
+      let runtime = runtime
+      let (clock : float Eio.Time.clock_ty Eio.Time.clock) = clock
+      let fs = fs
+      let project_name = project_name
+      let user_config = config.user_config
+      let worktree_mutex = worktree_mutex
+      let hook_mutex = hook_mutex
+    end in
+    let module WS = Worktree_setup.Make (W) (Env) in
+    let execute_worktree_plan ~patch_id ~(agent : Patch_agent.t) ~fetch_lock
+        ~fail_label ~ancestor_ids (plan : Worktree_plan.t) =
+      let default_path = Worktree.worktree_dir ~project_name ~patch_id in
+      let rec loop ~path = function
+        | [] -> (Worktree.Ok, path)
+        | Worktree_plan.Ensure_worktree :: rest -> (
+            match WS.ensure_worktree ~patch_id ~agent () with
+            | Some p -> loop ~path:p rest
+            | None ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf
+                     "Cannot %s — worktree missing and could not be created"
+                     fail_label);
+                ( Worktree.Error
+                    (Printf.sprintf "%s failed: worktree missing" fail_label),
+                  path ))
+        | Worktree_plan.Fetch_origin :: rest -> (
+            match W.fetch_origin ~fetch_lock ~path with
+            | Result.Ok () -> loop ~path rest
+            | Result.Error msg ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "Fetch failed before %s — %s" fail_label msg);
+                ( Worktree.Error
+                    (Printf.sprintf "fetch before rebase failed: %s" msg),
+                  path ))
+        | Worktree_plan.Rebase_onto target :: rest -> (
+            match W.rebase_onto ~path ~target ~project_name ~ancestor_ids with
+            | Worktree.Ok -> loop ~path rest
+            | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->
+                (r, path))
+      in
+      loop ~path:default_path plan
+    in
     let long_lived_sessions :
         (Patch_id.t, Session_driver.long_lived_session) Stdlib.Hashtbl.t =
       Stdlib.Hashtbl.create 16
@@ -2389,10 +2390,7 @@ struct
                                       (fun orch ->
                                         Orchestrator.mark_running orch patch_id);
                                     match
-                                      ensure_worktree ~runtime ~clock ~fs
-                                        ~project_name ~patch_id ~agent
-                                        ~user_config:config.user_config
-                                        ~worktree_mutex ~hook_mutex
+                                      WS.ensure_worktree ~patch_id ~agent
                                         ~branch:patch.Patch.branch
                                         ~base_ref:(Branch.to_string base_branch)
                                         ()
@@ -2628,10 +2626,8 @@ struct
                                 patch_id)
                         in
                         let rebase_result, wt_path =
-                          execute_worktree_plan ~runtime ~clock ~fs
-                            ~project_name ~patch_id ~agent
-                            ~user_config:config.user_config ~worktree_mutex
-                            ~hook_mutex ~fetch_lock:fetch_mutex
+                          execute_worktree_plan ~patch_id ~agent
+                            ~fetch_lock:fetch_mutex
                             ~fail_label:"rebase" ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
                         in
@@ -2900,10 +2896,7 @@ struct
                                         render_base_changed_prefix base_change
                                       in
                                       let wt_path_opt =
-                                        ensure_worktree ~runtime ~clock ~fs
-                                          ~project_name ~patch_id ~agent
-                                          ~user_config:config.user_config
-                                          ~worktree_mutex ~hook_mutex ()
+                                        WS.ensure_worktree ~patch_id ~agent ()
                                       in
                                       let wt_path =
                                         match wt_path_opt with
@@ -3038,10 +3031,7 @@ struct
                                      against fresh refs, not the stale
                                      local tracking ref. *)
                                         let rebase_result, _wt_path =
-                                          execute_worktree_plan ~runtime ~clock
-                                            ~fs ~project_name ~patch_id ~agent
-                                            ~user_config:config.user_config
-                                            ~worktree_mutex ~hook_mutex
+                                          execute_worktree_plan ~patch_id ~agent
                                             ~fetch_lock:fetch_mutex
                                             ~fail_label:"merge-conflict rebase"
                                             ~ancestor_ids

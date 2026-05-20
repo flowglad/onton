@@ -1,6 +1,16 @@
 open Base
 
-module Make (W : Worktree.S) = struct
+module type ENV = sig
+  val runtime : Runtime.t
+  val clock : float Eio.Time.clock_ty Eio.Time.clock
+  val fs : Eio.Fs.dir_ty Eio.Path.t
+  val project_name : string
+  val user_config : User_config.t
+  val worktree_mutex : Eio.Mutex.t
+  val hook_mutex : Eio.Mutex.t
+end
+
+module Make (W : Worktree.S) (Env : ENV) = struct
   let resolve_worktree_path ~project_name ~patch_id ~(agent : Patch_agent.t)
       ?branch () =
     (* When the caller passes [?branch], they're asking for that branch's
@@ -21,9 +31,14 @@ module Make (W : Worktree.S) = struct
         in
         path
 
-  let ensure_worktree ~runtime ~clock ~fs ~project_name ~patch_id
-      ~(agent : Patch_agent.t) ~(user_config : User_config.t) ~worktree_mutex
-      ~hook_mutex ?branch ?base_ref () =
+  let ensure_worktree ~patch_id ~(agent : Patch_agent.t) ?branch ?base_ref () =
+    let runtime = Env.runtime in
+    let clock = Env.clock in
+    let fs = Env.fs in
+    let project_name = Env.project_name in
+    let user_config = Env.user_config in
+    let worktree_mutex = Env.worktree_mutex in
+    let hook_mutex = Env.hook_mutex in
     let log_event = Runtime_logging.log_event in
     let path =
       resolve_worktree_path ~project_name ~patch_id ~agent ?branch ()
