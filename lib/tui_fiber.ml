@@ -134,7 +134,7 @@ module Make (Env : Tui_env.S) = struct
       patches_start_row;
       patches_scroll_offset;
       patches_visible_count;
-      _;
+      detail_scrolls = _;
     } =
       state
     in
@@ -178,7 +178,7 @@ module Make (Env : Tui_env.S) = struct
             | None -> "")
         | Tui.List_view | Tui.Timeline_view -> ""
       in
-      let now = Unix.gettimeofday () in
+      let now = Eio.Time.now clock in
       (match !status_msg with
       | Some msg when Tui.msg_expired ~now msg -> status_msg := None
       | Some _ | None -> ());
@@ -691,7 +691,7 @@ module Make (Env : Tui_env.S) = struct
                     let screen_idx = row - start in
                     let abs_idx = !patches_scroll_offset + screen_idx in
                     if start > 0 && screen_idx >= 0 && screen_idx < count then (
-                      let now = Unix.gettimeofday () in
+                      let now = Eio.Time.now Env.clock in
                       let is_double =
                         Float.compare (now -. !last_click_time) 0.3 <= 0
                         && !last_click_row = abs_idx
