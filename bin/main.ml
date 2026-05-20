@@ -3936,7 +3936,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
         [
           reconciliation_fiber;
           (fun () -> poller_fiber (module Reconciler : STARTUP_RECONCILER));
-          Persistence_fiber_runner.run ~transcripts;
+          (fun () -> Persistence_fiber_runner.run ~transcripts ());
         ]
       in
       if config.headless then

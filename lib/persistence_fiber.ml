@@ -18,9 +18,9 @@ module Make (Env : Persistence_env.S) = struct
       Eio.Time.sleep Env.clock 5.0;
       Runtime.update Env.runtime (fun snap ->
           let t = snap.Runtime.transcripts in
-          Hashtbl.clear t;
+          Base.Hashtbl.clear t;
           Stdlib.Hashtbl.iter
-            (fun k v -> Hashtbl.set t ~key:k ~data:v)
+            (fun k v -> Base.Hashtbl.set t ~key:k ~data:v)
             transcripts;
           snap);
       let snap = Runtime.snapshot_unsync Env.runtime in

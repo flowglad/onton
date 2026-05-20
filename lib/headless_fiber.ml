@@ -8,6 +8,8 @@ module Headless_env = struct
 end
 
 module Make (Env : Headless_env.S) = struct
+  (* Duplicated from [bin/main.ml] for Patch 10 extraction scope. Consolidate
+     with the TUI-side helper in a later patch if we want one shared home. *)
   let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
       ~(map_event : Activity_log.Event.t -> 'a)
       ~(map_transition : Activity_log.Transition_entry.t -> 'a)
@@ -26,6 +28,8 @@ module Make (Env : Headless_env.S) = struct
     in
     List.sort (events @ transitions @ stream) ~compare
 
+  (* Duplicated from [bin/main.ml] for Patch 10 extraction scope. Consolidate
+     with the TUI-side helper in a later patch if we want one shared home. *)
   let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
     match kind with
     | Activity_log.Stream_entry.Tool_use (name, input) ->
