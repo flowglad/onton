@@ -10,5 +10,10 @@ module type S = sig
   val show_error : error -> string
 
   val pr_state :
-    net:_ Eio.Net.t -> t -> Types.Pr_number.t -> (Pr_state.t, error) Result.t
+    net:_ Eio.Net.t ->
+    clock:_ Eio.Time.clock ->
+    ?timeout:float ->
+    t ->
+    Types.Pr_number.t ->
+    (Pr_state.t, error) Result.t
 end
