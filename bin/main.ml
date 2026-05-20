@@ -17,6 +17,8 @@ type config = {
   repo_root : string;
   max_concurrency : int;
   headless : bool;
+  patch_agent_provider : string option;
+  patch_agent_effort : string option;
   user_config : User_config.t;
 }
 
@@ -26,6 +28,10 @@ let default_backend = "claude"
 
 let known_backends =
   [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
+
+let known_patch_agent_providers = [ "anthropic"; "openai" ]
+
+let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
 (** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
     canonical [(backend, model)] tuple used internally. Empty [backend] falls
@@ -40,7 +46,8 @@ let resolve_backend_model ~backend ~model =
   (backend, Base.String.strip model)
 
 let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
-    ~main_branch ~poll_interval ~max_concurrency =
+    ~main_branch ~poll_interval ~max_concurrency ~patch_agent_provider
+    ~patch_agent_effort =
   let errors =
     Base.List.filter_map
       [
@@ -61,6 +68,24 @@ let validate_resolved_config ~backend ~github_token ~github_owner ~github_repo
         ( max_concurrency < 1,
           Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
             max_concurrency );
+        ( (match patch_agent_provider with
+          | Some provider ->
+              not
+                (Base.List.mem known_patch_agent_providers provider
+                   ~equal:String.equal)
+          | None -> false),
+          Printf.sprintf
+            "--patch-agent-provider / PATCH_AGENT_PROVIDER must be one of: %s"
+            (String.concat ", " known_patch_agent_providers) );
+        ( (match patch_agent_effort with
+          | Some effort ->
+              not
+                (Base.List.mem known_patch_agent_efforts effort
+                   ~equal:String.equal)
+          | None -> false),
+          Printf.sprintf
+            "--patch-agent-effort / PATCH_AGENT_EFFORT must be one of: %s"
+            (String.concat ", " known_patch_agent_efforts) );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
@@ -1648,16 +1673,10 @@ struct
     let fetch_mutex = Eio.Mutex.create () in
     let long_lived_sessions = Long_lived_sessions.create () in
     let patch_agent_provider =
-      match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
-      | Some s when not (Base.String.is_empty (Base.String.strip s)) ->
-          Base.String.strip s
-      | Some _ | None -> "anthropic"
+      Base.Option.value config.patch_agent_provider ~default:"anthropic"
     in
     let patch_agent_effort =
-      match Stdlib.Sys.getenv_opt "PATCH_AGENT_EFFORT" with
-      | Some s when not (Base.String.is_empty (Base.String.strip s)) ->
-          Base.String.strip s
-      | Some _ | None -> "medium"
+      Base.Option.value config.patch_agent_effort ~default:"medium"
     in
     let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~patch_id
         ~prompt ~agent ~on_pr_detected ~complexity =
@@ -3317,6 +3336,20 @@ let with_snapshot_load ~project_name config gameplan =
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
     ~headless =
+  let patch_agent_provider =
+    match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
+    | Some s ->
+        let s = Base.String.strip s in
+        if Base.String.is_empty s then None else Some s
+    | None -> None
+  in
+  let patch_agent_effort =
+    match Stdlib.Sys.getenv_opt "PATCH_AGENT_EFFORT" with
+    | Some s ->
+        let s = Base.String.strip s in
+        if Base.String.is_empty s then None else Some s
+    | None -> None
+  in
   let repo_root_for_fresh =
     Repo_root.normalize (Base.Option.value repo_root ~default:".")
   in
@@ -3373,6 +3406,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           repo_root;
           max_concurrency;
           headless;
+          patch_agent_provider;
+          patch_agent_effort;
           user_config = User_config.load ~github_owner:owner ~github_repo:repo;
         }
       in
@@ -3460,6 +3495,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       repo_root;
                       max_concurrency;
                       headless;
+                      patch_agent_provider;
+                      patch_agent_effort;
                       user_config =
                         User_config.load ~github_owner:owner ~github_repo:repo;
                     }
@@ -3593,6 +3630,8 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       repo_root;
                       max_concurrency = stored.Project_store.max_concurrency;
                       headless;
+                      patch_agent_provider;
+                      patch_agent_effort;
                       user_config =
                         User_config.load ~github_owner:owner ~github_repo:repo;
                     }
@@ -3609,6 +3648,8 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       ~github_repo:config.github_repo ~main_branch:config.main_branch
       ~poll_interval:config.poll_interval
       ~max_concurrency:config.max_concurrency
+      ~patch_agent_provider:config.patch_agent_provider
+      ~patch_agent_effort:config.patch_agent_effort
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
