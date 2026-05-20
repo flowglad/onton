@@ -14,6 +14,7 @@
     the lifetime of the module instance and never vary per call. *)
 module type ENV = sig
   include Run_env.S
+
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
