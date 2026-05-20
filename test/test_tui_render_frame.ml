@@ -140,12 +140,15 @@ let test_list_view_activity_squeezed_partial () =
   let frame = render ~height:18 ~activity:four_activity_entries many_views in
   assert (Tui.patch_count frame >= 1);
   let lines = plain_lines frame in
-  (* Not all four entries should show — there isn't room for them all *)
+  (* Activity is partially visible: at least one entry shown but not all
+     four. Asserting both ends prevents the test from passing vacuously if
+     activity collapsed entirely. *)
   let visible_events =
     List.count
       [ "event 0"; "event 1"; "event 2"; "event 3" ]
       ~f:(line_contains lines)
   in
+  assert (visible_events >= 1);
   assert (visible_events < 4)
 
 let test_frame_anchored_at_top () =

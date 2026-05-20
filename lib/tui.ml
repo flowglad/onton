@@ -1225,15 +1225,19 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
         { no_patches with lines }
     | List_view ->
         (* Patches get priority. Reserve only the non-patch, non-activity
-           chrome: header(2) + blank after header + up to 2 scroll indicators
-           + blank before footer + status + footer. Activity is rendered into
-           whatever space is left after the patch block, and collapses
-           entirely when there is no room. *)
+           chrome: header(2) + blank after header + blank before footer +
+           status + footer. Scroll indicators are reserved only when patches
+           actually overflow, so the rows they would have taken go to
+           activity when the list fits. *)
         let chrome_reserved =
-          2 + 1 + 2 + 1 + List.length status_line + List.length footer
+          2 + 1 + 1 + List.length status_line + List.length footer
         in
+        let patches_section_max = Int.max 0 (height - chrome_reserved) in
+        let total_views = List.length views in
         let max_patch_rows =
-          Int.max 0 (height - chrome_reserved - 1 (* "Patches" header *))
+          let without_indicators = Int.max 0 (patches_section_max - 1) in
+          if total_views <= without_indicators then without_indicators
+          else Int.max 0 (patches_section_max - 3)
         in
         let patches, patch_header_lines, scroll_off, visible_rows =
           render_patches ~width ~selected ~max_visible:max_patch_rows ~now views
@@ -1246,17 +1250,18 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
           1 (* blank before footer *) + List.length status_line
           + List.length footer
         in
+        (* Space available for the activity section, which includes its own
+           blank separator from the patch block. Need at least 3 lines
+           (separator + "Activity" header + 1 entry) to be worth rendering. *)
         let activity_budget =
-          (* Need at least 2 lines (Activity header + 1 entry) plus a blank
-             separator, so check against 3 total. *)
-          height - lines_before_activity - lines_after_activity - 1
+          height - lines_before_activity - lines_after_activity
         in
         let activity_lines =
-          if List.is_empty activity || activity_budget < 2 then []
+          if List.is_empty activity || activity_budget < 3 then []
           else
             let raw = render_activity activity in
-            if List.length raw <= activity_budget then raw
-            else List.take raw activity_budget
+            let take = Int.min (List.length raw) (activity_budget - 1) in
+            List.take raw take
         in
         let lines =
           header @ [ "" ] @ patches
