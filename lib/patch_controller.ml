@@ -835,6 +835,7 @@ let%test "reconcile_patch keeps PR draft while merge conflict is active" =
   let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
   let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
   let t = Orchestrator.set_pr_body_delivered t pid true in
+  let t = Orchestrator.set_checks_passing t pid true in
   let t = Orchestrator.complete t pid in
   let t = Orchestrator.set_has_conflict t pid in
   let _, effects =
@@ -904,6 +905,7 @@ let%test
   let t = Orchestrator.fire t (Orchestrator.Start (child_id, parent_branch)) in
   let t = Orchestrator.set_pr_number t child_id (Pr_number.of_int 42) in
   let t = Orchestrator.set_pr_body_delivered t child_id true in
+  let t = Orchestrator.set_checks_passing t child_id true in
   let t = Orchestrator.complete t child_id in
   let gp =
     Gameplan.
