@@ -76,7 +76,7 @@ let gen_repo_config : Repo_config.t QCheck2.Gen.t =
   in
   let* routes = list_size (return (List.length keys)) gen_route in
   let complexity_routes = List.zip_exn keys routes in
-  return { Repo_config.complexity_routes; review_backends = [] }
+  return { Repo_config.empty with complexity_routes }
 
 let pp_decision (d : Backend_routing.decision) =
   Printf.sprintf "{ backend = %s; model = %s }" d.backend
@@ -93,8 +93,8 @@ let () =
          gen_complexity)
       (fun (repo_config, default_backend, cli_model, complexity) ->
         let d =
-          Backend_routing.decide ~repo_config ~default_backend ~cli_model
-            ~complexity
+          Backend_routing.decide ~repo_config ~default_backend
+            ~effective_model:cli_model ~complexity
         in
         String.equal d.backend default_backend
         && Option.equal String.equal d.model cli_model)
@@ -107,12 +107,12 @@ let () =
          gen_complexity)
       (fun (repo_config, default_backend, cli_model, complexity) ->
         let with_cfg =
-          Backend_routing.decide ~repo_config ~default_backend ~cli_model
-            ~complexity
+          Backend_routing.decide ~repo_config ~default_backend
+            ~effective_model:cli_model ~complexity
         in
         let without_cfg =
           Backend_routing.decide ~repo_config:Repo_config.empty ~default_backend
-            ~cli_model ~complexity
+            ~effective_model:cli_model ~complexity
         in
         String.equal with_cfg.backend without_cfg.backend
         && Option.equal String.equal with_cfg.model without_cfg.model)
@@ -128,7 +128,7 @@ let () =
         | Some route ->
             let d =
               Backend_routing.decide ~repo_config ~default_backend
-                ~cli_model:(Some auto) ~complexity
+                ~effective_model:(Some auto) ~complexity
             in
             String.equal d.backend route.backend
             && Option.equal String.equal d.model route.model)
@@ -146,7 +146,7 @@ let () =
         | None ->
             let d =
               Backend_routing.decide ~repo_config ~default_backend
-                ~cli_model:(Some auto) ~complexity
+                ~effective_model:(Some auto) ~complexity
             in
             (* The fallback canonicalises to lowercase "auto" regardless of
                how the user typed [--model], so registry deduplication works. *)
@@ -162,7 +162,7 @@ let () =
       (fun (repo_config, default_backend, auto) ->
         let d =
           Backend_routing.decide ~repo_config ~default_backend
-            ~cli_model:(Some auto) ~complexity:None
+            ~effective_model:(Some auto) ~complexity:None
         in
         String.equal d.backend default_backend
         && Option.equal String.equal d.model (Some "auto"))
@@ -177,7 +177,7 @@ let () =
         let decisions =
           List.map variants ~f:(fun v ->
               Backend_routing.decide ~repo_config ~default_backend
-                ~cli_model:(Some v) ~complexity)
+                ~effective_model:(Some v) ~complexity)
         in
         match decisions with
         | [] -> true
@@ -211,8 +211,8 @@ let () =
       (fun (repo_config, default_backend, cli_model, complexity) ->
         try
           let d =
-            Backend_routing.decide ~repo_config ~default_backend ~cli_model
-              ~complexity
+            Backend_routing.decide ~repo_config ~default_backend
+              ~effective_model:cli_model ~complexity
           in
           not (String.is_empty d.backend)
         with _ -> false)

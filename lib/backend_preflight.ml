@@ -54,14 +54,14 @@ let check_backend ?getenv_opt ?is_executable backend =
                 PATH, or choose another backend with --backend."
                backend command))
 
-let selected_backends ~default_backend ~cli_model ~(repo_config : Repo_config.t)
-    =
+let selected_backends ~default_backend ~effective_model
+    ~(repo_config : Repo_config.t) =
   let add acc backend =
     if List.mem acc backend ~equal:String.equal then acc else backend :: acc
   in
   let acc = add [] default_backend in
   let uses_routes =
-    match cli_model with
+    match effective_model with
     | Some model -> Backend_routing.is_auto_model (Some model)
     | None -> false
   in
@@ -73,9 +73,11 @@ let selected_backends ~default_backend ~cli_model ~(repo_config : Repo_config.t)
   in
   List.rev acc
 
-let validate ?getenv_opt ?is_executable ~default_backend ~cli_model ~repo_config
-    () =
-  let backends = selected_backends ~default_backend ~cli_model ~repo_config in
+let validate ?getenv_opt ?is_executable ~default_backend ~effective_model
+    ~repo_config () =
+  let backends =
+    selected_backends ~default_backend ~effective_model ~repo_config
+  in
   let errors =
     List.filter_map backends ~f:(fun backend ->
         match check_backend ?getenv_opt ?is_executable backend with
@@ -84,31 +86,31 @@ let validate ?getenv_opt ?is_executable ~default_backend ~cli_model ~repo_config
   in
   match errors with [] -> Ok () | _ :: _ -> Error errors
 
-let%test "selected_backends ignores routes unless cli model is auto" =
+let%test "selected_backends ignores routes unless effective model is auto" =
   let repo_config =
     {
-      Repo_config.complexity_routes =
-        [ (1, { backend = "codex"; model = None }) ];
-      review_backends = [];
+      Repo_config.empty with
+      complexity_routes = [ (1, { backend = "codex"; model = None }) ];
     }
   in
   List.equal String.equal
-    (selected_backends ~default_backend:"claude" ~cli_model:None ~repo_config)
+    (selected_backends ~default_backend:"claude" ~effective_model:None
+       ~repo_config)
     [ "claude" ]
 
-let%test "selected_backends includes routes for auto model" =
+let%test "selected_backends includes routes for auto effective model" =
   let repo_config =
     {
-      Repo_config.complexity_routes =
+      Repo_config.empty with
+      complexity_routes =
         [
           (1, { backend = "codex"; model = None });
           (2, { backend = "claude"; model = Some "sonnet" });
         ];
-      review_backends = [];
     }
   in
   List.equal String.equal
-    (selected_backends ~default_backend:"claude" ~cli_model:(Some "auto")
+    (selected_backends ~default_backend:"claude" ~effective_model:(Some "auto")
        ~repo_config)
     [ "claude"; "codex" ]
 
@@ -118,7 +120,7 @@ let%test "validate reports missing backend executable" =
     validate
       ~getenv_opt:(fun _ -> Some "/bin")
       ~is_executable:(fun _ -> false)
-      ~default_backend:"codex" ~cli_model:None ~repo_config ()
+      ~default_backend:"codex" ~effective_model:None ~repo_config ()
   with
   | Error [ msg ] ->
       String.is_substring msg ~substring:"codex"
