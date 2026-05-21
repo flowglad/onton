@@ -948,7 +948,103 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
             :: common_fibers)
         with Fibers.Tui.Quit -> ())
 
-let run_with_config ~no_lock ~auto_merge (config : config) gameplan
+(** Trailing-positional PR operations parsed from the command line. *)
+type pr_op = Add_pr of Pr_number.t | Remove_pr of Pr_number.t
+
+let report setup ~patch_id msg =
+  Printf.eprintf "onton: %s\n%!" msg;
+  log_event setup.runtime ~patch_id msg
+
+(** Add a single GitHub PR as an ad-hoc patch. Mirrors [Tui_input.Prompt_pr] in
+    [tui_fiber.ml]: fetch PR state, skip forks/missing head branches, no-op when
+    already registered. *)
+let apply_add_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
+    pr_number =
+  let module Forge = (val cap.forge) in
+  let n = Pr_number.to_int pr_number in
+  let patch_id = Patch_id.of_string (string_of_int n) in
+  let already_exists =
+    Runtime.read setup.runtime (fun snap ->
+        Base.Option.is_some
+          (Orchestrator.find_agent snap.Runtime.orchestrator patch_id))
+  in
+  if already_exists then
+    report setup ~patch_id (Printf.sprintf "Ad-hoc PR #%d already registered" n)
+  else
+    match Forge.pr_state pr_number with
+    | Error err ->
+        report setup ~patch_id
+          (Printf.sprintf "Cannot add ad-hoc PR #%d — %s" n
+             (Forge.show_error err))
+    | Ok pr_state when Pr_state.is_fork pr_state ->
+        report setup ~patch_id
+          (Printf.sprintf "Cannot add ad-hoc PR #%d — fork PRs not supported" n)
+    | Ok pr_state -> (
+        match pr_state.Pr_state.head_branch with
+        | None ->
+            report setup ~patch_id
+              (Printf.sprintf "Cannot add ad-hoc PR #%d — no head branch" n)
+        | Some branch ->
+            cap.register_pr_number ~patch_id ~pr_number;
+            Runtime.update_orchestrator setup.runtime (fun orch ->
+                let base_branch =
+                  Base.Option.value pr_state.Pr_state.base_branch
+                    ~default:(Orchestrator.main_branch orch)
+                in
+                Orchestrator.add_agent orch ~patch_id ~branch ~base_branch
+                  ~pr_number);
+            report setup ~patch_id
+              (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
+                 (Branch.to_string branch)))
+
+(** Remove a single ad-hoc PR. Mirrors [Tui_input.Remove_patch] in
+    [tui_fiber.ml]: refuses to touch gameplan patches, warns on busy ones. *)
+let apply_remove_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
+    pr_number =
+  let n = Pr_number.to_int pr_number in
+  let patch_id = Patch_id.of_string (string_of_int n) in
+  let agent_opt, in_gameplan =
+    Runtime.read setup.runtime (fun snap ->
+        let agent =
+          Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+        in
+        let in_gp =
+          Base.List.exists snap.Runtime.gameplan.Gameplan.patches
+            ~f:(fun (p : Patch.t) -> Patch_id.equal p.Patch.id patch_id)
+        in
+        (agent, in_gp))
+  in
+  match agent_opt with
+  | None ->
+      report setup ~patch_id
+        (Printf.sprintf "Cannot remove PR #%d — not registered" n)
+  | Some _ when in_gameplan ->
+      report setup ~patch_id
+        (Printf.sprintf
+           "Cannot remove PR #%d — gameplan patches cannot be removed" n)
+  | Some agent ->
+      if agent.Patch_agent.busy then
+        report setup ~patch_id
+          (Printf.sprintf
+             "Warning — PR #%d is currently running, it may create a GitHub PR \
+              before stopping"
+             n);
+      Runtime.update_orchestrator setup.runtime (fun orch ->
+          Orchestrator.remove_agent orch patch_id);
+      cap.unregister_pr_number ~patch_id;
+      report setup ~patch_id (Printf.sprintf "Removed ad-hoc PR #%d" n)
+
+(** Apply trailing-positional PR ops in command-line order, so [+5 -5 +5] leaves
+    PR #5 registered. *)
+let apply_pr_ops ~(setup : runtime_setup) ~(cap : constructed_capabilities)
+    (ops : pr_op list) =
+  List.iter
+    (function
+      | Add_pr n -> apply_add_pr ~setup ~cap n
+      | Remove_pr n -> apply_remove_pr ~setup ~cap n)
+    ops
+
+let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
     existing_snapshot =
   let resolved = Resolved_config.of_config config |> ok_or_exit in
   let {
@@ -1012,6 +1108,7 @@ let run_with_config ~no_lock ~auto_merge (config : config) gameplan
     setup_runtime env ~config:resolved ~gameplan ~existing_snapshot ~auto_merge
   in
   let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
+  apply_pr_ops ~setup ~cap:capabilities pr_ops;
   let tui_state = Tui_state.create () in
   let fiber_env = build_fiber_env setup capabilities ~tui_state in
   run_main_loop setup capabilities fiber_env ~tui_state
@@ -1032,7 +1129,7 @@ let run_with_config ~no_lock ~auto_merge (config : config) gameplan
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless ~no_lock ~auto_merge =
+    ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
@@ -1041,7 +1138,8 @@ let run ~project ~gameplan_path ~github_token ~backend ~model
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
-      run_with_config ~no_lock ~auto_merge config gameplan existing_snapshot
+      run_with_config ~no_lock ~auto_merge ~pr_ops config gameplan
+        existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
 
@@ -1054,6 +1152,95 @@ let project_arg =
         ~doc:
           "Project name to resume. If omitted, derived from --gameplan's \
            project name.")
+
+(** A token is a PR op iff it matches [^[+-][0-9]+$]. We classify before
+    cmdliner sees argv because cmdliner would otherwise reject [-N] as an
+    unknown short option. False positives are vanishingly rare: no current onton
+    flag uses [-<digits>] form, and project names of the same shape are
+    pathological. *)
+let looks_like_pr_op (s : string) : bool =
+  let len = String.length s in
+  len >= 2
+  && (Char.equal s.[0] '+' || Char.equal s.[0] '-')
+  && String.for_all
+       (function '0' .. '9' -> true | _ -> false)
+       (String.sub s 1 (len - 1))
+
+let parse_pr_op_token (s : string) : (pr_op, string) result =
+  if not (looks_like_pr_op s) then
+    Error
+      (Printf.sprintf
+         "unrecognized PR op token %S — expected +N or -N (e.g. +123, -123)" s)
+  else
+    let rest = String.sub s 1 (String.length s - 1) in
+    match int_of_string_opt rest with
+    | Some n when n > 0 ->
+        let pr = Pr_number.of_int n in
+        if Char.equal s.[0] '+' then Ok (Add_pr pr) else Ok (Remove_pr pr)
+    | _ ->
+        Error
+          (Printf.sprintf
+             "invalid PR number in %S — expected a positive integer after the \
+              sign"
+             s)
+
+let cli_option_takes_value (s : string) : bool =
+  match String.index_opt s '=' with
+  | Some _ -> false
+  | None -> (
+      (* Keep this in sync with Cmdliner [opt] arguments below:
+         --gameplan, --token, --backend, --model, --repo, --main-branch,
+         --poll-interval, and --max-concurrency. *)
+      match s with
+      | "--gameplan" | "--token" | "--backend" | "--model" | "--repo"
+      | "--main-branch" | "--poll-interval" | "--max-concurrency" ->
+          true
+      | _ -> false)
+
+let is_flag_like_token (s : string) : bool =
+  String.length s > 0 && Char.equal s.[0] '-'
+
+(** Strip [+N]/[-N] tokens out of [argv] before cmdliner parses it. Returns the
+    list of ops in left-to-right order alongside the filtered argv. *)
+let extract_pr_ops_from_argv (argv : string array) :
+    (pr_op list * string array, string) result =
+  let n = Array.length argv in
+  let ops = ref [] in
+  let kept = ref [] in
+  let err = ref None in
+  let saw_project = ref false in
+  let i = ref 0 in
+  while !i < n && Option.is_none !err do
+    let tok = argv.(!i) in
+    if !i = 0 then kept := tok :: !kept
+    else if cli_option_takes_value tok then (
+      kept := tok :: !kept;
+      if !i + 1 < n && not (looks_like_pr_op argv.(!i + 1)) then (
+        incr i;
+        kept := argv.(!i) :: !kept))
+    else if is_flag_like_token tok && not (looks_like_pr_op tok) then
+      kept := tok :: !kept
+    else if looks_like_pr_op tok then
+      match parse_pr_op_token tok with
+      | Ok op -> ops := op :: !ops
+      | Error msg -> err := Some msg
+    else if not !saw_project then (
+      saw_project := true;
+      kept := tok :: !kept)
+    else
+      err :=
+        Some
+          (Printf.sprintf
+             "unrecognized positional argument %S — expected +N or -N (e.g. \
+              +123, -123)"
+             tok);
+    incr i
+  done;
+  match !err with
+  | Some msg -> Error msg
+  | None ->
+      let kept_argv = Array.of_list (List.rev !kept) in
+      Ok (List.rev !ops, kept_argv)
 
 let gameplan_path_arg =
   let open Cmdliner in
@@ -1185,7 +1372,7 @@ let auto_merge_arg =
            per-patch toggles set via the TUI survive restarts. Individual \
            patches can still be toggled off in the TUI manage overlay.")
 
-let main_cmd =
+let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock
@@ -1224,7 +1411,7 @@ let main_cmd =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock ~auto_merge)
+        ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_ops)
   in
   let term =
     Term.(
@@ -1240,8 +1427,16 @@ let main_cmd =
          Usage:\n\
         \  onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   Start a new project\n\
         \  onton PROJECT [OPTIONS]                         Resume a saved \
-         project"
+         project\n\
+        \  onton PROJECT (+N|-N) ... [OPTIONS]             Resume and \
+         add/remove PR #N as an ad-hoc patch"
   in
   Cmd.v info term
 
-let () = Stdlib.exit (Cmdliner.Cmd.eval main_cmd)
+let () =
+  match extract_pr_ops_from_argv Sys.argv with
+  | Error msg ->
+      Printf.eprintf "onton: %s\n" msg;
+      Stdlib.exit 1
+  | Ok (pr_ops, argv) ->
+      Stdlib.exit (Cmdliner.Cmd.eval ~argv (main_cmd ~pr_ops))
