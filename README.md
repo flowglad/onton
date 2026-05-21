@@ -479,6 +479,40 @@ overridden. Stored configs written by older onton versions (where `backend`
 was `claude-opus` or `claude-sonnet`) are migrated to the decomposed shape
 automatically on load.
 
+### Per-repo defaults (`config.json`)
+
+To avoid re-typing `--backend` / `--model` for every fresh run in a repo,
+write a per-repo config at
+`~/.config/onton/<owner>/<repo>/config.json`:
+
+```jsonc
+{
+  "default": {
+    "backend": "codex",
+    "model":   "auto"
+  },
+  "routing": {
+    "1": { "backend": "claude", "model": "haiku"   },
+    "3": { "backend": "codex",  "model": "gpt-5.5" }
+  }
+}
+```
+
+Resolution order, evaluated per field independently:
+
+1. CLI flag (`--backend` / `--model`)
+2. Previously stored value from the project store (resume only)
+3. `default.backend` / `default.model` from `config.json`
+4. Built-in (`claude`; model unset)
+
+`model: "auto"` from any source — the CLI flag or `default.model` —
+activates the `routing` map: each patch's complexity (1/2/3) picks its
+own `(backend, model)`, falling back to the effective backend's hardcoded
+ladder for tiers with no entry. Both subfields of `default` are
+optional; pin just `backend`, just `model`, or both. Run
+`onton-check-repo-config <owner> <repo>` to verify how a `config.json`
+parses.
+
 ### Supported models
 
 Onton passes `--model` through to the backend CLI verbatim, so any model the

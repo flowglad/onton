@@ -14,17 +14,58 @@ let default_backend = "claude"
 let known_backends =
   [ "claude"; "codex"; "opencode"; "pi"; "gemini"; "patch-agent" ]
 
-(** Resolve a CLI [--backend]/[--model] pair (or stored equivalents) into the
-    canonical [(backend, model)] tuple used internally. Empty [backend] falls
-    back to [default_backend]. An empty [model] is preserved — the backend
-    dispatch then omits [--model] from the underlying CLI call so each
-    provider's own default applies. *)
-let resolve_backend_model ~backend ~model =
-  let backend =
-    if Base.String.is_empty (Base.String.strip backend) then default_backend
-    else Base.String.strip backend
-  in
-  (backend, Base.String.strip model)
+type repo_coords = {
+  github_token : string;
+  github_owner : string;
+  github_repo : string;
+  repo_root : string;
+}
+(** Coordinates that locate the GitHub repo and its local checkout. Resolved
+    independently per path (fresh: from --repo + git remote; gameplan: from the
+    parsed gameplan + onton-managed checkout; resume: stored + inferred). *)
+
+type run_knobs = {
+  poll_interval : float;
+  max_concurrency : int;
+  headless : bool;
+  patch_agent_provider : string option;
+  patch_agent_effort : string option;
+}
+(** Run-time knobs that don't vary inside a single invocation. Built once at the
+    top of [resolve_config] from CLI flags and env vars, then shared by all
+    three paths. *)
+
+type backend_inputs = {
+  cli_backend : string;
+  cli_model : string;
+  stored_backend : string;
+  stored_model : string;
+}
+(** The four sources that feed [Backend_routing.resolve_pair]. Fresh and
+    gameplan paths leave [stored_*] as [""] (no prior run); the resume path
+    populates them from [Project_store]. *)
+
+(** Load the per-repo [config.json] for the given GitHub coordinates, or exit on
+    error. [config.json] is allowed to be absent ([empty] returned) but a
+    malformed file is a hard failure — the run cannot continue with a config the
+    user thought they were applying. *)
+let load_repo_config_or_exit ~github_owner ~github_repo =
+  let config_dir = User_config.config_dir ~github_owner ~github_repo in
+  match Repo_config.load ~config_dir ~known_backends () with
+  | Ok t -> t
+  | Error msg ->
+      Printf.eprintf "Error: %s\n" msg;
+      Stdlib.exit 1
+
+(** Resolve the effective [(backend, model)] pair from the four layered sources:
+    CLI flag, [Project_store] stored value, [Repo_config.default_*], and the
+    hard-coded built-in default. Per-field precedence is
+    [CLI > stored > config > built-in]. [stored_backend] / [stored_model] are
+    [""] for fresh and gameplan paths (no stored value to consult). *)
+let resolve_backend_model ~cli_backend ~cli_model ~stored_backend ~stored_model
+    ~repo_config =
+  Backend_routing.resolve_pair ~cli_backend ~cli_model ~stored_backend
+    ~stored_model ~repo_config ~built_in_backend:default_backend
 
 (** {1 PR number registry}
 
@@ -233,6 +274,55 @@ let with_snapshot_load ~project_name config gameplan =
             project_name msg;
         ]
 
+(** Finalize a run: load the per-repo config, layer-merge the effective
+    [(backend, model)] from CLI / stored / config / built-in, persist the
+    resolved config to disk, and attach the on-disk snapshot. Centralizes the
+    body shared by the fresh, gameplan, and resume paths. *)
+let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
+    ~main_branch ~gameplan =
+  let { github_token; github_owner; github_repo; repo_root } = repo_coords in
+  let {
+    poll_interval;
+    max_concurrency;
+    headless;
+    patch_agent_provider;
+    patch_agent_effort;
+  } =
+    run_knobs
+  in
+  let { cli_backend; cli_model; stored_backend; stored_model } =
+    backend_inputs
+  in
+  let repo_config = load_repo_config_or_exit ~github_owner ~github_repo in
+  let backend, model =
+    resolve_backend_model ~cli_backend ~cli_model ~stored_backend ~stored_model
+      ~repo_config
+  in
+  Project_store.save_config ~project_name ~github_token ~github_owner
+    ~github_repo ~backend ~model
+    ~main_branch:(Branch.to_string main_branch)
+    ~poll_interval ~repo_root ~max_concurrency;
+  let config =
+    {
+      Resolved_config.project = Some project_name;
+      backend;
+      model;
+      github_token;
+      github_owner;
+      github_repo;
+      main_branch;
+      poll_interval;
+      repo_root;
+      max_concurrency;
+      headless;
+      patch_agent_provider;
+      patch_agent_effort;
+      user_config = User_config.load ~github_owner ~github_repo;
+      repo_config;
+    }
+  in
+  with_snapshot_load ~project_name config gameplan
+
 (** Resolve CLI args into a config ready to run.
     - [--gameplan] provided: parse it, persist config + gameplan source, derive
       project name.
@@ -254,6 +344,18 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
         let s = Base.String.strip s in
         if Base.String.is_empty s then None else Some s
     | None -> None
+  in
+  let run_knobs =
+    {
+      poll_interval;
+      max_concurrency;
+      headless;
+      patch_agent_provider;
+      patch_agent_effort;
+    }
+  in
+  let cli_backend_inputs ?(stored_backend = "") ?(stored_model = "") () =
+    { cli_backend = backend; cli_model = model; stored_backend; stored_model }
   in
   let repo_root_for_fresh =
     Repo_root.normalize (Base.Option.value repo_root ~default:".")
@@ -292,32 +394,17 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           context_resources = [];
         }
       in
-      let backend, model = resolve_backend_model ~backend ~model in
       let main_branch = resolve_branch ~repo_root main_branch in
-      Project_store.save_config ~project_name ~github_token:token
-        ~github_owner:owner ~github_repo:repo ~backend ~model
-        ~main_branch:(Branch.to_string main_branch)
-        ~poll_interval ~repo_root ~max_concurrency;
-      let config =
-        Resolved_config.
-          {
-            project = Some project_name;
-            backend;
-            model;
-            github_token = token;
-            github_owner = owner;
-            github_repo = repo;
-            main_branch;
-            poll_interval;
-            repo_root;
-            max_concurrency;
-            headless;
-            patch_agent_provider;
-            patch_agent_effort;
-            user_config = User_config.load ~github_owner:owner ~github_repo:repo;
-          }
+      let repo_coords =
+        {
+          github_token = token;
+          github_owner = owner;
+          github_repo = repo;
+          repo_root;
+        }
       in
-      with_snapshot_load ~project_name config gameplan
+      finalize_run ~project_name ~repo_coords ~run_knobs
+        ~backend_inputs:(cli_backend_inputs ()) ~main_branch ~gameplan
   | _, Some gp_path -> (
       match Gameplan_parser.parse_file gp_path with
       | Error msg -> Error [ Printf.sprintf "Error parsing gameplan: %s" msg ]
@@ -380,35 +467,20 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                         owner repo msg;
                     ]
               | Ok repo_root ->
-                  let backend, model = resolve_backend_model ~backend ~model in
                   let main_branch = resolve_branch ~repo_root main_branch in
-                  Project_store.save_config ~project_name ~github_token:token
-                    ~github_owner:owner ~github_repo:repo ~backend ~model
-                    ~main_branch:(Branch.to_string main_branch)
-                    ~poll_interval ~repo_root ~max_concurrency;
                   Project_store.save_gameplan_source ~project_name
                     ~source_path:gp_path;
-                  let config =
-                    Resolved_config.
-                      {
-                        project = Some project_name;
-                        backend;
-                        model;
-                        github_token = token;
-                        github_owner = owner;
-                        github_repo = repo;
-                        main_branch;
-                        poll_interval;
-                        repo_root;
-                        max_concurrency;
-                        headless;
-                        patch_agent_provider;
-                        patch_agent_effort;
-                        user_config =
-                          User_config.load ~github_owner:owner ~github_repo:repo;
-                      }
+                  let repo_coords =
+                    {
+                      github_token = token;
+                      github_owner = owner;
+                      github_repo = repo;
+                      repo_root;
+                    }
                   in
-                  with_snapshot_load ~project_name config gameplan)))
+                  finalize_run ~project_name ~repo_coords ~run_knobs
+                    ~backend_inputs:(cli_backend_inputs ()) ~main_branch
+                    ~gameplan)))
   | Some proj, None -> (
       if not (Project_store.project_exists proj) then
         Error
@@ -437,16 +509,6 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                   let merge_cli_stored cli stored_val =
                     let c = Base.String.strip cli in
                     if Base.String.is_empty c then stored_val else c
-                  in
-                  let resolved_backend_str =
-                    merge_cli_stored backend stored.Project_store.backend
-                  in
-                  let resolved_model_str =
-                    merge_cli_stored model stored.Project_store.model
-                  in
-                  let backend, model =
-                    resolve_backend_model ~backend:resolved_backend_str
-                      ~model:resolved_model_str
                   in
                   let token_from_stored =
                     merge_cli_stored github_token
@@ -517,34 +579,31 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                     | Some b -> b
                     | None -> Branch.of_string stored.Project_store.main_branch
                   in
-                  (* Persist the resolved config so the next launch without
-                     CLI overrides picks up the current values. *)
-                  Project_store.save_config ~project_name:proj
-                    ~github_token:token ~github_owner:owner ~github_repo:repo
-                    ~backend ~model ~main_branch:(Branch.to_string branch)
-                    ~poll_interval:stored.Project_store.poll_interval ~repo_root
-                    ~max_concurrency:stored.Project_store.max_concurrency;
-                  let config =
-                    Resolved_config.
-                      {
-                        project = Some proj;
-                        backend;
-                        model;
-                        github_token = token;
-                        github_owner = owner;
-                        github_repo = repo;
-                        main_branch = branch;
-                        poll_interval = stored.Project_store.poll_interval;
-                        repo_root;
-                        max_concurrency = stored.Project_store.max_concurrency;
-                        headless;
-                        patch_agent_provider;
-                        patch_agent_effort;
-                        user_config =
-                          User_config.load ~github_owner:owner ~github_repo:repo;
-                      }
+                  let repo_coords =
+                    {
+                      github_token = token;
+                      github_owner = owner;
+                      github_repo = repo;
+                      repo_root;
+                    }
                   in
-                  with_snapshot_load ~project_name:proj config gameplan))
+                  (* Resume reuses the stored [poll_interval] and
+                     [max_concurrency] rather than today's CLI defaults so a
+                     project's settled values survive without explicit flags. *)
+                  let run_knobs =
+                    {
+                      run_knobs with
+                      poll_interval = stored.Project_store.poll_interval;
+                      max_concurrency = stored.Project_store.max_concurrency;
+                    }
+                  in
+                  let backend_inputs =
+                    cli_backend_inputs
+                      ~stored_backend:stored.Project_store.backend
+                      ~stored_model:stored.Project_store.model ()
+                  in
+                  finalize_run ~project_name:proj ~repo_coords ~run_knobs
+                    ~backend_inputs ~main_branch:branch ~gameplan))
 
 let ok_or_exit = function
   | Ok x -> x
@@ -678,18 +737,13 @@ let construct_capabilities ~net (setup : runtime_setup) =
         None
     | None -> None
   in
-  let cli_model_opt = if Base.String.is_empty model then None else Some model in
-  let repo_config =
-    let config_dir = User_config.config_dir ~github_owner ~github_repo in
-    match Repo_config.load ~config_dir ~known_backends () with
-    | Ok t -> t
-    | Error msg ->
-        Printf.eprintf "Error: %s\n" msg;
-        Stdlib.exit 1
+  let effective_model_opt =
+    if Base.String.is_empty model then None else Some model
   in
+  let repo_config = config.Resolved_config.repo_config in
   (match
      Backend_preflight.validate ~default_backend:backend
-       ~cli_model:cli_model_opt ~repo_config ()
+       ~effective_model:effective_model_opt ~repo_config ()
    with
   | Ok () -> ()
   | Error errs ->
@@ -702,7 +756,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   let pick_backend ~complexity =
     let ({ Backend_routing.backend; model } as decision) =
       Backend_routing.decide ~repo_config ~default_backend:backend
-        ~cli_model:cli_model_opt ~complexity
+        ~effective_model:effective_model_opt ~complexity
     in
     (Backend_registry.get registry ~backend ~model, decision)
   in
@@ -713,7 +767,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   let resolve_routing ~complexity : Backend_routing.decision =
     let dec : Backend_routing.decision =
       Backend_routing.decide ~repo_config ~default_backend:backend
-        ~cli_model:cli_model_opt ~complexity
+        ~effective_model:effective_model_opt ~complexity
     in
     {
       dec with
@@ -1024,8 +1078,10 @@ let model_arg =
            [auto] picks a model per patch from the gameplan's [complexity] \
            field (1/2/3 → cheap/standard/strongest tier of the selected \
            backend). The per-backend ladder can be overridden by writing \
-           [~/.config/onton/<owner>/<repo>/config.json] with a [routing] map — \
-           see lib/repo_config.mli for the schema. When omitted, onton does \
+           [~/.config/onton/<owner>/<repo>/config.json] with a [routing] map; \
+           the same file's [default.{backend,model}] block sets per-repo \
+           defaults below CLI flags and stored values — see \
+           lib_core/repo_config.mli for the schema. When omitted, onton does \
            not pass --model to the underlying CLI, so the backend's own \
            default applies.")
 

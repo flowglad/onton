@@ -15,6 +15,7 @@ type config = {
   patch_agent_provider : string option;
   patch_agent_effort : string option;
   user_config : User_config.t;
+  repo_config : Repo_config.t;
 }
 
 type t = {
@@ -32,6 +33,7 @@ type t = {
   patch_agent_provider : string option;
   patch_agent_effort : string option;
   user_config : User_config.t;
+  repo_config : Repo_config.t;
 }
 
 let known_backends =
@@ -117,4 +119,5 @@ let of_config (config : config) =
           patch_agent_provider = config.patch_agent_provider;
           patch_agent_effort = config.patch_agent_effort;
           user_config = config.user_config;
+          repo_config = config.repo_config;
         }

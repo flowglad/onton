@@ -2,10 +2,16 @@
     [~/.config/onton/<owner>/<repo>/config.json] (the same directory layout the
     [User_config] hook lives in — see [User_config.config_dir]).
 
-    Currently only carries the [routing] map — a per-patch override that binds
-    each complexity tier (1/2/3) to a [(backend, model)] tuple. The map only
-    takes effect when [onton --model auto] is in use; explicit [--model <name>]
-    still wins for the whole run.
+    Carries three sections:
+    - [default] — a per-repo default [(backend, model)] pair that mirrors the
+      [--backend] / [--model] CLI flags. Either field may be omitted. Slots into
+      the resolution chain below [Project_store] (stored values from previous
+      runs) but above the hard-coded built-in default.
+    - [routing] — a per-patch override that binds each complexity tier (1/2/3)
+      to a [(backend, model)] tuple. Fires when the effective model (CLI or
+      [default.model]) is the literal ["auto"] (case-insensitive). Otherwise the
+      effective pair drives the whole run.
+    - [reviewBackends] — additional review sources to poll alongside the forge.
 
     Unknown top-level keys are ignored so the file can grow with new sections
     (e.g. timeouts, hook overrides) without breaking older binaries. *)
@@ -19,10 +25,19 @@ type route = {
 }
 
 type t = {
+  default_backend : string option;
+      (** Top-level [default.backend] from the config file. [Some name] (where
+          [name] is in the caller's [known_backends]) acts as the per-repo
+          default backend when neither [--backend] nor a previously stored
+          backend is set. [None] means "not configured — fall through". *)
+  default_model : string option;
+      (** Top-level [default.model] from the config file. [Some "auto"] (case-
+          insensitive) activates [routing] in the same way as [--model auto].
+          [Some other] pins a specific model. [None] means "not configured". *)
   complexity_routes : (int * route) list;
       (** Sparse map indexed by complexity (1/2/3). Stored as an alist because
           the set is tiny and the lookup is per-patch — fast enough. Missing
-          keys mean "no override", and the caller falls back to its default
+          keys mean "no override", and the caller falls back to the effective
           backend / built-in [auto_model] ladder. *)
   review_backends : Review_backend.t list;
       (** Additional review sources to poll alongside the forge. Empty (the
@@ -52,6 +67,10 @@ val load :
     The schema is:
     {[
       {
+        "default": {
+          "backend": "codex",
+          "model":   "auto"
+        },
         "routing": {
           "1": { "backend": "claude", "model": "haiku" },
           "2": { "backend": "codex",  "model": "gpt-5.4" },
@@ -59,8 +78,9 @@ val load :
         }
       }
     ]}
-    [model] is optional. Top-level extra keys are ignored so the file can grow
-    without breaking older binaries. *)
+    Inside [routing.<n>], [backend] is required and [model] is optional. Inside
+    [default], both [backend] and [model] are optional. Top-level extra keys are
+    ignored so the file can grow without breaking older binaries. *)
 
 val route_for_complexity : t -> complexity:int option -> route option
 (** Look up the override for a given patch complexity. [None] when the patch has
