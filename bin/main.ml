@@ -1134,6 +1134,9 @@ let cli_option_takes_value (s : string) : bool =
   match String.index_opt s '=' with
   | Some _ -> false
   | None -> (
+      (* Keep this in sync with Cmdliner [opt] arguments below:
+         --gameplan, --token, --backend, --model, --repo, --main-branch,
+         --poll-interval, and --max-concurrency. *)
       match s with
       | "--gameplan" | "--token" | "--backend" | "--model" | "--repo"
       | "--main-branch" | "--poll-interval" | "--max-concurrency" ->
