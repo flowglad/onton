@@ -1161,7 +1161,7 @@ let extract_pr_ops_from_argv (argv : string array) :
     if !i = 0 then kept := tok :: !kept
     else if cli_option_takes_value tok then (
       kept := tok :: !kept;
-      if !i + 1 < n then (
+      if !i + 1 < n && not (looks_like_pr_op argv.(!i + 1)) then (
         incr i;
         kept := argv.(!i) :: !kept))
     else if is_flag_like_token tok && not (looks_like_pr_op tok) then
