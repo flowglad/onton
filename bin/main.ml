@@ -1134,11 +1134,6 @@ let main_cmd =
   let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock
       prune no_refresh auto_merge =
-    if auto_merge && Base.Option.is_none gameplan_path then (
-      Printf.eprintf
-        "Error: --auto-merge requires --gameplan. It only seeds the initial \
-         state of a fresh project.\n";
-      Stdlib.exit 1);
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1160,7 +1155,12 @@ let main_cmd =
           Eio_main.run @@ fun env ->
           Debug_upload.run ~net:(Eio.Stdenv.net env) ~project_name
             ~version:Version.s)
-    else
+    else (
+      if auto_merge && Base.Option.is_none gameplan_path then (
+        Printf.eprintf
+          "Error: --auto-merge requires --gameplan. It only seeds the initial \
+           state of a fresh project.\n";
+        Stdlib.exit 1);
       let main_branch =
         Base.Option.map main_branch ~f:(fun s ->
             Branch.of_string (Base.String.strip s))
@@ -1168,7 +1168,7 @@ let main_cmd =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock ~auto_merge
+        ~max_concurrency ~headless ~no_lock ~auto_merge)
   in
   let term =
     Term.(
