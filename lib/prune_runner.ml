@@ -80,8 +80,11 @@ let refresh_agents_from_forge ~net ~clock ~(cfg : Project_store.stored_config)
         Eio.Fiber.List.map ~max_fibers:16
           (fun (patch_id, pr_number) ->
             let result =
-              try Result.map_error (Forge.pr_state pr_number) ~f:(fun _ -> ())
-              with _ -> Error ()
+              try
+                Result.map_error (Forge.pr_state pr_number) ~f:(fun _ -> ())
+              with
+              | Eio.Cancel.Cancelled _ as exn -> raise exn
+              | _ -> Error ()
             in
             (patch_id, pr_number, result))
           candidates
