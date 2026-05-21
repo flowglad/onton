@@ -1130,6 +1130,19 @@ let parse_pr_op_token (s : string) : (pr_op, string) result =
               sign"
              s)
 
+let cli_option_takes_value (s : string) : bool =
+  match String.index_opt s '=' with
+  | Some _ -> false
+  | None -> (
+      match s with
+      | "--gameplan" | "--token" | "--backend" | "--model" | "--repo"
+      | "--main-branch" | "--poll-interval" | "--max-concurrency" ->
+          true
+      | _ -> false)
+
+let is_flag_like_token (s : string) : bool =
+  String.length s > 0 && Char.equal s.[0] '-'
+
 (** Strip [+N]/[-N] tokens out of [argv] before cmdliner parses it. Returns the
     list of ops in left-to-right order alongside the filtered argv. *)
 let extract_pr_ops_from_argv (argv : string array) :
@@ -1138,14 +1151,32 @@ let extract_pr_ops_from_argv (argv : string array) :
   let ops = ref [] in
   let kept = ref [] in
   let err = ref None in
+  let saw_project = ref false in
   let i = ref 0 in
   while !i < n && Option.is_none !err do
     let tok = argv.(!i) in
-    if !i > 0 && looks_like_pr_op tok then
+    if !i = 0 then kept := tok :: !kept
+    else if cli_option_takes_value tok then (
+      kept := tok :: !kept;
+      if !i + 1 < n then (
+        incr i;
+        kept := argv.(!i) :: !kept))
+    else if is_flag_like_token tok && not (looks_like_pr_op tok) then
+      kept := tok :: !kept
+    else if looks_like_pr_op tok then
       match parse_pr_op_token tok with
       | Ok op -> ops := op :: !ops
       | Error msg -> err := Some msg
-    else kept := tok :: !kept;
+    else if not !saw_project then (
+      saw_project := true;
+      kept := tok :: !kept)
+    else
+      err :=
+        Some
+          (Printf.sprintf
+             "unrecognized positional argument %S — expected +N or -N (e.g. \
+              +123, -123)"
+             tok);
     incr i
   done;
   match !err with
