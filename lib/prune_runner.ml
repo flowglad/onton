@@ -237,7 +237,9 @@ let run_prune ~net ~clock ~refresh () =
                        | Not_merged | No_patches | No_snapshot | Load_error _ ->
                            ());
                        (status, refresh_summary)))
-              with exn -> Error (Exn.to_string exn)
+              with
+              | Eio.Cancel.Cancelled _ as exn -> raise exn
+              | exn -> Error (Exn.to_string exn)
             with
             | Error msg ->
                 errors :=
