@@ -27,6 +27,13 @@ val response_error_message_contains : string -> substring:string -> bool
     distinct 422 cases (e.g. "pull request already exists" vs "no commits
     between"). Pure; safe on malformed input. *)
 
+val extract_github_message : string -> string
+(** Summarize an HTTP error response body for activity-log display. When the
+    body is a GitHub JSON error, returns the [message] field (and any
+    [errors[].message] details). When the body is not JSON — e.g. the multi-KB
+    HTML page GitHub serves on 5xx — truncates to ~200 characters so it does not
+    flood the activity stream. *)
+
 val default_timeout : float
 (** Per-request timeout default, in seconds. Without a timeout, a TCP connect
     stuck in [SYN_SENT] (e.g. dropped packets, dead route) can block the calling
