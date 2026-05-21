@@ -588,7 +588,7 @@ type constructed_capabilities = {
 
 type built_fiber_env = (module FIBER_ENV)
 
-let setup_runtime env ~config ~gameplan ~existing_snapshot =
+let setup_runtime env ~config ~gameplan ~existing_snapshot ~auto_merge =
   let { Resolved_config.headless; project_name; main_branch; _ } = config in
   if headless then
     Sys.set_signal Sys.sigint
@@ -606,6 +606,14 @@ let setup_runtime env ~config ~gameplan ~existing_snapshot =
         Printf.eprintf "Starting new project %S.\n%!" project_name;
         Runtime.create ~gameplan ~main_branch ()
   in
+  (* [--auto-merge] only seeds the initial state of a fresh project. On resume,
+     each patch's persisted [automerge_enabled] wins so per-patch user toggles
+     are not silently re-enabled across restarts. *)
+  if auto_merge && Base.Option.is_none existing_snapshot then
+    Runtime.update_orchestrator runtime (fun orch ->
+        Base.Map.fold (Orchestrator.agents_map orch) ~init:orch
+          ~f:(fun ~key:pid ~data:_ acc ->
+            Orchestrator.set_automerge_enabled acc pid true));
   Unix.putenv "ONTON_SNAPSHOT_PATH" (Project_store.snapshot_path project_name);
   {
     config;
@@ -886,7 +894,8 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
             :: common_fibers)
         with Fibers.Tui.Quit -> ())
 
-let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
+let run_with_config ~no_lock ~auto_merge (config : config) gameplan
+    existing_snapshot =
   let resolved = Resolved_config.of_config config |> ok_or_exit in
   let {
     Resolved_config.github_token;
@@ -945,7 +954,9 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
       Base.Option.iter lock ~f:Project_lock.release)
   @@ fun () ->
   Eio_main.run @@ fun env ->
-  let setup = setup_runtime env ~config:resolved ~gameplan ~existing_snapshot in
+  let setup =
+    setup_runtime env ~config:resolved ~gameplan ~existing_snapshot ~auto_merge
+  in
   let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
   let tui_state = Tui_state.create () in
   let fiber_env = build_fiber_env setup capabilities ~tui_state in
@@ -967,7 +978,7 @@ let run_with_config ~no_lock (config : config) gameplan existing_snapshot =
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless ~no_lock =
+    ~max_concurrency ~headless ~no_lock ~auto_merge =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
@@ -976,7 +987,7 @@ let run ~project ~gameplan_path ~github_token ~backend ~model
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
-      run_with_config ~no_lock config gameplan existing_snapshot
+      run_with_config ~no_lock ~auto_merge config gameplan existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
 
@@ -1107,11 +1118,27 @@ let no_refresh_arg =
            the [merged] flag stored in each project's snapshot. Useful offline \
            or when forge tokens have been rotated.")
 
+let auto_merge_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "auto-merge" ]
+        ~doc:
+          "Enable automerge for every patch in the gameplan at project start. \
+           Only valid when paired with --gameplan; ignored on resume so \
+           per-patch toggles set via the TUI survive restarts. Individual \
+           patches can still be toggled off in the TUI manage overlay.")
+
 let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock
-      prune no_refresh =
+      prune no_refresh auto_merge =
+    if auto_merge && Base.Option.is_none gameplan_path then (
+      Printf.eprintf
+        "Error: --auto-merge requires --gameplan. It only seeds the initial \
+         state of a fresh project.\n";
+      Stdlib.exit 1);
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1141,14 +1168,14 @@ let main_cmd =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock
+        ~max_concurrency ~headless ~no_lock ~auto_merge
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
       $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg)
+      $ prune_arg $ no_refresh_arg $ auto_merge_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
