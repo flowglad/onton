@@ -1092,15 +1092,31 @@ let prune_arg =
     & info [ "prune" ]
         ~doc:
           "Remove every stored project whose gameplan patches are all merged. \
-           Skips projects whose lock is held by a live onton process. Does not \
-           require any other arguments.")
+           Skips projects whose lock is held by a live onton process. By \
+           default, each project's non-terminal patches are reconciled with \
+           the forge first (one PR-state query per patch) so out-of-band \
+           merges are detected; pass --no-refresh to skip the network step.")
+
+let no_refresh_arg =
+  let open Cmdliner in
+  Arg.(
+    value & flag
+    & info [ "no-refresh" ]
+        ~doc:
+          "When pruning, skip the forge reconciliation step and rely solely on \
+           the [merged] flag stored in each project's snapshot. Useful offline \
+           or when forge tokens have been rotated.")
 
 let main_cmd =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock
-      prune =
-    if prune then Stdlib.exit (Prune_runner.run_prune ())
+      prune no_refresh =
+    if prune then
+      Stdlib.exit
+        ( Eio_main.run @@ fun env ->
+          Prune_runner.run_prune ~net:(Eio.Stdenv.net env)
+            ~clock:(Eio.Stdenv.clock env) ~refresh:(not no_refresh) () )
     else if upload_debug then (
       match project with
       | None ->
@@ -1132,7 +1148,7 @@ let main_cmd =
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
       $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg)
+      $ prune_arg $ no_refresh_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
