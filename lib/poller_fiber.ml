@@ -126,7 +126,8 @@ struct
     | Error (Github.Transport_error { msg; _ }) ->
         Poll_outcome.Transport_failed { msg }
     | Error (Github.Http_error { status; body; _ }) ->
-        Poll_outcome.Http_failed { status; msg = body }
+        Poll_outcome.Http_failed
+          { status; msg = Github.extract_github_message body }
     | Error (Github.Graphql_error msgs) -> Poll_outcome.Graphql_failed msgs
     | Error (Github.Json_parse_error msg) -> Poll_outcome.Json_parse_failed msg
 
