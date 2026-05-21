@@ -260,14 +260,32 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
                   ~branch_of
                   ~main:(Orchestrator.main_branch t)
               in
-              let desired_draft =
-                if Branch.equal expected_base (Orchestrator.main_branch t) then
-                  not agent.pr_body_delivered
-                else true
+              (* Mark-for-review is a one-way ratchet: we only emit
+                 [draft = false]. Re-drafting a ready PR is disruptive to
+                 reviewers, so the controller defers the transition until
+                 the patch has reached a fixpoint and then never flips back.
+
+                 The fixpoint requires the PR body to be delivered, the
+                 expected base to be [main] (all deps merged), the local
+                 branch to actually be rebased onto that base (otherwise a
+                 pending rebase could still surface a conflict), no active
+                 merge conflict, and CI green. [branch_rebased_onto] lags
+                 [expected_base] until the Rebase action lands, and
+                 [has_conflict] is set the moment a rebase or push surfaces
+                 a conflict — both must clear before we open for review. *)
+              let rebase_pending =
+                match agent.branch_rebased_onto with
+                | Some b -> not (Branch.equal b expected_base)
+                | None -> false
               in
-              if Bool.(agent.is_draft <> desired_draft) then
+              let ready_for_review =
+                Branch.equal expected_base (Orchestrator.main_branch t)
+                && agent.pr_body_delivered && (not agent.has_conflict)
+                && (not rebase_pending) && agent.checks_passing
+              in
+              if agent.is_draft && ready_for_review then
                 effects :=
-                  Set_pr_draft { patch_id; pr_number; draft = desired_draft }
+                  Set_pr_draft { patch_id; pr_number; draft = false }
                   :: !effects;
               if not (Branch.equal actual_base expected_base) then
                 effects :=
@@ -718,6 +736,7 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
   let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
   let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
   let t = Orchestrator.set_pr_body_delivered t pid true in
+  let t = Orchestrator.set_checks_passing t pid true in
   let t = Orchestrator.complete t pid in
   let _, effects =
     reconcile_patch t ~project_name:"proj"
@@ -743,6 +762,175 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
   List.exists effects ~f:(function
     | Set_pr_draft { patch_id; draft = false; _ } -> Patch_id.equal patch_id pid
     | Set_pr_draft _ | Set_pr_base _ -> false)
+
+let%test "reconcile_patch keeps PR draft while CI is not green" =
+  let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.set_pr_body_delivered t pid true in
+  let t = Orchestrator.complete t pid in
+  (* checks_passing left at its default [false] — CI hasn't reported green. *)
+  let _, effects =
+    reconcile_patch t ~project_name:"proj"
+      ~gameplan:
+        Gameplan.
+          {
+            project_name = "proj";
+            repo_owner = "";
+            repo_name = "";
+            problem_statement = "";
+            solution_summary = "";
+            final_state_spec = "";
+            patches = [ patch ];
+            current_state_analysis = "";
+            explicit_opinions = "";
+            acceptance_criteria = [];
+            open_questions = [];
+            functional_changes = [];
+            context_resources = [];
+          }
+      ~patch
+  in
+  List.is_empty effects
+
+let%test "reconcile_patch never re-drafts a PR once it is ready for review" =
+  let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.set_pr_body_delivered t pid true in
+  let t = Orchestrator.complete t pid in
+  (* Simulate GitHub having observed the PR as ready-for-review. *)
+  let t = Orchestrator.set_is_draft t pid false in
+  (* Now CI flaps red and a fresh conflict arrives. *)
+  let t = Orchestrator.set_checks_passing t pid false in
+  let t = Orchestrator.set_has_conflict t pid in
+  let _, effects =
+    reconcile_patch t ~project_name:"proj"
+      ~gameplan:
+        Gameplan.
+          {
+            project_name = "proj";
+            repo_owner = "";
+            repo_name = "";
+            problem_statement = "";
+            solution_summary = "";
+            final_state_spec = "";
+            patches = [ patch ];
+            current_state_analysis = "";
+            explicit_opinions = "";
+            acceptance_criteria = [];
+            open_questions = [];
+            functional_changes = [];
+            context_resources = [];
+          }
+      ~patch
+  in
+  not
+    (List.exists effects ~f:(function
+      | Set_pr_draft _ -> true
+      | Set_pr_base _ -> false))
+
+let%test "reconcile_patch keeps PR draft while merge conflict is active" =
+  let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (pid, main)) in
+  let t = Orchestrator.set_pr_number t pid (Pr_number.of_int 42) in
+  let t = Orchestrator.set_pr_body_delivered t pid true in
+  let t = Orchestrator.complete t pid in
+  let t = Orchestrator.set_has_conflict t pid in
+  let _, effects =
+    reconcile_patch t ~project_name:"proj"
+      ~gameplan:
+        Gameplan.
+          {
+            project_name = "proj";
+            repo_owner = "";
+            repo_name = "";
+            problem_statement = "";
+            solution_summary = "";
+            final_state_spec = "";
+            patches = [ patch ];
+            current_state_analysis = "";
+            explicit_opinions = "";
+            acceptance_criteria = [];
+            open_questions = [];
+            functional_changes = [];
+            context_resources = [];
+          }
+      ~patch
+  in
+  not
+    (List.exists effects ~f:(function
+      | Set_pr_draft { draft = false; _ } -> true
+      | Set_pr_draft _ | Set_pr_base _ -> false))
+
+let%test
+    "reconcile_patch keeps child PR draft until rebased onto main after parent \
+     merges" =
+  let parent_id = Patch_id.of_string "parent" in
+  let child_id = Patch_id.of_string "child" in
+  let parent_branch = Branch.of_string "parent-branch" in
+  let child_branch = Branch.of_string "child-branch" in
+  let mk_patch id branch deps =
+    {
+      Patch.id;
+      title = "test";
+      description = "test";
+      branch;
+      dependencies = deps;
+      spec = "";
+      acceptance_criteria = [];
+      changes = [];
+      files = [];
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+      complexity = None;
+      precedents = [];
+      required_context = [];
+    }
+  in
+  let parent_patch = mk_patch parent_id parent_branch [] in
+  let child_patch = mk_patch child_id child_branch [ parent_id ] in
+  let t =
+    Orchestrator.create ~patches:[ parent_patch; child_patch ] ~main_branch:main
+  in
+  let t = Orchestrator.fire t (Orchestrator.Start (parent_id, main)) in
+  let t = Orchestrator.set_pr_number t parent_id (Pr_number.of_int 41) in
+  let t = Orchestrator.complete t parent_id in
+  let t = Orchestrator.mark_merged t parent_id in
+  (* Child started on the parent's branch — branch_rebased_onto records
+     [parent_branch], NOT main. Parent has since merged, so expected_base
+     flips to main, but the local branch has not yet been rebased. *)
+  let t = Orchestrator.fire t (Orchestrator.Start (child_id, parent_branch)) in
+  let t = Orchestrator.set_pr_number t child_id (Pr_number.of_int 42) in
+  let t = Orchestrator.set_pr_body_delivered t child_id true in
+  let t = Orchestrator.complete t child_id in
+  let gp =
+    Gameplan.
+      {
+        project_name = "proj";
+        repo_owner = "";
+        repo_name = "";
+        problem_statement = "";
+        solution_summary = "";
+        final_state_spec = "";
+        patches = [ parent_patch; child_patch ];
+        current_state_analysis = "";
+        explicit_opinions = "";
+        acceptance_criteria = [];
+        open_questions = [];
+        functional_changes = [];
+        context_resources = [];
+      }
+  in
+  let _, effects =
+    reconcile_patch t ~project_name:"proj" ~gameplan:gp ~patch:child_patch
+  in
+  not
+    (List.exists effects ~f:(function
+      | Set_pr_draft { patch_id; draft = false; _ } ->
+          Patch_id.equal patch_id child_id
+      | Set_pr_draft _ | Set_pr_base _ -> false))
 
 let%test "reconcile_patch emits no effects for merged agent" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
