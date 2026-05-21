@@ -206,19 +206,35 @@ let () =
   in
 
   let prop_draft_reemits_until_success =
-    Test.make ~name:"patch_controller: draft effect re-emits until acknowledged"
+    Test.make
+      ~name:
+        "patch_controller: ready-for-review effect re-emits until acknowledged"
       ~count:200
-      Gen.(triple gen_patch_id gen_branch bool)
-      (fun (pid, branch, notes_delivered) ->
-        let desired_draft = not notes_delivered in
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
+        (* Agent is at the ready-for-review fixpoint except is_draft is still
+           true on GitHub; reconcile must emit Set_pr_draft{draft=false} until
+           the effect is acknowledged. One-way ratchet — the reverse
+           direction (re-draft) is not exercised by this property. *)
         let agent =
-          make_agent ~patch_id:pid ~branch
+          Patch_agent.restore ~patch_id:pid ~branch
             ~pr_number:(Some (Pr_number.of_int 42))
-            ~merged:false ~queue:[] ~base_branch:(Some main)
-            ~is_draft:(not desired_draft) ~pr_body_delivered:notes_delivered
-            ~start_attempts_without_pr:0
+            ~has_session:false ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:(Some main) ~checks_passing:true
+            ~current_op:None ~current_op_state:Patch_agent.Queued
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
         let orch = make_orch patch agent in
         begin try
@@ -239,6 +255,40 @@ let () =
               has_draft_effect effects1 && not (has_draft_effect effects2)
         with _ -> false
         end)
+  in
+
+  let prop_unknown_rebase_blocks_ready_for_review =
+    Test.make
+      ~name:"patch_controller: unknown rebase target blocks ready-for-review"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:false ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:true ~current_op:None
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+        in
+        let orch = make_orch patch agent in
+        let _orch, effects =
+          Patch_controller.reconcile_patch orch ~project_name:"test-project"
+            ~gameplan ~patch
+        in
+        not (has_draft_effect effects))
   in
 
   let prop_intervention_stable_after_threshold =
@@ -485,6 +535,7 @@ let () =
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0
+          |> fun agent -> Patch_agent.set_branch_rebased_onto agent main
         in
         let orch = make_orch patch agent in
         let poll =
@@ -496,7 +547,7 @@ let () =
               is_draft = true;
               has_conflict = false;
               merge_ready = false;
-              checks_passing = false;
+              checks_passing = true;
               ci_checks = [];
             }
         in
@@ -779,10 +830,10 @@ let () =
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_op_state:Patch_agent.Queued ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~branch_rebased_onto:(Some main) ~checks_passing:false
+            ~current_op:None ~current_op_state:Patch_agent.Queued
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -801,12 +852,15 @@ let () =
           in
           if not has_pr_body_action then false
           else
-            (* Fire Pr_body action and simulate delivery *)
+            (* Fire Pr_body action and simulate delivery. CI must be
+               observed green before the controller will mark ready —
+               that's a precondition of the fixpoint. *)
             let orch1 =
               Orchestrator.fire orch1
                 (Orchestrator.Respond (pid, Operation_kind.Pr_body))
             in
             let orch1 = Orchestrator.set_pr_body_delivered orch1 pid true in
+            let orch1 = Orchestrator.set_checks_passing orch1 pid true in
             let orch1 = Orchestrator.complete orch1 pid in
             (* Cycle 2: should converge — only draft effect *)
             let _orch2, effects2, actions2 =
@@ -1047,6 +1101,7 @@ let () =
       prop_plan_tick_deterministic;
       prop_pr_body_queue_idempotent;
       prop_draft_reemits_until_success;
+      prop_unknown_rebase_blocks_ready_for_review;
       prop_intervention_stable_after_threshold;
       prop_reconcile_all_exposes_pr_body_as_next_action;
       prop_reconcile_all_blocks_restart_after_intervention;
