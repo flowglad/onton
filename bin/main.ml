@@ -894,7 +894,67 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
             :: common_fibers)
         with Fibers.Tui.Quit -> ())
 
-let run_with_config ~no_lock ~auto_merge (config : config) gameplan
+(** Add a list of GitHub PRs as ad-hoc patches to the running orchestrator.
+    Mirrors [Tui_input.Prompt_pr] in [tui_fiber.ml]: fetch PR state, skip
+    forks/missing head branches, no-op when already registered. Failures are
+    reported to stderr and the event log; the remaining PRs still proceed. *)
+let add_pr_extras_to_runtime ~(setup : runtime_setup)
+    ~(cap : constructed_capabilities) (prs : Pr_number.t list) =
+  let module Forge = (val cap.forge) in
+  List.iter
+    (fun pr_number ->
+      let n = Pr_number.to_int pr_number in
+      let patch_id = Patch_id.of_string (string_of_int n) in
+      let already_exists =
+        Runtime.read setup.runtime (fun snap ->
+            Base.Option.is_some
+              (Orchestrator.find_agent snap.Runtime.orchestrator patch_id))
+      in
+      if already_exists then
+        log_event setup.runtime ~patch_id
+          (Printf.sprintf "Ad-hoc PR #%d already registered" n)
+      else
+        match Forge.pr_state pr_number with
+        | Error err ->
+            let msg =
+              Printf.sprintf "Cannot add ad-hoc PR #%d — %s" n
+                (Forge.show_error err)
+            in
+            Printf.eprintf "onton: %s\n%!" msg;
+            log_event setup.runtime ~patch_id msg
+        | Ok pr_state when Pr_state.is_fork pr_state ->
+            let msg =
+              Printf.sprintf "Cannot add ad-hoc PR #%d — fork PRs not supported"
+                n
+            in
+            Printf.eprintf "onton: %s\n%!" msg;
+            log_event setup.runtime ~patch_id msg
+        | Ok pr_state -> (
+            match pr_state.Pr_state.head_branch with
+            | None ->
+                let msg =
+                  Printf.sprintf "Cannot add ad-hoc PR #%d — no head branch" n
+                in
+                Printf.eprintf "onton: %s\n%!" msg;
+                log_event setup.runtime ~patch_id msg
+            | Some branch ->
+                cap.register_pr_number ~patch_id ~pr_number;
+                Runtime.update_orchestrator setup.runtime (fun orch ->
+                    let base_branch =
+                      Base.Option.value pr_state.Pr_state.base_branch
+                        ~default:(Orchestrator.main_branch orch)
+                    in
+                    Orchestrator.add_agent orch ~patch_id ~branch ~base_branch
+                      ~pr_number);
+                let msg =
+                  Printf.sprintf "Ad-hoc PR #%d added (%s)" n
+                    (Branch.to_string branch)
+                in
+                Printf.eprintf "onton: %s\n%!" msg;
+                log_event setup.runtime ~patch_id msg))
+    prs
+
+let run_with_config ~no_lock ~auto_merge ~pr_extras (config : config) gameplan
     existing_snapshot =
   let resolved = Resolved_config.of_config config |> ok_or_exit in
   let {
@@ -958,6 +1018,7 @@ let run_with_config ~no_lock ~auto_merge (config : config) gameplan
     setup_runtime env ~config:resolved ~gameplan ~existing_snapshot ~auto_merge
   in
   let capabilities = construct_capabilities ~net:(Eio.Stdenv.net env) setup in
+  add_pr_extras_to_runtime ~setup ~cap:capabilities pr_extras;
   let tui_state = Tui_state.create () in
   let fiber_env = build_fiber_env setup capabilities ~tui_state in
   run_main_loop setup capabilities fiber_env ~tui_state
@@ -978,7 +1039,7 @@ let run_with_config ~no_lock ~auto_merge (config : config) gameplan
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless ~no_lock ~auto_merge =
+    ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_extras =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
@@ -987,7 +1048,8 @@ let run ~project ~gameplan_path ~github_token ~backend ~model
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
       Stdlib.exit 1
   | Ok (config, gameplan, existing_snapshot) ->
-      run_with_config ~no_lock ~auto_merge config gameplan existing_snapshot
+      run_with_config ~no_lock ~auto_merge ~pr_extras config gameplan
+        existing_snapshot
 
 (** {1 CLI via Cmdliner} *)
 
@@ -1000,6 +1062,44 @@ let project_arg =
         ~doc:
           "Project name to resume. If omitted, derived from --gameplan's \
            project name.")
+
+(** Trailing positional arguments after PROJECT. The only currently recognized
+    form is [+N], which adds GitHub PR #N to the session as an ad-hoc patch
+    before the fibers start — the same path the TUI uses for [Prompt_pr]. *)
+let pr_extras_arg =
+  let open Cmdliner in
+  Arg.(
+    value & pos_right 0 string []
+    & info [] ~docv:"EXTRA"
+        ~doc:
+          "Additional positional arguments. Currently only the form [+N] is \
+           accepted, where N is a PR number; each [+N] is added to the running \
+           session as an ad-hoc patch.")
+
+(** Parse trailing positional args into PR numbers. Each must be
+    [+<positive int>]. Returns [Error] on the first bad token so the user sees
+    the offender by name instead of a silent ignore. *)
+let parse_pr_extras (raw : string list) : (Pr_number.t list, string) result =
+  let parse_one s =
+    if String.length s < 2 || not (Char.equal s.[0] '+') then
+      Error
+        (Printf.sprintf
+           "unrecognized positional argument %S — expected +N (e.g. +123)" s)
+    else
+      let rest = String.sub s 1 (String.length s - 1) in
+      match int_of_string_opt rest with
+      | Some n when n > 0 -> Ok (Pr_number.of_int n)
+      | _ ->
+          Error
+            (Printf.sprintf
+               "invalid PR number in %S — expected a positive integer after +" s)
+  in
+  let rec loop acc = function
+    | [] -> Ok (List.rev acc)
+    | x :: xs -> (
+        match parse_one x with Ok n -> loop (n :: acc) xs | Error e -> Error e)
+  in
+  loop [] raw
 
 let gameplan_path_arg =
   let open Cmdliner in
@@ -1131,9 +1231,9 @@ let auto_merge_arg =
 
 let main_cmd =
   let open Cmdliner in
-  let run_cmd project gameplan_path github_token backend model main_branch
-      poll_interval repo_root max_concurrency headless upload_debug no_lock
-      prune no_refresh auto_merge =
+  let run_cmd project pr_extras_raw gameplan_path github_token backend model
+      main_branch poll_interval repo_root max_concurrency headless upload_debug
+      no_lock prune no_refresh auto_merge =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1161,6 +1261,13 @@ let main_cmd =
           "Error: --auto-merge requires --gameplan. It only seeds the initial \
            state of a fresh project.\n";
         Stdlib.exit 1);
+      let pr_extras =
+        match parse_pr_extras pr_extras_raw with
+        | Ok prs -> prs
+        | Error msg ->
+            Printf.eprintf "onton: %s\n" msg;
+            Stdlib.exit 1
+      in
       let main_branch =
         Base.Option.map main_branch ~f:(fun s ->
             Branch.of_string (Base.String.strip s))
@@ -1168,14 +1275,15 @@ let main_cmd =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock ~auto_merge)
+        ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_extras)
   in
   let term =
     Term.(
-      const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
-      $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg $ auto_merge_arg)
+      const run_cmd $ project_arg $ pr_extras_arg $ gameplan_path_arg
+      $ github_token_arg $ backend_arg $ model_arg $ main_branch_arg
+      $ poll_interval_arg $ repo_arg $ max_concurrency_arg $ headless_arg
+      $ upload_debug_arg $ no_lock_arg $ prune_arg $ no_refresh_arg
+      $ auto_merge_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
@@ -1184,7 +1292,9 @@ let main_cmd =
          Usage:\n\
         \  onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   Start a new project\n\
         \  onton PROJECT [OPTIONS]                         Resume a saved \
-         project"
+         project\n\
+        \  onton PROJECT +N [+N ...] [OPTIONS]             Resume and add PR \
+         #N as an ad-hoc patch"
   in
   Cmd.v info term
 
