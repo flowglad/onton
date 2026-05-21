@@ -79,7 +79,11 @@ let refresh_agents_from_forge ~net ~clock ~(cfg : Project_store.stored_config)
       let results =
         Eio.Fiber.List.map ~max_fibers:16
           (fun (patch_id, pr_number) ->
-            (patch_id, pr_number, Forge.pr_state pr_number))
+            let result =
+              try Result.map_error (Forge.pr_state pr_number) ~f:(fun _ -> ())
+              with _ -> Error ()
+            in
+            (patch_id, pr_number, result))
           candidates
       in
       let attempted = List.length results in
@@ -236,10 +240,14 @@ let run_prune ~net ~clock ~refresh () =
                 errors :=
                   (project_name, Stdlib.Printf.sprintf "prune failed: %s" msg)
                   :: !errors
-            | Ok (All_merged, _) -> (
+            | Ok (All_merged, refresh_summary) -> (
                 try
+                  let refresh_note =
+                    Option.bind refresh_summary ~f:format_refresh_summary
+                  in
                   removed :=
-                    (project_name, worktree_root_for ~project_name) :: !removed
+                    (project_name, worktree_root_for ~project_name, refresh_note)
+                    :: !removed
                 with exn ->
                   errors := (project_name, Exn.to_string exn) :: !errors)
             | Ok (Not_merged, refresh_summary) ->
@@ -256,8 +264,10 @@ let run_prune ~net ~clock ~refresh () =
                   ( project_name,
                     Stdlib.Printf.sprintf "snapshot load failed: %s" msg )
                   :: !errors));
-    List.iter (List.rev !removed) ~f:(fun (n, _) ->
-        Stdlib.Printf.printf "removed %s\n" n);
+    List.iter (List.rev !removed) ~f:(fun (n, _, refresh_note) ->
+        match refresh_note with
+        | None -> Stdlib.Printf.printf "removed %s\n" n
+        | Some note -> Stdlib.Printf.printf "removed %s — %s\n" n note);
     List.iter (List.rev !kept) ~f:(fun (n, reason) ->
         Stdlib.Printf.printf "kept    %s — %s\n" n reason);
     List.iter (List.rev !errors) ~f:(fun (n, msg) ->
@@ -267,7 +277,7 @@ let run_prune ~net ~clock ~refresh () =
       (List.length !kept)
       (pluralize (List.length !errors) "error");
     let leftover_worktrees =
-      List.filter !removed ~f:(fun (_, p) -> Stdlib.Sys.file_exists p)
+      List.filter !removed ~f:(fun (_, p, _) -> Stdlib.Sys.file_exists p)
     in
     if not (List.is_empty leftover_worktrees) then (
       Stdlib.Printf.printf
@@ -275,6 +285,6 @@ let run_prune ~net ~clock ~refresh () =
          Worktree directories are not pruned automatically (they may contain \
          build outputs).\n\
          Remove them manually once they are no longer needed:\n";
-      List.iter (List.rev leftover_worktrees) ~f:(fun (_, p) ->
+      List.iter (List.rev leftover_worktrees) ~f:(fun (_, p, _) ->
           Stdlib.Printf.printf "  rm -rf %s\n" p));
     if not (List.is_empty !errors) then 1 else 0
