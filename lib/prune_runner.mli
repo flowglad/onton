@@ -11,6 +11,7 @@ val run_prune :
     leaves the stored [merged] flag untouched so the project is kept, not
     accidentally deleted.
 
-    Returns [0] on success and [1] when one or more projects could not be pruned
-    due to lock or snapshot errors. Forge-refresh failures alone do not set the
-    exit code; they are surfaced as informational notes on the kept project. *)
+    Returns [0] on success and [1] when one or more projects report prune errors
+    (for example lock, snapshot-load, or prune-time filesystem errors).
+    Forge-refresh failures alone do not set the exit code; they are surfaced as
+    informational notes on the kept project. *)
