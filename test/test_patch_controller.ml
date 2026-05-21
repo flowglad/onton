@@ -257,6 +257,40 @@ let () =
         end)
   in
 
+  let prop_unknown_rebase_blocks_ready_for_review =
+    Test.make
+      ~name:"patch_controller: unknown rebase target blocks ready-for-review"
+      ~count:200
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        let patch = make_patch pid branch in
+        let gameplan = make_gameplan patch in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_number:(Some (Pr_number.of_int 42))
+            ~has_session:false ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:false ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
+            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+            ~conflict_noop_count:0 ~no_commits_push_count:0
+            ~branch_rebased_onto:None ~checks_passing:true ~current_op:None
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+        in
+        let orch = make_orch patch agent in
+        let _orch, effects =
+          Patch_controller.reconcile_patch orch ~project_name:"test-project"
+            ~gameplan ~patch
+        in
+        not (has_draft_effect effects))
+  in
+
   let prop_intervention_stable_after_threshold =
     Test.make
       ~name:
@@ -501,6 +535,7 @@ let () =
             ~pr_number:(Some (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0
+          |> fun agent -> Patch_agent.set_branch_rebased_onto agent main
         in
         let orch = make_orch patch agent in
         let poll =
@@ -795,10 +830,10 @@ let () =
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-            ~current_op_state:Patch_agent.Queued ~current_message_id:None
-            ~generation:0 ~worktree_path:None ~branch_blocked:false
-            ~llm_session_id:None ~automerge_enabled:false
+            ~branch_rebased_onto:(Some main) ~checks_passing:false
+            ~current_op:None ~current_op_state:Patch_agent.Queued
+            ~current_message_id:None ~generation:0 ~worktree_path:None
+            ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
             ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
         in
@@ -1066,6 +1101,7 @@ let () =
       prop_plan_tick_deterministic;
       prop_pr_body_queue_idempotent;
       prop_draft_reemits_until_success;
+      prop_unknown_rebase_blocks_ready_for_review;
       prop_intervention_stable_after_threshold;
       prop_reconcile_all_exposes_pr_body_as_next_action;
       prop_reconcile_all_blocks_restart_after_intervention;

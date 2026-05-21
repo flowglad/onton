@@ -276,7 +276,7 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
               let rebase_pending =
                 match agent.branch_rebased_onto with
                 | Some b -> not (Branch.equal b expected_base)
-                | None -> false
+                | None -> true
               in
               let ready_for_review =
                 Branch.equal expected_base (Orchestrator.main_branch t)
