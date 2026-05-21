@@ -8,18 +8,18 @@ type prune_status =
   | No_snapshot
   | Load_error of string
 
-(** Per-project refresh summary, captured during classification and stitched
-    into the human-readable [kept] reason. None when refresh was disabled or
-    the project had nothing eligible to refresh. *)
 type refresh_summary = {
   attempted : int;
   newly_merged : int;
   errors : int;
   skipped_reason : string option;
       (** When the project was eligible for refresh but it was skipped (e.g.
-          missing token), explain why so the user understands the kept
-          reason. *)
+          missing token), explain why so the user understands the kept reason.
+      *)
 }
+(** Per-project refresh summary, captured during classification and stitched
+    into the human-readable [kept] reason. None when refresh was disabled or the
+    project had nothing eligible to refresh. *)
 
 let pluralize ?plural n singular =
   let many = match plural with Some p -> p | None -> singular ^ "s" in
@@ -98,8 +98,7 @@ let refresh_agents_from_forge ~net ~clock ~(cfg : Project_store.stored_config)
                   (agents, merged_count + 1, errs)
                 else (agents, merged_count, errs))
       in
-      ( agents,
-        { attempted; newly_merged; errors; skipped_reason = None } )
+      (agents, { attempted; newly_merged; errors; skipped_reason = None })
 
 let format_refresh_summary (s : refresh_summary) =
   let pr_word n = if n = 1 then "PR" else "PRs" in
@@ -114,14 +113,14 @@ let format_refresh_summary (s : refresh_summary) =
               (pr_word s.attempted);
           ]
           @ (if s.newly_merged > 0 then
-               [
-                 Stdlib.Printf.sprintf "%d newly merged" s.newly_merged;
-               ]
+               [ Stdlib.Printf.sprintf "%d newly merged" s.newly_merged ]
              else [])
           @
           if s.errors > 0 then
-            [ Stdlib.Printf.sprintf "%d forge error%s" s.errors
-                (if s.errors = 1 then "" else "s") ]
+            [
+              Stdlib.Printf.sprintf "%d forge error%s" s.errors
+                (if s.errors = 1 then "" else "s");
+            ]
           else []
         in
         Some (String.concat ~sep:", " parts)

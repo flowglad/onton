@@ -1103,9 +1103,9 @@ let no_refresh_arg =
     value & flag
     & info [ "no-refresh" ]
         ~doc:
-          "When pruning, skip the forge reconciliation step and rely solely \
-           on the [merged] flag stored in each project's snapshot. Useful \
-           offline or when forge tokens have been rotated.")
+          "When pruning, skip the forge reconciliation step and rely solely on \
+           the [merged] flag stored in each project's snapshot. Useful offline \
+           or when forge tokens have been rotated.")
 
 let main_cmd =
   let open Cmdliner in
@@ -1114,11 +1114,9 @@ let main_cmd =
       prune no_refresh =
     if prune then
       Stdlib.exit
-        (Eio_main.run @@ fun env ->
-         Prune_runner.run_prune
-           ~net:(Eio.Stdenv.net env)
-           ~clock:(Eio.Stdenv.clock env)
-           ~refresh:(not no_refresh) ())
+        ( Eio_main.run @@ fun env ->
+          Prune_runner.run_prune ~net:(Eio.Stdenv.net env)
+            ~clock:(Eio.Stdenv.clock env) ~refresh:(not no_refresh) () )
     else if upload_debug then (
       match project with
       | None ->
