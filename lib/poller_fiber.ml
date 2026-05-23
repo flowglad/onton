@@ -47,6 +47,7 @@ struct
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
+    let fetch_mutex = Env.fetch_mutex
   end
 
   module WS = Worktree_setup.Make (W) (WS_Env)
@@ -165,11 +166,10 @@ struct
        [Reconciler.detect_stale_bases] silently passes because both
        [base_branch] and [Graph.initial_base] read the same stale name.
 
-       The fetch races with per-worktree fetches in the runner fiber on
-       shared ref storage; that's a pre-existing condition we live with by
-       making this best-effort: a transient "cannot lock ref" just defers
-       the check by one [poll_interval]. *)
-    let fetch_lock = Eio.Mutex.create () in
+       The fetch uses [Env.fetch_mutex], the same mutex the runner fiber
+       holds for per-worktree fetches, so the two never race on the shared
+       ref store. *)
+    let fetch_lock = Env.fetch_mutex in
     let last_main_sha = ref "" in
     let main_str = Branch.to_string main in
     let check_main_freshness () =

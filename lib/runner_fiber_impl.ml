@@ -48,6 +48,7 @@ struct
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
+    let fetch_mutex = Env.fetch_mutex
   end
 
   module SD_Env : Session_driver.ENV = struct
@@ -61,6 +62,7 @@ struct
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
+    let fetch_mutex = Env.fetch_mutex
   end
 
   module WS = Worktree_setup.Make (W) (WS_Env)
@@ -451,9 +453,11 @@ struct
       Eio.Semaphore.acquire semaphore;
       Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
     in
-    (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
-     the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
-    let fetch_mutex = Eio.Mutex.create () in
+    (* Serializes [git fetch origin] across worktrees + the poller's
+       main-freshness fetch to avoid ref-lock races on the shared
+       [refs/remotes/origin/*] store. Shared via [Env.fetch_mutex] so a
+       single mutex covers every fiber. See [Worktree.fetch_origin]. *)
+    let fetch_mutex = Env.fetch_mutex in
     let long_lived_sessions = Long_lived_sessions.create () in
     let patch_agent_provider =
       Base.Option.value Env.patch_agent_provider ~default:"anthropic"

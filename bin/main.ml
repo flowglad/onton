@@ -145,6 +145,7 @@ module type FIBER_ENV = sig
   val unregister_pr_number : patch_id:Patch_id.t -> unit
   val worktree_mutex : Eio.Mutex.t
   val hook_mutex : Eio.Mutex.t
+  val fetch_mutex : Eio.Mutex.t
   val tui_state : Tui_state.t
 end
 
@@ -163,6 +164,7 @@ struct
         let user_config = Env.config.user_config
         let worktree_mutex = Env.worktree_mutex
         let hook_mutex = Env.hook_mutex
+        let fetch_mutex = Env.fetch_mutex
         let owner = Env.config.github_owner
         let repo = Env.config.github_repo
         let main_branch = Env.config.main_branch
@@ -187,6 +189,7 @@ struct
         let user_config = Env.config.user_config
         let worktree_mutex = Env.worktree_mutex
         let hook_mutex = Env.hook_mutex
+        let fetch_mutex = Env.fetch_mutex
         let process_mgr = Env.process_mgr
         let github_owner = Env.config.github_owner
         let github_repo = Env.config.github_repo
@@ -212,6 +215,7 @@ struct
         let user_config = Env.config.user_config
         let worktree_mutex = Env.worktree_mutex
         let hook_mutex = Env.hook_mutex
+        let fetch_mutex = Env.fetch_mutex
         let process_mgr = Env.process_mgr
         let stdout = Env.stdout
         let owner = Env.config.github_owner
@@ -684,6 +688,7 @@ type constructed_capabilities = {
   event_log : Event_log.t;
   worktree_mutex : Eio.Mutex.t;
   hook_mutex : Eio.Mutex.t;
+  fetch_mutex : Eio.Mutex.t;
   reconciliation_fiber : unit -> unit;
 }
 
@@ -920,6 +925,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     event_log;
     worktree_mutex = Eio.Mutex.create ();
     hook_mutex = Eio.Mutex.create ();
+    fetch_mutex = Eio.Mutex.create ();
     reconciliation_fiber;
   }
 
@@ -946,6 +952,7 @@ let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
     let unregister_pr_number = cap.unregister_pr_number
     let worktree_mutex = cap.worktree_mutex
     let hook_mutex = cap.hook_mutex
+    let fetch_mutex = cap.fetch_mutex
     let tui_state = tui_state
   end in
   (module Fiber_env : FIBER_ENV)
