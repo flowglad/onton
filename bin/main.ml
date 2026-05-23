@@ -19,6 +19,12 @@ type repo_coords = {
   github_owner : string;
   github_repo : string;
   repo_root : string;
+  url_scheme : Onton_core.Github_target.url_scheme option;
+      (** Transport for the managed [origin]. [None] when the fresh / resume
+          path didn't resolve one (legacy configs); [Some scheme] when
+          {!Managed_repo.ensure_managed_repo} auto-detected or honored a stored
+          value. Persisted to [config.json] so the next run is stable and used
+          by the startup OAuth scope pre-flight. *)
 }
 (** Coordinates that locate the GitHub repo and its local checkout. Resolved
     independently per path (fresh: from --repo + git remote; gameplan: from the
@@ -280,7 +286,9 @@ let with_snapshot_load ~project_name config gameplan =
     body shared by the fresh, gameplan, and resume paths. *)
 let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     ~main_branch ~gameplan =
-  let { github_token; github_owner; github_repo; repo_root } = repo_coords in
+  let { github_token; github_owner; github_repo; repo_root; url_scheme } =
+    repo_coords
+  in
   let {
     poll_interval;
     max_concurrency;
@@ -301,7 +309,9 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   Project_store.save_config ~project_name ~github_token ~github_owner
     ~github_repo ~backend ~model
     ~main_branch:(Branch.to_string main_branch)
-    ~poll_interval ~repo_root ~max_concurrency ();
+    ~poll_interval ~repo_root ~max_concurrency
+    ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
+    ();
   let config =
     {
       Resolved_config.project = Some project_name;
@@ -401,6 +411,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           github_owner = owner;
           github_repo = repo;
           repo_root;
+          url_scheme = None;
         }
       in
       finalize_run ~project_name ~repo_coords ~run_knobs
@@ -466,7 +477,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                         "Could not prepare onton-managed checkout for %s/%s: %s"
                         owner repo msg;
                     ]
-              | Ok (repo_root, _scheme) ->
+              | Ok (repo_root, scheme) ->
                   let main_branch = resolve_branch ~repo_root main_branch in
                   Project_store.save_gameplan_source ~project_name
                     ~source_path:gp_path;
@@ -476,6 +487,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       github_owner = owner;
                       github_repo = repo;
                       repo_root;
+                      url_scheme = Some scheme;
                     }
                   in
                   finalize_run ~project_name ~repo_coords ~run_knobs
@@ -589,6 +601,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       github_owner = owner;
                       github_repo = repo;
                       repo_root;
+                      url_scheme =
+                        Managed_repo.url_scheme_of_string
+                          (Option.value stored.Project_store.url_scheme
+                             ~default:"");
                     }
                   in
                   (* Resume reuses the stored [poll_interval] and
@@ -1108,6 +1124,24 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
       Base.Option.iter lock ~f:Project_lock.release)
   @@ fun () ->
   Eio_main.run @@ fun env ->
+  (* OAuth scope pre-flight: warn early when the configured token is missing
+     a scope a patch will need. The resolved transport scheme is re-read
+     from the persisted [config.json] (always populated for fresh / gameplan
+     paths, may be [None] for very old configs on the resume path — treat
+     that as Https for safety, which is what every onton clone was before
+     SSH support landed). The check is gated on the transport: SSH bypasses
+     OAuth scopes entirely. *)
+  (let scheme =
+     match Project_store.load_config ~project_name:resolved.project_name with
+     | Ok stored ->
+         Managed_repo.url_scheme_of_string
+           (Option.value stored.Project_store.url_scheme ~default:"")
+         |> Option.value ~default:Github_target.Https
+     | Error _ -> Github_target.Https
+   in
+   Scope_preflight.run ~net:(Eio.Stdenv.net env) ~clock:(Eio.Stdenv.clock env)
+     ~scheme ~token:resolved.github_token ~owner:resolved.github_owner
+     ~repo:resolved.github_repo ~gameplan);
   let setup =
     setup_runtime env ~config:resolved ~gameplan ~existing_snapshot ~auto_merge
   in
