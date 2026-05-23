@@ -159,7 +159,74 @@ struct
             Stdlib.Hashtbl.replace skip_logged patch_id true;
             true))
     in
+    (* P1-A: detect when [origin/<main>] has advanced past local <main>. When
+       it has, every agent currently based on <main> needs a rebase so it
+       picks up the freshly squash-merged commits — without this poke,
+       [Reconciler.detect_stale_bases] silently passes because both
+       [base_branch] and [Graph.initial_base] read the same stale name.
+
+       The fetch races with per-worktree fetches in the runner fiber on
+       shared ref storage; that's a pre-existing condition we live with by
+       making this best-effort: a transient "cannot lock ref" just defers
+       the check by one [poll_interval]. *)
+    let fetch_lock = Eio.Mutex.create () in
+    let last_main_sha = ref "" in
+    let main_str = Branch.to_string main in
+    let check_main_freshness () =
+      match W.fetch_origin ~fetch_lock ~path:repo_root with
+      | Result.Error _ -> ()
+      | Result.Ok () ->
+          let local_sha =
+            Option.value
+              (W.read_branch_sha ~path:repo_root ~ref_name:main_str)
+              ~default:""
+          in
+          let origin_sha =
+            Option.value
+              (W.read_branch_sha ~path:repo_root
+                 ~ref_name:("refs/remotes/origin/" ^ main_str))
+              ~default:""
+          in
+          if
+            Reconciler.detect_main_freshness_drift ~local_sha ~origin_sha
+            && not (String.equal origin_sha !last_main_sha)
+          then begin
+            last_main_sha := origin_sha;
+            Runtime_logging.log_event runtime
+              (Printf.sprintf
+                 "origin/%s advanced to %s (local %s) — enqueueing rebases for \
+                  agents on %s"
+                 main_str
+                 (if String.length origin_sha >= 8 then
+                    String.prefix origin_sha 8
+                  else origin_sha)
+                 (if String.length local_sha >= 8 then String.prefix local_sha 8
+                  else local_sha)
+                 main_str);
+            Runtime.update_orchestrator runtime (fun orch ->
+                let agents = Orchestrator.all_agents orch in
+                List.fold agents ~init:orch ~f:(fun acc agent ->
+                    let is_on_main =
+                      match agent.Patch_agent.base_branch with
+                      | Some b -> Branch.equal b main
+                      | None -> false
+                    in
+                    let already_rebasing =
+                      List.mem agent.Patch_agent.queue Operation_kind.Rebase
+                        ~equal:Operation_kind.equal
+                    in
+                    if
+                      is_on_main && Patch_agent.has_pr agent
+                      && (not agent.Patch_agent.merged)
+                      && not already_rebasing
+                    then
+                      Orchestrator.enqueue acc agent.Patch_agent.patch_id
+                        Operation_kind.Rebase
+                    else acc))
+          end
+    in
     let rec loop () =
+      check_main_freshness ();
       let intents =
         Runtime.read runtime (fun snap ->
             let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
