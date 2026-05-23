@@ -225,8 +225,16 @@ struct
                     else acc))
           end
     in
-    let rec loop () =
+    (* Freshness fiber: runs in parallel with the per-patch poll loop so a
+       slow [git fetch] for [origin/<main>] doesn't block the per-patch
+       fan-out. Same cadence as the patch poll loop for now; could be
+       independent later if needed. *)
+    let rec freshness_loop () =
       check_main_freshness ();
+      Eio.Time.sleep clock poll_interval;
+      freshness_loop ()
+    in
+    let rec loop () =
       let intents =
         Runtime.read runtime (fun snap ->
             let agents = Orchestrator.all_agents snap.Runtime.orchestrator in
@@ -495,5 +503,5 @@ struct
       Eio.Time.sleep clock poll_interval;
       loop ()
     in
-    loop ()
+    Eio.Fiber.both loop freshness_loop
 end
