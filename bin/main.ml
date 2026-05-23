@@ -340,7 +340,20 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       values. *)
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
-    ~headless =
+    ~headless ~(clone_scheme : string option) =
+  let clone_scheme_override =
+    match clone_scheme with
+    | None -> None
+    | Some s -> (
+        let s = Base.String.strip (Base.String.lowercase s) in
+        match Managed_repo.url_scheme_of_string s with
+        | Some _ as scheme -> scheme
+        | None ->
+            Printf.eprintf
+              "Error: --clone-scheme must be \"https\" or \"ssh\" (got %S)\n%!"
+              s;
+            Stdlib.exit 1)
+  in
   let patch_agent_provider =
     match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
     | Some s ->
@@ -467,8 +480,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                 else t
               in
               match
-                Managed_repo.ensure_managed_repo ~project_name ~token ~owner
-                  ~repo ()
+                Managed_repo.ensure_managed_repo
+                  ~clone_scheme:clone_scheme_override ~project_name ~token
+                  ~owner ~repo ()
               with
               | Error msg ->
                   Error
@@ -576,13 +590,21 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                           %!"
                          proj
                      else
+                       (* CLI override > persisted stored scheme > auto-detect *)
+                       let stored_scheme =
+                         Managed_repo.url_scheme_of_string
+                           (Option.value stored.Project_store.url_scheme
+                              ~default:"")
+                       in
+                       let effective_scheme =
+                         match clone_scheme_override with
+                         | Some _ as s -> s
+                         | None -> stored_scheme
+                       in
                        match
                          Managed_repo.ensure_managed_repo
-                           ~clone_scheme:
-                             (Managed_repo.url_scheme_of_string
-                                (Option.value stored.Project_store.url_scheme
-                                   ~default:""))
-                           ~project_name:proj ~token ~owner ~repo ()
+                           ~clone_scheme:effective_scheme ~project_name:proj
+                           ~token ~owner ~repo ()
                        with
                        | Ok _ -> ()
                        | Error msg ->
@@ -1167,10 +1189,11 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_ops =
+    ~max_concurrency ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
+      ~clone_scheme
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1337,6 +1360,21 @@ let main_branch_arg =
     & info [ "main-branch" ] ~docv:"BRANCH"
         ~doc:"Main branch name. Auto-detected from the git remote when omitted.")
 
+let clone_scheme_arg =
+  let open Cmdliner in
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "clone-scheme" ] ~docv:"SCHEME"
+        ~doc:
+          "Transport for the managed clone's [origin]: [https] (default) or \
+           [ssh]. When omitted, onton auto-detects from a sibling user clone \
+           (under the current working directory's parent, or under ~/code-src, \
+           ~/src, ~/code, ~/dev, ~/projects) and falls back to https. SSH \
+           bypasses the per-OAuth-scope restrictions GitHub enforces (e.g. the \
+           [workflow] scope for .github/workflows/*). The resolved scheme is \
+           persisted to config.json so subsequent runs are stable.")
+
 let poll_interval_arg =
   let open Cmdliner in
   Arg.(
@@ -1414,7 +1452,7 @@ let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock
-      prune no_refresh auto_merge =
+      prune no_refresh auto_merge clone_scheme =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1449,14 +1487,14 @@ let main_cmd ~pr_ops =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_ops)
+        ~max_concurrency ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops)
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
       $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg $ auto_merge_arg)
+      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s
