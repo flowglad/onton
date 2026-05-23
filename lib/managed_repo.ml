@@ -119,15 +119,102 @@ let run_git_no_cwd args =
       | result -> result
       | exception _ -> None)
 
+(** Candidate directories to scan for a sibling user clone of [owner/repo].
+    These are the conventional locations developers use; missing directories are
+    silently skipped. The function is total — never raises. *)
+let sibling_clone_candidates ~repo =
+  let home = try Stdlib.Sys.getenv "HOME" with _ -> "" in
+  let pwd = try Stdlib.Sys.getcwd () with _ -> "" in
+  let pwd_sibling =
+    if String.is_empty pwd then []
+    else [ Stdlib.Filename.concat (Stdlib.Filename.dirname pwd) repo ]
+  in
+  let home_dir sub =
+    if String.is_empty home then None
+    else Some (Stdlib.Filename.concat home (Stdlib.Filename.concat sub repo))
+  in
+  pwd_sibling
+  @ List.filter_map ~f:Fn.id
+      [
+        home_dir "code-src";
+        home_dir "src";
+        home_dir "code";
+        home_dir "dev";
+        home_dir "projects";
+      ]
+
+(** Read all [remote.<name>.url] entries from a sibling clone at [path]. Best
+    effort: returns the empty list on any IO error or if [path] is not a git
+    checkout. *)
+let read_remote_urls ~path =
+  let git_dir = Stdlib.Filename.concat path ".git" in
+  let is_git =
+    try
+      Stdlib.Sys.file_exists git_dir
+      && (Stdlib.Sys.is_directory git_dir
+         (* Worktrees have a .git file pointing at gitdir, not a directory.
+            We can still ask git itself via remote -v but only when the .git
+            entry exists in some form. *)
+         ||
+           try
+             let st = Unix.lstat git_dir in
+             match st.Unix.st_kind with
+             | Unix.S_REG -> true
+             | Unix.S_DIR | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
+             | Unix.S_SOCK ->
+                 false
+           with _ -> false)
+    with _ -> false
+  in
+  if not is_git then []
+  else
+    match
+      read_process_capture (fun () ->
+          Unix.open_process_args_in "git"
+            [| "git"; "-C"; path; "remote"; "-v" |])
+    with
+    | Some (Unix.WEXITED 0, out) ->
+        String.split_lines out
+        |> List.filter_map ~f:(fun line ->
+            (* Each line is "<name>\t<url> (fetch|push)". Keep the URL field. *)
+            match String.split line ~on:'\t' with
+            | _ :: rest :: _ -> (
+                match String.split rest ~on:' ' with
+                | url :: _ -> Some url
+                | [] -> None)
+            | _ -> None)
+        |> List.dedup_and_sort ~compare:String.compare
+    | Some (Unix.WEXITED _, _)
+    | Some (Unix.WSIGNALED _, _)
+    | Some (Unix.WSTOPPED _, _)
+    | None ->
+        []
+
+(** Effectful sibling-clone discovery. Returns the (path, url) pairs that look
+    like a user clone of [owner/repo]. Used to inherit the user's transport
+    choice for the managed clone. *)
+let discover_sibling_clones ~owner ~repo =
+  sibling_clone_candidates ~repo
+  |> List.filter_map ~f:(fun path ->
+      let urls = read_remote_urls ~path in
+      let matches =
+        List.exists urls ~f:(fun url ->
+            match Github_target.infer_owner_repo_from_url url with
+            | Some (o, r) -> String.equal o owner && String.equal r repo
+            | None -> false)
+      in
+      if matches then Some (path, urls) else None)
+
 (** Clone [owner/repo] from GitHub into [target_dir] (which must not exist yet).
-    Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper, so
-    [Git_env.set_github_token] must have been called first if the repo is
-    private. Uses [--filter=blob:none] for a partial clone — only fetched
-    objects are downloaded lazily, which is the right tradeoff for onton's
-    worktree-per-patch usage pattern. *)
-let clone_managed_repo ~owner ~repo ~target_dir =
+    Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper
+    (HTTPS) or the user's ssh-agent (SSH). For private repos with HTTPS,
+    [Git_env.set_github_token] must have been called first. Uses
+    [--filter=blob:none] for a partial clone — only fetched objects are
+    downloaded lazily, which is the right tradeoff for onton's worktree-per-
+    patch usage pattern. *)
+let clone_managed_repo ~scheme ~owner ~repo ~target_dir =
   Project_store.ensure_dir (Stdlib.Filename.dirname target_dir);
-  let url = Github_target.clone_url ~owner ~repo in
+  let url = Github_target.clone_url ~scheme ~owner ~repo in
   match run_git_no_cwd [ "clone"; "--filter=blob:none"; url; target_dir ] with
   | Some { status = Unix.WEXITED 0; _ } -> Ok ()
   | Some ({ status = Unix.WEXITED _; _ } as cap)
@@ -138,11 +225,51 @@ let clone_managed_repo ~owner ~repo ~target_dir =
            (format_process_failure cap))
   | None -> Error (Printf.sprintf "git clone %s/%s: could not spawn" owner repo)
 
+(** Resolve the transport scheme for the managed clone. Pure decision lives in
+    [Github_target.resolve_scheme]; here we supply the effectful inputs
+    (sibling-clone discovery, an explicit override from the CLI/config). When
+    [override = None] and at least one sibling SSH clone is found, an
+    informational stderr line announces the auto-detect choice so the user can
+    see why their managed clone became SSH. *)
+let resolve_clone_scheme ?(override : Github_target.url_scheme option = None)
+    ~owner ~repo () =
+  let siblings = discover_sibling_clones ~owner ~repo in
+  let sibling_urls = List.concat_map siblings ~f:(fun (_, urls) -> urls) in
+  let scheme =
+    Github_target.resolve_scheme ~override ~sibling_remote_urls:sibling_urls
+  in
+  (match (override, scheme, siblings) with
+  | None, Github_target.Ssh, (path, _) :: _ ->
+      Stdlib.Printf.eprintf
+        "onton: detected SSH sibling clone at %s — cloning managed repo via SSH\n\
+         %!"
+        path
+  | None, Github_target.Ssh, [] | None, Github_target.Https, _ | Some _, _, _ ->
+      ());
+  scheme
+
+let string_of_url_scheme = function
+  | Github_target.Https -> "https"
+  | Github_target.Ssh -> "ssh"
+
+let url_scheme_of_string = function
+  | "ssh" -> Some Github_target.Ssh
+  | "https" -> Some Github_target.Https
+  | _ -> None
+
 (** Ensure the onton-managed checkout for [project_name] is present and
     up-to-date. Clones if absent, fetches if present. Authenticates via
-    [Git_env]'s configured token. *)
-let ensure_managed_repo ~project_name ~token ~owner ~repo =
+    [Git_env]'s configured token (HTTPS) or the user's ssh-agent (SSH).
+
+    [?clone_scheme]: explicit override (e.g. from a [--clone-scheme] flag or a
+    [url_scheme] field already in [config.json]). If [None], auto-detect by
+    inspecting sibling user clones — see {!resolve_clone_scheme}. The resolved
+    scheme is returned together with the repo root so the caller can persist it
+    back to [config.json] on subsequent runs. *)
+let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
+    () =
   Git_env.set_github_token token;
+  let scheme = resolve_clone_scheme ~override:clone_scheme ~owner ~repo () in
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
   let repo_root_exists = Stdlib.Sys.file_exists repo_root in
@@ -165,14 +292,23 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
   in
   if repo_root_exists && has_git_dir then (
     let module Repo = (val Repo_git.make ~repo_root) in
+    (* If the managed clone already exists, the existing [origin] URL is
+       authoritative — we don't change transport mid-life. Reflect that in
+       the returned scheme so callers persist the matching value. *)
+    let existing_scheme =
+      match read_remote_urls ~path:repo_root with
+      | urls ->
+          List.find_map urls ~f:Github_target.scheme_of_url
+          |> Option.value ~default:scheme
+    in
     match Repo.fetch_managed_repo () with
-    | Ok () -> Ok repo_root
+    | Ok () -> Ok (repo_root, existing_scheme)
     | Error msg ->
         (* Log to stderr but don't abort — the user may be offline and the
            local clone may already have everything they need. *)
         Stdlib.Printf.eprintf
           "onton: warning: %s (continuing with existing local clone)\n%!" msg;
-        Ok repo_root)
+        Ok (repo_root, existing_scheme))
   else if repo_root_exists && not repo_root_is_dir then
     Error
       (Printf.sprintf
@@ -189,12 +325,12 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
               not empty; remove it and retry"
              repo_root)
     | Ok true -> (
-        match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
-        | Ok () -> Ok repo_root
+        match clone_managed_repo ~scheme ~owner ~repo ~target_dir:repo_root with
+        | Ok () -> Ok (repo_root, scheme)
         | Error msg -> Error msg)
   else
-    match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
-    | Ok () -> Ok repo_root
+    match clone_managed_repo ~scheme ~owner ~repo ~target_dir:repo_root with
+    | Ok () -> Ok (repo_root, scheme)
     | Error msg -> Error msg
 
 (** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].

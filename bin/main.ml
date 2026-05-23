@@ -301,7 +301,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   Project_store.save_config ~project_name ~github_token ~github_owner
     ~github_repo ~backend ~model
     ~main_branch:(Branch.to_string main_branch)
-    ~poll_interval ~repo_root ~max_concurrency;
+    ~poll_interval ~repo_root ~max_concurrency ();
   let config =
     {
       Resolved_config.project = Some project_name;
@@ -457,7 +457,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
               in
               match
                 Managed_repo.ensure_managed_repo ~project_name ~token ~owner
-                  ~repo
+                  ~repo ()
               with
               | Error msg ->
                   Error
@@ -466,7 +466,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                         "Could not prepare onton-managed checkout for %s/%s: %s"
                         owner repo msg;
                     ]
-              | Ok repo_root ->
+              | Ok (repo_root, _scheme) ->
                   let main_branch = resolve_branch ~repo_root main_branch in
                   Project_store.save_gameplan_source ~project_name
                     ~source_path:gp_path;
@@ -565,8 +565,12 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                          proj
                      else
                        match
-                         Managed_repo.ensure_managed_repo ~project_name:proj
-                           ~token ~owner ~repo
+                         Managed_repo.ensure_managed_repo
+                           ~clone_scheme:
+                             (Managed_repo.url_scheme_of_string
+                                (Option.value stored.Project_store.url_scheme
+                                   ~default:""))
+                           ~project_name:proj ~token ~owner ~repo ()
                        with
                        | Ok _ -> ()
                        | Error msg ->
