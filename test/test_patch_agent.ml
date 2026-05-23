@@ -725,8 +725,9 @@ let () =
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
-              ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-              ~current_op_state:Onton_core.Patch_agent.Queued
+              ~push_failure_count:0 ~branch_rebased_onto:None
+              ~branch_rebased_onto_sha:None ~checks_passing:false
+              ~current_op:None ~current_op_state:Onton_core.Patch_agent.Queued
               ~current_message_id:None ~generation:0 ~worktree_path:None
               ~branch_blocked:false ~llm_session_id:None
               ~automerge_enabled:false ~automerge_deadline:None
@@ -806,8 +807,9 @@ let () =
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
-              ~branch_rebased_onto:None ~checks_passing:false ~current_op:None
-              ~current_op_state:Onton_core.Patch_agent.Queued
+              ~push_failure_count:0 ~branch_rebased_onto:None
+              ~branch_rebased_onto_sha:None ~checks_passing:false
+              ~current_op:None ~current_op_state:Onton_core.Patch_agent.Queued
               ~current_message_id:None ~generation:0 ~worktree_path:None
               ~branch_blocked:false ~llm_session_id:None
               ~automerge_enabled:false ~automerge_deadline:None

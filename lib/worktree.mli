@@ -223,7 +223,7 @@ type push_result = Worktree_parser.push_result =
   | Push_ok
   | Push_up_to_date
   | Push_no_commits
-  | Push_rejected
+  | Push_rejected of Push_reject_classify.rejection
   | Push_worktree_missing
       (** Returned when the worktree directory was deleted between session start
           and push — typically a manual [rm -rf] or a leftover failed checkout.

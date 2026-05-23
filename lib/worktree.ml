@@ -482,7 +482,7 @@ type push_result = Worktree_parser.push_result =
   | Push_ok
   | Push_up_to_date
   | Push_no_commits
-  | Push_rejected
+  | Push_rejected of Push_reject_classify.rejection
   | Push_worktree_missing
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]

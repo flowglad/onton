@@ -720,9 +720,15 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                     log_event runtime ~patch_id
                       "runner: session ended with no commits on branch — push \
                        skipped, PR creation deferred"
-                | Worktree.Push_rejected ->
+                | Worktree.Push_rejected reason -> (
                     log_event runtime ~patch_id
-                      "runner: push rejected after session (lease)"
+                      (Printf.sprintf "runner: push rejected after session — %s"
+                         (Push_reject_classify.short_label reason));
+                    match Push_reject_classify.detail_excerpt reason with
+                    | Some msg ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "runner: push rejected detail: %s" msg)
+                    | None -> ())
                 | Worktree.Push_worktree_missing ->
                     log_event runtime ~patch_id
                       (Printf.sprintf
@@ -770,13 +776,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   | Orchestrator.Session_no_resume
                   | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
                   | Orchestrator.Session_worktree_missing
-                  | Orchestrator.Session_push_failed ->
+                  | Orchestrator.Session_push_failed _ ->
                       combined
                 in
                 let final_user_result =
                   match final_session_result with
                   | Orchestrator.Session_ok -> user_result
-                  | Orchestrator.Session_push_failed
+                  | Orchestrator.Session_push_failed _
                   | Orchestrator.Session_no_commits ->
                       (* LLM session ran fine but commits didn't ship (push failed
                    or the agent made no commits) — signal retry so the

@@ -489,7 +489,7 @@ let apply_rebase_push_result t patch_id
   match push_outcome with
   | None -> (t, Rebase_push_ok) (* no push effect emitted; already handled *)
   | Some Worktree.Push_ok | Some Worktree.Push_up_to_date -> (t, Rebase_push_ok)
-  | Some Worktree.Push_rejected ->
+  | Some (Worktree.Push_rejected _) ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Rebase_push_failed)
@@ -561,7 +561,7 @@ let apply_conflict_push_result t patch_id decision
   | ( Conflict_resolved,
       ( None
       | Some
-          ( Worktree.Push_rejected | Worktree.Push_no_commits
+          ( Worktree.Push_rejected _ | Worktree.Push_no_commits
           | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
@@ -570,7 +570,7 @@ let apply_conflict_push_result t patch_id decision
       ( None
       | Some
           ( Worktree.Push_ok | Worktree.Push_up_to_date
-          | Worktree.Push_no_commits | Worktree.Push_rejected
+          | Worktree.Push_no_commits | Worktree.Push_rejected _
           | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
       (t, Conflict_needs_agent)
   | Conflict_failed, _ -> (t, Conflict_give_up)
@@ -582,7 +582,10 @@ type session_result =
   | Session_failed of { is_fresh : bool; detail : string option }
   | Session_give_up
   | Session_worktree_missing
-  | Session_push_failed
+  | Session_push_failed of Push_reject_classify.rejection option
+      (** [Some r] carries a classified server-side rejection (workflow-scope,
+          branch-protection, lease, hook, …). [None] reflects a transport/local
+          [git push] error (no server message available). *)
   | Session_no_commits
 [@@deriving show, eq, sexp_of]
 
@@ -644,8 +647,12 @@ let apply_session_result t patch_id result =
   match result with
   | Session_ok ->
       let t = clear_session_fallback t patch_id in
-      (* A healthy session that pushed commits clears the no-commits counter. *)
-      update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
+      (* A healthy session that pushed commits clears the no-commits and
+         push-failure counters. *)
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
+      in
+      update_agent t patch_id ~f:Patch_agent.reset_push_failure_count
   | Session_process_error { is_fresh; _ } ->
       let t = on_session_failure t patch_id ~is_fresh in
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
@@ -676,7 +683,7 @@ let apply_session_result t patch_id result =
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
       complete_failed t patch_id
-  | Session_push_failed ->
+  | Session_push_failed reason -> (
       (* The LLM session itself ran cleanly — clear its fallback state so we
          resume the same session next iteration. The push failure does NOT
          use [complete_failed]: the session succeeded, so any inflight human
@@ -688,8 +695,26 @@ let apply_session_result t patch_id result =
          re-delivered the same messages, the push failed again, ad
          infinitum — with [clear_session_fallback] preventing escalation
          and the Human-in-queue exemption in [needs_intervention]
-         preventing the circuit breaker from firing. *)
-      clear_session_fallback t patch_id
+         preventing the circuit breaker from firing.
+
+         The [push_failure_count] counter (added in P0-B) feeds
+         [needs_intervention] once it reaches 3, breaking the tight retry
+         loop for transient server-side rejections. A {e permanent}
+         rejection (workflow-scope, branch-protection, push-pattern, hook)
+         short-circuits this by setting [session_fallback = Given_up]
+         directly, since retrying cannot resolve those under the current
+         credentials/branch-protection state. *)
+      let t = clear_session_fallback t patch_id in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.increment_push_failure_count
+      in
+      match reason with
+      | Some r when Push_reject_classify.is_permanent r ->
+          (* Two-step [set_tried_fresh] reaches [Given_up] from any starting
+             fallback state, including [Fresh_available]. *)
+          let t = set_tried_fresh t patch_id in
+          set_tried_fresh t patch_id
+      | Some _ | None -> t)
   | Session_no_commits ->
       (* The LLM session ran cleanly but left no commits on the branch (HEAD
          == base), so the supervisor skipped the push. Clear session fallback
@@ -712,19 +737,19 @@ let combine_session_and_push ~(session : session_result)
   match push with
   | Worktree.Push_worktree_missing -> Session_worktree_missing
   | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
-  | Worktree.Push_rejected | Worktree.Push_error _ -> (
+  | Worktree.Push_rejected _ | Worktree.Push_error _ -> (
       match session with
       | Session_ok -> (
           match push with
           | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
           | Worktree.Push_no_commits -> Session_no_commits
-          | Worktree.Push_rejected | Worktree.Push_error _ ->
-              Session_push_failed
+          | Worktree.Push_rejected reason -> Session_push_failed (Some reason)
+          | Worktree.Push_error _ -> Session_push_failed None
           | Worktree.Push_worktree_missing ->
               Session_worktree_missing
               (* unreachable — outer match catches this *))
       | Session_process_error _ | Session_no_resume | Session_failed _
-      | Session_give_up | Session_worktree_missing | Session_push_failed
+      | Session_give_up | Session_worktree_missing | Session_push_failed _
       | Session_no_commits ->
           session)
 

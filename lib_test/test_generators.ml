@@ -675,7 +675,7 @@ let gen_session_result =
           bool;
         return Onton.Orchestrator.Session_give_up;
         return Onton.Orchestrator.Session_worktree_missing;
-        return Onton.Orchestrator.Session_push_failed;
+        return (Onton.Orchestrator.Session_push_failed None);
         return Onton.Orchestrator.Session_no_commits;
       ])
 

@@ -44,7 +44,27 @@ type t = private {
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
+  push_failure_count : int;
+      (** Consecutive [Session_push_failed] outcomes (Session_ok or session
+          retry with [Push_rejected]/[Push_error]) since the last successful
+          push. At [>= 3] contributes to [needs_intervention]. Reset on
+          successful push ([Push_ok] / [Push_up_to_date]) and by
+          [reset_intervention_state]. A {e permanent} rejection
+          ([Push_reject_classify.is_permanent]) short-circuits this counter by
+          setting [session_fallback = Given_up] directly — see
+          {!Orchestrator.apply_session_result}. *)
   branch_rebased_onto : Types.Branch.t option;
+  branch_rebased_onto_sha : string option;
+      (** SHA the base ref resolved to at the time of the most recent successful
+          rebase / start. Used by [Worktree.rebase_onto] as the
+          [--onto NEW_BASE OLD_SHA] anchor when the base transitions from one
+          dep's branch to another (or to [main]): without it, the rebase falls
+          back to plain [git rebase NEW_BASE] which replays {e all} commits
+          between the local main and HEAD, leaving the old dep's commits on the
+          branch even after the dep's squash-merge appears on origin/main.
+          [None] when no rebase has succeeded yet, or when the orchestrator was
+          restarted before this field was added (it is back-filled to [None] via
+          [Patch_agent.restore], and old snapshots persist with [null]). *)
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
   current_op_state : op_state;
@@ -93,8 +113,8 @@ val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
     [ci_failure_count >= 3], [session_fallback = Given_up],
     [(not has_pr) && start_attempts_without_pr >= 2],
-    [conflict_noop_count >= 2], [no_commits_push_count >= 2], or
-    [pr_body_artifact_miss_count >= 2]. *)
+    [conflict_noop_count >= 2], [no_commits_push_count >= 2],
+    [push_failure_count >= 3], or [pr_body_artifact_miss_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -220,6 +240,17 @@ val reset_no_commits_push_count : t -> t
 (** Reset [no_commits_push_count] to 0. Called on [Session_ok] with a successful
     push, because the agent has demonstrated it can commit. *)
 
+val increment_push_failure_count : t -> t
+(** Record a [Session_push_failed] outcome. At [>= 3], [needs_intervention]
+    triggers — the push has been refused by the remote three sessions in a row
+    (e.g. lease races that don't resolve, or any transient server-side block). A
+    {e permanent} rejection (workflow scope, branch protection, push rule)
+    bypasses this counter entirely; see {!Orchestrator.apply_session_result}. *)
+
+val reset_push_failure_count : t -> t
+(** Reset [push_failure_count] to 0. Called on a successful push ([Push_ok] /
+    [Push_up_to_date]) in [Orchestrator.apply_session_result]. *)
+
 val increment_pr_body_artifact_miss_count : t -> t
 (** Record a Pr_body session that ended without durable PR body delivery. Called
     from [Orchestrator.apply_respond_outcome] on [Respond_pr_body_miss], which
@@ -258,9 +289,10 @@ val reset_ci_failure_count : t -> t
 
 val reset_intervention_state : t -> t
 (** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
-    [start_attempts_without_pr] to 0, [conflict_noop_count] to 0, and
-    [no_commits_push_count] to 0. Used after manual resolution (e.g., sending a
-    human message) to give the patch a fresh start. *)
+    [start_attempts_without_pr] to 0, [conflict_noop_count] to 0,
+    [no_commits_push_count] to 0, [push_failure_count] to 0, and
+    [pr_body_artifact_miss_count] to 0. Used after manual resolution (e.g.,
+    sending a human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)
@@ -381,7 +413,9 @@ val restore :
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->
+  push_failure_count:int ->
   branch_rebased_onto:Types.Branch.t option ->
+  branch_rebased_onto_sha:string option ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
   current_op_state:op_state ->

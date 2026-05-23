@@ -37,7 +37,9 @@ type t = {
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
+  push_failure_count : int;
   branch_rebased_onto : Branch.t option;
+  branch_rebased_onto_sha : string option;
   checks_passing : bool;
   current_op : Operation_kind.t option;
   current_op_state : op_state;
@@ -104,6 +106,7 @@ let needs_intervention t =
            || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
            || t.conflict_noop_count >= 2
            || t.no_commits_push_count >= 2
+           || t.push_failure_count >= 3
            || t.pr_body_artifact_miss_count >= 2))
 
 let create ~branch patch_id =
@@ -132,7 +135,9 @@ let create ~branch patch_id =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    push_failure_count = 0;
     branch_rebased_onto = None;
+    branch_rebased_onto_sha = None;
     checks_passing = false;
     current_op = None;
     current_op_state = Queued;
@@ -174,7 +179,9 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    push_failure_count = 0;
     branch_rebased_onto = None;
+    branch_rebased_onto_sha = None;
     checks_passing = false;
     current_op = None;
     current_op_state = Queued;
@@ -241,6 +248,11 @@ let increment_no_commits_push_count t =
   { t with no_commits_push_count = t.no_commits_push_count + 1 }
 
 let reset_no_commits_push_count t = { t with no_commits_push_count = 0 }
+
+let increment_push_failure_count t =
+  { t with push_failure_count = t.push_failure_count + 1 }
+
+let reset_push_failure_count t = { t with push_failure_count = 0 }
 
 let increment_pr_body_artifact_miss_count t =
   { t with pr_body_artifact_miss_count = t.pr_body_artifact_miss_count + 1 }
@@ -364,6 +376,7 @@ let reset_intervention_state t =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    push_failure_count = 0;
     pr_body_artifact_miss_count = 0;
   }
 
@@ -374,10 +387,11 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count ~start_attempts_without_pr ~conflict_noop_count
-    ~no_commits_push_count ~branch_rebased_onto ~checks_passing ~current_op
-    ~current_op_state ~current_message_id ~generation ~worktree_path
-    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
-    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
+    ~no_commits_push_count ~push_failure_count ~branch_rebased_onto
+    ~branch_rebased_onto_sha ~checks_passing ~current_op ~current_op_state
+    ~current_message_id ~generation ~worktree_path ~branch_blocked
+    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
+    ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -403,7 +417,9 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     start_attempts_without_pr;
     conflict_noop_count;
     no_commits_push_count;
+    push_failure_count;
     branch_rebased_onto;
+    branch_rebased_onto_sha;
     checks_passing;
     current_op;
     current_op_state;

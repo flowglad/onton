@@ -94,7 +94,7 @@ let failure_subkind_of_session_result (result : Orchestrator.session_result) =
       Failure_subkind.Other "session_failed"
   | Session_give_up -> Failure_subkind.Other "session_give_up"
   | Session_worktree_missing -> Failure_subkind.Process_error
-  | Session_push_failed -> Failure_subkind.Process_error
+  | Session_push_failed _ -> Failure_subkind.Process_error
   | Session_no_commits -> Failure_subkind.Other "session_no_commits"
 
 let sink t =

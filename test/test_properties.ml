@@ -723,7 +723,7 @@ let () =
         let orch = Orchestrator.apply_session_result orch pid result in
         let a = Orchestrator.agent orch pid in
         match result with
-        | Orchestrator.Session_ok | Orchestrator.Session_push_failed
+        | Orchestrator.Session_ok | Orchestrator.Session_push_failed _
         | Orchestrator.Session_no_commits ->
             (* LLM session succeeded — completion deferred to
                apply_respond_outcome, so agent stays busy here. *)
@@ -997,7 +997,7 @@ let () =
            Fresh_available. *)
         let orch = Orchestrator.set_tried_fresh orch pid in
         let orch =
-          Orchestrator.apply_session_result orch pid Session_push_failed
+          Orchestrator.apply_session_result orch pid (Session_push_failed None)
         in
         let a = Orchestrator.agent orch pid in
         Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
@@ -1016,7 +1016,7 @@ let () =
           (Orchestrator.agent orch pid).Patch_agent.start_attempts_without_pr
         in
         let orch =
-          Orchestrator.apply_session_result orch pid Session_push_failed
+          Orchestrator.apply_session_result orch pid (Session_push_failed None)
         in
         let after =
           (Orchestrator.agent orch pid).Patch_agent.start_attempts_without_pr
@@ -1035,12 +1035,110 @@ let () =
           (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
         in
         let orch =
-          Orchestrator.apply_session_result orch pid Session_push_failed
+          Orchestrator.apply_session_result orch pid (Session_push_failed None)
         in
         let after =
           (Orchestrator.agent orch pid).Patch_agent.ci_failure_count
         in
         Int.equal before after)
+  in
+  (* PSF-4..PSF-7 cover the new [push_failure_count] counter added by P0-B. The
+     family mirrors the PNC-* shape for [no_commits_push_count]: increment on
+     apply, threshold flips needs_intervention, reset on Session_ok with a
+     successful push, and a permanent rejection short-circuits to [Given_up]
+     without waiting for the counter. *)
+  let prop_psf4_increments_counter =
+    Test.make
+      ~name:"PSF-4: apply Session_push_failed bumps push_failure_count by 1"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let before =
+          (Orchestrator.agent orch pid).Patch_agent.push_failure_count
+        in
+        let orch =
+          Orchestrator.apply_session_result orch pid (Session_push_failed None)
+        in
+        let after =
+          (Orchestrator.agent orch pid).Patch_agent.push_failure_count
+        in
+        Int.equal before 0 && Int.equal after 1)
+  in
+  let prop_psf5_session_ok_resets_counter =
+    Test.make
+      ~name:
+        "PSF-5: apply Session_ok resets push_failure_count after Push_ok path"
+      (Gen.int_range 0 5) (fun n ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
+              Orchestrator.apply_session_result o pid (Session_push_failed None))
+        in
+        let orch = Orchestrator.apply_session_result orch pid Session_ok in
+        Int.equal (Orchestrator.agent orch pid).Patch_agent.push_failure_count 0)
+  in
+  let prop_psf6_threshold_flips_intervention =
+    Test.make
+      ~name:
+        "PSF-6: three consecutive Session_push_failed flip needs_intervention"
+      (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let bump o =
+          Orchestrator.apply_session_result o pid (Session_push_failed None)
+        in
+        let o1 = bump orch in
+        let o2 = bump o1 in
+        let o3 = bump o2 in
+        let needs o =
+          Patch_agent.needs_intervention (Orchestrator.agent o pid)
+        in
+        (* After the first two, no intervention; after the third, intervention
+           fires via [push_failure_count >= 3]. *)
+        (not (needs o1)) && (not (needs o2)) && needs o3)
+  in
+  let prop_psf7_permanent_reason_escalates_immediately =
+    Test.make
+      ~name:
+        "PSF-7: Session_push_failed (Some permanent) flips needs_intervention \
+         on the first event"
+      (Gen.oneof
+         [
+           Gen.return Push_reject_classify.Workflow_scope_missing;
+           Gen.return Push_reject_classify.Branch_protection;
+           Gen.return Push_reject_classify.Push_pattern_block;
+           Gen.return (Push_reject_classify.Hook_failure "x");
+         ])
+      (fun reason ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            (Session_push_failed (Some reason))
+        in
+        let a = Orchestrator.agent orch pid in
+        Patch_agent.needs_intervention a
+        && Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+             Patch_agent.Given_up)
+  in
+  let prop_psf8_transient_reason_does_not_escalate =
+    Test.make
+      ~name:
+        "PSF-8: Session_push_failed with Lease_violation / None / Unknown does \
+         NOT immediately escalate to Given_up"
+      (Gen.oneof
+         [
+           Gen.return None;
+           Gen.return (Some Push_reject_classify.Lease_violation);
+           Gen.return (Some (Push_reject_classify.Unknown ""));
+         ])
+      (fun reason ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            (Session_push_failed reason)
+        in
+        let a = Orchestrator.agent orch pid in
+        not
+          (Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+             Patch_agent.Given_up))
   in
   let prop_cp1_ok_pushok =
     Test.make ~name:"CP-1: Session_ok + Push_ok = Session_ok" (Gen.return ())
@@ -1059,20 +1157,22 @@ let () =
           Session_ok)
   in
   let prop_cp3_ok_rejected =
-    Test.make ~name:"CP-3: Session_ok + Push_rejected = Session_push_failed"
+    Test.make
+      ~name:
+        "CP-3: Session_ok + Push_rejected = Session_push_failed (Some reason)"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
           (Orchestrator.combine_session_and_push ~session:Session_ok
-             ~push:Worktree.Push_rejected)
-          Session_push_failed)
+             ~push:(Worktree.Push_rejected Push_reject_classify.Lease_violation))
+          (Session_push_failed (Some Push_reject_classify.Lease_violation)))
   in
   let prop_cp4_ok_error =
-    Test.make ~name:"CP-4: Session_ok + Push_error = Session_push_failed"
+    Test.make ~name:"CP-4: Session_ok + Push_error = Session_push_failed None"
       Gen.string_small (fun msg ->
         Orchestrator.equal_session_result
           (Orchestrator.combine_session_and_push ~session:Session_ok
              ~push:(Worktree.Push_error msg))
-          Session_push_failed)
+          (Session_push_failed None))
   in
   let gen_non_ok_session : Orchestrator.session_result Gen.t =
     Gen.oneof
@@ -1087,7 +1187,7 @@ let () =
           Gen.bool;
         Gen.return Orchestrator.Session_give_up;
         Gen.return Orchestrator.Session_worktree_missing;
-        Gen.return Orchestrator.Session_push_failed;
+        Gen.return (Orchestrator.Session_push_failed None);
         Gen.return Orchestrator.Session_no_commits;
       ]
   in
@@ -1097,7 +1197,7 @@ let () =
         Gen.return Worktree.Push_ok;
         Gen.return Worktree.Push_up_to_date;
         Gen.return Worktree.Push_no_commits;
-        Gen.return Worktree.Push_rejected;
+        Gen.return (Worktree.Push_rejected Push_reject_classify.Lease_violation);
         Gen.map (fun s -> Worktree.Push_error s) Gen.string_small;
       ]
   in
@@ -1346,13 +1446,17 @@ let () =
       ~name:
         "PG-10: classify_push_result code<>0 with '!' porcelain = Push_rejected"
       (Gen.int_range 1 255) (fun code ->
-        Worktree.equal_push_result
-          (Worktree.classify_push_result ~code
-             ~stdout:
-               "To origin\n\
-               \ ! [rejected] refs/heads/x -> refs/heads/x (stale info)"
-             ~stderr:"")
-          Worktree.Push_rejected)
+        match
+          Worktree.classify_push_result ~code
+            ~stdout:
+              "To origin\n\
+              \ ! [rejected] refs/heads/x -> refs/heads/x (stale info)"
+            ~stderr:""
+        with
+        | Worktree.Push_rejected _ -> true
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
+        | Worktree.Push_worktree_missing | Worktree.Push_error _ ->
+            false)
   in
   let prop_classify_nonzero_no_porcelain_equal_error =
     Test.make
@@ -1364,7 +1468,7 @@ let () =
         match Worktree.classify_push_result ~code ~stdout:"" ~stderr with
         | Worktree.Push_error _ -> true
         | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
-        | Worktree.Push_rejected | Worktree.Push_worktree_missing ->
+        | Worktree.Push_rejected _ | Worktree.Push_worktree_missing ->
             false)
   in
   let prop_classify_never_returns_no_commits =
@@ -1377,7 +1481,7 @@ let () =
       (fun (code, stdout, stderr) ->
         match Worktree.classify_push_result ~code ~stdout ~stderr with
         | Worktree.Push_no_commits | Worktree.Push_worktree_missing -> false
-        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected
+        | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_rejected _
         | Worktree.Push_error _ ->
             true)
   in
@@ -1387,6 +1491,11 @@ let () =
       prop_psf1_clears_session_fallback;
       prop_psf2_leaves_start_attempts_untouched;
       prop_psf3_leaves_ci_failure_count_untouched;
+      prop_psf4_increments_counter;
+      prop_psf5_session_ok_resets_counter;
+      prop_psf6_threshold_flips_intervention;
+      prop_psf7_permanent_reason_escalates_immediately;
+      prop_psf8_transient_reason_does_not_escalate;
       prop_cp1_ok_pushok;
       prop_cp2_ok_uptodate;
       prop_cp3_ok_rejected;
@@ -1417,6 +1526,6 @@ let () =
     ];
   Stdlib.print_endline
     "Session_push_failed + combine_session_and_push: all properties passed \
-     (PSF-1..3, CP-1..6, PNC-1..8, PG-1..12)"
+     (PSF-1..8, CP-1..6, PNC-1..8, PG-1..12)"
 
 let () = Stdlib.print_endline "all property tests passed"

@@ -216,7 +216,7 @@ type push_result =
   | Push_ok
   | Push_up_to_date
   | Push_no_commits
-  | Push_rejected
+  | Push_rejected of Push_reject_classify.rejection
   | Push_worktree_missing
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
@@ -262,7 +262,7 @@ let classify_push_result ~code ~stdout ~stderr =
     | _ -> Push_ok
   else
     match parse_push_porcelain stdout with
-    | Some '!' -> Push_rejected
+    | Some '!' -> Push_rejected (Push_reject_classify.classify ~stderr ~stdout)
     | _ ->
         Push_error
           (Printf.sprintf "push failed (exit %d): %s" code (String.strip stderr))

@@ -169,7 +169,9 @@ type session_result =
   | Session_failed of { is_fresh : bool; detail : string option }
   | Session_give_up
   | Session_worktree_missing
-  | Session_push_failed
+  | Session_push_failed of Push_reject_classify.rejection option
+      (** [Some r] carries a classified server-side rejection; [None] reflects a
+          transport / local [git push] failure ([Push_error]). *)
   | Session_no_commits
 [@@deriving show, eq, sexp_of]
 
@@ -185,16 +187,21 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
 
     {b Deferred completion}: [Session_push_failed] and [Session_no_commits] do
     NOT complete the agent — they only adjust state ([clear_session_fallback] in
-    both cases; [increment_no_commits_push_count] for [Session_no_commits]).
-    [busy] remains [true]. The caller MUST follow up in the same atomic snapshot
-    write with either [apply_start_outcome _ Start_failed] (Start path) or
+    both cases; [increment_no_commits_push_count] for [Session_no_commits];
+    [increment_push_failure_count] and possible escalation to [Given_up] for
+    [Session_push_failed]). [busy] remains [true]. The caller MUST follow up in
+    the same atomic snapshot write with either
+    [apply_start_outcome _ Start_failed] (Start path) or
     [apply_respond_outcome _ _ Respond_retry_push] (Respond path) to clear
     [busy]. This two-phase design is deliberate: the LLM session itself
     succeeded (messages were delivered; commits were made locally), so any
     inflight human payload must be consumed by plain [complete] rather than
     restored by [complete_failed] — the latter would re-enqueue Human and cause
     an infinite re-delivery loop. After 2 consecutive [Session_no_commits]
-    outcomes, [needs_intervention] fires via [no_commits_push_count >= 2]. *)
+    outcomes, [needs_intervention] fires via [no_commits_push_count >= 2]. After
+    3 consecutive [Session_push_failed] outcomes (or a single one carrying a
+    permanent rejection), [needs_intervention] fires via
+    [push_failure_count >= 3] or [Given_up]. *)
 
 val combine_session_and_push :
   session:session_result -> push:Worktree.push_result -> session_result
@@ -202,11 +209,16 @@ val combine_session_and_push :
     outcome into a single [session_result] for [apply_session_result].
     - A pre-existing LLM failure ([Session_process_error], [Session_failed],
       [Session_no_resume], [Session_give_up], [Session_worktree_missing],
-      [Session_push_failed]) is preserved unchanged — the push outcome doesn't
+      [Session_push_failed _]) is preserved unchanged — the push outcome doesn't
       change anything.
     - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
-    - [Session_ok] with [Push_rejected] or [Push_error] becomes
-      [Session_push_failed] — the LLM ran fine but commits didn't ship.
+    - [Session_ok] with [Push_rejected reason] becomes
+      [Session_push_failed (Some reason)] — the LLM ran fine but the remote
+      refused commits; the classified reason rides along so the orchestrator can
+      escalate immediately on permanent rejections (workflow-scope,
+      branch-protection, push-pattern, hook).
+    - [Session_ok] with [Push_error _] becomes [Session_push_failed None] — a
+      transport/local git error, always treated as transient.
     - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the LLM
       ran cleanly but left no commits on the branch, so the push was skipped (a
       base-equal branch can't become a PR). *)

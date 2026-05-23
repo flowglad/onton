@@ -946,9 +946,10 @@ struct
                                   log_event runtime ~patch_id
                                     "Force-push skipped after rebase — branch \
                                      has no commits ahead of base"
-                              | Worktree.Push_rejected ->
+                              | Worktree.Push_rejected reason ->
                                   log_event runtime ~patch_id
-                                    "Force-push rejected — lease violated"
+                                    (Printf.sprintf "Force-push rejected — %s"
+                                       (Push_reject_classify.short_label reason))
                               | Worktree.Push_worktree_missing ->
                                   log_event runtime ~patch_id
                                     (Printf.sprintf
@@ -1385,10 +1386,13 @@ struct
                                                     "Conflict force-push \
                                                      skipped — branch has no \
                                                      commits ahead of base"
-                                              | Worktree.Push_rejected ->
+                                              | Worktree.Push_rejected reason ->
                                                   log_event runtime ~patch_id
-                                                    "Conflict force-push \
-                                                     rejected — lease violated"
+                                                    (Printf.sprintf
+                                                       "Conflict force-push \
+                                                        rejected — %s"
+                                                       (Push_reject_classify
+                                                        .short_label reason))
                                               | Worktree.Push_worktree_missing
                                                 ->
                                                   log_event runtime ~patch_id
