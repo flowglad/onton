@@ -41,8 +41,9 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
                 path ))
       | Worktree_plan.Rebase_onto target :: rest -> (
           match
-            W.rebase_onto ~path ~target ~project_name:Env.project_name
-              ~ancestor_ids
+            W.rebase_onto
+              ~prev_base_sha:agent.Patch_agent.branch_rebased_onto_sha ~path
+              ~target ~project_name:Env.project_name ~ancestor_ids ()
           with
           | Worktree.Ok -> loop ~path rest
           | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->

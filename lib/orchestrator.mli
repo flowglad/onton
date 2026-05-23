@@ -77,6 +77,12 @@ val send_human_message : t -> Patch_id.t -> string -> t
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val clear_pr : t -> Patch_id.t -> t
 val set_session_failed : t -> Patch_id.t -> t
+
+val set_branch_rebased_onto_sha : t -> Patch_id.t -> string option -> t
+(** Record the SHA the base ref resolved to at the moment of a successful rebase
+    / start. Called by the runner fiber after [W.read_branch_sha] captures the
+    new value. [None] clears the field. *)
+
 val set_tried_fresh : t -> Patch_id.t -> t
 val clear_session_fallback : t -> Patch_id.t -> t
 val on_session_failure : t -> Patch_id.t -> is_fresh:bool -> t

@@ -481,6 +481,14 @@ let start t ~base_branch =
 let set_branch_rebased_onto t branch =
   { t with branch_rebased_onto = Some branch }
 
+let set_branch_rebased_onto_sha t sha =
+  match sha with
+  | None -> { t with branch_rebased_onto_sha = None }
+  | Some s ->
+      let s = String.strip s in
+      if String.is_empty s then { t with branch_rebased_onto_sha = None }
+      else { t with branch_rebased_onto_sha = Some s }
+
 let rebase t ~base_branch =
   if not (has_pr t) then invalid_arg "Patch_agent.rebase: patch has no PR";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";

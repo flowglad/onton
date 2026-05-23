@@ -25,8 +25,11 @@ module Fake_worktree : Worktree.S = struct
   let git_status ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
 
-  let rebase_onto ~path:_ ~target:_ ~project_name:_ ~ancestor_ids:_ =
+  let rebase_onto ?prev_base_sha:_ ~path:_ ~target:_ ~project_name:_
+      ~ancestor_ids:_ () =
     assert false
+
+  let read_branch_sha ~path:_ ~ref_name:_ = None
 
   let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
       ~ancestor_ids:_ =

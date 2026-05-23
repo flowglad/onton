@@ -897,6 +897,20 @@ struct
                             ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
                         in
+                        (* On a successful rebase, capture the SHA the new
+                           base resolved to so the next rebase can pass it
+                           as [prev_base_sha] and trim commits absorbed into
+                           a squash-merge on origin. Records via
+                           [Orchestrator.set_branch_rebased_onto_sha]. *)
+                        let post_rebase_sha =
+                          match rebase_result with
+                          | Worktree.Ok ->
+                              W.read_branch_sha ~path:wt_path
+                                ~ref_name:("origin/" ^ Branch.to_string new_base)
+                          | Worktree.Noop | Worktree.Conflict _
+                          | Worktree.Error _ ->
+                              None
+                        in
                         (match rebase_result with
                         | Worktree.Ok ->
                             log_event runtime ~patch_id
@@ -920,6 +934,13 @@ struct
                               let orch, effects =
                                 Orchestrator.apply_rebase_result orch patch_id
                                   rebase_result new_base
+                              in
+                              let orch =
+                                match post_rebase_sha with
+                                | Some _ ->
+                                    Orchestrator.set_branch_rebased_onto_sha
+                                      orch patch_id post_rebase_sha
+                                | None -> orch
                               in
                               let agent_after =
                                 Orchestrator.agent orch patch_id

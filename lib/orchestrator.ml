@@ -292,6 +292,10 @@ let set_pr_number t patch_id pr_number =
 
 let clear_pr t patch_id = update_agent t patch_id ~f:Patch_agent.clear_pr
 
+let set_branch_rebased_onto_sha t patch_id sha =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_branch_rebased_onto_sha a sha)
+
 let set_session_failed t patch_id =
   update_agent t patch_id ~f:Patch_agent.set_session_failed
 

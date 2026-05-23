@@ -208,6 +208,12 @@ val set_branch_rebased_onto : t -> Types.Branch.t -> t
     explicit successful [Rebase] action, or by the initial [Start] which plants
     the branch on its base). Drives [detect_notified_base_drift]. *)
 
+val set_branch_rebased_onto_sha : t -> string option -> t
+(** Record the SHA the base ref resolved to at the moment of a successful rebase
+    / start. [None] (or a whitespace-only string) clears the field — used when
+    the SHA could not be read; the next rebase will then fall back to the legacy
+    plain [git rebase target] semantics. *)
+
 val base_branch_changed : t -> bool
 (** [true] when [base_branch] differs from [notified_base_branch], meaning the
     agent session has not yet been told about the current base branch. *)

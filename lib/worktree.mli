@@ -175,18 +175,28 @@ type rebase_result = Worktree_parser.rebase_result =
 [@@deriving show, eq, sexp_of, compare]
 
 val rebase_onto :
+  ?prev_base_sha:string option ->
   process_mgr:_ Eio.Process.mgr ->
   path:string ->
   target:Types.Branch.t ->
   project_name:string ->
   ancestor_ids:Types.Patch_id.t list ->
+  unit ->
   rebase_result
-(** Rebase HEAD onto [target]. Uses [git log --cherry-pick] to detect
-    already-applied commits, and supplements that with subject-pattern matching
-    against [[<project_name>] Patch N:] for every [N] in [ancestor_ids] — the
-    fallback is load-bearing when [target] is a squash-merging trunk like
-    [main], because squash-merged ancestor commits carry a fresh patch-id that
-    cherry-pick cannot equate with the original feature-branch commits. Pass
+(** Rebase HEAD onto [target]. [?prev_base_sha] (default [None]) is the SHA the
+    previous base ref resolved to at the last successful rebase / start (see
+    [Patch_agent.branch_rebased_onto_sha]). When [Some sha] is supplied and the
+    cherry-pick / subject-pattern heuristic fails to isolate the patch's
+    commits, the rebase uses [git rebase --onto target sha] instead of the
+    legacy plain [git rebase target], dropping commits whose content was
+    absorbed into a squash-merge on origin (the patch-6 case).
+
+    Uses [git log --cherry-pick] to detect already-applied commits, and
+    supplements that with subject-pattern matching against
+    [[<project_name>] Patch N:] for every [N] in [ancestor_ids] — the fallback
+    is load-bearing when [target] is a squash-merging trunk like [main], because
+    squash-merged ancestor commits carry a fresh patch-id that cherry-pick
+    cannot equate with the original feature-branch commits. Pass
     [~project_name:""] or [~ancestor_ids:[]] to opt out of the subject filter
     entirely; cherry-pick deduplication still applies.
 
@@ -303,11 +313,15 @@ module type S = sig
   val conflict_diff : path:string -> string
 
   val rebase_onto :
+    ?prev_base_sha:string option ->
     path:string ->
     target:Types.Branch.t ->
     project_name:string ->
     ancestor_ids:Types.Patch_id.t list ->
+    unit ->
     rebase_result
+
+  val read_branch_sha : path:string -> ref_name:string -> string option
 
   val read_in_progress_conflict_info :
     path:string ->
