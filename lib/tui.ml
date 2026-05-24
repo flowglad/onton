@@ -1167,7 +1167,12 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
       match view_mode with
       | Detail_view patch_id ->
           List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
-      | List_view -> List.nth views selected
+      | List_view ->
+          let count = List.length views in
+          if count = 0 then None
+          else
+            let idx = Int.max 0 (Int.min selected (count - 1)) in
+            List.nth views idx
       | Timeline_view -> None
     in
     let automerge_enabled =
