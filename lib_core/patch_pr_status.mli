@@ -64,7 +64,26 @@ val mark_missing : t -> t
 (** Move to [Missing n] preserving the recorded number. Partial: requires
     [Present _]; raises [Invalid_argument] on [Absent] (cannot lose what was
     never had) and on [Missing _] (idempotency is the caller's responsibility —
-    re-marking would discard the original observation). *)
+    re-marking would discard the original observation).
+
+    For an idempotent variant, callers should classify with
+    {!classify_mark_missing} and dispatch on the result. The orchestrator
+    wrapper {!Orchestrator.mark_pr_missing} does this. *)
+
+(** {2 Pure classifiers} *)
+
+type mark_missing_decision =
+  | Mark_missing_already  (** Already [Missing] — re-marking is a no-op. *)
+  | Mark_missing_transition  (** [Present] — legal transition to [Missing]. *)
+  | Mark_missing_illegal
+      (** [Absent] — caller bug; cannot lose what was never had. *)
+[@@deriving show, eq]
+
+val classify_mark_missing : t -> mark_missing_decision
+(** Total. Inspects [t] and returns the decision the effectful handler should
+    dispatch on. Used by {!Orchestrator.mark_pr_missing} to make the
+    integration-level API idempotent on [Missing] while keeping the low-level
+    {!mark_missing} transition strict. *)
 
 (** {2 Persistence} *)
 

@@ -302,7 +302,25 @@ let set_pr_number t patch_id pr_number =
 let clear_pr t patch_id = update_agent t patch_id ~f:Patch_agent.clear_pr
 
 let mark_pr_missing t patch_id =
-  update_agent t patch_id ~f:Patch_agent.mark_pr_missing
+  (* Dispatch on the pure classifier so the integration-level API is
+     idempotent on an already-[Missing] agent. The low-level transition
+     [Patch_agent.mark_pr_missing] stays strict for testability — the
+     classifier above is what callers (production and tests) should
+     consult. *)
+  match find_agent t patch_id with
+  | None -> t
+  | Some a -> (
+      match Patch_pr_status.classify_mark_missing a.Patch_agent.pr_status with
+      | Mark_missing_already -> t
+      | Mark_missing_transition ->
+          update_agent t patch_id ~f:Patch_agent.mark_pr_missing
+      | Mark_missing_illegal ->
+          (* Caller bug: marking an [Absent] agent missing has no meaning.
+             Surface explicitly rather than silently transitioning. *)
+          invalid_arg
+            (Printf.sprintf
+               "Orchestrator.mark_pr_missing: agent %s has no PR (Absent)"
+               (Patch_id.to_string patch_id)))
 
 let set_branch_rebased_onto_sha t patch_id sha =
   update_agent t patch_id ~f:(fun a ->

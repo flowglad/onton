@@ -631,11 +631,20 @@ let rec apply_command orch patches cmd =
       Orchestrator.apply_force_complete orch pid
         (to_force_complete_reason reason)
   | Mark_pr_missing_adhoc i -> (
+      (* No is_pr_present guard: Orchestrator.mark_pr_missing is idempotent
+         on Missing per Patch_pr_status.classify_mark_missing. Exercises the
+         production path that fires re-Mark on consecutive poll cycles after
+         a vanish. *)
       let pid = adhoc_pid i in
       match Orchestrator.find_agent orch pid with
-      | Some agent when Patch_agent.is_pr_present agent ->
-          Orchestrator.mark_pr_missing orch pid
-      | Some _ | None -> orch)
+      | Some _ -> (
+          try Orchestrator.mark_pr_missing orch pid
+          with
+          (* Mark_missing_illegal (Absent) — swallow so the property test can
+             explore arbitrary interleavings without an explicit gate. *)
+          | Invalid_argument _ ->
+            orch)
+      | None -> orch)
   | Rediscover_replacement_adhoc i -> (
       let pid = adhoc_pid i in
       match Orchestrator.find_agent orch pid with

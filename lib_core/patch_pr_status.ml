@@ -26,6 +26,19 @@ let mark_missing = function
       invalid_arg
         "Patch_pr_status.mark_missing: already Missing — caller should guard"
 
+(* ── Pure classifiers ── *)
+
+type mark_missing_decision =
+  | Mark_missing_already
+  | Mark_missing_transition
+  | Mark_missing_illegal
+[@@deriving show, eq]
+
+let classify_mark_missing = function
+  | Missing _ -> Mark_missing_already
+  | Present _ -> Mark_missing_transition
+  | Absent -> Mark_missing_illegal
+
 (* ── Persistence ── *)
 
 let yojson_of_t = function
@@ -134,6 +147,27 @@ let%test "mark_missing raises on Missing" =
     let _ = mark_missing (Missing (mk_pr 1)) in
     false
   with Invalid_argument _ -> true
+
+let%test "classify_mark_missing: Present -> Transition" =
+  equal_mark_missing_decision
+    (classify_mark_missing (Present (mk_pr 1)))
+    Mark_missing_transition
+
+let%test "classify_mark_missing: Missing -> Already" =
+  equal_mark_missing_decision
+    (classify_mark_missing (Missing (mk_pr 1)))
+    Mark_missing_already
+
+let%test "classify_mark_missing: Absent -> Illegal" =
+  equal_mark_missing_decision
+    (classify_mark_missing Absent)
+    Mark_missing_illegal
+
+let%test "classify_mark_missing agrees with mark_missing on Transition" =
+  let s = Present (mk_pr 5) in
+  match classify_mark_missing s with
+  | Mark_missing_transition -> equal (mark_missing s) (Missing (mk_pr 5))
+  | Mark_missing_already | Mark_missing_illegal -> false
 
 let roundtrip_ok t =
   match t_of_yojson_compat (yojson_of_t t) with

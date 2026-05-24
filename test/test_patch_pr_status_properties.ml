@@ -106,6 +106,24 @@ let prop_legacy_int_decodes_to_present =
       | Ok (Present n') -> Pr_number.equal n n'
       | Ok (Absent | Missing _) | Error _ -> false)
 
+let prop_classify_mark_missing_total =
+  Test.make ~name:"classify_mark_missing is total and exhaustive" ~count:200
+    gen_any (fun t ->
+      match Patch_pr_status.classify_mark_missing t with
+      | Mark_missing_already -> Patch_pr_status.is_missing t
+      | Mark_missing_transition -> Patch_pr_status.is_pr_present t
+      | Mark_missing_illegal -> not (Patch_pr_status.has_pr t)
+      (* Absent only *))
+
+let prop_classify_mark_missing_agrees =
+  Test.make
+    ~name:"classify_mark_missing Transition agrees with mark_missing transition"
+    ~count:200 gen_present (fun t ->
+      match Patch_pr_status.classify_mark_missing t with
+      | Mark_missing_transition ->
+          Patch_pr_status.is_missing (Patch_pr_status.mark_missing t)
+      | Mark_missing_already | Mark_missing_illegal -> false)
+
 let prop_legacy_never_produces_missing =
   Test.make ~name:"legacy formats never produce Missing" ~count:100
     Gen.(oneof [ return `Null; map Pr_number.yojson_of_t gen_pr_number ])
@@ -131,6 +149,8 @@ let suite =
     prop_legacy_null_decodes_to_absent;
     prop_legacy_int_decodes_to_present;
     prop_legacy_never_produces_missing;
+    prop_classify_mark_missing_total;
+    prop_classify_mark_missing_agrees;
   ]
 
 let () =
