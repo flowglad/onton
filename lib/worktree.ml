@@ -563,6 +563,15 @@ let force_push_with_lease ~process_mgr ~path ~branch ~base =
               "push";
               "--porcelain";
               "--force-with-lease";
+              (* --force-if-includes refuses to overwrite the remote when our
+                 local branch does not contain the remote tip's reflog entry.
+                 --force-with-lease alone only checks "is remote where I last
+                 saw it?" — once a background fetch updates the local tracking
+                 ref to match actual remote, the lease passes even when local
+                 is strictly behind, silently wiping remote commits. See
+                 incident notes for PR #315 (auto-closed by a force-push of an
+                 empty branch). Requires git ≥ 2.30. *)
+              "--force-if-includes";
               "origin";
               branch_str;
             ]

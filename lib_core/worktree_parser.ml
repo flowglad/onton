@@ -253,8 +253,8 @@ let push_gate_from_count = function
   | Some 0 -> Skip_no_commits
   | None | Some _ -> Proceed
 
-(** Classify a [git push --porcelain --force-with-lease] invocation from its
-    exit code + stdout + stderr. *)
+(** Classify a [git push --porcelain --force-with-lease --force-if-includes]
+    invocation from its exit code + stdout + stderr. *)
 let classify_push_result ~code ~stdout ~stderr =
   if code = 0 then
     match parse_push_porcelain stdout with
