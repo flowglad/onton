@@ -70,7 +70,13 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
               recorded_history =
                 Anchor_history.to_list (Patch_agent.anchor_history agent);
               base_branch =
-                Base.Option.value agent.Patch_agent.base_branch ~default:target;
+                Base.Option.value agent.Patch_agent.base_branch
+                  ~default:
+                    (let target_s = Types.Branch.to_string target in
+                     Types.Branch.of_string
+                       (Base.Option.value
+                          (Base.String.chop_prefix target_s ~prefix:"origin/")
+                          ~default:target_s));
               head_sha;
             }
           in

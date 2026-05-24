@@ -226,14 +226,6 @@ val record_anchor : t -> Anchor.t -> t
     [(base, sha)]) and update the legacy view fields [branch_rebased_onto] and
     [branch_rebased_onto_sha] to mirror the new anchor. Pure and total. *)
 
-val clear_anchor_for_base : t -> Types.Branch.t -> t
-(** Called by the orchestrator when retargeting the agent's base to [new_base]
-    whose anchor SHA is no longer authoritative (e.g. a dep squash-merged so the
-    legacy single-anchor view is stale). Sets
-    [branch_rebased_onto = Some new_base] and clears [branch_rebased_onto_sha];
-    preserves {!field-anchor_history} so {!Rebase_decision.plan} can still use
-    older entries as fallbacks. *)
-
 val anchor_history : t -> Anchor_history.t
 
 val base_branch_changed : t -> bool

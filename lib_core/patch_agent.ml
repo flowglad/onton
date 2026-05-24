@@ -507,14 +507,6 @@ let record_anchor t anchor =
     branch_rebased_onto_sha = Some (Anchor.sha anchor);
   }
 
-let clear_anchor_for_base t new_base =
-  (* Drop the legacy SHA view when the orchestrator retargets the agent's
-     base to one whose recorded anchor SHA is no longer authoritative. The
-     anchor history is preserved — [Rebase_decision.plan] can still use older
-     entries as divergence fallbacks. The legacy [branch_rebased_onto] field
-     is set to the new base so the drift detector sees a coherent view. *)
-  { t with branch_rebased_onto = Some new_base; branch_rebased_onto_sha = None }
-
 let anchor_history t = t.anchor_history
 
 let rebase t ~base_branch =

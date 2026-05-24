@@ -24,7 +24,7 @@ let yojson_of_t = yojson_of_raw
 let of_yojson_opt json =
   match raw_of_yojson json with
   | exception _ -> None
-  | xs -> Some (List.take xs cap)
+  | xs -> Some (List.fold_right xs ~init:empty ~f:(fun a acc -> push acc a))
 
 let t_of_yojson json =
   match of_yojson_opt json with
