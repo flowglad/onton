@@ -48,6 +48,7 @@ struct
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
+    let fetch_mutex = Env.fetch_mutex
   end
 
   module SD_Env : Session_driver.ENV = struct
@@ -61,6 +62,7 @@ struct
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
+    let fetch_mutex = Env.fetch_mutex
   end
 
   module WS = Worktree_setup.Make (W) (WS_Env)
@@ -451,9 +453,11 @@ struct
       Eio.Semaphore.acquire semaphore;
       Fun.protect ~finally:(fun () -> Eio.Semaphore.release semaphore) f
     in
-    (* Serializes [git fetch origin] across worktrees to avoid ref-lock races on
-     the shared [refs/remotes/origin/*] store. See [Worktree.fetch_origin]. *)
-    let fetch_mutex = Eio.Mutex.create () in
+    (* Serializes [git fetch origin] across worktrees + the poller's
+       main-freshness fetch to avoid ref-lock races on the shared
+       [refs/remotes/origin/*] store. Shared via [Env.fetch_mutex] so a
+       single mutex covers every fiber. See [Worktree.fetch_origin]. *)
+    let fetch_mutex = Env.fetch_mutex in
     let long_lived_sessions = Long_lived_sessions.create () in
     let patch_agent_provider =
       Base.Option.value Env.patch_agent_provider ~default:"anthropic"
@@ -897,6 +901,20 @@ struct
                             ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
                         in
+                        (* On a successful rebase, capture the SHA the new
+                           base resolved to so the next rebase can pass it
+                           as [prev_base_sha] and trim commits absorbed into
+                           a squash-merge on origin. Records via
+                           [Orchestrator.set_branch_rebased_onto_sha]. *)
+                        let post_rebase_sha =
+                          match rebase_result with
+                          | Worktree.Ok ->
+                              W.read_branch_sha ~path:wt_path
+                                ~ref_name:("origin/" ^ Branch.to_string new_base)
+                          | Worktree.Noop | Worktree.Conflict _
+                          | Worktree.Error _ ->
+                              None
+                        in
                         (match rebase_result with
                         | Worktree.Ok ->
                             log_event runtime ~patch_id
@@ -920,6 +938,13 @@ struct
                               let orch, effects =
                                 Orchestrator.apply_rebase_result orch patch_id
                                   rebase_result new_base
+                              in
+                              let orch =
+                                match post_rebase_sha with
+                                | Some _ ->
+                                    Orchestrator.set_branch_rebased_onto_sha
+                                      orch patch_id post_rebase_sha
+                                | None -> orch
                               in
                               let agent_after =
                                 Orchestrator.agent orch patch_id
@@ -946,9 +971,10 @@ struct
                                   log_event runtime ~patch_id
                                     "Force-push skipped after rebase — branch \
                                      has no commits ahead of base"
-                              | Worktree.Push_rejected ->
+                              | Worktree.Push_rejected reason ->
                                   log_event runtime ~patch_id
-                                    "Force-push rejected — lease violated"
+                                    (Printf.sprintf "Force-push rejected — %s"
+                                       (Push_reject_classify.short_label reason))
                               | Worktree.Push_worktree_missing ->
                                   log_event runtime ~patch_id
                                     (Printf.sprintf
@@ -1385,10 +1411,13 @@ struct
                                                     "Conflict force-push \
                                                      skipped — branch has no \
                                                      commits ahead of base"
-                                              | Worktree.Push_rejected ->
+                                              | Worktree.Push_rejected reason ->
                                                   log_event runtime ~patch_id
-                                                    "Conflict force-push \
-                                                     rejected — lease violated"
+                                                    (Printf.sprintf
+                                                       "Conflict force-push \
+                                                        rejected — %s"
+                                                       (Push_reject_classify
+                                                        .short_label reason))
                                               | Worktree.Push_worktree_missing
                                                 ->
                                                   log_event runtime ~patch_id

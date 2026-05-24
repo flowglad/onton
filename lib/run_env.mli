@@ -7,4 +7,9 @@ module type S = sig
   val user_config : User_config.t
   val worktree_mutex : Eio.Mutex.t
   val hook_mutex : Eio.Mutex.t
+
+  val fetch_mutex : Eio.Mutex.t
+  (** Single mutex shared across every fiber that issues [git fetch] against the
+      managed repo's ref store. See [Run_env.S.fetch_mutex] in the
+      implementation for the race it serializes. *)
 end

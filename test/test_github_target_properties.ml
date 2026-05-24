@@ -187,7 +187,9 @@ let prop_clone_url_total =
   QCheck2.Test.make ~name:"clone_url: total"
     QCheck2.Gen.(pair gen_ident_string gen_ident_string)
     (fun (owner, repo) ->
-      let _ = Github_target.clone_url ~owner ~repo in
+      let _ =
+        Github_target.clone_url ~scheme:Github_target.Https ~owner ~repo
+      in
       true)
 
 (* ---------- Acceptance properties: every valid handle / repo is accepted ---------- *)
@@ -281,7 +283,9 @@ let prop_clone_url_roundtrips =
        for valid pairs"
     QCheck2.Gen.(pair gen_valid_owner gen_valid_repo)
     (fun (owner, repo) ->
-      let url = Github_target.clone_url ~owner ~repo in
+      let url =
+        Github_target.clone_url ~scheme:Github_target.Https ~owner ~repo
+      in
       match Github_target.infer_owner_repo_from_url url with
       | Some (o, r) -> String.equal o owner && String.equal r repo
       | None -> false)
@@ -291,14 +295,16 @@ let prop_clone_url_format =
     QCheck2.Gen.(pair gen_ident_string gen_ident_string)
     (fun (owner, repo) ->
       String.is_prefix
-        (Github_target.clone_url ~owner ~repo)
+        (Github_target.clone_url ~scheme:Github_target.Https ~owner ~repo)
         ~prefix:"https://github.com/")
 
 let prop_clone_url_ends_dot_git =
   QCheck2.Test.make ~name:"clone_url ends with .git"
     QCheck2.Gen.(pair gen_ident_string gen_ident_string)
     (fun (owner, repo) ->
-      String.is_suffix (Github_target.clone_url ~owner ~repo) ~suffix:".git")
+      String.is_suffix
+        (Github_target.clone_url ~scheme:Github_target.Https ~owner ~repo)
+        ~suffix:".git")
 
 let prop_infer_non_github_rejected =
   QCheck2.Test.make
@@ -354,6 +360,101 @@ let prop_validate_repo_strips =
         (Result.is_ok (Github_target.validate_repo s))
         (Result.is_ok (Github_target.validate_repo (pad ^ s ^ pad))))
 
+(* ---------- SSH / scheme decisions (P0-D) ---------- *)
+
+let prop_clone_url_ssh_format =
+  QCheck2.Test.make ~name:"clone_url ~scheme:Ssh starts with git@github.com:"
+    QCheck2.Gen.(pair gen_ident_string gen_ident_string)
+    (fun (owner, repo) ->
+      String.is_prefix
+        (Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo)
+        ~prefix:"git@github.com:")
+
+let prop_clone_url_ssh_roundtrips =
+  QCheck2.Test.make
+    ~name:
+      "infer_owner_repo_from_url (clone_url ~scheme:Ssh ~owner ~repo) = Some \
+       (owner, repo)"
+    QCheck2.Gen.(pair gen_valid_owner gen_valid_repo)
+    (fun (owner, repo) ->
+      let url =
+        Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo
+      in
+      match Github_target.infer_owner_repo_from_url url with
+      | Some (o, r) -> String.equal o owner && String.equal r repo
+      | None -> false)
+
+let prop_scheme_of_url_https_recognizer =
+  QCheck2.Test.make ~name:"scheme_of_url (clone_url Https) = Some Https"
+    QCheck2.Gen.(pair gen_valid_owner gen_valid_repo)
+    (fun (owner, repo) ->
+      let url =
+        Github_target.clone_url ~scheme:Github_target.Https ~owner ~repo
+      in
+      match Github_target.scheme_of_url url with
+      | Some Github_target.Https -> true
+      | Some Github_target.Ssh | None -> false)
+
+let prop_scheme_of_url_ssh_recognizer =
+  QCheck2.Test.make ~name:"scheme_of_url (clone_url Ssh) = Some Ssh"
+    QCheck2.Gen.(pair gen_valid_owner gen_valid_repo)
+    (fun (owner, repo) ->
+      let url =
+        Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo
+      in
+      match Github_target.scheme_of_url url with
+      | Some Github_target.Ssh -> true
+      | Some Github_target.Https | None -> false)
+
+let prop_scheme_of_url_total =
+  QCheck2.Test.make ~count:500
+    ~name:"scheme_of_url is total over arbitrary strings"
+    QCheck2.Gen.(string_size ~gen:printable (int_range 0 200))
+    (fun s ->
+      let _ = Github_target.scheme_of_url s in
+      true)
+
+let prop_resolve_scheme_override_wins =
+  QCheck2.Test.make ~name:"resolve_scheme: override Some _ always wins"
+    QCheck2.Gen.(
+      pair (oneof [ return Github_target.Https; return Github_target.Ssh ]) bool)
+    (fun (override, ssh_available) ->
+      Github_target.equal_url_scheme
+        (Github_target.resolve_scheme ~override:(Some override) ~ssh_available)
+        override)
+
+let prop_resolve_scheme_no_override_ssh_available =
+  QCheck2.Test.make
+    ~name:"resolve_scheme: override=None, ssh_available=true -> Ssh"
+    QCheck2.Gen.unit (fun () ->
+      Github_target.equal_url_scheme
+        (Github_target.resolve_scheme ~override:None ~ssh_available:true)
+        Github_target.Ssh)
+
+let prop_resolve_scheme_no_override_ssh_unavailable =
+  QCheck2.Test.make
+    ~name:"resolve_scheme: override=None, ssh_available=false -> Https"
+    QCheck2.Gen.unit (fun () ->
+      Github_target.equal_url_scheme
+        (Github_target.resolve_scheme ~override:None ~ssh_available:false)
+        Github_target.Https)
+
+let prop_resolve_scheme_total =
+  QCheck2.Test.make ~count:500
+    ~name:"resolve_scheme is total over arbitrary input"
+    QCheck2.Gen.(
+      pair
+        (oneof
+           [
+             return None;
+             return (Some Github_target.Https);
+             return (Some Github_target.Ssh);
+           ])
+        bool)
+    (fun (override, ssh_available) ->
+      let _ = Github_target.resolve_scheme ~override ~ssh_available in
+      true)
+
 let () =
   let tests =
     [
@@ -380,6 +481,15 @@ let () =
       prop_validate_target_idempotent;
       prop_validate_owner_strips;
       prop_validate_repo_strips;
+      prop_clone_url_ssh_format;
+      prop_clone_url_ssh_roundtrips;
+      prop_scheme_of_url_https_recognizer;
+      prop_scheme_of_url_ssh_recognizer;
+      prop_scheme_of_url_total;
+      prop_resolve_scheme_override_wins;
+      prop_resolve_scheme_no_override_ssh_available;
+      prop_resolve_scheme_no_override_ssh_unavailable;
+      prop_resolve_scheme_total;
     ]
   in
   Stdlib.exit (QCheck_base_runner.run_tests ~verbose:false tests)

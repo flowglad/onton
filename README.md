@@ -188,6 +188,37 @@ gh pr list --limit 1  # smoke-test repo access
 If you'd rather keep `gh`'s token separate from onton's, set `GITHUB_TOKEN`
 explicitly and `gh` will prefer that variable too — keeping both in sync.
 
+#### SSH transport
+
+OAuth tokens have per-scope restrictions enforced by GitHub even when the
+push itself looks routine. The most common gotcha: a token without the
+`workflow` scope is refused on any push that touches `.github/workflows/*`,
+with a clear `remote: refusing to allow an OAuth App to create or update
+workflow … without 'workflow' scope` message — and onton now classifies that
+as `workflow_scope_missing` and routes the agent straight to
+`needs_intervention` instead of retrying.
+
+SSH authentication is not subject to those per-scope restrictions. If you
+already maintain a sibling clone of `owner/repo` under one of `$PWD/..`,
+`~/code-src/`, `~/src/`, `~/code/`, `~/dev/`, or `~/projects/` whose `origin`
+uses SSH (`git@github.com:owner/repo.git`), onton will inherit the same SSH
+transport for its managed clone — you'll see
+`onton: detected SSH sibling clone at … — cloning managed repo via SSH` at
+startup, and `config.json` will record `url_scheme: "ssh"`. With no SSH
+sibling present, the managed clone defaults to HTTPS as before. SSH pushes
+flow through your ssh-agent / `~/.ssh/config`, so onton's OAuth token does
+not gate workflow changes.
+
+#### Manual git inside a worktree
+
+The per-patch worktrees under `~/worktrees/<project>/patch-<N>` are vanilla
+git checkouts; onton's `GIT_ASKPASS` injection does not apply when you run
+git there yourself. If you ever need to fetch or push from a worktree by
+hand and your interactive shell isn't authenticated for HTTPS pushes, run
+`gh auth setup-git` once — it installs gh's credential helper into your
+global git config and subsequent git invocations transparently reuse the
+token.
+
 ### Coding-agent authentication
 
 Onton spawns each patch in an isolated config dir (`spawn-envs/<patch_id>/{claude,codex,opencode}`)

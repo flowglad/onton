@@ -665,7 +665,9 @@ let () =
               in
               let orch, resolution =
                 Orchestrator.apply_rebase_push_result orch pid
-                  (Some Worktree.Push_rejected)
+                  (Some
+                     (Worktree.Push_rejected
+                        Push_reject_classify.Lease_violation))
               in
               let a = Orchestrator.agent orch pid in
               Orchestrator.equal_rebase_push_resolution resolution
@@ -930,7 +932,10 @@ let () =
               in
               let orch, resolution =
                 Orchestrator.apply_conflict_push_result orch pid
-                  Orchestrator.Conflict_resolved (Some Worktree.Push_rejected)
+                  Orchestrator.Conflict_resolved
+                  (Some
+                     (Worktree.Push_rejected
+                        Push_reject_classify.Lease_violation))
               in
               let a = Orchestrator.agent orch pid in
               Orchestrator.equal_conflict_resolution resolution

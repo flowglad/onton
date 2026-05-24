@@ -409,7 +409,24 @@ let conflict_diff ~process_mgr ~path =
     (* Truncate to avoid blowing up the prompt *)
     if String.length s > 4000 then String.prefix s 4000 ^ "\n[truncated]" else s
 
-let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
+(** Effectful: read the resolved SHA of [ref] from the worktree at [path]. Used
+    by the runner fiber to record [branch_rebased_onto_sha] after a successful
+    rebase, so the next rebase can pass it as [prev_base_sha] and trim commits
+    absorbed into a squash-merge on origin. Returns [None] on any error (missing
+    ref, git not runnable, etc.) — callers treat that as "no information" and
+    fall back to the legacy plain-rebase path. *)
+let read_branch_sha ~process_mgr ~path ~ref_name =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "rev-parse"; "--verify"; ref_name ]
+  in
+  if code = 0 then
+    let s = String.strip stdout in
+    if String.is_empty s then None else Some s
+  else None
+
+let rebase_onto ?(prev_base_sha = None) ~process_mgr ~path ~target ~project_name
+    ~ancestor_ids () =
   let target = Types.Branch.to_string target in
   let ancestor_code, _, ancestor_stderr =
     run_git_exit_code ~process_mgr
@@ -438,9 +455,26 @@ let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
       find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
     with
     | Result.Error msg ->
-        (* If we can't find unique commits, fall back to plain rebase *)
+        (* If we can't find unique commits, decide what upstream to pass to
+           [git rebase]:
+           - [prev_base_sha = Some sha]: do [git rebase --onto target sha]. This
+             is the patch-6 case — the orchestrator recorded the SHA the
+             previous base resolved to, and the patch's own commits live in
+             [sha..HEAD]. Drops squash-merged-equivalent dep commits.
+           - [None]: legacy plain [git rebase target] — replays everything in
+             [target..HEAD] including possibly-stale dep commits, preserved
+             for back-compat with agents whose [branch_rebased_onto_sha] was
+             never recorded. *)
+        let upstream =
+          Rebase_decision.upstream ~prev_base_sha ~fallback:target
+        in
+        let rebase_args =
+          if String.equal upstream target then
+            [ "git"; "-C"; path; "rebase"; target ]
+          else [ "git"; "-C"; path; "rebase"; "--onto"; target; upstream ]
+        in
         let rebase_code, _, rebase_stderr =
-          run_git_exit_code ~process_mgr [ "git"; "-C"; path; "rebase"; target ]
+          run_git_exit_code ~process_mgr rebase_args
         in
         if rebase_code = 0 then Ok
         else if rebase_code <> 1 then
@@ -456,7 +490,7 @@ let rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids =
           Conflict
             {
               target;
-              old_base = "";
+              old_base = (if String.equal upstream target then "" else upstream);
               unique_commits = [];
               strategy = Plain;
               orig_head;
@@ -482,7 +516,7 @@ type push_result = Worktree_parser.push_result =
   | Push_ok
   | Push_up_to_date
   | Push_no_commits
-  | Push_rejected
+  | Push_rejected of Push_reject_classify.rejection
   | Push_worktree_missing
   | Push_error of string
 [@@deriving show, eq, sexp_of, compare]
@@ -693,11 +727,18 @@ module type S = sig
   val conflict_diff : path:string -> string
 
   val rebase_onto :
+    ?prev_base_sha:string option ->
     path:string ->
     target:Types.Branch.t ->
     project_name:string ->
     ancestor_ids:Types.Patch_id.t list ->
+    unit ->
     rebase_result
+
+  val read_branch_sha : path:string -> ref_name:string -> string option
+  (** Resolve [ref_name] to a SHA in the worktree at [path]. [None] on any error
+      (missing ref, git failure). Used by the runner fiber to capture
+      [branch_rebased_onto_sha] after a successful rebase. *)
 
   val read_in_progress_conflict_info :
     path:string ->
@@ -742,8 +783,13 @@ let make ~process_mgr ~repo_root =
     let git_status ~path = git_status ~process_mgr ~path
     let conflict_diff ~path = conflict_diff ~process_mgr ~path
 
-    let rebase_onto ~path ~target ~project_name ~ancestor_ids =
-      rebase_onto ~process_mgr ~path ~target ~project_name ~ancestor_ids
+    let rebase_onto ?(prev_base_sha = None) ~path ~target ~project_name
+        ~ancestor_ids () =
+      rebase_onto ~prev_base_sha ~process_mgr ~path ~target ~project_name
+        ~ancestor_ids ()
+
+    let read_branch_sha ~path ~ref_name =
+      read_branch_sha ~process_mgr ~path ~ref_name
 
     let read_in_progress_conflict_info ~path ~target ~project_name ~ancestor_ids
         =

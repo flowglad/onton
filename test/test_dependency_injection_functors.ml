@@ -25,8 +25,11 @@ module Fake_worktree : Worktree.S = struct
   let git_status ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
 
-  let rebase_onto ~path:_ ~target:_ ~project_name:_ ~ancestor_ids:_ =
+  let rebase_onto ?prev_base_sha:_ ~path:_ ~target:_ ~project_name:_
+      ~ancestor_ids:_ () =
     assert false
+
+  let read_branch_sha ~path:_ ~ref_name:_ = None
 
   let read_in_progress_conflict_info ~path:_ ~target:_ ~project_name:_
       ~ancestor_ids:_ =
@@ -65,6 +68,7 @@ module Fake_env : Worktree_setup.ENV = struct
   let fs : Eio.Fs.dir_ty Eio.Path.t = Obj.magic ()
   let worktree_mutex : Eio.Mutex.t = Obj.magic ()
   let hook_mutex : Eio.Mutex.t = Obj.magic ()
+  let fetch_mutex : Eio.Mutex.t = Obj.magic ()
   let project_name = ""
   let user_config = { User_config.on_worktree_create = None }
 end
@@ -102,6 +106,7 @@ module Fake_sd_env : Session_driver.ENV = struct
   let fs : Eio.Fs.dir_ty Eio.Path.t = Obj.magic ()
   let worktree_mutex : Eio.Mutex.t = Obj.magic ()
   let hook_mutex : Eio.Mutex.t = Obj.magic ()
+  let fetch_mutex : Eio.Mutex.t = Obj.magic ()
   let project_name = ""
   let owner = ""
   let repo = ""
@@ -170,6 +175,7 @@ let () =
     let user_config = { User_config.on_worktree_create = None }
     let worktree_mutex = Eio.Mutex.create ()
     let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
   end in
   let module WS = Worktree_setup.Make (Fake_worktree) (Env) in
   (* Compile-time assertion: ensure_worktree accepts only patch-specific inputs.
@@ -203,6 +209,7 @@ let () =
     let user_config = { User_config.on_worktree_create = None }
     let worktree_mutex = Eio.Mutex.create ()
     let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
   end in
   let module SD = Session_driver.Make (Fake_worktree) (SD_Env) in
   (* Compile-time assertion: run accepts only per-session inputs.
@@ -239,6 +246,7 @@ let () =
     let user_config = { User_config.on_worktree_create = None }
     let worktree_mutex = Eio.Mutex.create ()
     let hook_mutex = Eio.Mutex.create ()
+    let fetch_mutex = Eio.Mutex.create ()
     let transcripts = transcripts
   end in
   let module WS3_Env : Worktree_setup.ENV = struct
@@ -249,6 +257,7 @@ let () =
     let user_config = Fake_fiber_env.user_config
     let worktree_mutex = Fake_fiber_env.worktree_mutex
     let hook_mutex = Fake_fiber_env.hook_mutex
+    let fetch_mutex = Fake_fiber_env.fetch_mutex
   end in
   let module SD3_Env : Session_driver.ENV = struct
     let runtime = Fake_fiber_env.runtime
@@ -261,6 +270,7 @@ let () =
     let user_config = Fake_fiber_env.user_config
     let worktree_mutex = Fake_fiber_env.worktree_mutex
     let hook_mutex = Fake_fiber_env.hook_mutex
+    let fetch_mutex = Fake_fiber_env.fetch_mutex
   end in
   let module WS3 = Worktree_setup.Make (Fake_worktree) (WS3_Env) in
   let module SD3 = Session_driver.Make (Fake_worktree) (SD3_Env) in

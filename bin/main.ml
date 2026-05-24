@@ -19,6 +19,11 @@ type repo_coords = {
   github_owner : string;
   github_repo : string;
   repo_root : string;
+  url_scheme : Onton_core.Github_target.url_scheme option;
+      (** Transport for the managed [origin]. [None] when the fresh / resume
+          path didn't resolve one (legacy configs); [Some scheme] when
+          {!Managed_repo.ensure_managed_repo} auto-detected or honored a stored
+          value. Persisted to [config.json] so the next run is stable. *)
 }
 (** Coordinates that locate the GitHub repo and its local checkout. Resolved
     independently per path (fresh: from --repo + git remote; gameplan: from the
@@ -139,6 +144,7 @@ module type FIBER_ENV = sig
   val unregister_pr_number : patch_id:Patch_id.t -> unit
   val worktree_mutex : Eio.Mutex.t
   val hook_mutex : Eio.Mutex.t
+  val fetch_mutex : Eio.Mutex.t
   val tui_state : Tui_state.t
 end
 
@@ -157,6 +163,7 @@ struct
         let user_config = Env.config.user_config
         let worktree_mutex = Env.worktree_mutex
         let hook_mutex = Env.hook_mutex
+        let fetch_mutex = Env.fetch_mutex
         let owner = Env.config.github_owner
         let repo = Env.config.github_repo
         let main_branch = Env.config.main_branch
@@ -181,6 +188,7 @@ struct
         let user_config = Env.config.user_config
         let worktree_mutex = Env.worktree_mutex
         let hook_mutex = Env.hook_mutex
+        let fetch_mutex = Env.fetch_mutex
         let process_mgr = Env.process_mgr
         let github_owner = Env.config.github_owner
         let github_repo = Env.config.github_repo
@@ -206,6 +214,7 @@ struct
         let user_config = Env.config.user_config
         let worktree_mutex = Env.worktree_mutex
         let hook_mutex = Env.hook_mutex
+        let fetch_mutex = Env.fetch_mutex
         let process_mgr = Env.process_mgr
         let stdout = Env.stdout
         let owner = Env.config.github_owner
@@ -280,7 +289,9 @@ let with_snapshot_load ~project_name config gameplan =
     body shared by the fresh, gameplan, and resume paths. *)
 let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     ~main_branch ~gameplan =
-  let { github_token; github_owner; github_repo; repo_root } = repo_coords in
+  let { github_token; github_owner; github_repo; repo_root; url_scheme } =
+    repo_coords
+  in
   let {
     poll_interval;
     max_concurrency;
@@ -301,7 +312,9 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   Project_store.save_config ~project_name ~github_token ~github_owner
     ~github_repo ~backend ~model
     ~main_branch:(Branch.to_string main_branch)
-    ~poll_interval ~repo_root ~max_concurrency;
+    ~poll_interval ~repo_root ~max_concurrency
+    ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
+    ();
   let config =
     {
       Resolved_config.project = Some project_name;
@@ -330,7 +343,20 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       values. *)
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
-    ~headless =
+    ~headless ~(clone_scheme : string option) =
+  let clone_scheme_override =
+    match clone_scheme with
+    | None -> None
+    | Some s -> (
+        let s = Base.String.strip (Base.String.lowercase s) in
+        match Managed_repo.url_scheme_of_string s with
+        | Some _ as scheme -> scheme
+        | None ->
+            Printf.eprintf
+              "Error: --clone-scheme must be \"https\" or \"ssh\" (got %S)\n%!"
+              s;
+            Stdlib.exit 1)
+  in
   let patch_agent_provider =
     match Stdlib.Sys.getenv_opt "PATCH_AGENT_PROVIDER" with
     | Some s ->
@@ -401,6 +427,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           github_owner = owner;
           github_repo = repo;
           repo_root;
+          url_scheme = None;
         }
       in
       finalize_run ~project_name ~repo_coords ~run_knobs
@@ -456,8 +483,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                 else t
               in
               match
-                Managed_repo.ensure_managed_repo ~project_name ~token ~owner
-                  ~repo
+                Managed_repo.ensure_managed_repo
+                  ~clone_scheme:clone_scheme_override ~project_name ~token
+                  ~owner ~repo ()
               with
               | Error msg ->
                   Error
@@ -466,7 +494,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                         "Could not prepare onton-managed checkout for %s/%s: %s"
                         owner repo msg;
                     ]
-              | Ok repo_root ->
+              | Ok (repo_root, scheme) ->
                   let main_branch = resolve_branch ~repo_root main_branch in
                   Project_store.save_gameplan_source ~project_name
                     ~source_path:gp_path;
@@ -476,6 +504,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       github_owner = owner;
                       github_repo = repo;
                       repo_root;
+                      url_scheme = Some scheme;
                     }
                   in
                   finalize_run ~project_name ~repo_coords ~run_knobs
@@ -547,33 +576,54 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                     pick_owner_repo gameplan.Gameplan.repo_name
                       stored.Project_store.github_repo inferred_repo
                   in
+                  let stored_url_scheme =
+                    Managed_repo.url_scheme_of_string
+                      (Option.value stored.Project_store.url_scheme ~default:"")
+                  in
                   (* If the stored repo_root is the onton-managed checkout for
                      this project, refresh it from origin before continuing.
-                     Best-effort: an offline resume should still proceed. *)
-                  (if
-                     String.equal repo_root
-                       (Project_store.managed_repo_dir proj)
-                   then
-                     if
-                       Base.String.is_empty (Base.String.strip owner)
-                       || Base.String.is_empty (Base.String.strip repo)
-                     then
-                       Printf.eprintf
-                         "onton: warning: stored project %S has no GitHub \
-                          owner/repo; skipping managed checkout refresh\n\
-                          %!"
-                         proj
-                     else
-                       match
-                         Managed_repo.ensure_managed_repo ~project_name:proj
-                           ~token ~owner ~repo
-                       with
-                       | Ok _ -> ()
-                       | Error msg ->
-                           Printf.eprintf
-                             "onton: warning: %s (resuming with local state)\n\
-                              %!"
-                             msg);
+                     Best-effort: an offline resume should still proceed.
+                     Capture the {b resolved} scheme so a CLI [--clone-scheme]
+                     override (or a probe-determined scheme on legacy configs)
+                     is threaded into [repo_coords.url_scheme] and persisted
+                     by [finalize_run]. *)
+                  let resolved_scheme =
+                    if
+                      String.equal repo_root
+                        (Project_store.managed_repo_dir proj)
+                    then (
+                      if
+                        Base.String.is_empty (Base.String.strip owner)
+                        || Base.String.is_empty (Base.String.strip repo)
+                      then begin
+                        Printf.eprintf
+                          "onton: warning: stored project %S has no GitHub \
+                           owner/repo; skipping managed checkout refresh\n\
+                           %!"
+                          proj;
+                        stored_url_scheme
+                      end
+                      else
+                        (* CLI override > persisted stored scheme > auto-detect *)
+                        let effective_scheme =
+                          match clone_scheme_override with
+                          | Some _ as s -> s
+                          | None -> stored_url_scheme
+                        in
+                        match
+                          Managed_repo.ensure_managed_repo
+                            ~clone_scheme:effective_scheme ~project_name:proj
+                            ~token ~owner ~repo ()
+                        with
+                        | Ok (_repo_root, scheme) -> Some scheme
+                        | Error msg ->
+                            Printf.eprintf
+                              "onton: warning: %s (resuming with local state)\n\
+                               %!"
+                              msg;
+                            stored_url_scheme)
+                    else stored_url_scheme
+                  in
                   let branch =
                     match main_branch with
                     | Some b -> b
@@ -585,6 +635,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       github_owner = owner;
                       github_repo = repo;
                       repo_root;
+                      url_scheme = resolved_scheme;
                     }
                   in
                   (* Resume reuses the stored [poll_interval] and
@@ -642,6 +693,7 @@ type constructed_capabilities = {
   event_log : Event_log.t;
   worktree_mutex : Eio.Mutex.t;
   hook_mutex : Eio.Mutex.t;
+  fetch_mutex : Eio.Mutex.t;
   reconciliation_fiber : unit -> unit;
 }
 
@@ -878,6 +930,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
     event_log;
     worktree_mutex = Eio.Mutex.create ();
     hook_mutex = Eio.Mutex.create ();
+    fetch_mutex = Eio.Mutex.create ();
     reconciliation_fiber;
   }
 
@@ -904,6 +957,7 @@ let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
     let unregister_pr_number = cap.unregister_pr_number
     let worktree_mutex = cap.worktree_mutex
     let hook_mutex = cap.hook_mutex
+    let fetch_mutex = cap.fetch_mutex
     let tui_state = tui_state
   end in
   (module Fiber_env : FIBER_ENV)
@@ -1129,10 +1183,11 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_ops =
+    ~max_concurrency ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
+      ~clone_scheme
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1299,6 +1354,22 @@ let main_branch_arg =
     & info [ "main-branch" ] ~docv:"BRANCH"
         ~doc:"Main branch name. Auto-detected from the git remote when omitted.")
 
+let clone_scheme_arg =
+  let open Cmdliner in
+  Arg.(
+    value
+    & opt (some string) None
+    & info [ "clone-scheme" ] ~docv:"SCHEME"
+        ~doc:
+          "Transport for the managed clone's [origin]: [https] or [ssh]. When \
+           omitted, onton probes SSH reachability (a non-interactive [git \
+           ls-remote git@github.com:owner/repo.git] with a 5s timeout) and \
+           picks [ssh] if the probe succeeds, otherwise [https]. SSH is \
+           preferred when available because it bypasses the per-OAuth-scope \
+           restrictions GitHub enforces (e.g. the [workflow] scope for \
+           .github/workflows/*). The resolved scheme is persisted to \
+           config.json, so the probe only runs on the first invocation.")
+
 let poll_interval_arg =
   let open Cmdliner in
   Arg.(
@@ -1376,7 +1447,7 @@ let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
       poll_interval repo_root max_concurrency headless upload_debug no_lock
-      prune no_refresh auto_merge =
+      prune no_refresh auto_merge clone_scheme =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1411,14 +1482,14 @@ let main_cmd ~pr_ops =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock ~auto_merge ~pr_ops)
+        ~max_concurrency ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops)
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
       $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg $ auto_merge_arg)
+      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

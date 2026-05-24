@@ -82,11 +82,17 @@ type stored_config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  url_scheme : string option; [@yojson.default None]
+      (* Persisted transport scheme for the managed clone's [origin]. [None]
+         on legacy configs predating P0-D; on the next [ensure_managed_repo]
+         we auto-detect from sibling clones and rewrite to [Some "https"] or
+         [Some "ssh"]. *)
 }
 [@@deriving yojson]
 
 let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
-    ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency =
+    ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency
+    ?(url_scheme : string option = None) () =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
@@ -101,6 +107,7 @@ let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
       poll_interval;
       repo_root;
       max_concurrency;
+      url_scheme;
     }
   in
   let json = yojson_of_stored_config config in

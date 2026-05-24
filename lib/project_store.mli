@@ -41,6 +41,11 @@ type stored_config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  url_scheme : string option;
+      (** Persisted transport for the managed [origin]. [None] on legacy configs
+          predating P0-D; gets auto-resolved on the next
+          {!Managed_repo.ensure_managed_repo}. Stored as a string
+          ([Some "https"] / [Some "ssh"]) so the file remains human-readable. *)
 }
 [@@deriving yojson]
 
@@ -55,6 +60,8 @@ val save_config :
   poll_interval:float ->
   repo_root:string ->
   max_concurrency:int ->
+  ?url_scheme:string option ->
+  unit ->
   unit
 (** Persist project config to the data directory. Creates the directory if
     needed. *)

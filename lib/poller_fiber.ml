@@ -47,6 +47,7 @@ struct
     let user_config = Env.user_config
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
+    let fetch_mutex = Env.fetch_mutex
   end
 
   module WS = Worktree_setup.Make (W) (WS_Env)
@@ -158,6 +159,82 @@ struct
           else (
             Stdlib.Hashtbl.replace skip_logged patch_id true;
             true))
+    in
+    (* P1-A: detect when [origin/<main>] has advanced past local <main>. When
+       it has, every agent currently based on <main> needs a rebase so it
+       picks up the freshly squash-merged commits — without this poke,
+       [Reconciler.detect_stale_bases] silently passes because both
+       [base_branch] and [Graph.initial_base] read the same stale name.
+
+       The fetch uses [Env.fetch_mutex], the same mutex the runner fiber
+       holds for per-worktree fetches, so the two never race on the shared
+       ref store. *)
+    let fetch_lock = Env.fetch_mutex in
+    let last_main_sha = ref "" in
+    let main_str = Branch.to_string main in
+    let check_main_freshness () =
+      match W.fetch_origin ~fetch_lock ~path:repo_root with
+      | Result.Error _ -> ()
+      | Result.Ok () ->
+          let local_sha =
+            Option.value
+              (W.read_branch_sha ~path:repo_root ~ref_name:main_str)
+              ~default:""
+          in
+          let origin_sha =
+            Option.value
+              (W.read_branch_sha ~path:repo_root
+                 ~ref_name:("refs/remotes/origin/" ^ main_str))
+              ~default:""
+          in
+          if
+            Reconciler.detect_main_freshness_drift ~local_sha ~origin_sha
+            && not (String.equal origin_sha !last_main_sha)
+          then begin
+            last_main_sha := origin_sha;
+            Runtime_logging.log_event runtime
+              (Printf.sprintf
+                 "origin/%s advanced to %s (local %s) — enqueueing rebases for \
+                  agents on %s"
+                 main_str
+                 (if String.length origin_sha >= 8 then
+                    String.prefix origin_sha 8
+                  else origin_sha)
+                 (if String.length local_sha >= 8 then String.prefix local_sha 8
+                  else local_sha)
+                 main_str);
+            Runtime.update_orchestrator runtime (fun orch ->
+                let agents = Orchestrator.all_agents orch in
+                List.fold agents ~init:orch ~f:(fun acc agent ->
+                    let is_on_main =
+                      match agent.Patch_agent.base_branch with
+                      | Some b -> Branch.equal b main
+                      | None -> false
+                    in
+                    let already_rebasing =
+                      List.mem agent.Patch_agent.queue Operation_kind.Rebase
+                        ~equal:Operation_kind.equal
+                    in
+                    if
+                      is_on_main && Patch_agent.has_pr agent
+                      && (not agent.Patch_agent.merged)
+                      && not already_rebasing
+                    then
+                      Orchestrator.enqueue acc agent.Patch_agent.patch_id
+                        Operation_kind.Rebase
+                    else acc))
+          end
+    in
+    (* Freshness fiber: runs in parallel with the per-patch poll loop so a
+       slow [git fetch] for [origin/<main>] doesn't block the per-patch
+       fan-out. Same cadence as the patch poll loop for now; could be
+       independent later if needed. Sleeps before its first check so it
+       doesn't duplicate the fetch [Managed_repo.ensure_managed_repo] already
+       ran at startup. *)
+    let rec freshness_loop () =
+      Eio.Time.sleep clock poll_interval;
+      check_main_freshness ();
+      freshness_loop ()
     in
     let rec loop () =
       let intents =
@@ -428,5 +505,5 @@ struct
       Eio.Time.sleep clock poll_interval;
       loop ()
     in
-    loop ()
+    Eio.Fiber.both loop freshness_loop
 end

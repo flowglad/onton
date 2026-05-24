@@ -61,10 +61,16 @@ let format_process_failure { stdout; stderr; _ } =
   if String.is_empty detail then "no output" else detail
 
 (** Spawn [git] (not [git -C ...]) with a clean environment, capture stdout and
-    stderr. Used for [git clone] before any working tree exists. *)
-let run_git_no_cwd args =
+    stderr. Used for [git clone] before any working tree exists. [?extra_env] is
+    appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND] for
+    one-off probes that must not prompt or hang). *)
+let run_git_no_cwd ?(extra_env = []) args =
   let argv = Array.of_list ("git" :: args) in
-  let env = Git_env.clean_env () in
+  let env =
+    let base = Git_env.clean_env () in
+    if List.is_empty extra_env then base
+    else Array.append base (Array.of_list extra_env)
+  in
   match Stdlib.Filename.temp_file "onton-git-stderr-" ".log" with
   | exception _ -> None
   | err_path -> (
@@ -119,15 +125,84 @@ let run_git_no_cwd args =
       | result -> result
       | exception _ -> None)
 
+(** Read all [remote.<name>.url] entries from a clone at [path]. Best effort:
+    returns the empty list on any IO error or if [path] is not a git checkout.
+    Used to inspect an existing managed clone's [origin] so we don't flip
+    transports mid-life. *)
+let read_remote_urls ~path =
+  let git_dir = Stdlib.Filename.concat path ".git" in
+  let is_git =
+    try
+      Stdlib.Sys.file_exists git_dir
+      && (Stdlib.Sys.is_directory git_dir
+         (* Worktrees have a .git file pointing at gitdir, not a directory.
+            We can still ask git itself via remote -v but only when the .git
+            entry exists in some form. *)
+         ||
+           try
+             let st = Unix.lstat git_dir in
+             match st.Unix.st_kind with
+             | Unix.S_REG -> true
+             | Unix.S_DIR | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO
+             | Unix.S_SOCK ->
+                 false
+           with _ -> false)
+    with _ -> false
+  in
+  if not is_git then []
+  else
+    match
+      read_process_capture (fun () ->
+          Unix.open_process_args_in "git"
+            [| "git"; "-C"; path; "remote"; "-v" |])
+    with
+    | Some (Unix.WEXITED 0, out) ->
+        String.split_lines out
+        |> List.filter_map ~f:(fun line ->
+            (* Each line is "<name>\t<url> (fetch|push)". Keep the URL field. *)
+            match String.split line ~on:'\t' with
+            | _ :: rest :: _ -> (
+                match String.split rest ~on:' ' with
+                | url :: _ -> Some url
+                | [] -> None)
+            | _ -> None)
+        |> List.dedup_and_sort ~compare:String.compare
+    | Some (Unix.WEXITED _, _)
+    | Some (Unix.WSIGNALED _, _)
+    | Some (Unix.WSTOPPED _, _)
+    | None ->
+        []
+
+(** Probe whether SSH is usable for [owner/repo] from the current machine. Runs
+    [git ls-remote -h git@github.com:owner/repo.git] with [BatchMode=yes] and
+    [ConnectTimeout=5], so a missing or passphrase-locked SSH key, an
+    unauthorized key, or a blocked outbound port all produce a clean [false]
+    without prompting or hanging. Exit code 0 means SSH can both authenticate to
+    GitHub and read this specific repo — which is also the condition for SSH
+    push to work. *)
+let probe_ssh_available ~owner ~repo =
+  let url = Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo in
+  let extra_env =
+    [ "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=5" ]
+  in
+  match run_git_no_cwd ~extra_env [ "ls-remote"; "-h"; url ] with
+  | Some { status = Unix.WEXITED 0; _ } -> true
+  | Some { status = Unix.WEXITED _; _ }
+  | Some { status = Unix.WSIGNALED _; _ }
+  | Some { status = Unix.WSTOPPED _; _ }
+  | None ->
+      false
+
 (** Clone [owner/repo] from GitHub into [target_dir] (which must not exist yet).
-    Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper, so
-    [Git_env.set_github_token] must have been called first if the repo is
-    private. Uses [--filter=blob:none] for a partial clone — only fetched
-    objects are downloaded lazily, which is the right tradeoff for onton's
-    worktree-per-patch usage pattern. *)
-let clone_managed_repo ~owner ~repo ~target_dir =
+    Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper
+    (HTTPS) or the user's ssh-agent (SSH). For private repos with HTTPS,
+    [Git_env.set_github_token] must have been called first. Uses
+    [--filter=blob:none] for a partial clone — only fetched objects are
+    downloaded lazily, which is the right tradeoff for onton's worktree-per-
+    patch usage pattern. *)
+let clone_managed_repo ~scheme ~owner ~repo ~target_dir =
   Project_store.ensure_dir (Stdlib.Filename.dirname target_dir);
-  let url = Github_target.clone_url ~owner ~repo in
+  let url = Github_target.clone_url ~scheme ~owner ~repo in
   match run_git_no_cwd [ "clone"; "--filter=blob:none"; url; target_dir ] with
   | Some { status = Unix.WEXITED 0; _ } -> Ok ()
   | Some ({ status = Unix.WEXITED _; _ } as cap)
@@ -138,10 +213,56 @@ let clone_managed_repo ~owner ~repo ~target_dir =
            (format_process_failure cap))
   | None -> Error (Printf.sprintf "git clone %s/%s: could not spawn" owner repo)
 
+(** Resolve the transport scheme for the managed clone. Pure decision lives in
+    [Github_target.resolve_scheme]; here we supply the effectful input (an SSH
+    reachability probe) when no [override] is provided. The probe is skipped
+    when the caller already has an override — either a [--clone-scheme] flag or
+    a previously-persisted [url_scheme] from [config.json] — since the answer is
+    fixed. An informational stderr line announces the auto-detected choice so
+    the user can see why their managed clone landed on SSH (or fell back to
+    HTTPS). *)
+let resolve_clone_scheme ?(override : Github_target.url_scheme option = None)
+    ~owner ~repo () =
+  let ssh_available =
+    match override with
+    | Some _ -> false
+    | None -> probe_ssh_available ~owner ~repo
+  in
+  let scheme = Github_target.resolve_scheme ~override ~ssh_available in
+  (match (override, scheme) with
+  | None, Github_target.Ssh ->
+      Stdlib.Printf.eprintf
+        "onton: SSH probe to git@github.com succeeded — cloning managed repo \
+         via SSH\n\
+         %!"
+  | None, Github_target.Https ->
+      Stdlib.Printf.eprintf
+        "onton: SSH probe to git@github.com unavailable — cloning managed repo \
+         via HTTPS\n\
+         %!"
+  | Some _, _ -> ());
+  scheme
+
+let string_of_url_scheme = function
+  | Github_target.Https -> "https"
+  | Github_target.Ssh -> "ssh"
+
+let url_scheme_of_string = function
+  | "ssh" -> Some Github_target.Ssh
+  | "https" -> Some Github_target.Https
+  | _ -> None
+
 (** Ensure the onton-managed checkout for [project_name] is present and
     up-to-date. Clones if absent, fetches if present. Authenticates via
-    [Git_env]'s configured token. *)
-let ensure_managed_repo ~project_name ~token ~owner ~repo =
+    [Git_env]'s configured token (HTTPS) or the user's ssh-agent (SSH).
+
+    [?clone_scheme]: explicit override (e.g. from a [--clone-scheme] flag or a
+    [url_scheme] field already in [config.json]). If [None], auto-detect by
+    probing SSH reachability to GitHub — see {!resolve_clone_scheme}. The
+    resolved scheme is returned together with the repo root so the caller can
+    persist it back to [config.json] on subsequent runs. *)
+let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
+    () =
   Git_env.set_github_token token;
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
@@ -163,16 +284,39 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
              repo_root (Base.Exn.to_string exn))
     else Ok false
   in
+  (* The SSH probe is only run on the clone path. When the managed clone
+     already exists on disk, the on-disk [origin] URL is the source of
+     truth, so probing would do a 5s network call whose result we'd
+     immediately discard — and the accompanying "cloning managed repo via X"
+     log line would be a lie. *)
+  let clone_with_probe ~target_dir =
+    let scheme = resolve_clone_scheme ~override:clone_scheme ~owner ~repo () in
+    match clone_managed_repo ~scheme ~owner ~repo ~target_dir with
+    | Ok () -> Ok (repo_root, scheme)
+    | Error msg -> Error msg
+  in
   if repo_root_exists && has_git_dir then (
     let module Repo = (val Repo_git.make ~repo_root) in
+    (* If the managed clone already exists, the existing [origin] URL is
+       authoritative — we don't change transport mid-life. Reflect that in
+       the returned scheme so callers persist the matching value. The
+       fallback when no parseable URL is found prefers the caller's override
+       (a [--clone-scheme] flag or persisted scheme), defaulting to HTTPS. *)
+    let existing_scheme =
+      match read_remote_urls ~path:repo_root with
+      | urls ->
+          List.find_map urls ~f:Github_target.scheme_of_url
+          |> Option.value
+               ~default:(Option.value clone_scheme ~default:Github_target.Https)
+    in
     match Repo.fetch_managed_repo () with
-    | Ok () -> Ok repo_root
+    | Ok () -> Ok (repo_root, existing_scheme)
     | Error msg ->
         (* Log to stderr but don't abort — the user may be offline and the
            local clone may already have everything they need. *)
         Stdlib.Printf.eprintf
           "onton: warning: %s (continuing with existing local clone)\n%!" msg;
-        Ok repo_root)
+        Ok (repo_root, existing_scheme))
   else if repo_root_exists && not repo_root_is_dir then
     Error
       (Printf.sprintf
@@ -188,14 +332,8 @@ let ensure_managed_repo ~project_name ~token ~owner ~repo =
              "Managed checkout path %s exists but is not a git checkout and is \
               not empty; remove it and retry"
              repo_root)
-    | Ok true -> (
-        match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
-        | Ok () -> Ok repo_root
-        | Error msg -> Error msg)
-  else
-    match clone_managed_repo ~owner ~repo ~target_dir:repo_root with
-    | Ok () -> Ok repo_root
-    | Error msg -> Error msg
+    | Ok true -> clone_with_probe ~target_dir:repo_root
+  else clone_with_probe ~target_dir:repo_root
 
 (** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].
     Uses argv (no shell). *)

@@ -95,6 +95,38 @@ Pitfalls when reading a bundle:
   across epochs — a mismatch usually means the user changed CLI flags
   between runs.
 
+## Authentication
+
+Onton needs to read from and push to the GitHub repo on behalf of an
+unattended supervisor session. There are two supported transports:
+
+- **HTTPS + OAuth (default)** — onton uses the configured GitHub token (from
+  `~/.config/gh/hosts.yml` or the `gho_*` value in
+  `~/.local/share/onton/<project>/config.json`) via a `GIT_ASKPASS` shim
+  installed by `lib/git_env.ml`. The token must carry the `repo` scope, and
+  **`workflow`** scope if any patch modifies `.github/workflows/*`. A push
+  that touches a workflow file under a token without the `workflow` scope is
+  rejected with `! [remote rejected] (refusing to allow an OAuth App to
+  create or update workflow …)` — that surfaces in the activity log as
+  `workflow_scope_missing` and the agent flips to `needs_intervention`
+  immediately (no retry loop). Fix:
+  `gh auth refresh -h github.com -s workflow`.
+- **SSH** — onton auto-detects whether the user already maintains a clone of
+  `owner/repo` under one of `$PWD/..`, `~/code-src/`, `~/src/`, `~/code/`,
+  `~/dev/`, or `~/projects/`. If the sibling's `origin` uses SSH
+  (`git@github.com:owner/repo.git`), the managed clone at
+  `~/.local/share/onton/<project>/repo` is created with the same SSH
+  transport, and pushes go through the user's ssh-agent / `~/.ssh/config`.
+  SSH bypasses the per-OAuth-scope restrictions entirely. The chosen
+  transport is logged to stderr on first run
+  (`onton: detected SSH sibling clone at … — cloning managed repo via SSH`)
+  and persisted to `config.json` as `url_scheme: "ssh"` / `"https"`.
+- **Manual git inside a worktree** — `~/worktrees/<project>/patch-<N>` is a
+  vanilla git worktree of the managed clone. Onton's `GIT_ASKPASS` does not
+  apply when you run git there yourself. If your interactive shell is not
+  authenticated for HTTPS pushes to github.com, run `gh auth setup-git` once
+  to install gh's credential helper into your global git config.
+
 ## Reference
 - Reference implementation (Elixir): `../orchestrate-gameplan/`
 - Reference specification: `../orchestrate-gameplan/spec/anton.pant`

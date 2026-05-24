@@ -419,7 +419,8 @@ let to_worktree_result = function
 let to_push_result = function
   | Push_ok_k -> Worktree.Push_ok
   | Push_up_to_date_k -> Worktree.Push_up_to_date
-  | Push_rejected_k -> Worktree.Push_rejected
+  | Push_rejected_k ->
+      Worktree.Push_rejected Push_reject_classify.Lease_violation
   | Push_error_k -> Worktree.Push_error "simulated error"
 
 let poll_params_of_kind = function
@@ -1437,7 +1438,7 @@ let () =
         (* 4. Push fails *)
         let orch, resolution =
           Orchestrator.apply_rebase_push_result orch pid
-            (Some Worktree.Push_rejected)
+            (Some (Worktree.Push_rejected Push_reject_classify.Lease_violation))
         in
         if
           not
@@ -1685,7 +1686,7 @@ let () =
            apply_respond_outcome via Respond_retry_push. *)
         let orch =
           Orchestrator.apply_session_result orch pid
-            Orchestrator.Session_push_failed
+            (Orchestrator.Session_push_failed None)
         in
         let mid = Orchestrator.agent orch pid in
         if not mid.Patch_agent.busy then
@@ -2149,7 +2150,7 @@ let () =
   Stdlib.print_endline "PI-17 passed"
 
 (* ================================================================== *)
-(* Convergence properties (CV-1 .. CV-5)                               *)
+(* Convergence properties (CV-1 .. CV-7)                               *)
 (*                                                                     *)
 (* These properties test TERMINATION: that repeatedly applying the     *)
 (* full Respond(Human) pipeline under a persistent failure mode        *)
@@ -2195,7 +2196,7 @@ let converged orch pid =
 let respond_outcome_of session_result =
   match session_result with
   | Orchestrator.Session_ok -> Orchestrator.Respond_ok
-  | Orchestrator.Session_push_failed | Orchestrator.Session_no_commits ->
+  | Orchestrator.Session_push_failed _ | Orchestrator.Session_no_commits ->
       Orchestrator.Respond_retry_push
   | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
   | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
@@ -2268,7 +2269,8 @@ let () =
         let orch, pid, _patches = mk_bootstrapped () in
         let orch = Orchestrator.send_human_message orch pid msg in
         match
-          try_respond_human_pipeline orch pid Orchestrator.Session_push_failed
+          try_respond_human_pipeline orch pid
+            (Orchestrator.Session_push_failed None)
         with
         | None -> QCheck2.Test.fail_report "CV-1: pipeline precondition failed"
         | Some orch ->
@@ -2496,7 +2498,7 @@ let () =
            to model the real escalation chain. *)
         let is_success_result r =
           match r with
-          | Orchestrator.Session_ok | Orchestrator.Session_push_failed
+          | Orchestrator.Session_ok | Orchestrator.Session_push_failed _
           | Orchestrator.Session_no_commits ->
               true
           | Orchestrator.Session_failed _ | Orchestrator.Session_process_error _
@@ -2545,6 +2547,85 @@ let () =
   in
   QCheck2.Test.check_exn prop_cv5;
   Stdlib.print_endline "CV-5 passed"
+
+(** CV-6: Persistent [Session_push_failed None] {b without} a Human message in
+    the queue still terminates. This is the regression test for the patch-6
+    incident, where 54 consecutive [Start → Session_push_failed → Start] cycles
+    never tripped [needs_intervention]. After P0-B, the [push_failure_count]
+    counter fires intervention at [>= 3] even with no Human-exemption pressure,
+    so the loop closes within 3 iterations. *)
+let () =
+  let prop_cv6 =
+    QCheck2.Test.make
+      ~name:
+        "CV-6: persistent Session_push_failed without Human converges via \
+         push_failure_count within 3 iterations"
+      ~count:200 (QCheck2.Gen.return ()) (fun () ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let bump o =
+          Orchestrator.apply_session_result o pid
+            (Orchestrator.Session_push_failed None)
+        in
+        let a0 = Orchestrator.agent orch pid in
+        if Patch_agent.needs_intervention a0 then
+          QCheck2.Test.fail_report
+            "CV-6: fresh agent should not need intervention";
+        let o1 = bump orch in
+        let o2 = bump o1 in
+        let o3 = bump o2 in
+        let a3 = Orchestrator.agent o3 pid in
+        if not (Patch_agent.needs_intervention a3) then
+          QCheck2.Test.fail_reportf
+            "CV-6: needs_intervention should be true after 3 \
+             Session_push_failed events (push_failure_count=%d)"
+            a3.Patch_agent.push_failure_count;
+        true)
+  in
+  QCheck2.Test.check_exn prop_cv6;
+  Stdlib.print_endline "CV-6 passed"
+
+(** CV-7: A single [Session_push_failed (Some <permanent>)] (workflow scope,
+    branch protection, push pattern, or hook failure) flips [needs_intervention]
+    on the very first event, without waiting for the counter. This is the
+    SSH/HTTPS short-circuit path: the rejection cannot resolve under the current
+    credentials / branch-protection state, so retry is wasteful. *)
+let () =
+  let prop_cv7 =
+    QCheck2.Test.make
+      ~name:
+        "CV-7: Session_push_failed with permanent rejection converges in 1 \
+         event"
+      ~count:200
+      (QCheck2.Gen.oneof
+         [
+           QCheck2.Gen.return Push_reject_classify.Workflow_scope_missing;
+           QCheck2.Gen.return Push_reject_classify.Branch_protection;
+           QCheck2.Gen.return Push_reject_classify.Push_pattern_block;
+           QCheck2.Gen.return (Push_reject_classify.Hook_failure "policy x");
+         ])
+      (fun reason ->
+        let orch, pid, _patches = mk_bootstrapped () in
+        let orch =
+          Orchestrator.apply_session_result orch pid
+            (Orchestrator.Session_push_failed (Some reason))
+        in
+        let a = Orchestrator.agent orch pid in
+        if not (Patch_agent.needs_intervention a) then
+          QCheck2.Test.fail_reportf
+            "CV-7: %s should escalate to Given_up immediately"
+            (Push_reject_classify.show_rejection reason);
+        if
+          not
+            (Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
+               Patch_agent.Given_up)
+        then
+          QCheck2.Test.fail_reportf
+            "CV-7: session_fallback should be Given_up (got %s)"
+            (Patch_agent.show_session_fallback a.Patch_agent.session_fallback);
+        true)
+  in
+  QCheck2.Test.check_exn prop_cv7;
+  Stdlib.print_endline "CV-7 passed"
 
 (** PI-AH-1..5: Ad-hoc stacking inference.
 
