@@ -1216,10 +1216,55 @@ let () =
              before.Patch_agent.pr_body_delivered)
   in
 
+  (* Child of a Missing parent must not be Start-eligible: the parent's
+     branch may not exist on the remote, so deps_satisfied gating on
+     is_pr_present (not has_pr) is the correct semantic. *)
+  let prop_child_of_missing_parent_not_startable =
+    Test.make
+      ~name:"plan_action_for_patch: child of Missing parent not Start-eligible"
+      ~count:1
+      Gen.(return ())
+      (fun () ->
+        let parent_pid = Patch_id.of_string "parent" in
+        let child_pid = Patch_id.of_string "child" in
+        let parent_branch = Branch.of_string "feat/parent" in
+        let child_branch = Branch.of_string "feat/child" in
+        let parent_patch = make_patch parent_pid parent_branch in
+        let child_patch =
+          {
+            (make_patch child_pid child_branch) with
+            dependencies = [ parent_pid ];
+          }
+        in
+        let patches = [ parent_patch; child_patch ] in
+        let gameplan = { (make_gameplan parent_patch) with patches } in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        (* Bootstrap parent: Start, set_pr_number, complete, then mark Missing *)
+        let orch =
+          Orchestrator.fire orch (Orchestrator.Start (parent_pid, main))
+        in
+        let orch =
+          Orchestrator.set_pr_number orch parent_pid (Pr_number.of_int 11)
+        in
+        let orch = Orchestrator.complete orch parent_pid in
+        let orch = Orchestrator.mark_pr_missing orch parent_pid in
+        (* Plan: child should NOT be Start-eligible because parent is Missing. *)
+        let messages =
+          Patch_controller.plan_messages orch ~patches:gameplan.Gameplan.patches
+        in
+        not
+          (List.exists messages
+             ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+               match msg.action with
+               | Orchestrator.Start (pid, _) -> Patch_id.equal pid child_pid
+               | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
+  in
+
   let suite =
     [
       prop_missing_adhoc_does_not_crash_reconcile;
       prop_apply_poll_lifts_missing_to_present;
+      prop_child_of_missing_parent_not_startable;
       prop_deterministic;
       prop_plan_tick_deterministic;
       prop_pr_body_queue_idempotent;

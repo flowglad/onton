@@ -337,7 +337,12 @@ let branch_map_of_patches patches =
 let plan_action_for_patch t ~branch_map patch_id =
   let agent = Orchestrator.agent t patch_id in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  let has_pr pid = Patch_agent.has_pr (Orchestrator.agent t pid) in
+  let has_pr pid =
+    (* Dependency satisfaction: a child cannot rebase onto a [Missing] parent
+       — the parent's branch may not exist on the remote. Gate on
+       is_pr_present rather than has_pr (which is true for [Missing] too). *)
+    Patch_agent.is_pr_present (Orchestrator.agent t pid)
+  in
   if
     (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
