@@ -482,6 +482,18 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_tried_fresh t patch_id in
       (complete t patch_id, [])
 
+let fold_anchor_events t patch_id events =
+  List.fold events ~init:t ~f:(fun t (ev : Worktree_plan.anchor_event) ->
+      match ev with
+      | Worktree_plan.Anchor_recorded a ->
+          update_agent t patch_id ~f:(fun ag -> Patch_agent.record_anchor ag a)
+      | Worktree_plan.Anchor_capture_failed -> t)
+
+let apply_rebase_with_anchor t patch_id rebase_result new_base anchor_events =
+  let t, effects = apply_rebase_result t patch_id rebase_result new_base in
+  let t = fold_anchor_events t patch_id anchor_events in
+  (t, effects)
+
 type rebase_push_resolution =
   | Rebase_push_ok
   | Rebase_push_failed

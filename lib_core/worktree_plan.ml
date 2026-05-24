@@ -21,7 +21,13 @@ let ref_string_of branch =
   Printf.sprintf "origin/%s" (Types.Branch.to_string branch)
 
 let for_rebase ~new_base =
-  [ Ensure_worktree; Fetch_origin; Rebase_onto (origin_of new_base) ]
+  [
+    Ensure_worktree;
+    Fetch_origin;
+    Capture_anchor { ref_name = ref_string_of new_base; slot = 0 };
+    Rebase_onto (origin_of new_base);
+    Record_anchor_on_success { slot = 0; base = new_base };
+  ]
 
 let for_merge_conflict ~base =
   [ Ensure_worktree; Fetch_origin; Rebase_onto (origin_of base) ]
