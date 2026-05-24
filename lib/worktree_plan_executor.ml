@@ -6,7 +6,7 @@ module type S = sig
     fail_label:string ->
     ancestor_ids:Types.Patch_id.t list ->
     Worktree_plan.t ->
-    Worktree.rebase_result * string
+    Worktree.rebase_result * string * Worktree_plan.anchor_event list
 end
 
 module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
@@ -17,11 +17,23 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
     let default_path =
       Worktree.worktree_dir ~project_name:Env.project_name ~patch_id
     in
-    let rec loop ~path = function
-      | [] -> (Worktree.Ok, path)
+    (* Slot table for [Capture_anchor] -> [Record_anchor_on_success]
+       handoff. Slots are sparse, so a small association list is plenty. *)
+    let slots : (int * string option) list ref = ref [] in
+    let set_slot k v =
+      slots :=
+        (k, v)
+        :: Base.List.filter !slots ~f:(fun (k', _) -> not (Base.Int.equal k k'))
+    in
+    let get_slot k =
+      Base.List.Assoc.find !slots ~equal:Base.Int.equal k
+      |> Base.Option.bind ~f:(fun x -> x)
+    in
+    let rec loop ~path ~last_rebase ~events = function
+      | [] -> (last_rebase, path, Base.List.rev events)
       | Worktree_plan.Ensure_worktree :: rest -> (
           match WS.ensure_worktree ~patch_id ~agent () with
-          | Some p -> loop ~path:p rest
+          | Some p -> loop ~path:p ~last_rebase ~events rest
           | None ->
               Runtime_logging.log_event Env.runtime ~patch_id
                 (Printf.sprintf
@@ -29,25 +41,45 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
                    fail_label);
               ( Worktree.Error
                   (Printf.sprintf "%s failed: worktree missing" fail_label),
-                path ))
+                path,
+                Base.List.rev events ))
       | Worktree_plan.Fetch_origin :: rest -> (
           match W.fetch_origin ~fetch_lock ~path with
-          | Result.Ok () -> loop ~path rest
+          | Result.Ok () -> loop ~path ~last_rebase ~events rest
           | Result.Error msg ->
               Runtime_logging.log_event Env.runtime ~patch_id
                 (Printf.sprintf "Fetch failed before %s — %s" fail_label msg);
               ( Worktree.Error
                   (Printf.sprintf "fetch before rebase failed: %s" msg),
-                path ))
+                path,
+                Base.List.rev events ))
+      | Worktree_plan.Capture_anchor { ref_name; slot } :: rest ->
+          let sha = W.read_branch_sha ~path ~ref_name in
+          set_slot slot sha;
+          loop ~path ~last_rebase ~events rest
       | Worktree_plan.Rebase_onto target :: rest -> (
           match
             W.rebase_onto
               ~prev_base_sha:agent.Patch_agent.branch_rebased_onto_sha ~path
               ~target ~project_name:Env.project_name ~ancestor_ids ()
           with
-          | Worktree.Ok -> loop ~path rest
-          | (Worktree.Noop | Worktree.Conflict _ | Worktree.Error _) as r ->
-              (r, path))
+          | (Worktree.Ok | Worktree.Noop) as r ->
+              loop ~path ~last_rebase:r ~events rest
+          | (Worktree.Conflict _ | Worktree.Error _) as r ->
+              (r, path, Base.List.rev events))
+      | Worktree_plan.Record_anchor_on_success { slot; base } :: rest ->
+          let events' =
+            match last_rebase with
+            | Worktree.Conflict _ | Worktree.Error _ -> events
+            | Worktree.Ok | Worktree.Noop -> (
+                match get_slot slot with
+                | None -> Worktree_plan.Anchor_capture_failed :: events
+                | Some sha -> (
+                    match Anchor.make ~base ~sha ~observed_at_remote:true with
+                    | Some a -> Worktree_plan.Anchor_recorded a :: events
+                    | None -> Worktree_plan.Anchor_capture_failed :: events))
+          in
+          loop ~path ~last_rebase ~events:events' rest
     in
-    loop ~path:default_path plan
+    loop ~path:default_path ~last_rebase:Worktree.Ok ~events:[] plan
 end

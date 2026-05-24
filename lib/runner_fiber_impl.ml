@@ -895,7 +895,7 @@ struct
                                 (Orchestrator.graph snap.Runtime.orchestrator)
                                 patch_id)
                         in
-                        let rebase_result, wt_path =
+                        let rebase_result, wt_path, _anchor_events =
                           Worktree_plan_executor.execute ~patch_id ~agent
                             ~fetch_lock:fetch_mutex ~fail_label:"rebase"
                             ~ancestor_ids
@@ -1321,7 +1321,7 @@ struct
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
-                                        let rebase_result, _wt_path =
+                                        let rebase_result, _wt_path, _evs =
                                           Worktree_plan_executor.execute
                                             ~patch_id ~agent
                                             ~fetch_lock:fetch_mutex
