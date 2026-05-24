@@ -351,24 +351,25 @@ struct
                   | Tui.Timeline_view -> None
                 in
                 match target_patch_id with
-                | Some patch_id ->
-                    let needs_intervention =
-                      Runtime.read Env.runtime (fun snap ->
-                          match
-                            Orchestrator.find_agent snap.Runtime.orchestrator
-                              patch_id
-                          with
-                          | None -> false
-                          | Some agent -> Patch_agent.needs_intervention agent)
-                    in
-                    if not needs_intervention then
-                      log_event Env.runtime ~patch_id
-                        "Cannot bump — patch is not in needs-intervention"
-                    else (
-                      Runtime.update_orchestrator Env.runtime (fun orch ->
-                          Orchestrator.reset_intervention_state orch patch_id);
-                      log_event Env.runtime ~patch_id
-                        "Bumped — cleared intervention state")
+                | Some patch_id -> (
+                    match
+                      Runtime.update_orchestrator_returning Env.runtime
+                        (fun orch ->
+                          match Orchestrator.find_agent orch patch_id with
+                          | None -> (orch, false)
+                          | Some agent ->
+                              if Patch_agent.needs_intervention agent then
+                                ( Orchestrator.reset_intervention_state orch
+                                    patch_id,
+                                  true )
+                              else (orch, false))
+                    with
+                    | true ->
+                        log_event Env.runtime ~patch_id
+                          "Bumped — cleared intervention state"
+                    | false ->
+                        log_event Env.runtime ~patch_id
+                          "Cannot bump — patch is not in needs-intervention")
                 | None -> ())
             | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
             | Term.Key.Backspace | Term.Key.Up | Term.Key.Down | Term.Key.Left
