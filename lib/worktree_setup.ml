@@ -98,6 +98,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
       | None -> (
           if W.is_checked_out_in_repo_root br then (
             let main_root = W.resolve_main_root () in
+            let refusal = Start_point_plan.Branch_checked_out_in_main_root in
             log_event runtime ~patch_id
               (Printf.sprintf
                  "Cannot create worktree — branch %s is checked out in the \
@@ -106,7 +107,11 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   again."
                  (Types.Branch.to_string br)
                  main_root main_root);
-            Missing)
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.apply_session_result orch patch_id
+                  (Orchestrator.Session_push_failed
+                     (Some (start_point_refusal_rejection refusal))));
+            Refused)
           else
             let base =
               match base_ref with

@@ -25,11 +25,12 @@
     with the named git command) or [Refuse reason] (skip the push and route the
     reason to the orchestrator).
 
-    Refusals that map to a planner-only state ([Branch_switched],
-    [Local_missing_remote_commits], [Local_diverged_from_remote_commits]) are
-    translated to {!Push_reject_classify.Local_state_unsafe} so the existing
-    [is_permanent] → [needs_intervention] escalation path applies without new
-    orchestrator state. *)
+    Refusals that map to a planner-only state ([Branch_ref_missing],
+    [Branch_switched], [Local_missing_remote_commits],
+    [Local_diverged_from_remote_commits]) are translated to
+    {!Push_reject_classify.Local_state_unsafe} so the existing [is_permanent] →
+    [needs_intervention] escalation path applies without new orchestrator state.
+*)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
