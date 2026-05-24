@@ -167,12 +167,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
           | `Fresh -> (None, true)
         in
         match WS.ensure_worktree ~patch_id ~agent () with
-        | None ->
+        | Worktree_setup.Missing ->
             Runtime.update_orchestrator runtime (fun orch ->
                 Orchestrator.apply_session_result orch patch_id
                   Orchestrator.Session_worktree_missing);
             (`Failed, [])
-        | Some worktree_path ->
+        | Worktree_setup.Refused -> (`Failed, [])
+        | Worktree_setup.Path worktree_path ->
             let cwd = Eio.Path.(fs / worktree_path) in
             (* Read once at session start so the per-event callback below can
              persist the session id to the crash-recovery sidecar without

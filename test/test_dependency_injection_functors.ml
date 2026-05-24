@@ -22,6 +22,7 @@ module Fake_worktree : Worktree.S = struct
   let prune_admin () = assert false
   let run_hook ~clock:_ ~script:_ ~cwd:_ ~env:_ () = assert false
   let fetch_origin ~fetch_lock:_ ~path:_ = assert false
+  let fetch_origin_branch ~fetch_lock:_ ~branch:_ = assert false
   let git_status ~path:_ = assert false
   let conflict_diff ~path:_ = assert false
 
@@ -85,7 +86,7 @@ let _check_narrowed :
     ?branch:Branch.t ->
     ?base_ref:string ->
     unit ->
-    string option =
+    Worktree_setup.ensure_result =
   WS.ensure_worktree
 
 (** Patch 2 compile-time signature check.
@@ -188,7 +189,7 @@ let () =
       ?branch:Branch.t ->
       ?base_ref:string ->
       unit ->
-      string option =
+      Worktree_setup.ensure_result =
     WS.ensure_worktree
   in
   ignore check_narrowed;

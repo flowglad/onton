@@ -2,6 +2,8 @@ open Base
 
 module type ENV = Run_env.S
 
+type ensure_result = Path of string | Missing | Refused
+
 module type S = sig
   val resolve_worktree_path :
     patch_id:Types.Patch_id.t ->
@@ -16,7 +18,7 @@ module type S = sig
     ?branch:Types.Branch.t ->
     ?base_ref:string ->
     unit ->
-    string option
+    ensure_result
 end
 
 module Make (W : Worktree.S) (Env : ENV) : S = struct
@@ -49,11 +51,17 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     let worktree_mutex = Env.worktree_mutex in
     let hook_mutex = Env.hook_mutex in
     let log_event = Runtime_logging.log_event in
+    let start_point_refusal_rejection refusal =
+      let reason =
+        Start_point_plan.short_label (Start_point_plan.Refuse refusal)
+      in
+      Push_reject_classify.Local_state_unsafe { reason }
+    in
     let path = resolve_worktree_path ~patch_id ~agent ?branch () in
     if Stdlib.Sys.file_exists path then (
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);
-      Some path)
+      Path path)
     else
       let br =
         match branch with Some b -> b | None -> agent.Patch_agent.branch
@@ -86,10 +94,11 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             (Printf.sprintf "Found existing worktree for branch at %s" existing);
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.set_worktree_path orch patch_id existing);
-          Some existing
+          Path existing
       | None -> (
           if W.is_checked_out_in_repo_root br then (
             let main_root = W.resolve_main_root () in
+            let refusal = Start_point_plan.Branch_checked_out_in_main_root in
             log_event runtime ~patch_id
               (Printf.sprintf
                  "Cannot create worktree — branch %s is checked out in the \
@@ -98,7 +107,11 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   again."
                  (Types.Branch.to_string br)
                  main_root main_root);
-            None)
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.apply_session_result orch patch_id
+                  (Orchestrator.Session_push_failed
+                     (Some (start_point_refusal_rejection refusal))));
+            Refused)
           else
             let base =
               match base_ref with
@@ -108,18 +121,57 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   | Some b -> Types.Branch.to_string b
                   | None -> "HEAD")
             in
+            (* Refresh [refs/remotes/origin/<branch>] before we feed it to the
+               start-point planner — without this the planner would observe a
+               stale local view of remote, which is the failure mode that
+               wiped PR #315. Best-effort: the planner correctly handles
+               [remote_ref = None] (brand-new branch) so a missing-remote
+               fetch error is just logged and we continue. *)
+            let fetch_lock = Env.fetch_mutex in
+            (match
+               W.fetch_origin_branch ~fetch_lock
+                 ~branch:(Types.Branch.to_string br)
+             with
+            | Ok () -> ()
+            | Error msg ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "Pre-create fetch failed (continuing): %s" msg));
             log_event runtime ~patch_id
               (Printf.sprintf "Creating worktree at %s" path);
-            let created =
+            let create_outcome =
               match
                 Eio.Mutex.use_ro worktree_mutex (fun () ->
-                    ignore
-                      (W.create ~project_name ~patch_id ~branch:br
-                         ~base_ref:base))
+                    W.create ~project_name ~patch_id ~branch:br ~base_ref:base)
               with
-              | () -> true
+              | Ok _ -> `Created
+              | Error refusal -> `Refused refusal
               | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
-              | exception exn ->
+              | exception exn -> `Raised exn
+            in
+            let log_decision label =
+              log_event runtime ~patch_id
+                (Printf.sprintf "Worktree start-point: %s" label)
+            in
+            let created =
+              match create_outcome with
+              | `Created ->
+                  log_decision "ok";
+                  true
+              | `Refused refusal ->
+                  let label =
+                    Start_point_plan.short_label
+                      (Start_point_plan.Refuse refusal)
+                  in
+                  log_decision label;
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Worktree creation refused — %s"
+                       (Start_point_plan.show_refusal refusal));
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.apply_session_result orch patch_id
+                        (Orchestrator.Session_push_failed
+                           (Some (start_point_refusal_rejection refusal))));
+                  false
+              | `Raised exn ->
                   log_event runtime ~patch_id
                     (Printf.sprintf "Worktree creation failed — %s"
                        (Stdlib.Printexc.to_string exn));
@@ -155,13 +207,17 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                           (Printf.sprintf "Hook on_worktree_create failed — %s"
                              msg))
                 | None -> ());
-                Some path
+                Path path
             | true, false ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Worktree still missing at %s" path);
-                None
+                Missing
             | false, _ -> (
-                (* [Worktree.create] raised. A concurrent fiber may have already
+                match create_outcome with
+                | `Refused _ -> Refused
+                | `Created -> Missing
+                | `Raised _ -> (
+                    (* [Worktree.create] raised. A concurrent fiber may have already
                  added a real worktree for [br] before our attempt collided.
                  [find_for_branch] queries [git worktree list], which only
                  reports atomically-registered worktrees — so a hit here is a
@@ -170,13 +226,15 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                  branch: the winning creator is already responsible for it,
                  mirroring the existing "Found existing worktree for branch"
                  path above. *)
-                match W.find_for_branch br with
-                | Some existing ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Adopting concurrently-created worktree at %s" existing);
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.set_worktree_path orch patch_id existing);
-                    Some existing
-                | None -> None))
+                    match W.find_for_branch br with
+                    | Some existing ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Adopting concurrently-created worktree at %s"
+                             existing);
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.set_worktree_path orch patch_id
+                              existing);
+                        Path existing
+                    | None -> Missing)))
 end

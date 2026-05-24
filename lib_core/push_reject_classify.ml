@@ -7,6 +7,7 @@ type rejection =
   | Lease_violation
   | Hook_failure of string
   | Unknown of string
+  | Local_state_unsafe of { reason : string }
 [@@deriving show, eq, sexp_of, compare]
 
 (* GitHub's remote-rejected stderr is a mix of [remote: ...] lines and a
@@ -98,6 +99,7 @@ let short_label = function
   | Lease_violation -> "lease_violation"
   | Hook_failure _ -> "hook_failure"
   | Unknown _ -> "unknown_rejection"
+  | Local_state_unsafe _ -> "local_state_unsafe"
 
 let detail_excerpt = function
   | Workflow_scope_missing | Branch_protection | Push_pattern_block
@@ -105,9 +107,12 @@ let detail_excerpt = function
       None
   | Hook_failure s | Unknown s ->
       if String.is_empty (String.strip s) then None else Some s
+  | Local_state_unsafe { reason } ->
+      let reason = truncate_200 (String.strip reason) in
+      if String.is_empty reason then None else Some reason
 
 let is_permanent = function
   | Workflow_scope_missing | Branch_protection | Push_pattern_block
-  | Hook_failure _ ->
+  | Hook_failure _ | Local_state_unsafe _ ->
       true
   | Lease_violation | Unknown _ -> false

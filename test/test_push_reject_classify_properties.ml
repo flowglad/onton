@@ -118,7 +118,8 @@ let prop_generic_hook =
       | Push_reject_classify.Workflow_scope_missing
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
-      | Push_reject_classify.Lease_violation | Push_reject_classify.Unknown _ ->
+      | Push_reject_classify.Lease_violation | Push_reject_classify.Unknown _
+      | Push_reject_classify.Local_state_unsafe _ ->
           false)
 
 let prop_empty_stderr =
@@ -130,7 +131,8 @@ let prop_empty_stderr =
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
-      | Push_reject_classify.Hook_failure _ ->
+      | Push_reject_classify.Hook_failure _
+      | Push_reject_classify.Local_state_unsafe _ ->
           false)
 
 let prop_short_label_bounded =
@@ -174,7 +176,8 @@ let prop_permanence_matches_variant =
         | Push_reject_classify.Workflow_scope_missing
         | Push_reject_classify.Branch_protection
         | Push_reject_classify.Push_pattern_block
-        | Push_reject_classify.Hook_failure _ ->
+        | Push_reject_classify.Hook_failure _
+        | Push_reject_classify.Local_state_unsafe _ ->
             true
         | Push_reject_classify.Lease_violation | Push_reject_classify.Unknown _
           ->
@@ -200,6 +203,22 @@ let prop_recognizer_priority =
         (Push_reject_classify.classify ~stderr:workflow_scope_stderr ~stdout:"")
         Push_reject_classify.Workflow_scope_missing)
 
+let prop_local_state_unsafe =
+  Test.make ~count:1
+    ~name:
+      "PRC-15: Local_state_unsafe is permanent, has short_label and \
+       detail_excerpt" (Gen.return ()) (fun () ->
+      let r =
+        Push_reject_classify.Local_state_unsafe
+          { reason = "  " ^ String.make 300 'x' }
+      in
+      Push_reject_classify.is_permanent r
+      && String.equal (Push_reject_classify.short_label r) "local_state_unsafe"
+      &&
+      match Push_reject_classify.detail_excerpt r with
+      | Some s -> String.length s = 200 && String.for_all s ~f:(Char.equal 'x')
+      | None -> false)
+
 let prop_unknown_truncation =
   Test.make ~count:300 ~name:"PRC-14: Unknown payload is <= 200 chars"
     (Gen.string_size ~gen:Gen.char (Gen.int_range 0 1000))
@@ -216,9 +235,11 @@ let prop_unknown_truncation =
       | Push_reject_classify.Workflow_scope_missing
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
-      | Push_reject_classify.Lease_violation ->
+      | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Local_state_unsafe _ ->
           (* sanitization stripped all letters, so the named-fingerprint arms
-             are unreachable here — but the type system can't know that. *)
+             and the planner-only Local_state_unsafe arm are unreachable here
+             — but the type system can't know that. *)
           true)
 
 let () =
@@ -238,6 +259,7 @@ let () =
       prop_permanence_matches_variant;
       prop_classify_is_deterministic;
       prop_recognizer_priority;
+      prop_local_state_unsafe;
       prop_unknown_truncation;
     ];
   Stdlib.print_endline "Push_reject_classify: all properties passed"

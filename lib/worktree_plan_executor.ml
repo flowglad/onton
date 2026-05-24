@@ -33,8 +33,16 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
       | [] -> (last_rebase, path, Base.List.rev events)
       | Worktree_plan.Ensure_worktree :: rest -> (
           match WS.ensure_worktree ~patch_id ~agent () with
-          | Some p -> loop ~path:p ~last_rebase ~events rest
-          | None ->
+          | Worktree_setup.Path p -> loop ~path:p ~last_rebase ~events rest
+          | Worktree_setup.Refused ->
+              Runtime_logging.log_event Env.runtime ~patch_id
+                (Printf.sprintf "Cannot %s — worktree start point was refused"
+                   fail_label);
+              ( Worktree.Error
+                  (Printf.sprintf "%s failed: worktree refused" fail_label),
+                path,
+                Base.List.rev events )
+          | Worktree_setup.Missing ->
               Runtime_logging.log_event Env.runtime ~patch_id
                 (Printf.sprintf
                    "Cannot %s — worktree missing and could not be created"
