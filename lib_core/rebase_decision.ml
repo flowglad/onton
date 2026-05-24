@@ -1,16 +1,5 @@
 open Base
 
-(* ── Legacy shim — preserved for the fallback path in Worktree.rebase_onto.
-   Removed in step 5 once the runner computes [plan] directly and passes the
-   chosen upstream into the handler as an argument. ─────────────────────── *)
-
-let upstream ~prev_base_sha ~fallback =
-  match prev_base_sha with
-  | Some sha ->
-      let sha = String.strip sha in
-      if String.is_empty sha then fallback else sha
-  | None -> fallback
-
 (* ── Structured plan ─────────────────────────────────────────────────── *)
 
 type reason =

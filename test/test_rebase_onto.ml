@@ -777,7 +777,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test1: simple rebase" result;
    (* C should now be on top of B *)
@@ -818,7 +818,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test2: onto after squash" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -857,7 +857,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test3: multi-commit" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -879,7 +879,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_noop "test4: already up-to-date" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -905,7 +905,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_conflict "test5: conflict" result;
    (* Rebase should be left in progress for the agent to resolve *)
@@ -941,7 +941,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "dep2")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"dep2" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_noop "test6: dep2 already ancestor" result;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
@@ -968,7 +968,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    (* With a real merge, D1 is in main's history so cherry-pick should
       identify only F1 as unique. Result should be Ok or Noop depending
@@ -1000,7 +1000,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    (* find_old_base returns Error "no unique commits found" so we fall
       back to plain rebase. Plain rebase should produce Ok or conflict
@@ -1031,7 +1031,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"" ~ancestor_ids:[] ()
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_ok "test9: modify dep file" result;
    let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -1119,7 +1119,7 @@ let () =
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")
-       ~project_name:"proj"
+       ~upstream:"main" ~project_name:"proj"
        ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
        ()
    in

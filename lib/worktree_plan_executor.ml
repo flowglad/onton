@@ -58,10 +58,34 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
           set_slot slot sha;
           loop ~path ~last_rebase ~events rest
       | Worktree_plan.Rebase_onto target :: rest -> (
+          (* Compute the upstream argument via Rebase_decision.plan, using
+             the agent's recorded anchor history and a live HEAD-sha
+             observation. The cherry-pick / patch-id detection inside
+             W.rebase_onto remains as defense-in-depth; this resolved
+             [upstream] is used only on its fallback path. *)
+          let head_sha = W.read_branch_sha ~path ~ref_name:"HEAD" in
+          let plan_input : Rebase_decision.input =
+            {
+              anchor = Anchor_history.newest (Patch_agent.anchor_history agent);
+              recorded_history =
+                Anchor_history.to_list (Patch_agent.anchor_history agent);
+              base_branch =
+                Base.Option.value agent.Patch_agent.base_branch ~default:target;
+              head_sha;
+            }
+          in
+          let ancestor_oracle ancestor ~descendant =
+            W.is_ancestor ~path ~ancestor ~descendant
+          in
+          let plan = Rebase_decision.plan plan_input ~ancestor_oracle in
+          let upstream =
+            match plan with
+            | Rebase_decision.Onto { upstream; _ } -> upstream
+            | Rebase_decision.Plain { target; _ } -> target
+          in
           match
-            W.rebase_onto
-              ~prev_base_sha:agent.Patch_agent.branch_rebased_onto_sha ~path
-              ~target ~project_name:Env.project_name ~ancestor_ids ()
+            W.rebase_onto ~path ~target ~upstream ~project_name:Env.project_name
+              ~ancestor_ids ()
           with
           | (Worktree.Ok | Worktree.Noop) as r ->
               loop ~path ~last_rebase:r ~events rest

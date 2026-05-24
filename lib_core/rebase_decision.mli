@@ -27,15 +27,6 @@
     exactly the patch's own commits, the dep's commits stay on [main] untouched,
     and no conflict arises. *)
 
-(** {2 Legacy shim — single SHA in, single string out} *)
-
-val upstream : prev_base_sha:string option -> fallback:string -> string
-(** [upstream ~prev_base_sha ~fallback] returns the value to pass as
-    [<upstream>] to [git rebase --onto <target> <upstream>]. When
-    [prev_base_sha = Some sha] (with [sha] non-empty after stripping), [sha] is
-    returned. Otherwise [fallback] is returned (typically the previous
-    base-branch name, preserving today's 2-arg semantics). Pure and total. *)
-
 (** {2 Structured plan + reasoning} *)
 
 type reason =
