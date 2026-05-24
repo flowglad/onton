@@ -32,7 +32,35 @@ val create :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   base_ref:string ->
-  t
+  (t, Start_point_plan.refusal) Result.t
+(** Create a git worktree for [branch] under [project_name]/[patch_id].
+
+    Consults {!Start_point_plan.plan} before invoking git: reads the local
+    [refs/heads/<branch>] and remote-tracking [refs/remotes/origin/<branch>]
+    SHAs from [repo_root], computes their two-way ancestry, and executes the
+    action the planner returns. The supervisor is responsible for running
+    [fetch_origin_branch] beforehand so [refs/remotes/origin/<branch>] is fresh;
+    without that step the planner would see a stale remote ref.
+
+    Returns [Error refusal] when the planner refuses (local diverged from
+    remote, branch already checked out elsewhere, etc.). The caller surfaces
+    refusals through the orchestrator's intervention path.
+
+    Pre-empted inputs [branch_checked_out_in_main_root] and
+    [existing_worktree_path] are checked by the caller
+    ({!Worktree_setup.ensure_worktree}) before this function runs; this function
+    passes [false] / [None] to the planner. *)
+
+val fetch_origin_branch :
+  fetch_lock:Eio.Mutex.t ->
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  branch_str:string ->
+  (unit, string) Result.t
+(** Run [git -C <repo_root> fetch origin <branch>:refs/remotes/origin/<branch>]
+    under the shared [fetch_lock]. Best-effort: missing remote branch / network
+    failure returns [Error]; caller logs and proceeds (the planner correctly
+    handles [remote_ref = None] for the brand-new-branch case). *)
 
 val remove : process_mgr:_ Eio.Process.mgr -> repo_root:string -> t -> unit
 
@@ -289,7 +317,10 @@ module type S = sig
     patch_id:Types.Patch_id.t ->
     branch:Types.Branch.t ->
     base_ref:string ->
-    t
+    (t, Start_point_plan.refusal) Result.t
+
+  val fetch_origin_branch :
+    fetch_lock:Eio.Mutex.t -> branch:string -> (unit, string) Result.t
 
   val remove : t -> unit
   val detect_branch : path:string -> Types.Branch.t

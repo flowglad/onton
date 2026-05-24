@@ -104,6 +104,89 @@ let run_git ~process_mgr args =
       let cmd = String.concat ~sep:" " args in
       failwith (Printf.sprintf "git command failed: %s\nstderr: %s" cmd stderr)
 
+(* Run a git command and capture (exit_code, stdout, stderr) without raising.
+   Defined here, ahead of its first use in [read_repo_ref_sha] and
+   [compute_ancestry], so the worktree-creation planner inputs can be gathered
+   before the type re-exports and the heavier rebase/push functions below. *)
+let run_git_exit_code ~process_mgr args =
+  Eio.Switch.run @@ fun sw ->
+  let stdout_buf = Buffer.create 0 in
+  let stderr_buf = Buffer.create 64 in
+  let env = Stdlib.Lazy.force clean_git_env in
+  let child =
+    Eio.Process.spawn ~sw process_mgr ~env
+      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+      args
+  in
+  let code =
+    match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
+  in
+  (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
+
+(* Read a ref's SHA from the main repo (NOT a worktree). Returns [None] if the
+   ref does not exist or git fails. Used by [Worktree.create] to feed inputs to
+   [Start_point_plan.plan]. *)
+let read_repo_ref_sha ~process_mgr ~repo_root ~ref_name =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; repo_root; "rev-parse"; "--verify"; ref_name ]
+  in
+  if code = 0 then
+    let s = String.strip stdout in
+    if String.is_empty s then None else Some s
+  else None
+
+(* Compute the ancestor relationship between [local] and [remote] using two
+   [git merge-base --is-ancestor] probes. Returns [Unknown] if either probe
+   fails. Pure inputs are SHAs already known to exist at the time of call —
+   caller is expected to gather them via [read_repo_ref_sha] first. *)
+let compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote :
+    Start_point_plan.ancestry =
+  let is_ancestor a b =
+    let code, _, _ =
+      run_git_exit_code ~process_mgr
+        [ "git"; "-C"; repo_root; "merge-base"; "--is-ancestor"; a; b ]
+    in
+    match code with 0 -> Some true | 1 -> Some false | _ -> None
+  in
+  match (is_ancestor local remote, is_ancestor remote local) with
+  | Some true, Some true -> Start_point_plan.Equal
+  | Some true, Some false -> Start_point_plan.Remote_ahead
+  | Some false, Some true -> Start_point_plan.Local_ahead
+  | Some false, Some false -> Start_point_plan.Diverged
+  | _ -> Start_point_plan.Unknown
+
+(* Fetch a single branch from origin into the corresponding remote-tracking
+   ref. Best-effort: missing remote branch / network failure returns Error.
+   Caller is expected to log Error and proceed — the planner correctly handles
+   [remote_ref = None] for the "brand new branch" case.
+
+   Operates on [repo_root]; worktrees share the ref store with the main repo,
+   so this updates [refs/remotes/origin/<branch>] for all workers. The
+   [fetch_lock] mutex must be the same one shared with [fetch_origin] above. *)
+let fetch_origin_branch ~fetch_lock ~process_mgr ~repo_root ~branch_str =
+  Eio.Mutex.use_ro fetch_lock (fun () ->
+      try
+        let code, _stdout, stderr =
+          run_git_exit_code ~process_mgr
+            [
+              "git";
+              "-C";
+              repo_root;
+              "fetch";
+              "origin";
+              branch_str ^ ":refs/remotes/origin/" ^ branch_str;
+            ]
+        in
+        Worktree_parser.classify_fetch_result ~code ~stderr
+      with
+      | exn when has_cancellation exn -> raise exn
+      | exn ->
+          Result.Error
+            (Printf.sprintf "git fetch origin %s crashed: %s" branch_str
+               (Exn.to_string exn)))
+
 let add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str =
   run_git ~process_mgr
     [ "git"; "-C"; repo_root; "worktree"; "add"; path; branch_str ]
@@ -147,42 +230,101 @@ let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
            branch_str colliding colliding)
   | None -> ()
 
-let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref =
+(* Execute the [action] half of a [Start_point_plan.decision] against the
+   worktree at [path]. Raises only on truly exceptional git failures; the
+   "branch was concurrently created" race is handled inline by falling back to
+   the [Use_local_branch_unchanged] command shape. *)
+let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
+    (action : Start_point_plan.action) =
+  match action with
+  | Use_local_branch_unchanged _ ->
+      add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str
+  | Reset_and_use_remote_tracking _ ->
+      (* [-B] resets / recreates the local branch at the remote tracking ref
+         before checking it out into the new worktree. Defeats the PR #315
+         failure mode: if [refs/heads/<branch>] was stale, [-B] points it at
+         [origin/<branch>] now. *)
+      run_git ~process_mgr
+        [
+          "git";
+          "-C";
+          repo_root;
+          "worktree";
+          "add";
+          "-B";
+          branch_str;
+          path;
+          "origin/" ^ branch_str;
+        ]
+  | Create_new_branch_from_base { base_branch } -> (
+      match
+        run_git ~process_mgr
+          [
+            "git";
+            "-C";
+            repo_root;
+            "worktree";
+            "add";
+            "-b";
+            branch_str;
+            path;
+            base_branch;
+          ]
+      with
+      | () -> ()
+      | exception e when has_cancellation e -> raise e
+      | exception _ when branch_exists ~process_mgr ~repo_root branch_str ->
+          (* Branch was created (e.g. by a concurrent attempt) but worktree
+             setup failed — retry without -b. *)
+          add_worktree_for_existing_branch ~process_mgr ~repo_root ~path
+            ~branch_str)
+
+(* [Worktree.create] consults [Start_point_plan] before executing any git
+   command, ensuring the worktree starts at the right commit regardless of
+   whether the user's local clone has a stale branch ref. See the [.mli] doc
+   on [create] and [start_point_plan.mli] for the rules.
+
+   Returns [Error _] when the planner refuses (local diverged from remote,
+   branch checked out in main, etc.); the caller in [Worktree_setup] surfaces
+   refusals through the orchestrator's [needs_intervention] path. *)
+let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
+    (t, Start_point_plan.refusal) Result.t =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
-  if Stdlib.Sys.file_exists path then { patch_id; branch; path }
-  else if branch_exists ~process_mgr ~repo_root branch_str then (
-    add_worktree_for_existing_branch ~process_mgr ~repo_root ~path ~branch_str;
-    { patch_id; branch; path })
-  else
-    let start_point =
-      if remote_branch_exists ~process_mgr ~repo_root branch_str then
-        "origin/" ^ branch_str
-      else base_ref
-    in
+  if Stdlib.Sys.file_exists path then Result.Ok { patch_id; branch; path }
+  else (
     check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str;
-    (match
-       run_git ~process_mgr
-         [
-           "git";
-           "-C";
-           repo_root;
-           "worktree";
-           "add";
-           "-b";
-           branch_str;
-           path;
-           start_point;
-         ]
-     with
-    | () -> ()
-    | exception e when has_cancellation e -> raise e
-    | exception _ when branch_exists ~process_mgr ~repo_root branch_str ->
-        (* Branch was created (e.g. by a concurrent attempt) but worktree
-           setup failed — retry without -b *)
-        add_worktree_for_existing_branch ~process_mgr ~repo_root ~path
-          ~branch_str);
-    { patch_id; branch; path }
+    let local_ref =
+      read_repo_ref_sha ~process_mgr ~repo_root
+        ~ref_name:("refs/heads/" ^ branch_str)
+    in
+    let remote_ref =
+      read_repo_ref_sha ~process_mgr ~repo_root
+        ~ref_name:("refs/remotes/origin/" ^ branch_str)
+    in
+    let ancestry =
+      match (local_ref, remote_ref) with
+      | Some l, Some r ->
+          compute_repo_ancestry ~process_mgr ~repo_root ~local:l ~remote:r
+      | _ -> Start_point_plan.Unknown
+    in
+    (* [branch_checked_out_in_main_root] and [existing_worktree_path] are
+       checked by [Worktree_setup.ensure_worktree] before this point — we
+       pass [false]/[None] so the planner's totality contract is preserved
+       without redoing the work. If [Worktree.create] is ever called from
+       a caller that does not pre-check, those inputs should be supplied
+       there. *)
+    let decision =
+      Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
+        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
+        ~existing_worktree_path:None
+    in
+    match decision with
+    | Refuse refusal -> Result.Error refusal
+    | Plan action ->
+        execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
+          action;
+        Result.Ok { patch_id; branch; path })
 
 let remove ~process_mgr ~repo_root t =
   Eio.Process.run process_mgr
@@ -268,21 +410,9 @@ type rebase_result = Worktree_parser.rebase_result =
   | Error of string
 [@@deriving show, eq, sexp_of, compare]
 
-let run_git_exit_code ~process_mgr args =
-  Eio.Switch.run @@ fun sw ->
-  let stdout_buf = Buffer.create 0 in
-  let stderr_buf = Buffer.create 64 in
-  let env = Stdlib.Lazy.force clean_git_env in
-  let child =
-    Eio.Process.spawn ~sw process_mgr ~env
-      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      args
-  in
-  let code =
-    match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
-  in
-  (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
+(* [run_git_exit_code] is defined earlier in the file, just after [run_git],
+   so the start-point planner helpers above ([read_repo_ref_sha],
+   [compute_repo_ancestry], [fetch_origin_branch]) can call it. *)
 
 (** Pure: does [subject] match the conventional "[<project>] Patch <N>:"
     commit-subject format for some [N] in [ancestor_ids]? The patch-id segment
@@ -714,7 +844,14 @@ module type S = sig
     patch_id:Types.Patch_id.t ->
     branch:Types.Branch.t ->
     base_ref:string ->
-    t
+    (t, Start_point_plan.refusal) Result.t
+
+  val fetch_origin_branch :
+    fetch_lock:Eio.Mutex.t -> branch:string -> (unit, string) Result.t
+  (** Fetch a single branch from origin into the corresponding remote-tracking
+      ref. Best-effort: missing remote branch / network failure returns [Error].
+      Caller in [Worktree_setup.ensure_worktree] runs this before [create] so
+      the planner sees a fresh view of [origin/<branch>]. *)
 
   val remove : t -> unit
   val detect_branch : path:string -> Types.Branch.t
@@ -790,6 +927,9 @@ let make ~process_mgr ~repo_root =
 
     let fetch_origin ~fetch_lock ~path =
       fetch_origin ~fetch_lock ~process_mgr ~path
+
+    let fetch_origin_branch ~fetch_lock ~branch =
+      fetch_origin_branch ~fetch_lock ~process_mgr ~repo_root ~branch_str:branch
 
     let git_status ~path = git_status ~process_mgr ~path
     let conflict_diff ~path = conflict_diff ~process_mgr ~path

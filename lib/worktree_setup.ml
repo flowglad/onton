@@ -108,18 +108,51 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   | Some b -> Types.Branch.to_string b
                   | None -> "HEAD")
             in
+            (* Refresh [refs/remotes/origin/<branch>] before we feed it to the
+               start-point planner — without this the planner would observe a
+               stale local view of remote, which is the failure mode that
+               wiped PR #315. Best-effort: the planner correctly handles
+               [remote_ref = None] (brand-new branch) so a missing-remote
+               fetch error is just logged and we continue. *)
+            let fetch_lock = Env.fetch_mutex in
+            (match
+               W.fetch_origin_branch ~fetch_lock
+                 ~branch:(Types.Branch.to_string br)
+             with
+            | Ok () -> ()
+            | Error msg ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "Pre-create fetch failed (continuing): %s" msg));
             log_event runtime ~patch_id
               (Printf.sprintf "Creating worktree at %s" path);
-            let created =
+            let create_outcome =
               match
                 Eio.Mutex.use_ro worktree_mutex (fun () ->
-                    ignore
-                      (W.create ~project_name ~patch_id ~branch:br
-                         ~base_ref:base))
+                    W.create ~project_name ~patch_id ~branch:br ~base_ref:base)
               with
-              | () -> true
+              | Ok _ -> `Created
+              | Error refusal -> `Refused refusal
               | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
-              | exception exn ->
+              | exception exn -> `Raised exn
+            in
+            let log_decision label =
+              log_event runtime ~patch_id
+                (Printf.sprintf "Worktree start-point: %s" label)
+            in
+            let created =
+              match create_outcome with
+              | `Created ->
+                  log_decision "ok";
+                  true
+              | `Refused refusal ->
+                  log_decision
+                    (Start_point_plan.short_label
+                       (Start_point_plan.Refuse refusal));
+                  log_event runtime ~patch_id
+                    (Printf.sprintf "Worktree creation refused — %s"
+                       (Start_point_plan.show_refusal refusal));
+                  false
+              | `Raised exn ->
                   log_event runtime ~patch_id
                     (Printf.sprintf "Worktree creation failed — %s"
                        (Stdlib.Printexc.to_string exn));
