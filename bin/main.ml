@@ -23,8 +23,7 @@ type repo_coords = {
       (** Transport for the managed [origin]. [None] when the fresh / resume
           path didn't resolve one (legacy configs); [Some scheme] when
           {!Managed_repo.ensure_managed_repo} auto-detected or honored a stored
-          value. Persisted to [config.json] so the next run is stable and used
-          by the startup OAuth scope pre-flight. *)
+          value. Persisted to [config.json] so the next run is stable. *)
 }
 (** Coordinates that locate the GitHub repo and its local checkout. Resolved
     independently per path (fresh: from --repo + git remote; gameplan: from the
@@ -1153,24 +1152,6 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
       Base.Option.iter lock ~f:Project_lock.release)
   @@ fun () ->
   Eio_main.run @@ fun env ->
-  (* OAuth scope pre-flight: warn early when the configured token is missing
-     a scope a patch will need. The resolved transport scheme is re-read
-     from the persisted [config.json] (always populated for fresh / gameplan
-     paths, may be [None] for very old configs on the resume path — treat
-     that as Https for safety, which is what every onton clone was before
-     SSH support landed). The check is gated on the transport: SSH bypasses
-     OAuth scopes entirely. *)
-  (let scheme =
-     match Project_store.load_config ~project_name:resolved.project_name with
-     | Ok stored ->
-         Managed_repo.url_scheme_of_string
-           (Option.value stored.Project_store.url_scheme ~default:"")
-         |> Option.value ~default:Github_target.Https
-     | Error _ -> Github_target.Https
-   in
-   Scope_preflight.run ~net:(Eio.Stdenv.net env) ~clock:(Eio.Stdenv.clock env)
-     ~scheme ~token:resolved.github_token ~owner:resolved.github_owner
-     ~repo:resolved.github_repo ~gameplan);
   let setup =
     setup_runtime env ~config:resolved ~gameplan ~existing_snapshot ~auto_merge
   in

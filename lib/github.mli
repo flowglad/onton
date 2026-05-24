@@ -75,15 +75,3 @@ val make :
 (** [make ~net ~clock ~token ~owner ~repo] packages a GitHub-backed forge module
     that closes over the network and time capabilities plus client
     configuration. *)
-
-val fetch_oauth_scopes_for :
-  net:_ Eio.Net.t ->
-  clock:_ Eio.Time.clock ->
-  token:string ->
-  owner:string ->
-  repo:string ->
-  (Onton_core.Oauth_scopes.scope list, error) Result.t
-(** Hit [/user] with the configured token and return the parsed scopes from the
-    [X-OAuth-Scopes] response header. Used by the startup preflight in
-    {!Scope_preflight} to warn about missing scopes (e.g. [workflow]). The body
-    of the response is discarded — only the header matters. *)

@@ -54,8 +54,10 @@ let pick_remote_line stderr =
       | None -> "")
 
 let classify ~stderr ~stdout:_ =
-  (* Recognizer order matters: workflow scope is the most specific message and
-     can co-occur with the generic "remote rejected" trailer, so it must be
+  (* Recognizer order matters: workflow scope is the most specific message.
+     GH013 workflow-scope failures include "Repository rule violations found",
+     so [Workflow_scope_missing] must stay before [Push_pattern_block]. It can
+     also co-occur with the generic "remote rejected" trailer, so it must be
      checked before the catch-all hook-failure branch. *)
   if
     contains_ci stderr

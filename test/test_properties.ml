@@ -1116,7 +1116,8 @@ let () =
         let a = Orchestrator.agent orch pid in
         Patch_agent.needs_intervention a
         && Patch_agent.equal_session_fallback a.Patch_agent.session_fallback
-             Patch_agent.Given_up)
+             Patch_agent.Given_up
+        && Int.equal a.Patch_agent.push_failure_count 0)
   in
   let prop_psf8_transient_reason_does_not_escalate =
     Test.make

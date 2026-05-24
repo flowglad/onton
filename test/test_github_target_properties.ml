@@ -411,10 +411,8 @@ let prop_scheme_of_url_total =
     ~name:"scheme_of_url is total over arbitrary strings"
     QCheck2.Gen.(string_size ~gen:printable (int_range 0 200))
     (fun s ->
-      try
-        let _ = Github_target.scheme_of_url s in
-        true
-      with _ -> false)
+      let _ = Github_target.scheme_of_url s in
+      true)
 
 let prop_resolve_scheme_override_wins =
   QCheck2.Test.make ~name:"resolve_scheme: override Some _ always wins"
@@ -468,10 +466,8 @@ let prop_resolve_scheme_total =
         (list_size (int_range 0 5)
            (string_size ~gen:printable (int_range 0 80))))
     (fun (override, sibling_remote_urls) ->
-      try
-        let _ = Github_target.resolve_scheme ~override ~sibling_remote_urls in
-        true
-      with _ -> false)
+      let _ = Github_target.resolve_scheme ~override ~sibling_remote_urls in
+      true)
 
 let () =
   let tests =

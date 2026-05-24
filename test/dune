@@ -55,13 +55,6 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
- (name test_oauth_scopes_properties)
- (modules test_oauth_scopes_properties)
- (libraries onton_core qcheck-core qcheck-core.runner)
- (ocamlopt_flags (:standard -w -40-42))
- (ocamlc_flags (:standard -w -40-42)))
-
-(test
  (name test_rebase_decision_properties)
  (modules test_rebase_decision_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)

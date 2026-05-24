@@ -709,16 +709,14 @@ let apply_session_result t patch_id result =
          directly, since retrying cannot resolve those under the current
          credentials/branch-protection state. *)
       let t = clear_session_fallback t patch_id in
-      let t =
-        update_agent t patch_id ~f:Patch_agent.increment_push_failure_count
-      in
       match reason with
       | Some r when Push_reject_classify.is_permanent r ->
           (* Two-step [set_tried_fresh] reaches [Given_up] from any starting
              fallback state, including [Fresh_available]. *)
           let t = set_tried_fresh t patch_id in
           set_tried_fresh t patch_id
-      | Some _ | None -> t)
+      | Some _ | None ->
+          update_agent t patch_id ~f:Patch_agent.increment_push_failure_count)
   | Session_no_commits ->
       (* The LLM session ran cleanly but left no commits on the branch (HEAD
          == base), so the supervisor skipped the push. Clear session fallback

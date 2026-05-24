@@ -532,69 +532,6 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
   | Ok inner -> inner
   | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
 
-(** Fetch the OAuth scopes attached to the configured token by hitting the user
-    endpoint and reading the [X-OAuth-Scopes] response header. The body is
-    discarded — we only need the header. Returns the parsed scope list on
-    success. Used by the startup preflight in [lib/scope_preflight.ml] to warn
-    the user about missing scopes (e.g. [workflow] when a patch is going to
-    modify [.github/workflows/*]).
-
-    GitHub returns the header on any authenticated request, but [/user] is the
-    conventional probe and has no per-repository requirement (so the preflight
-    works even if the user's gameplan repo permissions are wrong; the warning
-    will still trigger on missing top-level scopes). *)
-let fetch_oauth_scopes ~net ~clock ?(timeout = default_timeout) t :
-    (Oauth_scopes.scope list, error) Result.t =
-  let meth_s = "GET" in
-  let path = "/user" in
-  let do_request () : (Oauth_scopes.scope list, error) Result.t =
-    try
-      Mirage_crypto_rng_unix.use_default ();
-      Result.bind
-        (Result.map_error (https_config ()) ~f:(fun msg ->
-             Transport_error { meth = meth_s; path; msg }))
-        ~f:(fun tls_config ->
-          let client =
-            Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
-          in
-          let uri = Uri.of_string ("https://api.github.com" ^ path) in
-          let headers =
-            Http.Header.of_list
-              [
-                ("Authorization", "Bearer " ^ t.token);
-                ("Accept", "application/vnd.github+json");
-                ("User-Agent", "onton/0.1.0");
-                ("X-GitHub-Api-Version", "2022-11-28");
-              ]
-          in
-          Eio.Switch.run @@ fun sw ->
-          let resp, resp_body = Cohttp_eio.Client.get client ~sw ~headers uri in
-          let status = Http.Response.status resp |> Http.Status.to_int in
-          (* Drain the body so the connection can be reused / closed cleanly,
-             but don't keep the payload around — only the header matters. *)
-          let _ : string =
-            Eio.Buf_read.(
-              of_flow ~max_size:max_response_size resp_body |> take_all)
-          in
-          if status >= 200 && status < 300 then
-            let header_value =
-              Http.Header.get (Http.Response.headers resp) "x-oauth-scopes"
-              |> Option.value ~default:""
-            in
-            Ok (Oauth_scopes.parse_header header_value)
-          else
-            Error
-              (Http_error
-                 { meth = meth_s; path; status; body = "<headers-only>" }))
-    with
-    | Eio.Cancel.Cancelled _ as exn -> raise exn
-    | exn ->
-        Error (Transport_error { meth = meth_s; path; msg = Exn.to_string exn })
-  in
-  match Eio.Time.with_timeout clock timeout (fun () -> Ok (do_request ())) with
-  | Ok inner -> inner
-  | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
-
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
   match request ~net ~clock ?timeout t ~meth:`GET ~path () with
@@ -944,13 +881,6 @@ let%expect_test "show_error transport error includes endpoint" =
   in
   Stdlib.print_endline (show_error err);
   [%expect {| GitHub API POST /graphql → transport error: connection refused |}]
-
-(** Public entry point: hit [/user] and return the parsed scopes from the
-    [X-OAuth-Scopes] response header. Mirrors {!make}'s argument shape so
-    callers can build it from the same [config] without first constructing a
-    forge module. *)
-let fetch_oauth_scopes_for ~net ~clock ~token ~owner ~repo =
-  fetch_oauth_scopes ~net ~clock (create ~token ~owner ~repo)
 
 let make ~net ~clock ~token ~owner ~repo :
     (module Forge.S with type error = error) =
