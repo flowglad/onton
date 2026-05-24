@@ -87,7 +87,7 @@ module Make (W : Worktree.S) (Env : Run_env.S) : S = struct
           let upstream =
             match plan with
             | Rebase_decision.Onto { upstream; _ } -> upstream
-            | Rebase_decision.Plain { target; _ } -> target
+            | Rebase_decision.Plain _ -> Types.Branch.to_string target
           in
           match
             W.rebase_onto ~path ~target ~upstream ~project_name:Env.project_name
