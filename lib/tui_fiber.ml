@@ -342,6 +342,34 @@ struct
                         log_event Env.runtime ~patch_id "Automerge disabled"
                     | None -> ())
                 | None -> ())
+            | Term.Key.Char 'b' -> (
+                input_mode := Tui_input.Normal;
+                let target_patch_id =
+                  match !view_mode with
+                  | Tui.Detail_view patch_id -> Some patch_id
+                  | Tui.List_view -> selected_pid ()
+                  | Tui.Timeline_view -> None
+                in
+                match target_patch_id with
+                | Some patch_id ->
+                    let needs_intervention =
+                      Runtime.read Env.runtime (fun snap ->
+                          match
+                            Orchestrator.find_agent snap.Runtime.orchestrator
+                              patch_id
+                          with
+                          | None -> false
+                          | Some agent -> Patch_agent.needs_intervention agent)
+                    in
+                    if not needs_intervention then
+                      log_event Env.runtime ~patch_id
+                        "Cannot bump — patch is not in needs-intervention"
+                    else (
+                      Runtime.update_orchestrator Env.runtime (fun orch ->
+                          Orchestrator.reset_intervention_state orch patch_id);
+                      log_event Env.runtime ~patch_id
+                        "Bumped — cleared intervention state")
+                | None -> ())
             | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
             | Term.Key.Backspace | Term.Key.Up | Term.Key.Down | Term.Key.Left
             | Term.Key.Right | Term.Key.Home | Term.Key.End | Term.Key.Page_up
