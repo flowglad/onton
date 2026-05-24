@@ -57,17 +57,10 @@ let scheme_of_url url =
   else if Re.execp https_url_re url then Some Https
   else None
 
-let resolve_scheme ~override ~sibling_remote_urls =
+let resolve_scheme ~override ~ssh_available =
   match override with
   | Some s -> s
-  | None ->
-      if
-        List.exists sibling_remote_urls ~f:(fun u ->
-            match scheme_of_url u with
-            | Some Ssh -> true
-            | Some Https | None -> false)
-      then Ssh
-      else Https
+  | None -> if ssh_available then Ssh else Https
 
 let infer_owner_repo_from_url url =
   let url = String.strip url in
@@ -130,29 +123,19 @@ let%test "scheme_of_url rejects junk" =
   && Option.is_none (scheme_of_url "")
   && Option.is_none (scheme_of_url "not a url")
 
-let%test "resolve_scheme: override Some wins" =
+let%test "resolve_scheme: override Some wins regardless of probe" =
   equal_url_scheme
-    (resolve_scheme ~override:(Some Ssh) ~sibling_remote_urls:[])
+    (resolve_scheme ~override:(Some Ssh) ~ssh_available:false)
     Ssh
   && equal_url_scheme
-       (resolve_scheme ~override:(Some Https)
-          ~sibling_remote_urls:[ "git@github.com:o/r.git" ])
+       (resolve_scheme ~override:(Some Https) ~ssh_available:true)
        Https
 
-let%test "resolve_scheme: no override, SSH sibling wins" =
-  equal_url_scheme
-    (resolve_scheme ~override:None
-       ~sibling_remote_urls:[ "git@github.com:o/r.git" ])
-    Ssh
+let%test "resolve_scheme: no override, ssh_available=true -> Ssh" =
+  equal_url_scheme (resolve_scheme ~override:None ~ssh_available:true) Ssh
 
-let%test "resolve_scheme: no override, no SSH sibling -> Https" =
-  equal_url_scheme
-    (resolve_scheme ~override:None
-       ~sibling_remote_urls:[ "https://github.com/o/r.git"; "junk" ])
-    Https
-
-let%test "resolve_scheme: no override, empty sibling list -> Https" =
-  equal_url_scheme (resolve_scheme ~override:None ~sibling_remote_urls:[]) Https
+let%test "resolve_scheme: no override, ssh_available=false -> Https" =
+  equal_url_scheme (resolve_scheme ~override:None ~ssh_available:false) Https
 
 let%test "infer_owner_repo_from_url parses https with .git" =
   match infer_owner_repo_from_url "https://github.com/flowglad/onton.git" with

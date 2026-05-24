@@ -417,39 +417,26 @@ let prop_scheme_of_url_total =
 let prop_resolve_scheme_override_wins =
   QCheck2.Test.make ~name:"resolve_scheme: override Some _ always wins"
     QCheck2.Gen.(
-      pair
-        (oneof [ return Github_target.Https; return Github_target.Ssh ])
-        (list_size (int_range 0 5)
-           (string_size ~gen:printable (int_range 0 80))))
-    (fun (override, sibling_remote_urls) ->
+      pair (oneof [ return Github_target.Https; return Github_target.Ssh ]) bool)
+    (fun (override, ssh_available) ->
       Github_target.equal_url_scheme
-        (Github_target.resolve_scheme ~override:(Some override)
-           ~sibling_remote_urls)
+        (Github_target.resolve_scheme ~override:(Some override) ~ssh_available)
         override)
 
-let prop_resolve_scheme_ssh_sibling_wins =
+let prop_resolve_scheme_no_override_ssh_available =
   QCheck2.Test.make
-    ~name:"resolve_scheme: override=None, at least one SSH sibling -> Ssh"
-    QCheck2.Gen.(
-      list_size (int_range 0 3) (string_size ~gen:printable (int_range 0 80)))
-    (fun other_urls ->
-      let ssh_url = "git@github.com:flowglad/onton.git" in
+    ~name:"resolve_scheme: override=None, ssh_available=true -> Ssh"
+    QCheck2.Gen.unit (fun () ->
       Github_target.equal_url_scheme
-        (Github_target.resolve_scheme ~override:None
-           ~sibling_remote_urls:(ssh_url :: other_urls))
+        (Github_target.resolve_scheme ~override:None ~ssh_available:true)
         Github_target.Ssh)
 
-let prop_resolve_scheme_no_ssh_sibling_https =
+let prop_resolve_scheme_no_override_ssh_unavailable =
   QCheck2.Test.make
-    ~name:"resolve_scheme: override=None, no SSH siblings -> Https"
-    QCheck2.Gen.(pair gen_valid_owner gen_valid_repo)
-    (fun (owner, repo) ->
-      let https_url =
-        Github_target.clone_url ~scheme:Github_target.Https ~owner ~repo
-      in
+    ~name:"resolve_scheme: override=None, ssh_available=false -> Https"
+    QCheck2.Gen.unit (fun () ->
       Github_target.equal_url_scheme
-        (Github_target.resolve_scheme ~override:None
-           ~sibling_remote_urls:[ https_url; "junk"; "" ])
+        (Github_target.resolve_scheme ~override:None ~ssh_available:false)
         Github_target.Https)
 
 let prop_resolve_scheme_total =
@@ -463,10 +450,9 @@ let prop_resolve_scheme_total =
              return (Some Github_target.Https);
              return (Some Github_target.Ssh);
            ])
-        (list_size (int_range 0 5)
-           (string_size ~gen:printable (int_range 0 80))))
-    (fun (override, sibling_remote_urls) ->
-      let _ = Github_target.resolve_scheme ~override ~sibling_remote_urls in
+        bool)
+    (fun (override, ssh_available) ->
+      let _ = Github_target.resolve_scheme ~override ~ssh_available in
       true)
 
 let () =
@@ -501,8 +487,8 @@ let () =
       prop_scheme_of_url_ssh_recognizer;
       prop_scheme_of_url_total;
       prop_resolve_scheme_override_wins;
-      prop_resolve_scheme_ssh_sibling_wins;
-      prop_resolve_scheme_no_ssh_sibling_https;
+      prop_resolve_scheme_no_override_ssh_available;
+      prop_resolve_scheme_no_override_ssh_unavailable;
       prop_resolve_scheme_total;
     ]
   in

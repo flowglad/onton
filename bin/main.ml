@@ -1355,13 +1355,14 @@ let clone_scheme_arg =
     & opt (some string) None
     & info [ "clone-scheme" ] ~docv:"SCHEME"
         ~doc:
-          "Transport for the managed clone's [origin]: [https] (default) or \
-           [ssh]. When omitted, onton auto-detects from a sibling user clone \
-           (under the current working directory's parent, or under ~/code-src, \
-           ~/src, ~/code, ~/dev, ~/projects) and falls back to https. SSH \
-           bypasses the per-OAuth-scope restrictions GitHub enforces (e.g. the \
-           [workflow] scope for .github/workflows/*). The resolved scheme is \
-           persisted to config.json so subsequent runs are stable.")
+          "Transport for the managed clone's [origin]: [https] or [ssh]. When \
+           omitted, onton probes SSH reachability (a non-interactive [git \
+           ls-remote git@github.com:owner/repo.git] with a 5s timeout) and \
+           picks [ssh] if the probe succeeds, otherwise [https]. SSH is \
+           preferred when available because it bypasses the per-OAuth-scope \
+           restrictions GitHub enforces (e.g. the [workflow] scope for \
+           .github/workflows/*). The resolved scheme is persisted to \
+           config.json, so the probe only runs on the first invocation.")
 
 let poll_interval_arg =
   let open Cmdliner in

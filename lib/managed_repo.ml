@@ -61,10 +61,16 @@ let format_process_failure { stdout; stderr; _ } =
   if String.is_empty detail then "no output" else detail
 
 (** Spawn [git] (not [git -C ...]) with a clean environment, capture stdout and
-    stderr. Used for [git clone] before any working tree exists. *)
-let run_git_no_cwd args =
+    stderr. Used for [git clone] before any working tree exists. [?extra_env] is
+    appended to the clean env (use to set, e.g., a custom [GIT_SSH_COMMAND] for
+    one-off probes that must not prompt or hang). *)
+let run_git_no_cwd ?(extra_env = []) args =
   let argv = Array.of_list ("git" :: args) in
-  let env = Git_env.clean_env () in
+  let env =
+    let base = Git_env.clean_env () in
+    if List.is_empty extra_env then base
+    else Array.append base (Array.of_list extra_env)
+  in
   match Stdlib.Filename.temp_file "onton-git-stderr-" ".log" with
   | exception _ -> None
   | err_path -> (
@@ -119,33 +125,10 @@ let run_git_no_cwd args =
       | result -> result
       | exception _ -> None)
 
-(** Candidate directories to scan for a sibling user clone of [owner/repo].
-    These are the conventional locations developers use; missing directories are
-    silently skipped. The function is total — never raises. *)
-let sibling_clone_candidates ~repo =
-  let home = try Stdlib.Sys.getenv "HOME" with _ -> "" in
-  let pwd = try Stdlib.Sys.getcwd () with _ -> "" in
-  let pwd_sibling =
-    if String.is_empty pwd then []
-    else [ Stdlib.Filename.concat (Stdlib.Filename.dirname pwd) repo ]
-  in
-  let home_dir sub =
-    if String.is_empty home then None
-    else Some (Stdlib.Filename.concat home (Stdlib.Filename.concat sub repo))
-  in
-  pwd_sibling
-  @ List.filter_map ~f:Fn.id
-      [
-        home_dir "code-src";
-        home_dir "src";
-        home_dir "code";
-        home_dir "dev";
-        home_dir "projects";
-      ]
-
-(** Read all [remote.<name>.url] entries from a sibling clone at [path]. Best
-    effort: returns the empty list on any IO error or if [path] is not a git
-    checkout. *)
+(** Read all [remote.<name>.url] entries from a clone at [path]. Best effort:
+    returns the empty list on any IO error or if [path] is not a git checkout.
+    Used to inspect an existing managed clone's [origin] so we don't flip
+    transports mid-life. *)
 let read_remote_urls ~path =
   let git_dir = Stdlib.Filename.concat path ".git" in
   let is_git =
@@ -190,20 +173,25 @@ let read_remote_urls ~path =
     | None ->
         []
 
-(** Effectful sibling-clone discovery. Returns the (path, url) pairs that look
-    like a user clone of [owner/repo]. Used to inherit the user's transport
-    choice for the managed clone. *)
-let discover_sibling_clones ~owner ~repo =
-  sibling_clone_candidates ~repo
-  |> List.filter_map ~f:(fun path ->
-      let urls = read_remote_urls ~path in
-      let matches =
-        List.exists urls ~f:(fun url ->
-            match Github_target.infer_owner_repo_from_url url with
-            | Some (o, r) -> String.equal o owner && String.equal r repo
-            | None -> false)
-      in
-      if matches then Some (path, urls) else None)
+(** Probe whether SSH is usable for [owner/repo] from the current machine. Runs
+    [git ls-remote -h git@github.com:owner/repo.git] with [BatchMode=yes] and
+    [ConnectTimeout=5], so a missing or passphrase-locked SSH key, an
+    unauthorized key, or a blocked outbound port all produce a clean [false]
+    without prompting or hanging. Exit code 0 means SSH can both authenticate to
+    GitHub and read this specific repo — which is also the condition for SSH
+    push to work. *)
+let probe_ssh_available ~owner ~repo =
+  let url = Github_target.clone_url ~scheme:Github_target.Ssh ~owner ~repo in
+  let extra_env =
+    [ "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=5" ]
+  in
+  match run_git_no_cwd ~extra_env [ "ls-remote"; "-h"; url ] with
+  | Some { status = Unix.WEXITED 0; _ } -> true
+  | Some { status = Unix.WEXITED _; _ }
+  | Some { status = Unix.WSIGNALED _; _ }
+  | Some { status = Unix.WSTOPPED _; _ }
+  | None ->
+      false
 
 (** Clone [owner/repo] from GitHub into [target_dir] (which must not exist yet).
     Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS] helper
@@ -226,26 +214,33 @@ let clone_managed_repo ~scheme ~owner ~repo ~target_dir =
   | None -> Error (Printf.sprintf "git clone %s/%s: could not spawn" owner repo)
 
 (** Resolve the transport scheme for the managed clone. Pure decision lives in
-    [Github_target.resolve_scheme]; here we supply the effectful inputs
-    (sibling-clone discovery, an explicit override from the CLI/config). When
-    [override = None] and at least one sibling SSH clone is found, an
-    informational stderr line announces the auto-detect choice so the user can
-    see why their managed clone became SSH. *)
+    [Github_target.resolve_scheme]; here we supply the effectful input (an SSH
+    reachability probe) when no [override] is provided. The probe is skipped
+    when the caller already has an override — either a [--clone-scheme] flag or
+    a previously-persisted [url_scheme] from [config.json] — since the answer is
+    fixed. An informational stderr line announces the auto-detected choice so
+    the user can see why their managed clone landed on SSH (or fell back to
+    HTTPS). *)
 let resolve_clone_scheme ?(override : Github_target.url_scheme option = None)
     ~owner ~repo () =
-  let siblings = discover_sibling_clones ~owner ~repo in
-  let sibling_urls = List.concat_map siblings ~f:(fun (_, urls) -> urls) in
-  let scheme =
-    Github_target.resolve_scheme ~override ~sibling_remote_urls:sibling_urls
+  let ssh_available =
+    match override with
+    | Some _ -> false
+    | None -> probe_ssh_available ~owner ~repo
   in
-  (match (override, scheme, siblings) with
-  | None, Github_target.Ssh, (path, _) :: _ ->
+  let scheme = Github_target.resolve_scheme ~override ~ssh_available in
+  (match (override, scheme) with
+  | None, Github_target.Ssh ->
       Stdlib.Printf.eprintf
-        "onton: detected SSH sibling clone at %s — cloning managed repo via SSH\n\
+        "onton: SSH probe to git@github.com succeeded — cloning managed repo \
+         via SSH\n\
          %!"
-        path
-  | None, Github_target.Ssh, [] | None, Github_target.Https, _ | Some _, _, _ ->
-      ());
+  | None, Github_target.Https ->
+      Stdlib.Printf.eprintf
+        "onton: SSH probe to git@github.com unavailable — cloning managed repo \
+         via HTTPS\n\
+         %!"
+  | Some _, _ -> ());
   scheme
 
 let string_of_url_scheme = function
@@ -263,9 +258,9 @@ let url_scheme_of_string = function
 
     [?clone_scheme]: explicit override (e.g. from a [--clone-scheme] flag or a
     [url_scheme] field already in [config.json]). If [None], auto-detect by
-    inspecting sibling user clones — see {!resolve_clone_scheme}. The resolved
-    scheme is returned together with the repo root so the caller can persist it
-    back to [config.json] on subsequent runs. *)
+    probing SSH reachability to GitHub — see {!resolve_clone_scheme}. The
+    resolved scheme is returned together with the repo root so the caller can
+    persist it back to [config.json] on subsequent runs. *)
 let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
     () =
   Git_env.set_github_token token;

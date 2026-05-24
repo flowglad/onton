@@ -13,11 +13,11 @@ val ensure_managed_repo :
     stable.
 
     [?clone_scheme] is the explicit override (e.g. a [--clone-scheme] CLI flag
-    or a previously-persisted [url_scheme] from [config.json]). If [None],
-    sibling user clones are scanned ([$PWD/..], [~/code-src/], [~/src/],
-    [~/code/], [~/dev/], [~/projects/]) and SSH is chosen iff any match uses
-    SSH; otherwise the default is HTTPS. When the managed clone already exists
-    on disk, its existing [origin] URL is authoritative — we don't flip
+    or a previously-persisted [url_scheme] from [config.json]). If [None], SSH
+    reachability to [git@github.com:owner/repo.git] is probed (with
+    [BatchMode=yes] and a short [ConnectTimeout]); SSH is chosen if the probe
+    succeeds, otherwise the fallback is HTTPS. When the managed clone already
+    exists on disk, its existing [origin] URL is authoritative — we don't flip
     transports mid-life. *)
 
 val url_scheme_of_string : string -> Onton_core.Github_target.url_scheme option
@@ -26,13 +26,6 @@ val url_scheme_of_string : string -> Onton_core.Github_target.url_scheme option
 
 val string_of_url_scheme : Onton_core.Github_target.url_scheme -> string
 (** Serialize a scheme as ["https"] or ["ssh"] for storage in [config.json]. *)
-
-val discover_sibling_clones :
-  owner:string -> repo:string -> (string * string list) list
-(** Effectful: scan conventional sibling-clone directories for user clones
-    matching [owner/repo]. Returns [(path, remote_urls)] pairs. Used by the
-    auto-detect path in {!ensure_managed_repo}; exposed for tests and for
-    callers that want to display the detected siblings to the user. *)
 
 val infer_github_token : unit -> string
 (** Resolve a GitHub token from [GITHUB_TOKEN] or [gh auth token]. *)

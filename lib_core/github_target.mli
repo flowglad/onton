@@ -22,13 +22,14 @@ val validate_target : owner:string -> repo:string -> (unit, string) Result.t
     (owner checked before repo) so a single error suffices to identify the
     offending half. *)
 
-(** Transport scheme for the managed clone's [origin]. [Https] (default) uses
-    GitHub's [https://github.com/<owner>/<repo>.git] URL together with the
-    OAuth/PAT token injected via {!Onton.Git_env}. [Ssh] uses
+(** Transport scheme for the managed clone's [origin]. [Https] uses GitHub's
+    [https://github.com/<owner>/<repo>.git] URL together with the OAuth/PAT
+    token injected via {!Onton.Git_env}. [Ssh] uses
     [git@github.com:<owner>/<repo>.git] and relies on the user's ssh-agent and
     [~/.ssh/config] for authentication. SSH is the only transport that bypasses
     the per-OAuth-scope restrictions GitHub enforces (e.g. the [workflow] scope
-    for [.github/workflows/*] changes). *)
+    for [.github/workflows/*] changes); when SSH is reachable it is preferred,
+    with HTTPS as the fallback. *)
 type url_scheme = Https | Ssh [@@deriving show, eq, sexp_of, compare, yojson]
 
 val clone_url : scheme:url_scheme -> owner:string -> repo:string -> string
@@ -41,18 +42,18 @@ val clone_url : scheme:url_scheme -> owner:string -> repo:string -> string
 val scheme_of_url : string -> url_scheme option
 (** Classify an existing remote URL as [Some Https] / [Some Ssh] / [None]. The
     [None] branch covers junk strings and any non-github.com URL. Total — never
-    raises. Used by the sibling-clone auto-detector to inherit the user's
-    transport choice for the managed clone. *)
+    raises. Used by [lib/managed_repo.ml] to detect the existing managed clone's
+    transport when one is already on disk. *)
 
 val resolve_scheme :
-  override:url_scheme option -> sibling_remote_urls:string list -> url_scheme
+  override:url_scheme option -> ssh_available:bool -> url_scheme
 (** Pure decision for "what transport should the managed clone use?". Returns
-    [override] when [Some] (the [--clone-scheme] CLI flag wins). With
-    [override = None], returns [Ssh] iff any element of [sibling_remote_urls]
-    parses as SSH via {!scheme_of_url}; otherwise defaults to [Https]. The
-    handler in [lib/managed_repo.ml] is responsible for discovering sibling
-    clones; this function takes the discovery result as data so the decision
-    stays purely testable. *)
+    [override] when [Some] (the [--clone-scheme] CLI flag, or a previously-
+    persisted scheme, wins). With [override = None], returns [Ssh] when
+    [ssh_available] is [true], otherwise [Https]. The handler in
+    [lib/managed_repo.ml] is responsible for probing SSH reachability; this
+    function takes the probe result as data so the decision stays purely
+    testable. *)
 
 val infer_owner_repo_from_url : string -> (string * string) option
 (** Parse a GitHub remote URL (HTTPS or SSH) and extract [(owner, repo)]. Strips
