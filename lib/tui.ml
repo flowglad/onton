@@ -1037,7 +1037,8 @@ let render_help_overlay ~width ~height =
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
 
-let render_manage_overlay ~width ~height ~automerge_enabled =
+let render_manage_overlay ~width ~height ~automerge_enabled ~needs_intervention
+    =
   let dismiss = Term.styled [ Term.Sgr.dim ] "(esc to cancel)" in
   let title =
     Term.styled
@@ -1055,11 +1056,19 @@ let render_manage_overlay ~width ~height ~automerge_enabled =
       Term.styled [ Term.Sgr.bold; Term.Sgr.fg_green ] automerge_label
     else Term.styled [ Term.Sgr.dim ] automerge_label
   in
+  let bump_item =
+    if needs_intervention then
+      Some
+        (Term.styled [ Term.Sgr.dim ]
+           "    b   Bump (clear intervention, continue patch loop)")
+    else None
+  in
   let items =
     [
       Term.styled [ Term.Sgr.dim ] "    m   Force mark as merged (break glass)";
       automerge_item;
     ]
+    @ Option.to_list bump_item
   in
   let content = title :: "" :: items in
   let overlay_h = Int.max 0 (Int.min (List.length content) (height - 1)) in
@@ -1154,17 +1163,30 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     let overlay = render_help_overlay ~width ~height in
     { no_patches with lines = overlay }
   else if show_manage then
-    let automerge_enabled =
+    let target_pv =
       match view_mode with
       | Detail_view patch_id ->
           List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
-          |> Option.value_map ~default:false ~f:(fun pv -> pv.automerge_enabled)
       | List_view ->
-          List.nth views selected
-          |> Option.value_map ~default:false ~f:(fun pv -> pv.automerge_enabled)
-      | Timeline_view -> false
+          let count = List.length views in
+          if count = 0 then None
+          else
+            let idx = Int.max 0 (Int.min selected (count - 1)) in
+            List.nth views idx
+      | Timeline_view -> None
     in
-    let overlay = render_manage_overlay ~width ~height ~automerge_enabled in
+    let automerge_enabled =
+      Option.value_map target_pv ~default:false ~f:(fun pv ->
+          pv.automerge_enabled)
+    in
+    let needs_intervention =
+      Option.value_map target_pv ~default:false ~f:(fun pv ->
+          pv.needs_intervention)
+    in
+    let overlay =
+      render_manage_overlay ~width ~height ~automerge_enabled
+        ~needs_intervention
+    in
     { no_patches with lines = overlay; detail_scroll_offset = scroll_offset }
   else
     let header = render_header ~project_name ~backend_name ~width in

@@ -156,7 +156,11 @@ val views_of_orchestrator :
 val render_help_overlay : width:int -> height:int -> string list
 
 val render_manage_overlay :
-  width:int -> height:int -> automerge_enabled:bool -> string list
+  width:int ->
+  height:int ->
+  automerge_enabled:bool ->
+  needs_intervention:bool ->
+  string list
 
 type prompt_info = { prompt_text : string; cursor_col : int }
 
