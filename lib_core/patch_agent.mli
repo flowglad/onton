@@ -135,11 +135,15 @@ val pr_number : t -> Types.Pr_number.t option
     [None] for [Absent]. *)
 
 val needs_intervention : t -> bool
-(** Derived predicate: true when [Human] is not in [queue] and any of:
-    [ci_failure_count >= 3], [session_fallback = Given_up],
-    [(not has_pr) && start_attempts_without_pr >= 2],
-    [conflict_noop_count >= 2], [no_commits_push_count >= 2],
-    [push_failure_count >= 3], or [pr_body_artifact_miss_count >= 2]. *)
+(** Derived predicate. True iff the agent is not [merged] AND any of:
+    - [session_fallback = Given_up] (bypasses the Human exemption)
+    - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
+      exemption; queued Human entries are deferred until [Missing → Present]
+      recovery rather than dispatched while [Missing])
+    - [Human] not in queue AND any of: [ci_failure_count >= 3],
+      [(not has_pr) && start_attempts_without_pr >= 2],
+      [conflict_noop_count >= 2], [no_commits_push_count >= 2],
+      [push_failure_count >= 3], [pr_body_artifact_miss_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -442,18 +446,24 @@ val mark_pr_missing : t -> t
 (** Transition the agent from [Present pr] to [Missing pr]: the remote no longer
     has the PR. Minimal: clears only the world-state assertions that are no
     longer authoritative ([is_draft], [merge_ready], [checks_passing],
-    [ci_checks]). Everything else — queue, counters, [notified_base_branch],
-    [delivered_ci_run_ids], [pr_body_delivered], [current_op], [busy],
-    [base_branch] — is preserved so a [Missing → Present] recovery via
-    {!set_pr_number} (same-number) is a near-no-op.
+    [ci_checks]). Everything else — queue (including Human, Ci, Pr_body,
+    Findings, Rebase, Review_comments, Merge_conflict), counters,
+    [notified_base_branch], [delivered_ci_run_ids], [pr_body_delivered],
+    [current_op], [busy], [base_branch] — is preserved so a [Missing → Present]
+    recovery via {!set_pr_number} (same-number) is a near-no-op.
 
-    The planner gates Rebase/Respond on [is_pr_present] so PR-coupled queue
-    entries cannot fire while the agent is [Missing]; preserved Human and
-    Merge_conflict entries are dispatched once the PR is recovered.
+    {b Human messages on a [Missing] agent are deferred, not actively
+       dispatched.} {!needs_intervention} fires on [is_pr_missing], so the
+    planner's Respond/Rebase branches gate the agent off. Queued Human entries
+    survive the [Missing] phase and dispatch normally once the PR recovers to
+    [Present] (via {!Patch_pr_status.classify_recovery_on_observe} →
+    {!Orchestrator.set_pr_number}). The operator's escape if the PR is not
+    coming back is [Orchestrator.remove_agent] (i.e., [-N] in the TUI).
 
     Raises [Invalid_argument] on [Absent] (cannot mark missing what was never
     had) or [Missing] (idempotency is the caller's responsibility — see
-    {!Orchestrator.mark_pr_missing} for the idempotent wrapper). *)
+    {!Orchestrator.mark_pr_missing} for the idempotent integration-level
+    wrapper). *)
 
 val restore :
   patch_id:Types.Patch_id.t ->

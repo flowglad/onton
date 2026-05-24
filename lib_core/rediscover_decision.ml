@@ -35,6 +35,13 @@ let classify (input : input) : classification =
       if input.in_gameplan then Clear_pr_for_recreate else Mark_pr_missing
   | Error message -> Log_error { message }
 
+type log_decision = Log_emit | Log_skip [@@deriving show, eq]
+
+let classify_vanish_log cls ~already_logged =
+  match cls with
+  | Mark_pr_missing -> if already_logged then Log_skip else Log_emit
+  | Switch_to_pr _ | Clear_pr_for_recreate | Log_error _ -> Log_skip
+
 (* ── Inline tests: one per row of the decision table ── *)
 
 let mk_pid = Patch_id.of_string
@@ -132,3 +139,28 @@ let%test "classify is deterministic" =
     }
   in
   equal_classification (classify input) (classify input)
+
+let%test "classify_vanish_log: Mark_pr_missing first time -> Log_emit" =
+  equal_log_decision
+    (classify_vanish_log Mark_pr_missing ~already_logged:false)
+    Log_emit
+
+let%test "classify_vanish_log: Mark_pr_missing already logged -> Log_skip" =
+  equal_log_decision
+    (classify_vanish_log Mark_pr_missing ~already_logged:true)
+    Log_skip
+
+let%test "classify_vanish_log: Switch_to_pr never emits" =
+  equal_log_decision
+    (classify_vanish_log (Switch_to_pr sample_replacement) ~already_logged:false)
+    Log_skip
+
+let%test "classify_vanish_log: Clear_pr_for_recreate never emits" =
+  equal_log_decision
+    (classify_vanish_log Clear_pr_for_recreate ~already_logged:false)
+    Log_skip
+
+let%test "classify_vanish_log: Log_error never emits" =
+  equal_log_decision
+    (classify_vanish_log (Log_error { message = "x" }) ~already_logged:false)
+    Log_skip

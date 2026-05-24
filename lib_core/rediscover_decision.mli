@@ -52,3 +52,15 @@ type classification =
 
 val classify : input -> classification
 (** Total. Pure. Same input always yields the same classification. *)
+
+(** {2 Log dedup} *)
+
+type log_decision = Log_emit | Log_skip [@@deriving show, eq]
+
+val classify_vanish_log : classification -> already_logged:bool -> log_decision
+(** Pure decision for "should the effectful handler emit the 'PR vanished from
+    remote' log line on this tick?". The handler maintains the [already_logged]
+    flag per-patch (mirroring [mark_skip_logged] in the poller fiber) and resets
+    it whenever a successful recovery transition fires (e.g. [Switch_to_pr]).
+    Returns [Log_skip] for non-[Mark_pr_missing] classifications regardless of
+    [already_logged]. *)
