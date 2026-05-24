@@ -40,6 +40,12 @@ type t = {
   push_failure_count : int;
   branch_rebased_onto : Branch.t option;
   branch_rebased_onto_sha : string option;
+  anchor_history : Anchor_history.t;
+      (** Newest-first log of {!Anchor.t} values recorded over this agent's
+          lifetime. The newest entry mirrors
+          [(branch_rebased_onto, branch_rebased_onto_sha)] as a derived view;
+          older entries serve as divergence fallbacks for
+          {!Rebase_decision.plan}. Capped at {!Anchor_history.cap}. *)
   checks_passing : bool;
   current_op : Operation_kind.t option;
   current_op_state : op_state;
@@ -138,6 +144,7 @@ let create ~branch patch_id =
     push_failure_count = 0;
     branch_rebased_onto = None;
     branch_rebased_onto_sha = None;
+    anchor_history = Anchor_history.empty;
     checks_passing = false;
     current_op = None;
     current_op_state = Queued;
@@ -182,6 +189,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     push_failure_count = 0;
     branch_rebased_onto = None;
     branch_rebased_onto_sha = None;
+    anchor_history = Anchor_history.empty;
     checks_passing = false;
     current_op = None;
     current_op_state = Queued;
@@ -388,10 +396,10 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count ~start_attempts_without_pr ~conflict_noop_count
     ~no_commits_push_count ~push_failure_count ~branch_rebased_onto
-    ~branch_rebased_onto_sha ~checks_passing ~current_op ~current_op_state
-    ~current_message_id ~generation ~worktree_path ~branch_blocked
-    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ~automerge_failure_count ~delivered_ci_run_ids =
+    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
+    ~current_op_state ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
+    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -420,6 +428,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
     push_failure_count;
     branch_rebased_onto;
     branch_rebased_onto_sha;
+    anchor_history;
     checks_passing;
     current_op;
     current_op_state;
@@ -488,6 +497,25 @@ let set_branch_rebased_onto_sha t sha =
       let s = String.strip s in
       if String.is_empty s then { t with branch_rebased_onto_sha = None }
       else { t with branch_rebased_onto_sha = Some s }
+
+let record_anchor t anchor =
+  let anchor_history = Anchor_history.push t.anchor_history anchor in
+  {
+    t with
+    anchor_history;
+    branch_rebased_onto = Some (Anchor.base anchor);
+    branch_rebased_onto_sha = Some (Anchor.sha anchor);
+  }
+
+let clear_anchor_for_base t new_base =
+  (* Drop the legacy SHA view when the orchestrator retargets the agent's
+     base to one whose recorded anchor SHA is no longer authoritative. The
+     anchor history is preserved — [Rebase_decision.plan] can still use older
+     entries as divergence fallbacks. The legacy [branch_rebased_onto] field
+     is set to the new base so the drift detector sees a coherent view. *)
+  { t with branch_rebased_onto = Some new_base; branch_rebased_onto_sha = None }
+
+let anchor_history t = t.anchor_history
 
 let rebase t ~base_branch =
   if not (has_pr t) then invalid_arg "Patch_agent.rebase: patch has no PR";

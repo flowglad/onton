@@ -191,6 +191,76 @@ let () =
           | Error _msg -> false
         with _ -> false)
   in
+  (* anchor_history is a new field; exercise it explicitly by pushing 1-8
+     synthetic anchors onto an agent before round-tripping. The generic
+     gen_patch_agent_fully_populated leaves history empty, which would
+     trivially round-trip; this test confirms non-empty histories survive
+     yojson_of_t / patch_agent_of_yojson identically. *)
+  let gen_hex_sha =
+    QCheck2.Gen.string_size
+      ~gen:QCheck2.Gen.(oneof [ char_range '0' '9'; char_range 'a' 'f' ])
+      (QCheck2.Gen.return 40)
+  in
+  let gen_anchor =
+    QCheck2.Gen.map2
+      (fun branch sha ->
+        match
+          Onton_core.Anchor.make ~base:branch ~sha ~observed_at_remote:true
+        with
+        | Some a -> a
+        | None -> assert false)
+      (QCheck2.Gen.map Branch.of_string
+         (QCheck2.Gen.string_size
+            ~gen:(QCheck2.Gen.char_range 'a' 'z')
+            (QCheck2.Gen.int_range 1 20)))
+      gen_hex_sha
+  in
+  let anchor_history_roundtrip =
+    QCheck2.Test.make
+      ~name:"patch_agent.anchor_history survives JSON round-trip" ~count:100
+      QCheck2.Gen.(
+        pair gen_patch_agent_fully_populated
+          (list_size (int_range 1 8) gen_anchor))
+      (fun (agent, anchors) ->
+        try
+          let agent =
+            List.fold anchors ~init:agent
+              ~f:Onton_core.Patch_agent.record_anchor
+          in
+          let gameplan = gameplan_for_agent agent in
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          | Ok agent' ->
+              Onton_core.Anchor_history.equal
+                (Onton_core.Patch_agent.anchor_history agent)
+                (Onton_core.Patch_agent.anchor_history agent')
+          | Error _msg -> false
+        with _ -> false)
+  in
+  (* Old snapshots predating anchor_history must load as empty history. *)
+  let missing_anchor_history_defaults_empty =
+    QCheck2.Test.make
+      ~name:"missing anchor_history key defaults to Anchor_history.empty"
+      ~count:50 gen_patch_agent_fully_populated (fun agent ->
+        try
+          let gameplan = gameplan_for_agent agent in
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          let json =
+            match json with
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter fields ~f:(fun (k, _) ->
+                       not (String.equal k "anchor_history")))
+            | other -> other
+          in
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          | Ok agent' ->
+              Onton_core.Anchor_history.equal
+                (Onton_core.Patch_agent.anchor_history agent')
+                Onton_core.Anchor_history.empty
+          | Error _ -> false
+        with _ -> false)
+  in
   let pr_number_roundtrip =
     QCheck2.Test.make ~name:"pr_number survives round-trip" ~count:200
       gen_patch_agent_fully_populated (fun agent ->
@@ -375,6 +445,8 @@ let () =
         snapshot_json_structure;
         file_roundtrip;
         patch_agent_roundtrip_fully_populated;
+        anchor_history_roundtrip;
+        missing_anchor_history_defaults_empty;
         pr_number_roundtrip;
         missing_pr_number_defaults_none;
         missing_branch_falls_back_to_gameplan;

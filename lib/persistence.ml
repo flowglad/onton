@@ -168,6 +168,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         match a.branch_rebased_onto_sha with
         | None -> `Null
         | Some s -> `String s );
+      ("anchor_history", Anchor_history.yojson_of_t a.anchor_history);
       ("checks_passing", `Bool a.checks_passing);
       ( "current_op",
         match a.current_op with
@@ -298,6 +299,13 @@ let patch_agent_of_yojson ~gameplan json =
          (Option.value (int_member_opt "push_failure_count" json) ~default:0)
        ~branch_rebased_onto_sha:
          (string_member_opt "branch_rebased_onto_sha" json)
+       ~anchor_history:
+         (match Yojson.Safe.Util.member "anchor_history" json with
+         | `Null -> Anchor_history.empty
+         | v -> (
+             match Anchor_history.of_yojson_opt v with
+             | Some h -> h
+             | None -> Anchor_history.empty))
        ~branch_rebased_onto:
          (match string_member_opt "branch_rebased_onto" json with
          | Some s -> Some (Branch.of_string s)
@@ -764,12 +772,12 @@ let%test_module "session_id_sidecars" =
           ~start_attempts_without_pr:0 ~conflict_noop_count:0
           ~no_commits_push_count:0 ~push_failure_count:0
           ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-          ~checks_passing:false ~current_op:None
-          ~current_op_state:Patch_agent.Queued ~current_message_id:None
-          ~generation:0 ~worktree_path:None ~branch_blocked:false
-          ~llm_session_id ~automerge_enabled:false ~automerge_deadline:None
-          ~automerge_inflight:false ~automerge_failure_count:0
-          ~delivered_ci_run_ids:[]
+          ~anchor_history:Anchor_history.empty ~checks_passing:false
+          ~current_op:None ~current_op_state:Patch_agent.Queued
+          ~current_message_id:None ~generation:0 ~worktree_path:None
+          ~branch_blocked:false ~llm_session_id ~automerge_enabled:false
+          ~automerge_deadline:None ~automerge_inflight:false
+          ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
       in
       let orch =
         Orchestrator.restore

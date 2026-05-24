@@ -207,7 +207,7 @@ let plan_onto_target_upstream : Rebase_decision.plan -> (string * string) option
   | Plain _ ->
       None
 
-(** RD-PLAN-1: Plain {No_anchor} when no anchor / no history. *)
+(** RD-PLAN-1: [Plain No_anchor] when no anchor / no history. *)
 let prop_plan_no_anchor =
   Test.make ~count:100 ~name:"plan: empty input -> Plain No_anchor"
     (Gen.pair gen_typed_branch (Gen.option gen_hex40))
