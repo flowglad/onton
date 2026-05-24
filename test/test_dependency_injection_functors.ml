@@ -86,7 +86,7 @@ let _check_narrowed :
     ?branch:Branch.t ->
     ?base_ref:string ->
     unit ->
-    string option =
+    Worktree_setup.ensure_result =
   WS.ensure_worktree
 
 (** Patch 2 compile-time signature check.
@@ -189,7 +189,7 @@ let () =
       ?branch:Branch.t ->
       ?base_ref:string ->
       unit ->
-      string option =
+      Worktree_setup.ensure_result =
     WS.ensure_worktree
   in
   ignore check_narrowed;

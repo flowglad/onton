@@ -664,7 +664,7 @@ struct
                                         ~base_ref:(Branch.to_string base_branch)
                                         ()
                                     with
-                                    | None ->
+                                    | Worktree_setup.Missing ->
                                         Runtime.update_orchestrator runtime
                                           (fun orch ->
                                             Orchestrator.apply_session_result
@@ -672,7 +672,8 @@ struct
                                               Orchestrator
                                               .Session_worktree_missing);
                                         `Failed
-                                    | Some _wt_path ->
+                                    | Worktree_setup.Refused -> `Failed
+                                    | Worktree_setup.Path _wt_path ->
                                         (* Capture the initial anchor for this
                                            Start: resolve origin/<base_branch>'s
                                            current tip so the first rebase has
@@ -1204,8 +1205,9 @@ struct
                                       in
                                       let wt_path =
                                         match wt_path_opt with
-                                        | Some p -> p
-                                        | None ->
+                                        | Worktree_setup.Path p -> p
+                                        | Worktree_setup.Missing
+                                        | Worktree_setup.Refused ->
                                             Worktree.worktree_dir ~project_name
                                               ~patch_id
                                       in

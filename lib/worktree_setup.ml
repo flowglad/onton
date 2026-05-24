@@ -2,6 +2,8 @@ open Base
 
 module type ENV = Run_env.S
 
+type ensure_result = Path of string | Missing | Refused
+
 module type S = sig
   val resolve_worktree_path :
     patch_id:Types.Patch_id.t ->
@@ -16,7 +18,7 @@ module type S = sig
     ?branch:Types.Branch.t ->
     ?base_ref:string ->
     unit ->
-    string option
+    ensure_result
 end
 
 module Make (W : Worktree.S) (Env : ENV) : S = struct
@@ -59,7 +61,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     if Stdlib.Sys.file_exists path then (
       Runtime.update_orchestrator runtime (fun orch ->
           Orchestrator.set_worktree_path orch patch_id path);
-      Some path)
+      Path path)
     else
       let br =
         match branch with Some b -> b | None -> agent.Patch_agent.branch
@@ -92,7 +94,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             (Printf.sprintf "Found existing worktree for branch at %s" existing);
           Runtime.update_orchestrator runtime (fun orch ->
               Orchestrator.set_worktree_path orch patch_id existing);
-          Some existing
+          Path existing
       | None -> (
           if W.is_checked_out_in_repo_root br then (
             let main_root = W.resolve_main_root () in
@@ -104,7 +106,7 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   again."
                  (Types.Branch.to_string br)
                  main_root main_root);
-            None)
+            Missing)
           else
             let base =
               match base_ref with
@@ -200,15 +202,15 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                           (Printf.sprintf "Hook on_worktree_create failed — %s"
                              msg))
                 | None -> ());
-                Some path
+                Path path
             | true, false ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Worktree still missing at %s" path);
-                None
+                Missing
             | false, _ -> (
                 match create_outcome with
-                | `Refused _ -> None
-                | `Created -> None
+                | `Refused _ -> Refused
+                | `Created -> Missing
                 | `Raised _ -> (
                     (* [Worktree.create] raised. A concurrent fiber may have already
                  added a real worktree for [br] before our attempt collided.
@@ -228,6 +230,6 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                         Runtime.update_orchestrator runtime (fun orch ->
                             Orchestrator.set_worktree_path orch patch_id
                               existing);
-                        Some existing
-                    | None -> None)))
+                        Path existing
+                    | None -> Missing)))
 end
