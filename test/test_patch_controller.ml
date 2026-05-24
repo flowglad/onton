@@ -1159,9 +1159,67 @@ let () =
         with Invalid_argument _ -> false)
   in
 
+  (* Missing -> Present recovery via apply_poll_result. A poll that returns a
+     non-merged, non-conflict state means the remote currently has the PR;
+     the controller must lift the agent from Missing back to Present so
+     downstream planning can proceed. *)
+  let prop_apply_poll_lifts_missing_to_present =
+    Test.make ~name:"apply_poll_result lifts Missing -> Present on observe"
+      ~count:1
+      Gen.(return ())
+      (fun () ->
+        let pid = Patch_id.of_string "777" in
+        let branch = Branch.of_string "feat/recovered" in
+        let orch = Orchestrator.create ~patches:[] ~main_branch:main in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid ~branch ~base_branch:main
+            ~pr_number:(Pr_number.of_int 777)
+        in
+        (* Populate state that should survive the roundtrip *)
+        let orch =
+          Orchestrator.record_delivered_ci_run_ids orch pid [ 11; 12 ]
+        in
+        let orch = Orchestrator.set_pr_body_delivered orch pid true in
+        let before = Orchestrator.agent orch pid in
+        let orch = Orchestrator.mark_pr_missing orch pid in
+        let poll_result =
+          Poller.
+            {
+              merged = false;
+              has_conflict = false;
+              ci_checks = [];
+              checks_passing = true;
+              merge_ready = false;
+              queue = [];
+              is_draft = false;
+              closed = false;
+            }
+        in
+        let observation =
+          Patch_controller.
+            {
+              poll_result;
+              base_branch = None;
+              branch_in_root = false;
+              worktree_path = None;
+            }
+        in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        let after = Orchestrator.agent orch pid in
+        Patch_agent.is_pr_present after
+        && (not (Patch_agent.is_pr_missing after))
+        && List.equal Int.equal after.Patch_agent.delivered_ci_run_ids
+             before.Patch_agent.delivered_ci_run_ids
+        && Bool.equal after.Patch_agent.pr_body_delivered
+             before.Patch_agent.pr_body_delivered)
+  in
+
   let suite =
     [
       prop_missing_adhoc_does_not_crash_reconcile;
+      prop_apply_poll_lifts_missing_to_present;
       prop_deterministic;
       prop_plan_tick_deterministic;
       prop_pr_body_queue_idempotent;

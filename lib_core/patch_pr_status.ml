@@ -48,6 +48,13 @@ let classify_set_present t pr_number =
   | Missing n when Pr_number.equal n pr_number -> Set_present_recover_same
   | Absent | Present _ | Missing _ -> Set_present_adopt_new
 
+type recovery_decision = Lift_to_present of Pr_number.t | No_recovery_needed
+[@@deriving show, eq]
+
+let classify_recovery_on_observe = function
+  | Missing n -> Lift_to_present n
+  | Absent | Present _ -> No_recovery_needed
+
 (* ── Persistence ── *)
 
 let yojson_of_t = function
@@ -202,6 +209,21 @@ let%test "classify_set_present: Missing n + different m -> Adopt_new" =
   equal_set_present_decision
     (classify_set_present (Missing (mk_pr 7)) (mk_pr 8))
     Set_present_adopt_new
+
+let%test "classify_recovery_on_observe: Missing n -> Lift n" =
+  equal_recovery_decision
+    (classify_recovery_on_observe (Missing (mk_pr 9)))
+    (Lift_to_present (mk_pr 9))
+
+let%test "classify_recovery_on_observe: Present -> No_recovery" =
+  equal_recovery_decision
+    (classify_recovery_on_observe (Present (mk_pr 9)))
+    No_recovery_needed
+
+let%test "classify_recovery_on_observe: Absent -> No_recovery" =
+  equal_recovery_decision
+    (classify_recovery_on_observe Absent)
+    No_recovery_needed
 
 let roundtrip_ok t =
   match t_of_yojson_compat (yojson_of_t t) with

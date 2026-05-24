@@ -104,6 +104,21 @@ val classify_set_present : t -> Pr_number.t -> set_present_decision
     should preserve world-state (same-number recovery) or reset bootstrap state
     (different number). *)
 
+type recovery_decision =
+  | Lift_to_present of Pr_number.t
+      (** Prior status was [Missing n]; the remote now confirms the PR exists.
+          The effectful handler should call [set_pr_number] with the recorded
+          number (same-number recovery, preserves world-state). *)
+  | No_recovery_needed
+      (** Prior was [Present _] (no transition needed) or [Absent] (no PR to
+          recover). *)
+[@@deriving show, eq]
+
+val classify_recovery_on_observe : t -> recovery_decision
+(** Total. Used by callers that have a positive signal from the remote (the
+    poller's [Apply_pr_state] dispatch, the startup reconciler's discovery) to
+    decide whether to lift a [Missing] agent back to [Present]. *)
+
 (** {2 Persistence} *)
 
 val yojson_of_t : t -> Yojson.Safe.t

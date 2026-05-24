@@ -2957,3 +2957,31 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-AH-8 passed"
+
+(** PI-AH-9: a normal Apply_poll on a Missing ad-hoc agent lifts it back to
+    Present, exercising the Patch_pr_status.classify_recovery_on_observe
+    dispatch wired into Patch_controller.apply_poll_result. *)
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-9: Apply_poll on Missing ad-hoc lifts to Present" ~count:200
+      QCheck2.Gen.(int_range 0 (max_adhoc - 1))
+      (fun i ->
+        let patches = mk_patches 0 in
+        let orch = bootstrap patches in
+        let cmds =
+          [
+            Add_adhoc i;
+            Mark_pr_missing_adhoc i;
+            Apply_poll { patch_idx = i; poll_kind = Poll_normal };
+          ]
+        in
+        let orch = run_sequence orch patches cmds in
+        match Orchestrator.find_agent orch (adhoc_pid i) with
+        | Some agent ->
+            Patch_agent.is_pr_present agent
+            && not (Patch_agent.is_pr_missing agent)
+        | None -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-9 passed"

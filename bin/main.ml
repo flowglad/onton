@@ -867,18 +867,36 @@ let construct_capabilities ~net (setup : runtime_setup) =
       ~f:(fun { pr_number = pr; patch_id = pid; base_branch = base; merged } ->
         Runtime.update_orchestrator setup.runtime (fun orch ->
             match Orchestrator.find_agent orch pid with
-            | Some agent when Patch_agent.has_pr agent ->
-                Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                if merged then Orchestrator.mark_merged orch pid else orch
-            | Some _ ->
-                Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
-                let orch =
-                  Orchestrator.fire orch (Orchestrator.Start (pid, base))
-                in
-                let orch = Orchestrator.set_pr_number orch pid pr in
-                let orch = Orchestrator.complete orch pid in
-                if merged then Orchestrator.mark_merged orch pid else orch
-            | None -> orch));
+            | None -> orch
+            | Some agent -> (
+                (* Dispatch on the pure recovery classifier. Three cases:
+                   - agent was [Missing]: lift to [Present] via set_pr_number
+                     (Recover_same arm preserves world-state when [pr]
+                     matches the recorded number; Adopt_new arm resets if
+                     the remote disagrees).
+                   - agent was [Present _]: nothing to recover; register
+                     the externally-known number and pick up merged.
+                   - agent was [Absent]: bootstrap path — fire Start, set
+                     pr_number, complete. *)
+                match
+                  Patch_pr_status.classify_recovery_on_observe
+                    agent.Patch_agent.pr_status
+                with
+                | Lift_to_present _ ->
+                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    let orch = Orchestrator.set_pr_number orch pid pr in
+                    if merged then Orchestrator.mark_merged orch pid else orch
+                | No_recovery_needed when Patch_agent.is_pr_present agent ->
+                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    if merged then Orchestrator.mark_merged orch pid else orch
+                | No_recovery_needed ->
+                    Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    let orch =
+                      Orchestrator.fire orch (Orchestrator.Start (pid, base))
+                    in
+                    let orch = Orchestrator.set_pr_number orch pid pr in
+                    let orch = Orchestrator.complete orch pid in
+                    if merged then Orchestrator.mark_merged orch pid else orch)));
     Base.List.iter startup.reset_pending ~f:(fun patch_id ->
         log_event setup.runtime ~patch_id
           "Reset stale busy agent from crashed session";

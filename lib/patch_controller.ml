@@ -91,6 +91,23 @@ let apply_poll_result t patch_id
       poll_observation) =
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
+  (* If the agent was [Missing] and we have a successful poll observation,
+     lift it back to [Present] before applying any world-state updates. The
+     pure classifier is total; the effectful dispatch is a flat match.
+     [set_pr_number]'s [Set_present_recover_same] arm preserves all state
+     that was held across the [Missing] phase. *)
+  let t =
+    let agent = Orchestrator.agent t patch_id in
+    match
+      Patch_pr_status.classify_recovery_on_observe agent.Patch_agent.pr_status
+    with
+    | Lift_to_present pr ->
+        log
+          (Printf.sprintf "PR #%d re-appeared on remote — restoring to Present"
+             (Pr_number.to_int pr));
+        Orchestrator.set_pr_number t patch_id pr
+    | No_recovery_needed -> t
+  in
   let t =
     if poll_result.merged then (
       let agent = Orchestrator.agent t patch_id in
