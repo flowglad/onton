@@ -11,7 +11,7 @@ type op_state = Queued | Running
 type t = {
   patch_id : Patch_id.t;
   branch : Branch.t;
-  pr_number : Pr_number.t option;
+  pr_status : Patch_pr_status.t;
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -86,7 +86,10 @@ type t = {
 
 let pp fmt t = Sexp.pp_hum fmt (sexp_of_t t)
 let show t = Sexp.to_string_hum (sexp_of_t t)
-let has_pr t = Option.is_some t.pr_number
+let has_pr t = Patch_pr_status.has_pr t.pr_status
+let is_pr_present t = Patch_pr_status.is_pr_present t.pr_status
+let is_pr_missing t = Patch_pr_status.is_missing t.pr_status
+let pr_number t = Patch_pr_status.pr_number t.pr_status
 
 let needs_intervention t =
   let human_in_queue =
@@ -106,7 +109,7 @@ let needs_intervention t =
      callers that don't pre-filter by [merged]. *)
   let given_up = equal_session_fallback t.session_fallback Given_up in
   (not t.merged)
-  && (given_up
+  && (given_up || is_pr_missing t
      || (not human_in_queue)
         && (t.ci_failure_count >= 3
            || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
@@ -119,7 +122,7 @@ let create ~branch patch_id =
   {
     patch_id;
     branch;
-    pr_number = None;
+    pr_status = Patch_pr_status.Absent;
     has_session = false;
     busy = false;
     merged = false;
@@ -164,7 +167,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
   {
     patch_id;
     branch;
-    pr_number = Some pr_number;
+    pr_status = Patch_pr_status.Present pr_number;
     has_session = false;
     busy = false;
     merged = false;
@@ -305,7 +308,7 @@ let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 
 let is_approved t ~main_branch =
-  has_pr t && t.merge_ready && (not t.busy)
+  is_pr_present t && t.merge_ready && (not t.busy)
   && (not (needs_intervention t))
   && (not t.is_draft) && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
@@ -390,7 +393,7 @@ let reset_intervention_state t =
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
 
-let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
+let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
     ~ci_checks ~merge_ready ~is_draft ~pr_body_delivered
@@ -403,7 +406,7 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
   {
     patch_id;
     branch;
-    pr_number;
+    pr_status;
     has_session;
     busy;
     merged;
@@ -447,16 +450,20 @@ let restore ~patch_id ~branch ~pr_number ~has_session ~busy ~merged ~queue
 let set_pr_number t pr_number =
   {
     t with
-    pr_number = Some pr_number;
+    pr_status = Patch_pr_status.set_present t.pr_status pr_number;
     is_draft = true;
     pr_body_delivered = false;
     start_attempts_without_pr = 0;
   }
 
 let clear_pr t =
+  (* Gameplan-recreate path: a gameplan patch's PR was closed and the next
+     [Start] should open a fresh one. Tightens to Present-only via
+     [Patch_pr_status.clear_for_recreate]. Calling this on Absent or Missing
+     is a caller bug — see [mark_pr_missing] for the ad-hoc-vanished path. *)
   {
     t with
-    pr_number = None;
+    pr_status = Patch_pr_status.clear_for_recreate t.pr_status;
     is_draft = false;
     merge_ready = false;
     checks_passing = false;
@@ -465,6 +472,35 @@ let clear_pr t =
     base_branch = None;
     notified_base_branch = None;
     delivered_ci_run_ids = [];
+  }
+
+let mark_pr_missing t =
+  (* Ad-hoc PR vanished from remote. Preserves the recorded PR number (so the
+     TUI can show what was lost, and a poll that re-observes the PR can adopt
+     it back via [set_pr_number]), but strips functional PR state so no
+     downstream code tries to act against a number GitHub no longer has.
+     Queue entries that require an active PR are dropped; Human and
+     Merge_conflict survive (a human message can still be relevant, and the
+     conflict flag is informational). *)
+  let queue =
+    List.filter t.queue ~f:(fun k ->
+        match k with
+        | Operation_kind.Ci | Review_comments | Pr_body | Findings | Rebase ->
+            false
+        | Human | Merge_conflict -> true)
+  in
+  {
+    t with
+    pr_status = Patch_pr_status.mark_missing t.pr_status;
+    is_draft = false;
+    merge_ready = false;
+    checks_passing = false;
+    ci_checks = [];
+    ci_failure_count = 0;
+    base_branch = None;
+    notified_base_branch = None;
+    delivered_ci_run_ids = [];
+    queue;
   }
 
 let start t ~base_branch =
@@ -510,7 +546,8 @@ let record_anchor t anchor =
 let anchor_history t = t.anchor_history
 
 let rebase t ~base_branch =
-  if not (has_pr t) then invalid_arg "Patch_agent.rebase: patch has no PR";
+  if not (is_pr_present t) then
+    invalid_arg "Patch_agent.rebase: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.rebase: patch is merged";
 
   if t.busy then invalid_arg "Patch_agent.rebase: patch is busy";
@@ -541,7 +578,8 @@ let rebase t ~base_branch =
   }
 
 let respond t k =
-  if not (has_pr t) then invalid_arg "Patch_agent.respond: patch has no PR";
+  if not (is_pr_present t) then
+    invalid_arg "Patch_agent.respond: patch has no PR (or PR is missing)";
   if t.merged then invalid_arg "Patch_agent.respond: patch is merged";
 
   if t.busy then invalid_arg "Patch_agent.respond: patch is busy";

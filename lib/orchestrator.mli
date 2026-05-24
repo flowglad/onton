@@ -76,6 +76,15 @@ val send_human_message : t -> Patch_id.t -> string -> t
 
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val clear_pr : t -> Patch_id.t -> t
+
+val mark_pr_missing : t -> Patch_id.t -> t
+(** Transition the patch's [pr_status] from [Present] to [Missing]. The
+    effectful caller (typically the poller's PR-rediscovery path) uses this when
+    the remote has lost an ad-hoc PR — preserves the recorded number so the
+    operator can see what vanished and so a re-observation can adopt the same PR
+    back, while stripping functional PR state and dropping PR-coupled queue
+    entries. See {!Patch_agent.mark_pr_missing}. *)
+
 val set_session_failed : t -> Patch_id.t -> t
 
 val set_branch_rebased_onto_sha : t -> Patch_id.t -> string option -> t

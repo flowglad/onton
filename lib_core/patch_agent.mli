@@ -15,7 +15,10 @@ type op_state = Queued | Running
 type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
-  pr_number : Types.Pr_number.t option;
+  pr_status : Patch_pr_status.t;
+      (** Lifecycle status of the patch's PR. Use the accessor functions
+          ([has_pr], [is_pr_present], [is_pr_missing], [pr_number]) rather than
+          pattern-matching the field — see {!Patch_pr_status}. *)
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -114,7 +117,22 @@ val create_adhoc :
 (** {2 Derived predicates} *)
 
 val has_pr : t -> bool
-(** [true] when [pr_number] is [Some _]. *)
+(** [true] when this agent has a recorded PR identity (either [Present] or
+    [Missing] in [pr_status]). Used as the orchestrator-invariant predicate:
+    every graph node must be in the gameplan or have a PR identity. *)
+
+val is_pr_present : t -> bool
+(** [true] only when [pr_status = Present _]. Use this for any callsite that is
+    about to act on the PR (rebase, respond, merge, set draft) — a [Missing] PR
+    cannot be acted on. *)
+
+val is_pr_missing : t -> bool
+(** [true] only when [pr_status = Missing _]. Contributes to
+    {!needs_intervention}. *)
+
+val pr_number : t -> Types.Pr_number.t option
+(** The recorded PR number, if any. [Some] for both [Present] and [Missing];
+    [None] for [Absent]. *)
 
 val needs_intervention : t -> bool
 (** Derived predicate: true when [Human] is not in [queue] and any of:
@@ -405,13 +423,25 @@ val set_pr_number : t -> Types.Pr_number.t -> t
     establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
 
 val clear_pr : t -> t
-(** Remove the PR number and reset all PR-related state, returning the agent to
-    the no-PR bootstrap path. *)
+(** Remove the PR number and reset PR-related state, returning the agent to the
+    no-PR bootstrap path. Tightens to [Present]-only: raises [Invalid_argument]
+    on [Absent] or [Missing]. The gameplan-recreate path is the only legitimate
+    caller; ad-hoc-vanished should use {!mark_pr_missing} instead. *)
+
+val mark_pr_missing : t -> t
+(** Transition the agent from [Present pr] to [Missing pr]: the remote no longer
+    has the PR. Preserves the recorded PR number (so the TUI can show what was
+    lost and a re-observation can adopt the same PR back). Strips functional PR
+    state (draft, merge_ready, ci_checks, base_branch, etc.) and drops
+    PR-coupled queue entries (Ci, Review_comments, Pr_body, Findings, Rebase).
+    Preserves [Human] and [Merge_conflict] queue entries. Raises
+    [Invalid_argument] on [Absent] (cannot mark missing what was never had) or
+    [Missing] (idempotency is the caller's responsibility). *)
 
 val restore :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
-  pr_number:Types.Pr_number.t option ->
+  pr_status:Patch_pr_status.t ->
   has_session:bool ->
   busy:bool ->
   merged:bool ->

@@ -27,6 +27,7 @@ let make_view ~id ~title =
     ci_checks = [];
     recent_stream = [];
     pr_number = None;
+    pr_missing = false;
     base_branch = None;
     worktree_path = None;
     intervention_reason = None;

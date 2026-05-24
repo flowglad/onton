@@ -771,7 +771,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   Runtime.read setup.runtime (fun snap ->
       Orchestrator.all_agents snap.Runtime.orchestrator)
   |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
-      Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
+      Base.Option.iter (Patch_agent.pr_number agent) ~f:(fun pr_number ->
           Pr_registry.register pr_registry ~patch_id:agent.Patch_agent.patch_id
             ~pr_number));
   let branch_of = build_branch_map setup.gameplan ~default:main_branch in
@@ -859,7 +859,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
         Orchestrator.all_agents snap.Runtime.orchestrator)
     |> Base.List.iter ~f:(fun (agent : Patch_agent.t) ->
         if Base.Hash_set.mem errored_ids agent.Patch_agent.patch_id then
-          Base.Option.iter agent.Patch_agent.pr_number ~f:(fun pr_number ->
+          Base.Option.iter (Patch_agent.pr_number agent) ~f:(fun pr_number ->
               Pr_registry.register pr_registry
                 ~patch_id:agent.Patch_agent.patch_id ~pr_number));
     let open Startup_reconciler in

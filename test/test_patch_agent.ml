@@ -687,14 +687,14 @@ let () =
       (* -- create has no pr_number -- *)
       Test.make ~name:"create has no pr_number" gen_pid (fun pid ->
           let a = create ~branch:br0 pid in
-          Option.is_none a.pr_number);
+          Option.is_none (pr_number a));
       (* -- set_pr_number stores pr_number -- *)
       Test.make ~name:"set_pr_number stores pr_number"
         Gen.(pair gen_pid (map Pr_number.of_int (int_range 1 9999)))
         (fun (pid, pr) ->
           let a = create ~branch:br0 pid in
           let a = set_pr_number a pr in
-          Option.equal Pr_number.equal a.pr_number (Some pr));
+          Option.equal Pr_number.equal (pr_number a) (Some pr));
       (* -- start clears ci_checks -- *)
       Test.make ~name:"start clears ci_checks"
         Gen.(pair gen_pid gen_branch)
@@ -717,9 +717,10 @@ let () =
           let a = mark_merged a in
           let a =
             Onton_core.Patch_agent.restore ~patch_id:a.patch_id ~branch:br
-              ~pr_number:None ~has_session:false ~busy:false ~merged:false
-              ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
-              ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
+              ~pr_status:Onton_core.Patch_pr_status.Absent ~has_session:false
+              ~busy:false ~merged:false ~queue:[] ~satisfies:false
+              ~changed:false ~has_conflict:false ~base_branch:None
+              ~notified_base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
@@ -800,7 +801,8 @@ let () =
              restore — rebase should promote has_session to true. *)
           let a =
             restore ~patch_id:pid ~branch:br
-              ~pr_number:(Some (Pr_number.of_int 1))
+              ~pr_status:
+                (Onton_core.Patch_pr_status.Present (Pr_number.of_int 1))
               ~has_session:false ~busy:false ~merged:false ~queue:[]
               ~satisfies:true ~changed:false ~has_conflict:false
               ~base_branch:(Some br) ~notified_base_branch:(Some br)

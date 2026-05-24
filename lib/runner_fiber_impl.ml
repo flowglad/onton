@@ -214,7 +214,7 @@ struct
                        the inflight short-circuit that the predicate applies
                        by default — necessary here because this re-check runs
                        while we hold the flag. *)
-                      (match agent.Patch_agent.pr_number with
+                      (match Patch_agent.pr_number agent with
                         | Some current -> Pr_number.equal current pr_number
                         | None -> false)
                       && Patch_controller.is_automerge_candidate
@@ -717,8 +717,8 @@ struct
                                           Prompt.render_patch_prompt
                                             ~project_name ?agents_md
                                             ?pr_number:
-                                              agent.Patch_agent.pr_number patch
-                                            gameplan
+                                              (Patch_agent.pr_number agent)
+                                            patch gameplan
                                             ~base_branch:
                                               (Branch.to_string base_branch)
                                         in
@@ -742,7 +742,7 @@ struct
                                           Prompt.render_patch_layer
                                             ~project_name patch
                                             ?pr_number:
-                                              agent.Patch_agent.pr_number
+                                              (Patch_agent.pr_number agent)
                                             ~functional_changes
                                             ~base_branch:
                                               (Branch.to_string base_branch)
@@ -1040,8 +1040,9 @@ struct
                     let is_ci = Operation_kind.equal kind Operation_kind.Ci in
                     let pr_number =
                       Runtime.read runtime (fun snap ->
-                          (Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                            .Patch_agent.pr_number)
+                          Patch_agent.pr_number
+                            (Orchestrator.agent snap.Runtime.orchestrator
+                               patch_id))
                     in
                     let fresh_pr_state =
                       if is_review || is_ci then (
@@ -1215,7 +1216,7 @@ struct
                                    an enriched prompt to the agent. *)
                                       let deliver_to_agent ?conflict_info () =
                                         let pr_number =
-                                          agent.Patch_agent.pr_number
+                                          Patch_agent.pr_number agent
                                         in
                                         let rebase_still_in_progress =
                                           W.rebase_in_progress ~path:wt_path
@@ -1492,7 +1493,7 @@ struct
                                         base_change;
                                       } -> (
                                       let pr_number =
-                                        agent.Patch_agent.pr_number
+                                        Patch_agent.pr_number agent
                                       in
                                       let base_changed_prefix =
                                         render_base_changed_prefix base_change

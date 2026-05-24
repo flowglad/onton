@@ -46,8 +46,12 @@ let rec remove_path path =
 let refresh_candidates (agents : Patch_agent.t Map.M(Patch_id).t) =
   Map.fold agents ~init:[] ~f:(fun ~key:patch_id ~data:agent acc ->
       if agent.Patch_agent.merged then acc
+        (* Skip Missing: the PR is gone from the forge, so refreshing it would
+           404. Wait for an explicit Rediscover_pr to bring it back to Present
+           or for the operator to remove it. *)
+      else if not (Patch_agent.is_pr_present agent) then acc
       else
-        match agent.Patch_agent.pr_number with
+        match Patch_agent.pr_number agent with
         | None -> acc
         | Some pr_number -> (patch_id, pr_number) :: acc)
 

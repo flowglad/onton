@@ -101,6 +101,14 @@ type command =
   | Add_adhoc of int
   | Remove_adhoc of int
   | Discover_pr of int
+  | Mark_pr_missing_adhoc of int
+      (** Simulates the poller's [Rediscover_decision.Mark_pr_missing] arm — an
+          ad-hoc PR has vanished from the remote. Idempotency is the caller's
+          responsibility, so the apply path guards on [is_pr_present]. *)
+  | Rediscover_replacement_adhoc of int
+      (** Simulates [Rediscover_decision.Switch_to_pr] on an ad-hoc agent whose
+          PR was Missing — adopts a synthetic replacement PR number. Should
+          bring [pr_status] back to Present. *)
   | Apply_sync_outcome of {
       patch_idx : int;
       kind : Operation_kind.t;
@@ -173,6 +181,9 @@ let show_command = function
   | Add_adhoc i -> Printf.sprintf "Add_adhoc(%d)" i
   | Remove_adhoc i -> Printf.sprintf "Remove_adhoc(%d)" i
   | Discover_pr i -> Printf.sprintf "Discover_pr(%d)" i
+  | Mark_pr_missing_adhoc i -> Printf.sprintf "Mark_pr_missing_adhoc(%d)" i
+  | Rediscover_replacement_adhoc i ->
+      Printf.sprintf "Rediscover_replacement_adhoc(%d)" i
   | Apply_sync_outcome { patch_idx; kind; outcome } ->
       Printf.sprintf "Apply_sync_outcome(%d, %s, %s)" patch_idx
         (Operation_kind.to_label kind)
@@ -305,6 +316,10 @@ let gen_command ~n =
         map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Discover_pr i) gen_idx;
+        map (fun i -> Mark_pr_missing_adhoc i) (int_range 0 (max_adhoc - 1));
+        map
+          (fun i -> Rediscover_replacement_adhoc i)
+          (int_range 0 (max_adhoc - 1));
         gen_sync_outcome_command ~gen_idx;
         map2
           (fun i r -> Force_complete { patch_idx = i; reason = r })
@@ -344,6 +359,10 @@ let gen_atomic_command ~n =
         map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
         map (fun i -> Discover_pr i) gen_idx;
+        map (fun i -> Mark_pr_missing_adhoc i) (int_range 0 (max_adhoc - 1));
+        map
+          (fun i -> Rediscover_replacement_adhoc i)
+          (int_range 0 (max_adhoc - 1));
         gen_sync_outcome_command ~gen_idx;
         map2
           (fun i r -> Force_complete { patch_idx = i; reason = r })
@@ -611,6 +630,21 @@ let rec apply_command orch patches cmd =
       let pid = resolve_pid patches patch_idx in
       Orchestrator.apply_force_complete orch pid
         (to_force_complete_reason reason)
+  | Mark_pr_missing_adhoc i -> (
+      let pid = adhoc_pid i in
+      match Orchestrator.find_agent orch pid with
+      | Some agent when Patch_agent.is_pr_present agent ->
+          Orchestrator.mark_pr_missing orch pid
+      | Some _ | None -> orch)
+  | Rediscover_replacement_adhoc i -> (
+      let pid = adhoc_pid i in
+      match Orchestrator.find_agent orch pid with
+      | Some agent
+        when Patch_agent.is_pr_missing agent && not agent.Patch_agent.merged ->
+          let new_pr = Pr_number.of_int (200 + i) in
+          Patch_controller.apply_replacement_pr orch pid ~pr_number:new_pr
+            ~base_branch:main ~merged:false
+      | Some _ | None -> orch)
 
 type poll_log_info = {
   agent_before : Patch_agent.t;
@@ -662,7 +696,8 @@ let rec apply_command_with_logs orch patches cmd =
   | Reconcile | Runner_tick | Complete _ | Apply_session_result _
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Add_adhoc _
-  | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ | Force_complete _ ->
+  | Remove_adhoc _ | Discover_pr _ | Apply_sync_outcome _ | Force_complete _
+  | Mark_pr_missing_adhoc _ | Rediscover_replacement_adhoc _ ->
       (apply_command orch patches cmd, None)
 
 (* ========== Log invariant checks ========== *)
@@ -880,6 +915,32 @@ let check_merged_no_github_effects orch patches =
                    (Patch_id.to_string a.patch_id)
                    (List.length effects)))
 
+(** I-15: orchestrator graph invariant — every patch_id in the graph either
+    belongs to the gameplan or has a recorded PR identity (has_pr = Present or
+    Missing). Violation means an ad-hoc agent was cleared back to Absent instead
+    of being marked Missing — the original crash bug. *)
+let check_graph_pid_in_gameplan_or_has_pr orch patches =
+  let branch_map =
+    List.fold patches
+      ~init:(Map.empty (module Patch_id))
+      ~f:(fun acc (p : Patch.t) ->
+        Map.set acc ~key:p.Patch.id ~data:p.Patch.branch)
+  in
+  Graph.all_patch_ids (Orchestrator.graph orch)
+  |> List.iter ~f:(fun pid ->
+      let in_gameplan = Map.mem branch_map pid in
+      let agent_has_pr =
+        match Orchestrator.find_agent orch pid with
+        | Some a -> Patch_agent.has_pr a
+        | None -> false
+      in
+      if (not in_gameplan) && not agent_has_pr then
+        failwith
+          (Printf.sprintf
+             "I-15 graph_pid_in_gameplan_or_has_pr violated for %s — orphan \
+              ad-hoc patch (no PR identity and not in gameplan)"
+             (Patch_id.to_string pid)))
+
 (** I-12: notified_base_branch coherence — when has_session is true and the
     agent has not been rebased (notified_base_branch is Some), then
     notified_base_branch must have been set at start time. The field should only
@@ -1012,7 +1073,8 @@ let check_sync_outcome_invariants ~patches ~prev_agents ~curr_orch cmd =
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
   | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
-  | Force_complete _ ->
+  | Force_complete _ | Mark_pr_missing_adhoc _ | Rediscover_replacement_adhoc _
+    ->
       ()
 
 (* ========== Combined check ========== *)
@@ -1056,7 +1118,9 @@ let check_all_invariants orch patches ~prev_agents ~prev_merged ~curr_merged
       check_busy_mutual_exclusion orch action;
       check_base_branch_freshness orch patches action);
   (* Reconciliation invariants *)
-  check_merged_no_github_effects orch patches
+  check_merged_no_github_effects orch patches;
+  (* I-15: graph node ⟹ in_gameplan ∨ has_pr — bug-prevention invariant *)
+  check_graph_pid_in_gameplan_or_has_pr orch patches
 
 let delivered_pid_of_cmd cmd patches =
   match cmd with
@@ -1065,7 +1129,8 @@ let delivered_pid_of_cmd cmd patches =
   | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
   | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
   | Apply_rebase_push_result _ | Add_adhoc _ | Remove_adhoc _ | Discover_pr _
-  | Apply_sync_outcome _ | Force_complete _ ->
+  | Apply_sync_outcome _ | Force_complete _ | Mark_pr_missing_adhoc _
+  | Rediscover_replacement_adhoc _ ->
       None
 
 let removed_pids_of_cmd cmd prev_removed =
@@ -1075,7 +1140,8 @@ let removed_pids_of_cmd cmd prev_removed =
   | Apply_session_result _ | Apply_rebase_result _ | Send_human_message _
   | Reset_intervention _ | Atomic_poll_reconcile _
   | Apply_conflict_rebase_result _ | Apply_rebase_push_result _ | Discover_pr _
-  | Apply_sync_outcome _ | Force_complete _ ->
+  | Apply_sync_outcome _ | Force_complete _ | Mark_pr_missing_adhoc _
+  | Rediscover_replacement_adhoc _ ->
       prev_removed
 
 let run_sequence ?(debug = false) orch patches cmds =
@@ -1095,10 +1161,11 @@ let run_sequence ?(debug = false) orch patches cmds =
         (* Re-adding an adhoc patch resets its lifecycle — clear merge log. *)
         let merged_logged =
           match cmd with
-          | Add_adhoc i -> Set.remove merged_logged (adhoc_pid i)
-          | Remove_adhoc _ | Apply_poll _ | Reconcile | Runner_tick | Complete _
-          | Apply_session_result _ | Apply_rebase_result _
-          | Send_human_message _ | Reset_intervention _
+          | Add_adhoc i | Rediscover_replacement_adhoc i ->
+              Set.remove merged_logged (adhoc_pid i)
+          | Mark_pr_missing_adhoc _ | Remove_adhoc _ | Apply_poll _ | Reconcile
+          | Runner_tick | Complete _ | Apply_session_result _
+          | Apply_rebase_result _ | Send_human_message _ | Reset_intervention _
           | Atomic_poll_reconcile _ | Apply_conflict_rebase_result _
           | Apply_rebase_push_result _ | Discover_pr _ | Apply_sync_outcome _
           | Force_complete _ ->
@@ -2793,3 +2860,57 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-AH-5 passed"
+
+(** PI-AH-6: ad-hoc + Mark_pr_missing + Remove_adhoc preserves I-15 (graph
+    invariant) under any interleaving. This is the bug-prevention property — the
+    original crash happened when an ad-hoc agent was cleared instead of marked
+    missing, leaving an orphan in the graph. *)
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-6: Add+Mark_pr_missing+Remove sequences preserve I-15"
+      ~count:500
+      QCheck2.Gen.(
+        list_size (int_range 1 12)
+          (oneof
+             [
+               map (fun i -> Add_adhoc i) (int_range 0 (max_adhoc - 1));
+               map
+                 (fun i -> Mark_pr_missing_adhoc i)
+                 (int_range 0 (max_adhoc - 1));
+               map (fun i -> Remove_adhoc i) (int_range 0 (max_adhoc - 1));
+             ]))
+      (fun cmds ->
+        let patches = mk_patches 0 in
+        let orch = bootstrap patches in
+        let _ : Orchestrator.t = run_sequence orch patches cmds in
+        true)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-6 passed"
+
+(** PI-AH-7: ad-hoc + Mark_pr_missing + Rediscover_replacement leaves the agent
+    in Present after a successful replacement (no stuck-Missing state). *)
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-7: Rediscover_replacement after Mark_pr_missing -> Present"
+      ~count:200
+      QCheck2.Gen.(int_range 0 (max_adhoc - 1))
+      (fun i ->
+        let patches = mk_patches 0 in
+        let orch = bootstrap patches in
+        let cmds =
+          [
+            Add_adhoc i; Mark_pr_missing_adhoc i; Rediscover_replacement_adhoc i;
+          ]
+        in
+        let orch = run_sequence orch patches cmds in
+        match Orchestrator.find_agent orch (adhoc_pid i) with
+        | Some agent ->
+            Patch_agent.is_pr_present agent
+            && not (Patch_agent.is_pr_missing agent)
+        | None -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-7 passed"

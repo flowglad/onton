@@ -125,8 +125,15 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
     [
       ("patch_id", Patch_id.yojson_of_t a.patch_id);
       ("branch", Branch.yojson_of_t a.branch);
+      ("pr_status", Patch_pr_status.yojson_of_t a.pr_status);
+      (* Legacy field, written alongside [pr_status] so an older onton binary
+         can still load snapshots produced by this version. The legacy reader
+         maps null -> Absent and bare int -> Present, which silently
+         degrades a Missing PR to Present on downgrade — safe, because the
+         poller will re-evaluate and re-Mark on the next cycle. Remove once
+         the downgrade window has closed. *)
       ( "pr_number",
-        match a.pr_number with
+        match Patch_agent.pr_number a with
         | None -> `Null
         | Some n -> Pr_number.yojson_of_t n );
       ("has_session", `Bool a.has_session);
@@ -260,8 +267,26 @@ let patch_agent_of_yojson ~gameplan json =
                   with
                  | Some p -> Branch.to_string p.Patch.branch
                  | None -> pid)))
-       ~pr_number:
-         (int_member_opt "pr_number" json |> Option.map ~f:Pr_number.of_int)
+       ~pr_status:
+         (match Yojson.Safe.Util.member "pr_status" json with
+         | `Null -> (
+             (* Legacy snapshot: no [pr_status] field. Derive from the legacy
+                [pr_number] field: int -> Present, null -> Absent. Missing
+                cannot appear in legacy data (the field was added with the
+                state). *)
+             match int_member_opt "pr_number" json with
+             | None -> Patch_pr_status.Absent
+             | Some n -> Patch_pr_status.Present (Pr_number.of_int n))
+         | v -> (
+             match Patch_pr_status.t_of_yojson_compat v with
+             | Ok s -> s
+             | Error _ -> (
+                 (* Malformed [pr_status] — fall back to the legacy field as
+                     a last resort so a single bad write doesn't lose the
+                     agent entirely. *)
+                 match int_member_opt "pr_number" json with
+                 | None -> Patch_pr_status.Absent
+                 | Some n -> Patch_pr_status.Present (Pr_number.of_int n))))
        ~has_session ~busy:(bool_member "busy" json)
        ~merged:(bool_member "merged" json)
        ~queue
@@ -762,15 +787,15 @@ let%test_module "session_id_sidecars" =
 
     let snapshot ?(busy = false) ?llm_session_id () =
       let agent =
-        Patch_agent.restore ~patch_id ~branch:patch.branch ~pr_number:None
-          ~has_session:false ~busy ~merged:false ~queue:[] ~satisfies:false
-          ~changed:false ~has_conflict:false ~base_branch:None
-          ~notified_base_branch:None ~ci_failure_count:0
-          ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-          ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-          ~is_draft:false ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
-          ~start_attempts_without_pr:0 ~conflict_noop_count:0
-          ~no_commits_push_count:0 ~push_failure_count:0
+        Patch_agent.restore ~patch_id ~branch:patch.branch
+          ~pr_status:Patch_pr_status.Absent ~has_session:false ~busy
+          ~merged:false ~queue:[] ~satisfies:false ~changed:false
+          ~has_conflict:false ~base_branch:None ~notified_base_branch:None
+          ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+          ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+          ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
+          ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
+          ~conflict_noop_count:0 ~no_commits_push_count:0 ~push_failure_count:0
           ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
           ~anchor_history:Anchor_history.empty ~checks_passing:false
           ~current_op:None ~current_op_state:Patch_agent.Queued

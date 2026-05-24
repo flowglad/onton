@@ -45,7 +45,7 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~checks_passing ~queue ~merged ~is_draft ~branch_blocked ~worktree_path =
   let busy = Option.is_some current_op in
   Patch_agent.restore ~patch_id ~branch
-    ~pr_number:(Some (Pr_number.of_int 42))
+    ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
     ~has_session:busy ~busy ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict ~base_branch:(Some main) ~notified_base_branch:(Some main)
     ~ci_failure_count ~session_fallback:Patch_agent.Fresh_available
