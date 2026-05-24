@@ -109,6 +109,15 @@ let refresh_base_branch t patch_id =
           Graph.initial_base t.graph patch_id ~has_merged ~branch_of
             ~main:t.main_branch
         in
+        (* Intentionally do NOT touch branch_rebased_onto here, even when
+           [fresh] differs from the current base. branch_rebased_onto
+           tracks where the local branch was LAST REBASED — clearing it
+           would hide the drift the detector exists to surface. The
+           rebase planner reads [anchor_history] directly and uses an
+           [is_ancestor] oracle at rebase time to decide whether the
+           recorded anchor is still safe for the new base; orchestrator-
+           level invalidation would be redundant and would also break
+           drift detection (PI-16). *)
         update_agent t patch_id ~f:(fun a ->
             Patch_agent.set_base_branch a fresh)
 
