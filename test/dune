@@ -62,6 +62,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_push_plan_properties)
+ (modules test_push_plan_properties)
+ (libraries onton_core re qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_rebase_decision_properties)
  (modules test_rebase_decision_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)
@@ -225,6 +232,13 @@
 (test
  (name test_worktree_start_point_integration)
  (modules test_worktree_start_point_integration)
+ (libraries onton onton_core eio eio_main eio.unix unix)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_push_plan_integration)
+ (modules test_push_plan_integration)
  (libraries onton onton_core eio eio_main eio.unix unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))

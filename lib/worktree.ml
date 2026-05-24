@@ -661,31 +661,122 @@ type push_gate = Worktree_parser.push_gate = Proceed | Skip_no_commits
 let push_gate_from_count = Worktree_parser.push_gate_from_count
 let classify_push_result = Worktree_parser.classify_push_result
 
-(** Effectful: run [git rev-list --count base..HEAD] in the worktree. *)
-let commits_ahead_of_base ~process_mgr ~path ~base =
-  let base_str = Types.Branch.to_string base in
-  let code, stdout, _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "rev-list"; "--count"; base_str ^ "..HEAD" ]
+(* [commits_ahead_of_base] previously ran [git rev-list --count base..HEAD]
+   in the worktree; that's the function that produced PR #315's HEAD-vs-branch
+   gate mismatch. [gather_push_plan_inputs] below now measures ahead-of-base
+   on the named branch (refs/heads/<branch>), not HEAD, so an agent that
+   [git switch]ed mid-session cannot trip the gate with commits the push
+   command would never upload. *)
+
+(* Gather the inputs [Push_plan.plan] needs. Returns a tuple so the caller
+   can pattern-match the planner output without re-reading git twice. *)
+let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
+  let worktree_path_exists = Stdlib.Sys.file_exists path in
+  let worktree_head_branch =
+    if not worktree_path_exists then None
+    else
+      let code, stdout, _ =
+        run_git_exit_code ~process_mgr
+          [ "git"; "-C"; path; "rev-parse"; "--abbrev-ref"; "HEAD" ]
+      in
+      if code = 0 then
+        let s = String.strip stdout in
+        if String.is_empty s || String.equal s "HEAD" then None else Some s
+      else None
   in
-  parse_commit_count ~code ~stdout
+  let read_sha ref_name =
+    if not worktree_path_exists then None
+    else
+      let code, stdout, _ =
+        run_git_exit_code ~process_mgr
+          [ "git"; "-C"; path; "rev-parse"; "--verify"; ref_name ]
+      in
+      if code = 0 then
+        let s = String.strip stdout in
+        if String.is_empty s then None else Some s
+      else None
+  in
+  let branch_ref_sha = read_sha ("refs/heads/" ^ branch_str) in
+  let remote_tracking_sha = read_sha ("refs/remotes/origin/" ^ branch_str) in
+  let ancestry : Push_plan.ancestry =
+    if not worktree_path_exists then Push_plan.Unknown
+    else
+      match (branch_ref_sha, remote_tracking_sha) with
+      | _, None -> Push_plan.No_remote_yet
+      | None, Some _ -> Push_plan.Unknown
+      | Some local, Some remote -> (
+          let code, _, _ =
+            run_git_exit_code ~process_mgr
+              [
+                "git"; "-C"; path; "merge-base"; "--is-ancestor"; remote; local;
+              ]
+          in
+          (* exit 0 = remote is ancestor of local (local includes remote);
+             exit 1 = it isn't (push would wipe commits);
+             anything else = unknown (treat conservatively at the planner). *)
+          match code with
+          | 0 -> Push_plan.Local_includes_remote
+          | 1 -> Push_plan.Local_missing_remote
+          | _ -> Push_plan.Unknown)
+  in
+  let commits_ahead_of_base =
+    if not worktree_path_exists then None
+    else
+      (* Measure ahead-of-base on the NAMED BRANCH, not worktree HEAD —
+         otherwise an agent that [git switch]ed mid-session could trip the
+         gate with commits the push command would never upload. *)
+      let code, stdout, _ =
+        run_git_exit_code ~process_mgr
+          [
+            "git";
+            "-C";
+            path;
+            "rev-list";
+            "--count";
+            base_str ^ "..refs/heads/" ^ branch_str;
+          ]
+      in
+      Worktree_parser.parse_commit_count ~code ~stdout
+  in
+  ( worktree_path_exists,
+    worktree_head_branch,
+    branch_ref_sha,
+    remote_tracking_sha,
+    ancestry,
+    commits_ahead_of_base )
 
 let force_push_with_lease ~process_mgr ~path ~branch ~base =
-  (* If the worktree directory is gone (deleted out from under us mid-session),
-     short-circuit before spawning git so the caller can route to the
-     worktree-missing cleanup path. Without this, every git invocation below
-     fails with "fatal: cannot change to '<path>': No such file or directory"
-     and surfaces as a generic [Push_error] that triggers retry-push instead
-     of reconstruction. *)
-  if not (Stdlib.Sys.file_exists path) then Push_worktree_missing
-  else
-    let count = commits_ahead_of_base ~process_mgr ~path ~base in
-    match push_gate_from_count count with
-    | Skip_no_commits -> Push_no_commits
-    | Proceed ->
-        let branch_str = Types.Branch.to_string branch in
-        let code, stdout, stderr =
-          run_git_exit_code ~process_mgr
+  let branch_str = Types.Branch.to_string branch in
+  let base_str = Types.Branch.to_string base in
+  let ( worktree_path_exists,
+        worktree_head_branch,
+        branch_ref_sha,
+        remote_tracking_sha,
+        ancestry,
+        commits_ahead_of_base ) =
+    gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str
+  in
+  let decision =
+    Push_plan.plan ~expected_branch:branch_str ~worktree_path_exists
+      ~worktree_head_branch ~branch_ref_sha ~remote_tracking_sha ~ancestry
+      ~commits_ahead_of_base
+  in
+  match decision with
+  | Refuse Push_plan.Worktree_missing -> Push_worktree_missing
+  | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
+  | Refuse
+      (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
+       | Push_plan.Local_missing_remote_commits _ ) as r) -> (
+      match Push_plan.to_push_reject_classify_rejection r with
+      | Some rej -> Push_rejected rej
+      | None ->
+          (* These three refusals all map to Some _ per
+             [to_push_reject_classify_rejection]; fall back conservatively. *)
+          Push_error (Push_plan.short_label (Push_plan.Refuse r)))
+  | Push action ->
+      let args =
+        match action with
+        | Push_plan.Force_push_if_includes ->
             [
               "git";
               "-C";
@@ -705,8 +796,20 @@ let force_push_with_lease ~process_mgr ~path ~branch ~base =
               "origin";
               branch_str;
             ]
-        in
-        classify_push_result ~code ~stdout ~stderr
+        | Push_plan.Initial_push ->
+            [
+              "git";
+              "-C";
+              path;
+              "push";
+              "--porcelain";
+              "-u";
+              "origin";
+              branch_str;
+            ]
+      in
+      let code, stdout, stderr = run_git_exit_code ~process_mgr args in
+      classify_push_result ~code ~stdout ~stderr
 
 let rebase_in_progress ~process_mgr ~path =
   let code, stdout, _ =

@@ -36,6 +36,12 @@ type rejection =
   | Unknown of string
       (** Nothing recognizable in stderr; the excerpt is preserved (truncated to
           200 chars) so the user has a starting point for diagnosis. *)
+  | Local_state_unsafe of { reason : string }
+      (** Pre-flight refusal produced by [Push_plan.plan] — the local worktree
+          state would make the push unsafe (wrong branch checked out, local
+          missing remote commits, etc.). Permanent: a retry without human action
+          cannot fix it. [reason] is a short human-readable label drawn from
+          [Push_plan.short_label]. *)
 [@@deriving show, eq, sexp_of, compare]
 
 val classify : stderr:string -> stdout:string -> rejection
