@@ -175,7 +175,7 @@ type rebase_result = Worktree_parser.rebase_result =
 [@@deriving show, eq, sexp_of, compare]
 
 val rebase_onto :
-  ?prev_base_sha:string option ->
+  upstream:string ->
   process_mgr:_ Eio.Process.mgr ->
   path:string ->
   target:Types.Branch.t ->
@@ -183,13 +183,11 @@ val rebase_onto :
   ancestor_ids:Types.Patch_id.t list ->
   unit ->
   rebase_result
-(** Rebase HEAD onto [target]. [?prev_base_sha] (default [None]) is the SHA the
-    previous base ref resolved to at the last successful rebase / start (see
-    [Patch_agent.branch_rebased_onto_sha]). When [Some sha] is supplied and the
-    cherry-pick / subject-pattern heuristic fails to isolate the patch's
-    commits, the rebase uses [git rebase --onto target sha] instead of the
-    legacy plain [git rebase target], dropping commits whose content was
-    absorbed into a squash-merge on origin (the patch-6 case).
+(** Rebase HEAD onto [target]. [upstream] is the resolved [<upstream>] argument
+    for [git rebase --onto <target> <upstream> HEAD], computed by the caller via
+    {!Rebase_decision.plan} from the agent's anchor history. If [upstream]
+    equals the rendered [target], the legacy 2-arg [git rebase <target>] form is
+    used instead.
 
     Uses [git log --cherry-pick] to detect already-applied commits, and
     supplements that with subject-pattern matching against
@@ -313,15 +311,27 @@ module type S = sig
   val conflict_diff : path:string -> string
 
   val rebase_onto :
-    ?prev_base_sha:string option ->
     path:string ->
     target:Types.Branch.t ->
+    upstream:string ->
     project_name:string ->
     ancestor_ids:Types.Patch_id.t list ->
     unit ->
     rebase_result
+  (** [upstream] is the resolved [<upstream>] argument for
+      [git rebase --onto <target> <upstream> HEAD]. It is computed by the caller
+      from {!Rebase_decision.plan} (which consults the agent's
+      {!Anchor_history.t}). If [upstream] equals [target]'s rendered string, the
+      2-arg [git rebase <target>] form is used instead. *)
 
   val read_branch_sha : path:string -> ref_name:string -> string option
+
+  val is_ancestor : path:string -> ancestor:string -> descendant:string -> bool
+  (** [is_ancestor ~path ~ancestor ~descendant] returns [true] iff [ancestor] is
+      an ancestor of [descendant] in the repo at [path], via
+      [git merge-base --is-ancestor]. Returns [false] on any error (including
+      unresolvable SHAs), so callers can treat it as a total
+      pure-from-the-outside oracle. *)
 
   val read_in_progress_conflict_info :
     path:string ->

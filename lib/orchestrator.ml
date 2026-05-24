@@ -109,6 +109,15 @@ let refresh_base_branch t patch_id =
           Graph.initial_base t.graph patch_id ~has_merged ~branch_of
             ~main:t.main_branch
         in
+        (* Intentionally do NOT touch branch_rebased_onto here, even when
+           [fresh] differs from the current base. branch_rebased_onto
+           tracks where the local branch was LAST REBASED — clearing it
+           would hide the drift the detector exists to surface. The
+           rebase planner reads [anchor_history] directly and uses an
+           [is_ancestor] oracle at rebase time to decide whether the
+           recorded anchor is still safe for the new base; orchestrator-
+           level invalidation would be redundant and would also break
+           drift detection (PI-16). *)
         update_agent t patch_id ~f:(fun a ->
             Patch_agent.set_base_branch a fresh)
 
@@ -482,6 +491,18 @@ let apply_rebase_result t patch_id rebase_result new_base =
       let t = set_tried_fresh t patch_id in
       (complete t patch_id, [])
 
+let fold_anchor_events t patch_id events =
+  List.fold events ~init:t ~f:(fun t (ev : Worktree_plan.anchor_event) ->
+      match ev with
+      | Worktree_plan.Anchor_recorded a ->
+          update_agent t patch_id ~f:(fun ag -> Patch_agent.record_anchor ag a)
+      | Worktree_plan.Anchor_capture_failed -> t)
+
+let apply_rebase_with_anchor t patch_id rebase_result new_base anchor_events =
+  let t, effects = apply_rebase_result t patch_id rebase_result new_base in
+  let t = fold_anchor_events t patch_id anchor_events in
+  (t, effects)
+
 type rebase_push_resolution =
   | Rebase_push_ok
   | Rebase_push_failed
@@ -549,6 +570,16 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       let t = set_session_failed t patch_id in
       let t = complete t patch_id in
       (t, Conflict_failed, [])
+
+let apply_conflict_rebase_with_anchor t patch_id rebase_result new_base
+    anchor_events =
+  let t, decision, effects =
+    apply_conflict_rebase_result t patch_id rebase_result new_base
+  in
+  let t = fold_anchor_events t patch_id anchor_events in
+  (t, decision, effects)
+
+let apply_anchor_events t patch_id events = fold_anchor_events t patch_id events
 
 type conflict_resolution =
   | Conflict_done

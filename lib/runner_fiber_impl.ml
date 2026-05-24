@@ -673,6 +673,40 @@ struct
                                               .Session_worktree_missing);
                                         `Failed
                                     | Some _wt_path ->
+                                        (* Capture the initial anchor for this
+                                           Start: resolve origin/<base_branch>'s
+                                           current tip so the first rebase has
+                                           a usable [<upstream>] for [git rebase
+                                           --onto]. Closes the production-bug
+                                           blind spot where a Start-then-dep-
+                                           squash-merge sequence left the agent
+                                           with no anchor at first-rebase time
+                                           and forced the legacy 2-arg fallback
+                                           into a "both added" conflict. *)
+                                        let ancestor_ids =
+                                          Runtime.read runtime (fun snap ->
+                                              Graph.transitive_ancestors
+                                                (Orchestrator.graph
+                                                   snap.Runtime.orchestrator)
+                                                patch_id)
+                                        in
+                                        let _, _, start_anchor_events =
+                                          Worktree_plan_executor.execute
+                                            ~patch_id ~agent
+                                            ~fetch_lock:fetch_mutex
+                                            ~fail_label:"start anchor capture"
+                                            ~ancestor_ids
+                                            (Worktree_plan.for_start
+                                               ~base:base_branch)
+                                        in
+                                        (match start_anchor_events with
+                                        | [] -> ()
+                                        | _ ->
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                Orchestrator.apply_anchor_events
+                                                  orch patch_id
+                                                  start_anchor_events));
                                         let agents_md =
                                           read_optional_file
                                             (Stdlib.Filename.concat _wt_path
@@ -895,25 +929,11 @@ struct
                                 (Orchestrator.graph snap.Runtime.orchestrator)
                                 patch_id)
                         in
-                        let rebase_result, wt_path =
+                        let rebase_result, wt_path, anchor_events =
                           Worktree_plan_executor.execute ~patch_id ~agent
                             ~fetch_lock:fetch_mutex ~fail_label:"rebase"
                             ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
-                        in
-                        (* On a successful rebase, capture the SHA the new
-                           base resolved to so the next rebase can pass it
-                           as [prev_base_sha] and trim commits absorbed into
-                           a squash-merge on origin. Records via
-                           [Orchestrator.set_branch_rebased_onto_sha]. *)
-                        let post_rebase_sha =
-                          match rebase_result with
-                          | Worktree.Ok ->
-                              W.read_branch_sha ~path:wt_path
-                                ~ref_name:("origin/" ^ Branch.to_string new_base)
-                          | Worktree.Noop | Worktree.Conflict _
-                          | Worktree.Error _ ->
-                              None
                         in
                         (match rebase_result with
                         | Worktree.Ok ->
@@ -936,15 +956,8 @@ struct
                                 Orchestrator.agent orch patch_id
                               in
                               let orch, effects =
-                                Orchestrator.apply_rebase_result orch patch_id
-                                  rebase_result new_base
-                              in
-                              let orch =
-                                match post_rebase_sha with
-                                | Some _ ->
-                                    Orchestrator.set_branch_rebased_onto_sha
-                                      orch patch_id post_rebase_sha
-                                | None -> orch
+                                Orchestrator.apply_rebase_with_anchor orch
+                                  patch_id rebase_result new_base anchor_events
                               in
                               let agent_after =
                                 Orchestrator.agent orch patch_id
@@ -1321,7 +1334,9 @@ struct
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
-                                        let rebase_result, _wt_path =
+                                        let ( rebase_result,
+                                              _wt_path,
+                                              anchor_events ) =
                                           Worktree_plan_executor.execute
                                             ~patch_id ~agent
                                             ~fetch_lock:fetch_mutex
@@ -1369,9 +1384,10 @@ struct
                                               in
                                               let orch, decision, effects =
                                                 Orchestrator
-                                                .apply_conflict_rebase_result
+                                                .apply_conflict_rebase_with_anchor
                                                   orch patch_id rebase_result
                                                   (Types.Branch.of_string base)
+                                                  anchor_events
                                               in
                                               let agent_after =
                                                 Orchestrator.agent orch patch_id

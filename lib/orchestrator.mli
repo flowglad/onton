@@ -298,6 +298,21 @@ val apply_rebase_result :
     -> set_base_branch + set_has_conflict + enqueue Merge_conflict + complete.
     [Error _] -> set_session_failed + set_tried_fresh + complete. *)
 
+val apply_rebase_with_anchor :
+  t ->
+  Patch_id.t ->
+  Worktree.rebase_result ->
+  Branch.t ->
+  Worktree_plan.anchor_event list ->
+  t * rebase_effect list
+(** Atomic variant of {!apply_rebase_result} that also folds the executor's
+    {!Worktree_plan.anchor_event} observations into the agent. The two
+    transitions are combined so the orchestrator can never observe a half-
+    applied state where (say) the rebase succeeded but the anchor was not
+    recorded. Each [Anchor_recorded] event calls {!Patch_agent.record_anchor};
+    [Anchor_capture_failed] events are ignored (the prior anchor is preserved).
+*)
+
 type rebase_push_resolution =
   | Rebase_push_ok
   | Rebase_push_failed
@@ -336,6 +351,25 @@ val apply_conflict_rebase_result :
     GitHub state — the poller will re-set and re-enqueue if conflict persists).
     [Conflict] -> set_has_conflict + [Deliver_to_agent] + [[]]. [Error _] ->
     set_session_failed + complete + [Conflict_failed]. *)
+
+val apply_conflict_rebase_with_anchor :
+  t ->
+  Patch_id.t ->
+  Worktree.rebase_result ->
+  Branch.t ->
+  Worktree_plan.anchor_event list ->
+  t * conflict_rebase_decision * rebase_effect list
+(** Atomic variant of {!apply_conflict_rebase_result} that also folds
+    {!Worktree_plan.anchor_event} observations into the agent. Same policy as
+    {!apply_rebase_with_anchor}: [Anchor_recorded] calls
+    {!Patch_agent.record_anchor}; [Anchor_capture_failed] is ignored. *)
+
+val apply_anchor_events :
+  t -> Patch_id.t -> Worktree_plan.anchor_event list -> t
+(** Fold {!Worktree_plan.anchor_event} observations into the agent without any
+    other transition. Called by the runner Start path after executing
+    {!Worktree_plan.for_start} to record the initial anchor for a
+    freshly-branched-off-dep patch, before the LLM session begins. *)
 
 type conflict_resolution =
   | Conflict_done

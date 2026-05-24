@@ -65,6 +65,13 @@ type t = private {
           [None] when no rebase has succeeded yet, or when the orchestrator was
           restarted before this field was added (it is back-filled to [None] via
           [Patch_agent.restore], and old snapshots persist with [null]). *)
+  anchor_history : Anchor_history.t;
+      (** Newest-first log of {!Anchor.t} values recorded over this agent's
+          lifetime. Updated via {!record_anchor}; mirrored into
+          [branch_rebased_onto] and [branch_rebased_onto_sha] as a derived view.
+          {!Rebase_decision.plan} consults the history when the newest anchor is
+          unreachable from HEAD and walks back to the oldest still- reachable
+          entry. Capped at {!Anchor_history.cap}. *)
   checks_passing : bool;
   current_op : Types.Operation_kind.t option;
   current_op_state : op_state;
@@ -213,6 +220,13 @@ val set_branch_rebased_onto_sha : t -> string option -> t
     / start. [None] (or a whitespace-only string) clears the field — used when
     the SHA could not be read; the next rebase will then fall back to the legacy
     plain [git rebase target] semantics. *)
+
+val record_anchor : t -> Anchor.t -> t
+(** Push [anchor] onto {!field-anchor_history} (newest-first, deduped by
+    [(base, sha)]) and update the legacy view fields [branch_rebased_onto] and
+    [branch_rebased_onto_sha] to mirror the new anchor. Pure and total. *)
+
+val anchor_history : t -> Anchor_history.t
 
 val base_branch_changed : t -> bool
 (** [true] when [base_branch] differs from [notified_base_branch], meaning the
@@ -422,6 +436,7 @@ val restore :
   push_failure_count:int ->
   branch_rebased_onto:Types.Branch.t option ->
   branch_rebased_onto_sha:string option ->
+  anchor_history:Anchor_history.t ->
   checks_passing:bool ->
   current_op:Types.Operation_kind.t option ->
   current_op_state:op_state ->

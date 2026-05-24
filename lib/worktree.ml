@@ -425,8 +425,15 @@ let read_branch_sha ~process_mgr ~path ~ref_name =
     if String.is_empty s then None else Some s
   else None
 
-let rebase_onto ?(prev_base_sha = None) ~process_mgr ~path ~target ~project_name
-    ~ancestor_ids () =
+let is_ancestor ~process_mgr ~path ~ancestor ~descendant =
+  let code, _, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "merge-base"; "--is-ancestor"; ancestor; descendant ]
+  in
+  code = 0
+
+let rebase_onto ~upstream ~process_mgr ~path ~target ~project_name ~ancestor_ids
+    () =
   let target = Types.Branch.to_string target in
   let ancestor_code, _, ancestor_stderr =
     run_git_exit_code ~process_mgr
@@ -455,19 +462,13 @@ let rebase_onto ?(prev_base_sha = None) ~process_mgr ~path ~target ~project_name
       find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids
     with
     | Result.Error msg ->
-        (* If we can't find unique commits, decide what upstream to pass to
-           [git rebase]:
-           - [prev_base_sha = Some sha]: do [git rebase --onto target sha]. This
-             is the patch-6 case — the orchestrator recorded the SHA the
-             previous base resolved to, and the patch's own commits live in
-             [sha..HEAD]. Drops squash-merged-equivalent dep commits.
-           - [None]: legacy plain [git rebase target] — replays everything in
-             [target..HEAD] including possibly-stale dep commits, preserved
-             for back-compat with agents whose [branch_rebased_onto_sha] was
-             never recorded. *)
-        let upstream =
-          Rebase_decision.upstream ~prev_base_sha ~fallback:target
-        in
+        (* The cherry-pick / patch-id detection in [find_old_base] failed,
+           so use the caller-supplied [upstream] (computed by the executor
+           via [Rebase_decision.plan] from the agent's anchor history). If
+           [upstream] equals [target], no usable anchor exists and we fall
+           back to the 2-arg form; otherwise [git rebase --onto target
+           upstream HEAD] replays exactly the patch's own commits past
+           [upstream]. *)
         let rebase_args =
           if String.equal upstream target then
             [ "git"; "-C"; path; "rebase"; target ]
@@ -727,9 +728,9 @@ module type S = sig
   val conflict_diff : path:string -> string
 
   val rebase_onto :
-    ?prev_base_sha:string option ->
     path:string ->
     target:Types.Branch.t ->
+    upstream:string ->
     project_name:string ->
     ancestor_ids:Types.Patch_id.t list ->
     unit ->
@@ -737,8 +738,9 @@ module type S = sig
 
   val read_branch_sha : path:string -> ref_name:string -> string option
   (** Resolve [ref_name] to a SHA in the worktree at [path]. [None] on any error
-      (missing ref, git failure). Used by the runner fiber to capture
-      [branch_rebased_onto_sha] after a successful rebase. *)
+      (missing ref, git failure). *)
+
+  val is_ancestor : path:string -> ancestor:string -> descendant:string -> bool
 
   val read_in_progress_conflict_info :
     path:string ->
@@ -783,13 +785,15 @@ let make ~process_mgr ~repo_root =
     let git_status ~path = git_status ~process_mgr ~path
     let conflict_diff ~path = conflict_diff ~process_mgr ~path
 
-    let rebase_onto ?(prev_base_sha = None) ~path ~target ~project_name
-        ~ancestor_ids () =
-      rebase_onto ~prev_base_sha ~process_mgr ~path ~target ~project_name
+    let rebase_onto ~path ~target ~upstream ~project_name ~ancestor_ids () =
+      rebase_onto ~upstream ~process_mgr ~path ~target ~project_name
         ~ancestor_ids ()
 
     let read_branch_sha ~path ~ref_name =
       read_branch_sha ~process_mgr ~path ~ref_name
+
+    let is_ancestor ~path ~ancestor ~descendant =
+      is_ancestor ~process_mgr ~path ~ancestor ~descendant
 
     let read_in_progress_conflict_info ~path ~target ~project_name ~ancestor_ids
         =

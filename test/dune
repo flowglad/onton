@@ -62,6 +62,20 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_anchor)
+ (modules test_anchor)
+ (libraries onton_core qcheck-core qcheck-core.runner yojson)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_rebase_state_machine)
+ (modules test_rebase_state_machine)
+ (libraries onton_core)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_backend_parser_totality)
  (modules test_backend_parser_totality)
  (libraries onton_core qcheck-core qcheck-core.runner yojson)
