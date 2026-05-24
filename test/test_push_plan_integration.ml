@@ -145,27 +145,29 @@ let scenario_local_missing_remote env =
   setup_origin ~origin_dir;
   setup_seed_clone ~origin_dir ~managed_dir;
   sh ~dir:managed_dir "git checkout -q -b feat";
-  sh ~dir:managed_dir "echo work > work.txt";
+  sh ~dir:managed_dir "echo shared > work.txt";
   sh ~dir:managed_dir "git add work.txt";
+  sh ~dir:managed_dir "git commit -q -m 'shared work'";
+  let shared_feat_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  sh ~dir:managed_dir "git push -q -u origin feat";
+  sh ~dir:managed_dir "echo remote > remote.txt";
+  sh ~dir:managed_dir "git add remote.txt";
   sh ~dir:managed_dir "git commit -q -m 'remote work'";
   sh ~dir:managed_dir "git push -q -u origin feat";
   let remote_feat_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
-  (* Reset local feat to the base (simulating the stale-local state PR #315
-     hit), but DO NOT update the local tracking ref — that's exactly the
-     pre-conditions of the wipe. *)
+  (* Reset local feat to an older commit that is still ahead of base. This
+     makes local a strict ancestor of origin/feat while keeping
+     commits_ahead_of_base > 0, so the ancestry refusal is not pre-empted by
+     No_commits_ahead_of_base. *)
   sh ~dir:managed_dir "git checkout -q main";
-  let main_sha = git_capture ~dir:managed_dir [ "rev-parse"; "main" ] in
   sh ~dir:managed_dir
-    (Printf.sprintf "git branch -f feat %s" (Stdlib.Filename.quote main_sha));
+    (Printf.sprintf "git branch -f feat %s"
+       (Stdlib.Filename.quote shared_feat_sha));
   sh ~dir:managed_dir "git checkout -q feat";
   (* Sanity: local feat != remote feat. *)
   let local_feat = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
   if String.equal local_feat remote_feat_sha then
     failwith "precondition: local feat was supposed to be stale";
-  (* Add a commit so commits_ahead_of_base > 0; the refusal must still fire. *)
-  sh ~dir:managed_dir "echo trivial > trivial.txt";
-  sh ~dir:managed_dir "git add trivial.txt";
-  sh ~dir:managed_dir "git commit -q -m 'trivial'";
   let outcome =
     Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
@@ -174,13 +176,12 @@ let scenario_local_missing_remote env =
   (match outcome with
   | Worktree.Push_rejected (Push_reject_classify.Local_state_unsafe { reason })
     ->
-      if String.equal reason "refuse_local_diverged" then
+      if String.equal reason "refuse_local_behind" then
         Stdlib.print_endline "  local_missing_remote: OK (refused)"
       else
         failwith
           (Printf.sprintf
-             "local_missing_remote: expected reason refuse_local_diverged, got \
-              %s"
+             "local_missing_remote: expected reason refuse_local_behind, got %s"
              reason)
   | Worktree.Push_rejected
       ( Push_reject_classify.Workflow_scope_missing
