@@ -30,7 +30,13 @@ let for_rebase ~new_base =
   ]
 
 let for_merge_conflict ~base =
-  [ Ensure_worktree; Fetch_origin; Rebase_onto (origin_of base) ]
+  [
+    Ensure_worktree;
+    Fetch_origin;
+    Capture_anchor { ref_name = ref_string_of base; slot = 0 };
+    Rebase_onto (origin_of base);
+    Record_anchor_on_success { slot = 0; base };
+  ]
 
 let for_start ~base =
   [

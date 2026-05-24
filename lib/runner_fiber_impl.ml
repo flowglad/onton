@@ -1300,7 +1300,9 @@ struct
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
-                                        let rebase_result, _wt_path, _evs =
+                                        let ( rebase_result,
+                                              _wt_path,
+                                              anchor_events ) =
                                           Worktree_plan_executor.execute
                                             ~patch_id ~agent
                                             ~fetch_lock:fetch_mutex
@@ -1348,9 +1350,10 @@ struct
                                               in
                                               let orch, decision, effects =
                                                 Orchestrator
-                                                .apply_conflict_rebase_result
+                                                .apply_conflict_rebase_with_anchor
                                                   orch patch_id rebase_result
                                                   (Types.Branch.of_string base)
+                                                  anchor_events
                                               in
                                               let agent_after =
                                                 Orchestrator.agent orch patch_id

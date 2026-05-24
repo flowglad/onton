@@ -562,6 +562,14 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       let t = complete t patch_id in
       (t, Conflict_failed, [])
 
+let apply_conflict_rebase_with_anchor t patch_id rebase_result new_base
+    anchor_events =
+  let t, decision, effects =
+    apply_conflict_rebase_result t patch_id rebase_result new_base
+  in
+  let t = fold_anchor_events t patch_id anchor_events in
+  (t, decision, effects)
+
 type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push

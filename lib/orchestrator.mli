@@ -352,6 +352,18 @@ val apply_conflict_rebase_result :
     [Conflict] -> set_has_conflict + [Deliver_to_agent] + [[]]. [Error _] ->
     set_session_failed + complete + [Conflict_failed]. *)
 
+val apply_conflict_rebase_with_anchor :
+  t ->
+  Patch_id.t ->
+  Worktree.rebase_result ->
+  Branch.t ->
+  Worktree_plan.anchor_event list ->
+  t * conflict_rebase_decision * rebase_effect list
+(** Atomic variant of {!apply_conflict_rebase_result} that also folds
+    {!Worktree_plan.anchor_event} observations into the agent. Same policy as
+    {!apply_rebase_with_anchor}: [Anchor_recorded] calls
+    {!Patch_agent.record_anchor}; [Anchor_capture_failed] is ignored. *)
+
 type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push
