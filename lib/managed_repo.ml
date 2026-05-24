@@ -264,7 +264,6 @@ let url_scheme_of_string = function
 let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
     () =
   Git_env.set_github_token token;
-  let scheme = resolve_clone_scheme ~override:clone_scheme ~owner ~repo () in
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
   let repo_root_exists = Stdlib.Sys.file_exists repo_root in
@@ -285,16 +284,30 @@ let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
              repo_root (Base.Exn.to_string exn))
     else Ok false
   in
+  (* The SSH probe is only run on the clone path. When the managed clone
+     already exists on disk, the on-disk [origin] URL is the source of
+     truth, so probing would do a 5s network call whose result we'd
+     immediately discard — and the accompanying "cloning managed repo via X"
+     log line would be a lie. *)
+  let clone_with_probe ~target_dir =
+    let scheme = resolve_clone_scheme ~override:clone_scheme ~owner ~repo () in
+    match clone_managed_repo ~scheme ~owner ~repo ~target_dir with
+    | Ok () -> Ok (repo_root, scheme)
+    | Error msg -> Error msg
+  in
   if repo_root_exists && has_git_dir then (
     let module Repo = (val Repo_git.make ~repo_root) in
     (* If the managed clone already exists, the existing [origin] URL is
        authoritative — we don't change transport mid-life. Reflect that in
-       the returned scheme so callers persist the matching value. *)
+       the returned scheme so callers persist the matching value. The
+       fallback when no parseable URL is found prefers the caller's override
+       (a [--clone-scheme] flag or persisted scheme), defaulting to HTTPS. *)
     let existing_scheme =
       match read_remote_urls ~path:repo_root with
       | urls ->
           List.find_map urls ~f:Github_target.scheme_of_url
-          |> Option.value ~default:scheme
+          |> Option.value
+               ~default:(Option.value clone_scheme ~default:Github_target.Https)
     in
     match Repo.fetch_managed_repo () with
     | Ok () -> Ok (repo_root, existing_scheme)
@@ -319,14 +332,8 @@ let ensure_managed_repo ?(clone_scheme = None) ~project_name ~token ~owner ~repo
              "Managed checkout path %s exists but is not a git checkout and is \
               not empty; remove it and retry"
              repo_root)
-    | Ok true -> (
-        match clone_managed_repo ~scheme ~owner ~repo ~target_dir:repo_root with
-        | Ok () -> Ok (repo_root, scheme)
-        | Error msg -> Error msg)
-  else
-    match clone_managed_repo ~scheme ~owner ~repo ~target_dir:repo_root with
-    | Ok () -> Ok (repo_root, scheme)
-    | Error msg -> Error msg
+    | Ok true -> clone_with_probe ~target_dir:repo_root
+  else clone_with_probe ~target_dir:repo_root
 
 (** Resolve GitHub token: check GITHUB_TOKEN env var, then try [gh auth token].
     Uses argv (no shell). *)

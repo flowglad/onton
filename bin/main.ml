@@ -576,45 +576,54 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                     pick_owner_repo gameplan.Gameplan.repo_name
                       stored.Project_store.github_repo inferred_repo
                   in
+                  let stored_url_scheme =
+                    Managed_repo.url_scheme_of_string
+                      (Option.value stored.Project_store.url_scheme ~default:"")
+                  in
                   (* If the stored repo_root is the onton-managed checkout for
                      this project, refresh it from origin before continuing.
-                     Best-effort: an offline resume should still proceed. *)
-                  (if
-                     String.equal repo_root
-                       (Project_store.managed_repo_dir proj)
-                   then
-                     if
-                       Base.String.is_empty (Base.String.strip owner)
-                       || Base.String.is_empty (Base.String.strip repo)
-                     then
-                       Printf.eprintf
-                         "onton: warning: stored project %S has no GitHub \
-                          owner/repo; skipping managed checkout refresh\n\
-                          %!"
-                         proj
-                     else
-                       (* CLI override > persisted stored scheme > auto-detect *)
-                       let stored_scheme =
-                         Managed_repo.url_scheme_of_string
-                           (Option.value stored.Project_store.url_scheme
-                              ~default:"")
-                       in
-                       let effective_scheme =
-                         match clone_scheme_override with
-                         | Some _ as s -> s
-                         | None -> stored_scheme
-                       in
-                       match
-                         Managed_repo.ensure_managed_repo
-                           ~clone_scheme:effective_scheme ~project_name:proj
-                           ~token ~owner ~repo ()
-                       with
-                       | Ok _ -> ()
-                       | Error msg ->
-                           Printf.eprintf
-                             "onton: warning: %s (resuming with local state)\n\
-                              %!"
-                             msg);
+                     Best-effort: an offline resume should still proceed.
+                     Capture the {b resolved} scheme so a CLI [--clone-scheme]
+                     override (or a probe-determined scheme on legacy configs)
+                     is threaded into [repo_coords.url_scheme] and persisted
+                     by [finalize_run]. *)
+                  let resolved_scheme =
+                    if
+                      String.equal repo_root
+                        (Project_store.managed_repo_dir proj)
+                    then (
+                      if
+                        Base.String.is_empty (Base.String.strip owner)
+                        || Base.String.is_empty (Base.String.strip repo)
+                      then begin
+                        Printf.eprintf
+                          "onton: warning: stored project %S has no GitHub \
+                           owner/repo; skipping managed checkout refresh\n\
+                           %!"
+                          proj;
+                        stored_url_scheme
+                      end
+                      else
+                        (* CLI override > persisted stored scheme > auto-detect *)
+                        let effective_scheme =
+                          match clone_scheme_override with
+                          | Some _ as s -> s
+                          | None -> stored_url_scheme
+                        in
+                        match
+                          Managed_repo.ensure_managed_repo
+                            ~clone_scheme:effective_scheme ~project_name:proj
+                            ~token ~owner ~repo ()
+                        with
+                        | Ok (_repo_root, scheme) -> Some scheme
+                        | Error msg ->
+                            Printf.eprintf
+                              "onton: warning: %s (resuming with local state)\n\
+                               %!"
+                              msg;
+                            stored_url_scheme)
+                    else stored_url_scheme
+                  in
                   let branch =
                     match main_branch with
                     | Some b -> b
@@ -626,10 +635,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       github_owner = owner;
                       github_repo = repo;
                       repo_root;
-                      url_scheme =
-                        Managed_repo.url_scheme_of_string
-                          (Option.value stored.Project_store.url_scheme
-                             ~default:"");
+                      url_scheme = resolved_scheme;
                     }
                   in
                   (* Resume reuses the stored [poll_interval] and

@@ -228,10 +228,12 @@ struct
     (* Freshness fiber: runs in parallel with the per-patch poll loop so a
        slow [git fetch] for [origin/<main>] doesn't block the per-patch
        fan-out. Same cadence as the patch poll loop for now; could be
-       independent later if needed. *)
+       independent later if needed. Sleeps before its first check so it
+       doesn't duplicate the fetch [Managed_repo.ensure_managed_repo] already
+       ran at startup. *)
     let rec freshness_loop () =
-      check_main_freshness ();
       Eio.Time.sleep clock poll_interval;
+      check_main_freshness ();
       freshness_loop ()
     in
     let rec loop () =
