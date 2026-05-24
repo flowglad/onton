@@ -127,6 +127,54 @@ unattended supervisor session. There are two supported transports:
   authenticated for HTTPS pushes to github.com, run `gh auth setup-git` once
   to install gh's credential helper into your global git config.
 
+## Rebase anchor lifecycle
+
+A patch agent's rebase upstream is chosen by `lib_core/rebase_decision.ml`'s
+`plan` from the agent's `anchor_history` (newest-first list of
+`Anchor.t = { base; sha; observed_at_remote }`, cap 8, in `lib_core/`).
+
+Anchors get recorded at three moments by `lib/runner_fiber_impl.ml`,
+mediated by `Worktree_plan` capture/record ops the executor interprets:
+
+- **Start** — `Worktree_plan.for_start` runs after the worktree is created
+  and before the LLM session begins. It fetches origin, reads
+  `origin/<base_branch>`'s tip, and records that SHA as the agent's
+  initial anchor via `Orchestrator.apply_anchor_events`. Closes the
+  production-bug case where a patch branched off a dep and never rebased
+  before the dep squash-merged.
+- **Rebase (Ok / Noop)** — `Worktree_plan.for_rebase` captures
+  `origin/<new_base>` post-fetch and a `Record_anchor_on_success` op
+  emits the anchor event after the rebase succeeds. `Noop` refreshes the
+  anchor too — a noop proves local HEAD already contains the remote tip.
+- **Merge-conflict resolution (Ok / Noop)** — `for_merge_conflict` mirrors
+  the rebase plan; a successful conflict rebase also refreshes the
+  anchor.
+
+`Conflict` and `Error` rebase results preserve the prior anchor unchanged
+(via `Rebase_decision.anchor_after_result`); a failed attempt never
+corrupts what was recorded.
+
+At rebase time the executor calls `Rebase_decision.plan` with the agent's
+`anchor_history` and an `is_ancestor` oracle (`git merge-base
+--is-ancestor` via `Worktree.S.is_ancestor`). The plan picks the newest
+anchor whose SHA is reachable from the patch's HEAD; if none is
+reachable it falls back to history, then to `Plain { No_anchor }` which
+runs the legacy 2-arg `git rebase <target>`. The cherry-pick / patch-id
+detection inside `Worktree.rebase_onto` (`find_old_base`) remains as
+defense-in-depth: it tries first; the planner's chosen `upstream` is
+used only on its fallback path.
+
+`Orchestrator.refresh_base_branch` deliberately does NOT invalidate the
+anchor when the base retargets — the planner handles staleness via its
+ancestor oracle at rebase time, and touching `branch_rebased_onto` here
+would hide the drift the detector exists to surface (see PI-16 in
+`test_interleaving_properties.ml`).
+
+The pure decision is covered by `test/test_rebase_decision_properties.ml`
+(RD-PLAN-1..8, RD-AAR-1..5) plus `test/test_anchor.ml`. Realistic event
+sequences are covered by `test/test_rebase_state_machine.ml` (SM-1, SM-2
+= production bug, SM-3a/b, SM-4, SM-7, SM-8, SM-no-anchor).
+
 ## Reference
 - Reference implementation (Elixir): `../orchestrate-gameplan/`
 - Reference specification: `../orchestrate-gameplan/spec/anton.pant`
