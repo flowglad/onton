@@ -570,6 +570,8 @@ let apply_conflict_rebase_with_anchor t patch_id rebase_result new_base
   let t = fold_anchor_events t patch_id anchor_events in
   (t, decision, effects)
 
+let apply_anchor_events t patch_id events = fold_anchor_events t patch_id events
+
 type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push

@@ -364,6 +364,13 @@ val apply_conflict_rebase_with_anchor :
     {!apply_rebase_with_anchor}: [Anchor_recorded] calls
     {!Patch_agent.record_anchor}; [Anchor_capture_failed] is ignored. *)
 
+val apply_anchor_events :
+  t -> Patch_id.t -> Worktree_plan.anchor_event list -> t
+(** Fold {!Worktree_plan.anchor_event} observations into the agent without any
+    other transition. Called by the runner Start path after executing
+    {!Worktree_plan.for_start} to record the initial anchor for a
+    freshly-branched-off-dep patch, before the LLM session begins. *)
+
 type conflict_resolution =
   | Conflict_done
   | Conflict_retry_push

@@ -673,6 +673,40 @@ struct
                                               .Session_worktree_missing);
                                         `Failed
                                     | Some _wt_path ->
+                                        (* Capture the initial anchor for this
+                                           Start: resolve origin/<base_branch>'s
+                                           current tip so the first rebase has
+                                           a usable [<upstream>] for [git rebase
+                                           --onto]. Closes the production-bug
+                                           blind spot where a Start-then-dep-
+                                           squash-merge sequence left the agent
+                                           with no anchor at first-rebase time
+                                           and forced the legacy 2-arg fallback
+                                           into a "both added" conflict. *)
+                                        let ancestor_ids =
+                                          Runtime.read runtime (fun snap ->
+                                              Graph.transitive_ancestors
+                                                (Orchestrator.graph
+                                                   snap.Runtime.orchestrator)
+                                                patch_id)
+                                        in
+                                        let _, _, start_anchor_events =
+                                          Worktree_plan_executor.execute
+                                            ~patch_id ~agent
+                                            ~fetch_lock:fetch_mutex
+                                            ~fail_label:"start anchor capture"
+                                            ~ancestor_ids
+                                            (Worktree_plan.for_start
+                                               ~base:base_branch)
+                                        in
+                                        (match start_anchor_events with
+                                        | [] -> ()
+                                        | _ ->
+                                            Runtime.update_orchestrator runtime
+                                              (fun orch ->
+                                                Orchestrator.apply_anchor_events
+                                                  orch patch_id
+                                                  start_anchor_events));
                                         let agents_md =
                                           read_optional_file
                                             (Stdlib.Filename.concat _wt_path
