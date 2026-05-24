@@ -208,12 +208,15 @@ let prop_local_state_unsafe =
     ~name:
       "PRC-15: Local_state_unsafe is permanent, has short_label and \
        detail_excerpt" (Gen.return ()) (fun () ->
-      let r = Push_reject_classify.Local_state_unsafe { reason = "x" } in
+      let r =
+        Push_reject_classify.Local_state_unsafe
+          { reason = "  " ^ String.make 300 'x' }
+      in
       Push_reject_classify.is_permanent r
       && String.equal (Push_reject_classify.short_label r) "local_state_unsafe"
       &&
       match Push_reject_classify.detail_excerpt r with
-      | Some s -> String.equal s "x"
+      | Some s -> String.length s = 200 && String.for_all s ~f:(Char.equal 'x')
       | None -> false)
 
 let prop_unknown_truncation =

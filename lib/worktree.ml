@@ -712,11 +712,27 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
               ]
           in
           (* exit 0 = remote is ancestor of local (local includes remote);
-             exit 1 = it isn't (push would wipe commits);
-             anything else = unknown (treat conservatively at the planner). *)
+             exit 1 only means remote is not an ancestor of local. Probe the
+             inverse to distinguish local-behind from true divergence. *)
           match code with
           | 0 -> Push_plan.Local_includes_remote
-          | 1 -> Push_plan.Local_missing_remote
+          | 1 -> (
+              let inverse_code, _, _ =
+                run_git_exit_code ~process_mgr
+                  [
+                    "git";
+                    "-C";
+                    path;
+                    "merge-base";
+                    "--is-ancestor";
+                    local;
+                    remote;
+                  ]
+              in
+              match inverse_code with
+              | 0 -> Push_plan.Local_missing_remote
+              | 1 -> Push_plan.Local_diverged_from_remote
+              | _ -> Push_plan.Unknown)
           | _ -> Push_plan.Unknown)
   in
   let commits_ahead_of_base =
@@ -766,7 +782,8 @@ let force_push_with_lease ~process_mgr ~path ~branch ~base =
   | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
   | Refuse
       (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-       | Push_plan.Local_missing_remote_commits _ ) as r) -> (
+       | Push_plan.Local_missing_remote_commits _
+       | Push_plan.Local_diverged_from_remote_commits _ ) as r) -> (
       match Push_plan.to_push_reject_classify_rejection r with
       | Some rej -> Push_rejected rej
       | None ->

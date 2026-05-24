@@ -26,10 +26,10 @@
     reason to the orchestrator).
 
     Refusals that map to a planner-only state ([Branch_switched],
-    [Local_missing_remote_commits]) are translated to
-    {!Push_reject_classify.Local_state_unsafe} so the existing [is_permanent] →
-    [needs_intervention] escalation path applies without new orchestrator state.
-*)
+    [Local_missing_remote_commits], [Local_diverged_from_remote_commits]) are
+    translated to {!Push_reject_classify.Local_state_unsafe} so the existing
+    [is_permanent] → [needs_intervention] escalation path applies without new
+    orchestrator state. *)
 
 type sha = string [@@deriving show, eq, sexp_of, compare]
 
@@ -41,6 +41,8 @@ type ancestry =
   | Local_missing_remote
       (** Remote has commits the local branch does not reach — a force-push
           would lose them. *)
+  | Local_diverged_from_remote
+      (** Local and remote each have commits the other does not reach. *)
   | No_remote_yet  (** The branch has never been pushed. *)
   | Unknown  (** Ancestry could not be determined; treat conservatively. *)
 [@@deriving show, eq, sexp_of, compare]
@@ -71,6 +73,9 @@ type refusal =
       (** [ancestry = Local_missing_remote] — pushing now would force-push a
           local that is strictly behind remote on real content, wiping commits.
       *)
+  | Local_diverged_from_remote_commits of { local_sha : sha; remote_sha : sha }
+      (** [ancestry = Local_diverged_from_remote] — pushing now would force-push
+          a divergent local branch over remote-only commits. *)
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
@@ -94,6 +99,8 @@ val plan :
     + [commits_ahead_of_base = Some 0] → [Refuse No_commits_ahead_of_base]
     + [ancestry = Local_missing_remote] (and both refs present) →
       [Refuse (Local_missing_remote_commits _)]
+    + [ancestry = Local_diverged_from_remote] (and both refs present) →
+      [Refuse (Local_diverged_from_remote_commits _)]
     + [remote_tracking_sha = None] → [Push Initial_push]
     + otherwise → [Push Force_push_if_includes] *)
 
@@ -102,15 +109,16 @@ val short_label : decision -> string
     suitable for the activity log. Always non-empty and ≤ 32 characters.
     Examples: ["force_push"], ["initial_push"], ["refuse_no_commits"],
     ["refuse_wt_missing"], ["refuse_ref_missing"], ["refuse_branch_switched"],
-    ["refuse_local_behind"]. *)
+    ["refuse_local_behind"], ["refuse_local_diverged"]. *)
 
 val to_push_reject_classify_rejection :
   refusal -> Push_reject_classify.rejection option
 (** Map planner refusals onto the rejection variant used by the orchestrator's
     permanent-rejection escalation:
 
-    - [Branch_switched] / [Local_missing_remote_commits] / [Branch_ref_missing]
-      → [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
+    - [Branch_switched] / [Local_missing_remote_commits] /
+      [Local_diverged_from_remote_commits] / [Branch_ref_missing] →
+      [Some (Local_state_unsafe { reason = short_label_of_refusal })] — route
       through [needs_intervention].
     - [No_commits_ahead_of_base] / [Worktree_missing] → [None] — the
       orchestrator already has dedicated non-rejection handlers

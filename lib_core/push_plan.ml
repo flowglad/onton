@@ -5,6 +5,7 @@ type sha = string [@@deriving show, eq, sexp_of, compare]
 type ancestry =
   | Local_includes_remote
   | Local_missing_remote
+  | Local_diverged_from_remote
   | No_remote_yet
   | Unknown
 [@@deriving show, eq, sexp_of, compare]
@@ -18,6 +19,7 @@ type refusal =
   | Branch_ref_missing of { branch : string }
   | Branch_switched of { expected : string; got : string option }
   | Local_missing_remote_commits of { local_sha : sha; remote_sha : sha }
+  | Local_diverged_from_remote_commits of { local_sha : sha; remote_sha : sha }
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Push of action | Refuse of refusal
@@ -47,8 +49,12 @@ let plan ~expected_branch ~worktree_path_exists ~worktree_head_branch
               | Local_missing_remote, Some remote_sha ->
                   Refuse
                     (Local_missing_remote_commits { local_sha; remote_sha })
-              | ( ( Local_missing_remote | Local_includes_remote | No_remote_yet
-                  | Unknown ),
+              | Local_diverged_from_remote, Some remote_sha ->
+                  Refuse
+                    (Local_diverged_from_remote_commits
+                       { local_sha; remote_sha })
+              | ( ( Local_missing_remote | Local_diverged_from_remote
+                  | Local_includes_remote | No_remote_yet | Unknown ),
                   None ) ->
                   Push Initial_push
               | (Local_includes_remote | No_remote_yet | Unknown), Some _ ->
@@ -62,6 +68,7 @@ let short_label = function
   | Refuse (Branch_ref_missing _) -> "refuse_ref_missing"
   | Refuse (Branch_switched _) -> "refuse_branch_switched"
   | Refuse (Local_missing_remote_commits _) -> "refuse_local_behind"
+  | Refuse (Local_diverged_from_remote_commits _) -> "refuse_local_diverged"
 
 let to_push_reject_classify_rejection (r : refusal) :
     Push_reject_classify.rejection option =
@@ -79,3 +86,7 @@ let to_push_reject_classify_rejection (r : refusal) :
       Some
         (Push_reject_classify.Local_state_unsafe
            { reason = "refuse_local_behind" })
+  | Local_diverged_from_remote_commits _ ->
+      Some
+        (Push_reject_classify.Local_state_unsafe
+           { reason = "refuse_local_diverged" })

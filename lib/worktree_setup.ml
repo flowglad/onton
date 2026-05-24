@@ -49,6 +49,12 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
     let worktree_mutex = Env.worktree_mutex in
     let hook_mutex = Env.hook_mutex in
     let log_event = Runtime_logging.log_event in
+    let start_point_refusal_rejection refusal =
+      let reason =
+        Start_point_plan.short_label (Start_point_plan.Refuse refusal)
+      in
+      Push_reject_classify.Local_state_unsafe { reason }
+    in
     let path = resolve_worktree_path ~patch_id ~agent ?branch () in
     if Stdlib.Sys.file_exists path then (
       Runtime.update_orchestrator runtime (fun orch ->
@@ -145,12 +151,18 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   log_decision "ok";
                   true
               | `Refused refusal ->
-                  log_decision
-                    (Start_point_plan.short_label
-                       (Start_point_plan.Refuse refusal));
+                  let label =
+                    Start_point_plan.short_label
+                      (Start_point_plan.Refuse refusal)
+                  in
+                  log_decision label;
                   log_event runtime ~patch_id
                     (Printf.sprintf "Worktree creation refused — %s"
                        (Start_point_plan.show_refusal refusal));
+                  Runtime.update_orchestrator runtime (fun orch ->
+                      Orchestrator.apply_session_result orch patch_id
+                        (Orchestrator.Session_push_failed
+                           (Some (start_point_refusal_rejection refusal))));
                   false
               | `Raised exn ->
                   log_event runtime ~patch_id
@@ -194,7 +206,11 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                   (Printf.sprintf "Worktree still missing at %s" path);
                 None
             | false, _ -> (
-                (* [Worktree.create] raised. A concurrent fiber may have already
+                match create_outcome with
+                | `Refused _ -> None
+                | `Created -> None
+                | `Raised _ -> (
+                    (* [Worktree.create] raised. A concurrent fiber may have already
                  added a real worktree for [br] before our attempt collided.
                  [find_for_branch] queries [git worktree list], which only
                  reports atomically-registered worktrees — so a hit here is a
@@ -203,13 +219,15 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                  branch: the winning creator is already responsible for it,
                  mirroring the existing "Found existing worktree for branch"
                  path above. *)
-                match W.find_for_branch br with
-                | Some existing ->
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Adopting concurrently-created worktree at %s" existing);
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Orchestrator.set_worktree_path orch patch_id existing);
-                    Some existing
-                | None -> None))
+                    match W.find_for_branch br with
+                    | Some existing ->
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Adopting concurrently-created worktree at %s"
+                             existing);
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Orchestrator.set_worktree_path orch patch_id
+                              existing);
+                        Some existing
+                    | None -> None)))
 end

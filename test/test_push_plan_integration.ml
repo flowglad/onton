@@ -55,8 +55,20 @@ let git_capture ?(dir = ".") args =
        Stdlib.Buffer.add_channel buf ic 4096
      done
    with End_of_file -> ());
-  let _ = Unix.close_process_in ic in
-  String.strip (Buffer.contents buf)
+  let contents = Buffer.contents buf in
+  match Unix.close_process_in ic with
+  | Unix.WEXITED 0 -> String.strip contents
+  | Unix.WEXITED code ->
+      failwith
+        (Printf.sprintf "git command failed (exit %d): %s\n%s" code cmd contents)
+  | Unix.WSIGNALED signal ->
+      failwith
+        (Printf.sprintf "git command killed by signal %d: %s\n%s" signal cmd
+           contents)
+  | Unix.WSTOPPED signal ->
+      failwith
+        (Printf.sprintf "git command stopped by signal %d: %s\n%s" signal cmd
+           contents)
 
 let setup_origin ~origin_dir =
   Unix.mkdir origin_dir 0o755;
@@ -162,12 +174,13 @@ let scenario_local_missing_remote env =
   (match outcome with
   | Worktree.Push_rejected (Push_reject_classify.Local_state_unsafe { reason })
     ->
-      if String.equal reason "refuse_local_behind" then
+      if String.equal reason "refuse_local_diverged" then
         Stdlib.print_endline "  local_missing_remote: OK (refused)"
       else
         failwith
           (Printf.sprintf
-             "local_missing_remote: expected reason refuse_local_behind, got %s"
+             "local_missing_remote: expected reason refuse_local_diverged, got \
+              %s"
              reason)
   | Worktree.Push_rejected
       ( Push_reject_classify.Workflow_scope_missing

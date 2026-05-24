@@ -108,7 +108,8 @@ let detail_excerpt = function
   | Hook_failure s | Unknown s ->
       if String.is_empty (String.strip s) then None else Some s
   | Local_state_unsafe { reason } ->
-      if String.is_empty (String.strip reason) then None else Some reason
+      let reason = truncate_200 (String.strip reason) in
+      if String.is_empty reason then None else Some reason
 
 let is_permanent = function
   | Workflow_scope_missing | Branch_protection | Push_pattern_block
