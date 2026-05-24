@@ -124,6 +124,26 @@ let prop_classify_mark_missing_agrees =
           Patch_pr_status.is_missing (Patch_pr_status.mark_missing t)
       | Mark_missing_already | Mark_missing_illegal -> false)
 
+let prop_classify_set_present_total =
+  Test.make ~name:"classify_set_present partitions by prior-number-match"
+    ~count:300
+    Gen.(pair gen_any gen_pr_number)
+    (fun (t, n) ->
+      let prior_matches =
+        Option.equal Pr_number.equal (Patch_pr_status.pr_number t) (Some n)
+      in
+      match Patch_pr_status.classify_set_present t n with
+      | Set_present_recover_same -> prior_matches
+      | Set_present_adopt_new -> not prior_matches)
+
+let prop_set_present_idempotent =
+  Test.make ~name:"set_present same-number applied twice = once" ~count:200
+    Gen.(pair gen_any gen_pr_number)
+    (fun (t, n) ->
+      let once = Patch_pr_status.set_present t n in
+      let twice = Patch_pr_status.set_present once n in
+      Patch_pr_status.equal once twice)
+
 let prop_legacy_never_produces_missing =
   Test.make ~name:"legacy formats never produce Missing" ~count:100
     Gen.(oneof [ return `Null; map Pr_number.yojson_of_t gen_pr_number ])
@@ -151,6 +171,8 @@ let suite =
     prop_legacy_never_produces_missing;
     prop_classify_mark_missing_total;
     prop_classify_mark_missing_agrees;
+    prop_classify_set_present_total;
+    prop_set_present_idempotent;
   ]
 
 let () =

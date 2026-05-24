@@ -2923,3 +2923,37 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-AH-7 passed"
+
+(** PI-AH-8: same-PR-number recovery via [set_pr_number] after [mark_pr_missing]
+    preserves [notified_base_branch], [delivered_ci_run_ids],
+    [pr_body_delivered], and queue contents. Exercises Commit 2's
+    [Set_present_recover_same] path end-to-end. *)
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-AH-8: Mark+set_pr_number same-number preserves state" ~count:200
+      QCheck2.Gen.(int_range 0 (max_adhoc - 1))
+      (fun i ->
+        let patches = mk_patches 0 in
+        let orch = bootstrap patches in
+        let pid = adhoc_pid i in
+        let orch = apply_command orch patches (Add_adhoc i) in
+        (* Populate world-state that should survive the roundtrip *)
+        let pr = adhoc_pr i in
+        let orch =
+          Orchestrator.record_delivered_ci_run_ids orch pid [ 11; 12 ]
+        in
+        let orch = Orchestrator.set_pr_body_delivered orch pid true in
+        let orch = Orchestrator.enqueue orch pid Operation_kind.Human in
+        let before = Orchestrator.agent orch pid in
+        let orch = Orchestrator.mark_pr_missing orch pid in
+        let orch = Orchestrator.set_pr_number orch pid pr in
+        let after = Orchestrator.agent orch pid in
+        Patch_agent.is_pr_present after
+        && List.equal Int.equal after.delivered_ci_run_ids
+             before.delivered_ci_run_ids
+        && Bool.equal after.pr_body_delivered before.pr_body_delivered
+        && List.equal Operation_kind.equal after.queue before.queue)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-AH-8 passed"

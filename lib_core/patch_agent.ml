@@ -448,13 +448,30 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
   }
 
 let set_pr_number t pr_number =
-  {
-    t with
-    pr_status = Patch_pr_status.set_present t.pr_status pr_number;
-    is_draft = true;
-    pr_body_delivered = false;
-    start_attempts_without_pr = 0;
-  }
+  (* Dispatch on the pure classifier:
+     - [Set_present_recover_same] (Missing N → Present N or Present N →
+       Present N): preserve all world-state. The body is still delivered, CI
+       runs already accounted, notified_base_branch still authoritative.
+     - [Set_present_adopt_new] (Absent → Present, Missing M → Present N
+       M≠N, Present M → Present N M≠N): reset PR-bootstrap lifecycle fields
+       that the OLD setter cleared, plus the PR-keyed CI history that no
+       longer corresponds to the new PR's check runs. Does NOT touch
+       base_branch / notified_base_branch — those are owned by [start]
+       (bootstrap) and the poller (renumbering). *)
+  match Patch_pr_status.classify_set_present t.pr_status pr_number with
+  | Set_present_recover_same ->
+      { t with pr_status = Patch_pr_status.set_present t.pr_status pr_number }
+  | Set_present_adopt_new ->
+      {
+        t with
+        pr_status = Patch_pr_status.set_present t.pr_status pr_number;
+        is_draft = true;
+        pr_body_delivered = false;
+        start_attempts_without_pr = 0;
+        ci_checks = [];
+        ci_failure_count = 0;
+        delivered_ci_run_ids = [];
+      }
 
 let clear_pr t =
   (* Gameplan-recreate path: a gameplan patch's PR was closed and the next
@@ -475,20 +492,18 @@ let clear_pr t =
   }
 
 let mark_pr_missing t =
-  (* Ad-hoc PR vanished from remote. Preserves the recorded PR number (so the
-     TUI can show what was lost, and a poll that re-observes the PR can adopt
-     it back via [set_pr_number]), but strips functional PR state so no
-     downstream code tries to act against a number GitHub no longer has.
-     Queue entries that require an active PR are dropped; Human and
-     Merge_conflict survive (a human message can still be relevant, and the
-     conflict flag is informational). *)
-  let queue =
-    List.filter t.queue ~f:(fun k ->
-        match k with
-        | Operation_kind.Ci | Review_comments | Pr_body | Findings | Rebase ->
-            false
-        | Human | Merge_conflict -> true)
-  in
+  (* Minimal transition. Clears only the world-state assertions that are no
+     longer authoritative (is_draft, merge_ready, checks_passing, ci_checks);
+     preserves everything else so a Missing -> Present recovery via
+     [set_pr_number] (same-number, [Set_present_recover_same]) is a near
+     no-op.
+
+     Queue is preserved: the planner gates Rebase/Respond on [is_pr_present]
+     so PR-coupled entries cannot fire on a Missing agent. [busy] /
+     [current_op] are preserved too — any inflight session runs to
+     completion against the recorded number; its outcome is applied to the
+     agent normally (the session-level retry counters track real failures
+     even when GitHub returns 404). *)
   {
     t with
     pr_status = Patch_pr_status.mark_missing t.pr_status;
@@ -496,11 +511,6 @@ let mark_pr_missing t =
     merge_ready = false;
     checks_passing = false;
     ci_checks = [];
-    ci_failure_count = 0;
-    base_branch = None;
-    notified_base_branch = None;
-    delivered_ci_run_ids = [];
-    queue;
   }
 
 let start t ~base_branch =

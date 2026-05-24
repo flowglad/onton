@@ -419,8 +419,18 @@ val highest_priority : t -> Types.Operation_kind.t option
 (** {2 Persistence support} *)
 
 val set_pr_number : t -> Types.Pr_number.t -> t
-(** Store [pr_number] (making [has_pr] true). Not a plain field setter —
-    establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
+(** Store [pr_number] (making [has_pr] true). Dispatches on
+    {!Patch_pr_status.classify_set_present}:
+    - [Set_present_recover_same] (prior was [Missing N] or [Present N] with the
+      same number): preserves all world-state — the body is still delivered, CI
+      runs already accounted, [notified_base_branch] still authoritative.
+    - [Set_present_adopt_new] (prior was [Absent], or the number differs):
+      resets PR-bootstrap fields ([is_draft = true],
+      [pr_body_delivered = false], [start_attempts_without_pr = 0]) plus
+      PR-keyed CI history that no longer matches the new PR's check runs
+      ([ci_checks = []], [ci_failure_count = 0], [delivered_ci_run_ids = []]).
+      Does NOT touch [base_branch] / [notified_base_branch] — those are owned by
+      [start] during bootstrap and by the poller during renumbering. *)
 
 val clear_pr : t -> t
 (** Remove the PR number and reset PR-related state, returning the agent to the
@@ -430,13 +440,20 @@ val clear_pr : t -> t
 
 val mark_pr_missing : t -> t
 (** Transition the agent from [Present pr] to [Missing pr]: the remote no longer
-    has the PR. Preserves the recorded PR number (so the TUI can show what was
-    lost and a re-observation can adopt the same PR back). Strips functional PR
-    state (draft, merge_ready, ci_checks, base_branch, etc.) and drops
-    PR-coupled queue entries (Ci, Review_comments, Pr_body, Findings, Rebase).
-    Preserves [Human] and [Merge_conflict] queue entries. Raises
-    [Invalid_argument] on [Absent] (cannot mark missing what was never had) or
-    [Missing] (idempotency is the caller's responsibility). *)
+    has the PR. Minimal: clears only the world-state assertions that are no
+    longer authoritative ([is_draft], [merge_ready], [checks_passing],
+    [ci_checks]). Everything else — queue, counters, [notified_base_branch],
+    [delivered_ci_run_ids], [pr_body_delivered], [current_op], [busy],
+    [base_branch] — is preserved so a [Missing → Present] recovery via
+    {!set_pr_number} (same-number) is a near-no-op.
+
+    The planner gates Rebase/Respond on [is_pr_present] so PR-coupled queue
+    entries cannot fire while the agent is [Missing]; preserved Human and
+    Merge_conflict entries are dispatched once the PR is recovered.
+
+    Raises [Invalid_argument] on [Absent] (cannot mark missing what was never
+    had) or [Missing] (idempotency is the caller's responsibility — see
+    {!Orchestrator.mark_pr_missing} for the idempotent wrapper). *)
 
 val restore :
   patch_id:Types.Patch_id.t ->

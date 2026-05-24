@@ -85,6 +85,25 @@ val classify_mark_missing : t -> mark_missing_decision
     integration-level API idempotent on [Missing] while keeping the low-level
     {!mark_missing} transition strict. *)
 
+type set_present_decision =
+  | Set_present_recover_same
+      (** Prior status was [Missing n] or [Present n] with the same number n —
+          this is a same-PR recovery / restate. The effectful handler should
+          preserve world-state fields (the body is still delivered, CI runs
+          already accounted, notified_base_branch still authoritative). *)
+  | Set_present_adopt_new
+      (** Prior was [Absent], or the number differs. This is a fresh PR
+          (bootstrap) or renumbering — the handler should reset bootstrap
+          lifecycle fields (is_draft, pr_body_delivered, base_branch,
+          delivered_ci_run_ids, etc.) as if the PR is new. *)
+[@@deriving show, eq]
+
+val classify_set_present : t -> Pr_number.t -> set_present_decision
+(** Total. Compares the prior status against the new PR number. Used by
+    {!Patch_agent.set_pr_number} to decide whether a Missing↔Present roundtrip
+    should preserve world-state (same-number recovery) or reset bootstrap state
+    (different number). *)
+
 (** {2 Persistence} *)
 
 val yojson_of_t : t -> Yojson.Safe.t

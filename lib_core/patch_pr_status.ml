@@ -39,6 +39,15 @@ let classify_mark_missing = function
   | Present _ -> Mark_missing_transition
   | Absent -> Mark_missing_illegal
 
+type set_present_decision = Set_present_recover_same | Set_present_adopt_new
+[@@deriving show, eq]
+
+let classify_set_present t pr_number =
+  match t with
+  | Present n when Pr_number.equal n pr_number -> Set_present_recover_same
+  | Missing n when Pr_number.equal n pr_number -> Set_present_recover_same
+  | Absent | Present _ | Missing _ -> Set_present_adopt_new
+
 (* ── Persistence ── *)
 
 let yojson_of_t = function
@@ -168,6 +177,31 @@ let%test "classify_mark_missing agrees with mark_missing on Transition" =
   match classify_mark_missing s with
   | Mark_missing_transition -> equal (mark_missing s) (Missing (mk_pr 5))
   | Mark_missing_already | Mark_missing_illegal -> false
+
+let%test "classify_set_present: Absent + any n -> Adopt_new" =
+  equal_set_present_decision
+    (classify_set_present Absent (mk_pr 1))
+    Set_present_adopt_new
+
+let%test "classify_set_present: Present n + same n -> Recover_same" =
+  equal_set_present_decision
+    (classify_set_present (Present (mk_pr 7)) (mk_pr 7))
+    Set_present_recover_same
+
+let%test "classify_set_present: Present n + different m -> Adopt_new" =
+  equal_set_present_decision
+    (classify_set_present (Present (mk_pr 7)) (mk_pr 8))
+    Set_present_adopt_new
+
+let%test "classify_set_present: Missing n + same n -> Recover_same" =
+  equal_set_present_decision
+    (classify_set_present (Missing (mk_pr 7)) (mk_pr 7))
+    Set_present_recover_same
+
+let%test "classify_set_present: Missing n + different m -> Adopt_new" =
+  equal_set_present_decision
+    (classify_set_present (Missing (mk_pr 7)) (mk_pr 8))
+    Set_present_adopt_new
 
 let roundtrip_ok t =
   match t_of_yojson_compat (yojson_of_t t) with
