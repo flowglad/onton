@@ -638,12 +638,13 @@ let rec apply_command orch patches cmd =
       let pid = adhoc_pid i in
       match Orchestrator.find_agent orch pid with
       | Some _ -> (
-          try Orchestrator.mark_pr_missing orch pid
-          with
+          try Orchestrator.mark_pr_missing orch pid with
           (* Mark_missing_illegal (Absent) — swallow so the property test can
              explore arbitrary interleavings without an explicit gate. *)
-          | Invalid_argument _ ->
-            orch)
+          | Invalid_argument msg
+            when String.is_substring msg ~substring:"Mark_missing_illegal" ->
+              orch
+          | Invalid_argument _ as exn -> raise exn)
       | None -> orch)
   | Rediscover_replacement_adhoc i -> (
       let pid = adhoc_pid i in
@@ -2891,9 +2892,10 @@ let () =
              ]))
       (fun cmds ->
         let patches = mk_patches 0 in
-        let orch = bootstrap patches in
-        let _ : Orchestrator.t = run_sequence orch patches cmds in
-        true)
+        (safe_verbose cmds patches) (fun () ->
+            let orch = bootstrap patches in
+            let _ : Orchestrator.t = run_sequence orch patches cmds in
+            true))
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-AH-6 passed"
@@ -2908,18 +2910,19 @@ let () =
       QCheck2.Gen.(int_range 0 (max_adhoc - 1))
       (fun i ->
         let patches = mk_patches 0 in
-        let orch = bootstrap patches in
         let cmds =
           [
             Add_adhoc i; Mark_pr_missing_adhoc i; Rediscover_replacement_adhoc i;
           ]
         in
-        let orch = run_sequence orch patches cmds in
-        match Orchestrator.find_agent orch (adhoc_pid i) with
-        | Some agent ->
-            Patch_agent.is_pr_present agent
-            && not (Patch_agent.is_pr_missing agent)
-        | None -> false)
+        (safe_verbose cmds patches) (fun () ->
+            let orch = bootstrap patches in
+            let orch = run_sequence orch patches cmds in
+            match Orchestrator.find_agent orch (adhoc_pid i) with
+            | Some agent ->
+                Patch_agent.is_pr_present agent
+                && not (Patch_agent.is_pr_missing agent)
+            | None -> false))
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-AH-7 passed"
@@ -2952,6 +2955,8 @@ let () =
         Patch_agent.is_pr_present after
         && List.equal Int.equal after.delivered_ci_run_ids
              before.delivered_ci_run_ids
+        && Option.equal Branch.equal after.notified_base_branch
+             before.notified_base_branch
         && Bool.equal after.pr_body_delivered before.pr_body_delivered
         && List.equal Operation_kind.equal after.queue before.queue)
   in

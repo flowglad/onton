@@ -73,6 +73,10 @@ let t_of_yojson_compat (json : Yojson.Safe.t) : (t, string) Result.t =
         Error (Stdlib.Printexc.to_string exn)
     | Yojson.Safe.Util.Type_error (msg, _) ->
         Error (Printf.sprintf "malformed pr_number: %s" msg)
+    | exn ->
+        Error
+          (Printf.sprintf "malformed pr_number: %s"
+             (Stdlib.Printexc.to_string exn))
   in
   match json with
   | `Null ->

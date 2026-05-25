@@ -459,14 +459,16 @@ let set_pr_number t pr_number =
        base_branch / notified_base_branch — those are owned by [start]
        (bootstrap) and the poller (renumbering). *)
   match Patch_pr_status.classify_set_present t.pr_status pr_number with
-  | Set_present_recover_same ->
+  | Patch_pr_status.Set_present_recover_same ->
       { t with pr_status = Patch_pr_status.set_present t.pr_status pr_number }
-  | Set_present_adopt_new ->
+  | Patch_pr_status.Set_present_adopt_new ->
       {
         t with
         pr_status = Patch_pr_status.set_present t.pr_status pr_number;
         is_draft = true;
+        merge_ready = false;
         pr_body_delivered = false;
+        checks_passing = false;
         start_attempts_without_pr = 0;
         ci_checks = [];
         ci_failure_count = 0;

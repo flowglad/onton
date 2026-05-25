@@ -882,14 +882,16 @@ let construct_capabilities ~net (setup : runtime_setup) =
                   Patch_pr_status.classify_recovery_on_observe
                     agent.Patch_agent.pr_status
                 with
-                | Lift_to_present _ ->
+                | Patch_pr_status.Lift_to_present _ ->
                     Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
                     let orch = Orchestrator.set_pr_number orch pid pr in
                     if merged then Orchestrator.mark_merged orch pid else orch
-                | No_recovery_needed when Patch_agent.is_pr_present agent ->
+                | Patch_pr_status.No_recovery_needed
+                  when Patch_agent.is_pr_present agent ->
                     Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
+                    let orch = Orchestrator.set_pr_number orch pid pr in
                     if merged then Orchestrator.mark_merged orch pid else orch
-                | No_recovery_needed ->
+                | Patch_pr_status.No_recovery_needed ->
                     Pr_registry.register pr_registry ~patch_id:pid ~pr_number:pr;
                     let orch =
                       Orchestrator.fire orch (Orchestrator.Start (pid, base))

@@ -101,12 +101,12 @@ let apply_poll_result t patch_id
     match
       Patch_pr_status.classify_recovery_on_observe agent.Patch_agent.pr_status
     with
-    | Lift_to_present pr ->
+    | Patch_pr_status.Lift_to_present pr ->
         log
           (Printf.sprintf "PR #%d re-appeared on remote — restoring to Present"
              (Pr_number.to_int pr));
         Orchestrator.set_pr_number t patch_id pr
-    | No_recovery_needed -> t
+    | Patch_pr_status.No_recovery_needed -> t
   in
   let t =
     if poll_result.merged then (
@@ -399,7 +399,7 @@ let plan_action_for_patch t ~branch_map patch_id =
         Some (Orchestrator.Rebase (patch_id, new_base))
     | _ -> None
   else if
-    Patch_agent.has_pr agent
+    Patch_agent.is_pr_present agent
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention agent))
