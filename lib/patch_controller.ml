@@ -91,6 +91,23 @@ let apply_poll_result t patch_id
       poll_observation) =
   let logs = ref [] in
   let log message = logs := { message; patch_id } :: !logs in
+  (* If the agent was [Missing] and we have a successful poll observation,
+     lift it back to [Present] before applying any world-state updates. The
+     pure classifier is total; the effectful dispatch is a flat match.
+     [set_pr_number]'s [Set_present_recover_same] arm preserves all state
+     that was held across the [Missing] phase. *)
+  let t =
+    let agent = Orchestrator.agent t patch_id in
+    match
+      Patch_pr_status.classify_recovery_on_observe agent.Patch_agent.pr_status
+    with
+    | Patch_pr_status.Lift_to_present pr ->
+        log
+          (Printf.sprintf "PR #%d re-appeared on remote — restoring to Present"
+             (Pr_number.to_int pr));
+        Orchestrator.set_pr_number t patch_id pr
+    | Patch_pr_status.No_recovery_needed -> t
+  in
   let t =
     if poll_result.merged then (
       let agent = Orchestrator.agent t patch_id in
@@ -241,8 +258,12 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
     let t = enqueue_pr_body_if_needed t patch_id agent in
     let agent = Orchestrator.agent t patch_id in
     let effects = ref [] in
-    (match agent.pr_number with
-    | Some pr_number -> (
+    (* Gate on [is_pr_present]: emitting Set_pr_draft / Set_pr_base against a
+       [Missing] PR would 404 against GitHub. A gameplan patch can in
+       principle reach Missing if the poller ever wires that for gameplan
+       patches in the future; defensively skip it here either way. *)
+    (match Patch_agent.pr_number agent with
+    | Some pr_number when Patch_agent.is_pr_present agent -> (
         match agent.base_branch with
         | Some actual_base ->
             let has_merged pid =
@@ -293,7 +314,7 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
                   :: !effects
             end
         | None -> ())
-    | None -> ());
+    | Some _ | None -> ());
     (t, List.rev !effects)
 
 let reconcile_all t ~project_name ~gameplan =
@@ -316,7 +337,12 @@ let branch_map_of_patches patches =
 let plan_action_for_patch t ~branch_map patch_id =
   let agent = Orchestrator.agent t patch_id in
   let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
-  let has_pr pid = Patch_agent.has_pr (Orchestrator.agent t pid) in
+  let has_pr pid =
+    (* Dependency satisfaction: a child cannot rebase onto a [Missing] parent
+       — the parent's branch may not exist on the remote. Gate on
+       is_pr_present rather than has_pr (which is true for [Missing] too). *)
+    Patch_agent.is_pr_present (Orchestrator.agent t pid)
+  in
   if
     (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
@@ -345,8 +371,10 @@ let plan_action_for_patch t ~branch_map patch_id =
        would sit on a stale base until a human message happened to land and
        flip the Human exemption inside [Patch_agent.needs_intervention]. A
        conflict outcome still enqueues [Merge_conflict], which keeps the
-       patch blocked until an LLM session can run. *)
-    Patch_agent.has_pr agent
+       patch blocked until an LLM session can run. Gate on [is_pr_present]
+       (not [has_pr]) so a [Missing] PR is excluded — rebase pushes against
+       a vanished PR would 404. *)
+    Patch_agent.is_pr_present agent
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.branch_blocked)
@@ -371,7 +399,7 @@ let plan_action_for_patch t ~branch_map patch_id =
         Some (Orchestrator.Rebase (patch_id, new_base))
     | _ -> None
   else if
-    Patch_agent.has_pr agent
+    Patch_agent.is_pr_present agent
     && (not agent.Patch_agent.merged)
     && (not agent.Patch_agent.busy)
     && (not (Patch_agent.needs_intervention agent))
@@ -400,6 +428,11 @@ let reconcile_action_message t action =
 
 let reconcile_messages t ~patches =
   let branch_map = branch_map_of_patches patches in
+  (* Invariant: every graph patch_id is either in the gameplan (branch_map) or
+     has a PR identity ([has_pr] is true for both Present and Missing). A
+     violation indicates an ad-hoc agent was [clear_pr]-ed instead of
+     [mark_pr_missing]-ed, leaving an orphan in the graph. See
+     [poller_fiber.ml]'s [Rediscover_pr] arm and [Patch_pr_status]. *)
   let missing =
     Graph.all_patch_ids (Orchestrator.graph t)
     |> List.filter ~f:(fun pid ->
@@ -409,9 +442,12 @@ let reconcile_messages t ~patches =
   if not (List.is_empty missing) then
     invalid_arg
       (Printf.sprintf
-         "Patch_controller.plan_messages: tick input missing %d patch id(s) \
-          from graph"
-         (List.length missing));
+         "Patch_controller.reconcile_messages: orchestrator invariant violated \
+          — %d ad-hoc patch(es) have no PR and are not in the gameplan (likely \
+          a [clear_pr] on an ad-hoc agent; should have been \
+          [mark_pr_missing]). patch_ids: %s"
+         (List.length missing)
+         (String.concat ~sep:", " (List.map missing ~f:Patch_id.to_string)));
   let patch_ids = Graph.all_patch_ids (Orchestrator.graph t) in
   let t =
     List.fold patch_ids ~init:t ~f:(fun acc patch_id ->
@@ -596,13 +632,13 @@ let reconcile_automerge t ~now =
             (Orchestrator.set_automerge_deadline t patch_id deadline, decisions)
         | true, Some deadline ->
             if Float.( >= ) now deadline then
-              match agent.Patch_agent.pr_number with
-              | Some pr_number ->
+              match Patch_agent.pr_number agent with
+              | Some pr_number when Patch_agent.is_pr_present agent ->
                   let t = Orchestrator.set_automerge_inflight t patch_id true in
                   ( t,
                     { merge_patch_id = patch_id; merge_pr_number = pr_number }
                     :: decisions )
-              | None ->
+              | Some _ | None ->
                   (* Unreachable today because [is_automerge_candidate]
                      requires [is_approved] which requires [has_pr]. Defensive
                      clear so a future predicate change can't leave a patch

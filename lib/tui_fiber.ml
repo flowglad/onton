@@ -300,14 +300,16 @@ struct
                             Orchestrator.agent snap.Runtime.orchestrator
                               patch_id
                           in
-                          (agent.Patch_agent.busy, Patch_agent.has_pr agent))
+                          ( agent.Patch_agent.busy,
+                            Patch_agent.is_pr_present agent ))
                     in
                     if busy then
                       log_event Env.runtime ~patch_id
                         "Cannot force-mark as merged — patch is currently busy"
                     else if not has_pr then
                       log_event Env.runtime ~patch_id
-                        "Cannot force-mark as merged — patch has no PR"
+                        "Cannot force-mark as merged — patch has no usable PR \
+                         (Missing or Absent)"
                     else (
                       Runtime.update_orchestrator Env.runtime (fun orch ->
                           Orchestrator.mark_merged orch patch_id);

@@ -50,9 +50,9 @@ let make_orch patch agent =
     ~outbox:(Map.empty (module Message_id))
     ~main_branch:main
 
-let make_agent ~patch_id ~branch ~pr_number ~merged ~queue ~base_branch
+let make_agent ~patch_id ~branch ~pr_status ~merged ~queue ~base_branch
     ~is_draft ~pr_body_delivered ~start_attempts_without_pr =
-  Patch_agent.restore ~patch_id ~branch ~pr_number ~has_session:false
+  Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
@@ -115,10 +115,13 @@ let () =
       let base_branch =
         if has_pr then Some (if use_main_base then main else branch) else None
       in
-      let pr_number = if has_pr then Some (Pr_number.of_int 42) else None in
+      let pr_status =
+        if has_pr then Patch_pr_status.Present (Pr_number.of_int 42)
+        else Patch_pr_status.Absent
+      in
       let patch = make_patch pid branch in
       let agent =
-        make_agent ~patch_id:pid ~branch ~pr_number ~merged ~queue ~base_branch
+        make_agent ~patch_id:pid ~branch ~pr_status ~merged ~queue ~base_branch
           ~is_draft ~pr_body_delivered ~start_attempts_without_pr
       in
       return (patch, make_gameplan patch, make_orch patch agent))
@@ -182,7 +185,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
@@ -222,7 +225,7 @@ let () =
            direction (re-draft) is not exercised by this property. *)
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
@@ -271,7 +274,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
@@ -307,9 +310,9 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~branch ~pr_number:None ~merged:false
-            ~queue:[] ~base_branch:None ~is_draft:false ~pr_body_delivered:false
-            ~start_attempts_without_pr:2
+          make_agent ~patch_id:pid ~branch ~pr_status:Patch_pr_status.Absent
+            ~merged:false ~queue:[] ~base_branch:None ~is_draft:false
+            ~pr_body_delivered:false ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -339,7 +342,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
@@ -370,9 +373,9 @@ let () =
         let patch = make_patch pid branch in
         let gameplan = make_gameplan patch in
         let agent =
-          make_agent ~patch_id:pid ~branch ~pr_number:None ~merged:false
-            ~queue:[] ~base_branch:None ~is_draft:false ~pr_body_delivered:false
-            ~start_attempts_without_pr:2
+          make_agent ~patch_id:pid ~branch ~pr_status:Patch_pr_status.Absent
+            ~merged:false ~queue:[] ~base_branch:None ~is_draft:false
+            ~pr_body_delivered:false ~start_attempts_without_pr:2
         in
         let orch = make_orch patch agent in
         let orch, effects =
@@ -408,7 +411,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false
             ~queue:[ Operation_kind.Rebase ] ~satisfies:false ~changed:false
             ~has_conflict:false ~base_branch:(Some branch)
@@ -452,7 +455,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false
             ~queue:[ Operation_kind.Ci ] ~satisfies:false ~changed:false
             ~has_conflict:false ~base_branch:(Some branch)
@@ -497,7 +500,7 @@ let () =
         (* pr_body_delivered=false so Set_pr_description fires *)
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
@@ -547,7 +550,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0
           |> fun agent -> Patch_agent.set_branch_rebased_onto agent main
@@ -589,7 +592,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
@@ -635,7 +638,7 @@ let () =
         let patch = make_patch pid branch in
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
@@ -699,7 +702,7 @@ let () =
         in
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:true ~has_conflict:false
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
@@ -750,7 +753,7 @@ let () =
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
@@ -789,7 +792,7 @@ let () =
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:None ~is_draft:true
             ~pr_body_delivered:false ~start_attempts_without_pr:0
         in
@@ -842,7 +845,7 @@ let () =
            draft effect and no more Respond actions. *)
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:false ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
@@ -926,7 +929,7 @@ let () =
         (* Agent has base_branch = branch, but graph says main (no deps) *)
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
@@ -956,7 +959,7 @@ let () =
         (* Agent has base_branch = main, graph says main (no deps) → match *)
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
@@ -979,7 +982,7 @@ let () =
         let gameplan = make_gameplan patch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
             ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
@@ -1007,7 +1010,7 @@ let () =
         let patch = make_patch pid branch in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:false
             ~pr_body_delivered:true ~start_attempts_without_pr:0
         in
@@ -1052,13 +1055,13 @@ let () =
         let patch = make_patch pid branch in
         (* Agent with session but no PR → should appear *)
         let agent_session_no_pr =
-          Patch_agent.restore ~patch_id:pid ~branch ~pr_number:None
-            ~has_session:true ~busy:false ~merged:false ~queue:[]
-            ~satisfies:false ~changed:false ~has_conflict:false
-            ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
-            ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
-            ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_status:Patch_pr_status.Absent ~has_session:true ~busy:false
+            ~merged:false ~queue:[] ~satisfies:false ~changed:false
+            ~has_conflict:false ~base_branch:None ~notified_base_branch:None
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
@@ -1096,7 +1099,7 @@ let () =
         let patch = make_patch pid branch in
         let agent =
           Patch_agent.restore ~patch_id:pid ~branch
-            ~pr_number:(Some (Pr_number.of_int 42))
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~has_session:true ~busy:false ~merged:false ~queue:[]
             ~satisfies:false ~changed:false ~has_conflict:false
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
@@ -1125,8 +1128,143 @@ let () =
         List.is_empty (Patch_controller.discovery_intents orch))
   in
 
+  (* Bug repro: an ad-hoc agent transitioned to Missing must not crash
+     reconcile_messages, and must surface as needs_intervention with no
+     Start message issued. *)
+  let prop_missing_adhoc_does_not_crash_reconcile =
+    Test.make ~name:"reconcile_messages tolerates Missing ad-hoc agent" ~count:1
+      Gen.(return ())
+      (fun () ->
+        let pid = Patch_id.of_string "999" in
+        let branch = Branch.of_string "feat/vanished" in
+        let orch = Orchestrator.create ~patches:[] ~main_branch:main in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid ~branch ~base_branch:main
+            ~pr_number:(Pr_number.of_int 999)
+        in
+        let orch = Orchestrator.mark_pr_missing orch pid in
+        try
+          let messages = Patch_controller.plan_messages orch ~patches:[] in
+          let agent = Orchestrator.agent orch pid in
+          let no_start_message =
+            List.for_all messages
+              ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+                match msg.action with
+                | Orchestrator.Start _ -> false
+                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> true)
+          in
+          Patch_agent.needs_intervention agent
+          && Patch_agent.is_pr_missing agent
+          && no_start_message
+        with Invalid_argument _ -> false)
+  in
+
+  (* Missing -> Present recovery via apply_poll_result. A poll that returns a
+     non-merged, non-conflict state means the remote currently has the PR;
+     the controller must lift the agent from Missing back to Present so
+     downstream planning can proceed. *)
+  let prop_apply_poll_lifts_missing_to_present =
+    Test.make ~name:"apply_poll_result lifts Missing -> Present on observe"
+      ~count:1
+      Gen.(return ())
+      (fun () ->
+        let pid = Patch_id.of_string "777" in
+        let branch = Branch.of_string "feat/recovered" in
+        let orch = Orchestrator.create ~patches:[] ~main_branch:main in
+        let orch =
+          Orchestrator.add_agent orch ~patch_id:pid ~branch ~base_branch:main
+            ~pr_number:(Pr_number.of_int 777)
+        in
+        (* Populate state that should survive the roundtrip *)
+        let orch =
+          Orchestrator.record_delivered_ci_run_ids orch pid [ 11; 12 ]
+        in
+        let orch = Orchestrator.set_pr_body_delivered orch pid true in
+        let before = Orchestrator.agent orch pid in
+        let orch = Orchestrator.mark_pr_missing orch pid in
+        let poll_result =
+          Poller.
+            {
+              merged = false;
+              has_conflict = false;
+              ci_checks = [];
+              checks_passing = true;
+              merge_ready = false;
+              queue = [];
+              is_draft = false;
+              closed = false;
+            }
+        in
+        let observation =
+          Patch_controller.
+            {
+              poll_result;
+              base_branch = None;
+              branch_in_root = false;
+              worktree_path = None;
+            }
+        in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid observation
+        in
+        let after = Orchestrator.agent orch pid in
+        Patch_agent.is_pr_present after
+        && (not (Patch_agent.is_pr_missing after))
+        && List.equal Int.equal after.Patch_agent.delivered_ci_run_ids
+             before.Patch_agent.delivered_ci_run_ids
+        && Bool.equal after.Patch_agent.pr_body_delivered
+             before.Patch_agent.pr_body_delivered)
+  in
+
+  (* Child of a Missing parent must not be Start-eligible: the parent's
+     branch may not exist on the remote, so deps_satisfied gating on
+     is_pr_present (not has_pr) is the correct semantic. *)
+  let prop_child_of_missing_parent_not_startable =
+    Test.make
+      ~name:"plan_action_for_patch: child of Missing parent not Start-eligible"
+      ~count:1
+      Gen.(return ())
+      (fun () ->
+        let parent_pid = Patch_id.of_string "parent" in
+        let child_pid = Patch_id.of_string "child" in
+        let parent_branch = Branch.of_string "feat/parent" in
+        let child_branch = Branch.of_string "feat/child" in
+        let parent_patch = make_patch parent_pid parent_branch in
+        let child_patch =
+          {
+            (make_patch child_pid child_branch) with
+            dependencies = [ parent_pid ];
+          }
+        in
+        let patches = [ parent_patch; child_patch ] in
+        let gameplan = { (make_gameplan parent_patch) with patches } in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        (* Bootstrap parent: Start, set_pr_number, complete, then mark Missing *)
+        let orch =
+          Orchestrator.fire orch (Orchestrator.Start (parent_pid, main))
+        in
+        let orch =
+          Orchestrator.set_pr_number orch parent_pid (Pr_number.of_int 11)
+        in
+        let orch = Orchestrator.complete orch parent_pid in
+        let orch = Orchestrator.mark_pr_missing orch parent_pid in
+        (* Plan: child should NOT be Start-eligible because parent is Missing. *)
+        let messages =
+          Patch_controller.plan_messages orch ~patches:gameplan.Gameplan.patches
+        in
+        not
+          (List.exists messages
+             ~f:(fun (msg : Orchestrator.patch_agent_message) ->
+               match msg.action with
+               | Orchestrator.Start (pid, _) -> Patch_id.equal pid child_pid
+               | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
+  in
+
   let suite =
     [
+      prop_missing_adhoc_does_not_crash_reconcile;
+      prop_apply_poll_lifts_missing_to_present;
+      prop_child_of_missing_parent_not_startable;
       prop_deterministic;
       prop_plan_tick_deterministic;
       prop_pr_body_queue_idempotent;

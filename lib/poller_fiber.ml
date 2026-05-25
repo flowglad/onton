@@ -160,6 +160,28 @@ struct
             Stdlib.Hashtbl.replace skip_logged patch_id true;
             true))
     in
+    (* Per-patch "PR vanished" log dedup. Mirrors [skip_logged] above: the
+       poll loop re-classifies Mark_pr_missing on every cycle while the PR
+       remains absent (Orchestrator.mark_pr_missing is now idempotent), so
+       without dedup the activity log fills with duplicates. Reset on a
+       successful [Switch_to_pr] so a future vanish-reopen-vanish cycle
+       re-logs. *)
+    let vanish_logged : (Patch_id.t, bool) Stdlib.Hashtbl.t =
+      Stdlib.Hashtbl.create 16
+    in
+    let vanish_logged_mutex = Eio.Mutex.create () in
+    let vanish_already_logged patch_id =
+      Eio.Mutex.use_ro vanish_logged_mutex (fun () ->
+          Stdlib.Hashtbl.mem vanish_logged patch_id)
+    in
+    let mark_vanish_logged patch_id =
+      Eio.Mutex.use_rw ~protect:true vanish_logged_mutex (fun () ->
+          Stdlib.Hashtbl.replace vanish_logged patch_id true)
+    in
+    let clear_vanish_logged patch_id =
+      Eio.Mutex.use_rw ~protect:true vanish_logged_mutex (fun () ->
+          Stdlib.Hashtbl.remove vanish_logged patch_id)
+    in
     (* P1-A: detect when [origin/<main>] has advanced past local <main>. When
        it has, every agent currently based on <main> needs a rebase so it
        picks up the freshly squash-merged commits — without this poke,
@@ -216,7 +238,8 @@ struct
                         ~equal:Operation_kind.equal
                     in
                     if
-                      is_on_main && Patch_agent.has_pr agent
+                      is_on_main
+                      && Patch_agent.is_pr_present agent
                       && (not agent.Patch_agent.merged)
                       && not already_rebasing
                     then
@@ -320,25 +343,80 @@ struct
                           | Some agent -> agent.Patch_agent.branch
                           | None -> branch_of patch_id)
                 in
-                (match StartupReconciler.discover_pr ~branch with
-                | Ok (Some (new_pr, base_branch, merged)) ->
+                let in_gameplan =
+                  Runtime.read runtime (fun snap ->
+                      List.exists snap.Runtime.gameplan.Gameplan.patches
+                        ~f:(fun (p : Patch.t) ->
+                          Patch_id.equal p.Patch.id patch_id))
+                in
+                let discover_result :
+                    (Rediscover_decision.replacement option, string) Result.t =
+                  match StartupReconciler.discover_pr ~branch with
+                  | Ok (Some (new_pr, base_branch, merged)) ->
+                      Ok
+                        (Some
+                           Rediscover_decision.{ new_pr; base_branch; merged })
+                  | Ok None -> Ok None
+                  | Error msg -> Error msg
+                in
+                let cls =
+                  Rediscover_decision.classify
+                    {
+                      patch_id;
+                      pr_number;
+                      in_gameplan;
+                      result = discover_result;
+                    }
+                in
+                (match cls with
+                | Rediscover_decision.Switch_to_pr
+                    { new_pr; base_branch; merged } ->
                     Runtime_logging.log_event runtime ~patch_id
                       (Printf.sprintf "Switched to PR #%d"
                          (Pr_number.to_int new_pr));
                     register_pr_number ~patch_id ~pr_number:new_pr;
+                    (* Recovery transition: clear the vanish-log dedup so a
+                       future vanish/reopen/vanish cycle re-logs once. *)
+                    clear_vanish_logged patch_id;
                     Runtime.update_orchestrator runtime (fun orch ->
                         Patch_controller.apply_replacement_pr orch patch_id
                           ~pr_number:new_pr ~base_branch ~merged)
-                | Ok None ->
+                | Rediscover_decision.Clear_pr_for_recreate ->
                     Runtime_logging.log_event runtime ~patch_id
                       "No open PR found — cleared stale PR state, will create \
                        on next session";
                     unregister_pr_number ~patch_id;
                     Runtime.update_orchestrator runtime (fun orch ->
                         Orchestrator.clear_pr orch patch_id)
-                | Error msg ->
+                | Rediscover_decision.Mark_pr_missing ->
+                    (* Ad-hoc PR vanished from remote. Surface for
+                       intervention; keep the external pr_number registration
+                       so a re-opened PR is discovered on the next poll. The
+                       operator's [-N] clears the registration via
+                       [apply_remove_pr] when they intend to remove.
+
+                       Dedup the "vanished" log line via the pure
+                       [Rediscover_decision.classify_vanish_log] decision so
+                       the activity log stays clean while the agent remains
+                       Missing across many poll cycles. *)
+                    (match
+                       Rediscover_decision.classify_vanish_log cls
+                         ~already_logged:(vanish_already_logged patch_id)
+                     with
+                    | Rediscover_decision.Log_emit ->
+                        Runtime_logging.log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "PR #%d vanished from remote — marking agent for \
+                              intervention; use -%d to remove if intentional"
+                             (Pr_number.to_int pr_number)
+                             (Pr_number.to_int pr_number));
+                        mark_vanish_logged patch_id
+                    | Rediscover_decision.Log_skip -> ());
+                    Runtime.update_orchestrator runtime (fun orch ->
+                        Orchestrator.mark_pr_missing orch patch_id)
+                | Rediscover_decision.Log_error { message } ->
                     Runtime_logging.log_event runtime ~patch_id
-                      (Printf.sprintf "PR re-discovery failed — %s" msg));
+                      (Printf.sprintf "PR re-discovery failed — %s" message));
                 None
             | Poll_cycle.Apply_pr_state
                 { pr_state; poll_result; ci_checks_truncated } ->

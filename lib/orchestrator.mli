@@ -76,6 +76,18 @@ val send_human_message : t -> Patch_id.t -> string -> t
 
 val set_pr_number : t -> Patch_id.t -> Pr_number.t -> t
 val clear_pr : t -> Patch_id.t -> t
+
+val mark_pr_missing : t -> Patch_id.t -> t
+(** Transition the patch's [pr_status] from [Present] to [Missing], or no-op if
+    already [Missing]. The effectful caller (typically the poller's
+    PR-rediscovery path) uses this when the remote has lost an ad-hoc PR.
+
+    Idempotent on [Missing] (the second poll cycle after a vanish will hit the
+    same classification; without idempotency that would crash). Raises
+    [Invalid_argument] on [Absent] — that case represents a caller bug (cannot
+    lose what was never had). See {!Patch_pr_status.classify_mark_missing} for
+    the pure decision this dispatches on. *)
+
 val set_session_failed : t -> Patch_id.t -> t
 
 val set_branch_rebased_onto_sha : t -> Patch_id.t -> string option -> t

@@ -310,6 +310,10 @@ type patch_view = {
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
+  pr_missing : bool;
+      (** [true] when [pr_number] is set but the remote no longer has the PR.
+          Distinguishes "we lost the PR" from "we have the PR" so the row label
+          can render a distinctive marker. *)
   base_branch : Branch.t option;
   worktree_path : string option;
   intervention_reason : string option;
@@ -416,7 +420,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
     human_messages = List.length agent.human_messages;
     ci_checks = agent.ci_checks;
     recent_stream = [];
-    pr_number = agent.pr_number;
+    pr_number = Patch_agent.pr_number agent;
+    pr_missing = Patch_agent.is_pr_missing agent;
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
     intervention_reason = None;
@@ -534,6 +539,10 @@ let render_patch_row ~width ~selected ~now (pv : patch_view) =
   in
   let pr_label =
     match pv.pr_number with
+    | Some n when pv.pr_missing ->
+        (* Vanished from remote — flag the number with a leading ! so the
+           operator can see which PR was lost. *)
+        Printf.sprintf "!%-5d" (Pr_number.to_int n)
     | Some n -> Printf.sprintf "#%-5d" (Pr_number.to_int n)
     | None -> "  --  "
   in
@@ -684,8 +693,10 @@ let detail_info_rows (pv : patch_view) ~width ~now =
         (match pv.model with Some m -> m | None -> "(backend default)");
       Printf.sprintf "  PR:          %s"
         (match pv.pr_number with
+        | Some n when pv.pr_missing ->
+            Printf.sprintf "#%d (vanished from remote)" (Pr_number.to_int n)
         | Some n -> Printf.sprintf "#%d" (Pr_number.to_int n)
-        | None -> if pv.has_pr then "yes" else "no");
+        | None -> "no");
       Printf.sprintf "  Dependencies: %s"
         (match pv.dep_ids with
         | [] -> "none"

@@ -687,14 +687,14 @@ let () =
       (* -- create has no pr_number -- *)
       Test.make ~name:"create has no pr_number" gen_pid (fun pid ->
           let a = create ~branch:br0 pid in
-          Option.is_none a.pr_number);
+          Option.is_none (pr_number a));
       (* -- set_pr_number stores pr_number -- *)
       Test.make ~name:"set_pr_number stores pr_number"
         Gen.(pair gen_pid (map Pr_number.of_int (int_range 1 9999)))
         (fun (pid, pr) ->
           let a = create ~branch:br0 pid in
           let a = set_pr_number a pr in
-          Option.equal Pr_number.equal a.pr_number (Some pr));
+          Option.equal Pr_number.equal (pr_number a) (Some pr));
       (* -- start clears ci_checks -- *)
       Test.make ~name:"start clears ci_checks"
         Gen.(pair gen_pid gen_branch)
@@ -717,9 +717,10 @@ let () =
           let a = mark_merged a in
           let a =
             Onton_core.Patch_agent.restore ~patch_id:a.patch_id ~branch:br
-              ~pr_number:None ~has_session:false ~busy:false ~merged:false
-              ~queue:[] ~satisfies:false ~changed:false ~has_conflict:false
-              ~base_branch:None ~notified_base_branch:None ~ci_failure_count:0
+              ~pr_status:Onton_core.Patch_pr_status.Absent ~has_session:false
+              ~busy:false ~merged:false ~queue:[] ~satisfies:false
+              ~changed:false ~has_conflict:false ~base_branch:None
+              ~notified_base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
               ~merge_ready:false ~is_draft:false ~pr_body_delivered:false
@@ -800,7 +801,8 @@ let () =
              restore — rebase should promote has_session to true. *)
           let a =
             restore ~patch_id:pid ~branch:br
-              ~pr_number:(Some (Pr_number.of_int 1))
+              ~pr_status:
+                (Onton_core.Patch_pr_status.Present (Pr_number.of_int 1))
               ~has_session:false ~busy:false ~merged:false ~queue:[]
               ~satisfies:true ~changed:false ~has_conflict:false
               ~base_branch:(Some br) ~notified_base_branch:(Some br)
@@ -946,6 +948,71 @@ let () =
           let a = set_pr_number a (Pr_number.of_int 7) in
           has_pr a && a.is_draft && (not a.pr_body_delivered)
           && a.start_attempts_without_pr = 0);
+      (* -- mark_pr_missing is minimal: clears only world-state assertions -- *)
+      Test.make
+        ~name:"mark_pr_missing preserves queue + counters + delivered_ci"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = enqueue a Operation_kind.Pr_body in
+            let a = enqueue a Operation_kind.Human in
+            let a = record_delivered_ci_run_ids a [ 101; 102 ] in
+            let a = set_pr_body_delivered a true in
+            let before_queue = a.queue in
+            let before_delivered = a.delivered_ci_run_ids in
+            let before_notified = a.notified_base_branch in
+            let a = mark_pr_missing a in
+            is_pr_missing a
+            && List.equal Operation_kind.equal a.queue before_queue
+            && List.equal Int.equal a.delivered_ci_run_ids before_delivered
+            && Option.equal Branch.equal a.notified_base_branch before_notified
+            && a.pr_body_delivered && (not a.is_draft) && (not a.merge_ready)
+            && (not a.checks_passing) && List.is_empty a.ci_checks
+          with _ -> false);
+      (* -- set_pr_number Recover_same preserves bootstrap fields -- *)
+      Test.make ~name:"set_pr_number Recover_same preserves bootstrap fields"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let pr = Pr_number.of_int 42 in
+            let a = create ~branch:br pid |> fun a -> start a ~base_branch:br in
+            let a = set_pr_number a pr in
+            (* Now Present pr; populate state that should survive a roundtrip. *)
+            let a = set_pr_body_delivered a true in
+            let a = record_delivered_ci_run_ids a [ 101; 102 ] in
+            let before_delivered = a.delivered_ci_run_ids in
+            let before_notified = a.notified_base_branch in
+            let a = mark_pr_missing a in
+            let a = set_pr_number a pr in
+            (* same pr -> Recover_same: preserve everything *)
+            is_pr_present a && a.pr_body_delivered
+            && List.equal Int.equal a.delivered_ci_run_ids before_delivered
+            && Option.equal Branch.equal a.notified_base_branch before_notified
+          with _ -> false);
+      (* -- set_pr_number Adopt_new on different pr resets PR-keyed CI -- *)
+      Test.make ~name:"set_pr_number Adopt_new resets PR-keyed CI history"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let pr1 = Pr_number.of_int 1 in
+            let pr2 = Pr_number.of_int 2 in
+            let a = create ~branch:br pid |> fun a -> start a ~base_branch:br in
+            let a = set_pr_number a pr1 in
+            let a = record_delivered_ci_run_ids a [ 101 ] in
+            let a = set_pr_body_delivered a true in
+            let a = set_pr_number a pr2 in
+            (* different pr -> Adopt_new: reset CI history + bootstrap *)
+            is_pr_present a
+            && List.is_empty a.delivered_ci_run_ids
+            && (not a.pr_body_delivered) && a.is_draft
+          with _ -> false);
       Test.make ~name:"on_pr_discovery_failure increments durable attempt count"
         ~count:1
         Gen.(pure pid0)

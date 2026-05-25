@@ -15,7 +15,10 @@ type op_state = Queued | Running
 type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
-  pr_number : Types.Pr_number.t option;
+  pr_status : Patch_pr_status.t;
+      (** Lifecycle status of the patch's PR. Use the accessor functions
+          ([has_pr], [is_pr_present], [is_pr_missing], [pr_number]) rather than
+          pattern-matching the field — see {!Patch_pr_status}. *)
   has_session : bool;
   busy : bool;
   merged : bool;
@@ -114,14 +117,33 @@ val create_adhoc :
 (** {2 Derived predicates} *)
 
 val has_pr : t -> bool
-(** [true] when [pr_number] is [Some _]. *)
+(** [true] when this agent has a recorded PR identity (either [Present] or
+    [Missing] in [pr_status]). Used as the orchestrator-invariant predicate:
+    every graph node must be in the gameplan or have a PR identity. *)
+
+val is_pr_present : t -> bool
+(** [true] only when [pr_status = Present _]. Use this for any callsite that is
+    about to act on the PR (rebase, respond, merge, set draft) — a [Missing] PR
+    cannot be acted on. *)
+
+val is_pr_missing : t -> bool
+(** [true] only when [pr_status = Missing _]. Contributes to
+    {!needs_intervention}. *)
+
+val pr_number : t -> Types.Pr_number.t option
+(** The recorded PR number, if any. [Some] for both [Present] and [Missing];
+    [None] for [Absent]. *)
 
 val needs_intervention : t -> bool
-(** Derived predicate: true when [Human] is not in [queue] and any of:
-    [ci_failure_count >= 3], [session_fallback = Given_up],
-    [(not has_pr) && start_attempts_without_pr >= 2],
-    [conflict_noop_count >= 2], [no_commits_push_count >= 2],
-    [push_failure_count >= 3], or [pr_body_artifact_miss_count >= 2]. *)
+(** Derived predicate. True iff the agent is not [merged] AND any of:
+    - [session_fallback = Given_up] (bypasses the Human exemption)
+    - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
+      exemption; queued Human entries are deferred until [Missing → Present]
+      recovery rather than dispatched while [Missing])
+    - [Human] not in queue AND any of: [ci_failure_count >= 3],
+      [(not has_pr) && start_attempts_without_pr >= 2],
+      [conflict_noop_count >= 2], [no_commits_push_count >= 2],
+      [push_failure_count >= 3], [pr_body_artifact_miss_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -401,17 +423,52 @@ val highest_priority : t -> Types.Operation_kind.t option
 (** {2 Persistence support} *)
 
 val set_pr_number : t -> Types.Pr_number.t -> t
-(** Store [pr_number] (making [has_pr] true). Not a plain field setter —
-    establishes the PR-present state and resets PR-bootstrap lifecycle facts. *)
+(** Store [pr_number] (making [has_pr] true). Dispatches on
+    {!Patch_pr_status.classify_set_present}:
+    - [Set_present_recover_same] (prior was [Missing N] or [Present N] with the
+      same number): preserves all world-state — the body is still delivered, CI
+      runs already accounted, [notified_base_branch] still authoritative.
+    - [Set_present_adopt_new] (prior was [Absent], or the number differs):
+      resets PR-bootstrap fields ([is_draft = true],
+      [pr_body_delivered = false], [start_attempts_without_pr = 0]) plus
+      PR-keyed CI history that no longer matches the new PR's check runs
+      ([ci_checks = []], [ci_failure_count = 0], [delivered_ci_run_ids = []]).
+      Does NOT touch [base_branch] / [notified_base_branch] — those are owned by
+      [start] during bootstrap and by the poller during renumbering. *)
 
 val clear_pr : t -> t
-(** Remove the PR number and reset all PR-related state, returning the agent to
-    the no-PR bootstrap path. *)
+(** Remove the PR number and reset PR-related state, returning the agent to the
+    no-PR bootstrap path. Tightens to [Present]-only: raises [Invalid_argument]
+    on [Absent] or [Missing]. The gameplan-recreate path is the only legitimate
+    caller; ad-hoc-vanished should use {!mark_pr_missing} instead. *)
+
+val mark_pr_missing : t -> t
+(** Transition the agent from [Present pr] to [Missing pr]: the remote no longer
+    has the PR. Minimal: clears only the world-state assertions that are no
+    longer authoritative ([is_draft], [merge_ready], [checks_passing],
+    [ci_checks]). Everything else — queue (including Human, Ci, Pr_body,
+    Findings, Rebase, Review_comments, Merge_conflict), counters,
+    [notified_base_branch], [delivered_ci_run_ids], [pr_body_delivered],
+    [current_op], [busy], [base_branch] — is preserved so a [Missing → Present]
+    recovery via {!set_pr_number} (same-number) is a near-no-op.
+
+    {b Human messages on a [Missing] agent are deferred, not actively
+       dispatched.} {!needs_intervention} fires on [is_pr_missing], so the
+    planner's Respond/Rebase branches gate the agent off. Queued Human entries
+    survive the [Missing] phase and dispatch normally once the PR recovers to
+    [Present] (via {!Patch_pr_status.classify_recovery_on_observe} →
+    {!Orchestrator.set_pr_number}). The operator's escape if the PR is not
+    coming back is [Orchestrator.remove_agent] (i.e., [-N] in the TUI).
+
+    Raises [Invalid_argument] on [Absent] (cannot mark missing what was never
+    had) or [Missing] (idempotency is the caller's responsibility — see
+    {!Orchestrator.mark_pr_missing} for the idempotent integration-level
+    wrapper). *)
 
 val restore :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
-  pr_number:Types.Pr_number.t option ->
+  pr_status:Patch_pr_status.t ->
   has_session:bool ->
   busy:bool ->
   merged:bool ->

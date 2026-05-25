@@ -269,7 +269,66 @@ let () =
           let json = Onton.Persistence.patch_agent_to_yojson agent in
           match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
           | Ok agent' ->
-              Option.equal Pr_number.equal agent.pr_number agent'.pr_number
+              Option.equal Pr_number.equal
+                (Onton_core.Patch_agent.pr_number agent)
+                (Onton_core.Patch_agent.pr_number agent')
+          | Error _ -> false
+        with _ -> false)
+  in
+  (* pr_status round-trip: every Patch_pr_status variant (Absent, Present,
+     Missing) survives serialize -> deserialize through patch_agent_*_yojson. *)
+  let pr_status_roundtrip =
+    QCheck2.Test.make ~name:"pr_status survives round-trip (all 3 variants)"
+      ~count:300
+      QCheck2.Gen.(
+        oneof
+          [
+            return Onton_core.Patch_pr_status.Absent;
+            map
+              (fun n -> Onton_core.Patch_pr_status.Present (Pr_number.of_int n))
+              (int_range 1 9999);
+            map
+              (fun n -> Onton_core.Patch_pr_status.Missing (Pr_number.of_int n))
+              (int_range 1 9999);
+          ])
+      (fun pr_status ->
+        try
+          let json = Onton_core.Patch_pr_status.yojson_of_t pr_status in
+          match Onton_core.Patch_pr_status.t_of_yojson_compat json with
+          | Ok pr_status' ->
+              Onton_core.Patch_pr_status.equal pr_status pr_status'
+          | Error _ -> false
+        with _ -> false)
+  in
+  (* Legacy pr_number-only snapshot (no pr_status key) decodes correctly:
+     null -> Absent, int -> Present. Missing cannot appear from legacy data. *)
+  let legacy_pr_number_decodes_correctly =
+    QCheck2.Test.make
+      ~name:"legacy pr_number field decodes to Absent or Present" ~count:200
+      gen_patch_agent_fully_populated (fun agent ->
+        try
+          let gameplan = gameplan_for_agent agent in
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          (* Remove pr_status; keep legacy pr_number to simulate an older
+             snapshot. *)
+          let json =
+            match json with
+            | `Assoc fields ->
+                `Assoc
+                  (List.filter fields ~f:(fun (k, _) ->
+                       not (String.equal k "pr_status")))
+            | other -> other
+          in
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          | Ok agent' ->
+              (* Whatever the agent's original pr_status, the legacy-only
+                 decode preserves the pr_number value and avoids Missing. *)
+              let original_pr = Onton_core.Patch_agent.pr_number agent in
+              let decoded_pr = Onton_core.Patch_agent.pr_number agent' in
+              let not_missing =
+                not (Onton_core.Patch_agent.is_pr_missing agent')
+              in
+              Option.equal Pr_number.equal original_pr decoded_pr && not_missing
           | Error _ -> false
         with _ -> false)
   in
@@ -279,17 +338,20 @@ let () =
         try
           let gameplan = gameplan_for_agent agent in
           let json = Onton.Persistence.patch_agent_to_yojson agent in
-          (* Remove pr_number from JSON to simulate legacy snapshot *)
+          (* Remove both pr_number and pr_status from JSON to simulate a
+             legacy snapshot that predates either field. *)
           let json =
             match json with
             | `Assoc fields ->
                 `Assoc
                   (List.filter fields ~f:(fun (k, _) ->
-                       not (String.equal k "pr_number")))
+                       (not (String.equal k "pr_number"))
+                       && not (String.equal k "pr_status")))
             | other -> other
           in
           match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
-          | Ok agent' -> Option.is_none agent'.pr_number
+          | Ok agent' ->
+              Option.is_none (Onton_core.Patch_agent.pr_number agent')
           | Error _ -> false
         with _ -> false)
   in
@@ -448,6 +510,8 @@ let () =
         anchor_history_roundtrip;
         missing_anchor_history_defaults_empty;
         pr_number_roundtrip;
+        pr_status_roundtrip;
+        legacy_pr_number_decodes_correctly;
         missing_pr_number_defaults_none;
         missing_branch_falls_back_to_gameplan;
         adhoc_snapshot_roundtrip;

@@ -1,0 +1,136 @@
+open Types
+
+(** The lifecycle state of a patch's GitHub pull request.
+
+    Distinguishes three honest states a patch can occupy along the PR axis,
+    eliminating the historical collapse where [Pr_number.t option = None] meant
+    both "no PR yet" (bootstrap) and "PR previously existed but is now gone"
+    (the remote lost it). That collision was the root cause of a crash in
+    {!Patch_controller.reconcile_messages}: an ad-hoc agent whose remote PR
+    vanished was [clear_pr]-ed back to [None], leaving the orchestrator's graph
+    holding a node with neither gameplan nor PR.
+
+    Do not confuse this module with {!Pr_state}, which is the forge-agnostic
+    view of a single PR's GitHub-side facts (status, merge_state, ci_checks,
+    findings, ...). [Patch_pr_status] is strictly the patch agent's own
+    lifecycle status. *)
+
+type t =
+  | Absent  (** No PR has been opened for this patch yet. *)
+  | Present of Pr_number.t  (** PR is open and tracked. *)
+  | Missing of Pr_number.t
+      (** PR previously existed and the remote no longer has it. The agent is
+          surfaced for intervention; the recorded number lets the poller adopt
+          the PR back if it reappears, and the TUI can tell the operator which
+          PR it was. *)
+[@@deriving show, eq, sexp_of, compare]
+
+(** {2 Predicates} *)
+
+val has_pr : t -> bool
+(** [true] for [Present] and [Missing] — the orchestrator-invariant sense: "we
+    know a PR identity for this patch." Drives the
+    {!Patch_controller.reconcile_messages} invariant that every graph node must
+    be in the gameplan or have a PR identity. *)
+
+val is_pr_present : t -> bool
+(** [true] only for [Present] — the functional sense: "the PR can be rebased /
+    responded to / merged." Callers about to call GitHub against the recorded
+    number should gate on this, not on [has_pr]. *)
+
+val is_missing : t -> bool
+(** [true] only for [Missing]. *)
+
+val pr_number : t -> Pr_number.t option
+(** The recorded PR number, if any. [Some] for both [Present] and [Missing];
+    [None] for [Absent]. *)
+
+(** {2 Smart constructors} *)
+
+val set_present : t -> Pr_number.t -> t
+(** Move to [Present n]. Total: accepts any source state. Used by all paths
+    where a PR has been observed on the remote — first discovery
+    ([Absent → Present]), re-discovery after a vanish ([Missing → Present]), and
+    replacement renumbering ([Present → Present]). *)
+
+val clear_for_recreate : t -> t
+(** Move to [Absent]. Partial: raises [Invalid_argument] on [Absent] or
+    [Missing]. Used only by the gameplan-recreate path: when a gameplan patch's
+    PR has been closed and we want the next [Start] to open a fresh one. Calling
+    this on [Missing] would erase the user-visible history of which PR vanished;
+    use {!mark_missing} for that case instead. *)
+
+val mark_missing : t -> t
+(** Move to [Missing n] preserving the recorded number. Partial: requires
+    [Present _]; raises [Invalid_argument] on [Absent] (cannot lose what was
+    never had) and on [Missing _] (idempotency is the caller's responsibility —
+    re-marking would discard the original observation).
+
+    For an idempotent variant, callers should classify with
+    {!classify_mark_missing} and dispatch on the result. The orchestrator
+    wrapper {!Orchestrator.mark_pr_missing} does this. *)
+
+(** {2 Pure classifiers} *)
+
+type mark_missing_decision =
+  | Mark_missing_already  (** Already [Missing] — re-marking is a no-op. *)
+  | Mark_missing_transition  (** [Present] — legal transition to [Missing]. *)
+  | Mark_missing_illegal
+      (** [Absent] — caller bug; cannot lose what was never had. *)
+[@@deriving show, eq]
+
+val classify_mark_missing : t -> mark_missing_decision
+(** Total. Inspects [t] and returns the decision the effectful handler should
+    dispatch on. Used by {!Orchestrator.mark_pr_missing} to make the
+    integration-level API idempotent on [Missing] while keeping the low-level
+    {!mark_missing} transition strict. *)
+
+type set_present_decision =
+  | Set_present_recover_same
+      (** Prior status was [Missing n] or [Present n] with the same number n —
+          this is a same-PR recovery / restate. The effectful handler should
+          preserve world-state fields (the body is still delivered, CI runs
+          already accounted, notified_base_branch still authoritative). *)
+  | Set_present_adopt_new
+      (** Prior was [Absent], or the number differs. This is a fresh PR
+          (bootstrap) or renumbering — the handler should reset bootstrap
+          lifecycle fields (is_draft, pr_body_delivered, base_branch,
+          delivered_ci_run_ids, etc.) as if the PR is new. *)
+[@@deriving show, eq]
+
+val classify_set_present : t -> Pr_number.t -> set_present_decision
+(** Total. Compares the prior status against the new PR number. Used by
+    {!Patch_agent.set_pr_number} to decide whether a Missing↔Present roundtrip
+    should preserve world-state (same-number recovery) or reset bootstrap state
+    (different number). *)
+
+type recovery_decision =
+  | Lift_to_present of Pr_number.t
+      (** Prior status was [Missing n]; the remote now confirms the PR exists.
+          The effectful handler should call [set_pr_number] with the recorded
+          number (same-number recovery, preserves world-state). *)
+  | No_recovery_needed
+      (** Prior was [Present _] (no transition needed) or [Absent] (no PR to
+          recover). *)
+[@@deriving show, eq]
+
+val classify_recovery_on_observe : t -> recovery_decision
+(** Total. Used by callers that have a positive signal from the remote (the
+    poller's [Apply_pr_state] dispatch, the startup reconciler's discovery) to
+    decide whether to lift a [Missing] agent back to [Present]. *)
+
+(** {2 Persistence} *)
+
+val yojson_of_t : t -> Yojson.Safe.t
+(** Tagged-variant encoding: emits [\{"kind": "absent"\}] /
+    [\{"kind": "present", "pr_number": n\}] /
+    [\{"kind": "missing", "pr_number": n\}]. *)
+
+val t_of_yojson_compat : Yojson.Safe.t -> (t, string) Result.t
+(** Decode tagged form, with backward-compatible fall-backs:
+    - [`Null] → [Absent] (legacy [pr_number = null]).
+    - bare integer or any value decodable by [Pr_number.t_of_yojson] →
+      [Present n] (legacy [pr_number = n]).
+    - unrecognized JSON → [Error _].
+
+    Wraps raises from [Pr_number]'s ppx-derived decoder. *)
