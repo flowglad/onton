@@ -25,12 +25,41 @@ let rec has_cancellation = function
       List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
   | _ -> false
 
+(* [posix_spawn] can transiently fail (e.g. EAGAIN) when the host is near its
+   per-user process limit — a heavily parallel test runner, or many concurrent
+   patches each driving git. Such failures surface as exceptions *other* than a
+   process verdict ([Eio.Process.E _] — [Child_error]/[Executable_not_found],
+   meaning git actually ran) and other than cancellation. We retry only that
+   transient class so a one-off spawn failure isn't mistaken for a git result
+   (or crash an op); a genuine exit status or cancellation is never retried. *)
+let is_transient_spawn_failure = function
+  | Eio.Io (Eio.Process.E _, _) -> false
+  | e -> not (has_cancellation e)
+
+let rec retry_transient_spawn ?(attempts = 4) f =
+  match f () with
+  | x -> x
+  | exception e when attempts <= 1 || not (is_transient_spawn_failure e) ->
+      raise e
+  | exception _ ->
+      (* Yield so the scheduler can make progress (reap exited children, let
+         other fibers release resources) before the next attempt. *)
+      Eio.Fiber.yield ();
+      retry_transient_spawn ~attempts:(attempts - 1) f
+
+(* [Eio.Process.run] wrapper that retries transient spawn failures. Named
+   parameter [mgr] (not [process_mgr]) so a textual rewrite of the call sites
+   below doesn't recurse into this definition. *)
+let process_run_retry mgr ?env ?stdout ?stderr args =
+  retry_transient_spawn (fun () ->
+      Eio.Process.run mgr ?env ?stdout ?stderr args)
+
 let clean_git_env = Stdlib.Lazy.from_fun Git_env.clean_env
 
 let ref_exists ~process_mgr ~repo_root ref_path =
   let buf = Buffer.create 16 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
@@ -50,7 +79,7 @@ let resolve_main_root ~process_mgr ~repo_root =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -76,7 +105,7 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -91,7 +120,7 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
 let run_git ~process_mgr args =
   let stderr_buf = Buffer.create 128 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink (Buffer.create 64))
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -114,10 +143,11 @@ let run_git_exit_code ~process_mgr args =
   let stderr_buf = Buffer.create 64 in
   let env = Stdlib.Lazy.force clean_git_env in
   let child =
-    Eio.Process.spawn ~sw process_mgr ~env
-      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      args
+    retry_transient_spawn (fun () ->
+        Eio.Process.spawn ~sw process_mgr ~env
+          ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+          ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+          args)
   in
   let code =
     match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
@@ -200,7 +230,7 @@ let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 512 in
   let existing_branches =
     match
-      Eio.Process.run process_mgr
+      process_run_retry process_mgr
         ~env:(Stdlib.Lazy.force clean_git_env)
         ~stdout:(Eio.Flow.buffer_sink buf)
         ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
@@ -369,7 +399,7 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
         Result.Ok { patch_id; branch; path })
 
 let remove ~process_mgr ~repo_root t =
-  Eio.Process.run process_mgr
+  process_run_retry process_mgr
     ~env:(Stdlib.Lazy.force clean_git_env)
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
 
@@ -378,7 +408,7 @@ let detect_branch ~process_mgr ~path =
   let path = normalize_path path in
   let stderr_buf = Buffer.create 64 in
   (match
-     Eio.Process.run process_mgr
+     process_run_retry process_mgr
        ~env:(Stdlib.Lazy.force clean_git_env)
        ~stdout:(Eio.Flow.buffer_sink buf)
        ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -407,7 +437,7 @@ let list_with_branches ~process_mgr ~repo_root =
   let buf = Buffer.create 512 in
   let stderr_buf = Buffer.create 64 in
   (match
-     Eio.Process.run process_mgr
+     process_run_retry process_mgr
        ~env:(Stdlib.Lazy.force clean_git_env)
        ~stdout:(Eio.Flow.buffer_sink buf)
        ~stderr:(Eio.Flow.buffer_sink stderr_buf)

@@ -210,6 +210,11 @@
  (libraries onton_core qcheck-core))
 
 (test
+ (name test_worktree_spawn_retry)
+ (modules test_worktree_spawn_retry)
+ (libraries onton onton_core eio eio_main eio.unix unix))
+
+(test
  (name test_spawn_logic)
  (modules test_spawn_logic)
  (libraries onton onton_core onton_test_support qcheck-core))
