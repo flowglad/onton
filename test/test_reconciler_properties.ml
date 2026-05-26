@@ -618,64 +618,6 @@ let prop_reconcile_dedup_rebase =
       in
       List.length rebases = 1)
 
-(* P1-A: detect_main_freshness_drift covers the SHA-vs-SHA case that
-   detect_stale_bases misses (both sides read the same stale local main name,
-   so structural check passes). *)
-let prop_main_drift_total =
-  QCheck2.Test.make ~count:500
-    ~name:"MFD-1: detect_main_freshness_drift is total over arbitrary strings"
-    (QCheck2.Gen.pair
-       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 0 60))
-       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 0 60)))
-    (fun (local_sha, origin_sha) ->
-      try
-        let _ = Reconciler.detect_main_freshness_drift ~local_sha ~origin_sha in
-        true
-      with _ -> false)
-
-let prop_main_drift_equal_shas_no_drift =
-  QCheck2.Test.make ~name:"MFD-2: equal non-empty SHAs -> no drift" ~count:200
-    (QCheck2.Gen.string_size
-       ~gen:(QCheck2.Gen.char_range 'a' 'f')
-       (QCheck2.Gen.int_range 7 40))
-    (fun sha ->
-      not
-        (Reconciler.detect_main_freshness_drift ~local_sha:sha ~origin_sha:sha))
-
-let prop_main_drift_different_shas_drifts =
-  QCheck2.Test.make ~name:"MFD-3: distinct non-empty SHAs -> drift fires"
-    ~count:200
-    (QCheck2.Gen.pair
-       (QCheck2.Gen.string_size
-          ~gen:(QCheck2.Gen.char_range 'a' 'f')
-          (QCheck2.Gen.int_range 7 40))
-       (QCheck2.Gen.string_size
-          ~gen:(QCheck2.Gen.char_range '0' '9')
-          (QCheck2.Gen.int_range 7 40)))
-    (fun (l, r) ->
-      if Base.String.equal l r then true
-      else Reconciler.detect_main_freshness_drift ~local_sha:l ~origin_sha:r)
-
-let prop_main_drift_empty_is_silent =
-  QCheck2.Test.make ~name:"MFD-4: empty SHA on either side -> silent (no drift)"
-    (QCheck2.Gen.pair
-       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 0 40))
-       (QCheck2.Gen.string_size (QCheck2.Gen.int_range 0 40)))
-    (fun (l, r) ->
-      let l_empty = Base.String.is_empty (Base.String.strip l) in
-      let r_empty = Base.String.is_empty (Base.String.strip r) in
-      if l_empty || r_empty then
-        not (Reconciler.detect_main_freshness_drift ~local_sha:l ~origin_sha:r)
-      else true)
-
-let prop_main_drift_strip_whitespace =
-  QCheck2.Test.make
-    ~name:"MFD-5: whitespace around the SHA is stripped before compare"
-    (QCheck2.Gen.return ()) (fun () ->
-      not
-        (Reconciler.detect_main_freshness_drift ~local_sha:"  abc1234  "
-           ~origin_sha:"abc1234\n"))
-
 let () =
   let tests =
     [
@@ -706,11 +648,6 @@ let () =
       prop_drift_always_produces_enqueue_rebase;
       prop_reconcile_e2e_catches_drift;
       prop_reconcile_dedup_rebase;
-      prop_main_drift_total;
-      prop_main_drift_equal_shas_no_drift;
-      prop_main_drift_different_shas_drifts;
-      prop_main_drift_empty_is_silent;
-      prop_main_drift_strip_whitespace;
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

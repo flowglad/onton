@@ -33,12 +33,6 @@ type t = {
   agents : Patch_agent.t Map.M(Patch_id).t;
   outbox : patch_agent_message Map.M(Message_id).t;
   main_branch : Branch.t;
-  main_sha : string option;
-      (** Sha of [origin/<main_branch>] as last observed by the poller. Used by
-          {!Start_eligibility} to gate [Start] actions: a [Start(c, base=B)] is
-          deferred until [B]'s [branch_rebased_onto_sha] equals [main_sha], so
-          that [c]'s worktree is never cut from a stale dep branch. [None] until
-          the first poller tick fetches [origin/main]. *)
 }
 
 let create ~patches ~main_branch =
@@ -57,13 +51,7 @@ let create ~patches ~main_branch =
               (Printf.sprintf "Orchestrator.create: duplicate patch id %s"
                  (Patch_id.to_string p.Patch.id)))
   in
-  {
-    graph;
-    agents;
-    outbox = Map.empty (module Message_id);
-    main_branch;
-    main_sha = None;
-  }
+  { graph; agents; outbox = Map.empty (module Message_id); main_branch }
 
 let agent t patch_id =
   match Map.find t.agents patch_id with
@@ -163,8 +151,8 @@ let mark_merged t patch_id =
   let t = update_agent t patch_id ~f:Patch_agent.mark_merged in
   (* Eagerly update [base_branch] for direct dependents so it is never stale
      when [Merge_conflict] fires, AND eagerly enqueue a [Rebase] so the dep's
-     local tip catches up to [main_sha] before any deferred [Start] that
-     depends on it can fire. Without the eager enqueue, the dep stays on a
+     local branch absorbs the just-merged ancestor before any deferred [Start]
+     that depends on it can fire. Without the eager enqueue, the dep stays on a
      stale base until the next reconciler poll tick — the window that wiped
      event-stream-pages patch 3. *)
   let dependents = Graph.dependents t.graph patch_id in
@@ -267,12 +255,20 @@ let find_patch_by_branch t branch =
 let start_eligibility t base =
   let base_is_main = Branch.equal base t.main_branch in
   let base_branch = Branch.to_string base in
-  let base_patch_merged, base_patch_rebased_onto_sha, base_patch_busy_rebasing =
+  let has_merged pid =
+    match find_agent t pid with Some a -> a.Patch_agent.merged | None -> false
+  in
+  let branch_of pid =
+    match find_agent t pid with
+    | Some a -> a.Patch_agent.branch
+    | None -> t.main_branch
+  in
+  let base_patch_merged, base_patch_busy_rebasing, base_structurally_fresh =
     match find_patch_by_branch t base with
-    | None -> (false, None, false)
+    | None -> (false, false, false)
     | Some bpid -> (
         match find_agent t bpid with
-        | None -> (false, None, false)
+        | None -> (false, false, false)
         | Some a ->
             let running_rebase =
               a.Patch_agent.busy
@@ -289,12 +285,34 @@ let start_eligibility t base =
                 (Some Operation_kind.Rebase)
             in
             let busy_rebasing = running_rebase || runnable_rebase in
-            ( a.Patch_agent.merged,
-              a.Patch_agent.branch_rebased_onto_sha,
-              busy_rebasing ))
+            (* Freshness is dependency-scoped, not main-scoped: the base is
+               fresh iff its local branch was actually rebased onto the
+               structurally-correct base for the current merge state
+               ([branch_rebased_onto = initial_base]). A base on main is fresh
+               even if main later advanced for unrelated reasons. [initial_base]
+               raises with >1 open dep, so derive the structural base from
+               [open_deps] directly here ([] -> main, [d] -> d's branch) and
+               treat the ambiguous >1 case as not-fresh (fail closed). That fail
+               closed does not deadlock: a base with >1 open deps reaches Allow
+               once its extra deps merge (dropping it to <=1 open dep, then a
+               rebase), and every merge re-evaluates the deferred Start via the
+               reconciler tick. Computing [open_deps] once also avoids the
+               redundant graph traversal [initial_base] would repeat. A redundant
+               [Rebase] left queued on an already-fresh base does not defer Start
+               — [busy_rebasing] above gates only an imminent rebase, and a
+               completed rebase drains the queue (SBI-3), so [runnable_rebase]
+               cannot latch on a fresh base. *)
+            let open_deps = Graph.open_pr_deps t.graph bpid ~has_merged in
+            let structurally_fresh =
+              match (open_deps, a.Patch_agent.branch_rebased_onto) with
+              | [], Some b -> Branch.equal b t.main_branch
+              | [ d ], Some b -> Branch.equal b (branch_of d)
+              | _ -> false
+            in
+            (a.Patch_agent.merged, busy_rebasing, structurally_fresh))
   in
   Start_eligibility.decide ~base_is_main ~base_branch ~base_patch_merged
-    ~base_patch_rebased_onto_sha ~base_patch_busy_rebasing ~main_sha:t.main_sha
+    ~base_patch_busy_rebasing ~base_structurally_fresh
 
 let runnable_messages t =
   let action_rank = function
@@ -523,18 +541,12 @@ let reset_automerge_failure_count t patch_id =
 let all_agents t = Map.data t.agents
 let graph t = t.graph
 
-let restore ~graph ~agents ~outbox ~main_branch ?main_sha () =
+let restore ~graph ~agents ~outbox ~main_branch () =
   let outbox = Map.filter outbox ~f:(fun msg -> Map.mem agents msg.patch_id) in
-  { graph; agents; outbox; main_branch; main_sha }
+  { graph; agents; outbox; main_branch }
 
 let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }
-let main_sha t = t.main_sha
-
-let set_main_sha t sha =
-  let sha = String.strip sha in
-  if String.is_empty sha then t else { t with main_sha = Some sha }
-
 let agents_map t = t.agents
 
 let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
