@@ -39,7 +39,7 @@ let make_orch patch agent =
   let agents = Map.of_alist_exn (module Patch_id) [ (patch.Patch.id, agent) ] in
   Orchestrator.restore ~graph ~agents
     ~outbox:(Map.empty (module Message_id))
-    ~main_branch:main
+    ~main_branch:main ()
 
 let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~checks_passing ~queue ~merged ~is_draft ~branch_blocked ~worktree_path =

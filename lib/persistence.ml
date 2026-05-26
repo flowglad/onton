@@ -491,12 +491,18 @@ let orchestrator_to_yojson (o : Orchestrator.t) =
                   | Orchestrator.Obsolete -> "Obsolete") );
             ] ))
   in
+  let main_sha_field =
+    match Orchestrator.main_sha o with
+    | None -> []
+    | Some s -> [ ("main_sha", `String s) ]
+  in
   `Assoc
-    [
-      ("main_branch", Branch.yojson_of_t (Orchestrator.main_branch o));
-      ("agents", `Assoc agents);
-      ("outbox", `Assoc outbox);
-    ]
+    ([
+       ("main_branch", Branch.yojson_of_t (Orchestrator.main_branch o));
+       ("agents", `Assoc agents);
+       ("outbox", `Assoc outbox);
+     ]
+    @ main_sha_field)
 
 let action_of_yojson json =
   let ( let* ) r f = Result.bind r ~f in
@@ -533,6 +539,11 @@ let orchestrator_of_yojson ~gameplan json =
     let ( let* ) r f = Result.bind r ~f in
     let graph = Graph.of_patches gameplan.Gameplan.patches in
     let main_branch = Branch.of_string (string_member "main_branch" json) in
+    let main_sha =
+      match Yojson.Safe.Util.member "main_sha" json with
+      | `String s when not (String.is_empty s) -> Some s
+      | _ -> None
+    in
     Result.bind
       (result_all
          (Yojson.Safe.Util.member "agents" json
@@ -643,7 +654,8 @@ let orchestrator_of_yojson ~gameplan json =
                             | _ -> g))))
           in
           Ok
-            (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch))
+            (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch
+               ?main_sha ()))
   with
   | Yojson.Safe.Util.Type_error (msg, _) ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)
@@ -809,7 +821,7 @@ let%test_module "session_id_sidecars" =
           ~graph:(Graph.of_patches [ patch ])
           ~agents:(Map.singleton (module Patch_id) patch_id agent)
           ~outbox:(Map.empty (module Message_id))
-          ~main_branch
+          ~main_branch ()
       in
       {
         Runtime.orchestrator = orch;

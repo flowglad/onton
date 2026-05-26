@@ -209,6 +209,16 @@ struct
                  ~ref_name:("refs/remotes/origin/" ^ main_str))
               ~default:""
           in
+          (* Record the observed [origin/<main>] sha on the orchestrator on
+             every successful fetch — not just on drift. [Start_eligibility]
+             consults [main_sha] to gate [Start] actions; if we only updated
+             on drift, the first-ever fetch (where [last_main_sha] is empty)
+             would update, but subsequent ticks during a quiet period would
+             leave [main_sha] unset for any orchestrator built from a
+             snapshot. *)
+          if not (String.is_empty origin_sha) then
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.set_main_sha orch origin_sha);
           if
             Reconciler.detect_main_freshness_drift ~local_sha ~origin_sha
             && not (String.equal origin_sha !last_main_sha)

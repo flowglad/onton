@@ -2013,13 +2013,19 @@ let () =
 
 (** PI-16: The retire-blue-green/patch-2 scenario end-to-end — a dependent patch
     whose PR gets auto-retargeted by GitHub when its dep merges and whose branch
-    is never thereby rebased. The drift detector must catch it.
+    is never thereby rebased. By the time the reconciler has run, [b] must have
+    a [Rebase] queued — whether the eager [mark_merged] enqueue (see
+    {!Orchestrator.mark_merged}) put it there or the reconciler's drift detector
+    did. The previous version of this test asserted that the reconciler
+    specifically emitted [Enqueue_rebase b]; that assertion broke when
+    [mark_merged] started enqueuing eagerly to close the [Start]-vs-rebase race,
+    so the assertion is now on the end state: b's queue contains [Rebase] no
+    matter which layer produced it.
 
     Setup: two patches, patch b depends on patch a. Both bootstrap to having
     PRs; b's branch_rebased_onto is patch-a's branch (where it started). a
     merges (agent flagged merged, GitHub deletes a's branch and retargets b's PR
-    to main — modeled by updating b.base_branch to main). The reconciler must
-    enqueue a Rebase on b. *)
+    to main — modeled by updating b.base_branch to main). *)
 let () =
   let prop_pi16 =
     QCheck2.Test.make
@@ -2102,10 +2108,20 @@ let () =
           Reconciler.reconcile ~graph:(Orchestrator.graph orch) ~main
             ~merged_pr_patches:merged_patches ~branch_of patch_views
         in
-        (* The reconciler must emit Enqueue_rebase for b. *)
-        List.exists actions ~f:(function
-          | Reconciler.Enqueue_rebase p -> Patch_id.equal p pid_b
-          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+        let reconciler_enqueued =
+          List.exists actions ~f:(function
+            | Reconciler.Enqueue_rebase p -> Patch_id.equal p pid_b
+            | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false)
+        in
+        let already_in_queue =
+          let ag_b = Orchestrator.agent orch pid_b in
+          List.mem ag_b.Patch_agent.queue Operation_kind.Rebase
+            ~equal:Operation_kind.equal
+        in
+        (* Either layer is acceptable: mark_merged's eager enqueue (Phase 4
+           of stale-base prevention) or the reconciler's drift detector. The
+           assertion is on the end state, not the producer. *)
+        reconciler_enqueued || already_in_queue)
   in
   QCheck2.Test.check_exn prop_pi16;
   Stdlib.print_endline "PI-16 passed"

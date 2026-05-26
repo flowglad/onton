@@ -289,8 +289,38 @@ let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
    Returns [Error _] when the planner refuses (local diverged from remote,
    branch checked out in main, etc.); the caller in [Worktree_setup] surfaces
    refusals through the orchestrator's [needs_intervention] path. *)
-let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
-    (t, Start_point_plan.refusal) Result.t =
+(* Whether [origin/<main_branch>] is an ancestor of [base_ref]. Only meaningful
+   when we are about to cut a brand-new branch from [base_ref] (a stacked
+   dependency branch). When [base_ref] is itself the main branch, freshness is
+   not this function's concern — stale-local-main is handled by the poller's
+   main-freshness drift detection — so we return [Unknown_freshness] and let
+   the create proceed. Defense-in-depth behind the orchestrator's scheduling
+   gate; a probe failure also yields [Unknown_freshness] so a transient git
+   error never blocks a legitimate create. *)
+let compute_base_freshness ~process_mgr ~repo_root ~main_branch ~base_ref :
+    Start_point_plan.base_freshness =
+  if String.equal base_ref main_branch then Start_point_plan.Unknown_freshness
+  else
+    let origin_main = "origin/" ^ main_branch in
+    let code, _, _ =
+      run_git_exit_code ~process_mgr
+        [
+          "git";
+          "-C";
+          repo_root;
+          "merge-base";
+          "--is-ancestor";
+          origin_main;
+          base_ref;
+        ]
+    in
+    match code with
+    | 0 -> Start_point_plan.Fresh
+    | 1 -> Start_point_plan.Stale
+    | _ -> Start_point_plan.Unknown_freshness
+
+let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
+    ~main_branch : (t, Start_point_plan.refusal) Result.t =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
   if Stdlib.Sys.file_exists path then Result.Ok { patch_id; branch; path }
@@ -310,6 +340,16 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
           compute_repo_ancestry ~process_mgr ~repo_root ~local:l ~remote:r
       | _ -> Start_point_plan.Unknown
     in
+    (* Only probe base freshness on the brand-new-branch path (neither local
+       nor remote ref for our own branch exists yet) — the only arm that cuts
+       from [base_ref]. Skipping the probe elsewhere avoids a needless git
+       call. *)
+    let base_freshness =
+      match (local_ref, remote_ref) with
+      | None, None ->
+          compute_base_freshness ~process_mgr ~repo_root ~main_branch ~base_ref
+      | _ -> Start_point_plan.Unknown_freshness
+    in
     (* [branch_checked_out_in_main_root] and [existing_worktree_path] are
        checked by [Worktree_setup.ensure_worktree] before this point — we
        pass [false]/[None] so the planner's totality contract is preserved
@@ -318,8 +358,8 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
        there. *)
     let decision =
       Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
-        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
-        ~existing_worktree_path:None
+        ~base_branch:base_ref ~base_freshness
+        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
     in
     match decision with
     | Refuse refusal -> Result.Error refusal
@@ -973,6 +1013,7 @@ module type S = sig
     patch_id:Types.Patch_id.t ->
     branch:Types.Branch.t ->
     base_ref:string ->
+    main_branch:string ->
     (t, Start_point_plan.refusal) Result.t
 
   val fetch_origin_branch :
@@ -1043,8 +1084,9 @@ let make ~process_mgr ~repo_root =
     let remote_branch_exists branch_str =
       remote_branch_exists ~process_mgr ~repo_root branch_str
 
-    let create ~project_name ~patch_id ~branch ~base_ref =
+    let create ~project_name ~patch_id ~branch ~base_ref ~main_branch =
       create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
+        ~main_branch
 
     let remove t = remove ~process_mgr ~repo_root t
     let detect_branch ~path = detect_branch ~process_mgr ~path

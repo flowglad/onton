@@ -48,7 +48,7 @@ let make_orch patch agent =
   let agents = Map.of_alist_exn (module Patch_id) [ (patch.Patch.id, agent) ] in
   Orchestrator.restore ~graph ~agents
     ~outbox:(Map.empty (module Message_id))
-    ~main_branch:main
+    ~main_branch:main ()
 
 let make_agent ~patch_id ~branch ~pr_status ~merged ~queue ~base_branch
     ~is_draft ~pr_body_delivered ~start_attempts_without_pr =
@@ -1082,7 +1082,7 @@ let () =
                  (module Patch_id)
                  [ (pid, agent_session_no_pr) ])
             ~outbox:(Map.empty (module Message_id))
-            ~main_branch:main
+            ~main_branch:main ()
         in
         let intents = Patch_controller.discovery_intents orch in
         List.length intents = 1
@@ -1123,7 +1123,7 @@ let () =
             ~graph:(Graph.of_patches [ patch ])
             ~agents:(Map.of_alist_exn (module Patch_id) [ (pid, agent) ])
             ~outbox:(Map.empty (module Message_id))
-            ~main_branch:main
+            ~main_branch:main ()
         in
         List.is_empty (Patch_controller.discovery_intents orch))
   in
