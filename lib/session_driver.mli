@@ -18,6 +18,7 @@ module type ENV = sig
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
+  val event_log : Event_log.t
 end
 
 module Make (_ : Worktree.S) (_ : ENV) : sig

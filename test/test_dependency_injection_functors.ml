@@ -118,6 +118,7 @@ module Fake_sd_env : Session_driver.ENV = struct
   let repo = ""
   let transcripts = Stdlib.Hashtbl.create 0
   let user_config = { User_config.on_worktree_create = None }
+  let event_log = Event_log.create ~path:"/dev/null"
 end
 
 module SD = Session_driver.Make (Fake_worktree) (Fake_sd_env)
@@ -216,6 +217,7 @@ let () =
     let worktree_mutex = Eio.Mutex.create ()
     let hook_mutex = Eio.Mutex.create ()
     let fetch_mutex = Eio.Mutex.create ()
+    let event_log = Event_log.create ~path:"/dev/null"
   end in
   let module SD = Session_driver.Make (Fake_worktree) (SD_Env) in
   (* Compile-time assertion: run accepts only per-session inputs.
@@ -254,6 +256,7 @@ let () =
     let hook_mutex = Eio.Mutex.create ()
     let fetch_mutex = Eio.Mutex.create ()
     let transcripts = transcripts
+    let event_log = Event_log.create ~path:"/dev/null"
   end in
   let module WS3_Env : Worktree_setup.ENV = struct
     let runtime = Fake_fiber_env.runtime
@@ -277,6 +280,7 @@ let () =
     let worktree_mutex = Fake_fiber_env.worktree_mutex
     let hook_mutex = Fake_fiber_env.hook_mutex
     let fetch_mutex = Fake_fiber_env.fetch_mutex
+    let event_log = Fake_fiber_env.event_log
   end in
   let module WS3 = Worktree_setup.Make (Fake_worktree) (WS3_Env) in
   let module SD3 = Session_driver.Make (Fake_worktree) (SD3_Env) in

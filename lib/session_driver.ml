@@ -131,6 +131,7 @@ module type ENV = sig
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
+  val event_log : Event_log.t
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
@@ -685,12 +686,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                                  Persistence.patch_agent_to_yojson agent_after
                                );
                              ];
-                       })
+                       });
+                  (agent_before, agent_after)
                 in
                 (match !cancelled with
                 | None -> ()
                 | Some exn ->
-                    apply_result_and_emit_complete session_result;
+                    ignore (apply_result_and_emit_complete session_result);
                     raise exn);
                 (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
@@ -707,6 +709,24 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                    by start/respond/rebase. Fall back to main just in case. *)
                       Runtime.read runtime (fun snap ->
                           Orchestrator.main_branch snap.Runtime.orchestrator)
+                in
+                let branch_str = Types.Branch.to_string branch in
+                let base_str = Types.Branch.to_string base in
+                let push_local_sha =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/heads/" ^ branch_str)
+                in
+                let push_remote_tracking_sha =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/remotes/origin/" ^ branch_str)
+                in
+                let push_base_sha =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/heads/" ^ base_str)
+                in
+                let push_agent_before =
+                  Runtime.read runtime (fun snap ->
+                      Orchestrator.agent snap.Runtime.orchestrator patch_id)
                 in
                 let push_outcome =
                   W.force_push_with_lease ~path:worktree_path ~branch ~base
@@ -798,7 +818,15 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   | Orchestrator.Session_worktree_missing ->
                       `Failed
                 in
-                apply_result_and_emit_complete final_session_result;
+                let _, push_agent_after =
+                  apply_result_and_emit_complete final_session_result
+                in
+                Event_log.log_push Env.event_log ~patch_id
+                  ~kind:Event_log.Session_end_push ~result:push_outcome
+                  ~local_sha:push_local_sha
+                  ~remote_tracking_sha:push_remote_tracking_sha
+                  ~base_sha:push_base_sha ~agent_before:push_agent_before
+                  ~agent_after:push_agent_after;
                 (final_user_result, List.rev !tool_failures)))
 
   let run ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt

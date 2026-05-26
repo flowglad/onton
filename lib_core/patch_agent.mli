@@ -134,8 +134,17 @@ val pr_number : t -> Types.Pr_number.t option
 (** The recorded PR number, if any. [Some] for both [Present] and [Missing];
     [None] for [Absent]. *)
 
+val intervention_reason : t -> string option
+(** [Some reason] when the agent needs intervention; [None] otherwise. Returns
+    the first triggering condition's short label, in the same priority order as
+    the predicate. The label strings — ["pr_missing"], ["ci_failure_count>=3"],
+    ["conflict_noop_count>=2"], etc. — are stable and intended to land verbatim
+    in the event log so operators can grep "why is this patch stuck?" by reason.
+*)
+
 val needs_intervention : t -> bool
-(** Derived predicate. True iff the agent is not [merged] AND any of:
+(** [Option.is_some (intervention_reason t)]. Derived predicate. True iff the
+    agent is not [merged] AND any of:
     - [session_fallback = Given_up] (bypasses the Human exemption)
     - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
       exemption; queued Human entries are deferred until [Missing → Present]

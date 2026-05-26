@@ -91,32 +91,46 @@ let is_pr_present t = Patch_pr_status.is_pr_present t.pr_status
 let is_pr_missing t = Patch_pr_status.is_missing t.pr_status
 let pr_number t = Patch_pr_status.pr_number t.pr_status
 
-let needs_intervention t =
-  let human_in_queue =
-    List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
-  in
-  (* The Human exemption lets a newly-arrived human message be delivered
-     even to an agent with a high ci_failure_count or other failure state.
-     However, the exemption does NOT apply when session_fallback = Given_up:
-     a Given_up agent cannot start any session, so the delivery attempt
-     immediately fails at the Give_up check and complete_failed re-enqueues
-     Human — creating an infinite loop.  Override the exemption so the
-     reconciler stops scheduling actions and the agent surfaces for
-     manual intervention.
+(* Single source of truth for the needs-intervention reason. Returns the
+   first triggering condition's short label, or [None] when the predicate
+   is false. [needs_intervention] is then defined as
+   [Option.is_some (intervention_reason t)], so the two functions cannot
+   drift. The label strings are stable and intended to land verbatim in the
+   event log so operators can grep for "why is this patch stuck?" by
+   reason. *)
+let intervention_reason t =
+  if t.merged then None
+  else
+    let human_in_queue =
+      List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
+    in
+    let given_up = equal_session_fallback t.session_fallback Given_up in
+    if given_up then Some "session_fallback=given_up"
+    else if is_pr_missing t then Some "pr_missing"
+      (* The Human exemption lets a newly-arrived human message be delivered
+       even to an agent with a high ci_failure_count or other failure state.
+       However, the exemption does NOT apply when session_fallback = Given_up:
+       a Given_up agent cannot start any session, so the delivery attempt
+       immediately fails at the Give_up check and complete_failed re-enqueues
+       Human — creating an infinite loop. Override the exemption so the
+       reconciler stops scheduling actions and the agent surfaces for
+       manual intervention.
 
-     [merged] is terminal — a merged agent never needs intervention, so
-     short-circuit on it to keep the predicate self-consistent even for
-     callers that don't pre-filter by [merged]. *)
-  let given_up = equal_session_fallback t.session_fallback Given_up in
-  (not t.merged)
-  && (given_up || is_pr_missing t
-     || (not human_in_queue)
-        && (t.ci_failure_count >= 3
-           || ((not (has_pr t)) && t.start_attempts_without_pr >= 2)
-           || t.conflict_noop_count >= 2
-           || t.no_commits_push_count >= 2
-           || t.push_failure_count >= 3
-           || t.pr_body_artifact_miss_count >= 2))
+       [merged] is terminal — a merged agent never needs intervention, so
+       short-circuit on it to keep the predicate self-consistent even for
+       callers that don't pre-filter by [merged]. *)
+    else if human_in_queue then None
+    else if t.ci_failure_count >= 3 then Some "ci_failure_count>=3"
+    else if (not (has_pr t)) && t.start_attempts_without_pr >= 2 then
+      Some "start_attempts_without_pr>=2"
+    else if t.conflict_noop_count >= 2 then Some "conflict_noop_count>=2"
+    else if t.no_commits_push_count >= 2 then Some "no_commits_push_count>=2"
+    else if t.push_failure_count >= 3 then Some "push_failure_count>=3"
+    else if t.pr_body_artifact_miss_count >= 2 then
+      Some "pr_body_artifact_miss_count>=2"
+    else None
+
+let needs_intervention t = Option.is_some (intervention_reason t)
 
 let create ~branch patch_id =
   {

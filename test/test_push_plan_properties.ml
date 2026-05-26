@@ -15,9 +15,12 @@ open Onton_core
     - {b PPP-3 Local-missing-remote refused}: when
       [ancestry = Local_missing_remote] and both refs are present, decision is
       [Refuse (Local_missing_remote_commits _)].
-    - {b PPP-3b Local-diverged-from-remote refused}: when
-      [ancestry = Local_diverged_from_remote] and both refs are present,
-      decision is [Refuse (Local_diverged_from_remote_commits _)].
+    - {b PPP-3b Local-diverged-from-remote permitted}: when
+      [ancestry = Local_diverged_from_remote] and both refs are present, the
+      decision is [Push Force_push_if_includes] (post-rebase divergence — the
+      git-level [--force-if-includes] flag covers the unsafe edge case; refusing
+      here would strand the orchestrator on the [conflict_noop_count >= 2]
+      needs-intervention threshold).
     - {b PPP-4 Zero commits → skip}: [commits_ahead_of_base = Some 0] yields
       [Refuse No_commits_ahead_of_base] (after worktree-missing, branch-switch,
       branch-ref-missing pre-emptions).
@@ -53,8 +56,7 @@ let is_refuse_no_commits = function
   | PP.Refuse PP.No_commits_ahead_of_base -> true
   | PP.Refuse
       ( PP.Worktree_missing | PP.Branch_ref_missing _ | PP.Branch_switched _
-      | PP.Local_missing_remote_commits _
-      | PP.Local_diverged_from_remote_commits _ )
+      | PP.Local_missing_remote_commits _ )
   | PP.Push _ ->
       false
 
@@ -62,8 +64,7 @@ let is_refuse_wt_missing = function
   | PP.Refuse PP.Worktree_missing -> true
   | PP.Refuse
       ( PP.No_commits_ahead_of_base | PP.Branch_ref_missing _
-      | PP.Branch_switched _ | PP.Local_missing_remote_commits _
-      | PP.Local_diverged_from_remote_commits _ )
+      | PP.Branch_switched _ | PP.Local_missing_remote_commits _ )
   | PP.Push _ ->
       false
 
@@ -71,8 +72,7 @@ let is_refuse_ref_missing = function
   | PP.Refuse (PP.Branch_ref_missing _) -> true
   | PP.Refuse
       ( PP.No_commits_ahead_of_base | PP.Worktree_missing | PP.Branch_switched _
-      | PP.Local_missing_remote_commits _
-      | PP.Local_diverged_from_remote_commits _ )
+      | PP.Local_missing_remote_commits _ )
   | PP.Push _ ->
       false
 
@@ -80,8 +80,7 @@ let is_refuse_branch_switched = function
   | PP.Refuse (PP.Branch_switched _) -> true
   | PP.Refuse
       ( PP.No_commits_ahead_of_base | PP.Worktree_missing
-      | PP.Branch_ref_missing _ | PP.Local_missing_remote_commits _
-      | PP.Local_diverged_from_remote_commits _ )
+      | PP.Branch_ref_missing _ | PP.Local_missing_remote_commits _ )
   | PP.Push _ ->
       false
 
@@ -89,17 +88,7 @@ let is_refuse_local_behind = function
   | PP.Refuse (PP.Local_missing_remote_commits _) -> true
   | PP.Refuse
       ( PP.No_commits_ahead_of_base | PP.Worktree_missing
-      | PP.Branch_ref_missing _ | PP.Branch_switched _
-      | PP.Local_diverged_from_remote_commits _ )
-  | PP.Push _ ->
-      false
-
-let is_refuse_local_diverged = function
-  | PP.Refuse (PP.Local_diverged_from_remote_commits _) -> true
-  | PP.Refuse
-      ( PP.No_commits_ahead_of_base | PP.Worktree_missing
-      | PP.Branch_ref_missing _ | PP.Branch_switched _
-      | PP.Local_missing_remote_commits _ )
+      | PP.Branch_ref_missing _ | PP.Branch_switched _ )
   | PP.Push _ ->
       false
 
@@ -229,25 +218,34 @@ let prop_local_missing_remote_refused =
       in
       is_refuse_local_behind d)
 
-let prop_local_diverged_from_remote_refused =
+let prop_local_diverged_from_remote_permitted =
+  (* Regression: an earlier revision refused this case with
+     [Local_diverged_from_remote_commits], which stranded the orchestrator
+     on the [conflict_noop_count >= 2] needs-intervention threshold every
+     time a stacked patch was rebased onto a freshly-advanced base. Post-
+     rebase divergence is the legitimate state where local IS the rebased
+     version of remote; the git-level [--force-if-includes] flag handles
+     the actually-unsafe edge case (remote has commits local doesn't reach
+     via its reflog). *)
   Test.make ~count:500
     ~name:
-      "PPP-3b: ancestry=Local_diverged_from_remote + both refs present → \
-       Local_diverged_from_remote_commits"
+      "PPP-3b: ancestry=Local_diverged_from_remote + both refs present → Push \
+       Force_push_if_includes"
     Gen.(
       let* local_sha = gen_sha in
       let* remote_sha = gen_sha in
       let* branch = gen_branch_name in
-      return (local_sha, remote_sha, branch))
-    (fun (local_sha, remote_sha, branch) ->
+      let* commits = int_range 1 50 in
+      return (local_sha, remote_sha, branch, commits))
+    (fun (local_sha, remote_sha, branch, commits) ->
       let d =
         PP.plan ~expected_branch:branch ~worktree_path_exists:true
           ~worktree_head_branch:(Some branch) ~branch_ref_sha:(Some local_sha)
           ~remote_tracking_sha:(Some remote_sha)
           ~ancestry:PP.Local_diverged_from_remote
-          ~commits_ahead_of_base:(Some 3)
+          ~commits_ahead_of_base:(Some commits)
       in
-      is_refuse_local_diverged d)
+      is_push_force d)
 
 let prop_zero_commits_skip =
   Test.make ~count:500
@@ -293,7 +291,13 @@ let prop_happy_path =
       let* local_sha = gen_sha in
       let* remote_sha = gen_sha in
       let* anc =
-        oneof_array [| PP.Local_includes_remote; PP.No_remote_yet; PP.Unknown |]
+        oneof_array
+          [|
+            PP.Local_includes_remote;
+            PP.Local_diverged_from_remote;
+            PP.No_remote_yet;
+            PP.Unknown;
+          |]
       in
       let* commits = int_range 1 50 in
       return (branch, local_sha, remote_sha, anc, commits))
@@ -362,7 +366,7 @@ let prop_variants_reachable =
           ~remote_tracking_sha:(Some "r") ~ancestry:PP.Local_missing_remote
           ~commits_ahead_of_base:(Some 1)
       in
-      let local_diverged =
+      let local_diverged_now_pushes =
         PP.plan ~expected_branch:"b" ~worktree_path_exists:true
           ~worktree_head_branch:(Some "b") ~branch_ref_sha:(Some "l")
           ~remote_tracking_sha:(Some "r")
@@ -375,7 +379,7 @@ let prop_variants_reachable =
       && is_refuse_ref_missing ref_missing
       && is_refuse_branch_switched branch_switched
       && is_refuse_local_behind local_behind
-      && is_refuse_local_diverged local_diverged)
+      && is_push_force local_diverged_now_pushes)
 
 let prop_refusal_to_rejection_permanent =
   Test.make ~count:1
@@ -389,8 +393,6 @@ let prop_refusal_to_rejection_permanent =
           PP.Branch_ref_missing { branch = "b" };
           PP.Branch_switched { expected = "b"; got = Some "other" };
           PP.Local_missing_remote_commits { local_sha = "l"; remote_sha = "r" };
-          PP.Local_diverged_from_remote_commits
-            { local_sha = "l"; remote_sha = "r" };
         ]
       in
       List.for_all refusals ~f:(fun r ->
@@ -417,7 +419,7 @@ let () =
          prop_branch_switch_refused;
          prop_matching_head_branch_not_switched;
          prop_local_missing_remote_refused;
-         prop_local_diverged_from_remote_refused;
+         prop_local_diverged_from_remote_permitted;
          prop_zero_commits_skip;
          prop_initial_push;
          prop_happy_path;
