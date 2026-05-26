@@ -1,42 +1,40 @@
-(** Pure decision: is a [Start] action eligible to fire right now, given the
-    freshness of its base branch relative to the orchestrator's known
-    [origin/main] sha?
+(** Pure decision: is a [Start] action eligible to fire right now, given whether
+    its base patch's local branch has already incorporated the merged form of
+    its dependencies?
 
     Why this exists: the orchestrator schedules [Start(c, base=b)] as soon as
-    [c] is dispatchable, but [b]'s local branch can lag [origin/main] when an
+    [c] is dispatchable, but [b]'s local branch can lag its dependencies when an
     upstream dependency merges to main while [b] is open (busy responding to
-    CI/review). Cutting [c]'s worktree from a stale [b] silently elides the
-    just-merged ancestor's commits. The reconciler's poll-tick detectors
-    (`detect_rebases`, `detect_stale_bases`, `detect_notified_base_drift`)
-    eventually catch this, but a [Start] can race past the next tick. This
-    module is the synchronous gate that closes that race: when the base is
-    stale, [Start] is deferred (not consumed) until the rebase pipeline brings
-    [b] up to date.
+    CI/review). Cutting [c]'s worktree from such a [b] silently elides the
+    just-merged ancestor's commits — and under squash merges [b] still carries
+    the dep's pre-squash commits, so a later rebase of [b] would leave [c]
+    stranded on history that no longer exists. The reconciler's poll-tick
+    detectors ([detect_rebases], [detect_stale_bases],
+    [detect_notified_base_drift]) enqueue the rebase that fixes this, but a
+    [Start] can race past the next tick. This module is the synchronous gate
+    that closes that race: when the base is not yet fresh, [Start] is deferred
+    (not consumed) until the rebase pipeline brings [b] up to date.
 
-    {1 Authority}
+    {1 Freshness is dependency-scoped, not main-scoped}
 
-    The orchestrator tracks [origin/main]'s sha (`Orchestrator.main_sha`,
-    updated by the poller). Each open patch records the sha of the base it was
-    last rebased onto (`Patch_agent.branch_rebased_onto_sha`, written by the
-    rebase pipeline on success). When the two agree for [c]'s base patch, the
-    base contains main's tip and [Start] is safe. *)
+    The gate does NOT require [b] to be current with the latest [origin/main].
+    It only requires [b]'s local branch to sit on its structurally-correct base
+    given the current merge state — i.e. [Patch_agent.branch_rebased_onto]
+    equals [Graph.initial_base b]. A [b] based directly on main is always fresh,
+    even if main has since advanced for unrelated reasons; an unrelated merge to
+    main never makes [b] stale for the purpose of cutting [c]. The caller
+    computes the [base_structurally_fresh] flag from the dep graph and the base
+    patch's recorded rebase anchor. *)
 
 type defer_reason =
-  | Main_sha_unknown
-      (** The poller has not yet observed [origin/main] (e.g. very first tick
-          after startup) and no rebase is in flight. Fail closed — defer rather
-          than risk cutting from a base whose freshness we cannot verify. *)
   | Base_patch_busy_with_rebase of { base_branch : string }
       (** The base patch already has a [Rebase] in flight (busy with op
           [Rebase], or [Rebase] is queued and highest-priority). Wait for it
           rather than racing it. *)
-  | Base_not_rebased_since_main_advanced of {
-      base_branch : string;
-      base_rebased_onto_sha : string option;
-      main_sha : string;
-    }
-      (** The base patch's last-recorded rebase sha differs from the
-          orchestrator's known main sha. The base needs to be rebased before
+  | Base_not_fresh_for_cut of { base_branch : string }
+      (** The base patch's local branch is not yet rebased onto its
+          structurally-correct base — a dependency has merged but the rebase
+          that absorbs it has not landed. The base needs that rebase before
           [Start] can fire. *)
 [@@deriving show, eq, sexp_of, compare]
 
@@ -47,9 +45,8 @@ val decide :
   base_is_main:bool ->
   base_branch:string ->
   base_patch_merged:bool ->
-  base_patch_rebased_onto_sha:string option ->
   base_patch_busy_rebasing:bool ->
-  main_sha:string option ->
+  base_structurally_fresh:bool ->
   decision
 (** [decide] is total and deterministic. Pre-emption order, applied top-down:
 
@@ -60,21 +57,15 @@ val decide :
       will refresh [base_branch] before the [Start] actually executes via
       [refresh_base_branch] in [mark_merged]).
     + [base_patch_busy_rebasing = true] → [Defer Base_patch_busy_with_rebase].
-      Checked before [main_sha = None] so an active rebase pre-empts the
-      unknown-main verdict (and the arm is not dead when main is unpublished).
-    + [main_sha = None] → [Defer Main_sha_unknown]. Fail closed.
-    + [base_patch_rebased_onto_sha = Some s] and [Some s = main_sha] → [Allow].
-    + Otherwise → [Defer Base_not_rebased_since_main_advanced { … }].
+      Checked before the freshness flag so an active rebase pre-empts.
+    + [base_structurally_fresh = false] → [Defer Base_not_fresh_for_cut].
+    + Otherwise → [Allow].
 
-    Note: this decision does not look at the dep graph. The caller resolves
-    [c]'s base to a single base patch (or main) and passes the relevant facts.
-    For multi-dep patches, the caller is expected to wait for the dep graph to
-    collapse to ≤1 open dep (the existing [refresh_base_branch] contract) before
-    constructing a [Start] action; this module enforces freshness of that single
-    chosen base. *)
+    Note: this decision does not look at the dep graph itself. The caller
+    resolves [c]'s base to a single base patch (or main) and passes the relevant
+    facts, including whether that base is structurally fresh. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the decision arm, suitable for
     activity logging. Always non-empty and ≤ 32 characters. Examples: ["allow"],
-    ["defer_main_unknown"], ["defer_base_busy_rebasing"], ["defer_base_stale"].
-*)
+    ["defer_base_busy_rebasing"], ["defer_base_stale"]. *)

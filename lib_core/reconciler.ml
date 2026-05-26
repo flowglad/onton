@@ -77,12 +77,6 @@ let detect_rebases graph views ~newly_merged =
     [base_branch vs initial_base] both read [main] and agreed, so no rebase was
     enqueued. *)
 
-let detect_main_freshness_drift ~local_sha ~origin_sha =
-  let l = String.strip local_sha in
-  let r = String.strip origin_sha in
-  if String.is_empty l || String.is_empty r then false
-  else not (String.equal l r)
-
 let detect_notified_base_drift views =
   List.filter_map views ~f:(fun v ->
       if

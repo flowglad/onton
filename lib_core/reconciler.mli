@@ -66,18 +66,6 @@ val detect_rebases :
     dependents of [newly_merged] patches that have a PR, are not merged, and do
     not already have a rebase queued. *)
 
-val detect_main_freshness_drift : local_sha:string -> origin_sha:string -> bool
-(** [detect_main_freshness_drift ~local_sha ~origin_sha] returns [true] when the
-    local [main] branch tip differs from [origin/main]. Pure predicate over two
-    strings — the effectful side reads the SHAs via [git rev-parse] and passes
-    them in. Used by the poller to decide whether to fast-forward local [main]
-    before the next reconciler tick: when the SHAs disagree,
-    [detect_stale_bases] cannot fire (it consults [Graph.initial_base], which
-    reads the {e same} stale local main name), so every agent ends up rebasing
-    onto a target that already missed recently-merged commits. Empty strings
-    (treat as "unknown") return [false] — conservative: don't claim drift on
-    missing data. *)
-
 val detect_notified_base_drift : patch_view list -> action list
 (** [detect_notified_base_drift views] returns [Enqueue_rebase] for agents whose
     [branch_rebased_onto] is [Some b] and differs from the current
