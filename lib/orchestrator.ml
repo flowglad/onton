@@ -265,13 +265,21 @@ let start_eligibility t base =
         match find_agent t bpid with
         | None -> (false, None, false)
         | Some a ->
-            let busy_rebasing =
+            let running_rebase =
               a.Patch_agent.busy
               && Option.equal Operation_kind.equal a.Patch_agent.current_op
                    (Some Operation_kind.Rebase)
-              || List.mem a.Patch_agent.queue Operation_kind.Rebase
-                   ~equal:Operation_kind.equal
             in
+            (* Only treat a queued Rebase as in-flight when it is the next op to
+               run (highest priority); a Rebase buried behind higher-priority
+               work — or one left queued on an already-fresh base — must not
+               defer Start, or we over-defer and lose liveness. *)
+            let runnable_rebase =
+              Option.equal Operation_kind.equal
+                (Patch_agent.highest_priority a)
+                (Some Operation_kind.Rebase)
+            in
+            let busy_rebasing = running_rebase || runnable_rebase in
             ( a.Patch_agent.merged,
               a.Patch_agent.branch_rebased_onto_sha,
               busy_rebasing ))

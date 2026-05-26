@@ -168,30 +168,64 @@ let apply_command m cmd =
             (Orchestrator.graph m.orch)
             pid ~has_merged ~branch_of ~main
         in
-        (* Only meaningful when the patch has no current message and isn't
-           busy; otherwise we'd be racing with bootstrap state. *)
-        if agent.Patch_agent.busy || Patch_agent.has_pr agent then m
-        else
-          let _ = base in
-          (* The harness doesn't synthesize message ids, so we simulate by
-             firing Start directly and immediately rolling back if the gate
-             would have refused. The point is to exercise the [start_eligibility]
-             query on a base that can vary. *)
-          m
+        (* Inject a real [Pending] Start(pid, base) into the outbox so the
+           freshness gate in [runnable_messages] is actually exercised against
+           it. [base] varies as deps merge / rebase and as main advances, so
+           the gate is observed against fresh and stale bases alike. The id is
+           keyed on (patch, base, generation) — mirroring the controller — so a
+           base change re-keys the message and [reconcile_message] obsoletes the
+           prior Start for this patch. *)
+        let message_id =
+          Message_id.of_string
+            (Printf.sprintf "%s:sbi-start:%s:%d" (Patch_id.to_string pid)
+               (Branch.to_string base) agent.Patch_agent.generation)
+        in
+        let msg =
+          {
+            Orchestrator.message_id;
+            patch_id = pid;
+            generation = agent.Patch_agent.generation;
+            action = Orchestrator.Start (pid, base);
+            payload_hash = "sbi";
+            status = Orchestrator.Pending;
+          }
+        in
+        { m with orch = Orchestrator.reconcile_message m.orch msg }
 
 (* -- Invariants -- *)
 
-(** SBI: for every (Start, base) in the orchestrator's outbox that is [Pending]
-    and would be selected by [runnable_messages], the eligibility check returns
-    [Allow]. *)
+(** Independent freshness oracle: [true] iff [base] is fresh per the documented
+    SBI invariant — recomputed directly from agent fields rather than delegating
+    back to [start_eligibility], so the property genuinely checks that
+    [runnable_messages]' gate enforces freshness (a regression that let a stale
+    Start through would be caught) instead of re-deriving the same verdict. *)
+let base_is_fresh m base =
+  if Branch.equal base main then true
+  else
+    let base_agent =
+      Map.data (Orchestrator.agents_map m.orch)
+      |> List.find ~f:(fun (a : Patch_agent.t) ->
+          Branch.equal a.Patch_agent.branch base)
+    in
+    match base_agent with
+    | None -> false
+    | Some a -> (
+        a.Patch_agent.merged
+        ||
+        match
+          (a.Patch_agent.branch_rebased_onto_sha, Orchestrator.main_sha m.orch)
+        with
+        | Some s, Some main_sha -> String.equal s main_sha
+        | _ -> false)
+
+(** SBI: every [Start (_, base)] surfaced by [runnable_messages] has a fresh
+    [base] per [base_is_fresh]. [Enqueue_start] seeds the outbox with real
+    Pending Starts whose base varies, so this is non-vacuous. *)
 let sbi_runnable_starts_are_fresh m =
   let runnable = Orchestrator.runnable_messages m.orch in
   List.for_all runnable ~f:(fun msg ->
       match Orchestrator.message_action msg with
-      | Orchestrator.Start (_, base) -> (
-          match Orchestrator.start_eligibility m.orch base with
-          | Start_eligibility.Allow -> true
-          | Start_eligibility.Defer _ -> false)
+      | Orchestrator.Start (_, base) -> base_is_fresh m base
       | Orchestrator.Rebase _ | Orchestrator.Respond _ -> true)
 
 (** SBI-2 (liveness): any patch deferred by the freshness gate is making
