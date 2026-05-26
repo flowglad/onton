@@ -212,6 +212,33 @@ let classify_fetch_result ~code ~stderr =
       (Printf.sprintf "git fetch origin failed (exit %d): %s" code
          (String.strip stderr))
 
+(** Outcome of a branch-scoped
+    [git fetch origin <branch>:refs/remotes/origin/<branch>]. Distinguishes the
+    routine "brand-new branch has no upstream yet" case from a real fetch
+    failure (network, auth, ref-lock contention). The pre-create fetch in
+    [Worktree_setup.ensure_worktree] always trips the no-upstream case on the
+    very first creation of a patch worktree — it is the normal path, not an
+    error, and callers log it calmly so it doesn't masquerade as a problem in
+    the operator log. *)
+type fetch_branch_result =
+  | Fetch_branch_ok
+  | Fetch_branch_no_remote_ref
+  | Fetch_branch_error of string
+[@@deriving show, eq, sexp_of, compare]
+
+(** Pure classifier for branch-scoped fetches. The [no_remote_ref] case keys off
+    git's canonical phrasing ["couldn't find remote ref"]; any other non-zero
+    exit produces [Fetch_branch_error] with the exit code and stripped stderr
+    embedded, mirroring [classify_fetch_result]. *)
+let classify_fetch_branch_result ~code ~stderr =
+  if code = 0 then Fetch_branch_ok
+  else if String.is_substring stderr ~substring:"couldn't find remote ref" then
+    Fetch_branch_no_remote_ref
+  else
+    Fetch_branch_error
+      (Printf.sprintf "git fetch origin failed (exit %d): %s" code
+         (String.strip stderr))
+
 type push_result =
   | Push_ok
   | Push_up_to_date

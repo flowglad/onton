@@ -383,6 +383,122 @@ let () =
   if errcode <> 0 then Stdlib.exit errcode
 
 (* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.classify_fetch_branch_result] — the typed
+   branch-scoped fetch classifier. Distinguishing the brand-new-branch
+   "couldn't find remote ref" case from real fetch failures keeps the
+   pre-create-fetch log non-alarming on the first creation of every
+   patch worktree.
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let prop_branch_exit_zero_is_ok =
+    Test.make ~name:"classify_fetch_branch_result: exit 0 -> Fetch_branch_ok"
+      ~count:200 Gen.string (fun stderr ->
+        match Worktree.classify_fetch_branch_result ~code:0 ~stderr with
+        | Worktree.Fetch_branch_ok -> true
+        | Worktree.Fetch_branch_no_remote_ref | Worktree.Fetch_branch_error _ ->
+            false)
+  in
+  let prop_branch_couldnt_find_remote_ref =
+    (* Regression: the exact stderr produced by [git fetch origin
+       <branch>:refs/remotes/origin/<branch>] when [<branch>] has never
+       been pushed. This trips on the very first worktree create for
+       every patch in a fresh gameplan and must classify as the routine
+       no-upstream case, not as an error. *)
+    Test.make
+      ~name:
+        "classify_fetch_branch_result: 'couldn't find remote ref' -> \
+         Fetch_branch_no_remote_ref" ~count:1 Gen.unit (fun () ->
+        let stderr =
+          "fatal: couldn't find remote ref ts2pant-let-mutation-ssa/patch-2"
+        in
+        match Worktree.classify_fetch_branch_result ~code:128 ~stderr with
+        | Worktree.Fetch_branch_no_remote_ref -> true
+        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_error _ -> false)
+  in
+  let prop_branch_substring_anywhere =
+    (* The detector keys off git's canonical phrasing and must fire
+       regardless of surrounding noise in stderr. *)
+    Test.make
+      ~name:
+        "classify_fetch_branch_result: 'couldn't find remote ref' anywhere in \
+         stderr"
+      ~count:200
+      Gen.(pair string string)
+      (fun (prefix, suffix) ->
+        let stderr = prefix ^ "couldn't find remote ref " ^ suffix in
+        match Worktree.classify_fetch_branch_result ~code:128 ~stderr with
+        | Worktree.Fetch_branch_no_remote_ref -> true
+        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_error _ -> false)
+  in
+  let prop_branch_other_failures_are_error =
+    (* Stderr that does NOT contain the no-upstream marker classifies as
+       Fetch_branch_error with the exit code embedded — same shape as
+       [classify_fetch_result]. *)
+    Test.make
+      ~name:
+        "classify_fetch_branch_result: non-zero without marker -> \
+         Fetch_branch_error"
+      ~count:200
+      Gen.(pair (int_range 1 255) (string_size (int_range 0 60)))
+      (fun (code, stderr_raw) ->
+        (* Strip any accidentally-generated marker substring to keep the
+           negative property well-defined. *)
+        let stderr =
+          if
+            String.is_substring stderr_raw ~substring:"couldn't find remote ref"
+          then ""
+          else stderr_raw
+        in
+        match Worktree.classify_fetch_branch_result ~code ~stderr with
+        | Worktree.Fetch_branch_error msg ->
+            String.is_substring msg ~substring:(Printf.sprintf "exit %d" code)
+        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_no_remote_ref ->
+            false)
+  in
+  let prop_branch_ref_lock_is_error =
+    (* Regression carry-over from [classify_fetch_result]: ref-lock
+       contention is a real failure, not a no-upstream signal. *)
+    Test.make
+      ~name:
+        "classify_fetch_branch_result: ref-lock stderr -> Fetch_branch_error"
+      ~count:1 Gen.unit (fun () ->
+        let stderr =
+          "error: cannot lock ref 'refs/remotes/origin/main': is at \
+           11ea3d8d67b9c481e7c8ddec7a6e1d46f2db1ba8 but expected \
+           d97cc64a88e05401a2f8fdf3624b79dbfb16671d"
+        in
+        match Worktree.classify_fetch_branch_result ~code:1 ~stderr with
+        | Worktree.Fetch_branch_error msg ->
+            String.is_substring msg ~substring:"cannot lock ref"
+        | Worktree.Fetch_branch_ok | Worktree.Fetch_branch_no_remote_ref ->
+            false)
+  in
+  let prop_branch_total_no_raise =
+    Test.make ~name:"classify_fetch_branch_result: total (never raises)"
+      ~count:500
+      Gen.(pair (int_range (-256) 512) string)
+      (fun (code, stderr) ->
+        try
+          let _ = Worktree.classify_fetch_branch_result ~code ~stderr in
+          true
+        with _ -> false)
+  in
+  let suite =
+    [
+      prop_branch_exit_zero_is_ok;
+      prop_branch_couldnt_find_remote_ref;
+      prop_branch_substring_anywhere;
+      prop_branch_other_failures_are_error;
+      prop_branch_ref_lock_is_error;
+      prop_branch_total_no_raise;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
    Pure tests for [Worktree.classify_unique_commits] —
    the new decision layer that returns BOTH the per-commit list and the
    oldest SHA. [oldest_non_ancestor_commit] is now a thin wrapper, so the

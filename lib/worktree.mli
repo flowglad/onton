@@ -51,16 +51,35 @@ val create :
     ({!Worktree_setup.ensure_worktree}) before this function runs; this function
     passes [false] / [None] to the planner. *)
 
+(** Outcome of [fetch_origin_branch]. The [Fetch_branch_no_remote_ref] case is
+    the routine "brand-new branch — no upstream yet" state, which trips on the
+    very first creation of every patch worktree and is not a failure; callers
+    log it calmly to avoid misleading the operator. Real fetch failures
+    (network, auth, ref-lock) surface as [Fetch_branch_error msg]. *)
+type fetch_branch_result = Worktree_parser.fetch_branch_result =
+  | Fetch_branch_ok
+  | Fetch_branch_no_remote_ref
+  | Fetch_branch_error of string
+[@@deriving show, eq, sexp_of, compare]
+
+val classify_fetch_branch_result :
+  code:int -> stderr:string -> fetch_branch_result
+(** Pure: classify a branch-scoped [git fetch origin <branch>:...] invocation
+    from its exit code and stderr. Detects the no-upstream case by matching
+    git's canonical phrasing ["couldn't find remote ref"]. Split out from
+    [fetch_origin_branch] so the decision can be property-tested without
+    spawning processes. *)
+
 val fetch_origin_branch :
   fetch_lock:Eio.Mutex.t ->
   process_mgr:_ Eio.Process.mgr ->
   repo_root:string ->
   branch_str:string ->
-  (unit, string) Result.t
+  fetch_branch_result
 (** Run [git -C <repo_root> fetch origin <branch>:refs/remotes/origin/<branch>]
-    under the shared [fetch_lock]. Best-effort: missing remote branch / network
-    failure returns [Error]; caller logs and proceeds (the planner correctly
-    handles [remote_ref = None] for the brand-new-branch case). *)
+    under the shared [fetch_lock]. The planner correctly handles
+    [remote_ref = None] for the brand-new-branch case, so callers proceed on
+    every result variant; the distinction matters for log clarity. *)
 
 val remove : process_mgr:_ Eio.Process.mgr -> repo_root:string -> t -> unit
 
@@ -320,7 +339,7 @@ module type S = sig
     (t, Start_point_plan.refusal) Result.t
 
   val fetch_origin_branch :
-    fetch_lock:Eio.Mutex.t -> branch:string -> (unit, string) Result.t
+    fetch_lock:Eio.Mutex.t -> branch:string -> fetch_branch_result
 
   val remove : t -> unit
   val detect_branch : path:string -> Types.Branch.t

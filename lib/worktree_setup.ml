@@ -124,16 +124,24 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             (* Refresh [refs/remotes/origin/<branch>] before we feed it to the
                start-point planner — without this the planner would observe a
                stale local view of remote, which is the failure mode that
-               wiped PR #315. Best-effort: the planner correctly handles
-               [remote_ref = None] (brand-new branch) so a missing-remote
-               fetch error is just logged and we continue. *)
+               wiped PR #315. The planner correctly handles
+               [remote_ref = None] (brand-new branch) so all three result
+               variants are non-fatal here; the typed result lets us log the
+               routine no-upstream case calmly and reserve the alarming
+               "failed" wording for real fetch errors. *)
             let fetch_lock = Env.fetch_mutex in
             (match
                W.fetch_origin_branch ~fetch_lock
                  ~branch:(Types.Branch.to_string br)
              with
-            | Ok () -> ()
-            | Error msg ->
+            | Fetch_branch_ok -> ()
+            | Fetch_branch_no_remote_ref ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf
+                     "No remote ref for %s yet (brand-new branch — skipping \
+                      pre-create fetch)"
+                     (Types.Branch.to_string br))
+            | Fetch_branch_error msg ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Pre-create fetch failed (continuing): %s" msg));
             log_event runtime ~patch_id
