@@ -63,6 +63,7 @@ struct
     let worktree_mutex = Env.worktree_mutex
     let hook_mutex = Env.hook_mutex
     let fetch_mutex = Env.fetch_mutex
+    let event_log = Env.event_log
   end
 
   module WS = Worktree_setup.Make (W) (WS_Env)
@@ -930,11 +931,29 @@ struct
                                 (Orchestrator.graph snap.Runtime.orchestrator)
                                 patch_id)
                         in
+                        let rebase_branch_str =
+                          Types.Branch.to_string agent.Patch_agent.branch
+                        in
+                        let predicted_wt_path =
+                          WS.resolve_worktree_path ~patch_id ~agent ()
+                        in
+                        let pre_rebase_head =
+                          W.read_branch_sha ~path:predicted_wt_path
+                            ~ref_name:("refs/heads/" ^ rebase_branch_str)
+                        in
                         let rebase_result, wt_path, anchor_events =
                           Worktree_plan_executor.execute ~patch_id ~agent
                             ~fetch_lock:fetch_mutex ~fail_label:"rebase"
                             ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
+                        in
+                        let post_rebase_head =
+                          W.read_branch_sha ~path:wt_path
+                            ~ref_name:("refs/heads/" ^ rebase_branch_str)
+                        in
+                        let rebase_target_base_sha =
+                          W.read_branch_sha ~path:wt_path
+                            ~ref_name:("refs/heads/" ^ Branch.to_string new_base)
                         in
                         (match rebase_result with
                         | Worktree.Ok ->
@@ -965,10 +984,24 @@ struct
                               in
                               (orch, (agent_before, (agent_after, effects))))
                         in
-                        let push_outcome =
+                        let push_record =
                           Base.List.find_map effects
                             ~f:(fun Orchestrator.Push_branch ->
                               let branch = agent.Patch_agent.branch in
+                              let branch_str = Types.Branch.to_string branch in
+                              let base_str = Types.Branch.to_string new_base in
+                              let local_sha =
+                                W.read_branch_sha ~path:wt_path
+                                  ~ref_name:("refs/heads/" ^ branch_str)
+                              in
+                              let remote_tracking_sha =
+                                W.read_branch_sha ~path:wt_path
+                                  ~ref_name:("refs/remotes/origin/" ^ branch_str)
+                              in
+                              let base_sha =
+                                W.read_branch_sha ~path:wt_path
+                                  ~ref_name:("refs/heads/" ^ base_str)
+                              in
                               let result =
                                 W.force_push_with_lease ~path:wt_path ~branch
                                   ~base:new_base
@@ -998,17 +1031,36 @@ struct
                               | Worktree.Push_error msg ->
                                   log_event runtime ~patch_id
                                     (Printf.sprintf "Force-push failed — %s" msg));
-                              Some result)
+                              Some
+                                ( result,
+                                  local_sha,
+                                  remote_tracking_sha,
+                                  base_sha ))
                         in
-                        let resolution =
+                        let push_outcome =
+                          Base.Option.map push_record ~f:(fun (r, _, _, _) -> r)
+                        in
+                        let resolution, push_agent_after =
                           Runtime.update_orchestrator_returning runtime
                             (fun orch ->
                               let orch, resolution =
                                 Orchestrator.apply_rebase_push_result orch
                                   patch_id push_outcome
                               in
-                              (orch, resolution))
+                              let push_agent_after =
+                                Orchestrator.agent orch patch_id
+                              in
+                              (orch, (resolution, push_agent_after)))
                         in
+                        (match push_record with
+                        | Some (result, local_sha, remote_tracking_sha, base_sha)
+                          ->
+                            Event_log.log_push event_log ~patch_id
+                              ~kind:Event_log.Rebase_resolution_push ~result
+                              ~local_sha ~remote_tracking_sha ~base_sha
+                              ~agent_before:agent_after
+                              ~agent_after:push_agent_after
+                        | None -> ());
                         (match resolution with
                         | Orchestrator.Rebase_push_ok -> ()
                         | Orchestrator.Rebase_push_failed ->
@@ -1019,7 +1071,10 @@ struct
                             log_event runtime ~patch_id
                               "Enqueued rebase retry after push error");
                         Event_log.log_rebase event_log ~patch_id
-                          ~result:rebase_result ~agent_before ~agent_after))
+                          ~result:rebase_result ~pre_rebase_head
+                          ~post_rebase_head
+                          ~target_base_sha:rebase_target_base_sha ~agent_before
+                          ~agent_after))
             | Orchestrator.Respond (patch_id, kind) ->
                 (* Use pre-fire agent state for human_messages — fire/respond
                  clears them as a postcondition. *)
@@ -1337,8 +1392,23 @@ struct
                                      target origin/<base> so we rebase
                                      against fresh refs, not the stale
                                      local tracking ref. *)
+                                        let conflict_branch_str =
+                                          Types.Branch.to_string
+                                            agent.Patch_agent.branch
+                                        in
+                                        let predicted_wt_path =
+                                          WS.resolve_worktree_path ~patch_id
+                                            ~agent ()
+                                        in
+                                        let cr_pre_rebase_head =
+                                          W.read_branch_sha
+                                            ~path:predicted_wt_path
+                                            ~ref_name:
+                                              ("refs/heads/"
+                                             ^ conflict_branch_str)
+                                        in
                                         let ( rebase_result,
-                                              _wt_path,
+                                              executor_wt_path,
                                               anchor_events ) =
                                           Worktree_plan_executor.execute
                                             ~patch_id ~agent
@@ -1348,6 +1418,19 @@ struct
                                             (Worktree_plan.for_merge_conflict
                                                ~base:
                                                  (Types.Branch.of_string base))
+                                        in
+                                        let cr_post_rebase_head =
+                                          W.read_branch_sha
+                                            ~path:executor_wt_path
+                                            ~ref_name:
+                                              ("refs/heads/"
+                                             ^ conflict_branch_str)
+                                        in
+                                        let cr_target_base_sha =
+                                          W.read_branch_sha
+                                            ~path:executor_wt_path
+                                            ~ref_name:
+                                              ("refs/remotes/origin/" ^ base)
                                         in
                                         let conflict_info =
                                           match rebase_result with
@@ -1403,12 +1486,35 @@ struct
                                         in
                                         Event_log.log_conflict_rebase event_log
                                           ~patch_id ~result:rebase_result
-                                          ~decision ~agent_before ~agent_after;
-                                        let push_outcome =
+                                          ~decision
+                                          ~pre_rebase_head:cr_pre_rebase_head
+                                          ~post_rebase_head:cr_post_rebase_head
+                                          ~target_base_sha:cr_target_base_sha
+                                          ~agent_before ~agent_after;
+                                        let push_record =
                                           Base.List.find_map effects
                                             ~f:(fun Orchestrator.Push_branch ->
                                               let branch =
                                                 agent.Patch_agent.branch
+                                              in
+                                              let branch_str =
+                                                Types.Branch.to_string branch
+                                              in
+                                              let local_sha =
+                                                W.read_branch_sha ~path:wt_path
+                                                  ~ref_name:
+                                                    ("refs/heads/" ^ branch_str)
+                                              in
+                                              let remote_tracking_sha =
+                                                W.read_branch_sha ~path:wt_path
+                                                  ~ref_name:
+                                                    ("refs/remotes/origin/"
+                                                   ^ branch_str)
+                                              in
+                                              let base_sha =
+                                                W.read_branch_sha ~path:wt_path
+                                                  ~ref_name:
+                                                    ("refs/heads/" ^ base)
                                               in
                                               let result =
                                                 W.force_push_with_lease
@@ -1452,9 +1558,17 @@ struct
                                                        "Conflict force-push \
                                                         failed — %s"
                                                        msg));
-                                              Some result)
+                                              Some
+                                                ( result,
+                                                  local_sha,
+                                                  remote_tracking_sha,
+                                                  base_sha ))
                                         in
-                                        let resolution =
+                                        let push_outcome =
+                                          Base.Option.map push_record
+                                            ~f:(fun (r, _, _, _) -> r)
+                                        in
+                                        let resolution, push_agent_after =
                                           Runtime.update_orchestrator_returning
                                             runtime (fun orch ->
                                               let orch, resolution =
@@ -1462,8 +1576,29 @@ struct
                                                 .apply_conflict_push_result orch
                                                   patch_id decision push_outcome
                                               in
-                                              (orch, resolution))
+                                              let push_agent_after =
+                                                Orchestrator.agent orch patch_id
+                                              in
+                                              ( orch,
+                                                (resolution, push_agent_after)
+                                              ))
                                         in
+                                        (match push_record with
+                                        | Some
+                                            ( result,
+                                              local_sha,
+                                              remote_tracking_sha,
+                                              base_sha ) ->
+                                            Event_log.log_push event_log
+                                              ~patch_id
+                                              ~kind:
+                                                Event_log
+                                                .Conflict_resolution_push
+                                              ~result ~local_sha
+                                              ~remote_tracking_sha ~base_sha
+                                              ~agent_before:agent_after
+                                              ~agent_after:push_agent_after
+                                        | None -> ());
                                         match resolution with
                                         | Orchestrator.Conflict_done -> `Ok
                                         | Orchestrator.Conflict_retry_push ->

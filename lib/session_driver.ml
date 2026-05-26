@@ -131,6 +131,7 @@ module type ENV = sig
   val owner : string
   val repo : string
   val transcripts : (Types.Patch_id.t, string) Stdlib.Hashtbl.t
+  val event_log : Event_log.t
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
@@ -708,6 +709,24 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       Runtime.read runtime (fun snap ->
                           Orchestrator.main_branch snap.Runtime.orchestrator)
                 in
+                let branch_str = Types.Branch.to_string branch in
+                let base_str = Types.Branch.to_string base in
+                let push_local_sha =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/heads/" ^ branch_str)
+                in
+                let push_remote_tracking_sha =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/remotes/origin/" ^ branch_str)
+                in
+                let push_base_sha =
+                  W.read_branch_sha ~path:worktree_path
+                    ~ref_name:("refs/heads/" ^ base_str)
+                in
+                let push_agent_before =
+                  Runtime.read runtime (fun snap ->
+                      Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                in
                 let push_outcome =
                   W.force_push_with_lease ~path:worktree_path ~branch ~base
                 in
@@ -740,6 +759,16 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 | Worktree.Push_error msg ->
                     log_event runtime ~patch_id
                       (Printf.sprintf "runner: push error after session: %s" msg));
+                let push_agent_after =
+                  Runtime.read runtime (fun snap ->
+                      Orchestrator.agent snap.Runtime.orchestrator patch_id)
+                in
+                Event_log.log_push Env.event_log ~patch_id
+                  ~kind:Event_log.Session_end_push ~result:push_outcome
+                  ~local_sha:push_local_sha
+                  ~remote_tracking_sha:push_remote_tracking_sha
+                  ~base_sha:push_base_sha ~agent_before:push_agent_before
+                  ~agent_after:push_agent_after;
                 (* Combine LLM session outcome with push outcome into a single
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:

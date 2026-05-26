@@ -792,8 +792,7 @@ let force_push_with_lease ~process_mgr ~path ~branch ~base =
   | Refuse Push_plan.No_commits_ahead_of_base -> Push_no_commits
   | Refuse
       (( Push_plan.Branch_ref_missing _ | Push_plan.Branch_switched _
-       | Push_plan.Local_missing_remote_commits _
-       | Push_plan.Local_diverged_from_remote_commits _ ) as r) -> (
+       | Push_plan.Local_missing_remote_commits _ ) as r) -> (
       match Push_plan.to_push_reject_classify_rejection r with
       | Some rej -> Push_rejected rej
       | None ->
