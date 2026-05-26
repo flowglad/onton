@@ -560,8 +560,8 @@ need reproducibility. The names below are accurate as of February 2026 —
 | `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
 | `pi` | Run `pi --help` for the current list | Pi CLI |
 
-Pushing a `v*` tag builds a macOS ARM64 binary, creates a GitHub release, and
-updates the Homebrew formula.
+Pushing a `v*` tag builds macOS ARM64 and x86_64 binaries, creates a GitHub
+release, and updates the Homebrew formula.
 
 ## TUI
 

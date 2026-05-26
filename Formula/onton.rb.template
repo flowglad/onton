@@ -7,8 +7,15 @@ class Onton < Formula
   version "VERSION"
   license "MIT"
 
-  url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-arm64-apple-darwin.tar.gz"
-  sha256 "SHA256_ARM64"
+  on_arm do
+    url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-arm64-apple-darwin.tar.gz"
+    sha256 "SHA256_ARM64"
+  end
+
+  on_intel do
+    url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-x86_64-apple-darwin.tar.gz"
+    sha256 "SHA256_X86_64"
+  end
 
   depends_on "gmp"
 
