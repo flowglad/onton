@@ -281,6 +281,31 @@ let sbi_defer_implies_progress m =
                     ~equal:Operation_kind.equal
                   || Patch_agent.has_pr base_ag)))
 
+(** SBI-3 (rebase drains the queue): the freshness gate's
+    [Base_patch_busy_with_rebase] arm only stays sound if a completed rebase
+    actually removes [Rebase] from the agent's queue — otherwise
+    [runnable_rebase] would latch [true] forever, a just-rebased base would keep
+    deferring with [Base_patch_busy_with_rebase], and SBI-2's "by definition"
+    arm would pass vacuously. Assert the postcondition directly: any idle (not
+    [busy]) agent whose recorded sha already matches [main_sha] must carry no
+    queued [Rebase]. [Patch_agent.rebase] enforces this (it filters [Rebase] out
+    of [queue]); this locks it in so a regression in
+    [fire]/[apply_rebase_result]/[complete] would be caught here rather than
+    hidden behind a vacuous liveness pass. *)
+let sbi_completed_rebase_drains_queue m =
+  let main_sha = Orchestrator.main_sha m.orch in
+  List.for_all (Orchestrator.all_agents m.orch) ~f:(fun (a : Patch_agent.t) ->
+      let rebased_to_main =
+        match (a.Patch_agent.branch_rebased_onto_sha, main_sha) with
+        | Some s, Some ms -> String.equal s ms
+        | _ -> false
+      in
+      if (not a.Patch_agent.busy) && rebased_to_main then
+        not
+          (List.mem a.Patch_agent.queue Operation_kind.Rebase
+             ~equal:Operation_kind.equal)
+      else true)
+
 (* -- Generators -- *)
 
 module Gen = QCheck2.Gen
@@ -332,6 +357,24 @@ let prop_defer_implies_progress =
         List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
             let m = apply_command m cmd in
             (m, ok && sbi_defer_implies_progress m))
+      in
+      ok)
+
+let prop_completed_rebase_drains_queue =
+  QCheck2.Test.make ~count:300
+    ~name:
+      "SBI-3: a completed rebase drains [Rebase] from the queue (no stale \
+       busy-rebasing latch)"
+    Gen.(
+      let* n_patches = int_range 2 4 in
+      let* cmds = gen_command_seq ~n_patches in
+      return (n_patches, cmds))
+    (fun (n_patches, cmds) ->
+      let m = bootstrap (mk_patches n_patches) in
+      let _final, ok =
+        List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
+            let m = apply_command m cmd in
+            (m, ok && sbi_completed_rebase_drains_queue m))
       in
       ok)
 
@@ -412,5 +455,6 @@ let () =
        [
          prop_sbi_holds;
          prop_defer_implies_progress;
+         prop_completed_rebase_drains_queue;
          prop_event_stream_pages_witness;
        ])
