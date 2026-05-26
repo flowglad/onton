@@ -18,7 +18,9 @@ jobs:
           - arch: arm64
             runner: macos-14
           - arch: x86_64
-            runner: macos-13
+            # macos-13 (free Intel runner) was retired by GitHub; the -large
+            # variant is the paid Intel/x86_64 runner that's still available.
+            runner: macos-13-large
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
