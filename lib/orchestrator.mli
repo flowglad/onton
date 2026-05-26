@@ -415,5 +415,29 @@ val restore :
   agents:Patch_agent.t Map.M(Patch_id).t ->
   outbox:patch_agent_message Map.M(Message_id).t ->
   main_branch:Branch.t ->
+  ?main_sha:string ->
+  unit ->
   t
-(** Reconstruct orchestrator from persisted components. *)
+(** Reconstruct orchestrator from persisted components. [main_sha] defaults to
+    [None] when an older snapshot has no recorded value; the poller fills it in
+    on the next tick. *)
+
+val main_sha : t -> string option
+(** Sha of [origin/<main_branch>] as last observed by the poller. [None] until
+    the first successful fetch. *)
+
+val set_main_sha : t -> string -> t
+(** Record the latest observed [origin/<main_branch>] sha. Empty/whitespace
+    inputs are ignored (returns [t] unchanged) so a failed fetch doesn't clobber
+    a previously good value. *)
+
+val start_eligibility : t -> Branch.t -> Start_eligibility.decision
+(** [start_eligibility t base] is the freshness verdict for a hypothetical
+    [Start] action whose base is [base], evaluated against [t]'s current
+    [main_sha] and the base patch's recorded rebase anchor. Used to gate [Start]
+    in {!runnable_messages}; exposed for tests/TUI introspection.
+
+    Returns [Allow] when the base is main, when the base patch is merged
+    (effectively main), or when the base patch's [branch_rebased_onto_sha]
+    matches [main_sha]. Otherwise returns [Defer reason]. See
+    {!Start_eligibility}. *)

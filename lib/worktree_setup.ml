@@ -144,12 +144,30 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             | Fetch_branch_error msg ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Pre-create fetch failed (continuing): %s" msg));
+            let main_branch =
+              Types.Branch.to_string
+                (Runtime.read runtime (fun snap ->
+                     Orchestrator.main_branch snap.Runtime.orchestrator))
+            in
+            (* Also refresh [origin/<main>] so [Worktree.create]'s base-freshness
+               probe (defense-in-depth behind the orchestrator's scheduling
+               gate) sees the current main tip rather than a stale local view.
+               Best-effort — a fetch failure leaves the probe to report
+               [Unknown_freshness], which proceeds. *)
+            (match W.fetch_origin_branch ~fetch_lock ~branch:main_branch with
+            | Fetch_branch_ok | Fetch_branch_no_remote_ref -> ()
+            | Fetch_branch_error msg ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf
+                     "Pre-create fetch of origin/%s failed (continuing): %s"
+                     main_branch msg));
             log_event runtime ~patch_id
               (Printf.sprintf "Creating worktree at %s" path);
             let create_outcome =
               match
                 Eio.Mutex.use_ro worktree_mutex (fun () ->
-                    W.create ~project_name ~patch_id ~branch:br ~base_ref:base)
+                    W.create ~project_name ~patch_id ~branch:br ~base_ref:base
+                      ~main_branch)
               with
               | Ok _ -> `Created
               | Error refusal -> `Refused refusal

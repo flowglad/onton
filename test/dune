@@ -62,6 +62,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_start_eligibility_properties)
+ (modules test_start_eligibility_properties)
+ (libraries onton_core re qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_push_plan_properties)
  (modules test_push_plan_properties)
  (libraries onton_core re qcheck-core qcheck-core.runner)
@@ -203,6 +210,11 @@
  (libraries onton_core qcheck-core))
 
 (test
+ (name test_worktree_spawn_retry)
+ (modules test_worktree_spawn_retry)
+ (libraries onton onton_core eio eio_main eio.unix unix))
+
+(test
  (name test_spawn_logic)
  (modules test_spawn_logic)
  (libraries onton onton_core onton_test_support qcheck-core))
@@ -310,6 +322,13 @@
  (name test_interleaving_properties)
  (modules test_interleaving_properties)
  (libraries onton onton_core onton_test_support qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_stale_base_invariants)
+ (modules test_stale_base_invariants)
+ (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 

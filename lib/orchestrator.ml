@@ -33,6 +33,12 @@ type t = {
   agents : Patch_agent.t Map.M(Patch_id).t;
   outbox : patch_agent_message Map.M(Message_id).t;
   main_branch : Branch.t;
+  main_sha : string option;
+      (** Sha of [origin/<main_branch>] as last observed by the poller. Used by
+          {!Start_eligibility} to gate [Start] actions: a [Start(c, base=B)] is
+          deferred until [B]'s [branch_rebased_onto_sha] equals [main_sha], so
+          that [c]'s worktree is never cut from a stale dep branch. [None] until
+          the first poller tick fetches [origin/main]. *)
 }
 
 let create ~patches ~main_branch =
@@ -51,7 +57,13 @@ let create ~patches ~main_branch =
               (Printf.sprintf "Orchestrator.create: duplicate patch id %s"
                  (Patch_id.to_string p.Patch.id)))
   in
-  { graph; agents; outbox = Map.empty (module Message_id); main_branch }
+  {
+    graph;
+    agents;
+    outbox = Map.empty (module Message_id);
+    main_branch;
+    main_sha = None;
+  }
 
 let agent t patch_id =
   match Map.find t.agents patch_id with
@@ -149,13 +161,33 @@ let enqueue t patch_id kind =
 
 let mark_merged t patch_id =
   let t = update_agent t patch_id ~f:Patch_agent.mark_merged in
-  (* Eagerly update base_branch for direct dependents so it is never
-     stale when Merge_conflict fires. *)
+  (* Eagerly update [base_branch] for direct dependents so it is never stale
+     when [Merge_conflict] fires, AND eagerly enqueue a [Rebase] so the dep's
+     local tip catches up to [main_sha] before any deferred [Start] that
+     depends on it can fire. Without the eager enqueue, the dep stays on a
+     stale base until the next reconciler poll tick — the window that wiped
+     event-stream-pages patch 3. *)
   let dependents = Graph.dependents t.graph patch_id in
   List.fold dependents ~init:t ~f:(fun t dep_id ->
       match find_agent t dep_id with
       | None -> t
-      | Some _ -> refresh_base_branch t dep_id)
+      | Some _ -> (
+          let t = refresh_base_branch t dep_id in
+          (* Re-fetch after [refresh_base_branch] so the [merged]/[queue] guards
+             read the post-refresh agent rather than a stale pre-refresh
+             snapshot. (Today [refresh_base_branch] mutates only [base_branch],
+             but re-reading keeps this correct if that ever changes.) The
+             [merged] guard is not dead: a dependent can already be merged when
+             this fires, and a merged dep must not be handed a [Rebase]. *)
+          match find_agent t dep_id with
+          | None -> t
+          | Some dep_agent ->
+              if
+                dep_agent.Patch_agent.merged
+                || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
+                     ~equal:Operation_kind.equal
+              then t
+              else enqueue t dep_id Operation_kind.Rebase))
 
 let remove_agent t patch_id =
   {
@@ -223,6 +255,47 @@ let current_message t patch_id =
   | None -> None
   | Some message_id -> Map.find t.outbox message_id
 
+let find_patch_by_branch t branch =
+  Map.to_alist t.agents
+  |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch branch)
+  |> Option.map ~f:fst
+
+(** [start_eligibility t base] is the freshness verdict for a hypothetical
+    [Start] action whose base is [base] against [t]'s current view of the world.
+    Exposed so tests and TUI surfaces can inspect the gate without firing the
+    action. *)
+let start_eligibility t base =
+  let base_is_main = Branch.equal base t.main_branch in
+  let base_branch = Branch.to_string base in
+  let base_patch_merged, base_patch_rebased_onto_sha, base_patch_busy_rebasing =
+    match find_patch_by_branch t base with
+    | None -> (false, None, false)
+    | Some bpid -> (
+        match find_agent t bpid with
+        | None -> (false, None, false)
+        | Some a ->
+            let running_rebase =
+              a.Patch_agent.busy
+              && Option.equal Operation_kind.equal a.Patch_agent.current_op
+                   (Some Operation_kind.Rebase)
+            in
+            (* Only treat a queued Rebase as in-flight when it is the next op to
+               run (highest priority); a Rebase buried behind higher-priority
+               work — or one left queued on an already-fresh base — must not
+               defer Start, or we over-defer and lose liveness. *)
+            let runnable_rebase =
+              Option.equal Operation_kind.equal
+                (Patch_agent.highest_priority a)
+                (Some Operation_kind.Rebase)
+            in
+            let busy_rebasing = running_rebase || runnable_rebase in
+            ( a.Patch_agent.merged,
+              a.Patch_agent.branch_rebased_onto_sha,
+              busy_rebasing ))
+  in
+  Start_eligibility.decide ~base_is_main ~base_branch ~base_patch_merged
+    ~base_patch_rebased_onto_sha ~base_patch_busy_rebasing ~main_sha:t.main_sha
+
 let runnable_messages t =
   let action_rank = function
     | Start _ -> 0
@@ -232,7 +305,16 @@ let runnable_messages t =
   Map.data t.outbox
   |> List.filter ~f:(fun msg ->
       match msg.status with
-      | Pending -> true
+      | Pending -> (
+          (* Gate [Start] on base-branch freshness. Other actions are not
+             freshness-sensitive: [Rebase] is what closes the freshness gap,
+             and [Respond] operates on a worktree that already exists. *)
+          match msg.action with
+          | Start (_, base) -> (
+              match start_eligibility t base with
+              | Start_eligibility.Allow -> true
+              | Start_eligibility.Defer _ -> false)
+          | Rebase _ | Respond _ -> true)
       | Acked ->
           let agent = agent t msg.patch_id in
           Option.equal Message_id.equal agent.current_message_id
@@ -441,18 +523,19 @@ let reset_automerge_failure_count t patch_id =
 let all_agents t = Map.data t.agents
 let graph t = t.graph
 
-let restore ~graph ~agents ~outbox ~main_branch =
+let restore ~graph ~agents ~outbox ~main_branch ?main_sha () =
   let outbox = Map.filter outbox ~f:(fun msg -> Map.mem agents msg.patch_id) in
-  { graph; agents; outbox; main_branch }
+  { graph; agents; outbox; main_branch; main_sha }
 
 let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }
-let agents_map t = t.agents
+let main_sha t = t.main_sha
 
-let find_patch_by_branch t branch =
-  Map.to_alist t.agents
-  |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch branch)
-  |> Option.map ~f:fst
+let set_main_sha t sha =
+  let sha = String.strip sha in
+  if String.is_empty sha then t else { t with main_sha = Some sha }
+
+let agents_map t = t.agents
 
 let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
   if Map.mem t.agents patch_id then t

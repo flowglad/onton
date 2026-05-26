@@ -5,6 +5,9 @@ type sha = string [@@deriving show, eq, sexp_of, compare]
 type ancestry = Local_ahead | Remote_ahead | Equal | Diverged | Unknown
 [@@deriving show, eq, sexp_of, compare]
 
+type base_freshness = Fresh | Stale | Unknown_freshness
+[@@deriving show, eq, sexp_of, compare]
+
 type action =
   | Reset_and_use_remote_tracking of { remote_sha : sha }
   | Use_local_branch_unchanged of { local_sha : sha }
@@ -16,12 +19,13 @@ type refusal =
   | Local_has_unpushed_commits of { local_sha : sha; remote_sha : sha }
   | Branch_checked_out_in_main_root
   | Worktree_already_registered of { existing_path : string }
+  | Base_branch_stale_vs_main of { base_branch : string }
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Plan of action | Refuse of refusal
 [@@deriving show, eq, sexp_of, compare]
 
-let plan ~local_ref ~remote_ref ~ancestry ~base_branch
+let plan ~local_ref ~remote_ref ~ancestry ~base_branch ~base_freshness
     ~branch_checked_out_in_main_root ~existing_worktree_path =
   if branch_checked_out_in_main_root then Refuse Branch_checked_out_in_main_root
   else
@@ -30,7 +34,18 @@ let plan ~local_ref ~remote_ref ~ancestry ~base_branch
         Refuse (Worktree_already_registered { existing_path })
     | None -> (
         match (local_ref, remote_ref) with
-        | None, None -> Plan (Create_new_branch_from_base { base_branch })
+        | None, None -> (
+            (* About to cut a brand-new branch from [base_branch]. This is the
+               only arm that consumes [base_branch], so it is the only place a
+               stale base can silently elide an upstream's commits. Refuse only
+               on a definite [Stale] verdict — [Unknown_freshness] (probe
+               failed, or main not tracked) proceeds, since this is a
+               defense-in-depth net behind the orchestrator's scheduling gate
+               and must not block legitimate creates. *)
+            match base_freshness with
+            | Stale -> Refuse (Base_branch_stale_vs_main { base_branch })
+            | Fresh | Unknown_freshness ->
+                Plan (Create_new_branch_from_base { base_branch }))
         | None, Some remote_sha ->
             Plan (Reset_and_use_remote_tracking { remote_sha })
         | Some local_sha, None ->
@@ -52,3 +67,4 @@ let short_label = function
   | Refuse (Local_has_unpushed_commits _) -> "refuse_local_ahead"
   | Refuse Branch_checked_out_in_main_root -> "refuse_main_checkout"
   | Refuse (Worktree_already_registered _) -> "refuse_wt_registered"
+  | Refuse (Base_branch_stale_vs_main _) -> "refuse_base_stale"

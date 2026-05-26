@@ -25,12 +25,41 @@ let rec has_cancellation = function
       List.exists exns ~f:(fun (exn, _bt) -> has_cancellation exn)
   | _ -> false
 
+(* [posix_spawn] can transiently fail (e.g. EAGAIN) when the host is near its
+   per-user process limit — a heavily parallel test runner, or many concurrent
+   patches each driving git. Such failures surface as exceptions *other* than a
+   process verdict ([Eio.Process.E _] — [Child_error]/[Executable_not_found],
+   meaning git actually ran) and other than cancellation. We retry only that
+   transient class so a one-off spawn failure isn't mistaken for a git result
+   (or crash an op); a genuine exit status or cancellation is never retried. *)
+let is_transient_spawn_failure = function
+  | Eio.Io (Eio.Process.E _, _) -> false
+  | e -> not (has_cancellation e)
+
+let rec retry_transient_spawn ?(attempts = 4) f =
+  match f () with
+  | x -> x
+  | exception e when attempts <= 1 || not (is_transient_spawn_failure e) ->
+      raise e
+  | exception _ ->
+      (* Yield so the scheduler can make progress (reap exited children, let
+         other fibers release resources) before the next attempt. *)
+      Eio.Fiber.yield ();
+      retry_transient_spawn ~attempts:(attempts - 1) f
+
+(* [Eio.Process.run] wrapper that retries transient spawn failures. Named
+   parameter [mgr] (not [process_mgr]) so a textual rewrite of the call sites
+   below doesn't recurse into this definition. *)
+let process_run_retry mgr ?env ?stdout ?stderr args =
+  retry_transient_spawn (fun () ->
+      Eio.Process.run mgr ?env ?stdout ?stderr args)
+
 let clean_git_env = Stdlib.Lazy.from_fun Git_env.clean_env
 
 let ref_exists ~process_mgr ~repo_root ref_path =
   let buf = Buffer.create 16 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
@@ -50,7 +79,7 @@ let resolve_main_root ~process_mgr ~repo_root =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -76,7 +105,7 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
   let buf = Buffer.create 128 in
   let stderr_buf = Buffer.create 64 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink buf)
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -91,7 +120,7 @@ let is_checked_out_in_repo_root ~process_mgr ~repo_root branch =
 let run_git ~process_mgr args =
   let stderr_buf = Buffer.create 128 in
   match
-    Eio.Process.run process_mgr
+    process_run_retry process_mgr
       ~env:(Stdlib.Lazy.force clean_git_env)
       ~stdout:(Eio.Flow.buffer_sink (Buffer.create 64))
       ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -114,10 +143,11 @@ let run_git_exit_code ~process_mgr args =
   let stderr_buf = Buffer.create 64 in
   let env = Stdlib.Lazy.force clean_git_env in
   let child =
-    Eio.Process.spawn ~sw process_mgr ~env
-      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      args
+    retry_transient_spawn (fun () ->
+        Eio.Process.spawn ~sw process_mgr ~env
+          ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+          ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+          args)
   in
   let code =
     match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
@@ -200,7 +230,7 @@ let check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str =
   let buf = Buffer.create 512 in
   let existing_branches =
     match
-      Eio.Process.run process_mgr
+      process_run_retry process_mgr
         ~env:(Stdlib.Lazy.force clean_git_env)
         ~stdout:(Eio.Flow.buffer_sink buf)
         ~stderr:(Eio.Flow.buffer_sink (Buffer.create 16))
@@ -289,8 +319,44 @@ let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
    Returns [Error _] when the planner refuses (local diverged from remote,
    branch checked out in main, etc.); the caller in [Worktree_setup] surfaces
    refusals through the orchestrator's [needs_intervention] path. *)
-let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
-    (t, Start_point_plan.refusal) Result.t =
+(* Whether [origin/<main_branch>] is an ancestor of [base_ref]. Only meaningful
+   when we are about to cut a brand-new branch from [base_ref] (a stacked
+   dependency branch). When [base_ref] is itself the main branch, freshness is
+   not this function's concern — stale-local-main is handled by the poller's
+   main-freshness drift detection — so we return [Unknown_freshness] and let
+   the create proceed. Defense-in-depth behind the orchestrator's scheduling
+   gate; a probe failure also yields [Unknown_freshness] so a transient git
+   error never blocks a legitimate create. *)
+let compute_base_freshness ~process_mgr ~repo_root ~main_branch ~base_ref :
+    Start_point_plan.base_freshness =
+  let origin_main = "origin/" ^ main_branch in
+  (* [base_ref] may be a bare name ([main]) or an origin-qualified ref
+     ([origin/main]); every current caller passes the latter. Normalise so the
+     skip fires for both, rather than only the bare form. *)
+  let base_is_main =
+    String.equal base_ref main_branch || String.equal base_ref origin_main
+  in
+  if base_is_main then Start_point_plan.Unknown_freshness
+  else
+    let code, _, _ =
+      run_git_exit_code ~process_mgr
+        [
+          "git";
+          "-C";
+          repo_root;
+          "merge-base";
+          "--is-ancestor";
+          origin_main;
+          base_ref;
+        ]
+    in
+    match code with
+    | 0 -> Start_point_plan.Fresh
+    | 1 -> Start_point_plan.Stale
+    | _ -> Start_point_plan.Unknown_freshness
+
+let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
+    ~main_branch : (t, Start_point_plan.refusal) Result.t =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
   if Stdlib.Sys.file_exists path then Result.Ok { patch_id; branch; path }
@@ -310,6 +376,16 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
           compute_repo_ancestry ~process_mgr ~repo_root ~local:l ~remote:r
       | _ -> Start_point_plan.Unknown
     in
+    (* Only probe base freshness on the brand-new-branch path (neither local
+       nor remote ref for our own branch exists yet) — the only arm that cuts
+       from [base_ref]. Skipping the probe elsewhere avoids a needless git
+       call. *)
+    let base_freshness =
+      match (local_ref, remote_ref) with
+      | None, None ->
+          compute_base_freshness ~process_mgr ~repo_root ~main_branch ~base_ref
+      | _ -> Start_point_plan.Unknown_freshness
+    in
     (* [branch_checked_out_in_main_root] and [existing_worktree_path] are
        checked by [Worktree_setup.ensure_worktree] before this point — we
        pass [false]/[None] so the planner's totality contract is preserved
@@ -318,8 +394,8 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
        there. *)
     let decision =
       Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
-        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
-        ~existing_worktree_path:None
+        ~base_branch:base_ref ~base_freshness
+        ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
     in
     match decision with
     | Refuse refusal -> Result.Error refusal
@@ -329,7 +405,7 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
         Result.Ok { patch_id; branch; path })
 
 let remove ~process_mgr ~repo_root t =
-  Eio.Process.run process_mgr
+  process_run_retry process_mgr
     ~env:(Stdlib.Lazy.force clean_git_env)
     [ "git"; "-C"; repo_root; "worktree"; "remove"; "--force"; t.path ]
 
@@ -338,7 +414,7 @@ let detect_branch ~process_mgr ~path =
   let path = normalize_path path in
   let stderr_buf = Buffer.create 64 in
   (match
-     Eio.Process.run process_mgr
+     process_run_retry process_mgr
        ~env:(Stdlib.Lazy.force clean_git_env)
        ~stdout:(Eio.Flow.buffer_sink buf)
        ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -367,7 +443,7 @@ let list_with_branches ~process_mgr ~repo_root =
   let buf = Buffer.create 512 in
   let stderr_buf = Buffer.create 64 in
   (match
-     Eio.Process.run process_mgr
+     process_run_retry process_mgr
        ~env:(Stdlib.Lazy.force clean_git_env)
        ~stdout:(Eio.Flow.buffer_sink buf)
        ~stderr:(Eio.Flow.buffer_sink stderr_buf)
@@ -973,6 +1049,7 @@ module type S = sig
     patch_id:Types.Patch_id.t ->
     branch:Types.Branch.t ->
     base_ref:string ->
+    main_branch:string ->
     (t, Start_point_plan.refusal) Result.t
 
   val fetch_origin_branch :
@@ -1043,8 +1120,9 @@ let make ~process_mgr ~repo_root =
     let remote_branch_exists branch_str =
       remote_branch_exists ~process_mgr ~repo_root branch_str
 
-    let create ~project_name ~patch_id ~branch ~base_ref =
+    let create ~project_name ~patch_id ~branch ~base_ref ~main_branch =
       create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
+        ~main_branch
 
     let remove t = remove ~process_mgr ~repo_root t
     let detect_branch ~path = detect_branch ~process_mgr ~path

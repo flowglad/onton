@@ -9,6 +9,21 @@ type t = private {
 
 val worktree_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
 
+val is_transient_spawn_failure : exn -> bool
+(** [true] for exceptions that mean a subprocess could not be spawned/run to
+    completion (e.g. [posix_spawn] failing with EAGAIN under process-table
+    pressure) — i.e. anything that is {e not} a process verdict
+    ([Eio.Process.E _]: [Child_error]/[Executable_not_found], where git actually
+    ran) and {e not} a cancellation. These are the failures
+    {!retry_transient_spawn} retries. Exposed for testing. *)
+
+val retry_transient_spawn : ?attempts:int -> (unit -> 'a) -> 'a
+(** Run [f], retrying up to [attempts] times (default 4) while it raises a
+    {!is_transient_spawn_failure}. A process verdict or cancellation is
+    re-raised immediately; the last attempt's exception is re-raised once
+    attempts are exhausted. Yields to the scheduler between attempts. Exposed
+    for testing. *)
+
 val resolve_main_root :
   process_mgr:_ Eio.Process.mgr -> repo_root:string -> string
 (** Resolve the main working tree (git common dir's parent) from any repo path.
@@ -32,6 +47,7 @@ val create :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   base_ref:string ->
+  main_branch:string ->
   (t, Start_point_plan.refusal) Result.t
 (** Create a git worktree for [branch] under [project_name]/[patch_id].
 
@@ -42,9 +58,17 @@ val create :
     [fetch_origin_branch] beforehand so [refs/remotes/origin/<branch>] is fresh;
     without that step the planner would see a stale remote ref.
 
+    On the brand-new-branch arm (neither ref exists), also probes whether
+    [origin/<main_branch>] is an ancestor of [base_ref]; a definite "no" yields
+    [Refuse (Base_branch_stale_vs_main _)] rather than silently cutting from a
+    stale dependency branch. This is defense-in-depth behind the orchestrator's
+    {!Start_eligibility} scheduling gate. The supervisor should run
+    [fetch_origin_branch ~branch:main_branch] beforehand so the probe sees the
+    current main tip.
+
     Returns [Error refusal] when the planner refuses (local diverged from
-    remote, branch already checked out elsewhere, etc.). The caller surfaces
-    refusals through the orchestrator's intervention path.
+    remote, branch already checked out elsewhere, base stale vs main, etc.). The
+    caller surfaces refusals through the orchestrator's intervention path.
 
     Pre-empted inputs [branch_checked_out_in_main_root] and
     [existing_worktree_path] are checked by the caller
@@ -336,6 +360,7 @@ module type S = sig
     patch_id:Types.Patch_id.t ->
     branch:Types.Branch.t ->
     base_ref:string ->
+    main_branch:string ->
     (t, Start_point_plan.refusal) Result.t
 
   val fetch_origin_branch :
