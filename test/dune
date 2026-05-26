@@ -244,14 +244,14 @@
 (test
  (name test_worktree_start_point_integration)
  (modules test_worktree_start_point_integration)
- (libraries onton onton_core eio eio_main eio.unix unix)
+ (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
  (name test_push_plan_integration)
  (modules test_push_plan_integration)
- (libraries onton onton_core eio eio_main eio.unix unix)
+ (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)
  (ocamlopt_flags (:standard -w -40-42))
  (ocamlc_flags (:standard -w -40-42)))
 

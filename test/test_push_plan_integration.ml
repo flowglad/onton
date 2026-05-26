@@ -1,6 +1,7 @@
 open Base
 open Onton
 open Onton_core
+module Git_env = Onton_test_support.Git_env
 
 (** Integration test: drive [Worktree.force_push_with_lease] against real git
     fixtures to cover the {!Push_plan} refusal arms that the unit/property tests
@@ -35,40 +36,12 @@ let with_temp_dir f =
       with _ -> ());
   f dir
 
-let sh ?(dir = ".") cmd =
-  let full = Printf.sprintf "cd %s && %s" (Stdlib.Filename.quote dir) cmd in
-  let code = Stdlib.Sys.command full in
-  if code <> 0 then
-    failwith (Printf.sprintf "command failed (exit %d): %s" code full)
-
-let git_capture ?(dir = ".") args =
-  let argstr =
-    String.concat ~sep:" " (List.map ~f:Stdlib.Filename.quote args)
-  in
-  let cmd =
-    Printf.sprintf "cd %s && git %s" (Stdlib.Filename.quote dir) argstr
-  in
-  let ic = Unix.open_process_in cmd in
-  let buf = Buffer.create 128 in
-  (try
-     while true do
-       Stdlib.Buffer.add_channel buf ic 4096
-     done
-   with End_of_file -> ());
-  let contents = Buffer.contents buf in
-  match Unix.close_process_in ic with
-  | Unix.WEXITED 0 -> String.strip contents
-  | Unix.WEXITED code ->
-      failwith
-        (Printf.sprintf "git command failed (exit %d): %s\n%s" code cmd contents)
-  | Unix.WSIGNALED signal ->
-      failwith
-        (Printf.sprintf "git command killed by signal %d: %s\n%s" signal cmd
-           contents)
-  | Unix.WSTOPPED signal ->
-      failwith
-        (Printf.sprintf "git command stopped by signal %d: %s\n%s" signal cmd
-           contents)
+(* Delegate to the scrubbed-env helpers in {!Onton_test_support.Git_env} so an
+   inherited [GIT_*] var (e.g. from the pre-commit hook that runs [dune
+   runtest]) cannot redirect these fixtures' git at the host repo. See
+   lib/git_env.mli. *)
+let sh ?(dir = ".") cmd = Git_env.sh ~dir cmd
+let git_capture ?(dir = ".") args = Git_env.git_capture ~cwd:dir args
 
 let setup_origin ~origin_dir =
   Unix.mkdir origin_dir 0o755;
@@ -129,10 +102,8 @@ let scenario_branch_switched env =
            (Worktree.show_push_result outcome)));
   (* Verify nothing was pushed to remote. *)
   let remote_has_feat =
-    Stdlib.Sys.command
-      (Printf.sprintf
-         "cd %s && git ls-remote --exit-code origin feat >/dev/null 2>&1"
-         (Stdlib.Filename.quote managed_dir))
+    Git_env.git_exit_code ~cwd:managed_dir
+      [ "ls-remote"; "--exit-code"; "origin"; "feat" ]
   in
   if remote_has_feat = 0 then
     failwith "branch_switched: remote received feat — push was not refused"

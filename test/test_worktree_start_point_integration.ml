@@ -1,6 +1,7 @@
 open Base
 open Onton
 open Onton_core
+module Git_env = Onton_test_support.Git_env
 
 (** Integration test: drive [Worktree.create] against real git fixtures to cover
     every {!Start_point_plan} arm.
@@ -41,7 +42,13 @@ let with_temp_dir f =
   let prior_home = Stdlib.Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" dir;
   Stdlib.at_exit (fun () ->
-      (match prior_home with Some h -> Unix.putenv "HOME" h | None -> ());
+      (match prior_home with
+      | Some h -> Unix.putenv "HOME" h
+      | None ->
+          (* HOME was unset on entry; leaving it pointed at the temp dir we are
+             about to delete would strand later [worktree_dir] lookups on a
+             dangling path. Point it at a directory that exists. *)
+          Unix.putenv "HOME" (Stdlib.Filename.get_temp_dir_name ()));
       try
         let _ =
           Stdlib.Sys.command
@@ -51,28 +58,13 @@ let with_temp_dir f =
       with _ -> ());
   f dir
 
-let sh ?(dir = ".") cmd =
-  let full = Printf.sprintf "cd %s && %s" (Stdlib.Filename.quote dir) cmd in
-  let code = Stdlib.Sys.command full in
-  if code <> 0 then
-    failwith (Printf.sprintf "command failed (exit %d): %s" code full)
-
-let git_capture ?(dir = ".") args =
-  let argstr =
-    String.concat ~sep:" " (List.map ~f:Stdlib.Filename.quote args)
-  in
-  let cmd =
-    Printf.sprintf "cd %s && git %s" (Stdlib.Filename.quote dir) argstr
-  in
-  let ic = Unix.open_process_in cmd in
-  let buf = Buffer.create 128 in
-  (try
-     while true do
-       Stdlib.Buffer.add_channel buf ic 4096
-     done
-   with End_of_file -> ());
-  let _ = Unix.close_process_in ic in
-  String.strip (Buffer.contents buf)
+(* Delegate to the scrubbed-env helpers in {!Onton_test_support.Git_env}. These
+   fixtures run under [dune runtest], which the pre-commit hook invokes with the
+   host repo's [GIT_DIR]/[GIT_INDEX_FILE]/[GIT_WORK_TREE] exported into the
+   environment; spawning git with the ambient env let those vars redirect a
+   sandbox commit onto the host worktree (see lib/git_env.mli). *)
+let sh ?(dir = ".") cmd = Git_env.sh ~dir cmd
+let git_capture ?(dir = ".") args = Git_env.git_capture ~cwd:dir args
 
 let setup_origin_with_main ~origin_dir =
   Unix.mkdir origin_dir 0o755;
@@ -267,13 +259,9 @@ let scenario_local_strictly_ahead env =
   let local = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
   let remote = git_capture ~dir:managed_dir [ "rev-parse"; "origin/feat" ] in
   let is_remote_ancestor_of_local =
-    let cmd =
-      Printf.sprintf "cd %s && git merge-base --is-ancestor %s %s"
-        (Stdlib.Filename.quote managed_dir)
-        (Stdlib.Filename.quote remote)
-        (Stdlib.Filename.quote local)
-    in
-    Stdlib.Sys.command cmd = 0
+    Git_env.git_exit_code ~cwd:managed_dir
+      [ "merge-base"; "--is-ancestor"; remote; local ]
+    = 0
   in
   assert_true "precondition: remote is ancestor of local"
     is_remote_ancestor_of_local;
@@ -328,12 +316,9 @@ let scenario_base_stale_vs_main env =
   clone_into ~origin_dir ~managed_dir;
   (* Precondition: origin/main is NOT an ancestor of origin/patch-b. *)
   let stale =
-    let cmd =
-      Printf.sprintf
-        "cd %s && git merge-base --is-ancestor origin/main origin/patch-b"
-        (Stdlib.Filename.quote managed_dir)
-    in
-    Stdlib.Sys.command cmd <> 0
+    Git_env.git_exit_code ~cwd:managed_dir
+      [ "merge-base"; "--is-ancestor"; "origin/main"; "origin/patch-b" ]
+    <> 0
   in
   assert_true "precondition: origin/main not ancestor of origin/patch-b" stale;
   let res =
@@ -378,12 +363,9 @@ let scenario_base_fresh_stacked env =
   sh ~dir:origin_dir "git checkout -q main";
   clone_into ~origin_dir ~managed_dir;
   let fresh =
-    let cmd =
-      Printf.sprintf
-        "cd %s && git merge-base --is-ancestor origin/main origin/patch-b"
-        (Stdlib.Filename.quote managed_dir)
-    in
-    Stdlib.Sys.command cmd = 0
+    Git_env.git_exit_code ~cwd:managed_dir
+      [ "merge-base"; "--is-ancestor"; "origin/main"; "origin/patch-b" ]
+    = 0
   in
   assert_true "precondition: origin/main IS ancestor of origin/patch-b" fresh;
   let res =

@@ -359,6 +359,12 @@ let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref
     ~main_branch : (t, Start_point_plan.refusal) Result.t =
   let path = worktree_dir ~project_name ~patch_id in
   let branch_str = Types.Branch.to_string branch in
+  (* The destination is keyed only on [$HOME] + [project_name] + [patch_id]
+     (see {!worktree_dir}). When the path already exists we trust it and skip
+     the git setup, so callers must guarantee an isolated [$HOME] — in
+     particular, tests redirect HOME into a temp sandbox so a stale
+     [~/worktrees/<project>/patch-<id>] from a prior run cannot make this
+     short-circuit return a spurious Ok. *)
   if Stdlib.Sys.file_exists path then Result.Ok { patch_id; branch; path }
   else (
     check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str;
