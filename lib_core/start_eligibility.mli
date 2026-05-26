@@ -24,8 +24,8 @@
 type defer_reason =
   | Main_sha_unknown
       (** The poller has not yet observed [origin/main] (e.g. very first tick
-          after startup). Fail closed — defer rather than risk cutting from a
-          base whose freshness we cannot verify. *)
+          after startup) and no rebase is in flight. Fail closed — defer rather
+          than risk cutting from a base whose freshness we cannot verify. *)
   | Base_patch_busy_with_rebase of { base_branch : string }
       (** The base patch already has a [Rebase] in flight (busy with op
           [Rebase], or [Rebase] is queued and highest-priority). Wait for it
@@ -59,8 +59,10 @@ val decide :
       callers must treat this as "base is effectively main" (the orchestrator
       will refresh [base_branch] before the [Start] actually executes via
       [refresh_base_branch] in [mark_merged]).
-    + [main_sha = None] → [Defer Main_sha_unknown]. Fail closed.
     + [base_patch_busy_rebasing = true] → [Defer Base_patch_busy_with_rebase].
+      Checked before [main_sha = None] so an active rebase pre-empts the
+      unknown-main verdict (and the arm is not dead when main is unpublished).
+    + [main_sha = None] → [Defer Main_sha_unknown]. Fail closed.
     + [base_patch_rebased_onto_sha = Some s] and [Some s = main_sha] → [Allow].
     + Otherwise → [Defer Base_not_rebased_since_main_advanced { … }].
 

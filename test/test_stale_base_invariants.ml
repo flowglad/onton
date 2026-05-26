@@ -140,9 +140,21 @@ let apply_command m cmd =
           || not rebase_in_queue
         then m
         else
-          (* Fire the Rebase action first — that's what dequeues [Rebase] from
-             the patch's queue and sets [busy = true] (mirroring
-             Patch_agent.rebase's spec). Then apply the successful result. *)
+          (* This drives the agent state-machine directly (fire → apply result)
+             rather than the message lifecycle (accept_message → … →
+             apply_rebase_result), and that shortcut is safe for the SBI
+             property because the property only reads base freshness from agent
+             fields — [merged], [branch_rebased_onto_sha], and (via
+             [start_eligibility]'s busy-rebase check) [busy]/[current_op]/[queue]
+             — none of which depend on outbox message [status] or
+             [current_message_id]. [Orchestrator.fire (Rebase _)] sets
+             [busy = true] and [current_op = Rebase] (Patch_agent.rebase's spec)
+             exactly as [accept_message] would, which is also the precondition
+             [apply_rebase_result]'s eventual [complete] requires. The only state
+             not modelled here is the *in-flight* (Acked, busy) rebase observed
+             between commands; the busy-via-queue path is exercised after
+             [Pr_merged]'s eager enqueue, and [prop_event_stream_pages_witness]
+             covers Base_patch_busy_with_rebase directly. *)
           let orch =
             Orchestrator.fire m.orch (Orchestrator.Rebase (pid, main))
           in
@@ -247,18 +259,27 @@ let sbi_defer_implies_progress m =
               (Start_eligibility.Base_patch_busy_with_rebase _) ->
               true (* by definition: a Rebase is in flight or queued *)
           | Start_eligibility.Defer
-              (Start_eligibility.Base_not_rebased_since_main_advanced _) ->
-              (* Find the base patch and confirm it's open + has either Rebase
-                 queued OR is in a state that the reconciler will catch on
-                 the next tick (PR present, not merged). Pure Pending-with-no-
-                 queue-and-no-rebase-detector-input would be a stuck state. *)
+              (Start_eligibility.Base_not_rebased_since_main_advanced _) -> (
+              (* There must be an actual path to Allow: the base patch either has
+                 a [Rebase] queued (which will close the freshness gap) or has a
+                 PR the reconciler's stale-base detectors can enqueue a [Rebase]
+                 against on the next tick. A base patch that exists but has
+                 neither — e.g. needs_intervention with an empty queue and no PR
+                 — is genuinely stuck, so a bare existence check would pass
+                 vacuously. *)
               let bpid_opt =
                 Map.to_alist (Orchestrator.agents_map m.orch)
                 |> List.find_map ~f:(fun (pid, ag) ->
                     if Branch.equal ag.Patch_agent.branch base then Some pid
                     else None)
               in
-              Option.is_some bpid_opt))
+              match bpid_opt with
+              | None -> false
+              | Some bpid ->
+                  let base_ag = Orchestrator.agent m.orch bpid in
+                  List.mem base_ag.Patch_agent.queue Operation_kind.Rebase
+                    ~equal:Operation_kind.equal
+                  || Patch_agent.has_pr base_ag)))
 
 (* -- Generators -- *)
 

@@ -141,6 +141,9 @@ let prop_preempt_main_unknown =
           i with
           base_is_main = false;
           base_patch_merged = false;
+          (* busy_rebasing now pre-empts the unknown-main arm, so pin it off to
+             isolate the Main_sha_unknown case. *)
+          base_patch_busy_rebasing = false;
           main_sha = None;
         })
     (fun i -> is_defer_main_unknown (call i))

@@ -171,14 +171,23 @@ let mark_merged t patch_id =
   List.fold dependents ~init:t ~f:(fun t dep_id ->
       match find_agent t dep_id with
       | None -> t
-      | Some dep_agent ->
+      | Some _ -> (
           let t = refresh_base_branch t dep_id in
-          if
-            dep_agent.Patch_agent.merged
-            || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
-                 ~equal:Operation_kind.equal
-          then t
-          else enqueue t dep_id Operation_kind.Rebase)
+          (* Re-fetch after [refresh_base_branch] so the [merged]/[queue] guards
+             read the post-refresh agent rather than a stale pre-refresh
+             snapshot. (Today [refresh_base_branch] mutates only [base_branch],
+             but re-reading keeps this correct if that ever changes.) The
+             [merged] guard is not dead: a dependent can already be merged when
+             this fires, and a merged dep must not be handed a [Rebase]. *)
+          match find_agent t dep_id with
+          | None -> t
+          | Some dep_agent ->
+              if
+                dep_agent.Patch_agent.merged
+                || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
+                     ~equal:Operation_kind.equal
+              then t
+              else enqueue t dep_id Operation_kind.Rebase))
 
 let remove_agent t patch_id =
   {

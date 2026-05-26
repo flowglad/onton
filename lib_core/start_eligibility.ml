@@ -17,23 +17,26 @@ let decide ~base_is_main ~base_branch ~base_patch_merged
     ~base_patch_rebased_onto_sha ~base_patch_busy_rebasing ~main_sha =
   if base_is_main then Allow
   else if base_patch_merged then Allow
+  else if base_patch_busy_rebasing then
+    (* Check this before [main_sha = None]: an active/imminent rebase is the
+       most informative signal and is a valid reason to wait regardless of
+       whether the poller has published main yet. Otherwise this short-circuit
+       would be unreachable while [main_sha = None]. *)
+    Defer (Base_patch_busy_with_rebase { base_branch })
   else
     match main_sha with
     | None -> Defer Main_sha_unknown
     | Some main_sha -> (
-        if base_patch_busy_rebasing then
-          Defer (Base_patch_busy_with_rebase { base_branch })
-        else
-          match base_patch_rebased_onto_sha with
-          | Some s when String.equal s main_sha -> Allow
-          | _ ->
-              Defer
-                (Base_not_rebased_since_main_advanced
-                   {
-                     base_branch;
-                     base_rebased_onto_sha = base_patch_rebased_onto_sha;
-                     main_sha;
-                   }))
+        match base_patch_rebased_onto_sha with
+        | Some s when String.equal s main_sha -> Allow
+        | _ ->
+            Defer
+              (Base_not_rebased_since_main_advanced
+                 {
+                   base_branch;
+                   base_rebased_onto_sha = base_patch_rebased_onto_sha;
+                   main_sha;
+                 }))
 
 let short_label = function
   | Allow -> "allow"
