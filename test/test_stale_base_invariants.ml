@@ -199,7 +199,7 @@ let base_is_fresh m base =
     in
     match base_entry with
     | None -> false
-    | Some (bpid, a) ->
+    | Some (bpid, a) -> (
         if a.Patch_agent.merged then true
         else
           (* Bind [open_deps] once and pattern-match to derive the structural
@@ -214,7 +214,7 @@ let base_is_fresh m base =
               ~has_merged:(fun dep ->
                 (Orchestrator.agent m.orch dep).Patch_agent.merged)
           in
-          (match (open_deps, a.Patch_agent.branch_rebased_onto) with
+          match (open_deps, a.Patch_agent.branch_rebased_onto) with
           | [], Some b -> Branch.equal b main
           | [ d ], Some b -> Branch.equal b (branch_of_patches m.patches d)
           | _ -> false)
