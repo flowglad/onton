@@ -947,6 +947,11 @@ struct
                             ~ancestor_ids
                             (Worktree_plan.for_rebase ~new_base)
                         in
+                        let pre_rebase_head =
+                          if Base.String.equal predicted_wt_path wt_path then
+                            pre_rebase_head
+                          else None
+                        in
                         let post_rebase_head =
                           W.read_branch_sha ~path:wt_path
                             ~ref_name:("refs/heads/" ^ rebase_branch_str)
@@ -1425,6 +1430,13 @@ struct
                                             ~ref_name:
                                               ("refs/heads/"
                                              ^ conflict_branch_str)
+                                        in
+                                        let cr_pre_rebase_head =
+                                          if
+                                            Base.String.equal predicted_wt_path
+                                              executor_wt_path
+                                          then cr_pre_rebase_head
+                                          else None
                                         in
                                         let cr_target_base_sha =
                                           W.read_branch_sha

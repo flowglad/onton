@@ -105,11 +105,20 @@ let intervention_reason t =
       List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
     in
     let given_up = equal_session_fallback t.session_fallback Given_up in
-    (* [given_up] and [is_pr_missing] bypass the Human exemption (see the
-       comment below). All other counters defer to the exemption: a queued
-       Human message keeps the reconciler scheduling work. *)
     if given_up then Some "session_fallback=given_up"
     else if is_pr_missing t then Some "pr_missing"
+      (* The Human exemption lets a newly-arrived human message be delivered
+       even to an agent with a high ci_failure_count or other failure state.
+       However, the exemption does NOT apply when session_fallback = Given_up:
+       a Given_up agent cannot start any session, so the delivery attempt
+       immediately fails at the Give_up check and complete_failed re-enqueues
+       Human — creating an infinite loop. Override the exemption so the
+       reconciler stops scheduling actions and the agent surfaces for
+       manual intervention.
+
+       [merged] is terminal — a merged agent never needs intervention, so
+       short-circuit on it to keep the predicate self-consistent even for
+       callers that don't pre-filter by [merged]. *)
     else if human_in_queue then None
     else if t.ci_failure_count >= 3 then Some "ci_failure_count>=3"
     else if (not (has_pr t)) && t.start_attempts_without_pr >= 2 then
@@ -122,18 +131,6 @@ let intervention_reason t =
     else None
 
 let needs_intervention t = Option.is_some (intervention_reason t)
-(* The Human exemption lets a newly-arrived human message be delivered
-   even to an agent with a high ci_failure_count or other failure state.
-   However, the exemption does NOT apply when session_fallback = Given_up:
-   a Given_up agent cannot start any session, so the delivery attempt
-   immediately fails at the Give_up check and complete_failed re-enqueues
-   Human — creating an infinite loop.  Override the exemption so the
-   reconciler stops scheduling actions and the agent surfaces for
-   manual intervention.
-
-   [merged] is terminal — a merged agent never needs intervention, so
-   short-circuit on it to keep the predicate self-consistent even for
-   callers that don't pre-filter by [merged]. *)
 
 let create ~branch patch_id =
   {

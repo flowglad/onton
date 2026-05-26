@@ -113,7 +113,7 @@ type push_kind =
   | Session_end_push
   | Rebase_resolution_push
   | Conflict_resolution_push
-[@@deriving show, eq, sexp_of, compare]
+[@@deriving eq, sexp_of, compare]
 
 val log_push :
   t ->
