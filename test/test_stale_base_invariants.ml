@@ -199,17 +199,25 @@ let base_is_fresh m base =
     in
     match base_entry with
     | None -> false
-    | Some (bpid, a) -> (
-        a.Patch_agent.merged
-        || List.length
-             (Graph.open_pr_deps (Orchestrator.graph m.orch) bpid
-                ~has_merged:(fun dep ->
-                  (Orchestrator.agent m.orch dep).Patch_agent.merged))
-           <= 1
-           &&
-           match a.Patch_agent.branch_rebased_onto with
-           | Some b -> Branch.equal b (initial_base_of m.orch m.patches bpid)
-           | None -> false)
+    | Some (bpid, a) ->
+        if a.Patch_agent.merged then true
+        else
+          (* Bind [open_deps] once and pattern-match to derive the structural
+             base directly ([] -> main, [d] -> d's branch), treating >1 open
+             deps as not-fresh — mirroring [Orchestrator.start_eligibility].
+             Keeping the guard and the base derivation in a single match means
+             no reordering can leave [Graph.initial_base] (which raises on >1
+             open deps) called unguarded; deriving the base inline also keeps
+             this oracle independent of [start_eligibility]. *)
+          let open_deps =
+            Graph.open_pr_deps (Orchestrator.graph m.orch) bpid
+              ~has_merged:(fun dep ->
+                (Orchestrator.agent m.orch dep).Patch_agent.merged)
+          in
+          (match (open_deps, a.Patch_agent.branch_rebased_onto) with
+          | [], Some b -> Branch.equal b main
+          | [ d ], Some b -> Branch.equal b (branch_of_patches m.patches d)
+          | _ -> false)
 
 (** SBI: every [Start (_, base)] surfaced by [runnable_messages] has a fresh
     [base] per [base_is_fresh]. [Enqueue_start] seeds the outbox with real
