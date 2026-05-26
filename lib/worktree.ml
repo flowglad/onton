@@ -329,9 +329,15 @@ let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
    error never blocks a legitimate create. *)
 let compute_base_freshness ~process_mgr ~repo_root ~main_branch ~base_ref :
     Start_point_plan.base_freshness =
-  if String.equal base_ref main_branch then Start_point_plan.Unknown_freshness
+  let origin_main = "origin/" ^ main_branch in
+  (* [base_ref] may be a bare name ([main]) or an origin-qualified ref
+     ([origin/main]); every current caller passes the latter. Normalise so the
+     skip fires for both, rather than only the bare form. *)
+  let base_is_main =
+    String.equal base_ref main_branch || String.equal base_ref origin_main
+  in
+  if base_is_main then Start_point_plan.Unknown_freshness
   else
-    let origin_main = "origin/" ^ main_branch in
     let code, _, _ =
       run_git_exit_code ~process_mgr
         [
