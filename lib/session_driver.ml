@@ -686,12 +686,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                                  Persistence.patch_agent_to_yojson agent_after
                                );
                              ];
-                       })
+                       });
+                  (agent_before, agent_after)
                 in
                 (match !cancelled with
                 | None -> ()
                 | Some exn ->
-                    apply_result_and_emit_complete session_result;
+                    ignore (apply_result_and_emit_complete session_result);
                     raise exn);
                 (* Supervisor-owned push: agent commits locally; we push every
              local commit to the remote at session end. force_push_with_lease
@@ -759,16 +760,6 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 | Worktree.Push_error msg ->
                     log_event runtime ~patch_id
                       (Printf.sprintf "runner: push error after session: %s" msg));
-                let push_agent_after =
-                  Runtime.read runtime (fun snap ->
-                      Orchestrator.agent snap.Runtime.orchestrator patch_id)
-                in
-                Event_log.log_push Env.event_log ~patch_id
-                  ~kind:Event_log.Session_end_push ~result:push_outcome
-                  ~local_sha:push_local_sha
-                  ~remote_tracking_sha:push_remote_tracking_sha
-                  ~base_sha:push_base_sha ~agent_before:push_agent_before
-                  ~agent_after:push_agent_after;
                 (* Combine LLM session outcome with push outcome into a single
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:
@@ -827,7 +818,15 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   | Orchestrator.Session_worktree_missing ->
                       `Failed
                 in
-                apply_result_and_emit_complete final_session_result;
+                let _, push_agent_after =
+                  apply_result_and_emit_complete final_session_result
+                in
+                Event_log.log_push Env.event_log ~patch_id
+                  ~kind:Event_log.Session_end_push ~result:push_outcome
+                  ~local_sha:push_local_sha
+                  ~remote_tracking_sha:push_remote_tracking_sha
+                  ~base_sha:push_base_sha ~agent_before:push_agent_before
+                  ~agent_after:push_agent_after;
                 (final_user_result, List.rev !tool_failures)))
 
   let run ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
