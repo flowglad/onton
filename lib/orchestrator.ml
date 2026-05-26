@@ -290,19 +290,24 @@ let start_eligibility t base =
                structurally-correct base for the current merge state
                ([branch_rebased_onto = initial_base]). A base on main is fresh
                even if main later advanced for unrelated reasons. [initial_base]
-               raises with >1 open dep, so guard on that first and treat the
-               ambiguous case as not-fresh (fail closed). A redundant [Rebase]
-               left queued on an already-fresh base does not defer Start —
-               [busy_rebasing] above gates only an imminent rebase. *)
+               raises with >1 open dep, so derive the structural base from
+               [open_deps] directly here ([] -> main, [d] -> d's branch) and
+               treat the ambiguous >1 case as not-fresh (fail closed). That fail
+               closed does not deadlock: a base with >1 open deps reaches Allow
+               once its extra deps merge (dropping it to <=1 open dep, then a
+               rebase), and every merge re-evaluates the deferred Start via the
+               reconciler tick. Computing [open_deps] once also avoids the
+               redundant graph traversal [initial_base] would repeat. A redundant
+               [Rebase] left queued on an already-fresh base does not defer Start
+               — [busy_rebasing] above gates only an imminent rebase, and a
+               completed rebase drains the queue (SBI-3), so [runnable_rebase]
+               cannot latch on a fresh base. *)
+            let open_deps = Graph.open_pr_deps t.graph bpid ~has_merged in
             let structurally_fresh =
-              List.length (Graph.open_pr_deps t.graph bpid ~has_merged) <= 1
-              &&
-              match a.Patch_agent.branch_rebased_onto with
-              | Some b ->
-                  Branch.equal b
-                    (Graph.initial_base t.graph bpid ~has_merged ~branch_of
-                       ~main:t.main_branch)
-              | None -> false
+              match (open_deps, a.Patch_agent.branch_rebased_onto) with
+              | [], Some b -> Branch.equal b t.main_branch
+              | [ d ], Some b -> Branch.equal b (branch_of d)
+              | _ -> false
             in
             (a.Patch_agent.merged, busy_rebasing, structurally_fresh))
   in
