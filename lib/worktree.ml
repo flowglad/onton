@@ -158,9 +158,11 @@ let compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote :
   | _ -> Start_point_plan.Unknown
 
 (* Fetch a single branch from origin into the corresponding remote-tracking
-   ref. Best-effort: missing remote branch / network failure returns Error.
-   Caller is expected to log Error and proceed — the planner correctly handles
-   [remote_ref = None] for the "brand new branch" case.
+   ref. Returns a typed [fetch_branch_result] so callers can distinguish
+   the routine "brand-new branch — no upstream yet" case from genuine
+   fetch failures (network, auth, ref-lock contention). The planner
+   correctly handles [remote_ref = None] either way; the distinction is
+   load-bearing only for log clarity.
 
    Operates on [repo_root]; worktrees share the ref store with the main repo,
    so this updates [refs/remotes/origin/<branch>] for all workers. The
@@ -179,11 +181,11 @@ let fetch_origin_branch ~fetch_lock ~process_mgr ~repo_root ~branch_str =
               branch_str ^ ":refs/remotes/origin/" ^ branch_str;
             ]
         in
-        Worktree_parser.classify_fetch_result ~code ~stderr
+        Worktree_parser.classify_fetch_branch_result ~code ~stderr
       with
       | exn when has_cancellation exn -> raise exn
       | exn ->
-          Result.Error
+          Worktree_parser.Fetch_branch_error
             (Printf.sprintf "git fetch origin %s crashed: %s" branch_str
                (Exn.to_string exn)))
 
@@ -501,6 +503,14 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
         else Result.Ok (String.strip stdout, commits)
 
 let classify_fetch_result = Worktree_parser.classify_fetch_result
+
+type fetch_branch_result = Worktree_parser.fetch_branch_result =
+  | Fetch_branch_ok
+  | Fetch_branch_no_remote_ref
+  | Fetch_branch_error of string
+[@@deriving show, eq, sexp_of, compare]
+
+let classify_fetch_branch_result = Worktree_parser.classify_fetch_branch_result
 
 let fetch_origin ~fetch_lock ~process_mgr ~path =
   (* Serialize concurrent fetches across worktrees of the same repo. All
@@ -967,11 +977,12 @@ module type S = sig
     (t, Start_point_plan.refusal) Result.t
 
   val fetch_origin_branch :
-    fetch_lock:Eio.Mutex.t -> branch:string -> (unit, string) Result.t
+    fetch_lock:Eio.Mutex.t -> branch:string -> fetch_branch_result
   (** Fetch a single branch from origin into the corresponding remote-tracking
-      ref. Best-effort: missing remote branch / network failure returns [Error].
-      Caller in [Worktree_setup.ensure_worktree] runs this before [create] so
-      the planner sees a fresh view of [origin/<branch>]. *)
+      ref. Returns [Fetch_branch_no_remote_ref] for the routine brand-new-branch
+      case (no upstream yet — not a failure); [Fetch_branch_error msg] for real
+      fetch failures. Caller in [Worktree_setup.ensure_worktree] runs this
+      before [create] so the planner sees a fresh view of [origin/<branch>]. *)
 
   val remove : t -> unit
   val detect_branch : path:string -> Types.Branch.t
