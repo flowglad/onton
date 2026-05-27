@@ -212,13 +212,13 @@ let parse_merge_state = function
   | _ -> Pr_state.Unknown
 
 (* Typed model of the GraphQL PR response. Every nullable scalar/object is an
-   [option] ([@yojson.option] tolerates both a missing key and an explicit
+   [option] ([@yojson.default None] tolerates both a missing key and an explicit
    [null]); every record allows unmodeled fields so a schema addition never
    fails the parse. Decoding goes through [Json.try_of_yojson], so a shape
    mismatch becomes [Error (Json_parse_error _)] rather than a raised exception
    that fails the whole poll — the failure class behind PR #333. *)
 
-type oid_obj = { oid : string option [@yojson.option] }
+type oid_obj = { oid : string option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 (* A check-context node is an internally-tagged union on [__typename]
@@ -228,18 +228,18 @@ type oid_obj = { oid : string option [@yojson.option] }
    Optional [typename]/[name]/[context] preserve the "skip unrecognized or
    incomplete node" behavior of the previous hand-rolled parser. *)
 type context_node = {
-  typename : string option; [@key "__typename"] [@yojson.option]
-  database_id : int option; [@key "databaseId"] [@yojson.option]
-  name : string option; [@yojson.option]
-  conclusion : string option; [@yojson.option]
-  details_url : string option; [@key "detailsUrl"] [@yojson.option]
-  text : string option; [@yojson.option]
-  started_at : string option; [@key "startedAt"] [@yojson.option]
-  context : string option; [@yojson.option]
-  state : string option; [@yojson.option]
-  target_url : string option; [@key "targetUrl"] [@yojson.option]
-  description : string option; [@yojson.option]
-  created_at : string option; [@key "createdAt"] [@yojson.option]
+  typename : string option; [@key "__typename"] [@yojson.default None]
+  database_id : int option; [@key "databaseId"] [@yojson.default None]
+  name : string option; [@yojson.default None]
+  conclusion : string option; [@yojson.default None]
+  details_url : string option; [@key "detailsUrl"] [@yojson.default None]
+  text : string option; [@yojson.default None]
+  started_at : string option; [@key "startedAt"] [@yojson.default None]
+  context : string option; [@yojson.default None]
+  state : string option; [@yojson.default None]
+  target_url : string option; [@key "targetUrl"] [@yojson.default None]
+  description : string option; [@yojson.default None]
+  created_at : string option; [@key "createdAt"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
@@ -263,7 +263,7 @@ type status_check_rollup = {
 
 type commit = {
   status_check_rollup : status_check_rollup option;
-      [@key "statusCheckRollup"] [@yojson.option]
+      [@key "statusCheckRollup"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
@@ -276,12 +276,12 @@ type commits = { nodes : commit_node list [@yojson.default []] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type comment_node = {
-  database_id : int option; [@key "databaseId"] [@yojson.option]
+  database_id : int option; [@key "databaseId"] [@yojson.default None]
   body : string;
-  path : string option; [@yojson.option]
-  line : int option; [@yojson.option]
-  commit : oid_obj option; [@yojson.option]
-  original_commit : oid_obj option; [@key "originalCommit"] [@yojson.option]
+  path : string option; [@yojson.default None]
+  line : int option; [@yojson.default None]
+  commit : oid_obj option; [@yojson.default None]
+  original_commit : oid_obj option; [@key "originalCommit"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
@@ -289,7 +289,7 @@ type comment_connection = { nodes : comment_node list [@yojson.default []] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type review_thread = {
-  id : string option; [@yojson.option]
+  id : string option; [@yojson.default None]
   is_resolved : bool; [@key "isResolved"]
   is_outdated : bool; [@key "isOutdated"] [@yojson.default false]
   comments : comment_connection; [@yojson.default { nodes = [] }]
@@ -299,34 +299,34 @@ type review_thread = {
 type review_threads = { nodes : review_thread list [@yojson.default []] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
-type repo_owner = { login : string option [@yojson.option] }
+type repo_owner = { login : string option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type pull_request = {
   state : string;
-  mergeable : string option; [@yojson.option]
+  mergeable : string option; [@yojson.default None]
   is_draft : bool; [@key "isDraft"] [@yojson.default false]
-  merge_state_status : string option; [@key "mergeStateStatus"] [@yojson.option]
-  head_ref_name : string option; [@key "headRefName"] [@yojson.option]
-  head_ref_oid : string option; [@key "headRefOid"] [@yojson.option]
-  base_ref_name : string option; [@key "baseRefName"] [@yojson.option]
-  merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.option]
+  merge_state_status : string option; [@key "mergeStateStatus"] [@yojson.default None]
+  head_ref_name : string option; [@key "headRefName"] [@yojson.default None]
+  head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
+  base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
+  merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.default None]
   commits : commits; [@yojson.default { nodes = [] }]
   review_threads : review_threads; [@key "reviewThreads"] [@yojson.default { nodes = [] }]
   head_repository_owner : repo_owner option;
-      [@key "headRepositoryOwner"] [@yojson.option]
+      [@key "headRepositoryOwner"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type repository = {
-  pull_request : pull_request option; [@key "pullRequest"] [@yojson.option]
+  pull_request : pull_request option; [@key "pullRequest"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
-type data = { repository : repository option [@yojson.option] }
+type data = { repository : repository option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
-type response = { data : data option [@yojson.option] }
+type response = { data : data option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 (* Map a decoded context node to a [Ci_check.t], or [None] to skip it.
@@ -341,29 +341,27 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
           let conclusion =
             match n.conclusion with Some c -> String.lowercase c | None -> "pending"
           in
-          Types.Ci_check.
-            {
-              name;
-              conclusion;
-              details_url = n.details_url;
-              description = n.text;
-              started_at = n.started_at;
-              id = n.database_id;
-            })
+          {
+            Types.Ci_check.name;
+            conclusion;
+            details_url = n.details_url;
+            description = n.text;
+            started_at = n.started_at;
+            id = n.database_id;
+          })
   | Some "StatusContext" ->
       Option.map n.context ~f:(fun name ->
           let conclusion =
             match n.state with Some s -> String.lowercase s | None -> "pending"
           in
-          Types.Ci_check.
-            {
-              name;
-              conclusion;
-              details_url = n.target_url;
-              description = n.description;
-              started_at = n.created_at;
-              id = None;
-            })
+          {
+            Types.Ci_check.name;
+            conclusion;
+            details_url = n.target_url;
+            description = n.description;
+            started_at = n.created_at;
+            id = None;
+          })
   | Some _ | None -> None
 
 let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
@@ -372,17 +370,16 @@ let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
     | Some raw_id -> Types.Comment_id.of_int raw_id
     | None -> Types.Comment_id.next_synthetic ()
   in
-  Types.Comment.
-    {
-      id;
-      thread_id;
-      body = n.body;
-      path = n.path;
-      line = n.line;
-      commit_sha = Option.bind n.commit ~f:(fun o -> o.oid);
-      original_commit_sha = Option.bind n.original_commit ~f:(fun o -> o.oid);
-      outdated;
-    }
+  {
+    Types.Comment.id;
+    thread_id;
+    body = n.body;
+    path = n.path;
+    line = n.line;
+    commit_sha = Option.bind n.commit ~f:(fun o -> o.oid);
+    original_commit_sha = Option.bind n.original_commit ~f:(fun o -> o.oid);
+    outdated;
+  }
 
 let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
   let status =
