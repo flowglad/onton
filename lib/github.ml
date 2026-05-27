@@ -285,7 +285,7 @@ type comment_connection = { nodes : comment_node list [@yojson.default []] }
 
 type review_thread = {
   id : string option; [@yojson.default None]
-  is_resolved : bool; [@key "isResolved"]
+  is_resolved : bool; [@key "isResolved"] [@yojson.default false]
   is_outdated : bool; [@key "isOutdated"] [@yojson.default false]
   comments : comment_connection; [@yojson.default { nodes = [] }]
 }
