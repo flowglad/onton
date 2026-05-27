@@ -35,8 +35,9 @@ type t = {
   merge_commit_sha : string option; [@yojson.option]
       (** Squash/merge commit SHA when the PR is [merged]; [None] otherwise.
           Recorded on the agent when [merged] flips true so the base-containment
-          gate can ancestry-check it. [@yojson.option] so pre-existing persisted
-          snapshots/events decode to [None]. *)
+          gate can ancestry-check it. [Poller.t] is only serialized (to the
+          event log), never deserialized; [@yojson.option] just omits the field
+          from event JSON when [None]. *)
 }
 [@@deriving show, eq, yojson]
 (** The result of polling a single patch's PR state. *)

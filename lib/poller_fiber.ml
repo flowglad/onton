@@ -463,9 +463,20 @@ struct
               | Some a -> a.Patch_agent.merge_commit_sha
               | None -> None
             in
-            let main_root = W.resolve_main_root () in
+            (* [main_root] and the [is_ancestor] git calls are deferred until
+               actually needed: [contains_merged_siblings] short-circuits
+               (no oracle call) for a base on main or a patch with no merged
+               deps, so projects with no fan-in-mid-merge pay no git cost here.
+               The oracle is fail-closed: a transient git spawn failure returns
+               [false] rather than aborting the whole reconcile tick (it runs
+               under the runtime lock). Cancellation must still propagate. *)
+            let main_root = lazy (W.resolve_main_root ()) in
             let ancestor_oracle ancestor ~descendant =
-              W.is_ancestor ~path:main_root ~ancestor ~descendant
+              try
+                W.is_ancestor ~path:(Lazy.force main_root) ~ancestor ~descendant
+              with
+              | Eio.Cancel.Cancelled _ as exn -> raise exn
+              | _ -> false
             in
             let orch =
               List.fold (Orchestrator.all_agents orch) ~init:orch

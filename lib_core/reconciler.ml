@@ -143,10 +143,17 @@ let detect_sibling_stale_bases graph views ~has_merged =
       ~init:(Map.empty (module Patch_id))
       ~f:(fun acc v -> Map.set acc ~key:v.id ~data:v)
   in
-  let base_has_rebase_queued b =
+  (* [b] is rebasable only once it has a PR and does not already have a Rebase
+     queued. Guarding on [b]'s own view (not the fan-in patch [v]'s) keeps this
+     detector as disciplined as the other three, which only ever enqueue a
+     rebase for a patch they have validated. *)
+  let base_rebasable b =
     match Map.find view_by_id b with
     | Some bv ->
-        List.mem bv.queue Operation_kind.Rebase ~equal:Operation_kind.equal
+        bv.has_pr
+        && not
+             (List.mem bv.queue Operation_kind.Rebase
+                ~equal:Operation_kind.equal)
     | None -> false
   in
   List.filter_map views ~f:(fun v ->
@@ -156,7 +163,7 @@ let detect_sibling_stale_bases graph views ~has_merged =
         && not v.base_contains_merged_siblings
       then
         let b = Graph.sole_open_dep graph v.id ~has_merged in
-        if base_has_rebase_queued b then None else Some (Enqueue_rebase b)
+        if base_rebasable b then Some (Enqueue_rebase b) else None
       else None)
 
 let plan_operations views ~has_merged ~branch_of ~graph ~main =
@@ -204,7 +211,7 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
   in
   let drift_rebases = detect_notified_base_drift views in
   let sibling_rebases = detect_sibling_stale_bases graph views ~has_merged in
-  (* Deduplicate across the three rebase detectors. Priority is arbitrary —
+  (* Deduplicate across the four rebase detectors. Priority is arbitrary —
      they all emit the same [Enqueue_rebase] with the same patch_id — but we
      must not emit duplicates, since the orchestrator's [enqueue] is
      idempotent but tests assert on action counts. *)

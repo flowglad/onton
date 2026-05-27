@@ -12,9 +12,10 @@ type t = {
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
   merge_commit_sha : string option; [@yojson.option]
-      (** Squash/merge commit SHA when [merged]; [None] otherwise. Annotated
-          [@yojson.option] so older persisted snapshots/events that predate this
-          field decode to [None] instead of failing. *)
+      (** Squash/merge commit SHA when [merged]; [None] otherwise. [Poller.t] is
+          only serialized (to the event log), never deserialized; the
+          [@yojson.option] annotation just omits the field from event JSON when
+          [None]. *)
 }
 [@@deriving show, eq, yojson]
 
