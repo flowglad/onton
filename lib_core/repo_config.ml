@@ -21,24 +21,23 @@ let config_path ~config_dir = Stdlib.Filename.concat config_dir "config.json"
 
 let parse_route ~known_backends ~complexity (json : Yojson.Safe.t) :
     (route, string) Result.t =
-  let open Yojson.Safe.Util in
   match json with
   | `Assoc _ ->
       let backend_result =
-        match member "backend" json with
-        | `Null -> Ok None
-        | `String s when String.is_empty (String.strip s) -> Ok None
-        | `String s -> Ok (Some (String.strip s))
-        | _ ->
+        match Json.field "backend" json with
+        | None -> Ok None
+        | Some (`String s) when String.is_empty (String.strip s) -> Ok None
+        | Some (`String s) -> Ok (Some (String.strip s))
+        | Some _ ->
             Error
               (Printf.sprintf "routing.%d.backend must be a string" complexity)
       in
       let model_result =
-        match member "model" json with
-        | `Null -> Ok None
-        | `String s when String.is_empty (String.strip s) -> Ok None
-        | `String s -> Ok (Some (String.strip s))
-        | _ ->
+        match Json.field "model" json with
+        | None -> Ok None
+        | Some (`String s) when String.is_empty (String.strip s) -> Ok None
+        | Some (`String s) -> Ok (Some (String.strip s))
+        | Some _ ->
             Error
               (Printf.sprintf "routing.%d.model must be a string when present"
                  complexity)
@@ -101,15 +100,14 @@ let default_known_review_kinds = [ "review-service" ]
 
 let parse_default ~known_backends (json : Yojson.Safe.t) :
     (string option * string option, string) Result.t =
-  let open Yojson.Safe.Util in
   match json with
   | `Null -> Ok (None, None)
   | `Assoc _ ->
       let backend_result =
-        match member "backend" json with
-        | `Null -> Ok None
-        | `String s when String.is_empty (String.strip s) -> Ok None
-        | `String s ->
+        match Json.field "backend" json with
+        | None -> Ok None
+        | Some (`String s) when String.is_empty (String.strip s) -> Ok None
+        | Some (`String s) ->
             let name = String.strip s in
             if List.mem known_backends name ~equal:String.equal then
               Ok (Some name)
@@ -120,14 +118,14 @@ let parse_default ~known_backends (json : Yojson.Safe.t) :
                     of: %s)"
                    name
                    (String.concat ~sep:", " known_backends))
-        | _ -> Error "default.backend must be a string"
+        | Some _ -> Error "default.backend must be a string"
       in
       let model_result =
-        match member "model" json with
-        | `Null -> Ok None
-        | `String s when String.is_empty (String.strip s) -> Ok None
-        | `String s -> Ok (Some (String.strip s))
-        | _ -> Error "default.model must be a string when present"
+        match Json.field "model" json with
+        | None -> Ok None
+        | Some (`String s) when String.is_empty (String.strip s) -> Ok None
+        | Some (`String s) -> Ok (Some (String.strip s))
+        | Some _ -> Error "default.model must be a string when present"
       in
       Result.bind backend_result ~f:(fun b ->
           Result.map model_result ~f:(fun m -> (b, m)))
@@ -136,18 +134,21 @@ let parse_default ~known_backends (json : Yojson.Safe.t) :
 let parse_string ~known_backends
     ?(known_review_kinds = default_known_review_kinds) (raw : string) :
     (t, string) Result.t =
-  match
-    try Ok (Yojson.Safe.from_string raw)
-    with Yojson.Json_error msg -> Error (Printf.sprintf "config.json: %s" msg)
-  with
-  | Error _ as e -> e
-  | Ok json -> (
-      let open Yojson.Safe.Util in
+  match Yojson.Safe.from_string raw with
+  | exception Yojson.Json_error msg ->
+      Error (Printf.sprintf "config.json: %s" msg)
+  | json -> (
       match json with
       | `Assoc _ ->
-          let default_json = member "default" json in
-          let routing = member "routing" json in
-          let review_backends_json = member "reviewBackends" json in
+          let default_json =
+            Option.value (Json.field "default" json) ~default:`Null
+          in
+          let routing =
+            Option.value (Json.field "routing" json) ~default:`Null
+          in
+          let review_backends_json =
+            Option.value (Json.field "reviewBackends" json) ~default:`Null
+          in
           Result.bind (parse_default ~known_backends default_json)
             ~f:(fun (default_backend, default_model) ->
               Result.bind (parse_routing ~known_backends routing)

@@ -149,141 +149,143 @@ let find_json_start s =
   | Some n -> String.drop_prefix s n
 
 let session_init_of_json json =
-  let open Yojson.Safe.Util in
-  match member "session_id" json |> to_string_option with
+  match Json.string_field "session_id" json with
   | None -> []
   | Some session_id ->
       [
         Types.Stream_event.Session_init
           {
             session_id;
-            api_key_source = member "apiKeySource" json |> to_string_option;
-            model = member "model" json |> to_string_option;
-            claude_code_version =
-              member "claude_code_version" json |> to_string_option;
-            permission_mode = member "permissionMode" json |> to_string_option;
+            api_key_source = Json.string_field "apiKeySource" json;
+            model = Json.string_field "model" json;
+            claude_code_version = Json.string_field "claude_code_version" json;
+            permission_mode = Json.string_field "permissionMode" json;
           };
       ]
 
 let parse_stream_events (line : string) : Types.Stream_event.t list =
-  try
-    let json = Yojson.Safe.from_string (find_json_start line) in
-    let open Yojson.Safe.Util in
-    let typ = member "type" json |> to_string_option in
-    match typ with
-    | Some "content_block_delta" -> (
-        let delta = member "delta" json in
-        let delta_type = member "type" delta |> to_string_option in
-        match delta_type with
-        | Some "text_delta" ->
-            let text =
-              member "text" delta |> to_string_option
-              |> Option.value ~default:""
-            in
-            [ Types.Stream_event.Text_delta text ]
-        | _ -> [])
-    | Some "content_block_start" -> (
-        let content_block = member "content_block" json in
-        let block_type = member "type" content_block |> to_string_option in
-        match block_type with
-        | Some "tool_use" ->
-            let name =
-              member "name" content_block
-              |> to_string_option |> Option.value ~default:""
-            in
-            [ Types.Stream_event.Tool_use { name; input = ""; status = None } ]
-        | _ -> [])
-    | Some "assistant" ->
-        let content =
-          match member "message" json |> member "content" with
-          | `List l -> l
-          | _ -> []
-        in
-        List.filter_map content ~f:(fun block ->
-            let block_type = member "type" block |> to_string_option in
-            match block_type with
-            | Some "tool_use" ->
-                let name =
-                  member "name" block |> to_string_option
-                  |> Option.value ~default:""
-                in
-                let input =
-                  match member "input" block with
-                  | `Null -> ""
-                  | v -> Yojson.Safe.to_string v
-                in
-                Some
-                  (Types.Stream_event.Tool_use { name; input; status = None })
-            | Some "text" ->
-                let text =
-                  member "text" block |> to_string_option
-                  |> Option.value ~default:""
-                in
-                Some (Types.Stream_event.Text_delta text)
-            | _ -> None)
-    | Some "message_delta" -> (
-        let delta = member "delta" json in
-        let raw_reason =
-          member "stop_reason" delta |> to_string_option
-          |> Option.value ~default:""
-        in
-        match Types.Stop_reason.of_string raw_reason with
-        | None -> []
-        | Some stop_reason ->
-            [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
-    | Some "result" ->
-        let is_error =
-          member "is_error" json |> to_bool_option
-          |> Option.value ~default:false
-        in
-        let session_init = session_init_of_json json in
-        if is_error then
-          let errors =
-            match member "errors" json with
-            | `List items ->
-                List.filter_map items ~f:(fun item -> to_string_option item)
+  match Yojson.Safe.from_string (find_json_start line) with
+  | exception Yojson.Json_error _ -> []
+  | json -> (
+      let typ = Json.string_field "type" json in
+      match typ with
+      | Some "content_block_delta" -> (
+          match
+            Option.bind (Json.field "delta" json) ~f:(Json.string_field "type")
+          with
+          | Some "text_delta" ->
+              let text =
+                Option.bind (Json.field "delta" json)
+                  ~f:(Json.string_field "text")
+                |> Option.value ~default:""
+              in
+              [ Types.Stream_event.Text_delta text ]
+          | Some _ | None -> [])
+      | Some "content_block_start" -> (
+          let content_block = Json.field "content_block" json in
+          let block_type =
+            Option.bind content_block ~f:(Json.string_field "type")
+          in
+          match block_type with
+          | Some "tool_use" ->
+              let name =
+                Option.bind content_block ~f:(Json.string_field "name")
+                |> Option.value ~default:""
+              in
+              [
+                Types.Stream_event.Tool_use { name; input = ""; status = None };
+              ]
+          | Some _ | None -> [])
+      | Some "assistant" ->
+          let content =
+            match
+              Option.bind (Json.field "message" json) ~f:(Json.field "content")
+            with
+            | Some (`List l) -> l
             | _ -> []
           in
-          let result_text =
-            member "result" json |> to_string_option
-            |> Option.map ~f:(fun text -> String.strip text)
-          in
-          let msg =
-            match errors with
-            | _ :: _ as errs -> String.concat ~sep:"; " errs
-            | [] -> (
-                match result_text with
-                | Some text when not (String.is_empty text) -> text
-                | _ -> "unknown error")
-          in
-          session_init @ [ Types.Stream_event.Error msg ]
-        else
-          let text =
-            member "result" json |> to_string_option |> Option.value ~default:""
-          in
+          List.filter_map content ~f:(fun block ->
+              let block_type = Json.string_field "type" block in
+              match block_type with
+              | Some "tool_use" ->
+                  let name =
+                    Json.string_field "name" block |> Option.value ~default:""
+                  in
+                  let input =
+                    match Json.field "input" block with
+                    | None -> ""
+                    | Some v -> Yojson.Safe.to_string v
+                  in
+                  Some
+                    (Types.Stream_event.Tool_use { name; input; status = None })
+              | Some "text" ->
+                  let text =
+                    Json.string_field "text" block |> Option.value ~default:""
+                  in
+                  Some (Types.Stream_event.Text_delta text)
+              | Some _ | None -> None)
+      | Some "message_delta" -> (
           let raw_reason =
-            member "stop_reason" json |> to_string_option
-            |> Option.value ~default:"end_turn"
+            Option.bind (Json.field "delta" json)
+              ~f:(Json.string_field "stop_reason")
+            |> Option.value ~default:""
           in
-          let stop_reason =
-            Types.Stop_reason.of_string raw_reason
-            |> Option.value ~default:Types.Stop_reason.End_turn
+          match Types.Stop_reason.of_string raw_reason with
+          | None -> []
+          | Some stop_reason ->
+              [ Types.Stream_event.Final_result { text = ""; stop_reason } ])
+      | Some "result" ->
+          let is_error =
+            Json.bool_field "is_error" json |> Option.value ~default:false
           in
-          session_init
-          @ [ Types.Stream_event.Final_result { text; stop_reason } ]
-    | Some "error" ->
-        let err =
-          member "error" json |> member "message" |> to_string_option
-          |> Option.value ~default:"unknown error"
-        in
-        [ Types.Stream_event.Error err ]
-    | Some "system" -> (
-        let subtype = member "subtype" json |> to_string_option in
-        match subtype with Some "init" -> session_init_of_json json | _ -> [])
-    | _ -> []
-  with
-  | Yojson.Json_error _ -> []
-  | Yojson.Safe.Util.Type_error _ -> []
+          let session_init = session_init_of_json json in
+          if is_error then
+            let errors =
+              match Option.bind (Json.field "errors" json) ~f:Json.list with
+              | Some items ->
+                  List.filter_map items ~f:(fun item -> Json.string item)
+              | None -> []
+            in
+            let result_text =
+              Json.string_field "result" json
+              |> Option.map ~f:(fun text -> String.strip text)
+            in
+            let msg =
+              match errors with
+              | _ :: _ as errs -> String.concat ~sep:"; " errs
+              | [] -> (
+                  match result_text with
+                  | Some text when not (String.is_empty text) -> text
+                  | _ -> "unknown error")
+            in
+            session_init @ [ Types.Stream_event.Error msg ]
+          else
+            let text =
+              Json.string_field "result" json |> Option.value ~default:""
+            in
+            let raw_reason =
+              Json.string_field "stop_reason" json
+              |> Option.value ~default:"end_turn"
+            in
+            let stop_reason =
+              Types.Stop_reason.of_string raw_reason
+              |> Option.value ~default:Types.Stop_reason.End_turn
+            in
+            session_init
+            @ [ Types.Stream_event.Final_result { text; stop_reason } ]
+      | Some "error" ->
+          let err =
+            Option.bind (Json.field "error" json)
+              ~f:(Json.string_field "message")
+            |> Option.value ~default:"unknown error"
+          in
+          [ Types.Stream_event.Error err ]
+      | Some "system" -> (
+          let subtype = Json.string_field "subtype" json in
+          match subtype with
+          | Some "init" -> session_init_of_json json
+          | Some _ | None -> [])
+      | Some _ | None -> [])
 
 let parse_stream_event (line : string) : Types.Stream_event.t option =
   match parse_stream_events line with [] -> None | e :: _ -> Some e

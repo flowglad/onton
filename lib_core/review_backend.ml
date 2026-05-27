@@ -10,12 +10,13 @@ type t = { name : string; kind : kind }
 let known_kind_default = [ "review-service" ]
 
 let string_field field json : (string, string) Result.t =
-  let open Yojson.Safe.Util in
-  match json |> member field with
-  | `String s when not (String.is_empty (String.strip s)) -> Ok (String.strip s)
-  | `String _ -> Error (Printf.sprintf "%S must be a non-empty string" field)
-  | `Null -> Error (Printf.sprintf "missing required field %S" field)
-  | _ -> Error (Printf.sprintf "%S must be a string" field)
+  match Json.field field json with
+  | Some (`String s) when not (String.is_empty (String.strip s)) ->
+      Ok (String.strip s)
+  | Some (`String _) ->
+      Error (Printf.sprintf "%S must be a non-empty string" field)
+  | None -> Error (Printf.sprintf "missing required field %S" field)
+  | Some _ -> Error (Printf.sprintf "%S must be a string" field)
 
 let strip_trailing_slashes s =
   let len = String.length s in
@@ -47,7 +48,6 @@ let has_authority base_url =
            ~f:(fun c -> not (Char.equal c ':'))
 
 let parse_review_service_kind json : (kind, string) Result.t =
-  let open Yojson.Safe.Util in
   let ( let* ) = Result.( >>= ) in
   let* base_url = string_field "baseUrl" json in
   let base_url = strip_trailing_slashes base_url in
@@ -60,12 +60,11 @@ let parse_review_service_kind json : (kind, string) Result.t =
       Error "review-service \"baseUrl\" must use https"
     else Ok ()
   in
-  let auth_json = json |> member "auth" in
-  let* () =
-    match auth_json with
-    | `Assoc _ -> Ok ()
-    | `Null -> Error "review-service backend missing required field \"auth\""
-    | _ -> Error "review-service \"auth\" must be an object"
+  let* auth_json =
+    match Json.field "auth" json with
+    | Some (`Assoc _ as auth_json) -> Ok auth_json
+    | None -> Error "review-service backend missing required field \"auth\""
+    | Some _ -> Error "review-service \"auth\" must be an object"
   in
   let* app_id = string_field "appId" auth_json in
   let* private_key_path = string_field "privateKeyPath" auth_json in

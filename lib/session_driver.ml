@@ -356,10 +356,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                         let summary =
                           try
                             let json = Yojson.Safe.from_string input in
-                            let field key =
-                              Yojson.Safe.Util.(
-                                member key json |> to_string_option)
-                            in
+                            let field key = Json.string_field key json in
                             let s =
                               match name with
                               | "Bash" -> field "command"

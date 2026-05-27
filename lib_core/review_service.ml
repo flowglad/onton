@@ -90,65 +90,68 @@ let string_opt = function
   | _ -> None
 
 let int_opt = function `Null -> None | `Int n -> Some n | _ -> None
+let member_opt field json = Json.field field json
 
 let require_string field json =
-  let open Yojson.Safe.Util in
-  match json |> member field with
-  | `String s -> Ok s
-  | `Null -> Error (Printf.sprintf "missing required field %S" field)
-  | _ -> Error (Printf.sprintf "field %S must be a string" field)
+  match member_opt field json with
+  | Some (`String s) -> Ok s
+  | None -> Error (Printf.sprintf "missing required field %S" field)
+  | Some _ -> Error (Printf.sprintf "field %S must be a string" field)
 
 let require_int field json =
-  let open Yojson.Safe.Util in
-  match json |> member field with
-  | `Int n -> Ok n
-  | `Null -> Error (Printf.sprintf "missing required field %S" field)
-  | _ -> Error (Printf.sprintf "field %S must be an integer" field)
+  match member_opt field json with
+  | Some (`Int n) -> Ok n
+  | None -> Error (Printf.sprintf "missing required field %S" field)
+  | Some _ -> Error (Printf.sprintf "field %S must be an integer" field)
+
+let string_field_opt field json =
+  match member_opt field json with Some v -> string_opt v | None -> None
+
+let int_field_opt field json =
+  match member_opt field json with Some v -> int_opt v | None -> None
 
 let parse_last_reply json : last_reply option =
-  let open Yojson.Safe.Util in
   match json with
-  | `Null -> None
   | `Assoc _ ->
-      let author = json |> member "author" |> string_opt in
-      let at = json |> member "at" |> string_opt in
-      let body = json |> member "body" |> string_opt in
+      let author = string_field_opt "author" json in
+      let at = string_field_opt "at" json in
+      let body = string_field_opt "body" json in
       (* All three required for a meaningful reply; any missing means we skip. *)
       Option.map3 author at body ~f:(fun author at body -> { author; at; body })
   | _ -> None
 
 let parse_outcome json : (outcome, string) Result.t =
-  let open Yojson.Safe.Util in
   match json with
   | `Null -> Error "outcome is null"
   | `Assoc _ -> (
-      let kind_str =
-        json |> member "kind" |> string_opt |> Option.value ~default:""
-      in
+      let kind_str = string_field_opt "kind" json |> Option.value ~default:"" in
       match outcome_kind_of_string kind_str with
       | None ->
           Error (Printf.sprintf "outcome.kind is not a known kind: %S" kind_str)
       | Some kind ->
-          let detected_at = json |> member "detectedAt" |> string_opt in
-          let actor = json |> member "actor" |> string_opt in
-          let reason = json |> member "reason" |> string_opt in
-          let last_reply = parse_last_reply (json |> member "lastReply") in
+          let detected_at = string_field_opt "detectedAt" json in
+          let actor = string_field_opt "actor" json in
+          let reason = string_field_opt "reason" json in
+          let last_reply =
+            match Json.field "lastReply" json with
+            | Some lr -> parse_last_reply lr
+            | None -> None
+          in
           Ok { kind; detected_at; actor; reason; last_reply })
   | _ -> Error "outcome must be an object"
 
 let parse_finding json : (finding, string) Result.t =
-  let open Yojson.Safe.Util in
   let ( let* ) = Result.( >>= ) in
   match json with
   | `Assoc _ ->
       let* id = require_string "id" json in
-      let github_comment_id = json |> member "githubCommentId" |> int_opt in
+      let github_comment_id = int_field_opt "githubCommentId" json in
       let* posting_sha = require_string "postingSha" json in
       let* path = require_string "path" json in
       let* start_line = require_int "startLine" json in
       let* end_line = require_int "endLine" json in
       let severity_str =
-        json |> member "severity" |> string_opt |> Option.value ~default:""
+        string_field_opt "severity" json |> Option.value ~default:""
       in
       let* severity =
         match severity_of_string severity_str with
@@ -157,7 +160,9 @@ let parse_finding json : (finding, string) Result.t =
       in
       let* body = require_string "body" json in
       let* created_at = require_string "createdAt" json in
-      let* outcome = parse_outcome (json |> member "outcome") in
+      let* outcome =
+        parse_outcome (Option.value (Json.field "outcome" json) ~default:`Null)
+      in
       Ok
         {
           id;
@@ -174,18 +179,17 @@ let parse_finding json : (finding, string) Result.t =
   | _ -> Error "finding must be an object"
 
 let parse_findings_response json : (findings_response, string) Result.t =
-  let open Yojson.Safe.Util in
   let ( let* ) = Result.( >>= ) in
   match json with
   | `Assoc _ ->
       let* repo_id = require_string "repoId" json in
       let* pull_number = require_int "pullNumber" json in
       let raw_findings =
-        match json |> member "findings" with `List xs -> xs | _ -> []
+        match Json.field "findings" json with Some (`List xs) -> xs | _ -> []
       in
       let count =
-        match json |> member "count" with
-        | `Int n -> n
+        match Json.field "count" json with
+        | Some (`Int n) -> n
         | _ -> List.length raw_findings
       in
       (* Drop entries that fail to parse rather than failing the whole response,
@@ -216,12 +220,13 @@ type resolve_response = { id : string; outcome : outcome }
 [@@deriving show, eq, sexp_of, compare]
 
 let parse_resolve_response json : (resolve_response, string) Result.t =
-  let open Yojson.Safe.Util in
   let ( let* ) = Result.( >>= ) in
   match json with
   | `Assoc _ ->
       let* id = require_string "id" json in
-      let* outcome = parse_outcome (json |> member "outcome") in
+      let* outcome =
+        parse_outcome (Option.value (Json.field "outcome" json) ~default:`Null)
+      in
       Ok { id; outcome }
   | _ -> Error "resolve response must be an object"
 
@@ -278,15 +283,17 @@ let parse_wontfix_artifact body : (wontfix_entry list, string) Result.t =
     | exception Yojson.Json_error msg ->
         Error (Printf.sprintf "wontfix artifact: %s" msg)
     | `List entries ->
+        let field_nonblank field entry =
+          match Json.field field entry with
+          | Some v -> nonblank_string_opt v
+          | None -> None
+        in
         let parsed =
           List.filter_map entries ~f:(fun entry ->
-              let open Yojson.Safe.Util in
               match entry with
               | `Assoc _ ->
-                  let id = entry |> member "id" |> nonblank_string_opt in
-                  let reason =
-                    entry |> member "reason" |> nonblank_string_opt
-                  in
+                  let id = field_nonblank "id" entry in
+                  let reason = field_nonblank "reason" entry in
                   Option.map2 id reason ~f:(fun id reason -> { id; reason })
               | _ -> None)
         in

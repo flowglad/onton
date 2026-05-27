@@ -11,20 +11,3 @@
 # #-comments are ignored.
 
 lib_core/json.ml
-
-# --- pending migration (remove each line as its module is converted) ---
-lib/github.ml
-lib/persistence.ml
-lib/session_driver.ml
-lib_core/claude_event_parser.ml
-lib_core/codex_cost.ml
-lib_core/codex_event_parser.ml
-lib_core/failure_subkind.ml
-lib_core/gameplan_parser.ml
-lib_core/gemini_event_parser.ml
-lib_core/opencode_event_parser.ml
-lib_core/patch_pr_status.ml
-lib_core/pi_event_parser.ml
-lib_core/repo_config.ml
-lib_core/review_backend.ml
-lib_core/review_service.ml

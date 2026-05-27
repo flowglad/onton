@@ -20,45 +20,41 @@ let build_args ~model ~cwd_path ~patch_id ~prompt ~resume_session =
   base @ model_args @ resume_args @ session_args
 
 let parse_event (line : string) : Types.Stream_event.t list =
-  try
-    match Yojson.Safe.from_string line with
-    | json -> (
-        let open Yojson.Safe.Util in
-        let typ = member "type" json |> to_string_option in
-        match typ with
-        | Some "message_update" -> (
-            let evt = member "assistantMessageEvent" json in
-            let evt_type = member "type" evt |> to_string_option in
-            match evt_type with
-            | Some "text_delta" ->
-                let delta =
-                  member "delta" evt |> to_string_option
-                  |> Option.value ~default:""
-                in
-                if String.is_empty delta then []
-                else [ Types.Stream_event.Text_delta delta ]
-            | Some "toolcall_end" ->
-                let tool_call = member "toolCall" evt in
-                let name =
-                  member "name" tool_call |> to_string_option
-                  |> Option.value ~default:""
-                in
-                let input =
-                  match member "arguments" tool_call with
-                  | `Null -> ""
-                  | v -> Yojson.Safe.to_string v
-                in
-                [ Types.Stream_event.Tool_use { name; input; status = None } ]
-            | _ -> [])
-        | Some "agent_end" ->
-            [
-              Types.Stream_event.Final_result
-                { text = ""; stop_reason = Types.Stop_reason.End_turn };
-            ]
-        | _ -> [])
-  with
-  | Yojson.Json_error _ -> []
-  | Yojson.Safe.Util.Type_error _ -> []
+  match Yojson.Safe.from_string line with
+  | exception Yojson.Json_error _ -> []
+  | json -> (
+      let typ = Json.string_field "type" json in
+      match typ with
+      | Some "message_update" -> (
+          let evt = Json.field "assistantMessageEvent" json in
+          let evt_type = Option.bind evt ~f:(Json.string_field "type") in
+          match evt_type with
+          | Some "text_delta" ->
+              let delta =
+                Option.bind evt ~f:(Json.string_field "delta")
+                |> Option.value ~default:""
+              in
+              if String.is_empty delta then []
+              else [ Types.Stream_event.Text_delta delta ]
+          | Some "toolcall_end" ->
+              let tool_call = Option.bind evt ~f:(Json.field "toolCall") in
+              let name =
+                Option.bind tool_call ~f:(Json.string_field "name")
+                |> Option.value ~default:""
+              in
+              let input =
+                match Option.bind tool_call ~f:(Json.field "arguments") with
+                | None -> ""
+                | Some v -> Yojson.Safe.to_string v
+              in
+              [ Types.Stream_event.Tool_use { name; input; status = None } ]
+          | _ -> [])
+      | Some "agent_end" ->
+          [
+            Types.Stream_event.Final_result
+              { text = ""; stop_reason = Types.Stop_reason.End_turn };
+          ]
+      | _ -> [])
 
 let auto_model ~complexity =
   ignore complexity;

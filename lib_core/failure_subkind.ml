@@ -20,7 +20,6 @@ type init_info = {
 [@@deriving show, eq]
 
 let t_of_yojson json =
-  let open Yojson.Safe.Util in
   match json with
   | `String "Ok" -> (Ok : t)
   | `String "Auth_unavailable" -> Auth_unavailable
@@ -30,11 +29,7 @@ let t_of_yojson json =
   | `String "Empty_response" -> Empty_response
   | `String "Process_error" -> Process_error
   | `Assoc [ ("Api_error", payload) ] ->
-      let status =
-        match payload with
-        | `Assoc _ -> payload |> member "status" |> to_int_option
-        | _ -> None
-      in
+      let status = Json.int_field "status" payload in
       Api_error { status }
   | `Assoc [ ("Other", `String detail) ] -> Other detail
   | _ -> Other "invalid_failure_subkind"
@@ -57,12 +52,7 @@ let yojson_of_t = function
   | Other detail -> `Assoc [ ("Other", `String detail) ]
 
 let init_info_of_yojson json =
-  let open Yojson.Safe.Util in
-  let read_opt_string field =
-    match member field json with
-    | `Null -> None
-    | value -> to_string_option value
-  in
+  let read_opt_string field = Json.string_field field json in
   {
     api_key_source = read_opt_string "api_key_source";
     model = read_opt_string "model";

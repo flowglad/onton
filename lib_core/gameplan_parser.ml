@@ -235,16 +235,35 @@ let patch_id_of_json = function
   | `String s when is_valid_patch_id s -> Some (Types.Patch_id.of_string s)
   | _ -> None
 
+(* Local structural-error exception. Replaces the deliberate partial-accessor
+   exceptions the parser previously used to abort and convert into an [Error];
+   [parse_json_string] catches it at the same boundary and produces the same
+   "JSON structure error" message. *)
+exception Parse_error of string
+
+(* [member key json] with the legacy [member] semantics: absent keys (and
+   explicit [`Null]) collapse to [`Null], so downstream matches on
+   [`Null]/[`List]/[`String] are preserved verbatim. *)
+let member key json = Option.value (Json.field key json) ~default:`Null
+
+(* Required string accessor mirroring the legacy [to_string]: raises on a
+   non-string so the surrounding [try]/[Parse_error] turns it into an [Error]. *)
+let to_string = function
+  | `String s -> s
+  | _ -> raise (Parse_error "expected a string")
+
+let to_list = function
+  | `List items -> items
+  | _ -> raise (Parse_error "expected an array")
+
 let json_string_list json key =
-  let open Yojson.Safe.Util in
-  match json |> member key with
+  match member key json with
   | `List items ->
       List.filter_map items ~f:(function `String s -> Some s | _ -> None)
   | _ -> []
 
 let json_required_string_list json key =
-  let open Yojson.Safe.Util in
-  match json |> member key with
+  match member key json with
   | `Null -> []
   | `List items ->
       List.map items ~f:(fun item ->
@@ -252,15 +271,13 @@ let json_required_string_list json key =
           | `String s -> s
           | _ ->
               raise
-                (Type_error
-                   (Printf.sprintf "%s[] must contain only strings" key, item)))
-  | value ->
-      raise
-        (Type_error (Printf.sprintf "%s must be an array of strings" key, value))
+                (Parse_error
+                   (Printf.sprintf "%s[] must contain only strings" key)))
+  | _ ->
+      raise (Parse_error (Printf.sprintf "%s must be an array of strings" key))
 
 let json_patch_id_list json key =
-  let open Yojson.Safe.Util in
-  match json |> member key with
+  match member key json with
   | `Null -> []
   | `List items ->
       List.map items ~f:(fun item ->
@@ -268,32 +285,28 @@ let json_patch_id_list json key =
           | Some id -> id
           | None ->
               raise
-                (Type_error
-                   (Printf.sprintf "%s[] must contain only patch IDs" key, item)))
-  | value ->
+                (Parse_error
+                   (Printf.sprintf "%s[] must contain only patch IDs" key)))
+  | _ ->
       raise
-        (Type_error
-           (Printf.sprintf "%s must be an array of patch IDs" key, value))
+        (Parse_error (Printf.sprintf "%s must be an array of patch IDs" key))
 
 let json_precedents json =
-  let open Yojson.Safe.Util in
-  match json |> member "precedents" with
+  match member "precedents" json with
   | `List items ->
       List.filter_map items ~f:(fun obj ->
-          match obj |> member "kind" with
+          match member "kind" obj with
           | `String kind when not (String.is_empty kind) ->
               let name =
-                match obj |> member "name" with `String s -> s | _ -> ""
+                match member "name" obj with `String s -> s | _ -> ""
               in
               let url =
-                match obj |> member "url" with
+                match member "url" obj with
                 | `String s when not (String.is_empty s) -> Some s
                 | _ -> None
               in
               let why_applicable =
-                match obj |> member "whyApplicable" with
-                | `String s -> s
-                | _ -> ""
+                match member "whyApplicable" obj with `String s -> s | _ -> ""
               in
               if String.is_empty name then None
               else Some { Types.Precedent.kind; name; url; why_applicable }
@@ -301,21 +314,17 @@ let json_precedents json =
   | _ -> []
 
 let parse_json_string input =
-  match
-    try Ok (Yojson.Safe.from_string input)
-    with Yojson.Json_error msg ->
+  match Yojson.Safe.from_string input with
+  | exception Yojson.Json_error msg ->
       Error (Printf.sprintf "JSON parse error: %s" msg)
-  with
-  | Error msg -> Error msg
-  | Ok json -> (
-      let open Yojson.Safe.Util in
+  | json -> (
       try
-        let project_name = json |> member "projectName" |> to_string in
+        let project_name = member "projectName" json |> to_string in
         let optional_string key =
-          match json |> member key with
+          match member key json with
           | `String s -> Base.String.strip s
           | `Null -> ""
-          | _ -> raise (Type_error (key ^ " must be a string", json))
+          | _ -> raise (Parse_error (key ^ " must be a string"))
         in
         (* [repo_owner] and [repo_name] are forge-agnostic at this layer —
            we only enforce non-empty when present (empty strings are normalised
@@ -374,33 +383,29 @@ let parse_json_string input =
                     | `String s -> s
                     | _ ->
                         raise
-                          (Type_error
-                             ("functionalChanges[].id must be a string", obj))
+                          (Parse_error "functionalChanges[].id must be a string")
                   in
                   let description =
                     match obj |> member "description" with
                     | `String s -> s
                     | _ ->
                         raise
-                          (Type_error
-                             ( "functionalChanges[].description must be a string",
-                               obj ))
+                          (Parse_error
+                             "functionalChanges[].description must be a string")
                   in
                   let owned_by =
                     match patch_id_of_json (obj |> member "ownedBy") with
                     | Some id -> id
                     | None ->
                         raise
-                          (Type_error
-                             ( "functionalChanges[].ownedBy must be an integer \
-                                or alphanumeric patch id",
-                               obj ))
+                          (Parse_error
+                             "functionalChanges[].ownedBy must be an integer \
+                              or alphanumeric patch id")
                   in
                   { Types.Functional_change.id; description; owned_by })
           | _ ->
               raise
-                (Type_error
-                   ("functionalChanges must be an array of objects", json))
+                (Parse_error "functionalChanges must be an array of objects")
         in
         let context_resources =
           match json |> member "contextResources" with
@@ -412,16 +417,15 @@ let parse_json_string input =
                     | `String s -> String.strip s
                     | _ ->
                         raise
-                          (Type_error
-                             ("contextResources[].id must be a string", obj))
+                          (Parse_error "contextResources[].id must be a string")
                   in
                   let kind =
                     match obj |> member "kind" with
                     | `String s -> s
                     | _ ->
                         raise
-                          (Type_error
-                             ("contextResources[].kind must be a string", obj))
+                          (Parse_error
+                             "contextResources[].kind must be a string")
                   in
                   let paths = json_string_list obj "paths" in
                   let why =
@@ -430,9 +434,7 @@ let parse_json_string input =
                   let consumed_by = json_patch_id_list obj "consumedBy" in
                   { Types.Context_resource.id; kind; paths; why; consumed_by })
           | _ ->
-              raise
-                (Type_error
-                   ("contextResources must be an array of objects", json))
+              raise (Parse_error "contextResources must be an array of objects")
         in
         let open_questions =
           match json |> member "openQuestions" with
@@ -443,13 +445,10 @@ let parse_json_string input =
                   | `String s -> s
                   | _ ->
                       raise
-                        (Type_error
-                           ( Printf.sprintf "openQuestions[%d] must be a string"
-                               i,
-                             json )))
-          | _ ->
-              raise
-                (Type_error ("openQuestions must be an array of strings", json))
+                        (Parse_error
+                           (Printf.sprintf "openQuestions[%d] must be a string"
+                              i)))
+          | _ -> raise (Parse_error "openQuestions must be an array of strings")
         in
         (* Dependency graph: {patch, classification, dependsOn[]} format *)
         let dep_graph =
@@ -463,10 +462,9 @@ let parse_json_string input =
                     | Some id -> id
                     | None ->
                         raise
-                          (Type_error
-                             ( "dependencyGraph[].patch must be an integer or \
-                                alphanumeric string",
-                               entry ))
+                          (Parse_error
+                             "dependencyGraph[].patch must be an integer or \
+                              alphanumeric string")
                   in
                   let depends_on =
                     match entry |> member "dependsOn" with
@@ -485,10 +483,9 @@ let parse_json_string input =
                 | Some id -> (id, Types.Patch_id.to_string id)
                 | None ->
                     raise
-                      (Type_error
-                         ( "patches[].number must be an integer or \
-                            alphanumeric string",
-                           p ))
+                      (Parse_error
+                         "patches[].number must be an integer or alphanumeric \
+                          string")
               in
               let title = p |> member "title" |> to_string in
               let changes = json_string_list p "changes" in
@@ -611,7 +608,7 @@ let parse_json_string input =
                               };
                             dependency_graph = dep_graph;
                           })))
-      with Type_error (msg, _) ->
+      with Parse_error msg ->
         Error (Printf.sprintf "JSON structure error: %s" msg))
 
 let read_file path =
