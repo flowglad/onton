@@ -313,9 +313,16 @@ let scenario_base_stale_vs_main env =
   clone_into ~origin_dir ~managed_dir;
   (* Precondition: origin/main is NOT an ancestor of origin/patch-b. *)
   let stale =
-    Git_env.git_exit_code ~cwd:managed_dir
-      [ "merge-base"; "--is-ancestor"; "origin/main"; "origin/patch-b" ]
-    <> 0
+    match
+      Git_env.git_exit_code ~cwd:managed_dir
+        [ "merge-base"; "--is-ancestor"; "origin/main"; "origin/patch-b" ]
+    with
+    | 1 -> true
+    | 0 -> false
+    | n ->
+        failwith
+          (Printf.sprintf
+             "precondition: merge-base --is-ancestor failed with exit %d" n)
   in
   assert_true "precondition: origin/main not ancestor of origin/patch-b" stale;
   let res =
