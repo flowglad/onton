@@ -19,10 +19,7 @@ type usage = { input_tokens : int; output_tokens : int; reasoning_tokens : int }
 [@@deriving show, eq, sexp_of, compare]
 
 let zero_usage = { input_tokens = 0; output_tokens = 0; reasoning_tokens = 0 }
-
-let int_member name json =
-  let open Yojson.Safe.Util in
-  match json with `Assoc _ -> member name json |> to_int_option | _ -> None
+let int_member name json = Json.int_field name json
 
 (* Reasoning tokens are reported under three schemas. In priority order:
    1. nested [output_tokens_details.reasoning_tokens] (OpenAI Responses API
@@ -33,11 +30,8 @@ let int_member name json =
    Take the first that decodes as an int; fall through to zero. *)
 let reasoning_tokens_of_usage usage =
   let from_nested =
-    match usage with
-    | `Assoc _ -> (
-        match Yojson.Safe.Util.member "output_tokens_details" usage with
-        | `Assoc _ as details -> int_member "reasoning_tokens" details
-        | _ -> None)
+    match Json.field "output_tokens_details" usage with
+    | Some (`Assoc _ as details) -> int_member "reasoning_tokens" details
     | _ -> None
   in
   let from_flat = int_member "reasoning_tokens" usage in
@@ -135,9 +129,8 @@ let turn_cost_for_payload ~model json =
   match model_pricing model with
   | None -> 0L
   | Some pricing ->
-      let open Yojson.Safe.Util in
       let usage =
-        match json with `Assoc _ -> member "usage" json | _ -> `Null
+        match Json.field "usage" json with Some u -> u | None -> `Null
       in
       cost_of_usage ~pricing (usage_of_yojson usage)
 

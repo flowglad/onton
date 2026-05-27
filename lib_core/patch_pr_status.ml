@@ -68,15 +68,9 @@ let yojson_of_t = function
 
 let t_of_yojson_compat (json : Yojson.Safe.t) : (t, string) Result.t =
   let decode_pr_number v =
-    try Ok (Pr_number.t_of_yojson v) with
-    | Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (exn, _) ->
-        Error (Stdlib.Printexc.to_string exn)
-    | Yojson.Safe.Util.Type_error (msg, _) ->
-        Error (Printf.sprintf "malformed pr_number: %s" msg)
-    | exn ->
-        Error
-          (Printf.sprintf "malformed pr_number: %s"
-             (Stdlib.Printexc.to_string exn))
+    match Json.try_of_yojson Pr_number.t_of_yojson v with
+    | Ok _ as ok -> ok
+    | Error msg -> Error (Printf.sprintf "malformed pr_number: %s" msg)
   in
   match json with
   | `Null ->

@@ -46,74 +46,70 @@ let normalize_input_json ~tool (json : Yojson.Safe.t) : Yojson.Safe.t =
   | _ -> json
 
 let parse_event (line : string) : Types.Stream_event.t list =
-  try
-    match Yojson.Safe.from_string line with
-    | json -> (
-        let open Yojson.Safe.Util in
-        let typ = member "type" json |> to_string_option in
-        match typ with
-        | Some "step_start" -> (
-            match member "sessionID" json |> to_string_option with
-            | Some id when not (String.is_empty id) ->
-                [
-                  Types.Stream_event.Turn_started;
-                  Types.Stream_event.Session_init
-                    {
-                      session_id = id;
-                      api_key_source = None;
-                      model = None;
-                      claude_code_version = None;
-                      permission_mode = None;
-                    };
-                ]
-            | _ -> [])
-        | Some "text" ->
-            let part = member "part" json in
-            let text =
-              member "text" part |> to_string_option |> Option.value ~default:""
-            in
-            if String.is_empty text then []
-            else [ Types.Stream_event.Text_delta text ]
-        | Some "tool_use" ->
-            let part = member "part" json in
-            let raw_tool =
-              member "tool" part |> to_string_option |> Option.value ~default:""
-            in
-            let state = member "state" part in
-            let input =
-              match member "input" state with
-              | `Null -> ""
-              | v ->
-                  Yojson.Safe.to_string (normalize_input_json ~tool:raw_tool v)
-            in
-            let status = member "status" state |> to_string_option in
-            [
-              Types.Stream_event.Tool_use
-                { name = normalize_tool_name raw_tool; input; status };
-            ]
-        | Some "step_finish" -> (
-            let part = member "part" json in
-            let reason =
-              member "reason" part |> to_string_option
-              |> Option.value ~default:""
-            in
-            match reason with
-            | "stop" ->
-                [
-                  Types.Stream_event.Final_result
-                    { text = ""; stop_reason = Types.Stop_reason.End_turn };
-                ]
-            | _ -> [])
-        | Some "error" ->
-            let msg =
-              member "message" json |> to_string_option
-              |> Option.value ~default:"unknown opencode error"
-            in
-            [ Types.Stream_event.Error msg ]
-        | _ -> [])
-  with
-  | Yojson.Json_error _ -> []
-  | Yojson.Safe.Util.Type_error _ -> []
+  match Yojson.Safe.from_string line with
+  | exception Yojson.Json_error _ -> []
+  | json -> (
+      let typ = Json.string_field "type" json in
+      match typ with
+      | Some "step_start" -> (
+          match Json.string_field "sessionID" json with
+          | Some id when not (String.is_empty id) ->
+              [
+                Types.Stream_event.Turn_started;
+                Types.Stream_event.Session_init
+                  {
+                    session_id = id;
+                    api_key_source = None;
+                    model = None;
+                    claude_code_version = None;
+                    permission_mode = None;
+                  };
+              ]
+          | _ -> [])
+      | Some "text" ->
+          let text =
+            Option.bind (Json.field "part" json) ~f:(Json.string_field "text")
+            |> Option.value ~default:""
+          in
+          if String.is_empty text then []
+          else [ Types.Stream_event.Text_delta text ]
+      | Some "tool_use" ->
+          let part = Json.field "part" json in
+          let raw_tool =
+            Option.bind part ~f:(Json.string_field "tool")
+            |> Option.value ~default:""
+          in
+          let state = Option.bind part ~f:(Json.field "state") in
+          let input =
+            match Option.bind state ~f:(Json.field "input") with
+            | None -> ""
+            | Some v ->
+                Yojson.Safe.to_string (normalize_input_json ~tool:raw_tool v)
+          in
+          let status = Option.bind state ~f:(Json.string_field "status") in
+          [
+            Types.Stream_event.Tool_use
+              { name = normalize_tool_name raw_tool; input; status };
+          ]
+      | Some "step_finish" -> (
+          let reason =
+            Option.bind (Json.field "part" json) ~f:(Json.string_field "reason")
+            |> Option.value ~default:""
+          in
+          match reason with
+          | "stop" ->
+              [
+                Types.Stream_event.Final_result
+                  { text = ""; stop_reason = Types.Stop_reason.End_turn };
+              ]
+          | _ -> [])
+      | Some "error" ->
+          let msg =
+            Json.string_field "message" json
+            |> Option.value ~default:"unknown opencode error"
+          in
+          [ Types.Stream_event.Error msg ]
+      | _ -> [])
 
 let auto_model ~complexity =
   match complexity with

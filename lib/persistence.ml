@@ -87,24 +87,55 @@ let overlay_session_id_sidecars ~snapshot_path (snap : Runtime.snapshot) =
   in
   { snap with Runtime.orchestrator }
 
-let string_member key json = Yojson.Safe.Util.(member key json |> to_string)
+(* Decode failure for the *required* accessors below. Replaces the partial
+   accessor exception these helpers used to raise: the two top-level decoders
+   ([orchestrator_of_yojson]/[snapshot_of_yojson]) catch it and produce the same
+   "malformed orchestrator/snapshot: <msg>" Error they did before. *)
+exception Decode_error of string
 
-let string_member_opt key json =
-  Yojson.Safe.Util.(member key json |> to_string_option)
+(* [member key json] mirroring the legacy [member]: absent keys and explicit
+   [`Null] both collapse to [`Null], preserving the [`Null]/[`List] matches and
+   the missing-key semantics of the optional helpers. *)
+let member key json = Option.value (Json.field key json) ~default:`Null
 
-let int_member key json = Yojson.Safe.Util.(member key json |> to_int)
-let bool_member key json = Yojson.Safe.Util.(member key json |> to_bool)
-let list_member key json = Yojson.Safe.Util.(member key json |> to_list)
+let string_member key json =
+  match Json.field key json with
+  | Some (`String s) -> s
+  | _ -> raise (Decode_error (Printf.sprintf "%s: expected a string" key))
+
+let string_member_opt key json = Json.string_field key json
+
+let int_member key json =
+  match Json.field key json with
+  | Some (`Int n) -> n
+  | _ -> raise (Decode_error (Printf.sprintf "%s: expected an int" key))
+
+let bool_member key json =
+  match Json.field key json with
+  | Some (`Bool b) -> b
+  | _ -> raise (Decode_error (Printf.sprintf "%s: expected a bool" key))
+
+let list_member key json =
+  match Json.field key json with
+  | Some (`List l) -> l
+  | None -> raise (Decode_error (Printf.sprintf "%s: expected a list" key))
+  | Some _ -> raise (Decode_error (Printf.sprintf "%s: expected a list" key))
+
+let to_assoc = function
+  | `Assoc kvs -> kvs
+  | _ -> raise (Decode_error "expected an object")
 
 let int_member_opt key json =
-  match Yojson.Safe.Util.member key json with
+  match member key json with
   | `Null -> None
-  | v -> Some (Yojson.Safe.Util.to_int v)
+  | `Int n -> Some n
+  | _ -> raise (Decode_error (Printf.sprintf "%s: expected an int" key))
 
 let bool_member_opt key json =
-  match Yojson.Safe.Util.member key json with
+  match member key json with
   | `Null -> None
-  | v -> Some (Yojson.Safe.Util.to_bool v)
+  | `Bool b -> Some b
+  | _ -> raise (Decode_error (Printf.sprintf "%s: expected a bool" key))
 
 let result_all xs =
   List.fold_right xs ~init:(Ok []) ~f:(fun x acc ->
@@ -112,7 +143,7 @@ let result_all xs =
 
 (** Wrap a raising ppx_yojson_conv deserializer into a Result.t. Delegates to
     {!Onton_core.Json.try_of_yojson} (the sanctioned home for the
-    [Yojson.Safe.Util.Type_error] catch). *)
+    partial-decoder exception catch). *)
 let try_of_yojson = Json.try_of_yojson
 
 (* ---------- Patch_agent ---------- *)
@@ -211,19 +242,17 @@ let patch_agent_of_yojson ~gameplan json =
            try_of_yojson Operation_kind.t_of_yojson_compat j))
   in
   let human_messages =
-    match Yojson.Safe.Util.member "human_messages" json with
-    | `List items ->
-        List.filter_map items ~f:(fun j -> Yojson.Safe.Util.to_string_option j)
+    match member "human_messages" json with
+    | `List items -> List.filter_map items ~f:(fun j -> Json.string j)
     | _ -> []
   in
   let inflight_human_messages =
-    match Yojson.Safe.Util.member "inflight_human_messages" json with
-    | `List items ->
-        List.filter_map items ~f:(fun j -> Yojson.Safe.Util.to_string_option j)
+    match member "inflight_human_messages" json with
+    | `List items -> List.filter_map items ~f:(fun j -> Json.string j)
     | _ -> []
   in
   let* session_fallback =
-    match Yojson.Safe.Util.member "session_fallback" json with
+    match member "session_fallback" json with
     | `Null -> Error "patch_agent: missing session_fallback"
     | v -> try_of_yojson Patch_agent.session_fallback_of_yojson v
   in
@@ -268,7 +297,7 @@ let patch_agent_of_yojson ~gameplan json =
                  | Some p -> Branch.to_string p.Patch.branch
                  | None -> pid)))
        ~pr_status:
-         (match Yojson.Safe.Util.member "pr_status" json with
+         (match member "pr_status" json with
          | `Null -> (
              (* Legacy snapshot: no [pr_status] field. Derive from the legacy
                 [pr_number] field: int -> Present, null -> Absent. Missing
@@ -335,7 +364,7 @@ let patch_agent_of_yojson ~gameplan json =
        ~branch_rebased_onto_sha:
          (string_member_opt "branch_rebased_onto_sha" json)
        ~anchor_history:
-         (match Yojson.Safe.Util.member "anchor_history" json with
+         (match member "anchor_history" json with
          | `Null -> Anchor_history.empty
          | v -> (
              match Anchor_history.of_yojson_opt v with
@@ -354,14 +383,14 @@ let patch_agent_of_yojson ~gameplan json =
              else None)
        ~checks_passing:(bool_member "checks_passing" json)
        ~current_op:
-         (match Yojson.Safe.Util.member "current_op" json with
+         (match member "current_op" json with
          | `Null -> None
          | v -> (
              match try_of_yojson Operation_kind.t_of_yojson_compat v with
              | Ok op -> Some op
              | Error _ -> None))
        ~current_op_state:
-         (match Yojson.Safe.Util.member "current_op_state" json with
+         (match member "current_op_state" json with
          | `Null ->
              (* Field absent in snapshots predating this feature (missing key
                 returns [`Null]) — default to [Queued]. A live agent will be
@@ -385,7 +414,7 @@ let patch_agent_of_yojson ~gameplan json =
             (bool_member_opt "automerge_enabled" json)
             ~default:false)
        ~automerge_deadline:
-         (match Yojson.Safe.Util.member "automerge_deadline" json with
+         (match member "automerge_deadline" json with
          | `Null -> None
          | `Float f -> Some f
          | `Int i -> Some (Float.of_int i)
@@ -412,10 +441,9 @@ let patch_agent_of_yojson ~gameplan json =
             (int_member_opt "automerge_failure_count" json)
             ~default:0)
        ~delivered_ci_run_ids:
-         (match Yojson.Safe.Util.member "delivered_ci_run_ids" json with
+         (match member "delivered_ci_run_ids" json with
          | `List items ->
-             List.filter_map items ~f:(fun j ->
-                 Yojson.Safe.Util.to_int_option j)
+             List.filter_map items ~f:(fun j -> Json.int j)
              |> List.dedup_and_sort ~compare:Int.compare
          | _ -> []))
 
@@ -519,7 +547,7 @@ let action_of_yojson json =
   | "respond" ->
       let* op_kind =
         try_of_yojson Operation_kind.t_of_yojson_compat
-          (Yojson.Safe.Util.member "operation_kind" json)
+          (member "operation_kind" json)
       in
       Ok
         (Orchestrator.Respond
@@ -545,8 +573,7 @@ let orchestrator_of_yojson ~gameplan json =
     let main_branch = Branch.of_string (string_member "main_branch" json) in
     Result.bind
       (result_all
-         (Yojson.Safe.Util.member "agents" json
-         |> Yojson.Safe.Util.to_assoc
+         (member "agents" json |> to_assoc
          |> List.map ~f:(fun (key, value) ->
              Result.bind (patch_agent_of_yojson ~gameplan value)
                ~f:(fun agent ->
@@ -565,8 +592,7 @@ let orchestrator_of_yojson ~gameplan json =
             ~f:(fun acc (k, v) -> Map.set acc ~key:k ~data:v)
         in
         let outbox =
-          Yojson.Safe.Util.member "outbox" json
-          |> Yojson.Safe.Util.to_assoc
+          member "outbox" json |> to_assoc
           |> List.fold
                ~init:(Ok (Map.empty (module Message_id)))
                ~f:(fun acc_result (key, value) ->
@@ -578,9 +604,7 @@ let orchestrator_of_yojson ~gameplan json =
                  let* status =
                    message_status_of_string (string_member "status" value)
                  in
-                 let* action =
-                   action_of_yojson (Yojson.Safe.Util.member "action" value)
-                 in
+                 let* action = action_of_yojson (member "action" value) in
                  let msg_id = Message_id.of_string key in
                  let message =
                    Orchestrator.
@@ -656,8 +680,7 @@ let orchestrator_of_yojson ~gameplan json =
             (Orchestrator.restore ~graph ~agents:agents_map ~outbox ~main_branch
                ()))
   with
-  | Yojson.Safe.Util.Type_error (msg, _) ->
-      Error (Printf.sprintf "malformed orchestrator: %s" msg)
+  | Decode_error msg -> Error (Printf.sprintf "malformed orchestrator: %s" msg)
   | Invalid_argument msg ->
       Error (Printf.sprintf "malformed orchestrator: %s" msg)
 
@@ -673,7 +696,7 @@ let transcripts_of_yojson json =
   (match json with
   | `Assoc fields ->
       List.iter fields ~f:(fun (key, value) ->
-          match Yojson.Safe.Util.to_string_option value with
+          match Json.string value with
           | Some s -> Hashtbl.set t ~key:(Patch_id.of_string key) ~data:s
           | None -> ())
   | _ -> ());
@@ -696,26 +719,22 @@ let snapshot_of_yojson json =
       Error (Printf.sprintf "unsupported version: %d" version)
     else
       Result.bind
-        (try_of_yojson Gameplan.t_of_yojson
-           (Yojson.Safe.Util.member "gameplan" json))
+        (try_of_yojson Gameplan.t_of_yojson (member "gameplan" json))
         ~f:(fun gameplan ->
           Result.bind
-            (orchestrator_of_yojson ~gameplan
-               (Yojson.Safe.Util.member "orchestrator" json))
+            (orchestrator_of_yojson ~gameplan (member "orchestrator" json))
             ~f:(fun orchestrator ->
               Result.map
-                (activity_log_of_yojson
-                   (Yojson.Safe.Util.member "activity_log" json))
+                (activity_log_of_yojson (member "activity_log" json))
                 ~f:(fun activity_log ->
                   let transcripts =
-                    match Yojson.Safe.Util.member "transcripts" json with
+                    match member "transcripts" json with
                     | `Null -> Hashtbl.create (module Patch_id)
                     | j -> transcripts_of_yojson j
                   in
                   { Runtime.orchestrator; activity_log; gameplan; transcripts })))
   with
-  | Yojson.Safe.Util.Type_error (msg, _) ->
-      Error (Printf.sprintf "malformed snapshot: %s" msg)
+  | Decode_error msg -> Error (Printf.sprintf "malformed snapshot: %s" msg)
   | Invalid_argument msg -> Error (Printf.sprintf "malformed snapshot: %s" msg)
 
 (* ---------- File I/O ---------- *)
