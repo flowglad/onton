@@ -11,6 +11,11 @@ type t = {
   merge_ready : bool;
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
+  merge_commit_sha : string option; [@yojson.option]
+      (** Squash/merge commit SHA when [merged]; [None] otherwise. [Poller.t] is
+          only serialized (to the event log), never deserialized; the
+          [@yojson.option] annotation just omits the field from event JSON when
+          [None]. *)
 }
 [@@deriving show, eq, yojson]
 
@@ -44,4 +49,5 @@ let poll ~was_merged (pr : Pr_state.t) =
     merge_ready = Pr_state.merge_ready pr;
     checks_passing = Pr_state.checks_passing pr;
     ci_checks = pr.Pr_state.ci_checks;
+    merge_commit_sha = pr.Pr_state.merge_commit_sha;
   }

@@ -240,11 +240,19 @@ let sbi_defer_implies_progress m =
       match a.Patch_agent.base_branch with
       | None -> true
       | Some base -> (
-          match Orchestrator.start_eligibility m.orch base with
+          match
+            Orchestrator.start_eligibility m.orch
+              ~base_contains_merged_siblings:true base
+          with
           | Start_eligibility.Allow -> true
           | Start_eligibility.Defer
               (Start_eligibility.Base_patch_busy_with_rebase _) ->
               true (* by definition: a Rebase is in flight or queued *)
+          | Start_eligibility.Defer
+              (Start_eligibility.Base_missing_merged_sibling _) ->
+              (* Unreachable: this invariant evaluates the gate with
+                 [~base_contains_merged_siblings:true]. *)
+              false
           | Start_eligibility.Defer (Start_eligibility.Base_not_fresh_for_cut _)
             -> (
               (* There must be an actual path to Allow: the base patch either has
@@ -383,7 +391,10 @@ let prop_event_stream_pages_witness =
       let branch_b = (Orchestrator.agent m.orch pid_b).Patch_agent.branch in
       (* Initially: bootstrap fired Start(c, base=b) with b's
          branch_rebased_onto = its structural base. Eligibility = Allow. *)
-      let allow0 = Orchestrator.start_eligibility m.orch branch_b in
+      let allow0 =
+        Orchestrator.start_eligibility m.orch
+          ~base_contains_merged_siblings:true branch_b
+      in
       let initial_allow =
         match allow0 with
         | Start_eligibility.Allow -> true
@@ -394,7 +405,8 @@ let prop_event_stream_pages_witness =
          branch. *)
       let m = apply_command m (Pr_merged 0) in
       let eligibility_after_merge =
-        Orchestrator.start_eligibility m.orch branch_b
+        Orchestrator.start_eligibility m.orch
+          ~base_contains_merged_siblings:true branch_b
       in
       (* The gate must defer Start(c, base=b): either [Base_not_fresh_for_cut]
          (branch still on a's branch, not main) or [Base_patch_busy_with_rebase]
@@ -406,6 +418,11 @@ let prop_event_stream_pages_witness =
             ( Start_eligibility.Base_not_fresh_for_cut _
             | Start_eligibility.Base_patch_busy_with_rebase _ ) ->
             true
+        (* Unreachable here: this scenario passes [~base_contains_merged_siblings]
+           via the structural path, not the sibling gate. *)
+        | Start_eligibility.Defer
+            (Start_eligibility.Base_missing_merged_sibling _) ->
+            false
         | Start_eligibility.Allow -> false
       in
       (* And b's queue contains Rebase, from the eager enqueue. *)
@@ -418,7 +435,8 @@ let prop_event_stream_pages_witness =
          returns to Allow. *)
       let m = apply_command m (Rebase_complete 1) in
       let eligibility_after_rebase =
-        Orchestrator.start_eligibility m.orch branch_b
+        Orchestrator.start_eligibility m.orch
+          ~base_contains_merged_siblings:true branch_b
       in
       let unblocked =
         match eligibility_after_rebase with
@@ -443,7 +461,10 @@ let prop_unrelated_main_advance_does_not_defer =
         (Orchestrator.agent m.orch pid_root).Patch_agent.branch
       in
       let allow_before =
-        match Orchestrator.start_eligibility m.orch branch_root with
+        match
+          Orchestrator.start_eligibility m.orch
+            ~base_contains_merged_siblings:true branch_root
+        with
         | Start_eligibility.Allow -> true
         | Start_eligibility.Defer _ -> false
       in
@@ -454,7 +475,10 @@ let prop_unrelated_main_advance_does_not_defer =
           ~init:m ~f:apply_command
       in
       let allow_after =
-        match Orchestrator.start_eligibility m.orch branch_root with
+        match
+          Orchestrator.start_eligibility m.orch
+            ~base_contains_merged_siblings:true branch_root
+        with
         | Start_eligibility.Allow -> true
         | Start_eligibility.Defer _ -> false
       in

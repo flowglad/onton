@@ -115,6 +115,8 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
 
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
+val set_merge_commit_sha : t -> Patch_id.t -> string option -> t
+val set_base_contains_merged_siblings : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
 val set_pr_body_delivered : t -> Patch_id.t -> bool -> t
 val reset_pr_body_artifact_miss_count : t -> Patch_id.t -> t
@@ -419,15 +421,21 @@ val restore :
   t
 (** Reconstruct orchestrator from persisted components. *)
 
-val start_eligibility : t -> Branch.t -> Start_eligibility.decision
-(** [start_eligibility t base] is the freshness verdict for a hypothetical
-    [Start] action whose base is [base], evaluated against [t]'s dependency
-    graph and the base patch's recorded rebase anchor. Used to gate [Start] in
+val start_eligibility :
+  t ->
+  base_contains_merged_siblings:bool ->
+  Branch.t ->
+  Start_eligibility.decision
+(** [start_eligibility t ~base_contains_merged_siblings base] is the freshness
+    verdict for a hypothetical [Start]/[Rebase] action whose base is [base],
+    evaluated against [t]'s dependency graph and the base patch's recorded
+    rebase anchor. [base_contains_merged_siblings] is the launching patch's
+    poll-derived base-containment cache. Used to gate [Start] and [Rebase] in
     {!runnable_messages}; exposed for tests/TUI introspection.
 
     Returns [Allow] when the base is main, when the base patch is merged
     (effectively main), or when the base patch's local branch is rebased onto
-    its structurally-correct base ([branch_rebased_onto = Graph.initial_base]).
-    Otherwise returns [Defer reason]. Freshness is dependency-scoped: an
-    unrelated advance of [origin/main] never defers a [Start]. See
-    {!Start_eligibility}. *)
+    its structurally-correct base ([branch_rebased_onto = Graph.initial_base])
+    and contains the launching patch's merged siblings. Otherwise returns
+    [Defer reason]. Freshness is dependency-scoped: an unrelated advance of
+    [origin/main] never defers a [Start]. See {!Start_eligibility}. *)

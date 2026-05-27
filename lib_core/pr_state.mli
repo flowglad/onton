@@ -23,6 +23,10 @@ type t = {
   findings : Review_service.finding list;
   head_branch : Branch.t option;
   head_oid : string option;
+  merge_commit_sha : string option;
+      (** For a merged PR, the squash/merge commit SHA on the base branch
+          (GitHub [mergeCommit.oid]). [None] for open/closed PRs or when the
+          forge has not yet reported it. *)
   base_branch : Branch.t option;
   is_fork : bool;
 }

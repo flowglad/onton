@@ -248,11 +248,13 @@ let find_patch_by_branch t branch =
   |> List.find ~f:(fun (_, a) -> Branch.equal a.Patch_agent.branch branch)
   |> Option.map ~f:fst
 
-(** [start_eligibility t base] is the freshness verdict for a hypothetical
-    [Start] action whose base is [base] against [t]'s current view of the world.
-    Exposed so tests and TUI surfaces can inspect the gate without firing the
-    action. *)
-let start_eligibility t base =
+(** [start_eligibility t ~base_contains_merged_siblings base] is the freshness
+    verdict for a hypothetical [Start]/[Rebase] action whose base is [base]
+    against [t]'s current view of the world. [base_contains_merged_siblings] is
+    the launching patch's poll-derived base-containment cache (whether [base]
+    already carries the launching patch's merged sibling deps). Exposed so tests
+    and TUI surfaces can inspect the gate without firing the action. *)
+let start_eligibility t ~base_contains_merged_siblings base =
   let base_is_main = Branch.equal base t.main_branch in
   let base_branch = Branch.to_string base in
   let has_merged pid =
@@ -313,6 +315,7 @@ let start_eligibility t base =
   in
   Start_eligibility.decide ~base_is_main ~base_branch ~base_patch_merged
     ~base_patch_busy_rebasing ~base_structurally_fresh
+    ~base_contains_merged_siblings
 
 let runnable_messages t =
   let action_rank = function
@@ -324,15 +327,26 @@ let runnable_messages t =
   |> List.filter ~f:(fun msg ->
       match msg.status with
       | Pending -> (
-          (* Gate [Start] on base-branch freshness. Other actions are not
-             freshness-sensitive: [Rebase] is what closes the freshness gap,
-             and [Respond] operates on a worktree that already exists. *)
+          (* Gate both [Start] and [Rebase] on base freshness. A [Rebase] of a
+             dependent must not run while its base is itself stale or mid-rebase
+             — otherwise it lands on a stale branch and needs a second rebase.
+             Gating it makes a fan-in/chain cascade block on its dependency
+             layers and converge bottom-up (main is always fresh), one rebase
+             per branch. The launching patch's [base_contains_merged_siblings]
+             cache supplies the sibling-containment input. [Respond] operates on
+             a worktree that already exists and is not freshness-sensitive. *)
+          let eligibility patch_id base =
+            let base_contains_merged_siblings =
+              (agent t patch_id).Patch_agent.base_contains_merged_siblings
+            in
+            match start_eligibility t ~base_contains_merged_siblings base with
+            | Start_eligibility.Allow -> true
+            | Start_eligibility.Defer _ -> false
+          in
           match msg.action with
-          | Start (_, base) -> (
-              match start_eligibility t base with
-              | Start_eligibility.Allow -> true
-              | Start_eligibility.Defer _ -> false)
-          | Rebase _ | Respond _ -> true)
+          | Start (patch_id, base) -> eligibility patch_id base
+          | Rebase (patch_id, base) -> eligibility patch_id base
+          | Respond _ -> true)
       | Acked ->
           let agent = agent t msg.patch_id in
           Option.equal Message_id.equal agent.current_message_id
@@ -476,6 +490,13 @@ let set_checks_passing t patch_id v =
 
 let set_merge_ready t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_ready a v)
+
+let set_merge_commit_sha t patch_id sha =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_commit_sha a sha)
+
+let set_base_contains_merged_siblings t patch_id v =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_base_contains_merged_siblings a v)
 
 let set_is_draft t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_is_draft a v)

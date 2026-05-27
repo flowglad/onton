@@ -306,6 +306,7 @@ let gen_pr_state =
           head_oid = None;
           base_branch;
           is_fork;
+          merge_commit_sha = None;
         })
       (pair gen_pr_status gen_merge_state)
       bool
@@ -349,6 +350,7 @@ let gen_poller =
             merge_ready;
             checks_passing;
             ci_checks;
+            merge_commit_sha = None;
           })
       gen_operation_kind_queue (triple bool bool bool) bool bool
       (list_small gen_ci_check))
@@ -471,6 +473,7 @@ let gen_patch_view =
                construct views explicitly rather than relying on this
                generator. *)
             branch_rebased_onto = Some base_branch;
+            base_contains_merged_siblings = true;
           })
       (pair gen_patch_id gen_branch)
       (quad bool bool bool bool)
@@ -750,6 +753,7 @@ let apply_reconcile_actions orch ~main ~branch_of =
             base_branch =
               Option.value a.Onton_core.Patch_agent.base_branch ~default:main;
             branch_rebased_onto = a.Onton_core.Patch_agent.branch_rebased_onto;
+            base_contains_merged_siblings = true;
           })
   in
   let merged_patches =

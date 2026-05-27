@@ -61,6 +61,7 @@ let make_agent ~patch_id ~branch ~pr_status ~merged ~queue ~base_branch
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~push_failure_count:0
     ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+    ~merge_commit_sha:None ~base_contains_merged_siblings:true
     ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:false
     ~current_op:None ~current_op_state:Patch_agent.Queued
     ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -235,7 +236,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:(Some main)
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:true
             ~current_op:None ~current_op_state:Patch_agent.Queued
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -284,7 +286,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:true
             ~current_op:None ~current_op_state:Patch_agent.Queued
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -422,7 +425,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -466,7 +470,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -510,7 +515,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -567,6 +573,7 @@ let () =
               merge_ready = false;
               checks_passing = true;
               ci_checks = [];
+              merge_commit_sha = None;
             }
         in
         let orch, _logs, _newly_blocked =
@@ -608,6 +615,7 @@ let () =
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
+              merge_commit_sha = None;
             }
         in
         let orch, _logs, _newly_blocked =
@@ -648,7 +656,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -669,6 +678,7 @@ let () =
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
+              merge_commit_sha = None;
             }
         in
         let orch, _logs, _newly_blocked =
@@ -712,7 +722,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -733,6 +744,7 @@ let () =
               merge_ready = false;
               checks_passing = false;
               ci_checks = [ check ];
+              merge_commit_sha = None;
             }
         in
         let orch, _logs, _newly_blocked =
@@ -769,6 +781,7 @@ let () =
               merge_ready;
               checks_passing;
               ci_checks = [];
+              merge_commit_sha = None;
             }
         in
         let orch, _logs, _newly_blocked =
@@ -808,6 +821,7 @@ let () =
               merge_ready = false;
               checks_passing = false;
               ci_checks = [];
+              merge_commit_sha = None;
             }
         in
         let observation =
@@ -855,7 +869,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:(Some main)
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -1029,6 +1044,7 @@ let () =
                     merge_ready = false;
                     checks_passing = false;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   };
               base_branch = Some new_base;
               branch_in_root = false;
@@ -1065,7 +1081,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -1109,7 +1126,8 @@ let () =
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -1193,6 +1211,7 @@ let () =
               queue = [];
               is_draft = false;
               closed = false;
+              merge_commit_sha = None;
             }
         in
         let observation =

@@ -11,6 +11,15 @@ type patch_view = {
   queue : Operation_kind.t list;
   base_branch : Branch.t;
   branch_rebased_onto : Branch.t option;
+  base_contains_merged_siblings : bool;
+      (** Whether this patch's resolved base branch already contains the squash
+          commit of every *merged* dependency of this patch. Computed
+          effectfully by the caller ([poller_fiber]) via [Worktree.is_ancestor]
+          over each merged dep's recorded merge-commit SHA, fail-closed to
+          [false] when a SHA is not yet known. [true] when the base is main (all
+          deps merged into main) or the base branch already carries the merged
+          siblings. Drives [detect_sibling_stale_bases] and the Start/Rebase
+          gate. *)
 }
 [@@deriving sexp_of]
 
@@ -111,6 +120,62 @@ let detect_stale_bases graph views ~has_merged ~branch_of ~main =
         else None
       else None)
 
+(** Detect fan-in patches whose resolved base branch does not yet contain a
+    merged *sibling* dependency. When [P] depends on several patches and exactly
+    one is still open, [P]'s base is that sole open dep [B]; [B]'s branch is a
+    sibling of [P]'s already-merged deps and does not carry their squash
+    commits. The other rebase detectors never fix this: [B] is not a dependent
+    of the merged sibling, so none of [detect_rebases] / [detect_stale_bases] /
+    [detect_notified_base_drift] enqueues [B]'s rebase. This detector creates
+    that demand — it enqueues a [Rebase] of [B] (the dependency), which on its
+    next run rebases onto [Graph.initial_base B] (= main once [B]'s own deps are
+    merged) and thereby absorbs [P]'s merged siblings. [P]'s own
+    [Start]/[Rebase] stays deferred by the eligibility gate
+    ([Base_missing_merged_sibling]) until [B] is fresh.
+
+    Guards mirror the other detectors (has_pr, ~merged, and skip when [B]
+    already has a [Rebase] queued). The [open_pr_deps = 1] guard keeps
+    [sole_open_dep] total and pins this to the "last-but-one dependency merged"
+    edge, where a single rebase of [B] realizes containment for [P]. *)
+let detect_sibling_stale_bases graph views ~has_merged =
+  let view_by_id =
+    List.fold views
+      ~init:(Map.empty (module Patch_id))
+      ~f:(fun acc v ->
+        match Map.add acc ~key:v.id ~data:v with
+        | `Ok m -> m
+        | `Duplicate ->
+            invalid_arg
+              (Printf.sprintf
+                 "Reconciler.detect_sibling_stale_bases: duplicate patch view \
+                  %s"
+                 (Patch_id.to_string v.id)))
+  in
+  (* [b] is rebasable only once it has a PR and does not already have a Rebase
+     queued. Guarding on [b]'s own view (not the fan-in patch [v]'s) keeps this
+     detector as disciplined as the other three, which only ever enqueue a
+     rebase for a patch they have validated. In particular, an unstarted/queued
+     dep with no worktree leaves the fan-in patch fail-closed for now; once [b]
+     starts and obtains a PR, the next reconcile tick can enqueue its rebase. *)
+  let base_rebasable b =
+    match Map.find view_by_id b with
+    | Some bv ->
+        bv.has_pr
+        && not
+             (List.mem bv.queue Operation_kind.Rebase
+                ~equal:Operation_kind.equal)
+    | None -> false
+  in
+  List.filter_map views ~f:(fun v ->
+      if
+        v.has_pr && (not v.merged)
+        && List.length (Graph.open_pr_deps graph v.id ~has_merged) = 1
+        && not v.base_contains_merged_siblings
+      then
+        let b = Graph.sole_open_dep graph v.id ~has_merged in
+        if base_rebasable b then Some (Enqueue_rebase b) else None
+      else None)
+
 let plan_operations views ~has_merged ~branch_of ~graph ~main =
   List.filter_map views ~f:(fun v ->
       if
@@ -155,7 +220,8 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
     detect_stale_bases graph views ~has_merged ~branch_of ~main
   in
   let drift_rebases = detect_notified_base_drift views in
-  (* Deduplicate across the three rebase detectors. Priority is arbitrary —
+  let sibling_rebases = detect_sibling_stale_bases graph views ~has_merged in
+  (* Deduplicate across the four rebase detectors. Priority is arbitrary —
      they all emit the same [Enqueue_rebase] with the same patch_id — but we
      must not emit duplicates, since the orchestrator's [enqueue] is
      idempotent but tests assert on action counts. *)
@@ -173,8 +239,9 @@ let reconcile ~graph ~main ~merged_pr_patches ~branch_of views =
     in
     let seen, kept1 = add_unseen (Set.empty (module Patch_id)) event_rebases in
     let seen, kept2 = add_unseen seen stale_rebases in
-    let _seen, kept3 = add_unseen seen drift_rebases in
-    List.rev kept1 @ List.rev kept2 @ List.rev kept3
+    let seen, kept3 = add_unseen seen drift_rebases in
+    let _seen, kept4 = add_unseen seen sibling_rebases in
+    List.rev kept1 @ List.rev kept2 @ List.rev kept3 @ List.rev kept4
   in
   let rebase_set =
     List.filter_map rebases ~f:(function

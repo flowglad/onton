@@ -399,6 +399,7 @@ let make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
         && not review_comments;
       checks_passing;
       ci_checks = [];
+      merge_commit_sha = None;
     }
 
 let apply_reconcile orch patches =
@@ -2097,6 +2098,7 @@ let () =
                   base_branch =
                     Option.value ag.Patch_agent.base_branch ~default:main;
                   branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+                  base_contains_merged_siblings = true;
                 })
         in
         let merged_patches =
@@ -2741,6 +2743,7 @@ let reconcile_views_of orch =
           queue = ag.Patch_agent.queue;
           base_branch = Option.value ag.Patch_agent.base_branch ~default:main;
           branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
+          base_contains_merged_siblings = true;
         })
 
 let () =

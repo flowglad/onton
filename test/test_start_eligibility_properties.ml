@@ -39,6 +39,7 @@ type inputs = {
   base_patch_merged : bool;
   base_patch_busy_rebasing : bool;
   base_structurally_fresh : bool;
+  base_contains_merged_siblings : bool;
 }
 
 let gen_inputs : inputs Gen.t =
@@ -48,6 +49,7 @@ let gen_inputs : inputs Gen.t =
   let* base_patch_merged = bool in
   let* base_patch_busy_rebasing = bool in
   let* base_structurally_fresh = bool in
+  let* base_contains_merged_siblings = bool in
   return
     {
       base_is_main;
@@ -55,6 +57,7 @@ let gen_inputs : inputs Gen.t =
       base_patch_merged;
       base_patch_busy_rebasing;
       base_structurally_fresh;
+      base_contains_merged_siblings;
     }
 
 let call i =
@@ -62,6 +65,7 @@ let call i =
     ~base_patch_merged:i.base_patch_merged
     ~base_patch_busy_rebasing:i.base_patch_busy_rebasing
     ~base_structurally_fresh:i.base_structurally_fresh
+    ~base_contains_merged_siblings:i.base_contains_merged_siblings
 
 (* ---------- Properties ---------- *)
 
@@ -80,11 +84,24 @@ let is_allow = function SE.Allow -> true | SE.Defer _ -> false
 
 let is_defer_busy = function
   | SE.Defer (SE.Base_patch_busy_with_rebase _) -> true
-  | SE.Allow | SE.Defer (SE.Base_not_fresh_for_cut _) -> false
+  | SE.Allow
+  | SE.Defer (SE.Base_not_fresh_for_cut _)
+  | SE.Defer (SE.Base_missing_merged_sibling _) ->
+      false
 
 let is_defer_stale = function
   | SE.Defer (SE.Base_not_fresh_for_cut _) -> true
-  | SE.Allow | SE.Defer (SE.Base_patch_busy_with_rebase _) -> false
+  | SE.Allow
+  | SE.Defer (SE.Base_patch_busy_with_rebase _)
+  | SE.Defer (SE.Base_missing_merged_sibling _) ->
+      false
+
+let is_defer_missing_sibling = function
+  | SE.Defer (SE.Base_missing_merged_sibling _) -> true
+  | SE.Allow
+  | SE.Defer (SE.Base_patch_busy_with_rebase _)
+  | SE.Defer (SE.Base_not_fresh_for_cut _) ->
+      false
 
 let prop_preempt_base_is_main =
   Test.make ~count:200 ~name:"SEP-3a: base_is_main pre-empts everything → Allow"
@@ -129,6 +146,7 @@ let prop_defer_when_not_fresh =
           base_patch_merged = false;
           base_patch_busy_rebasing = false;
           base_structurally_fresh = false;
+          base_contains_merged_siblings = true;
         })
     (fun i -> is_defer_stale (call i))
 
@@ -144,6 +162,83 @@ let prop_allow_when_fresh =
           base_patch_merged = false;
           base_patch_busy_rebasing = false;
           base_structurally_fresh = true;
+          base_contains_merged_siblings = true;
+        })
+    (fun i -> is_allow (call i))
+
+let prop_defer_when_missing_sibling =
+  Test.make ~count:300
+    ~name:
+      "SEP-3f: structurally fresh but missing merged sibling → Defer \
+       Base_missing_merged_sibling"
+    Gen.(
+      let* base_branch = gen_branch in
+      return
+        {
+          base_is_main = false;
+          base_branch;
+          base_patch_merged = false;
+          base_patch_busy_rebasing = false;
+          base_structurally_fresh = true;
+          base_contains_merged_siblings = false;
+        })
+    (fun i -> is_defer_missing_sibling (call i))
+
+let prop_stale_preempts_missing_sibling =
+  Test.make ~count:300
+    ~name:
+      "SEP-3g: not structurally fresh pre-empts the sibling gate → \
+       Base_not_fresh_for_cut"
+    Gen.(
+      let* base_branch = gen_branch in
+      return
+        {
+          base_is_main = false;
+          base_branch;
+          base_patch_merged = false;
+          base_patch_busy_rebasing = false;
+          base_structurally_fresh = false;
+          base_contains_merged_siblings = false;
+        })
+    (fun i -> is_defer_stale (call i))
+
+let prop_busy_merged_main_preempt_missing_sibling =
+  Test.make ~count:400
+    ~name:"SEP-3h: base_is_main / merged / busy each pre-empt the sibling gate"
+    Gen.(
+      (* missing sibling, but an earlier arm also holds; the earlier arm wins *)
+      let* which = int_range 0 2 in
+      let* base_branch = gen_branch in
+      let base =
+        {
+          base_is_main = false;
+          base_branch;
+          base_patch_merged = false;
+          base_patch_busy_rebasing = false;
+          base_structurally_fresh = true;
+          base_contains_merged_siblings = false;
+        }
+      in
+      return
+        (match which with
+        | 0 -> { base with base_is_main = true }
+        | 1 -> { base with base_patch_merged = true }
+        | _ -> { base with base_patch_busy_rebasing = true }))
+    (fun i -> not (is_defer_missing_sibling (call i)))
+
+let prop_allow_when_contains_siblings =
+  Test.make ~count:300
+    ~name:"SEP-3i: fresh and contains siblings, non-main, unmerged → Allow"
+    Gen.(
+      let* base_branch = gen_branch in
+      return
+        {
+          base_is_main = false;
+          base_branch;
+          base_patch_merged = false;
+          base_patch_busy_rebasing = false;
+          base_structurally_fresh = true;
+          base_contains_merged_siblings = true;
         })
     (fun i -> is_allow (call i))
 
@@ -153,7 +248,8 @@ let prop_allow_implies_fresh =
       | SE.Defer _ -> true
       | SE.Allow ->
           i.base_is_main || i.base_patch_merged
-          || ((not i.base_patch_busy_rebasing) && i.base_structurally_fresh))
+          || (not i.base_patch_busy_rebasing)
+             && i.base_structurally_fresh && i.base_contains_merged_siblings)
 
 let prop_defer_implies_not_fresh =
   Test.make ~count:500 ~name:"SEP-5: Defer ⇒ not fresh" gen_inputs (fun i ->
@@ -161,7 +257,9 @@ let prop_defer_implies_not_fresh =
       | SE.Allow -> true
       | SE.Defer _ ->
           (not i.base_is_main) && (not i.base_patch_merged)
-          && (i.base_patch_busy_rebasing || not i.base_structurally_fresh))
+          && (i.base_patch_busy_rebasing
+             || (not i.base_structurally_fresh)
+             || not i.base_contains_merged_siblings))
 
 let label_re = Re.compile (Re.Pcre.re "^[a-z][a-z0-9_]*$")
 
@@ -179,26 +277,36 @@ let prop_variants_reachable =
       let allow_main =
         SE.decide ~base_is_main:true ~base_branch:"main"
           ~base_patch_merged:false ~base_patch_busy_rebasing:false
-          ~base_structurally_fresh:false
+          ~base_structurally_fresh:false ~base_contains_merged_siblings:true
       in
       let allow_merged =
         SE.decide ~base_is_main:false ~base_branch:"b" ~base_patch_merged:true
           ~base_patch_busy_rebasing:false ~base_structurally_fresh:false
+          ~base_contains_merged_siblings:true
       in
       let allow_fresh =
         SE.decide ~base_is_main:false ~base_branch:"b" ~base_patch_merged:false
           ~base_patch_busy_rebasing:false ~base_structurally_fresh:true
+          ~base_contains_merged_siblings:true
       in
       let defer_busy =
         SE.decide ~base_is_main:false ~base_branch:"b" ~base_patch_merged:false
           ~base_patch_busy_rebasing:true ~base_structurally_fresh:true
+          ~base_contains_merged_siblings:true
       in
       let defer_stale =
         SE.decide ~base_is_main:false ~base_branch:"b" ~base_patch_merged:false
           ~base_patch_busy_rebasing:false ~base_structurally_fresh:false
+          ~base_contains_merged_siblings:true
+      in
+      let defer_missing_sibling =
+        SE.decide ~base_is_main:false ~base_branch:"b" ~base_patch_merged:false
+          ~base_patch_busy_rebasing:false ~base_structurally_fresh:true
+          ~base_contains_merged_siblings:false
       in
       is_allow allow_main && is_allow allow_merged && is_allow allow_fresh
-      && is_defer_busy defer_busy && is_defer_stale defer_stale)
+      && is_defer_busy defer_busy && is_defer_stale defer_stale
+      && is_defer_missing_sibling defer_missing_sibling)
 
 let () =
   let runner = QCheck_base_runner.run_tests_main in
@@ -212,6 +320,10 @@ let () =
          prop_preempt_busy;
          prop_defer_when_not_fresh;
          prop_allow_when_fresh;
+         prop_defer_when_missing_sibling;
+         prop_stale_preempts_missing_sibling;
+         prop_busy_merged_main_preempt_missing_sibling;
+         prop_allow_when_contains_siblings;
          prop_allow_implies_fresh;
          prop_defer_implies_not_fresh;
          prop_label_bounds;

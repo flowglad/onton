@@ -104,7 +104,14 @@ let refresh_agents_from_forge ~net ~clock ~(cfg : Project_store.stored_config)
                   let agents =
                     Map.change agents patch_id ~f:(function
                       | None -> None
-                      | Some agent -> Some (Patch_agent.mark_merged agent))
+                      | Some agent ->
+                          (* Record the merge-commit SHA we already have in
+                             hand so dependents' base-containment gate can
+                             ancestry-check it without waiting for a re-poll. *)
+                          Some
+                            (Patch_agent.set_merge_commit_sha
+                               (Patch_agent.mark_merged agent)
+                               pr_state.Pr_state.merge_commit_sha))
                   in
                   (agents, merged_count + 1, errs)
                 else (agents, merged_count, errs))

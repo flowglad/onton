@@ -93,6 +93,7 @@ let gen_rebase_scenario =
                   queue = [];
                   base_branch = main;
                   branch_rebased_onto = Some main;
+                  base_contains_merged_siblings = true;
                 })
         in
         (graph, views, newly_merged))
@@ -155,6 +156,7 @@ let prop_detect_rebases_skips_already_queued =
                 queue = [ Types.Operation_kind.Rebase ];
                 base_branch = main;
                 branch_rebased_onto = Some main;
+                base_contains_merged_siblings = true;
               })
       in
       return (graph, views, ids))
@@ -192,6 +194,7 @@ let gen_plan_scenario =
                   queue;
                   base_branch = main;
                   branch_rebased_onto = Some main;
+                  base_contains_merged_siblings = true;
                 }))))
 
 let prop_plan_skips_busy =
@@ -359,6 +362,7 @@ let gen_reconcile_scenario =
                   queue = [];
                   base_branch = main;
                   branch_rebased_onto = Some main;
+                  base_contains_merged_siblings = true;
                 }))))
 
 let prop_reconcile_merges_subset =
@@ -418,7 +422,8 @@ let dep_br = Types.Branch.of_string "dep"
 let other_br = Types.Branch.of_string "other"
 
 let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
-    ?(base_branch = main_br) ?(branch_rebased_onto = Some main_br) () =
+    ?(base_branch = main_br) ?(branch_rebased_onto = Some main_br)
+    ?(base_contains_merged_siblings = true) () =
   Reconciler.
     {
       id;
@@ -430,6 +435,7 @@ let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
       queue;
       base_branch;
       branch_rebased_onto;
+      base_contains_merged_siblings;
     }
 
 let pid s = Types.Patch_id.of_string s
@@ -618,6 +624,232 @@ let prop_reconcile_dedup_rebase =
       in
       List.length rebases = 1)
 
+(* ========== detect_sibling_stale_bases (fan-in) ========== *)
+
+let mk_patch ~id ~deps : Types.Patch.t =
+  {
+    id = pid id;
+    title = "";
+    description = "";
+    branch = Types.Branch.of_string id;
+    dependencies = List.map deps ~f:pid;
+    spec = "";
+    acceptance_criteria = [];
+    files = [];
+    classification = "";
+    changes = [];
+    test_stubs_introduced = [];
+    test_stubs_implemented = [];
+    complexity = None;
+    precedents = [];
+    required_context = [];
+  }
+
+(* P -> {d1, d2, d3}, with d2 a stacked child of d1 and d3 an independent
+   sibling — the exact fan-in shape from the bug report. *)
+let fanin_graph () =
+  Graph.of_patches
+    [
+      mk_patch ~id:"p" ~deps:[ "d1"; "d2"; "d3" ];
+      mk_patch ~id:"d1" ~deps:[];
+      mk_patch ~id:"d2" ~deps:[ "d1" ];
+      mk_patch ~id:"d3" ~deps:[];
+    ]
+
+let br s = Types.Branch.of_string s
+let branch_of p = br (Types.Patch_id.to_string p)
+let merged_in ids p = List.mem ids p ~equal:Types.Patch_id.equal
+
+(* Build the fan-in view set for P given which deps are merged and whether P's
+   base (the sole open dep) is believed to contain P's merged siblings. *)
+let fanin_views ~merged ~contains =
+  let p_view =
+    let open_deps =
+      List.filter
+        [ pid "d1"; pid "d2"; pid "d3" ]
+        ~f:(fun d -> not (merged_in merged d))
+    in
+    let base = match open_deps with [ d ] -> branch_of d | _ -> main_br in
+    mk_view ~id:(pid "p") ~base_branch:base ~branch_rebased_onto:(Some base)
+      ~base_contains_merged_siblings:contains ()
+  in
+  [
+    p_view;
+    mk_view ~id:(pid "d1") ();
+    mk_view ~id:(pid "d2") ();
+    mk_view ~id:(pid "d3") ();
+  ]
+
+let sibling_rebase_targets ~merged ~contains =
+  let graph = fanin_graph () in
+  let views = fanin_views ~merged ~contains in
+  Reconciler.detect_sibling_stale_bases graph views
+    ~has_merged:(merged_in merged)
+  |> List.filter_map ~f:(function
+    | Reconciler.Enqueue_rebase p -> Some p
+    | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> None)
+
+(* REG-perm-{1,2,3}: for each "last-but-one merged" permutation, the detector
+   enqueues a rebase of the *sole open dep* (the base B), so B absorbs P's
+   merged siblings before P is cut from it. *)
+let prop_fanin_perm_open_d2 =
+  QCheck2.Test.make
+    ~name:"sibling: {d1,d3 merged, d2 open}, base stale → rebase d2" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      List.equal Types.Patch_id.equal
+        (sibling_rebase_targets ~merged:[ pid "d1"; pid "d3" ] ~contains:false)
+        [ pid "d2" ])
+
+let prop_fanin_perm_open_d1 =
+  QCheck2.Test.make
+    ~name:"sibling: {d2,d3 merged, d1 open}, base stale → rebase d1" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      List.equal Types.Patch_id.equal
+        (sibling_rebase_targets ~merged:[ pid "d2"; pid "d3" ] ~contains:false)
+        [ pid "d1" ])
+
+let prop_fanin_perm_open_d3 =
+  QCheck2.Test.make
+    ~name:"sibling: {d1,d2 merged, d3 open}, base stale → rebase d3" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      List.equal Types.Patch_id.equal
+        (sibling_rebase_targets ~merged:[ pid "d1"; pid "d2" ] ~contains:false)
+        [ pid "d3" ])
+
+(* Positive: once the base contains the merged siblings, the detector is
+   silent — no over-rebasing (and the eligibility gate would Allow P). *)
+let prop_fanin_contains_silent =
+  QCheck2.Test.make
+    ~name:"sibling: base already contains merged siblings → no rebase" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      List.is_empty
+        (sibling_rebase_targets ~merged:[ pid "d1"; pid "d3" ] ~contains:true))
+
+(* Invariant (ii): a merged dep that the base already contains never triggers a
+   sibling rebase — i.e. unrelated/already-absorbed merges do not cause churn. *)
+let prop_fanin_no_rebase_when_contained =
+  QCheck2.Test.make
+    ~name:"sibling: no rebase from already-absorbed merges (invariant ii)"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      (* d1 merged, d2 open; base (d2) already contains d1. No rebase. *)
+      List.is_empty (sibling_rebase_targets ~merged:[ pid "d1" ] ~contains:true))
+
+(* Idempotent: if the base B already has a Rebase queued, no new emission. *)
+let prop_fanin_idempotent_when_queued =
+  QCheck2.Test.make ~name:"sibling: silent when base already has Rebase queued"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d3" ] in
+      let views =
+        [
+          mk_view ~id:(pid "p")
+            ~base_branch:(branch_of (pid "d2"))
+            ~branch_rebased_onto:(Some (branch_of (pid "d2")))
+            ~base_contains_merged_siblings:false ();
+          (* d2 (the base B) already has a Rebase queued *)
+          mk_view ~id:(pid "d2") ~queue:[ Types.Operation_kind.Rebase ] ();
+        ]
+      in
+      List.is_empty
+        (Reconciler.detect_sibling_stale_bases graph views
+           ~has_merged:(merged_in merged)))
+
+(* A queued/unstarted sole-open dep has no PR/worktree yet. The containment
+   oracle may therefore fail-closed for P's base branch, but the sibling detector
+   must not enqueue a Rebase for B until B itself has a PR. Once B starts and the
+   branch exists locally, a later tick can recompute containment or enqueue the
+   rebase normally. *)
+let prop_fanin_silent_when_base_has_no_pr =
+  QCheck2.Test.make ~name:"sibling: silent when sole open dep has no PR"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d3" ] in
+      let views =
+        [
+          mk_view ~id:(pid "p")
+            ~base_branch:(branch_of (pid "d2"))
+            ~branch_rebased_onto:(Some (branch_of (pid "d2")))
+            ~base_contains_merged_siblings:false ();
+          mk_view ~id:(pid "d2") ~has_pr:false ();
+        ]
+      in
+      List.is_empty
+        (Reconciler.detect_sibling_stale_bases graph views
+           ~has_merged:(merged_in merged)))
+
+(* Only Enqueue_rebase, never other action kinds; total over which-dep-open. *)
+let prop_fanin_only_enqueue_rebase =
+  QCheck2.Test.make
+    ~name:"sibling: only emits Enqueue_rebase, over all open-dep choices"
+    ~count:200
+    QCheck2.Gen.(oneof_list [ "d1"; "d2"; "d3" ])
+    (fun open_dep ->
+      let merged =
+        List.filter
+          [ pid "d1"; pid "d2"; pid "d3" ]
+          ~f:(fun d -> not (Types.Patch_id.equal d (pid open_dep)))
+      in
+      let graph = fanin_graph () in
+      let views = fanin_views ~merged ~contains:false in
+      let actions =
+        Reconciler.detect_sibling_stale_bases graph views
+          ~has_merged:(merged_in merged)
+      in
+      List.for_all actions ~f:(function
+        | Reconciler.Enqueue_rebase _ -> true
+        | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+
+(* No raise / no emission when P is not at the last-but-one edge (>1 open dep)
+   or when all deps merged (0 open deps, base = main). *)
+let prop_fanin_silent_off_edge =
+  QCheck2.Test.make ~name:"sibling: silent at 0 or >1 open deps (totality)"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      (* >1 open dep: nothing merged → 3 open deps. *)
+      let none_merged =
+        List.is_empty (sibling_rebase_targets ~merged:[] ~contains:false)
+      in
+      (* 0 open deps: all merged → base is main, no sole open dep. *)
+      let all_merged =
+        List.is_empty
+          (sibling_rebase_targets
+             ~merged:[ pid "d1"; pid "d2"; pid "d3" ]
+             ~contains:true)
+      in
+      none_merged && all_merged)
+
+(* reconcile-level: the sibling-stale scenario surfaces Enqueue_rebase d2 (the
+   demand for freshening the base B before P is cut from it). P's own deferral
+   is enforced separately by the orchestrator's runnable_messages gate
+   (Start_eligibility), exercised by the SEP-3f property; at the pure reconcile
+   layer P legitimately also gets a dependent rebase from detect_rebases. *)
+let prop_fanin_reconcile_enqueues_base_rebase =
+  QCheck2.Test.make ~name:"sibling: reconcile enqueues base (d2) rebase"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d3" ] in
+      let views = fanin_views ~merged ~contains:false in
+      let actions =
+        Reconciler.reconcile ~graph ~main:main_br ~merged_pr_patches:merged
+          ~branch_of views
+      in
+      List.exists actions ~f:(function
+        | Reconciler.Enqueue_rebase p -> Types.Patch_id.equal p (pid "d2")
+        | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+
 let () =
   let tests =
     [
@@ -648,6 +880,16 @@ let () =
       prop_drift_always_produces_enqueue_rebase;
       prop_reconcile_e2e_catches_drift;
       prop_reconcile_dedup_rebase;
+      prop_fanin_perm_open_d2;
+      prop_fanin_perm_open_d1;
+      prop_fanin_perm_open_d3;
+      prop_fanin_contains_silent;
+      prop_fanin_no_rebase_when_contained;
+      prop_fanin_idempotent_when_queued;
+      prop_fanin_silent_when_base_has_no_pr;
+      prop_fanin_only_enqueue_rebase;
+      prop_fanin_silent_off_edge;
+      prop_fanin_reconcile_enqueues_base_rebase;
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);
