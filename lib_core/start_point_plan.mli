@@ -37,15 +37,6 @@ type ancestry =
   | Unknown  (** ancestry could not be determined (e.g. probe failed) *)
 [@@deriving show, eq, sexp_of, compare]
 
-(** Whether the base branch (used only when cutting a brand-new branch) already
-    contains the latest [origin/<main>]. The effectful caller fills this in with
-    the result of a [git merge-base --is-ancestor origin/<main> <base>] probe:
-    [Fresh] when main is an ancestor of base, [Stale] when it is not,
-    [Unknown_freshness] when the probe could not be run (main not tracked, probe
-    error). Only [Stale] blocks; see {!plan}. *)
-type base_freshness = Fresh | Stale | Unknown_freshness
-[@@deriving show, eq, sexp_of, compare]
-
 (** The action a successful plan instructs the caller to take. *)
 type action =
   | Reset_and_use_remote_tracking of { remote_sha : sha }
@@ -79,13 +70,6 @@ type refusal =
   | Worktree_already_registered of { existing_path : string }
       (** Git already lists a worktree for this branch elsewhere; recreating
           would race. *)
-  | Base_branch_stale_vs_main of { base_branch : string }
-      (** About to cut a brand-new branch from [base_branch], but
-          [origin/<main>] is not an ancestor of [base_branch] — the base lags a
-          merged upstream and cutting from it would silently drop the upstream's
-          commits. Defense-in-depth behind the orchestrator's scheduling gate
-          (see {!Start_eligibility}); reaching this refusal means a [Start] was
-          executed without going through {!Orchestrator.runnable_messages}. *)
 [@@deriving show, eq, sexp_of, compare]
 
 (** A plan is either an action to execute or a refusal to report. *)
@@ -97,7 +81,6 @@ val plan :
   remote_ref:sha option ->
   ancestry:ancestry ->
   base_branch:string ->
-  base_freshness:base_freshness ->
   branch_checked_out_in_main_root:bool ->
   existing_worktree_path:string option ->
   decision
@@ -107,9 +90,7 @@ val plan :
       [Refuse Branch_checked_out_in_main_root]
     + [existing_worktree_path = Some p] →
       [Refuse (Worktree_already_registered { existing_path = p })]
-    + [(local_ref, remote_ref) = (None, None)] and [base_freshness = Stale] →
-      [Refuse (Base_branch_stale_vs_main { base_branch })]
-    + [(local_ref, remote_ref) = (None, None)] otherwise →
+    + [(local_ref, remote_ref) = (None, None)] →
       [Plan (Create_new_branch_from_base { base_branch })]
     + [(None, Some r)] →
       [Plan (Reset_and_use_remote_tracking { remote_sha = r })]
@@ -122,10 +103,13 @@ val plan :
       [Refuse (Local_diverged_from_remote ...)] (conservative — refuse rather
       than risk silent commit loss).
 
-    [base_freshness] only matters in the brand-new-branch arm: it is the only
-    decision that consumes [base_branch]. When a local or remote ref for the
-    patch's own branch already exists, the base is irrelevant and freshness is
-    not consulted. *)
+    The base is consumed only in the brand-new-branch arm
+    ([Create_new_branch_from_base]). Whether that base is up to date with
+    [origin/<main>] is intentionally {e not} gated here: freshness is
+    dependency-scoped and enforced by the orchestrator's scheduling gate (see
+    {!Start_eligibility}). A stacked dependent cut from its base's tip contains
+    everything in that base; main integration cascades at merge boundaries, so a
+    base lagging main for unrelated reasons must not block the cut. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the planner arm that fired,

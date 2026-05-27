@@ -12,7 +12,8 @@ open Onton_core
     - {b SPP-3 Remote authoritative}: when both refs are present and ancestry is
       [Equal] or [Remote_ahead], the action is [Reset_and_use_remote_tracking].
     - {b SPP-4 Missing both → create from base}: both refs absent ⇒
-      [Create_new_branch_from_base].
+      [Create_new_branch_from_base], unconditionally (base freshness vs main is
+      not gated here — see {!Start_point_plan.plan}).
     - {b SPP-5 Determinism}: same inputs yield identical output.
     - {b SPP-6 Pre-emption}: [branch_checked_out_in_main_root = true] always
       yields [Refuse Branch_checked_out_in_main_root] regardless of every other
@@ -61,7 +62,7 @@ let is_refuse_diverged = function
   | SP.Refuse (SP.Local_diverged_from_remote _) -> true
   | SP.Refuse
       ( SP.Local_has_unpushed_commits _ | SP.Branch_checked_out_in_main_root
-      | SP.Worktree_already_registered _ | SP.Base_branch_stale_vs_main _ )
+      | SP.Worktree_already_registered _ )
   | SP.Plan _ ->
       false
 
@@ -69,7 +70,7 @@ let is_refuse_local_ahead = function
   | SP.Refuse (SP.Local_has_unpushed_commits _) -> true
   | SP.Refuse
       ( SP.Local_diverged_from_remote _ | SP.Branch_checked_out_in_main_root
-      | SP.Worktree_already_registered _ | SP.Base_branch_stale_vs_main _ )
+      | SP.Worktree_already_registered _ )
   | SP.Plan _ ->
       false
 
@@ -77,7 +78,7 @@ let is_refuse_checked_out = function
   | SP.Refuse SP.Branch_checked_out_in_main_root -> true
   | SP.Refuse
       ( SP.Local_diverged_from_remote _ | SP.Local_has_unpushed_commits _
-      | SP.Worktree_already_registered _ | SP.Base_branch_stale_vs_main _ )
+      | SP.Worktree_already_registered _ )
   | SP.Plan _ ->
       false
 
@@ -85,17 +86,9 @@ let is_refuse_registered = function
   | SP.Refuse (SP.Worktree_already_registered _) -> true
   | SP.Refuse
       ( SP.Local_diverged_from_remote _ | SP.Local_has_unpushed_commits _
-      | SP.Branch_checked_out_in_main_root | SP.Base_branch_stale_vs_main _ ) ->
+      | SP.Branch_checked_out_in_main_root ) ->
       false
   | SP.Plan _ -> false
-
-let is_refuse_base_stale = function
-  | SP.Refuse (SP.Base_branch_stale_vs_main _) -> true
-  | SP.Refuse
-      ( SP.Local_diverged_from_remote _ | SP.Local_has_unpushed_commits _
-      | SP.Branch_checked_out_in_main_root | SP.Worktree_already_registered _ )
-  | SP.Plan _ ->
-      false
 
 (* ---------- Generators ---------- *)
 
@@ -106,9 +99,6 @@ let gen_ancestry =
   Gen.oneof_array
     [| SP.Local_ahead; SP.Remote_ahead; SP.Equal; SP.Diverged; SP.Unknown |]
 
-let gen_base_freshness =
-  Gen.oneof_array [| SP.Fresh; SP.Stale; SP.Unknown_freshness |]
-
 let gen_sha_option = Gen.option gen_sha
 let gen_path_option = Gen.option gen_branch_name
 
@@ -118,7 +108,6 @@ type plan_inputs = {
   remote_ref : SP.sha option;
   ancestry : SP.ancestry;
   base_branch : string;
-  base_freshness : SP.base_freshness;
   branch_checked_out_in_main_root : bool;
   existing_worktree_path : string option;
 }
@@ -129,7 +118,6 @@ let gen_inputs : plan_inputs Gen.t =
   let* remote_ref = gen_sha_option in
   let* ancestry = gen_ancestry in
   let* base_branch = gen_branch_name in
-  let* base_freshness = gen_base_freshness in
   let* branch_checked_out_in_main_root = bool in
   let* existing_worktree_path = gen_path_option in
   return
@@ -138,14 +126,13 @@ let gen_inputs : plan_inputs Gen.t =
       remote_ref;
       ancestry;
       base_branch;
-      base_freshness;
       branch_checked_out_in_main_root;
       existing_worktree_path;
     }
 
 let call i =
   SP.plan ~local_ref:i.local_ref ~remote_ref:i.remote_ref ~ancestry:i.ancestry
-    ~base_branch:i.base_branch ~base_freshness:i.base_freshness
+    ~base_branch:i.base_branch
     ~branch_checked_out_in_main_root:i.branch_checked_out_in_main_root
     ~existing_worktree_path:i.existing_worktree_path
 
@@ -170,8 +157,8 @@ let prop_no_silent_clobber =
     (fun (local, remote, anc, base_branch) ->
       let d =
         SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote) ~ancestry:anc
-          ~base_branch ~base_freshness:SP.Unknown_freshness
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+          ~base_branch ~branch_checked_out_in_main_root:false
+          ~existing_worktree_path:None
       in
       is_refuse d)
 
@@ -188,34 +175,14 @@ let prop_remote_authoritative =
     (fun (local, remote, anc, base_branch) ->
       let d =
         SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote) ~ancestry:anc
-          ~base_branch ~base_freshness:SP.Unknown_freshness
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+          ~base_branch ~branch_checked_out_in_main_root:false
+          ~existing_worktree_path:None
       in
       is_reset_to remote d)
 
 let prop_missing_both =
   Test.make ~count:200
-    ~name:
-      "SPP-4: local=None, remote=None, base not Stale → \
-       Create_new_branch_from_base"
-    Gen.(
-      let* base_branch = gen_branch_name in
-      let* anc = gen_ancestry in
-      let* fresh = oneof_array [| SP.Fresh; SP.Unknown_freshness |] in
-      return (base_branch, anc, fresh))
-    (fun (base_branch, anc, fresh) ->
-      let d =
-        SP.plan ~local_ref:None ~remote_ref:None ~ancestry:anc ~base_branch
-          ~base_freshness:fresh ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
-      in
-      is_create_from_base base_branch d)
-
-let prop_missing_both_stale =
-  Test.make ~count:200
-    ~name:
-      "SPP-4b: local=None, remote=None, base Stale → Refuse \
-       Base_branch_stale_vs_main"
+    ~name:"SPP-4: local=None, remote=None → Create_new_branch_from_base"
     Gen.(
       let* base_branch = gen_branch_name in
       let* anc = gen_ancestry in
@@ -223,33 +190,9 @@ let prop_missing_both_stale =
     (fun (base_branch, anc) ->
       let d =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:anc ~base_branch
-          ~base_freshness:SP.Stale ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
+          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
-      is_refuse_base_stale d)
-
-(* A Stale base must NOT block when the patch's own branch already exists —
-   freshness is only consulted on the brand-new-branch arm. *)
-let prop_stale_irrelevant_when_branch_exists =
-  Test.make ~count:300
-    ~name:"SPP-4c: base Stale is ignored when a local/remote ref exists"
-    Gen.(
-      let* local = gen_sha_option in
-      let* remote = gen_sha_option in
-      (* exclude (None, None) — that's the brand-new arm where Stale matters *)
-      let local, remote =
-        match (local, remote) with None, None -> (Some "l", None) | p -> p
-      in
-      let* anc = gen_ancestry in
-      let* base_branch = gen_branch_name in
-      return (local, remote, anc, base_branch))
-    (fun (local, remote, anc, base_branch) ->
-      let d =
-        SP.plan ~local_ref:local ~remote_ref:remote ~ancestry:anc ~base_branch
-          ~base_freshness:SP.Stale ~branch_checked_out_in_main_root:false
-          ~existing_worktree_path:None
-      in
-      not (is_refuse_base_stale d))
+      is_create_from_base base_branch d)
 
 let prop_determinism =
   Test.make ~count:500 ~name:"SPP-5: same inputs → same output" gen_inputs
@@ -296,54 +239,45 @@ let prop_variants_reachable =
     (Gen.return ()) (fun () ->
       let reset =
         SP.plan ~local_ref:None ~remote_ref:(Some "r") ~ancestry:SP.Unknown
-          ~base_branch:"main" ~base_freshness:SP.Unknown_freshness
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+          ~base_branch:"main" ~branch_checked_out_in_main_root:false
+          ~existing_worktree_path:None
       in
       let use_local =
         SP.plan ~local_ref:(Some "l") ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~base_freshness:SP.Unknown_freshness
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+          ~base_branch:"main" ~branch_checked_out_in_main_root:false
+          ~existing_worktree_path:None
       in
       let create =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~base_freshness:SP.Fresh
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+          ~base_branch:"main" ~branch_checked_out_in_main_root:false
+          ~existing_worktree_path:None
       in
       let refuse_diverged =
         SP.plan ~local_ref:(Some "l") ~remote_ref:(Some "r")
           ~ancestry:SP.Diverged ~base_branch:"main"
-          ~base_freshness:SP.Unknown_freshness
           ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let refuse_ahead =
         SP.plan ~local_ref:(Some "l") ~remote_ref:(Some "r")
           ~ancestry:SP.Local_ahead ~base_branch:"main"
-          ~base_freshness:SP.Unknown_freshness
           ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       let refuse_checked_out =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~base_freshness:SP.Fresh
-          ~branch_checked_out_in_main_root:true ~existing_worktree_path:None
+          ~base_branch:"main" ~branch_checked_out_in_main_root:true
+          ~existing_worktree_path:None
       in
       let refuse_registered =
         SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"main" ~base_freshness:SP.Fresh
-          ~branch_checked_out_in_main_root:false
+          ~base_branch:"main" ~branch_checked_out_in_main_root:false
           ~existing_worktree_path:(Some "/tmp/wt")
-      in
-      let refuse_base_stale =
-        SP.plan ~local_ref:None ~remote_ref:None ~ancestry:SP.Unknown
-          ~base_branch:"dep" ~base_freshness:SP.Stale
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
       in
       is_reset_to "r" reset && is_use_local use_local
       && is_create_from_base "main" create
       && is_refuse_diverged refuse_diverged
       && is_refuse_local_ahead refuse_ahead
       && is_refuse_checked_out refuse_checked_out
-      && is_refuse_registered refuse_registered
-      && is_refuse_base_stale refuse_base_stale)
+      && is_refuse_registered refuse_registered)
 
 let prop_remote_wins_over_local =
   Test.make ~count:500
@@ -359,8 +293,8 @@ let prop_remote_wins_over_local =
     (fun (local, remote, anc, base_branch) ->
       let d =
         SP.plan ~local_ref:(Some local) ~remote_ref:(Some remote) ~ancestry:anc
-          ~base_branch ~base_freshness:SP.Unknown_freshness
-          ~branch_checked_out_in_main_root:false ~existing_worktree_path:None
+          ~base_branch ~branch_checked_out_in_main_root:false
+          ~existing_worktree_path:None
       in
       not (is_use_local d))
 
@@ -373,8 +307,6 @@ let () =
          prop_no_silent_clobber;
          prop_remote_authoritative;
          prop_missing_both;
-         prop_missing_both_stale;
-         prop_stale_irrelevant_when_branch_exists;
          prop_determinism;
          prop_preempt_checked_out;
          prop_preempt_worktree;
