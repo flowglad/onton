@@ -413,6 +413,8 @@ This matters because the two artifacts have different lifespans. **A workstream 
 
 After the gameplan is finalised, validated, and its `openQuestions` are resolved, **propose a write-back to the workstream and wait for the programmer's approval before applying it.** Do not mutate the workstream silently: it is a shared planning artifact and may live in an external system (e.g. Notion via [[upsert-notion-gameplan]]). Present the intended edits as a diff or a tight summary, get sign-off, then apply them in place — updating existing entries rather than appending duplicates, and never pushing milestone-local detail up to the workstream level.
 
+Propose write-backs for all categories that apply, and present them together before waiting for approval. These categories are independent filters over the planning results, not a sequence that requires separate confirmation for each item.
+
 Propose write-backs for:
 
 1. **Decisions from the open-question dialogue.** Every entry added to `explicitOpinions` during [Resolving Open Questions](#resolving-open-questions) that answers a *workstream-level* question or constrains a *later* milestone. Add it to the workstream's `Decisions Made` and close the corresponding row in its `Open Questions`. This is the highest-value write-back — workstream open questions are frequently the ones that can only be resolved once a milestone is actually planned.
