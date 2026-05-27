@@ -271,7 +271,7 @@ type commits = { nodes : commit_node list [@yojson.default []] }
 
 type comment_node = {
   database_id : int option; [@key "databaseId"] [@yojson.default None]
-  body : string;
+  body : string; [@yojson.default ""]
   path : string option; [@yojson.default None]
   line : int option; [@yojson.default None]
   commit : oid_obj option; [@yojson.default None]
