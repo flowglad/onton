@@ -18,15 +18,11 @@ let extract_github_message body =
   in
   try
     let json = Yojson.Safe.from_string body in
-    let top_message =
-      Yojson.Safe.Util.(json |> member "message" |> to_string_option)
-    in
+    let top_message = Json.string_field "message" json in
     let validation_messages =
-      match Yojson.Safe.Util.(json |> member "errors") with
-      | `List errors ->
-          List.filter_map errors ~f:(fun err ->
-              Yojson.Safe.Util.(err |> member "message" |> to_string_option))
-      | _ -> []
+      match Json.field "errors" json |> Option.bind ~f:Json.list with
+      | Some errors -> List.filter_map errors ~f:(Json.string_field "message")
+      | None -> []
     in
     let messages = validation_messages @ Option.to_list top_message in
     let messages = List.stable_dedup messages ~compare:String.compare in
@@ -39,21 +35,19 @@ let extract_github_message body =
 let response_error_messages body =
   try
     let json = Yojson.Safe.from_string body in
-    let top_message =
-      Yojson.Safe.Util.(json |> member "message" |> to_string_option)
-    in
+    let top_message = Json.string_field "message" json in
     let validation_messages =
-      match Yojson.Safe.Util.(json |> member "errors") with
-      | `List errors ->
+      match Json.field "errors" json |> Option.bind ~f:Json.list with
+      | Some errors ->
           List.concat_map errors ~f:(fun err ->
               [
-                Yojson.Safe.Util.(err |> member "message" |> to_string_option);
-                Yojson.Safe.Util.(err |> member "code" |> to_string_option);
-                Yojson.Safe.Util.(err |> member "field" |> to_string_option);
-                Yojson.Safe.Util.(err |> member "resource" |> to_string_option);
+                Json.string_field "message" err;
+                Json.string_field "code" err;
+                Json.string_field "field" err;
+                Json.string_field "resource" err;
               ]
               |> List.filter_opt)
-      | _ -> []
+      | None -> []
     in
     Option.to_list top_message @ validation_messages
   with _ -> []
@@ -249,15 +243,15 @@ type page_info = {
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type contexts = {
-  page_info : page_info; [@key "pageInfo"] [@yojson.default { has_next_page = false }]
+  page_info : page_info;
+      [@key "pageInfo"] [@yojson.default { has_next_page = false }]
   nodes : context_node list; [@yojson.default []]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type status_check_rollup = {
   contexts : contexts;
-      [@yojson.default
-        { page_info = { has_next_page = false }; nodes = [] }]
+      [@yojson.default { page_info = { has_next_page = false }; nodes = [] }]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
@@ -281,7 +275,8 @@ type comment_node = {
   path : string option; [@yojson.default None]
   line : int option; [@yojson.default None]
   commit : oid_obj option; [@yojson.default None]
-  original_commit : oid_obj option; [@key "originalCommit"] [@yojson.default None]
+  original_commit : oid_obj option;
+      [@key "originalCommit"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
@@ -306,13 +301,15 @@ type pull_request = {
   state : string;
   mergeable : string option; [@yojson.default None]
   is_draft : bool; [@key "isDraft"] [@yojson.default false]
-  merge_state_status : string option; [@key "mergeStateStatus"] [@yojson.default None]
+  merge_state_status : string option;
+      [@key "mergeStateStatus"] [@yojson.default None]
   head_ref_name : string option; [@key "headRefName"] [@yojson.default None]
   head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
   base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
   merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.default None]
   commits : commits; [@yojson.default { nodes = [] }]
-  review_threads : review_threads; [@key "reviewThreads"] [@yojson.default { nodes = [] }]
+  review_threads : review_threads;
+      [@key "reviewThreads"] [@yojson.default { nodes = [] }]
   head_repository_owner : repo_owner option;
       [@key "headRepositoryOwner"] [@yojson.default None]
 }
@@ -339,7 +336,9 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
   | Some "CheckRun" ->
       Option.map n.name ~f:(fun name ->
           let conclusion =
-            match n.conclusion with Some c -> String.lowercase c | None -> "pending"
+            match n.conclusion with
+            | Some c -> String.lowercase c
+            | None -> "pending"
           in
           {
             Types.Ci_check.name;
@@ -352,7 +351,9 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
   | Some "StatusContext" ->
       Option.map n.context ~f:(fun name ->
           let conclusion =
-            match n.state with Some s -> String.lowercase s | None -> "pending"
+            match n.state with
+            | Some s -> String.lowercase s
+            | None -> "pending"
           in
           {
             Types.Ci_check.name;
@@ -426,11 +427,11 @@ let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
              [commit] vs [originalCommit] — GitHub advances [commit] to whatever
              commit still contains the line, flagging false positives. *)
           List.map thread.comments.nodes
-            ~f:(comment_of_node ~thread_id:thread.id ~outdated:thread.is_outdated))
+            ~f:
+              (comment_of_node ~thread_id:thread.id ~outdated:thread.is_outdated))
   in
   let unresolved_comment_count =
-    List.count pr.review_threads.nodes ~f:(fun thread ->
-        not thread.is_resolved)
+    List.count pr.review_threads.nodes ~f:(fun thread -> not thread.is_resolved)
   in
   let is_fork =
     match Option.bind pr.head_repository_owner ~f:(fun r -> r.login) with
@@ -602,36 +603,36 @@ let pr_state ~net ~clock ?timeout t pr =
     of [(pr_number, base_branch, merged)] for non-CLOSED PRs, newest first. Pure
     function — no I/O. *)
 let parse_rest_pr_list body =
-  try
-    match Yojson.Safe.from_string body with
-    | `List entries ->
-        let prs =
-          List.filter_map entries ~f:(fun entry ->
-              let open Yojson.Safe.Util in
-              let number = entry |> member "number" |> to_int in
-              let state =
-                entry |> member "state" |> to_string |> String.lowercase
-              in
-              let merged_at = entry |> member "merged_at" in
-              let base_ref =
-                entry |> member "base" |> member "ref" |> to_string
-              in
-              match (state, merged_at) with
-              | "closed", `Null -> None (* truly closed, not merged *)
-              | _ ->
-                  let merged =
-                    match merged_at with `Null -> false | _ -> true
-                  in
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | `List entries ->
+      let prs =
+        List.filter_map entries ~f:(fun entry ->
+            (* A null/absent [merged_at] means "not merged"; [Json.field]
+               collapses both to [None]. Entries missing [number] or [base.ref]
+               are skipped (malformed) rather than failing the whole list. *)
+            let merged = Option.is_some (Json.field "merged_at" entry) in
+            let state =
+              Json.string_field "state" entry |> Option.map ~f:String.lowercase
+            in
+            let base_ref =
+              Option.bind (Json.field "base" entry) ~f:(Json.string_field "ref")
+            in
+            match (Json.int_field "number" entry, base_ref) with
+            | Some number, Some base_ref ->
+                let truly_closed =
+                  match state with Some "closed" -> not merged | _ -> false
+                in
+                if truly_closed then None
+                else
                   Some
                     ( Types.Pr_number.of_int number,
                       Types.Branch.of_string base_ref,
-                      merged ))
-        in
-        Ok prs
-    | _ -> Error (Json_parse_error "expected JSON array from REST PR list")
-  with
-  | Yojson.Json_error msg -> Error (Json_parse_error msg)
-  | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
+                      merged )
+            | _ -> None)
+      in
+      Ok prs
+  | _ -> Error (Json_parse_error "expected JSON array from REST PR list")
 
 (** List PRs for a branch via REST API. Returns non-CLOSED PRs. *)
 let list_prs ~net ~clock ?timeout t ~branch ?(base = None) ~state () =
@@ -680,13 +681,15 @@ let create_pull_request ~net ~clock ?timeout t ~title ~head ~base ~body ~draft =
   match request ~net ~clock ?timeout t ~meth:`POST ~path ~body:req_body () with
   | Error _ as e -> e
   | Ok resp_str -> (
-      try
-        let json = Yojson.Safe.from_string resp_str in
-        let number = Yojson.Safe.Util.(json |> member "number" |> to_int) in
-        Ok (Types.Pr_number.of_int number)
-      with
-      | Yojson.Json_error msg -> Error (Json_parse_error msg)
-      | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg))
+      match Yojson.Safe.from_string resp_str with
+      | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+      | json -> (
+          match Json.int_field "number" json with
+          | Some number -> Ok (Types.Pr_number.of_int number)
+          | None ->
+              Error
+                (Json_parse_error "PR create response missing numeric 'number'")
+          ))
 
 (** Update the base (target) branch of a PR via REST API. *)
 let update_pr_base ~net ~clock ?timeout t ~pr_number ~base =
@@ -711,15 +714,12 @@ let pr_node_id ~net ~clock ?timeout t ~pr_number =
   match request ~net ~clock ?timeout t ~meth:`GET ~path () with
   | Error _ as e -> e
   | Ok body -> (
-      try
-        let json = Yojson.Safe.from_string body in
-        let node_id =
-          Yojson.Safe.Util.(json |> member "node_id" |> to_string)
-        in
-        Ok node_id
-      with
-      | Yojson.Json_error msg -> Error (Json_parse_error msg)
-      | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg))
+      match Yojson.Safe.from_string body with
+      | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+      | json -> (
+          match Json.string_field "node_id" json with
+          | Some node_id -> Ok node_id
+          | None -> Error (Json_parse_error "PR response missing 'node_id'")))
 
 (** Set or unset draft status on a PR via GraphQL mutation. REST API does not
     support changing the draft field. *)
@@ -747,21 +747,16 @@ let set_draft ~net ~clock ?timeout t ~pr_number ~draft =
           ~body:req_body ()
       with
       | Ok resp -> (
-          try
-            let json = Yojson.Safe.from_string resp in
-            let open Yojson.Safe.Util in
-            match json |> member "errors" with
-            | `Null | `List [] -> Ok ()
-            | errors ->
-                let msgs =
-                  errors |> to_list
-                  |> List.map ~f:(fun e -> e |> member "message" |> to_string)
-                in
-                Error (Graphql_error msgs)
-          with
-          | Yojson.Json_error msg -> Error (Json_parse_error msg)
-          | Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
-          )
+          match Yojson.Safe.from_string resp with
+          | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+          | json -> (
+              match Json.field "errors" json |> Option.bind ~f:Json.list with
+              | None | Some [] -> Ok () (* null / absent / empty errors *)
+              | Some errors ->
+                  Error
+                    (Graphql_error
+                       (List.filter_map errors ~f:(Json.string_field "message")))
+              ))
       | Error _ as e -> e)
 
 (** Outcome of a [PUT /pulls/:n/merge] call that returned a 2xx status. GitHub
@@ -788,19 +783,19 @@ type merge_result =
       [merged : bool], so absence is suspicious and we let the poller confirm
       rather than guessing. *)
 let interpret_merge_response body =
-  try
-    let json = Yojson.Safe.from_string body in
-    match Yojson.Safe.Util.(member "merged" json |> to_bool_option) with
-    | Some true -> Merge_succeeded
-    | Some false ->
-        let msg =
-          Yojson.Safe.Util.(member "message" json |> to_string_option)
-          |> Option.value ~default:"merged=false"
-        in
-        Merge_queued msg
-    | None -> Merge_unconfirmed
-  with Yojson.Json_error _ | Yojson.Safe.Util.Type_error _ ->
-    Merge_unconfirmed
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error _ -> Merge_unconfirmed
+  | json -> (
+      match Json.bool_field "merged" json with
+      | Some true -> Merge_succeeded
+      | Some false ->
+          let msg =
+            Option.value
+              (Json.string_field "message" json)
+              ~default:"merged=false"
+          in
+          Merge_queued msg
+      | None -> Merge_unconfirmed)
 
 (** Merge a pull request via the REST API. Maps to
     [PUT /repos/:owner/:repo/pulls/:number/merge]. Returns the parsed
