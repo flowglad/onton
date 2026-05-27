@@ -76,5 +76,12 @@ let () =
    with
   | Error _ -> check "try_of_yojson catches Of_yojson_error" true
   | Ok _ -> check "try_of_yojson catches Of_yojson_error" false);
+  (match
+     J.try_of_yojson
+       (fun _ -> raise (Yojson.Safe.Util.Type_error ("expected string", `Null)))
+       obj
+   with
+  | Error _ -> check "try_of_yojson catches Type_error" true
+  | Ok _ -> check "try_of_yojson catches Type_error" false);
 
   Stdlib.print_endline "test_json: OK"

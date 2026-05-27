@@ -26,8 +26,9 @@ cd "$REPO_ROOT" || exit 1
 # Allowlisted paths, comments/blank lines stripped and trailing space trimmed.
 allowed="$(grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" | sed 's/[[:space:]]*$//')"
 
-# Tracked OCaml sources in the libraries/binaries we police.
-files="$(git ls-files 'lib/*.ml' 'lib_core/*.ml' 'api/*.ml' 'bin/*.ml')"
+# Tracked OCaml sources in the libraries/binaries we police, including nested
+# modules — the leading-anchored grep keeps it to those top-level directories.
+files="$(git ls-files '*.ml' | grep -E '^(lib|lib_core|api|bin)/')"
 
 status=0
 
