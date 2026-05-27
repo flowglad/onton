@@ -271,10 +271,14 @@ let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
   in
   let pr_instructions =
     let commit_block =
-      {|
+      Printf.sprintf
+        {|
 **Commit your work with `git commit` before ending the session.** Every code change you make must land in a commit — uncommitted changes are discarded by the supervisor's push, and no PR can be opened from an empty branch. Multiple commits are fine; commit whenever it makes sense.
 
+**Prefix every commit subject with `[%s] Patch %s: `** (the same project name and patch number used by this branch and its PR title), e.g. `[%s] Patch %s: <short summary>`. This lets the supervisor recognize your commits as belonging to this patch when rebasing onto dependency branches later.
+
 **Do NOT run `git push` or `gh pr create` yourself.** The supervisor pushes your commits and opens/updates the PR.|}
+        project_name patch_id project_name patch_id
     in
     match pr_number with
     | Some _ -> commit_block
