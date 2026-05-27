@@ -7,13 +7,14 @@ class Onton < Formula
   version "VERSION"
   license "MIT"
 
-  # x86_64/Intel build temporarily dropped — no x86_64 macOS CI runner is
-  # available (GitHub retired macos-13). Tracked in #316. Without an on_intel
-  # block, `brew install` fails cleanly on Intel rather than installing an
-  # unrunnable ARM64 binary.
   on_arm do
     url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-arm64-apple-darwin.tar.gz"
     sha256 "SHA256_ARM64"
+  end
+
+  on_intel do
+    url "https://github.com/flowglad/onton/releases/download/vVERSION/onton-x86_64-apple-darwin.tar.gz"
+    sha256 "SHA256_X86_64"
   end
 
   depends_on "gmp"
