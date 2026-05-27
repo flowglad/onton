@@ -188,3 +188,15 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC2086 # SHFMT_FLAGS intentionally word-splits
           xargs -0 shfmt $SHFMT_FLAGS -d < "$RUNNER_TEMP/shell-files.nul"
+
+  lint-yojson:
+    name: No raw Yojson.Safe.Util
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Guards against new partial-accessor (member/to_string/to_*) call sites
+      # creeping back in outside lib_core/json.ml. See the script header and
+      # scripts/yojson-util-allowlist.txt.
+      - name: check-no-raw-yojson
+        run: bash scripts/check-no-raw-yojson.sh

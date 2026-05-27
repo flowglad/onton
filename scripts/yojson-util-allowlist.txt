@@ -1,0 +1,30 @@
+# Files permitted to reference Yojson.Safe.Util.
+#
+# Yojson.Safe.Util's member/to_string/to_* are partial — they raise at runtime,
+# invisibly to the type checker (the failure mode behind PR #333's poll crash).
+# lib_core/json.ml wraps the safe subset into total, option-returning accessors;
+# every other module should decode through Onton_core.Json (or ppx_yojson_conv).
+#
+# The end state is that only lib_core/json.ml remains here. The other entries are
+# pre-existing call sites being migrated; each conversion PR deletes its line.
+# Enforced by scripts/check-no-raw-yojson.sh (run in CI). Blank lines and
+# #-comments are ignored.
+
+lib_core/json.ml
+
+# --- pending migration (remove each line as its module is converted) ---
+lib/github.ml
+lib/persistence.ml
+lib/session_driver.ml
+lib_core/claude_event_parser.ml
+lib_core/codex_cost.ml
+lib_core/codex_event_parser.ml
+lib_core/failure_subkind.ml
+lib_core/gameplan_parser.ml
+lib_core/gemini_event_parser.ml
+lib_core/opencode_event_parser.ml
+lib_core/patch_pr_status.ml
+lib_core/pi_event_parser.ml
+lib_core/repo_config.ml
+lib_core/review_backend.ml
+lib_core/review_service.ml

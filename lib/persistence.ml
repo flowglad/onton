@@ -110,13 +110,10 @@ let result_all xs =
   List.fold_right xs ~init:(Ok []) ~f:(fun x acc ->
       Result.bind acc ~f:(fun tl -> Result.map x ~f:(fun hd -> hd :: tl)))
 
-(** Wrap a raising ppx_yojson_conv deserializer into a Result.t. *)
-let try_of_yojson f json =
-  try Ok (f json) with
-  | Ppx_yojson_conv_lib.Yojson_conv.Of_yojson_error (exn, _) ->
-      Error (Stdlib.Printexc.to_string exn)
-  | Yojson.Safe.Util.Type_error (msg, _) ->
-      Error (Printf.sprintf "malformed json: %s" msg)
+(** Wrap a raising ppx_yojson_conv deserializer into a Result.t. Delegates to
+    {!Onton_core.Json.try_of_yojson} (the sanctioned home for the
+    [Yojson.Safe.Util.Type_error] catch). *)
+let try_of_yojson = Json.try_of_yojson
 
 (* ---------- Patch_agent ---------- *)
 

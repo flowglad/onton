@@ -106,7 +106,7 @@ let scenario_brand_new env =
       ~project_name:"brand-new"
       ~patch_id:(Types.Patch_id.of_string "1")
       ~branch:(Types.Branch.of_string "feat")
-      ~base_ref:"origin/main" ~main_branch:"main"
+      ~base_ref:"origin/main"
   in
   match res with
   | Result.Ok wt ->
@@ -146,7 +146,7 @@ let scenario_remote_ahead_of_stale_local env =
       ~project_name:"stale-local"
       ~patch_id:(Types.Patch_id.of_string "2")
       ~branch:(Types.Branch.of_string "feat")
-      ~base_ref:"origin/main" ~main_branch:"main"
+      ~base_ref:"origin/main"
   in
   match res with
   | Result.Ok wt ->
@@ -183,7 +183,7 @@ let scenario_local_only env =
       ~project_name:"local-only"
       ~patch_id:(Types.Patch_id.of_string "3")
       ~branch:(Types.Branch.of_string "feat")
-      ~base_ref:"origin/main" ~main_branch:"main"
+      ~base_ref:"origin/main"
   in
   match res with
   | Result.Ok wt ->
@@ -217,7 +217,7 @@ let scenario_diverged env =
     Worktree.create ~process_mgr ~repo_root:managed_dir ~project_name:"diverged"
       ~patch_id:(Types.Patch_id.of_string "4")
       ~branch:(Types.Branch.of_string "feat")
-      ~base_ref:"origin/main" ~main_branch:"main"
+      ~base_ref:"origin/main"
   in
   match res with
   | Result.Ok _ -> failwith "diverged: expected Error refusal, got Ok"
@@ -227,8 +227,7 @@ let scenario_diverged env =
           Stdlib.print_endline "  diverged: OK (refused)"
       | Start_point_plan.Local_has_unpushed_commits _
       | Start_point_plan.Branch_checked_out_in_main_root
-      | Start_point_plan.Worktree_already_registered _
-      | Start_point_plan.Base_branch_stale_vs_main _ ->
+      | Start_point_plan.Worktree_already_registered _ ->
           failwith
             (Printf.sprintf
                "diverged: expected Local_diverged_from_remote, got %s"
@@ -270,7 +269,7 @@ let scenario_local_strictly_ahead env =
       ~project_name:"local-ahead"
       ~patch_id:(Types.Patch_id.of_string "5")
       ~branch:(Types.Branch.of_string "feat")
-      ~base_ref:"origin/main" ~main_branch:"main"
+      ~base_ref:"origin/main"
   in
   match res with
   | Result.Ok _ ->
@@ -281,22 +280,25 @@ let scenario_local_strictly_ahead env =
           Stdlib.print_endline "  local_strictly_ahead: OK (refused)"
       | Start_point_plan.Local_diverged_from_remote _
       | Start_point_plan.Branch_checked_out_in_main_root
-      | Start_point_plan.Worktree_already_registered _
-      | Start_point_plan.Base_branch_stale_vs_main _ ->
+      | Start_point_plan.Worktree_already_registered _ ->
           failwith
             (Printf.sprintf
                "local_strictly_ahead: expected Local_has_unpushed_commits, got \
                 %s"
                (Start_point_plan.show_refusal r)))
 
-(* The event-stream-pages witness, end-to-end against real git:
+(* Part B regression, end-to-end against real git:
 
    A→B→C stacking. Patch B's branch is cut from main *before* patch A merges to
-   main. Then A merges (origin/main advances to include A). We now try to cut a
-   brand-new branch C from B. Because origin/main is NOT an ancestor of B's
-   branch, [Worktree.create] must refuse with [Base_branch_stale_vs_main]
-   rather than silently producing a worktree missing A's commit. *)
-let scenario_base_stale_vs_main env =
+   main. Then A merges (origin/main advances to include A). We now cut a
+   brand-new branch C from B while origin/main is NOT an ancestor of B's
+   branch. This must SUCCEED: base freshness vs main is dependency-scoped and
+   enforced by the orchestrator's scheduling gate, not here. A dependent cut
+   from B's tip contains everything in B; main advancing for unrelated reasons
+   must not block the cut (the previous main-scoped veto livelocked the run —
+   main moves faster than rebase-and-restart). The new worktree must contain
+   B's commit; it need not contain A's. *)
+let scenario_base_stale_vs_main_now_allowed env =
   let process_mgr = Eio.Stdenv.process_mgr env in
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin" in
@@ -333,23 +335,26 @@ let scenario_base_stale_vs_main env =
       ~project_name:"base-stale"
       ~patch_id:(Types.Patch_id.of_string "c")
       ~branch:(Types.Branch.of_string "patch-c")
-      ~base_ref:"origin/patch-b" ~main_branch:"main"
+      ~base_ref:"origin/patch-b"
   in
   match res with
-  | Result.Ok _ ->
+  | Result.Ok wt ->
+      (* The new worktree must contain patch B's commit (b.txt), proving it was
+         cut from B's tip; it need not (and does not) contain A's a.txt. *)
+      let has_file name =
+        Stdlib.Sys.command
+          (Printf.sprintf "test -f %s"
+             (Stdlib.Filename.quote (Stdlib.Filename.concat wt.path name)))
+        = 0
+      in
+      assert_true "stale-vs-main: worktree contains base commit"
+        (has_file "b.txt");
+      Stdlib.print_endline "  base_stale_vs_main_now_allowed: OK (created)"
+  | Result.Error r ->
       failwith
-        "base_stale: expected Error (Base_branch_stale_vs_main), got Ok — a \
-         worktree cut from a stale dep branch would silently drop main's \
-         commits"
-  | Result.Error (Start_point_plan.Base_branch_stale_vs_main _) ->
-      Stdlib.print_endline "  base_stale_vs_main: OK (refused)"
-  | Result.Error
-      (( Start_point_plan.Local_diverged_from_remote _
-       | Start_point_plan.Local_has_unpushed_commits _
-       | Start_point_plan.Branch_checked_out_in_main_root
-       | Start_point_plan.Worktree_already_registered _ ) as r) ->
-      failwith
-        (Printf.sprintf "base_stale: expected Base_branch_stale_vs_main, got %s"
+        (Printf.sprintf
+           "base_stale_vs_main_now_allowed: expected Ok (main-freshness must \
+            not block a stacked cut), got refusal %s"
            (Start_point_plan.show_refusal r))
 
 (* The complement: a stacked base that legitimately CONTAINS the latest main
@@ -380,7 +385,7 @@ let scenario_base_fresh_stacked env =
       ~project_name:"base-fresh"
       ~patch_id:(Types.Patch_id.of_string "c2")
       ~branch:(Types.Branch.of_string "patch-c2")
-      ~base_ref:"origin/patch-b" ~main_branch:"main"
+      ~base_ref:"origin/patch-b"
   in
   match res with
   | Result.Ok wt ->
@@ -406,6 +411,6 @@ let () =
   scenario_local_only env;
   scenario_diverged env;
   scenario_local_strictly_ahead env;
-  scenario_base_stale_vs_main env;
+  scenario_base_stale_vs_main_now_allowed env;
   scenario_base_fresh_stacked env;
   Stdlib.print_endline "All start-point integration scenarios passed."
