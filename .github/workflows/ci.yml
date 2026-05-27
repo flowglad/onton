@@ -101,15 +101,15 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Cache opam switch
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
-        with:
-          path: _opam
-          key: opam-${{ runner.os }}-ocaml-5.4.1-${{ hashFiles('*.opam') }}
-
+      # Same reasoning as build-and-test above: do NOT cache [_opam/]. The
+      # manual switch cache drifts from setup-ocaml's [~/.opam/] state and, via
+      # actions/cache's frozen-first-entry behavior, a single half-consistent
+      # [_opam/] poisons every later run ("zarith ... META already exists").
+      # [dune-cache: true] plus the archive mirror cover the speed win.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.1'
+          dune-cache: true
 
       - name: Use opam.ocaml.org archive cache
         run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
