@@ -13,7 +13,6 @@
 lib_core/json.ml
 
 # --- pending migration (remove each line as its module is converted) ---
-lib/github.ml
 lib/persistence.ml
 lib/session_driver.ml
 lib_core/claude_event_parser.ml

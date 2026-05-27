@@ -1,4 +1,5 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type error =
   | Http_error of { meth : string; path : string; status : int; body : string }
@@ -210,237 +211,280 @@ let parse_merge_state = function
   | "CONFLICTING" -> Pr_state.Conflicting
   | _ -> Pr_state.Unknown
 
-let parse_check_context_node node =
-  let open Yojson.Safe.Util in
-  let typename = node |> member "__typename" |> to_string_option in
-  match typename with
-  | Some "CheckRun" -> (
-      match node |> member "name" |> to_string_option with
-      | None -> None
-      | Some name ->
-          let conclusion =
-            match node |> member "conclusion" |> to_string_option with
-            | Some c -> String.lowercase c
-            | None -> "pending"
-          in
-          let details_url = node |> member "detailsUrl" |> to_string_option in
-          let description = node |> member "text" |> to_string_option in
-          let started_at = node |> member "startedAt" |> to_string_option in
-          let id = node |> member "databaseId" |> to_int_option in
-          Some
-            Types.Ci_check.
-              { name; conclusion; details_url; description; started_at; id })
-  | Some "StatusContext" -> (
-      match node |> member "context" |> to_string_option with
-      | None -> None
-      | Some name ->
-          let conclusion =
-            match node |> member "state" |> to_string_option with
-            | Some s -> String.lowercase s
-            | None -> "pending"
-          in
-          let details_url = node |> member "targetUrl" |> to_string_option in
-          let description = node |> member "description" |> to_string_option in
-          let started_at = node |> member "createdAt" |> to_string_option in
-          Some
-            Types.Ci_check.
-              {
-                name;
-                conclusion;
-                details_url;
-                description;
-                started_at;
-                id = None;
-              })
-  | _ -> None
+(* Typed model of the GraphQL PR response. Every nullable scalar/object is an
+   [option] ([@yojson.option] tolerates both a missing key and an explicit
+   [null]); every record allows unmodeled fields so a schema addition never
+   fails the parse. Decoding goes through [Json.try_of_yojson], so a shape
+   mismatch becomes [Error (Json_parse_error _)] rather than a raised exception
+   that fails the whole poll — the failure class behind PR #333. *)
 
-let parse_comment_node ~thread_id ~outdated node =
-  let open Yojson.Safe.Util in
+type oid_obj = { oid : string option [@yojson.option] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+(* A check-context node is an internally-tagged union on [__typename]
+   (CheckRun | StatusContext) whose two arms share no keys. ppx's derived
+   variant encoding does not match that wire shape, so decode every node into
+   one flat all-optional record and dispatch in OCaml ([ci_check_of_context]).
+   Optional [typename]/[name]/[context] preserve the "skip unrecognized or
+   incomplete node" behavior of the previous hand-rolled parser. *)
+type context_node = {
+  typename : string option; [@key "__typename"] [@yojson.option]
+  database_id : int option; [@key "databaseId"] [@yojson.option]
+  name : string option; [@yojson.option]
+  conclusion : string option; [@yojson.option]
+  details_url : string option; [@key "detailsUrl"] [@yojson.option]
+  text : string option; [@yojson.option]
+  started_at : string option; [@key "startedAt"] [@yojson.option]
+  context : string option; [@yojson.option]
+  state : string option; [@yojson.option]
+  target_url : string option; [@key "targetUrl"] [@yojson.option]
+  description : string option; [@yojson.option]
+  created_at : string option; [@key "createdAt"] [@yojson.option]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type page_info = {
+  has_next_page : bool; [@key "hasNextPage"] [@yojson.default false]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type contexts = {
+  page_info : page_info; [@key "pageInfo"] [@yojson.default { has_next_page = false }]
+  nodes : context_node list; [@yojson.default []]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type status_check_rollup = {
+  contexts : contexts;
+      [@yojson.default
+        { page_info = { has_next_page = false }; nodes = [] }]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type commit = {
+  status_check_rollup : status_check_rollup option;
+      [@key "statusCheckRollup"] [@yojson.option]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type commit_node = {
+  commit : commit; [@yojson.default { status_check_rollup = None }]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type commits = { nodes : commit_node list [@yojson.default []] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type comment_node = {
+  database_id : int option; [@key "databaseId"] [@yojson.option]
+  body : string;
+  path : string option; [@yojson.option]
+  line : int option; [@yojson.option]
+  commit : oid_obj option; [@yojson.option]
+  original_commit : oid_obj option; [@key "originalCommit"] [@yojson.option]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type comment_connection = { nodes : comment_node list [@yojson.default []] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type review_thread = {
+  id : string option; [@yojson.option]
+  is_resolved : bool; [@key "isResolved"]
+  is_outdated : bool; [@key "isOutdated"] [@yojson.default false]
+  comments : comment_connection; [@yojson.default { nodes = [] }]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type review_threads = { nodes : review_thread list [@yojson.default []] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type repo_owner = { login : string option [@yojson.option] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type pull_request = {
+  state : string;
+  mergeable : string option; [@yojson.option]
+  is_draft : bool; [@key "isDraft"] [@yojson.default false]
+  merge_state_status : string option; [@key "mergeStateStatus"] [@yojson.option]
+  head_ref_name : string option; [@key "headRefName"] [@yojson.option]
+  head_ref_oid : string option; [@key "headRefOid"] [@yojson.option]
+  base_ref_name : string option; [@key "baseRefName"] [@yojson.option]
+  merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.option]
+  commits : commits; [@yojson.default { nodes = [] }]
+  review_threads : review_threads; [@key "reviewThreads"] [@yojson.default { nodes = [] }]
+  head_repository_owner : repo_owner option;
+      [@key "headRepositoryOwner"] [@yojson.option]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type repository = {
+  pull_request : pull_request option; [@key "pullRequest"] [@yojson.option]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type data = { repository : repository option [@yojson.option] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type response = { data : data option [@yojson.option] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+(* Map a decoded context node to a [Ci_check.t], or [None] to skip it.
+   Byte-for-byte equivalent to the former [parse_check_context_node]: unknown or
+   incomplete nodes are skipped, conclusion is lowercased with a "pending"
+   default, and the CheckRun/StatusContext field asymmetry (text vs description,
+   id present only for CheckRun) is preserved. *)
+let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
+  match n.typename with
+  | Some "CheckRun" ->
+      Option.map n.name ~f:(fun name ->
+          let conclusion =
+            match n.conclusion with Some c -> String.lowercase c | None -> "pending"
+          in
+          Types.Ci_check.
+            {
+              name;
+              conclusion;
+              details_url = n.details_url;
+              description = n.text;
+              started_at = n.started_at;
+              id = n.database_id;
+            })
+  | Some "StatusContext" ->
+      Option.map n.context ~f:(fun name ->
+          let conclusion =
+            match n.state with Some s -> String.lowercase s | None -> "pending"
+          in
+          Types.Ci_check.
+            {
+              name;
+              conclusion;
+              details_url = n.target_url;
+              description = n.description;
+              started_at = n.created_at;
+              id = None;
+            })
+  | Some _ | None -> None
+
+let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
   let id =
-    match node |> member "databaseId" |> to_int_option with
+    match n.database_id with
     | Some raw_id -> Types.Comment_id.of_int raw_id
     | None -> Types.Comment_id.next_synthetic ()
   in
-  let body = node |> member "body" |> to_string in
-  let path = node |> member "path" |> to_string_option in
-  let line = node |> member "line" |> to_int_option in
-  (* If [field] is absent or null we return [None]; if it's present but the
-     nested [oid] is missing/non-string, [to_string_option] also returns [None].
-     That second case is a GraphQL-schema-change red flag, but there's no
-     structured logger here — callers treat a [None] SHA as "no anchor info",
-     which is the safest fallback. *)
-  let oid_of field =
-    match node |> member field with
-    | `Null -> None
-    | obj -> obj |> member "oid" |> to_string_option
-  in
-  let commit_sha = oid_of "commit" in
-  let original_commit_sha = oid_of "originalCommit" in
   Types.Comment.
     {
       id;
       thread_id;
-      body;
-      path;
-      line;
-      commit_sha;
-      original_commit_sha;
+      body = n.body;
+      path = n.path;
+      line = n.line;
+      commit_sha = Option.bind n.commit ~f:(fun o -> o.oid);
+      original_commit_sha = Option.bind n.original_commit ~f:(fun o -> o.oid);
       outdated;
     }
 
-let parse_response_json ~owner json =
-  let open Yojson.Safe.Util in
-  try
-    let errors = json |> member "errors" in
-    match errors with
-    | `Null -> (
-        let pr =
-          json |> member "data" |> member "repository" |> member "pullRequest"
-        in
-        match pr with
-        | `Null -> Error (Json_parse_error "pullRequest not found")
-        | pr ->
+let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
+  let status =
+    match pr.state with
+    | "MERGED" -> Pr_state.Merged
+    | "CLOSED" -> Pr_state.Closed
+    | _ -> Pr_state.Open
+  in
+  let merge_state =
+    Option.value_map pr.mergeable ~default:Pr_state.Unknown ~f:parse_merge_state
+  in
+  let merge_ready =
+    match pr.merge_state_status with Some "CLEAN" -> true | _ -> false
+  in
+  let check_status, ci_checks, ci_checks_truncated =
+    match pr.commits.nodes with
+    | [] -> (Pr_state.Pending, [], false)
+    | node :: _ -> (
+        match node.commit.status_check_rollup with
+        | None -> (Pr_state.Pending, [], false)
+        | Some rollup ->
+            let truncated = rollup.contexts.page_info.has_next_page in
+            let checks =
+              List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
+            in
+            (* Derive check_status from individual conclusions; we deliberately
+               do NOT use the GraphQL rollup state (it conflates cancelled runs
+               with real failures). When truncated, downgrade Passing to Pending
+               so we never approve a merge that might fail on page 2+. *)
             let status =
-              match pr |> member "state" |> to_string with
-              | "MERGED" -> Pr_state.Merged
-              | "CLOSED" -> Pr_state.Closed
-              | _ -> Pr_state.Open
+              let base = Pr_state.derive_check_status checks in
+              if truncated && Pr_state.equal_check_status base Pr_state.Passing
+              then Pr_state.Pending
+              else base
             in
-            let merge_state =
-              match pr |> member "mergeable" |> to_string_option with
-              | Some s -> parse_merge_state s
-              | None -> Pr_state.Unknown
-            in
-            let is_draft =
-              pr |> member "isDraft" |> to_bool_option
-              |> Option.value ~default:false
-            in
-            let merge_ready =
-              match pr |> member "mergeStateStatus" |> to_string_option with
-              | Some "CLEAN" -> true
-              | _ -> false
-            in
-            let check_status, ci_checks, ci_checks_truncated =
-              let commits = pr |> member "commits" |> member "nodes" in
-              match commits |> to_list with
-              | [] -> (Pr_state.Pending, [], false)
-              | node :: _ -> (
-                  let rollup =
-                    node |> member "commit" |> member "statusCheckRollup"
-                  in
-                  match rollup with
-                  | `Null -> (Pr_state.Pending, [], false)
-                  | rollup ->
-                      let contexts = rollup |> member "contexts" in
-                      let truncated =
-                        contexts |> member "pageInfo" |> member "hasNextPage"
-                        |> to_bool_option
-                        |> Option.value ~default:false
-                      in
-                      let checks =
-                        contexts |> member "nodes" |> to_list
-                        |> List.filter_map ~f:parse_check_context_node
-                      in
-                      (* Derive check_status from individual conclusions.
-                         We deliberately do NOT use the GraphQL rollup
-                         state — it conflates cancelled runs (e.g.
-                         superseded by a newer commit) with real failures.
-                         See [Pr_state.derive_check_status] for semantics. *)
-                      let status =
-                        let base = Pr_state.derive_check_status checks in
-                        (* Passing is only reliable when we've seen every check.
-                           If the list is truncated, treat as Pending to avoid
-                           approving a merge that might have failures on page 2+. *)
-                        if
-                          truncated
-                          && Pr_state.equal_check_status base Pr_state.Passing
-                        then Pr_state.Pending
-                        else base
-                      in
-                      (status, checks, truncated))
-            in
-            let review_threads =
-              pr |> member "reviewThreads" |> member "nodes" |> to_list
-            in
-            let comments =
-              List.concat_map review_threads ~f:(fun thread ->
-                  if thread |> member "isResolved" |> to_bool then []
-                  else
-                    let thread_id = thread |> member "id" |> to_string_option in
-                    (* [isOutdated] is the authoritative signal from GitHub:
-                       the thread's anchored lines were changed by a later
-                       commit (or the file was deleted). Do not infer this
-                       from [commit] vs [originalCommit] — GitHub advances
-                       [commit] to whatever commit still contains the line,
-                       including commits that touched unrelated files, so
-                       that comparison flags false positives. *)
-                    let outdated =
-                      match thread |> member "isOutdated" with
-                      | `Bool b -> b
-                      | _ -> false
-                    in
-                    thread |> member "comments" |> member "nodes" |> to_list
-                    |> List.map ~f:(parse_comment_node ~thread_id ~outdated))
-            in
-            let unresolved_comment_count =
-              List.count review_threads ~f:(fun thread ->
-                  not (thread |> member "isResolved" |> to_bool))
-            in
-            let head_branch =
-              pr |> member "headRefName" |> to_string_option
-              |> Option.map ~f:Types.Branch.of_string
-            in
-            let head_oid = pr |> member "headRefOid" |> to_string_option in
-            let merge_commit_sha =
-              (* [mergeCommit] is [null] for every open/draft/unmerged PR.
-                 [member "oid"] on [`Null] raises [Type_error], which would
-                 fail the whole poll — guard the null arm explicitly, mirroring
-                 [parse_comment_node]'s [oid_of] helper above. *)
-              match pr |> member "mergeCommit" with
-              | `Null -> None
-              | commit -> commit |> member "oid" |> to_string_option
-            in
-            let base_branch =
-              pr |> member "baseRefName" |> to_string_option
-              |> Option.map ~f:Types.Branch.of_string
-            in
-            let is_fork =
-              match
-                pr
-                |> member "headRepositoryOwner"
-                |> member "login" |> to_string_option
-              with
-              | Some head_owner -> not (String.equal head_owner owner)
-              | None -> false
-            in
-            Ok
-              {
-                Pr_state.status;
-                is_draft;
-                merge_state;
-                merge_ready;
-                check_status;
-                ci_checks;
-                ci_checks_truncated;
-                comments;
-                unresolved_comment_count;
-                findings = [];
-                (* GitHub does not produce review-service findings; the
-                     poller in [bin/main.ml] augments this list from
-                     configured review-service backends. *)
-                head_branch;
-                head_oid;
-                merge_commit_sha;
-                base_branch;
-                is_fork;
-              })
-    | errors ->
-        let msgs =
-          errors |> to_list
-          |> List.map ~f:(fun e -> e |> member "message" |> to_string)
-        in
-        Error (Graphql_error msgs)
-  with Yojson.Safe.Util.Type_error (msg, _) -> Error (Json_parse_error msg)
+            (status, checks, truncated))
+  in
+  let comments =
+    List.concat_map pr.review_threads.nodes ~f:(fun thread ->
+        if thread.is_resolved then []
+        else
+          (* [isOutdated] is the authoritative signal from GitHub: the thread's
+             anchored lines were changed by a later commit. Do not infer it from
+             [commit] vs [originalCommit] — GitHub advances [commit] to whatever
+             commit still contains the line, flagging false positives. *)
+          List.map thread.comments.nodes
+            ~f:(comment_of_node ~thread_id:thread.id ~outdated:thread.is_outdated))
+  in
+  let unresolved_comment_count =
+    List.count pr.review_threads.nodes ~f:(fun thread ->
+        not thread.is_resolved)
+  in
+  let is_fork =
+    match Option.bind pr.head_repository_owner ~f:(fun r -> r.login) with
+    | Some head_owner -> not (String.equal head_owner owner)
+    | None -> false
+  in
+  {
+    Pr_state.status;
+    is_draft = pr.is_draft;
+    merge_state;
+    merge_ready;
+    check_status;
+    ci_checks;
+    ci_checks_truncated;
+    comments;
+    unresolved_comment_count;
+    findings = [];
+    (* GitHub does not produce review-service findings; the poller in
+       [bin/main.ml] augments this list from configured review-service
+       backends. *)
+    head_branch = Option.map pr.head_ref_name ~f:Types.Branch.of_string;
+    head_oid = pr.head_ref_oid;
+    merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
+    base_branch = Option.map pr.base_ref_name ~f:Types.Branch.of_string;
+    is_fork;
+  }
+
+let parse_response_json ~owner json =
+  (* [Json.field] is [None] for both a missing and an explicit-null [errors],
+     which is the "no errors" case; a present non-null [errors] is the GraphQL
+     error arm. *)
+  match Json.field "errors" json with
+  | Some errors_json ->
+      let msgs =
+        match Json.list errors_json with
+        | Some es -> List.filter_map es ~f:(Json.string_field "message")
+        | None -> []
+      in
+      Error (Graphql_error msgs)
+  | None -> (
+      (* Decode the whole object: the [response] wrapper turns a null/absent
+         [data]/[repository]/[pullRequest] into [None] rather than raising, so
+         all three funnel to the same "pullRequest not found" as before. *)
+      match Json.try_of_yojson response_of_yojson json with
+      | Error msg -> Error (Json_parse_error msg)
+      | Ok { data = None }
+      | Ok { data = Some { repository = None } }
+      | Ok { data = Some { repository = Some { pull_request = None } } } ->
+          Error (Json_parse_error "pullRequest not found")
+      | Ok { data = Some { repository = Some { pull_request = Some pr } } } ->
+          Ok (pr_state_of_pull_request ~owner pr))
 
 let parse_response ~owner body =
   try parse_response_json ~owner (Yojson.Safe.from_string body)
