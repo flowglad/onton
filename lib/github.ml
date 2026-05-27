@@ -1053,7 +1053,9 @@ let make ~net ~clock ~token ~owner ~repo :
       if List.is_empty order then merge_method_preference else order
     in
     let rec attempt = function
-      | [] -> merge_pr ~net ~clock client ~pr_number ~merge_method:`Merge
+      | [] ->
+          assert false
+          (* unreachable: order is always non-empty per the guard above *)
       | m :: rest -> (
           match merge_pr ~net ~clock client ~pr_number ~merge_method:m with
           | Error e when is_method_not_allowed e && not (List.is_empty rest) ->
