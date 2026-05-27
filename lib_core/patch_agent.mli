@@ -57,6 +57,15 @@ type t = private {
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
+  context_exhaustion_count : int;
+      (** Consecutive sessions that ended by exhausting the model's context
+          window ([Run_classification.Context_exhausted]).
+          [on_context_exhausted] bumps this and clears [llm_session_id] so the
+          next session starts fresh (resuming the overflowed thread would
+          re-overflow). At [>= 2] contributes to [needs_intervention] — a fresh
+          session that still overflows means the task does not fit one context
+          window. Reset on a successful session and by
+          [reset_intervention_state]. *)
   push_failure_count : int;
       (** Consecutive [Session_push_failed] outcomes (Session_ok or session
           retry with [Push_rejected]/[Push_error]) since the last successful
@@ -162,7 +171,8 @@ val needs_intervention : t -> bool
     - [Human] not in queue AND any of: [ci_failure_count >= 3],
       [(not has_pr) && start_attempts_without_pr >= 2],
       [conflict_noop_count >= 2], [no_commits_push_count >= 2],
-      [push_failure_count >= 3], [pr_body_artifact_miss_count >= 2]. *)
+      [context_exhaustion_count >= 2], [push_failure_count >= 3],
+      [pr_body_artifact_miss_count >= 2]. *)
 
 (** {2 Spec actions} *)
 
@@ -308,6 +318,16 @@ val reset_no_commits_push_count : t -> t
 (** Reset [no_commits_push_count] to 0. Called on [Session_ok] with a successful
     push, because the agent has demonstrated it can commit. *)
 
+val on_context_exhausted : t -> t
+(** Record a session that exhausted the model's context window. Bumps
+    [context_exhaustion_count] and clears [llm_session_id] so the next session
+    starts fresh — resuming the overflowed thread would re-overflow. Leaves
+    [session_fallback] untouched; exhaustion's intervention budget is the
+    counter, not the resume/fresh ladder. *)
+
+val reset_context_exhaustion_count : t -> t
+(** Reset [context_exhaustion_count] to 0. Called on a successful session. *)
+
 val increment_push_failure_count : t -> t
 (** Record a [Session_push_failed] outcome. At [>= 3], [needs_intervention]
     triggers — the push has been refused by the remote three sessions in a row
@@ -358,9 +378,10 @@ val reset_ci_failure_count : t -> t
 val reset_intervention_state : t -> t
 (** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
     [start_attempts_without_pr] to 0, [conflict_noop_count] to 0,
-    [no_commits_push_count] to 0, [push_failure_count] to 0, and
-    [pr_body_artifact_miss_count] to 0. Used after manual resolution (e.g.,
-    sending a human message) to give the patch a fresh start. *)
+    [no_commits_push_count] to 0, [context_exhaustion_count] to 0,
+    [push_failure_count] to 0, and [pr_body_artifact_miss_count] to 0. Used
+    after manual resolution (e.g., sending a human message) to give the patch a
+    fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)
@@ -518,6 +539,7 @@ val restore :
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->
+  context_exhaustion_count:int ->
   push_failure_count:int ->
   branch_rebased_onto:Types.Branch.t option ->
   branch_rebased_onto_sha:string option ->

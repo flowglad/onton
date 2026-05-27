@@ -761,6 +761,12 @@ type session_result =
           branch-protection, lease, hook, …). [None] reflects a transport/local
           [git push] error (no server message available). *)
   | Session_no_commits
+  | Session_context_exhausted
+      (** The session exhausted the model's context window
+          ([Run_classification.Context_exhausted]). Clears [llm_session_id] so
+          the next session starts fresh (resuming the overflowed thread would
+          re-overflow) and bumps [context_exhaustion_count]; at [>= 2] the agent
+          surfaces for intervention. *)
 [@@deriving show, eq, sexp_of]
 
 (** Complete a failed session, restoring only still-inflight human messages to
@@ -825,6 +831,9 @@ let apply_session_result t patch_id result =
          push-failure counters. *)
       let t =
         update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
+      in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_context_exhaustion_count
       in
       update_agent t patch_id ~f:Patch_agent.reset_push_failure_count
   | Session_process_error { is_fresh; _ } ->
@@ -897,6 +906,16 @@ let apply_session_result t patch_id result =
          [apply_respond_outcome] via [Respond_retry_push]. *)
       let t = clear_session_fallback t patch_id in
       update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
+  | Session_context_exhausted ->
+      (* The session overflowed the model's context window. [on_context_exhausted]
+         bumps [context_exhaustion_count] and clears [llm_session_id] so the next
+         session starts Fresh — resuming the overflowed thread would re-overflow
+         immediately. At [>= 2] the agent surfaces for intervention: a fresh
+         session that still overflows means the task does not fit one context
+         window. The session never finished its turn, so route through
+         [complete_failed] to restore any still-inflight human messages. *)
+      let t = update_agent t patch_id ~f:Patch_agent.on_context_exhausted in
+      complete_failed t patch_id
 
 let combine_session_and_push ~(session : session_result)
     ~(push : Worktree.push_result) : session_result =
@@ -922,7 +941,7 @@ let combine_session_and_push ~(session : session_result)
               (* unreachable — outer match catches this *))
       | Session_process_error _ | Session_no_resume | Session_failed _
       | Session_give_up | Session_worktree_missing | Session_push_failed _
-      | Session_no_commits ->
+      | Session_no_commits | Session_context_exhausted ->
           session)
 
 type start_outcome = Start_ok | Start_failed | Start_stale

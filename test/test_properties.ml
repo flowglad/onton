@@ -732,7 +732,8 @@ let () =
             a.Patch_agent.busy
         | Orchestrator.Session_process_error _ | Orchestrator.Session_no_resume
         | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-        | Orchestrator.Session_worktree_missing ->
+        | Orchestrator.Session_worktree_missing
+        | Orchestrator.Session_context_exhausted ->
             not a.Patch_agent.busy)
   in
   (* Property: Session_give_up sets needs_intervention *)
@@ -1366,6 +1367,78 @@ let () =
         && Int.equal a_before.Patch_agent.ci_failure_count
              a_after.Patch_agent.ci_failure_count)
   in
+  (* context_exhaustion_count property tests (PCE-N) mirror PNC-N: bump the
+     counter, clear llm_session_id (so the next session starts fresh rather
+     than resuming the overflowed thread), trigger needs_intervention at >= 2,
+     and reset on Session_ok / reset_intervention_state. *)
+  let prop_pce1_increments_counter =
+    Test.make ~name:"PCE-1: on_context_exhausted bumps the counter by exactly 1"
+      (Gen.int_range 0 5) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.on_context_exhausted a)
+        in
+        Int.equal a.Patch_agent.context_exhaustion_count n)
+  in
+  let prop_pce2_intervention_threshold =
+    Test.make
+      ~name:"PCE-2: context_exhaustion_count >= 2 flips needs_intervention"
+      (Gen.int_range 0 4) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.on_context_exhausted a)
+        in
+        Bool.equal (Patch_agent.needs_intervention a) (n >= 2))
+  in
+  let prop_pce3_clears_session_id =
+    Test.make ~name:"PCE-3: on_context_exhausted clears llm_session_id"
+      (Gen.return ()) (fun () ->
+        let a =
+          Patch_agent.set_llm_session_id (fresh_agent ()) (Some "overflowed")
+        in
+        let a = Patch_agent.on_context_exhausted a in
+        Option.is_none a.Patch_agent.llm_session_id)
+  in
+  let prop_pce4_reset_intervention_clears_counter =
+    Test.make ~name:"PCE-4: reset_intervention_state zeros context_exhaustion"
+      (Gen.int_range 0 5) (fun n ->
+        let a =
+          List.fold (List.range 0 n) ~init:(fresh_agent ()) ~f:(fun a _ ->
+              Patch_agent.on_context_exhausted a)
+        in
+        let a = Patch_agent.reset_intervention_state a in
+        Int.equal a.Patch_agent.context_exhaustion_count 0
+        && not (Patch_agent.needs_intervention a))
+  in
+  let prop_pce5_apply_bumps_and_clears =
+    Test.make
+      ~name:
+        "PCE-5: apply_session_result Session_context_exhausted bumps counter, \
+         clears session, completes" (Gen.return ()) (fun () ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          Orchestrator.set_llm_session_id orch pid (Some "overflowed")
+        in
+        let orch =
+          Orchestrator.apply_session_result orch pid Session_context_exhausted
+        in
+        let a = Orchestrator.agent orch pid in
+        Int.equal a.Patch_agent.context_exhaustion_count 1
+        && Option.is_none a.Patch_agent.llm_session_id
+        && not a.Patch_agent.busy)
+  in
+  let prop_pce6_session_ok_resets =
+    Test.make ~name:"PCE-6: Session_ok resets context_exhaustion_count"
+      (Gen.int_range 1 4) (fun n ->
+        let orch, pid = mk_busy_orch () in
+        let orch =
+          List.fold (List.range 0 n) ~init:orch ~f:(fun o _ ->
+              Orchestrator.apply_session_result o pid Session_context_exhausted)
+        in
+        let orch = Orchestrator.apply_session_result orch pid Session_ok in
+        let a = Orchestrator.agent orch pid in
+        Int.equal a.Patch_agent.context_exhaustion_count 0)
+  in
   (* Pure push-gate tests — verify the two pure decision helpers in
      [Worktree] that drive [force_push_with_lease]. *)
   let prop_gate_zero_skips =
@@ -1514,6 +1587,12 @@ let () =
       prop_pnc6_apply_bumps_counter;
       prop_pnc7_apply_completes_failed;
       prop_pnc8_apply_preserves_other_counters;
+      prop_pce1_increments_counter;
+      prop_pce2_intervention_threshold;
+      prop_pce3_clears_session_id;
+      prop_pce4_reset_intervention_clears_counter;
+      prop_pce5_apply_bumps_and_clears;
+      prop_pce6_session_ok_resets;
       prop_gate_zero_skips;
       prop_gate_positive_proceeds;
       prop_gate_unknown_proceeds;

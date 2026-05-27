@@ -127,6 +127,7 @@ let failure_subkind_of_session_result (result : Orchestrator.session_result) =
   | Session_worktree_missing -> Failure_subkind.Process_error
   | Session_push_failed _ -> Failure_subkind.Process_error
   | Session_no_commits -> Failure_subkind.Other "session_no_commits"
+  | Session_context_exhausted -> Failure_subkind.Context_exhausted
 
 let sink t =
   {

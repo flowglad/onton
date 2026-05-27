@@ -48,6 +48,14 @@ type t = {
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
+  context_exhaustion_count : int;
+      (** Consecutive sessions that ended by exhausting the model's context
+          window ([Run_classification.Context_exhausted]). Each one clears
+          [llm_session_id] so the next session starts fresh (resuming the
+          overflowed thread would re-overflow). At [>= 2] contributes to
+          [needs_intervention]: a *fresh* session that still overflows means the
+          task does not fit one context window and needs a human. Reset on a
+          successful session. *)
   push_failure_count : int;
   branch_rebased_onto : Branch.t option;
   branch_rebased_onto_sha : string option;
@@ -136,6 +144,8 @@ let intervention_reason t =
       Some "start_attempts_without_pr>=2"
     else if t.conflict_noop_count >= 2 then Some "conflict_noop_count>=2"
     else if t.no_commits_push_count >= 2 then Some "no_commits_push_count>=2"
+    else if t.context_exhaustion_count >= 2 then
+      Some "context_exhaustion_count>=2"
     else if t.push_failure_count >= 3 then Some "push_failure_count>=3"
     else if t.pr_body_artifact_miss_count >= 2 then
       Some "pr_body_artifact_miss_count>=2"
@@ -174,6 +184,7 @@ let create ~branch patch_id =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    context_exhaustion_count = 0;
     push_failure_count = 0;
     branch_rebased_onto = None;
     branch_rebased_onto_sha = None;
@@ -224,6 +235,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    context_exhaustion_count = 0;
     push_failure_count = 0;
     branch_rebased_onto = None;
     branch_rebased_onto_sha = None;
@@ -294,6 +306,20 @@ let increment_no_commits_push_count t =
   { t with no_commits_push_count = t.no_commits_push_count + 1 }
 
 let reset_no_commits_push_count t = { t with no_commits_push_count = 0 }
+
+(* Context-window exhaustion: bump the counter and drop [llm_session_id] so the
+   next session starts fresh — resuming the overflowed thread would re-overflow
+   immediately. Deliberately leaves [session_fallback] untouched: exhaustion has
+   its own intervention budget (the counter), orthogonal to the resume/fresh
+   fallback ladder. *)
+let on_context_exhausted t =
+  {
+    t with
+    context_exhaustion_count = t.context_exhaustion_count + 1;
+    llm_session_id = None;
+  }
+
+let reset_context_exhaustion_count t = { t with context_exhaustion_count = 0 }
 
 let increment_push_failure_count t =
   { t with push_failure_count = t.push_failure_count + 1 }
@@ -427,6 +453,7 @@ let reset_intervention_state t =
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
+    context_exhaustion_count = 0;
     push_failure_count = 0;
     pr_body_artifact_miss_count = 0;
   }
@@ -439,11 +466,11 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~ci_checks ~merge_ready ~merge_commit_sha ~base_contains_merged_siblings
     ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~push_failure_count ~branch_rebased_onto ~branch_rebased_onto_sha
-    ~anchor_history ~checks_passing ~current_op ~current_op_state
-    ~current_message_id ~generation ~worktree_path ~branch_blocked
-    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ~automerge_failure_count ~delivered_ci_run_ids =
+    ~context_exhaustion_count ~push_failure_count ~branch_rebased_onto
+    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
+    ~current_op_state ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
+    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -471,6 +498,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     start_attempts_without_pr;
     conflict_noop_count;
     no_commits_push_count;
+    context_exhaustion_count;
     push_failure_count;
     branch_rebased_onto;
     branch_rebased_onto_sha;

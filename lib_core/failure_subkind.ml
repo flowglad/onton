@@ -6,6 +6,7 @@ type t =
   | Api_error of { status : int option }
   | Network_error
   | Timed_out
+  | Context_exhausted
   | No_session_to_resume
   | Empty_response
   | Process_error
@@ -25,6 +26,7 @@ let t_of_yojson json =
   | `String "Auth_unavailable" -> Auth_unavailable
   | `String "Network_error" -> Network_error
   | `String "Timed_out" -> Timed_out
+  | `String "Context_exhausted" -> Context_exhausted
   | `String "No_session_to_resume" -> No_session_to_resume
   | `String "Empty_response" -> Empty_response
   | `String "Process_error" -> Process_error
@@ -46,6 +48,7 @@ let yojson_of_t = function
       `Assoc [ ("Api_error", `Assoc fields) ]
   | Network_error -> `String "Network_error"
   | Timed_out -> `String "Timed_out"
+  | Context_exhausted -> `String "Context_exhausted"
   | No_session_to_resume -> `String "No_session_to_resume"
   | Empty_response -> `String "Empty_response"
   | Process_error -> `String "Process_error"
@@ -110,6 +113,7 @@ let classify ~classification ~init ~text_tail ~stderr_tail =
   | Run_classification.Process_error _ -> Process_error
   | No_session_to_resume -> No_session_to_resume
   | Timed_out -> Timed_out
+  | Run_classification.Context_exhausted _ -> Context_exhausted
   | Success _ -> Ok
   | Session_failed { detail; _ } ->
       classify_session_failed ~init ~text_tail ~stderr_tail ~detail
@@ -121,6 +125,7 @@ let to_string = function
   | Api_error { status = None } -> "api_error"
   | Network_error -> "network_error"
   | Timed_out -> "timed_out"
+  | Context_exhausted -> "context_exhausted"
   | No_session_to_resume -> "no_session_to_resume"
   | Empty_response -> "empty_response"
   | Process_error -> "process_error"
