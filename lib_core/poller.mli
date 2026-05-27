@@ -32,6 +32,11 @@ type t = {
   checks_passing : bool;  (** [true] if CI checks are currently passing. *)
   ci_checks : Ci_check.t list;
       (** Individual CI check results from the most recent poll. *)
+  merge_commit_sha : string option; [@yojson.option]
+      (** Squash/merge commit SHA when the PR is [merged]; [None] otherwise.
+          Recorded on the agent when [merged] flips true so the base-containment
+          gate can ancestry-check it. [@yojson.option] so pre-existing persisted
+          snapshots/events decode to [None]. *)
 }
 [@@deriving show, eq, yojson]
 (** The result of polling a single patch's PR state. *)

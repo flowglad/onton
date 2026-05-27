@@ -727,7 +727,8 @@ let () =
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
               ~push_failure_count:0 ~branch_rebased_onto:None
-              ~branch_rebased_onto_sha:None
+              ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+              ~base_contains_merged_siblings:true
               ~anchor_history:Onton_core.Anchor_history.empty
               ~checks_passing:false ~current_op:None
               ~current_op_state:Onton_core.Patch_agent.Queued
@@ -812,7 +813,8 @@ let () =
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
               ~push_failure_count:0 ~branch_rebased_onto:None
-              ~branch_rebased_onto_sha:None
+              ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+              ~base_contains_merged_siblings:true
               ~anchor_history:Onton_core.Anchor_history.empty
               ~checks_passing:false ~current_op:None
               ~current_op_state:Onton_core.Patch_agent.Queued

@@ -175,6 +175,9 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         match a.branch_rebased_onto_sha with
         | None -> `Null
         | Some s -> `String s );
+      ( "merge_commit_sha",
+        match a.merge_commit_sha with None -> `Null | Some s -> `String s );
+      ("base_contains_merged_siblings", `Bool a.base_contains_merged_siblings);
       ("anchor_history", Anchor_history.yojson_of_t a.anchor_history);
       ("checks_passing", `Bool a.checks_passing);
       ( "current_op",
@@ -308,6 +311,11 @@ let patch_agent_of_yojson ~gameplan json =
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
+       ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
+       ~base_contains_merged_siblings:
+         (Option.value
+            (bool_member_opt "base_contains_merged_siblings" json)
+            ~default:true)
        ~is_draft:(bool_member "is_draft" json)
        ~pr_body_delivered:
          (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)
@@ -794,9 +802,11 @@ let%test_module "session_id_sidecars" =
           ~has_conflict:false ~base_branch:None ~notified_base_branch:None
           ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
           ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-          ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
-          ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-          ~conflict_noop_count:0 ~no_commits_push_count:0 ~push_failure_count:0
+          ~merge_ready:false ~merge_commit_sha:None
+          ~base_contains_merged_siblings:true ~is_draft:false
+          ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+          ~start_attempts_without_pr:0 ~conflict_noop_count:0
+          ~no_commits_push_count:0 ~push_failure_count:0
           ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
           ~anchor_history:Anchor_history.empty ~checks_passing:false
           ~current_op:None ~current_op_state:Patch_agent.Queued

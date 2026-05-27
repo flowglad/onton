@@ -11,6 +11,10 @@ type t = {
   merge_ready : bool;
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
+  merge_commit_sha : string option; [@yojson.option]
+      (** Squash/merge commit SHA when [merged]; [None] otherwise. Annotated
+          [@yojson.option] so older persisted snapshots/events that predate this
+          field decode to [None] instead of failing. *)
 }
 [@@deriving show, eq, yojson]
 
@@ -44,4 +48,5 @@ let poll ~was_merged (pr : Pr_state.t) =
     merge_ready = Pr_state.merge_ready pr;
     checks_passing = Pr_state.checks_passing pr;
     ci_checks = pr.Pr_state.ci_checks;
+    merge_commit_sha = pr.Pr_state.merge_commit_sha;
   }

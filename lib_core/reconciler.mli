@@ -25,6 +25,14 @@ type patch_view = {
           [base_branch], the local branch still carries the old dep's commits
           even if GitHub auto-retargeted the PR — a rebase is required. Used by
           [detect_notified_base_drift]. *)
+  base_contains_merged_siblings : bool;
+      (** Whether this patch's resolved base branch already contains the squash
+          commit of every *merged* dependency of this patch. Computed
+          effectfully by the caller ([poller_fiber]) via [Worktree.is_ancestor]
+          over each merged dep's recorded merge-commit SHA, fail-closed to
+          [false] when a SHA is not yet known. [true] when the base is main or
+          the base branch already carries the merged siblings. Drives
+          [detect_sibling_stale_bases] and the Start/Rebase eligibility gate. *)
 }
 [@@deriving sexp_of]
 (** Observable state of a single patch, projected for reconciliation. *)
@@ -79,6 +87,21 @@ val detect_notified_base_drift : patch_view list -> action list
     Same precondition guards as other rebase detectors: has_pr, !merged,
     !Rebase-in-queue. *)
 
+val detect_sibling_stale_bases :
+  Graph.t ->
+  patch_view list ->
+  has_merged:(Types.Patch_id.t -> bool) ->
+  action list
+(** [detect_sibling_stale_bases graph views ~has_merged] returns
+    [Enqueue_rebase B] for the sole open dependency [B] of every fan-in patch
+    [P] that has a PR, is not merged, has exactly one open dependency, and whose
+    base does not yet contain its merged siblings
+    ([base_contains_merged_siblings = false]). [B] is enqueued (not [P]); [P]'s
+    own start/rebase is gated separately by [Start_eligibility]. Skips when [B]
+    already has a [Rebase] queued. This is the demand that the other three
+    detectors miss, because [B] is a *sibling* of [P]'s merged deps, not a
+    dependent of them. *)
+
 val plan_operations :
   patch_view list ->
   has_merged:(Types.Patch_id.t -> bool) ->
@@ -98,6 +121,8 @@ val reconcile :
   branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
   patch_view list ->
   action list
-(** [reconcile] composes [detect_merges], [detect_rebases], and
-    [plan_operations] into a single pass. Returns actions in priority order:
-    merges first, then rebases, then operations. *)
+(** [reconcile] composes [detect_merges], the four rebase detectors
+    ([detect_rebases], [detect_stale_bases], [detect_notified_base_drift],
+    [detect_sibling_stale_bases]), and [plan_operations] into a single pass.
+    Rebase actions are deduplicated by patch id across the detectors. Returns
+    actions in priority order: merges first, then rebases, then operations. *)

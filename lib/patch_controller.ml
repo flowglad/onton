@@ -112,7 +112,15 @@ let apply_poll_result t patch_id
     if poll_result.merged then (
       let agent = Orchestrator.agent t patch_id in
       if not agent.Patch_agent.merged then log "Merged";
-      Orchestrator.mark_merged t patch_id)
+      let t = Orchestrator.mark_merged t patch_id in
+      (* Record the squash/merge commit SHA so dependents' base-containment gate
+         can ancestry-check it. Only overwrite when present, so a late/absent
+         [mergeCommit.oid] does not clobber a previously recorded SHA. Merged
+         agents that still lack a SHA are kept in the poll loop (see
+         [poller_fiber]) until it arrives. *)
+      match poll_result.Poller.merge_commit_sha with
+      | Some _ as sha -> Orchestrator.set_merge_commit_sha t patch_id sha
+      | None -> t)
     else t
   in
   let t =
@@ -1016,6 +1024,7 @@ let%test "no merge-conflict re-enqueue after noop" =
         merge_ready = false;
         checks_passing = false;
         ci_checks = [];
+        merge_commit_sha = None;
       }
   in
   let obs =

@@ -24,7 +24,24 @@
     even if main has since advanced for unrelated reasons; an unrelated merge to
     main never makes [b] stale for the purpose of cutting [c]. The caller
     computes the [base_structurally_fresh] flag from the dep graph and the base
-    patch's recorded rebase anchor. *)
+    patch's recorded rebase anchor.
+
+    {1 Sibling containment for fan-in patches}
+
+    Structural freshness alone is blind to a second hazard. When [c] fans in on
+    several dependencies (e.g. [c -> {1,2,3}] where [2] is a stacked child of
+    [1] and [3] is an independent sibling), [c]'s base resolves to the sole
+    still-open dep [b]. [b]'s branch transitively carries its own lineage, but
+    NOT a *sibling* dependency of [c] that merged to main independently — that
+    sibling's squash commit lives on main, never an ancestor of [b]. Cutting [c]
+    from such a [b] starts it from a base missing one of its own dependencies.
+    The [base_contains_merged_siblings] flag — computed by the caller against
+    [c]'s full merged-dep set via [Worktree.is_ancestor] over each merged dep's
+    [merge_commit_sha] — closes this. It never trips on unrelated main movement
+    (only [c]'s actual deps are checked), so it preserves the dependency-scoped
+    (not main-scoped) discipline above. The same gate is consulted for [Rebase]
+    actions, which is what makes a fan-in/chain rebase cascade block on its
+    dependency layers in topological order. *)
 
 type defer_reason =
   | Base_patch_busy_with_rebase of { base_branch : string }
@@ -36,6 +53,13 @@ type defer_reason =
           structurally-correct base — a dependency has merged but the rebase
           that absorbs it has not landed. The base needs that rebase before
           [Start] can fire. *)
+  | Base_missing_merged_sibling of { base_branch : string }
+      (** The base is structurally settled on its own lineage, but the launching
+          patch fans in on a sibling dependency that merged to main
+          independently and whose squash commit the base does not yet contain.
+          The base must be rebased to absorb that sibling before
+          [Start]/[Rebase] can fire. Computed against the launching patch's full
+          merged-dep set, so it also covers arbitrarily deep fan-in nesting. *)
 [@@deriving show, eq, sexp_of, compare]
 
 type decision = Allow | Defer of defer_reason
@@ -47,6 +71,7 @@ val decide :
   base_patch_merged:bool ->
   base_patch_busy_rebasing:bool ->
   base_structurally_fresh:bool ->
+  base_contains_merged_siblings:bool ->
   decision
 (** [decide] is total and deterministic. Pre-emption order, applied top-down:
 
@@ -59,13 +84,20 @@ val decide :
     + [base_patch_busy_rebasing = true] → [Defer Base_patch_busy_with_rebase].
       Checked before the freshness flag so an active rebase pre-empts.
     + [base_structurally_fresh = false] → [Defer Base_not_fresh_for_cut].
+    + [base_contains_merged_siblings = false] →
+      [Defer Base_missing_merged_sibling]. Checked last: only fires when the
+      base is otherwise settled on its own lineage but still lacks a merged
+      sibling dep's squash commit. The first two arms
+      ([base_is_main]/[base_patch_merged]) already imply containment.
     + Otherwise → [Allow].
 
     Note: this decision does not look at the dep graph itself. The caller
     resolves [c]'s base to a single base patch (or main) and passes the relevant
-    facts, including whether that base is structurally fresh. *)
+    facts, including whether that base is structurally fresh and whether it
+    contains [c]'s merged siblings. *)
 
 val short_label : decision -> string
 (** A short, lowercase, snake_case identifier for the decision arm, suitable for
     activity logging. Always non-empty and ≤ 32 characters. Examples: ["allow"],
-    ["defer_base_busy_rebasing"], ["defer_base_stale"]. *)
+    ["defer_base_busy_rebasing"], ["defer_base_stale"],
+    ["defer_base_missing_sibling"]. *)

@@ -137,6 +137,7 @@ let graphql_query =
       headRefName
       headRefOid
       baseRefName
+      mergeCommit { oid }
       headRepositoryOwner { login }
       commits(last: 1) {
         nodes {
@@ -390,6 +391,9 @@ let parse_response_json ~owner json =
               |> Option.map ~f:Types.Branch.of_string
             in
             let head_oid = pr |> member "headRefOid" |> to_string_option in
+            let merge_commit_sha =
+              pr |> member "mergeCommit" |> member "oid" |> to_string_option
+            in
             let base_branch =
               pr |> member "baseRefName" |> to_string_option
               |> Option.map ~f:Types.Branch.of_string
@@ -420,6 +424,7 @@ let parse_response_json ~owner json =
                      configured review-service backends. *)
                 head_branch;
                 head_oid;
+                merge_commit_sha;
                 base_branch;
                 is_fork;
               })

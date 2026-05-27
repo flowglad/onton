@@ -34,6 +34,16 @@ type t = private {
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
   merge_ready : bool;
+  merge_commit_sha : string option;
+      (** Squash/merge commit SHA once this patch's PR is merged (GitHub
+          [mergeCommit.oid]). Persisted, because merged agents are not
+          re-polled; dependents' base-containment gate ancestry-checks it. *)
+  base_contains_merged_siblings : bool;
+      (** Poll-derived cache (like [merge_ready]): whether this patch's resolved
+          base branch already contains the squash commit of every *merged*
+          dependency of this patch. Recomputed each poll tick; fail-closed to
+          [false] until known. Read by the reconciler and the Start/Rebase
+          eligibility gate. *)
   is_draft : bool;
   pr_body_delivered : bool;
   pr_body_artifact_miss_count : int;
@@ -266,6 +276,13 @@ val base_branch_changed : t -> bool
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
+val set_merge_commit_sha : t -> string option -> t
+(** Record the squash/merge commit SHA (GitHub [mergeCommit.oid]) when the PR is
+    observed merged. *)
+
+val set_base_contains_merged_siblings : t -> bool -> t
+(** Set the poll-derived base-containment cache. *)
+
 val set_is_draft : t -> bool -> t
 (** Set the draft flag from GitHub PR state. *)
 
@@ -493,6 +510,8 @@ val restore :
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
+  merge_commit_sha:string option ->
+  base_contains_merged_siblings:bool ->
   is_draft:bool ->
   pr_body_delivered:bool ->
   pr_body_artifact_miss_count:int ->

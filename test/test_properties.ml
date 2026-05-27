@@ -433,7 +433,8 @@ let () =
   let pid = Types.Patch_id.of_string "p1" in
   let main = Types.Branch.of_string "main" in
   let mk_view ?(has_pr = true) ?(merged = false) ?(busy = false)
-      ?(needs_intervention = false) ?(branch_blocked = false) ?(queue = []) id =
+      ?(needs_intervention = false) ?(branch_blocked = false) ?(queue = [])
+      ?(base_contains_merged_siblings = true) id =
     Reconciler.
       {
         id;
@@ -445,6 +446,7 @@ let () =
         queue;
         base_branch = main;
         branch_rebased_onto = Some main;
+        base_contains_merged_siblings;
       }
   in
   let mk_patch id =

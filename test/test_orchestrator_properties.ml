@@ -1082,6 +1082,7 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1121,6 +1122,7 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1161,6 +1163,7 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1205,6 +1208,7 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1245,6 +1249,7 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1294,6 +1299,7 @@ let () =
                     merge_ready = false;
                     checks_passing = false;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1346,6 +1352,7 @@ let () =
                     merge_ready = false;
                     checks_passing = false;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
@@ -1388,6 +1395,7 @@ let () =
                     merge_ready = false;
                     checks_passing = true;
                     ci_checks = [];
+                    merge_commit_sha = None;
                   }
               in
               let orch', _logs, _newly_blocked =
