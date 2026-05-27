@@ -270,6 +270,11 @@ let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
         base_branch base_branch
   in
   let pr_instructions =
+    (* Commit subjects are not rewritten or rejected downstream. The rebase
+       subject filter in [Worktree.rebase_onto] treats this prompt convention as
+       a best-effort agent contract: malformed subjects simply will not match
+       [Worktree.is_ancestor_patch_subject], so rebase falls back to the other
+       ancestry / patch-id paths. *)
     let commit_block =
       Printf.sprintf
         {|
