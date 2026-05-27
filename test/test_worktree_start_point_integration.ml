@@ -50,11 +50,8 @@ let with_temp_dir f =
              dangling path. Point it at a directory that exists. *)
           Unix.putenv "HOME" (Stdlib.Filename.get_temp_dir_name ()));
       try
-        let _ =
-          Stdlib.Sys.command
-            (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
-        in
-        ()
+        Git_env.sh ~dir:"/"
+          (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
       with _ -> ());
   f dir
 

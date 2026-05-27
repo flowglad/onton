@@ -16,6 +16,47 @@ let read_all fd =
   loop ();
   Buffer.contents buf
 
+let read_both fd1 fd2 =
+  let buf1 = Buffer.create 256 in
+  let buf2 = Buffer.create 256 in
+  let bytes = Bytes.create 4096 in
+  let ready ready_fds fd =
+    List.exists ready_fds ~f:(fun ready_fd -> Stdlib.(ready_fd = fd))
+  in
+  let read_one fd buf =
+    match Unix.read fd bytes 0 (Bytes.length bytes) with
+    | 0 -> false
+    | n ->
+        Buffer.add_subbytes buf bytes ~pos:0 ~len:n;
+        true
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> true
+  in
+  let rec loop fd1_open fd2_open =
+    match (fd1_open, fd2_open) with
+    | false, false -> ()
+    | _ -> (
+        let fds =
+          List.concat
+            [
+              (if fd1_open then [ fd1 ] else []);
+              (if fd2_open then [ fd2 ] else []);
+            ]
+        in
+        match Unix.select fds [] [] (-1.) with
+        | ready_fds, _, _ ->
+            let fd1_open =
+              fd1_open && ((not (ready ready_fds fd1)) || read_one fd1 buf1)
+            in
+            let fd2_open =
+              fd2_open && ((not (ready ready_fds fd2)) || read_one fd2 buf2)
+            in
+            loop fd1_open fd2_open
+        | exception Unix.Unix_error (Unix.EINTR, _, _) -> loop fd1_open fd2_open
+        )
+  in
+  loop true true;
+  (Buffer.contents buf1, Buffer.contents buf2)
+
 let run_git ~cwd args =
   let argv = Array.of_list ("git" :: "-C" :: cwd :: args) in
   let env = clean_env () in
@@ -99,10 +140,7 @@ let git_capture ~cwd args =
             (fun () ->
               Unix.create_process_env "git" argv env devnull stdout_w stderr_w)
         in
-        (* Drain stdout (then stderr) before reaping. git writes its small
-           output and exits, closing both ends, so this cannot deadlock. *)
-        let out_buf = read_all stdout_r in
-        let err_buf = read_all stderr_r in
+        let out_buf, err_buf = read_both stdout_r stderr_r in
         let rec waitpid () =
           match Unix.waitpid [] pid with
           | result -> result
@@ -137,7 +175,13 @@ let git_exit_code ~cwd args =
   let argv = Array.of_list ("git" :: "-C" :: cwd :: args) in
   let env = clean_env () in
   let devnull_in = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
-  let devnull_out = Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 in
+  let devnull_out =
+    match Unix.openfile "/dev/null" [ Unix.O_WRONLY ] 0 with
+    | fd -> fd
+    | exception exn ->
+        (try Unix.close devnull_in with _ -> ());
+        raise exn
+  in
   let pid =
     Stdlib.Fun.protect
       ~finally:(fun () ->
