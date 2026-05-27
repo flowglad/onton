@@ -13,7 +13,7 @@ class Onton < Formula
   # unrunnable ARM64 binary.
   on_arm do
     url "https://github.com/flowglad/onton/releases/download/v0.35.0/onton-arm64-apple-darwin.tar.gz"
-    sha256 "65fa00694c893f62dc38e8418899625fcade3ef28c7b78ef24e8f7a873932d5b"
+    sha256 "fe43f853ca5fcbea96e7a8cfef512979c6a5b83550b7e24e3511c4f063afbf34"
   end
 
   depends_on "gmp"
