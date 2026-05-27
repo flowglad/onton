@@ -11,21 +11,26 @@
     (a HEAD SHA, an [is-ancestor] oracle) and the resolved-remote SHA captured
     before the rebase.
 
-    {2 Why anchors matter — the squash-merge trap}
+    {2 Why anchors matter — the history-rewriting-merge trap}
 
     A patch agent branched off a dependency's tip and never rebased before that
-    dependency's PR squash-merged to [main] will, on its first rebase, try to
-    replay the dep's pre-squash commits on top of the post-squash version of
-    [main] — every file the dep added produces a "both added" conflict. Today
+    dependency's PR merged to [main] will, on its first rebase, try to replay
+    the dep's pre-merge commits on top of the post-merge version of [main] —
+    every file the dep added produces a "both added" conflict. This bites
+    whenever the merge rewrote the dep's history so its original commit SHAs are
+    not ancestors of [main]: a {b squash} merge (one new commit) or a {b rebase}
+    merge (cherry-picked commits with fresh SHAs). (A plain merge {e commit}
+    keeps the original SHAs as ancestors, so a 2-arg rebase is a no-op there —
+    but anchors are still correct, so the same path handles all three.) Today
     the orchestrator records an anchor SHA only after a successful rebase, so
     such a patch has no anchor at first-rebase time and falls back to the legacy
     2-arg rebase, which is the failure mode.
 
     With anchors recorded at every base transition (Start, Noop, Conflict-
     resolved, base retarget), {!plan} returns an [Onto] invocation whose
-    [<upstream>] is the dep's pre-squash tip — git's 3-arg rebase then replays
+    [<upstream>] is the dep's pre-merge tip — git's 3-arg rebase then replays
     exactly the patch's own commits, the dep's commits stay on [main] untouched,
-    and no conflict arises. *)
+    and no conflict arises, regardless of the merge method. *)
 
 (** {2 Structured plan + reasoning} *)
 

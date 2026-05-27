@@ -658,9 +658,11 @@ let apply_rebase_push_result t patch_id
   | Some Worktree.Push_no_commits
   | Some (Worktree.Push_error _)
   | Some Worktree.Push_worktree_missing ->
-      (* Push_no_commits after rebase means every commit squashed away — treat
-         as an infrastructure error and retry the rebase. Push_worktree_missing
-         lands here because the next Rebase invocation re-runs through
+      (* Push_no_commits after rebase means the rebase produced no commits —
+         the patch's work is already present on the new base (e.g. it landed
+         via the dependency's merge), so there is nothing to push. Treat as an
+         infrastructure error and retry the rebase. Push_worktree_missing lands
+         here because the next Rebase invocation re-runs through
          [ensure_worktree], which reconstructs the missing worktree before
          retrying. *)
       let t = enqueue t patch_id Operation_kind.Rebase in

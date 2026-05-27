@@ -444,7 +444,8 @@ struct
                         :: sides ))
             in
             (* Recompute the base-containment cache for every agent: does each
-               patch's resolved base branch already contain the squash commit of
+               patch's resolved base branch already contain the merge commit
+               ([mergeCommit.oid], whatever the repo's merge method produced) of
                every *merged* dependency of that patch? This is the only git I/O
                of the reconcile phase; it is skipped (trivially [true]) for
                patches based on main or with no merged deps, so the [is_ancestor]

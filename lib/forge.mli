@@ -41,10 +41,10 @@ module type S = sig
   val set_draft :
     pr_number:Types.Pr_number.t -> draft:bool -> (unit, error) Result.t
 
-  val merge_pr :
-    pr_number:Types.Pr_number.t ->
-    merge_method:[ `Merge | `Squash | `Rebase ] ->
-    (merge_result, error) Result.t
+  val merge_pr : pr_number:Types.Pr_number.t -> (merge_result, error) Result.t
+  (** Merge the PR, choosing a merge method the repository actually permits. The
+      implementation detects the allowed methods (squash/merge/rebase) and picks
+      one — callers must not assume squash. *)
 
   val check_repo_access : unit -> (unit, error) Result.t
 end

@@ -782,6 +782,71 @@ let merge_pr ~net ~clock ?timeout t ~pr_number ~merge_method =
   | Ok body -> Ok (interpret_merge_response body)
   | Error _ as e -> e
 
+(* Which merge methods the repository permits. GitHub rejects a [PUT
+   /pulls/:n/merge] whose [merge_method] is disabled with HTTP 405 ("Squash
+   merges are not allowed on this repository", etc.), so onton must not assume
+   any particular method is available — it detects and chooses one. *)
+type repo_merge_methods = { squash : bool; merge : bool; rebase : bool }
+
+let method_allowed (m : repo_merge_methods) = function
+  | `Squash -> m.squash
+  | `Merge -> m.merge
+  | `Rebase -> m.rebase
+
+let disable_method (m : repo_merge_methods) = function
+  | `Squash -> { m with squash = false }
+  | `Merge -> { m with merge = false }
+  | `Rebase -> { m with rebase = false }
+
+(* Preference order, most → least preferred. Squash first preserves onton's
+   historical default on repos that allow it; the choice is method-agnostic
+   downstream — rebase anchoring keys off the actual [mergeCommit.oid] and the
+   dependency's pre-merge tip, not on the merge having been a squash. *)
+let merge_method_preference = [ `Squash; `Merge; `Rebase ]
+
+let allowed_methods_in_preference (m : repo_merge_methods) =
+  List.filter merge_method_preference ~f:(method_allowed m)
+
+(* Parse the [allow_*_merge] booleans from a [GET /repos/:owner/:repo] body. An
+   absent field defaults to [true]: older GitHub Enterprise omits them, and the
+   worst case of a wrong [true] is a 405 that [merge_pr]'s fallback recovers
+   from. Returns [None] only when the body is not parseable JSON. *)
+let parse_repo_merge_methods body : repo_merge_methods option =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error _ -> None
+  | json ->
+      let open Yojson.Safe.Util in
+      let allowed field =
+        match member field json with `Bool v -> v | _ -> true
+      in
+      Some
+        {
+          squash = allowed "allow_squash_merge";
+          merge = allowed "allow_merge_commit";
+          rebase = allowed "allow_rebase_merge";
+        }
+
+let get_repo_merge_methods ~net ~clock ?timeout t :
+    (repo_merge_methods, error) Result.t =
+  let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
+  match request ~net ~clock ?timeout t ~meth:`GET ~path () with
+  | Ok body -> (
+      match parse_repo_merge_methods body with
+      | Some m -> Ok m
+      | None ->
+          Error (Json_parse_error "could not parse repo merge-method settings"))
+  | Error _ as e -> e
+
+(* A non-2xx response meaning "this merge method is disabled on the repo"
+   (GitHub 405 "… merges are not allowed on this repository"), as distinct from
+   a transient/auth/conflict failure that must not trigger method fallback. *)
+let is_method_not_allowed = function
+  | Http_error { status = 405; body; _ } ->
+      response_error_message_contains body ~substring:"not allowed"
+  | Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
+  | Transport_error _ ->
+      false
+
 (* ── Inline tests ── *)
 
 let%test "parse_rest_pr_list open PR" =
@@ -849,6 +914,72 @@ let%test "interpret_merge_response non-json body -> Merge_unconfirmed" =
   | Merge_unconfirmed -> true
   | Merge_succeeded | Merge_queued _ -> false
 
+let%test "parse_repo_merge_methods: all flags honored" =
+  match
+    parse_repo_merge_methods
+      {|{"allow_squash_merge":false,"allow_merge_commit":true,"allow_rebase_merge":false}|}
+  with
+  | Some { squash = false; merge = true; rebase = false } -> true
+  | _ -> false
+
+let%test "parse_repo_merge_methods: absent fields default to allowed" =
+  match parse_repo_merge_methods {|{"name":"repo"}|} with
+  | Some { squash = true; merge = true; rebase = true } -> true
+  | _ -> false
+
+let%test "parse_repo_merge_methods: non-json -> None" =
+  Option.is_none (parse_repo_merge_methods "not json")
+
+let%test "allowed_methods_in_preference: squash-disabled repo picks merge first"
+    =
+  match
+    allowed_methods_in_preference
+      { squash = false; merge = true; rebase = true }
+  with
+  | [ `Merge; `Rebase ] -> true
+  | _ -> false
+
+let%test "allowed_methods_in_preference: squash preferred when allowed" =
+  match
+    allowed_methods_in_preference
+      { squash = true; merge = true; rebase = false }
+  with
+  | [ `Squash; `Merge ] -> true
+  | _ -> false
+
+let%test "allowed_methods_in_preference: none allowed -> empty" =
+  List.is_empty
+    (allowed_methods_in_preference
+       { squash = false; merge = false; rebase = false })
+
+let%test "is_method_not_allowed: 405 'not allowed' -> true" =
+  is_method_not_allowed
+    (Http_error
+       {
+         meth = "PUT";
+         path = "/merge";
+         status = 405;
+         body =
+           {|{"message":"Squash merges are not allowed on this repository"}|};
+       })
+
+let%test "is_method_not_allowed: 405 without the phrase -> false" =
+  not
+    (is_method_not_allowed
+       (Http_error
+          {
+            meth = "PUT";
+            path = "/merge";
+            status = 405;
+            body = {|{"message":"Pull Request is not mergeable"}|};
+          }))
+
+let%test "is_method_not_allowed: 409 conflict -> false" =
+  not
+    (is_method_not_allowed
+       (Http_error
+          { meth = "PUT"; path = "/merge"; status = 409; body = "conflict" }))
+
 let%expect_test "show_error includes endpoint + permission hint on 403" =
   let err =
     Http_error
@@ -896,6 +1027,45 @@ let%expect_test "show_error transport error includes endpoint" =
 let make ~net ~clock ~token ~owner ~repo :
     (module Forge.S with type error = error) =
   let client = create ~token ~owner ~repo in
+  (* Cache the repo's allowed merge methods across calls; populated lazily on
+     the first merge and narrowed if a 405 later reveals a method is disabled. *)
+  let merge_methods_cache = ref None in
+  let resolve_allowed_methods () =
+    match !merge_methods_cache with
+    | Some m -> Some m
+    | None -> (
+        match get_repo_merge_methods ~net ~clock client with
+        | Ok m ->
+            merge_methods_cache := Some m;
+            Some m
+        | Error _ -> None)
+  in
+  let merge_pr_choosing ~pr_number =
+    (* Candidate methods, preferred first: the detected allowed set when we
+       could read it, otherwise the full preference list (a failed detect must
+       not block merges — the 405 fallback below still protects us). *)
+    let order =
+      match resolve_allowed_methods () with
+      | Some m -> allowed_methods_in_preference m
+      | None -> merge_method_preference
+    in
+    let order =
+      if List.is_empty order then merge_method_preference else order
+    in
+    let rec attempt = function
+      | [] -> merge_pr ~net ~clock client ~pr_number ~merge_method:`Merge
+      | m :: rest -> (
+          match merge_pr ~net ~clock client ~pr_number ~merge_method:m with
+          | Error e when is_method_not_allowed e && not (List.is_empty rest) ->
+              (* Stale allow-set: drop this method and try the next. *)
+              merge_methods_cache :=
+                Option.map !merge_methods_cache ~f:(fun mm ->
+                    disable_method mm m);
+              attempt rest
+          | (Ok _ | Error _) as other -> other)
+    in
+    attempt order
+  in
   let module M = struct
     type nonrec error = error
 
@@ -927,9 +1097,7 @@ let make ~net ~clock ~token ~owner ~repo :
     let set_draft ~pr_number ~draft =
       set_draft ~net ~clock client ~pr_number ~draft
 
-    let merge_pr ~pr_number ~merge_method =
-      merge_pr ~net ~clock client ~pr_number ~merge_method
-
+    let merge_pr ~pr_number = merge_pr_choosing ~pr_number
     let check_repo_access () = check_repo_access_internal ~net ~clock client
   end in
   (module M)
