@@ -851,9 +851,11 @@ let parse_repo_merge_methods body : repo_merge_methods option =
   match Yojson.Safe.from_string body with
   | exception Yojson.Json_error _ -> None
   | json ->
-      let open Yojson.Safe.Util in
+      (* Absent (or non-bool) → [true]: see comment above. [Json.bool_field]
+         returns [None] for both, which [Option.value ~default:true] maps to the
+         permissive default. *)
       let allowed field =
-        match member field json with `Bool v -> v | _ -> true
+        Option.value (Json.bool_field field json) ~default:true
       in
       Some
         {
