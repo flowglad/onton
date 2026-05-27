@@ -403,6 +403,26 @@ After the last question is resolved, **re-run `scripts/validate.py`** since edit
 
 The end state is a gameplan with `openQuestions: []` and an `explicitOpinions` array that captures every decision made during the dialogue.
 
+## Writing Back to the Parent Workstream
+
+The handoff from [[write-workstream]] is one-directional by default: this skill *reads* the workstream's `Established Precedents` and the milestone's `Definition of Done`. But writing the gameplan is where a milestone goes from sketch to concrete — and per the workstream skill's "don't over-plan" principle, later milestones are deliberately left thin until they are unpacked. The knowledge that unpacking produces (resolved questions, discovered prior art, real scope) must flow back **up** to the workstream, or the downstream milestones that would benefit never see it.
+
+This matters because the two artifacts have different lifespans. **A workstream is always persisted** — locally, in Notion, or both — and outlives the whole project. **A gameplan often is not**: once its patches land, the JSON has served its purpose and may be discarded. So the write-back is not merely a convenience that mirrors knowledge into a second place; for anything learned while planning this milestone, the workstream is frequently the *only* lasting home. Capture the substance in the workstream prose itself — do not write a workstream entry that says "see the gameplan for details," because the gameplan may be gone.
+
+**This step applies only when the gameplan is part of a workstream** (the `workstream` field is non-null). For a standalone gameplan, skip it entirely.
+
+After the gameplan is finalised, validated, and its `openQuestions` are resolved, **propose a write-back to the workstream and wait for the programmer's approval before applying it.** Do not mutate the workstream silently: it is a shared planning artifact and may live in an external system (e.g. Notion via [[upsert-notion-gameplan]]). Present the intended edits as a diff or a tight summary, get sign-off, then apply them in place — updating existing entries rather than appending duplicates, and never pushing milestone-local detail up to the workstream level.
+
+Propose write-backs for:
+
+1. **Decisions from the open-question dialogue.** Every entry added to `explicitOpinions` during [Resolving Open Questions](#resolving-open-questions) that answers a *workstream-level* question or constrains a *later* milestone. Add it to the workstream's `Decisions Made` and close the corresponding row in its `Open Questions`. This is the highest-value write-back — workstream open questions are frequently the ones that can only be resolved once a milestone is actually planned.
+
+2. **Cross-cutting precedents discovered during planning.** The inverse of [Handoff to write-gameplan](#leveraging-established-precedents): if planning surfaced prior art absent from the workstream's `Established Precedents` **and it spans multiple milestones**, promote it up using the workstream's four-field shape (kind, name, url, why applicable). Inherit the same discipline as the downward handoff — a precedent scoped to this one gameplan stays on its patch and does **not** go up.
+
+3. **Scope and Definition-of-Done reconciliation.** The finalised gameplan rarely matches the milestone's original `Definition of Done` exactly — work gets deferred, pulled forward, or split out. Reconcile the milestone record so its `Definition of Done`, `Unlocks`, and (if the milestone ends GATED) `Operator Actions Before Next Milestone` describe what the gameplan actually commits to. Now that flag names and gated state are concrete, fill in placeholder operator actions with the real flag name and the actual signals to watch. **If planning revealed follow-on work that does not fit this milestone — a deferred cutover, a flag flip and old-code removal, a newly-discovered dependency — propose adding it as a new or later milestone** (with a Definition of Done and dependency edges), rather than letting it evaporate. This is the one write-back permitted to suggest structural changes to the workstream; flag it as such so the programmer can weigh it deliberately.
+
+4. **Status, and a pointer if one is durable.** Mark this milestone as planned so the workstream stays a live index of which milestones are unplanned, planned, or executed. You may add a link to the artifact (`gameplans/<project-name>.json`, or the Notion URL if it was synced) as a convenience, but treat it as potentially dangling — the gameplan may not survive once its patches land. The status itself, and the substance captured in write-backs 1–3, must stand on their own without the link resolving.
+
 ## Specification Language
 
 The `spec` and `finalStateSpec` fields contain source code in a formal specification language. The language is a project-level choice — the gameplan structure is the same regardless of which language you use.
