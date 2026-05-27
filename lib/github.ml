@@ -1058,12 +1058,15 @@ let make ~net ~clock ~token ~owner ~repo :
           (* unreachable: order is always non-empty per the guard above *)
       | m :: rest -> (
           match merge_pr ~net ~clock client ~pr_number ~merge_method:m with
-          | Error e when is_method_not_allowed e && not (List.is_empty rest) ->
-              (* Stale allow-set: drop this method and try the next. *)
+          | Error e when is_method_not_allowed e ->
+              (* Stale allow-set: narrow the cache so future merges skip this
+                 method, then try the next candidate. Disabling happens even
+                 when [m] is the last candidate, so a repeat 405 isn't retried
+                 on the next call. *)
               merge_methods_cache :=
                 Option.map !merge_methods_cache ~f:(fun mm ->
                     disable_method mm m);
-              attempt rest
+              if List.is_empty rest then Error e else attempt rest
           | (Ok _ | Error _) as other -> other)
     in
     attempt order
