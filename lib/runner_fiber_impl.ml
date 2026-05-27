@@ -235,7 +235,7 @@ struct
               clear_inflight_if_needed ())
             else
               try
-                match Forge.merge_pr ~pr_number ~merge_method:`Squash with
+                match Forge.merge_pr ~pr_number with
                 | Ok Forge.Merge_succeeded ->
                     inflight_cleared := true;
                     Runtime.update_orchestrator runtime (fun orch ->
