@@ -98,9 +98,10 @@ val detect_sibling_stale_bases :
     base does not yet contain its merged siblings
     ([base_contains_merged_siblings = false]). [B] is enqueued (not [P]); [P]'s
     own start/rebase is gated separately by [Start_eligibility]. Skips when [B]
-    already has a [Rebase] queued. This is the demand that the other three
-    detectors miss, because [B] is a *sibling* of [P]'s merged deps, not a
-    dependent of them. *)
+    has no PR yet or already has a [Rebase] queued, so queued/unstarted
+    dependencies are never rebase-enqueued by this detector. This is the demand
+    that the other three detectors miss, because [B] is a *sibling* of [P]'s
+    merged deps, not a dependent of them. *)
 
 val plan_operations :
   patch_view list ->

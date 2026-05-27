@@ -762,6 +762,31 @@ let prop_fanin_idempotent_when_queued =
         (Reconciler.detect_sibling_stale_bases graph views
            ~has_merged:(merged_in merged)))
 
+(* A queued/unstarted sole-open dep has no PR/worktree yet. The containment
+   oracle may therefore fail-closed for P's base branch, but the sibling detector
+   must not enqueue a Rebase for B until B itself has a PR. Once B starts and the
+   branch exists locally, a later tick can recompute containment or enqueue the
+   rebase normally. *)
+let prop_fanin_silent_when_base_has_no_pr =
+  QCheck2.Test.make ~name:"sibling: silent when sole open dep has no PR"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d3" ] in
+      let views =
+        [
+          mk_view ~id:(pid "p")
+            ~base_branch:(branch_of (pid "d2"))
+            ~branch_rebased_onto:(Some (branch_of (pid "d2")))
+            ~base_contains_merged_siblings:false ();
+          mk_view ~id:(pid "d2") ~has_pr:false ();
+        ]
+      in
+      List.is_empty
+        (Reconciler.detect_sibling_stale_bases graph views
+           ~has_merged:(merged_in merged)))
+
 (* Only Enqueue_rebase, never other action kinds; total over which-dep-open. *)
 let prop_fanin_only_enqueue_rebase =
   QCheck2.Test.make
@@ -861,6 +886,7 @@ let () =
       prop_fanin_contains_silent;
       prop_fanin_no_rebase_when_contained;
       prop_fanin_idempotent_when_queued;
+      prop_fanin_silent_when_base_has_no_pr;
       prop_fanin_only_enqueue_rebase;
       prop_fanin_silent_off_edge;
       prop_fanin_reconcile_enqueues_base_rebase;

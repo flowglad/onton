@@ -479,6 +479,13 @@ struct
               | _ -> false
             in
             let orch =
+              (* Cancellation can interrupt this fold after updating only a
+                 prefix of agents. That partial cache is acceptable: the tick is
+                 aborting anyway, and the next reconcile invocation recomputes
+                 every agent from a fresh [main_root] lazy value. Agents skipped
+                 by a cancelled tick simply retain a fail-closed/stale cache for
+                 at most that aborted tick, deferring Start/Rebase until the next
+                 successful pass. *)
               List.fold (Orchestrator.all_agents orch) ~init:orch
                 ~f:(fun orch (a : Patch_agent.t) ->
                   let contains =

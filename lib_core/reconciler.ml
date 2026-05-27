@@ -146,7 +146,9 @@ let detect_sibling_stale_bases graph views ~has_merged =
   (* [b] is rebasable only once it has a PR and does not already have a Rebase
      queued. Guarding on [b]'s own view (not the fan-in patch [v]'s) keeps this
      detector as disciplined as the other three, which only ever enqueue a
-     rebase for a patch they have validated. *)
+     rebase for a patch they have validated. In particular, an unstarted/queued
+     dep with no worktree leaves the fan-in patch fail-closed for now; once [b]
+     starts and obtains a PR, the next reconcile tick can enqueue its rebase. *)
   let base_rebasable b =
     match Map.find view_by_id b with
     | Some bv ->
