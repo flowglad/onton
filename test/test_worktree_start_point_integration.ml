@@ -49,10 +49,13 @@ let with_temp_dir f =
              about to delete would strand later [worktree_dir] lookups on a
              dangling path. Point it at a directory that exists. *)
           Unix.putenv "HOME" (Stdlib.Filename.get_temp_dir_name ()));
-      try
-        Git_env.sh ~dir:"/"
-          (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
-      with _ -> ());
+      let cleanup_temp_dir () =
+        try
+          Git_env.sh ~dir:"/"
+            (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
+        with _ -> ()
+      in
+      cleanup_temp_dir ());
   f dir
 
 (* Delegate to the scrubbed-env helpers in {!Onton_test_support.Git_env}. These
