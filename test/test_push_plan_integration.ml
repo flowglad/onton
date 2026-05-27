@@ -39,7 +39,7 @@ let with_temp_dir f =
 (* Delegate to the scrubbed-env helpers in {!Onton_test_support.Git_env} so an
    inherited [GIT_*] var (e.g. from the pre-commit hook that runs [dune
    runtest]) cannot redirect these fixtures' git at the host repo. See
-   lib/git_env.mli. *)
+   lib_test/git_env.mli. *)
 let sh ?(dir = ".") cmd = Git_env.sh ~dir cmd
 let git_capture ?(dir = ".") args = Git_env.git_capture ~cwd:dir args
 
