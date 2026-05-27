@@ -4,7 +4,7 @@
 class Onton < Formula
   desc "OCaml orchestrator for parallel Claude Code agents executing gameplan patches"
   homepage "https://github.com/flowglad/onton"
-  version "0.36.0"
+  version "0.37.0"
   license "MIT"
 
   # x86_64/Intel build temporarily dropped — no x86_64 macOS CI runner is
@@ -12,8 +12,8 @@ class Onton < Formula
   # block, `brew install` fails cleanly on Intel rather than installing an
   # unrunnable ARM64 binary.
   on_arm do
-    url "https://github.com/flowglad/onton/releases/download/v0.36.0/onton-arm64-apple-darwin.tar.gz"
-    sha256 "cd5000d8e06dcbf142e7eeab9e4bbe198d86e8fdd6ceb467f76decd7c98c4952"
+    url "https://github.com/flowglad/onton/releases/download/v0.37.0/onton-arm64-apple-darwin.tar.gz"
+    sha256 "a2d5ae65cdf41bae131c74a53974314ad977a70144791893c7d87a6cac3f489f"
   end
 
   depends_on "gmp"
