@@ -24,12 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Cache opam switch
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
-        with:
-          path: _opam
-          key: opam-${{ matrix.runner }}-ocaml-5.4.1-${{ hashFiles('*.opam') }}
-
+      # We deliberately do NOT cache [_opam/]. setup-ocaml@v3 caches its own
+      # opam-root state at [~/.opam/]; caching the local switch alongside lets
+      # the two drift — a stale [~/.opam/] without the switch registered makes
+      # opam treat [_opam/] as a fresh switch and reinstall packages whose files
+      # still exist on disk (the "zarith ... META already exists" failure). Worse
+      # here: actions/cache freezes the first entry for a given `*.opam` hash, so
+      # one half-consistent [_opam/] (e.g. from a cancelled run) poisons every
+      # later run until the cache is manually evicted. See the build-and-test job
+      # in ci.yml for the full rationale. [dune-cache: true] plus the
+      # opam.ocaml.org archive mirror keep `opam install` fast without it.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.1'
