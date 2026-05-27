@@ -25,7 +25,26 @@ val run_git : cwd:string -> string list -> unit
 (** Spawn [git <args>] in [cwd] with {!clean_env}. Waits for exit. Raises
     [Failure] with the command, cwd, exit code, and captured stderr on non-zero
     exit (or signal). Stdout is discarded — for tests that need it, use
-    [Unix.create_process_env] directly with {!clean_env}. *)
+    {!git_capture}. *)
+
+val git_capture : cwd:string -> string list -> string
+(** Like {!run_git} but returns the command's trimmed stdout. Raises [Failure]
+    with the command, cwd, exit code, and captured stderr on non-zero exit (or
+    signal). Spawned with {!clean_env}. *)
+
+val git_exit_code : cwd:string -> string list -> int
+(** Spawn [git <args>] in [cwd] with {!clean_env} and return the exit code
+    instead of raising on a non-zero status (still raises if the process is
+    signaled). For queries whose exit code is the answer, e.g.
+    [merge-base --is-ancestor] or [ls-remote --exit-code]. Output is discarded.
+*)
+
+val sh : dir:string -> string -> unit
+(** Run a shell command in [dir] with {!clean_env}, for the non-git shell steps
+    in integration fixtures (e.g. [echo base > README.md], [git clone ...]).
+    stdout/stderr pass through. Raises [Failure] on non-zero exit (or signal).
+    Using {!clean_env} keeps any [git] the command invokes from inheriting a
+    poisoned environment. *)
 
 val init_repo : string -> unit
 (** Initialize a fresh git repo at [dir] with a deterministic identity: runs
