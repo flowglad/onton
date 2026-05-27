@@ -270,11 +270,20 @@ let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
         base_branch base_branch
   in
   let pr_instructions =
+    (* Commit subjects are not rewritten or rejected downstream. The rebase
+       subject filter in [Worktree.rebase_onto] treats this prompt convention as
+       a best-effort agent contract: malformed subjects simply will not match
+       [Worktree.is_ancestor_patch_subject], so rebase falls back to the other
+       ancestry / patch-id paths. *)
     let commit_block =
-      {|
+      Printf.sprintf
+        {|
 **Commit your work with `git commit` before ending the session.** Every code change you make must land in a commit — uncommitted changes are discarded by the supervisor's push, and no PR can be opened from an empty branch. Multiple commits are fine; commit whenever it makes sense.
 
+**Prefix every commit subject with `[%s] Patch %s: `** (the same project name and patch number used by this branch and its PR title), e.g. `[%s] Patch %s: <short summary>`. This lets the supervisor recognize your commits as belonging to this patch when rebasing onto dependency branches later.
+
 **Do NOT run `git push` or `gh pr create` yourself.** The supervisor pushes your commits and opens/updates the PR.|}
+        project_name patch_id project_name patch_id
     in
     match pr_number with
     | Some _ -> commit_block
