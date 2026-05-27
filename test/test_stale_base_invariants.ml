@@ -252,7 +252,7 @@ let sbi_defer_implies_progress m =
               (Start_eligibility.Base_missing_merged_sibling _) ->
               (* Unreachable: this invariant evaluates the gate with
                  [~base_contains_merged_siblings:true]. *)
-              true
+              false
           | Start_eligibility.Defer (Start_eligibility.Base_not_fresh_for_cut _)
             -> (
               (* There must be an actual path to Allow: the base patch either has
@@ -422,7 +422,7 @@ let prop_event_stream_pages_witness =
            via the structural path, not the sibling gate. *)
         | Start_eligibility.Defer
             (Start_eligibility.Base_missing_merged_sibling _) ->
-            true
+            false
         | Start_eligibility.Allow -> false
       in
       (* And b's queue contains Rebase, from the eager enqueue. *)

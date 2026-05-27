@@ -141,7 +141,15 @@ let detect_sibling_stale_bases graph views ~has_merged =
   let view_by_id =
     List.fold views
       ~init:(Map.empty (module Patch_id))
-      ~f:(fun acc v -> Map.set acc ~key:v.id ~data:v)
+      ~f:(fun acc v ->
+        match Map.add acc ~key:v.id ~data:v with
+        | `Ok m -> m
+        | `Duplicate ->
+            invalid_arg
+              (Printf.sprintf
+                 "Reconciler.detect_sibling_stale_bases: duplicate patch view \
+                  %s"
+                 (Patch_id.to_string v.id)))
   in
   (* [b] is rebasable only once it has a PR and does not already have a Rebase
      queued. Guarding on [b]'s own view (not the fan-in patch [v]'s) keeps this
