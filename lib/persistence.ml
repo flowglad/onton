@@ -313,9 +313,14 @@ let patch_agent_of_yojson ~gameplan json =
        ~merge_ready:(bool_member "merge_ready" json)
        ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
        ~base_contains_merged_siblings:
+         (* Default [false] (fail-closed) when the key is absent — an older
+            snapshot predating this field must not fail-open the Start/Rebase
+            gate for a fan-in patch on load. Snapshots written by this version
+            always include the key, so round-trip identity is preserved; the
+            first poll recomputes the live value either way. *)
          (Option.value
             (bool_member_opt "base_contains_merged_siblings" json)
-            ~default:true)
+            ~default:false)
        ~is_draft:(bool_member "is_draft" json)
        ~pr_body_delivered:
          (Option.value (bool_member_opt "pr_body_delivered" json) ~default:true)

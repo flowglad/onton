@@ -9,6 +9,10 @@ let contains_merged_siblings ~graph ~patch_id ~has_merged ~merge_sha ~branch_of
          defers on [deps_satisfied] anyway). *)
       false
   | [] | [ _ ] ->
+      (* [Graph.initial_base] is total for [<= 1] open dep: [[]] (all deps
+         merged, including a root patch with no deps) resolves to [main]; [[d]]
+         resolves to [d]'s branch. It only raises for [> 1] open deps, which the
+         arm above excludes — so this call never raises. *)
       let base =
         Graph.initial_base graph patch_id ~has_merged ~branch_of ~main
       in
