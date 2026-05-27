@@ -52,9 +52,10 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
     ~merge_ready:false ~is_draft ~pr_body_delivered:true
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-    ~conflict_noop_count:0 ~no_commits_push_count:0 ~push_failure_count:0
-    ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-    ~merge_commit_sha:None ~base_contains_merged_siblings:true
+    ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
+    ~push_failure_count:0 ~branch_rebased_onto:None
+    ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+    ~base_contains_merged_siblings:true
     ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing ~current_op
     ~current_op_state:(if busy then Patch_agent.Running else Patch_agent.Queued)
     ~current_message_id:None ~generation:0 ~worktree_path ~branch_blocked

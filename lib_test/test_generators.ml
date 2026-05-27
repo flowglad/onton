@@ -416,6 +416,7 @@ let gen_patch_agent_fully_populated =
     let* raw_llm_session_id =
       option (string_size ~gen:printable (int_range 8 36))
     in
+    let* context_exhaustion_count = int_range 0 3 in
     let a = Onton_core.Patch_agent.create ~branch pid in
     let a = Onton_core.Patch_agent.start a ~base_branch:branch in
     let a =
@@ -429,6 +430,13 @@ let gen_patch_agent_fully_populated =
           Onton_core.Patch_agent.set_tried_fresh a
       | Onton_core.Patch_agent.Given_up ->
           Onton_core.Patch_agent.set_session_failed a
+    in
+    (* Exercise context_exhaustion_count in the round-trip. Applied before
+       llm_session_id is set below, since on_context_exhausted also clears the
+       session id (the generator's intended id wins by being set last). *)
+    let a =
+      Fn.apply_n_times ~n:context_exhaustion_count
+        Onton_core.Patch_agent.on_context_exhausted a
     in
     (* When session_fallback is Tried_fresh or Given_up, llm_session_id must
        be None (escalation clears it). Only Fresh_available may have a value. *)

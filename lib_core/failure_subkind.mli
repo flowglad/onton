@@ -6,6 +6,7 @@ type t =
   | Api_error of { status : int option }
   | Network_error
   | Timed_out
+  | Context_exhausted
   | No_session_to_resume
   | Empty_response
   | Process_error

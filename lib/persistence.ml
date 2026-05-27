@@ -194,6 +194,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("conflict_noop_count", `Int a.conflict_noop_count);
       ("no_commits_push_count", `Int a.no_commits_push_count);
+      ("context_exhaustion_count", `Int a.context_exhaustion_count);
       ("push_failure_count", `Int a.push_failure_count);
       ( "branch_rebased_onto",
         match a.branch_rebased_onto with
@@ -359,6 +360,10 @@ let patch_agent_of_yojson ~gameplan json =
          (Option.value (int_member_opt "conflict_noop_count" json) ~default:0)
        ~no_commits_push_count:
          (Option.value (int_member_opt "no_commits_push_count" json) ~default:0)
+       ~context_exhaustion_count:
+         (Option.value
+            (int_member_opt "context_exhaustion_count" json)
+            ~default:0)
        ~push_failure_count:
          (Option.value (int_member_opt "push_failure_count" json) ~default:0)
        ~branch_rebased_onto_sha:
@@ -827,14 +832,15 @@ let%test_module "session_id_sidecars" =
           ~base_contains_merged_siblings:true ~is_draft:false
           ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
           ~start_attempts_without_pr:0 ~conflict_noop_count:0
-          ~no_commits_push_count:0 ~push_failure_count:0
-          ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-          ~anchor_history:Anchor_history.empty ~checks_passing:false
-          ~current_op:None ~current_op_state:Patch_agent.Queued
-          ~current_message_id:None ~generation:0 ~worktree_path:None
-          ~branch_blocked:false ~llm_session_id ~automerge_enabled:false
-          ~automerge_deadline:None ~automerge_inflight:false
-          ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+          ~no_commits_push_count:0 ~context_exhaustion_count:0
+          ~push_failure_count:0 ~branch_rebased_onto:None
+          ~branch_rebased_onto_sha:None ~anchor_history:Anchor_history.empty
+          ~checks_passing:false ~current_op:None
+          ~current_op_state:Patch_agent.Queued ~current_message_id:None
+          ~generation:0 ~worktree_path:None ~branch_blocked:false
+          ~llm_session_id ~automerge_enabled:false ~automerge_deadline:None
+          ~automerge_inflight:false ~automerge_failure_count:0
+          ~delivered_ci_run_ids:[]
       in
       let orch =
         Orchestrator.restore

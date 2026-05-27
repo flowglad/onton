@@ -14,7 +14,8 @@ let () =
       (fun msg ->
         match classify ~is_resume:false (Error msg) with
         | Process_error m -> String.equal m msg
-        | No_session_to_resume | Timed_out | Success _ | Session_failed _ ->
+        | No_session_to_resume | Timed_out | Context_exhausted _ | Success _
+        | Session_failed _ ->
             false)
   in
 
@@ -25,8 +26,8 @@ let () =
         let r = { r with timed_out = true } in
         match classify ~is_resume:false (Ok r) with
         | Timed_out -> true
-        | Process_error _ | No_session_to_resume | Success _ | Session_failed _
-          ->
+        | Process_error _ | No_session_to_resume | Context_exhausted _
+        | Success _ | Session_failed _ ->
             false)
   in
 
@@ -50,7 +51,9 @@ let () =
         in
         match classify ~is_resume:true (Ok r) with
         | No_session_to_resume -> true
-        | Process_error _ | Timed_out | Success _ | Session_failed _ -> false)
+        | Process_error _ | Timed_out | Context_exhausted _ | Success _
+        | Session_failed _ ->
+            false)
   in
 
   (* Ok with no events + resume + exit_code=0 -> Success *)
@@ -68,8 +71,8 @@ let () =
         in
         match classify ~is_resume:true (Ok r) with
         | Success _ -> true
-        | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
-          ->
+        | Process_error _ | No_session_to_resume | Timed_out
+        | Context_exhausted _ | Session_failed _ ->
             false)
   in
 
@@ -82,8 +85,8 @@ let () =
         in
         match classify ~is_resume:false (Ok r) with
         | Success _ -> true
-        | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
-          ->
+        | Process_error _ | No_session_to_resume | Timed_out
+        | Context_exhausted _ | Session_failed _ ->
             false)
   in
 
@@ -102,7 +105,8 @@ let () =
         in
         match classify ~is_resume:false (Ok r) with
         | Session_failed _ -> true
-        | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
+        | Process_error _ | No_session_to_resume | Timed_out
+        | Context_exhausted _ | Success _ ->
             false)
   in
 
@@ -121,7 +125,8 @@ let () =
         in
         match classify ~is_resume:false (Ok r) with
         | Session_failed { detail; _ } -> String.length detail <= 503
-        | Process_error _ | No_session_to_resume | Timed_out | Success _ ->
+        | Process_error _ | No_session_to_resume | Timed_out
+        | Context_exhausted _ | Success _ ->
             false)
   in
 
@@ -138,8 +143,8 @@ let () =
         let r = { r with saw_final_result = true; timed_out = false } in
         match classify ~is_resume (Ok r) with
         | Success _ -> true
-        | Process_error _ | No_session_to_resume | Timed_out | Session_failed _
-          ->
+        | Process_error _ | No_session_to_resume | Timed_out
+        | Context_exhausted _ | Session_failed _ ->
             false)
   in
 
@@ -150,8 +155,8 @@ let () =
         let r = { r with saw_final_result = true; timed_out = true } in
         match classify ~is_resume:false (Ok r) with
         | Timed_out -> true
-        | Process_error _ | No_session_to_resume | Success _ | Session_failed _
-          ->
+        | Process_error _ | No_session_to_resume | Context_exhausted _
+        | Success _ | Session_failed _ ->
             false)
   in
 
@@ -162,7 +167,50 @@ let () =
         let r = { r with got_events = false; timed_out = false } in
         match classify ~is_resume:false (Ok r) with
         | No_session_to_resume -> false (* should not happen without continue *)
-        | Process_error _ | Timed_out | Success _ | Session_failed _ -> true)
+        | Process_error _ | Timed_out | Context_exhausted _ | Success _
+        | Session_failed _ ->
+            true)
+  in
+
+  (* An error stream that reports a context-window overflow classifies as
+     Context_exhausted regardless of exit code or saw_final_result (but after
+     timed_out). Spec: an overflowed thread is poisoned and must be restarted
+     fresh, not resumed — see [Patch_agent.on_context_exhausted]. *)
+  let prop_context_exhausted =
+    Test.make ~name:"classify: overflow error stream -> Context_exhausted"
+      ~count:500
+      Gen.(
+        pair gen_run_outcome
+          (oneof_list
+             [
+               "Codex ran out of room in the model's context window. Start a \
+                new thread or clear earlier history before retrying.";
+               "model_context_window_exceeded";
+               "Your input exceeds the context window of this model \
+                (context_length_exceeded)";
+             ]))
+      (fun (r, overflow) ->
+        let r = { r with stream_errors = overflow; timed_out = false } in
+        match classify ~is_resume:true (Ok r) with
+        | Context_exhausted { stream_errors } ->
+            String.equal stream_errors overflow
+        | Process_error _ | No_session_to_resume | Timed_out | Success _
+        | Session_failed _ ->
+            false)
+  in
+
+  (* Timeout still wins over a context-overflow error stream. *)
+  let prop_timeout_beats_context_exhausted =
+    Test.make ~name:"classify: timed_out overrides context overflow" ~count:500
+      gen_run_outcome (fun r ->
+        let r =
+          { r with stream_errors = "ran out of room"; timed_out = true }
+        in
+        match classify ~is_resume:false (Ok r) with
+        | Timed_out -> true
+        | Process_error _ | No_session_to_resume | Context_exhausted _
+        | Success _ | Session_failed _ ->
+            false)
   in
 
   let suite =
@@ -177,6 +225,8 @@ let () =
       prop_saw_final_is_success;
       prop_timeout_beats_saw_final;
       prop_no_continue_uses_exit_code;
+      prop_context_exhausted;
+      prop_timeout_beats_context_exhausted;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

@@ -193,6 +193,11 @@ type session_result =
       (** [Some r] carries a classified server-side rejection; [None] reflects a
           transport / local [git push] failure ([Push_error]). *)
   | Session_no_commits
+  | Session_context_exhausted
+      (** The session exhausted the model's context window. Clears
+          [llm_session_id] so the next session starts fresh and bumps
+          [context_exhaustion_count]; at [>= 2] the agent surfaces for
+          intervention. *)
 [@@deriving show, eq, sexp_of]
 
 val apply_session_result : t -> Patch_id.t -> session_result -> t

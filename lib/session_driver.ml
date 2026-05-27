@@ -551,6 +551,19 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                       ( Orchestrator.Session_failed
                           { is_fresh; detail = Some detail },
                         `Failed )
+                  | Context_exhausted { stream_errors } ->
+                      (* The model's context window overflowed (e.g. Codex "ran
+                   out of room"). Resuming this thread would re-overflow, so
+                   [Session_context_exhausted] clears the session id and the
+                   next run starts fresh. The dedicated counter surfaces the
+                   agent for intervention if a fresh session overflows too. *)
+                      log_event runtime ~patch_id
+                        (Printf.sprintf
+                           "Session exited (%s) — context window exhausted; \
+                            clearing session, next run starts fresh — %s"
+                           backend_name
+                           (truncate stream_errors 500));
+                      (Orchestrator.Session_context_exhausted, `Failed)
                   | Success { stream_errors } ->
                       (match (resume_session, result) with
                       | Some _, Ok r when not r.Llm_backend.got_events ->
@@ -794,7 +807,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   | Orchestrator.Session_no_resume
                   | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
                   | Orchestrator.Session_worktree_missing
-                  | Orchestrator.Session_push_failed _ ->
+                  | Orchestrator.Session_push_failed _
+                  | Orchestrator.Session_context_exhausted ->
                       combined
                 in
                 let final_user_result =
@@ -812,7 +826,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   | Orchestrator.Session_process_error _
                   | Orchestrator.Session_no_resume
                   | Orchestrator.Session_failed _ | Orchestrator.Session_give_up
-                  | Orchestrator.Session_worktree_missing ->
+                  | Orchestrator.Session_worktree_missing
+                  | Orchestrator.Session_context_exhausted ->
                       `Failed
                 in
                 let _, push_agent_after =

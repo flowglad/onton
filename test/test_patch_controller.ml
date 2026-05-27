@@ -59,9 +59,10 @@ let make_agent ~patch_id ~branch ~pr_status ~merged ~queue ~base_branch
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
     ~merge_ready:false ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
-    ~conflict_noop_count:0 ~no_commits_push_count:0 ~push_failure_count:0
-    ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-    ~merge_commit_sha:None ~base_contains_merged_siblings:true
+    ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
+    ~push_failure_count:0 ~branch_rebased_onto:None
+    ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+    ~base_contains_merged_siblings:true
     ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:false
     ~current_op:None ~current_op_state:Patch_agent.Queued
     ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -235,9 +236,9 @@ let () =
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:(Some main)
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:(Some main) ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:true
             ~current_op:None ~current_op_state:Patch_agent.Queued
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -285,9 +286,9 @@ let () =
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:true
             ~current_op:None ~current_op_state:Patch_agent.Queued
             ~current_message_id:None ~generation:0 ~worktree_path:None
@@ -424,9 +425,9 @@ let () =
             ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -469,9 +470,9 @@ let () =
             ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -514,9 +515,9 @@ let () =
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -655,9 +656,9 @@ let () =
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -721,9 +722,9 @@ let () =
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -868,9 +869,9 @@ let () =
             ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:(Some main)
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:(Some main) ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -1080,9 +1081,9 @@ let () =
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -1125,9 +1126,9 @@ let () =
             ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~push_failure_count:0 ~branch_rebased_onto:None
-            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
-            ~base_contains_merged_siblings:true
+            ~context_exhaustion_count:0 ~push_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None

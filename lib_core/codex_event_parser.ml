@@ -87,6 +87,18 @@ let parse_event_with_cost_tracking ~model ~budget_cap_nano_usd ~cost_state line
             |> Option.value ~default:"unknown codex error"
           in
           ([ Types.Stream_event.Error msg ], cost_state)
+      | Some "turn.failed" ->
+          (* A failed turn carries its reason under [error.message] (e.g. the
+             "ran out of room in the model's context window" overflow). Without
+             this arm the failure is silently dropped — no stream error, no log
+             — and an overflow looks like a clean exit. Surface it as an Error
+             so the driver records it and the classifier can detect overflow. *)
+          let msg =
+            Json.field "error" json
+            |> Option.bind ~f:(Json.string_field "message")
+            |> Option.value ~default:"codex turn failed"
+          in
+          ([ Types.Stream_event.Error msg ], cost_state)
       | _ -> ([], cost_state))
 
 let build_args ~model ~cwd_path ~prompt ~resume_session =
@@ -300,6 +312,22 @@ let%test "parse_event error" =
   let line = {|{"type":"error","message":"rate limited"}|} in
   List.equal Types.Stream_event.equal (parse_event line)
     [ Types.Stream_event.Error "rate limited" ]
+
+let%test "parse_event turn.failed surfaces error.message as Error" =
+  let line =
+    {|{"type":"turn.failed","error":{"message":"Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."}}|}
+  in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [
+      Types.Stream_event.Error
+        "Codex ran out of room in the model's context window. Start a new \
+         thread or clear earlier history before retrying.";
+    ]
+
+let%test "parse_event turn.failed without error.message falls back" =
+  let line = {|{"type":"turn.failed"}|} in
+  List.equal Types.Stream_event.equal (parse_event line)
+    [ Types.Stream_event.Error "codex turn failed" ]
 
 let%test "parse_event invalid json" =
   List.is_empty (parse_event "not json at all")
