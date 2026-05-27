@@ -392,7 +392,13 @@ let parse_response_json ~owner json =
             in
             let head_oid = pr |> member "headRefOid" |> to_string_option in
             let merge_commit_sha =
-              pr |> member "mergeCommit" |> member "oid" |> to_string_option
+              (* [mergeCommit] is [null] for every open/draft/unmerged PR.
+                 [member "oid"] on [`Null] raises [Type_error], which would
+                 fail the whole poll — guard the null arm explicitly, mirroring
+                 [parse_comment_node]'s [oid_of] helper above. *)
+              match pr |> member "mergeCommit" with
+              | `Null -> None
+              | commit -> commit |> member "oid" |> to_string_option
             in
             let base_branch =
               pr |> member "baseRefName" |> to_string_option
