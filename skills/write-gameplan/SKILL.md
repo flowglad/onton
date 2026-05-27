@@ -413,7 +413,7 @@ This matters because the two artifacts have different lifespans. **A workstream 
 
 After the gameplan is finalised, validated, and its `openQuestions` are resolved, **propose a write-back to the workstream and wait for the programmer's approval before applying it.** Do not mutate the workstream silently: it is a shared planning artifact and may live in an external system (e.g. Notion via [[upsert-notion-gameplan]]). Present the intended edits as a diff or a tight summary, get sign-off, then apply them in place — updating existing entries rather than appending duplicates, and never pushing milestone-local detail up to the workstream level.
 
-Propose write-backs for all categories that apply, and present them together before waiting for approval. These categories are independent filters over the planning results, not a sequence that requires separate confirmation for each item.
+Treat the four categories below as independent filters over the planning results. Collect every applicable item before the presentation step, regardless of category, and present the proposed write-backs together before waiting for approval.
 
 Propose write-backs for:
 
