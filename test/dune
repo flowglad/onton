@@ -4,6 +4,11 @@
  (libraries onton onton_core))
 
 (test
+ (name test_github_merge_commit_null)
+ (modules test_github_merge_commit_null)
+ (libraries onton onton_core yojson))
+
+(test
  (name test_patch_agent)
  (modules test_patch_agent)
  (libraries onton onton_core qcheck-core))
