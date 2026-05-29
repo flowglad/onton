@@ -326,6 +326,53 @@ type patch_view = {
 }
 [@@warning "-69"]
 
+(* Translate the authoritative [Patch_agent.intervention_reason] code into a
+   human-facing, actionable banner line. The codes are the single source of
+   truth for *why* a patch is stuck (see patch_agent.ml); this function is the
+   single source of truth for how to *phrase* that to an operator. Returns
+   [None] exactly when the agent does not need intervention.
+
+   A reason code we don't recognise falls through to the raw code rather than a
+   generic message: an unmapped real reason is still more actionable than a
+   misleading one, and it flags that a new code needs a phrasing here. *)
+let human_intervention_reason (agent : Patch_agent.t) =
+  Option.map (Patch_agent.intervention_reason agent) ~f:(fun code ->
+      match code with
+      | "session_fallback=given_up" ->
+          "Agent gave up after repeated session failures \xe2\x80\x94 needs \
+           manual fix or restart"
+      | "pr_missing" ->
+          "PR is missing from the remote \xe2\x80\x94 recreate it or \
+           investigate why it vanished"
+      | "ci_failure_count>=3" ->
+          Printf.sprintf
+            "CI failed %d times in a row \xe2\x80\x94 fix the failing checks \
+             below"
+            agent.Patch_agent.ci_failure_count
+      | "start_attempts_without_pr>=2" ->
+          Printf.sprintf
+            "Could not open a PR after %d attempts \xe2\x80\x94 open it \
+             manually or check repo access"
+            agent.Patch_agent.start_attempts_without_pr
+      | "conflict_noop_count>=2" ->
+          "Stuck resolving merge conflicts against base \xe2\x80\x94 resolve \
+           them manually"
+      | "no_commits_push_count>=2" ->
+          "Sessions keep producing no commits to push \xe2\x80\x94 the task \
+           may be done or mis-scoped"
+      | "context_exhaustion_count>=2" ->
+          "Context window exhausted repeatedly \xe2\x80\x94 split the patch \
+           into smaller pieces"
+      | "push_failure_count>=3" ->
+          Printf.sprintf
+            "git push failed %d times \xe2\x80\x94 check branch protection or \
+             remote state"
+            agent.Patch_agent.push_failure_count
+      | "pr_body_artifact_miss_count>=2" ->
+          "PR body delivery blocked repeatedly \xe2\x80\x94 check the PR \
+           description requirements"
+      | other -> other)
+
 let patch_view_of_agent (agent : Patch_agent.t)
     ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
     ~(main_branch : Branch.t) ~(agents_by_id : Patch_agent.t Map.M(Patch_id).t)
@@ -424,7 +471,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     pr_missing = Patch_agent.is_pr_missing agent;
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
-    intervention_reason = None;
+    intervention_reason = human_intervention_reason agent;
     automerge_enabled = agent.automerge_enabled;
     automerge_deadline = agent.automerge_deadline;
     automerge_failure_count = agent.automerge_failure_count;
@@ -1135,12 +1182,20 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
         in
         let intervention_reason =
           if pv.needs_intervention then
-            match Map.Poly.find intervention_reasons pv.patch_id with
+            (* Prefer the authoritative reason derived from the agent's own
+               failure counters (set in [patch_view_of_agent]). The activity-log
+               map and recent stream are only deep fallbacks: scraping the most
+               recent event surfaces whatever happened last (e.g. "pushed after
+               session"), which is rarely the reason the patch is stuck. *)
+            match pv.intervention_reason with
             | Some _ as r -> r
-            | None ->
-                List.find_map filtered ~f:(function
-                  | Event { message; _ } -> Some message
-                  | Transition _ -> None)
+            | None -> (
+                match Map.Poly.find intervention_reasons pv.patch_id with
+                | Some _ as r -> r
+                | None ->
+                    List.find_map filtered ~f:(function
+                      | Event { message; _ } -> Some message
+                      | Transition _ -> None))
           else None
         in
         { pv with recent_stream = List.take filtered 10; intervention_reason })
