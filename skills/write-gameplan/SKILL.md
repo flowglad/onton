@@ -300,18 +300,32 @@ Attach precedents at the **patch** level, on the specific patches the precedent 
 
 ### Feature Flagging
 
-If the gameplan introduces new behavior that should be gated:
+When a gameplan introduces new behavior, there are **three** possible gating strategies — and which one is right is a decision for the programmer, not an assumption for you to make:
+
+1. **Create a new feature flag** and gate the new behavior behind it.
+2. **Gate behind an existing feature flag** the project already defines.
+3. **Don't gate at all** — ship the behavior directly (appropriate for pure refactors with no observable change, low-risk additions, or work that is itself enabling a flag that already exists).
+
+**Do not default to "create a new flag."** Creating a new flag is one option among three, not the presumed answer. Reflexively minting a new flag for every gameplan litters the codebase with dead toggles, fragments rollouts that should share a flag, and gates changes that never needed gating.
+
+**Before deciding, investigate and clarify:**
+
+- **Search the codebase for existing flag infrastructure and flags.** Find how this project gates behavior (a flag service, a database-backed flag table, environment variables, build constants) and enumerate the flags that already exist. A new feature frequently belongs under an existing flag that already gates the surrounding surface or an in-progress rollout.
+- **Decide whether gating is warranted at all.** If the change is a pure refactor with no observable behavior change, or is otherwise safe to ship unconditionally, option 3 is correct — record *why* no flag is needed.
+- **If the user has not already specified which strategy to use and the answer is not unambiguous from the codebase, do not guess — surface it.** Add an entry to `openQuestions` (e.g. "Gate behind a new flag, reuse existing flag `X`, or ship ungated?") so it is resolved with the programmer during [Resolving Open Questions](#resolving-open-questions), presenting the three options with the tradeoffs you found. Only treat the decision as settled when the user has stated it or the codebase makes it unambiguous.
+
+Once the strategy is decided, implement the mechanics:
 
 **Runtime flag service** (percentage rollout / allowlist):
 - Use your project's feature flag infrastructure (e.g., LaunchDarkly, Unleash, a database-backed flag table, or a custom service)
-- Declare the flag, gate new behavior behind it, and document the rollout strategy
+- Declare the flag (or reference the existing one), gate new behavior behind it, and document the rollout strategy
 - Use this for gradual rollouts or per-user gating
 
 **Configuration flag** (global on/off, simple cases only):
 - Pattern: an environment variable, config file entry, or build-time constant
 - Use only when a runtime flag service is overkill (e.g., dev-only toggles)
 
-Document the flag in the `featureFlagStrategy` field.
+Record the chosen strategy in the `featureFlagStrategy` field — naming whether the flag is new or reused, or stating plainly why no flag is needed — and populate `featureFlags` accordingly (an empty array when ungated).
 
 ### Patch Ordering
 
