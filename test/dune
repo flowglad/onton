@@ -178,6 +178,11 @@
  (libraries onton onton_core base))
 
 (test
+ (name test_intervention_reason)
+ (modules test_intervention_reason)
+ (libraries onton onton_core))
+
+(test
  (name test_stream_parser)
  (modules test_stream_parser)
  (libraries onton onton_core qcheck-core))

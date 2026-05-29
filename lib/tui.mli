@@ -148,6 +148,14 @@ val patch_count : frame -> int
 (** Number of actually rendered patch rows in the visible window (not total
     patches). Only meaningful in list view; 0 otherwise. *)
 
+val human_intervention_reason : Onton_core.Patch_agent.t -> string option
+(** The human-facing, actionable banner line for why a patch needs intervention,
+    or [None] when it does not. Translates the authoritative reason code from
+    {!Onton_core.Patch_agent.intervention_reason} (which is driven by the
+    agent's own failure counters) into operator-readable text. This is the
+    source the detail banner trusts first, ahead of any scraped activity-log
+    event. *)
+
 val views_of_orchestrator :
   orchestrator:Orchestrator.t ->
   gameplan:Gameplan.t ->
