@@ -107,9 +107,14 @@ let deps_satisfied m pid =
 (** Start [pid] from [base]: PR appears, implementation notes are delivered, and
     the session completes, mirroring the SBI bootstrap plus the deps-notes-ready
     contract (fire Start → set_pr_number → Pr_body delivered → complete). The
-    branch absorbs its base's current merge SHAs (the cut). No-op when already
-    started or when dependencies are not satisfied (cannot cut a worktree off a
-    missing base). *)
+    notes step matters: the deps-notes-ready Start gate
+    ([Patch_controller.plan_action_for_patch]) defers a child's Start until
+    every open dep has [pr_body_delivered] — these tests target rebase
+    freshness liveness, so the model publishes notes promptly; the notes
+    gate's own liveness has its own properties
+    ([test_interleaving_properties.ml]). The branch absorbs its base's current
+    merge SHAs (the cut). No-op when already started or when dependencies are
+    not satisfied (cannot cut a worktree off a missing base). *)
 let do_start m pid base =
   let agent = Orchestrator.agent m.orch pid in
   if Patch_agent.has_pr agent || agent.Patch_agent.merged then m
@@ -250,7 +255,8 @@ let apply_command m cmd =
 
 (* -- Tick: the poller's reconcile phase over the pure model -- *)
 
-let view_of_agent (a : Patch_agent.t) : Reconciler.patch_view =
+let view_of_agent ~sibling_rebase_target (a : Patch_agent.t) :
+    Reconciler.patch_view =
   {
     Reconciler.id = a.Patch_agent.patch_id;
     has_pr = Patch_agent.has_pr a;
@@ -262,6 +268,7 @@ let view_of_agent (a : Patch_agent.t) : Reconciler.patch_view =
     base_branch = Option.value a.Patch_agent.base_branch ~default:main;
     branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
     base_contains_merged_siblings = a.Patch_agent.base_contains_merged_siblings;
+    sibling_rebase_target;
   }
 
 (** One reconcile tick, mirroring [poller_fiber]'s reconcile phase: containment
@@ -291,7 +298,19 @@ let tick m =
           a.Patch_agent.patch_id contains)
   in
   let m = { m with orch } in
-  let views = List.map (Orchestrator.all_agents m.orch) ~f:view_of_agent in
+  let views =
+    List.map (Orchestrator.all_agents m.orch) ~f:(fun (a : Patch_agent.t) ->
+        (* Mirror [poller_fiber]: the frontier is computed (same oracle as the
+           containment fold) only when containment just read false. *)
+        let sibling_rebase_target =
+          if a.Patch_agent.base_contains_merged_siblings then None
+          else
+            Base_containment.stale_chain_rebase_target ~graph
+              ~patch_id:a.Patch_agent.patch_id ~has_merged ~merge_sha ~branch_of
+              ~main ~ancestor_oracle
+        in
+        view_of_agent ~sibling_rebase_target a)
+  in
   let merged_patches =
     List.filter_map (Orchestrator.all_agents m.orch)
       ~f:(fun (a : Patch_agent.t) ->
@@ -494,8 +513,25 @@ let gen_scenario =
 
 (* -- FLI-3 (random interleavings): liveness under fair quiescence -- *)
 
+let show_command = function
+  | Pr_merged i -> Printf.sprintf "Pr_merged %d" i
+  | Rebase_complete i -> Printf.sprintf "Rebase_complete %d" i
+  | Start_via_gate i -> Printf.sprintf "Start_via_gate %d" i
+
+let show_scenario (patches, started, cmds) =
+  let patch_s (p : Patch.t) =
+    Printf.sprintf "%s<-[%s]"
+      (Patch_id.to_string p.Patch.id)
+      (String.concat ~sep:","
+         (List.map p.Patch.dependencies ~f:Patch_id.to_string))
+  in
+  Printf.sprintf "patches=[%s] started=%d cmds=[%s]"
+    (String.concat ~sep:"; " (List.map patches ~f:patch_s))
+    started
+    (String.concat ~sep:"; " (List.map cmds ~f:show_command))
+
 let prop_random_dag_liveness =
-  QCheck2.Test.make ~count:300
+  QCheck2.Test.make ~count:300 ~print:show_scenario
     ~name:
       "FLI-3: random DAG interleavings quiesce with no startable-but-unstarted \
        patch" gen_scenario (fun (patches, started, cmds) ->
@@ -507,21 +543,41 @@ let prop_random_dag_liveness =
         in
         let m = quiesce m ~rounds:((2 * List.length patches) + 3) in
         no_startable_unstarted m
-      with _ -> false)
+      with exn ->
+        Stdlib.Printf.eprintf "FLI-3 raised: %s\n%!" (Exn.to_string exn);
+        false)
 
 (* -- FLI-4 (safety at every step): sibling-Defer implies demand -- *)
 
 (** The precise property the [has_pr] guard violated: whenever an unstarted
     patch P's hypothetical Start is deferred on [Base_missing_merged_sibling],
-    the freshening demand must already exist — its sole open dep B either has a
-    [Rebase] queued or this very reconcile round emitted [Enqueue_rebase B].
+    the freshening demand must already exist {e somewhere on B's open chain} —
+    the missing squash flows up from main one layer at a time
+    ([Base_containment.stale_chain_rebase_target]), so the demand may
+    legitimately sit on a layer below B (the frontier) rather than on B itself.
+    Demand means: some chain layer has a [Rebase] queued, or this very reconcile
+    round emitted [Enqueue_rebase] for one, or a chain layer has no PR yet (its
+    future Start cuts fresh from its base, healing that layer without a rebase).
     Checked after every command's tick.
 
     (A Defer on this arm presupposes B is structurally fresh — [decide] checks
     [base_structurally_fresh] first — which in this model implies B has Started
-    and holds a PR, so [base_rebasable]'s B-side guard cannot be the blocker.)
-*)
+    and holds a PR.) *)
 let sibling_defer_implies_demand m actions =
+  let open_chain_of b =
+    (* B's sole-open-dep chain, B included, down to the main-based layer.
+       Mirrors the frontier walk's domain; a multi-open-dep layer ends it. *)
+    let rec go acc pid =
+      match
+        Graph.open_pr_deps
+          (Orchestrator.graph m.orch)
+          pid ~has_merged:(has_merged_in m.orch)
+      with
+      | [ d ] -> go (d :: acc) d
+      | [] | _ :: _ :: _ -> acc
+    in
+    go [ b ] b
+  in
   List.for_all m.patches ~f:(fun (p : Patch.t) ->
       let agent = Orchestrator.agent m.orch p.Patch.id in
       if Patch_agent.has_pr agent || agent.Patch_agent.merged then true
@@ -542,9 +598,12 @@ let sibling_defer_implies_demand m actions =
             with
             | Start_eligibility.Defer
                 (Start_eligibility.Base_missing_merged_sibling _) ->
-                List.mem b_agent.Patch_agent.queue Operation_kind.Rebase
-                  ~equal:Operation_kind.equal
-                || enqueues_rebase_of actions b
+                List.exists (open_chain_of b) ~f:(fun c ->
+                    let c_agent = Orchestrator.agent m.orch c in
+                    (not (Patch_agent.has_pr c_agent))
+                    || List.mem c_agent.Patch_agent.queue Operation_kind.Rebase
+                         ~equal:Operation_kind.equal
+                    || enqueues_rebase_of actions c)
             | Start_eligibility.Allow
             | Start_eligibility.Defer
                 ( Start_eligibility.Base_patch_busy_with_rebase _
@@ -570,6 +629,74 @@ let prop_sibling_defer_implies_demand =
         ok
       with _ -> false)
 
+(* -- FLI-5 / FLI-6 (witnesses): the two chain-under-fan-in livelocks FLI-3
+   found at seeds 440463877 and 7 -- *)
+
+let started_everywhere m =
+  List.for_all m.patches ~f:(fun (p : Patch.t) ->
+      let a = Orchestrator.agent m.orch p.Patch.id in
+      Patch_agent.has_pr a || a.Patch_agent.merged)
+
+(** Seed-440463877 shape — {e rewrite stranding}. p4 fans in on the merged root
+    p0 and the top of an open chain p3 ← p2 ← p1 ← p0. When p0 merges, p1's
+    freshening rebase onto main rewrites branch-p1, stranding p2 (and
+    transitively p3) on dead history that lacks p0's squash: every name-based
+    detector reads p2 as fresh, and the sibling detector used to rebase only p3
+    — onto a branch-p2 that still lacked the squash — re-firing forever while p4
+    never became startable. The rewrite cascade
+    ([Orchestrator.apply_rebase_result] → stranded dependents) plus the
+    frontier-targeted sibling demand drive the squash up the chain one layer per
+    round; p4 then starts. *)
+let prop_chain_fanin_rewrite_witness =
+  QCheck2.Test.make ~count:1
+    ~name:
+      "FLI-5: rewrite-stranded chain under a fan-in patch heals \
+       (seed-440463877 witness)" (QCheck2.Gen.return ()) (fun () ->
+      let patches =
+        [
+          mk_patch ~id:"p0" ~deps:[];
+          mk_patch ~id:"p1" ~deps:[ "p0" ];
+          mk_patch ~id:"p2" ~deps:[ "p1" ];
+          mk_patch ~id:"p3" ~deps:[ "p2" ];
+          mk_patch ~id:"p4" ~deps:[ "p0"; "p3" ];
+          mk_patch ~id:"p5" ~deps:[ "p0" ];
+        ]
+      in
+      let m = bootstrap patches ~started:3 in
+      let m = fst (tick (apply_command m (Pr_merged 0))) in
+      let m = quiesce m ~rounds:((2 * List.length patches) + 3) in
+      no_startable_unstarted m && started_everywhere m)
+
+(** Seed-7 shape — {e merged-sibling content deep in the chain}. p5 fans in on
+    p1 and p3, with p3 ← p2 ← p0 and p1 merging straight to main (its squash
+    never enters p2's lineage — p1 is not a dependency of p2, so no detector
+    ever saw a reason to rebase p2). The squash can only reach branch-p3 by p2
+    first rebasing onto main; rebasing p3 alone re-fires forever. The frontier
+    ([Base_containment.stale_chain_rebase_target]) targets p2 first, then p3,
+    and p5 starts. *)
+let prop_chain_fanin_merge_witness =
+  QCheck2.Test.make ~count:1
+    ~name:
+      "FLI-6: merged-sibling squash flows up the open chain under a fan-in \
+       patch (seed-7 witness)" (QCheck2.Gen.return ()) (fun () ->
+      let patches =
+        [
+          mk_patch ~id:"p0" ~deps:[];
+          mk_patch ~id:"p1" ~deps:[ "p0" ];
+          mk_patch ~id:"p2" ~deps:[ "p0" ];
+          mk_patch ~id:"p3" ~deps:[ "p2" ];
+          mk_patch ~id:"p4" ~deps:[ "p0" ];
+          mk_patch ~id:"p5" ~deps:[ "p1"; "p3" ];
+        ]
+      in
+      let m = bootstrap patches ~started:3 in
+      let m = fst (tick (apply_command m (Pr_merged 0))) in
+      let m = fst (tick (apply_command m (Rebase_complete 1))) in
+      let m = fst (tick (apply_command m (Rebase_complete 2))) in
+      let m = fst (tick (apply_command m (Pr_merged 1))) in
+      let m = quiesce m ~rounds:((2 * List.length patches) + 3) in
+      no_startable_unstarted m && started_everywhere m)
+
 let () =
   let runner = QCheck_base_runner.run_tests_main in
   ignore
@@ -579,4 +706,6 @@ let () =
          prop_diamond_exhaustive;
          prop_random_dag_liveness;
          prop_sibling_defer_implies_demand;
+         prop_chain_fanin_rewrite_witness;
+         prop_chain_fanin_merge_witness;
        ])

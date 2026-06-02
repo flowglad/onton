@@ -434,7 +434,8 @@ let () =
   let main = Types.Branch.of_string "main" in
   let mk_view ?(has_pr = true) ?(merged = false) ?(busy = false)
       ?(needs_intervention = false) ?(branch_blocked = false) ?(queue = [])
-      ?(base_contains_merged_siblings = true) id =
+      ?(base_contains_merged_siblings = true) ?(sibling_rebase_target = None) id
+      =
     Reconciler.
       {
         id;
@@ -447,6 +448,7 @@ let () =
         base_branch = main;
         branch_rebased_onto = Some main;
         base_contains_merged_siblings;
+        sibling_rebase_target;
       }
   in
   let mk_patch id =

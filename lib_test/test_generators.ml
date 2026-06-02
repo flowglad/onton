@@ -482,6 +482,8 @@ let gen_patch_view =
                generator. *)
             branch_rebased_onto = Some base_branch;
             base_contains_merged_siblings = true;
+            (* Containment holds above, so there is no frontier to heal. *)
+            sibling_rebase_target = None;
           })
       (pair gen_patch_id gen_branch)
       (quad bool bool bool bool)
@@ -762,6 +764,8 @@ let apply_reconcile_actions orch ~main ~branch_of =
               Option.value a.Onton_core.Patch_agent.base_branch ~default:main;
             branch_rebased_onto = a.Onton_core.Patch_agent.branch_rebased_onto;
             base_contains_merged_siblings = true;
+            (* Containment held to [true] above, so no frontier exists. *)
+            sibling_rebase_target = None;
           })
   in
   let merged_patches =

@@ -2099,6 +2099,7 @@ let () =
                     Option.value ag.Patch_agent.base_branch ~default:main;
                   branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
                   base_contains_merged_siblings = true;
+                  sibling_rebase_target = None;
                 })
         in
         let merged_patches =
@@ -2746,6 +2747,7 @@ let reconcile_views_of orch =
           base_branch = Option.value ag.Patch_agent.base_branch ~default:main;
           branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;
           base_contains_merged_siblings = true;
+          sibling_rebase_target = None;
         })
 
 let () =
