@@ -27,6 +27,9 @@ jobs:
             # support ends when macOS 15 retires (~Fall 2027). Tracked in #316.
             runner: macos-15-intel
     steps:
+      # Plain actions/checkout here: this job runs on GitHub-hosted macOS
+      # (Blacksmith is Linux-only), where the Blacksmith checkout fork's git
+      # mirror has nothing to talk to.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       # We deliberately do NOT cache [_opam/]. setup-ocaml@v3 caches its own
@@ -36,9 +39,10 @@ jobs:
       # still exist on disk (the "zarith ... META already exists" failure). Worse
       # here: actions/cache freezes the first entry for a given `*.opam` hash, so
       # one half-consistent [_opam/] (e.g. from a cancelled run) poisons every
-      # later run until the cache is manually evicted. See the build-and-test job
-      # in ci.yml for the full rationale. [dune-cache: true] plus the
-      # opam.ocaml.org archive mirror keep `opam install` fast without it.
+      # later run until the cache is manually evicted. CI's build-and-test job
+      # sidesteps this with a Blacksmith sticky disk, but Blacksmith is
+      # Linux-only — no such option on these macOS runners. [dune-cache: true]
+      # plus the opam.ocaml.org archive mirror keep `opam install` fast without it.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.1'
@@ -72,7 +76,7 @@ jobs:
   release:
     name: Create Release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -92,7 +96,7 @@ jobs:
   homebrew:
     name: Update Homebrew Formula
     needs: release
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -104,7 +108,7 @@ jobs:
           echo "arm64=$(shasum -a 256 onton-arm64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           echo "x86_64=$(shasum -a 256 onton-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
         with:
           ref: main
 
