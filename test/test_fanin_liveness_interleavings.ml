@@ -316,7 +316,13 @@ let fire_runnable m =
   List.fold msgs ~init:m ~f:(fun m msg ->
       match Orchestrator.message_action msg with
       | Orchestrator.Start (pid, base) -> do_start m pid base
-      | Orchestrator.Rebase (pid, base) -> do_rebase m pid base
+      | Orchestrator.Rebase (pid, base) ->
+          let open_deps =
+            Graph.open_pr_deps
+              (Orchestrator.graph m.orch)
+              pid ~has_merged:(has_merged_in m.orch)
+          in
+          if List.length open_deps > 1 then m else do_rebase m pid base
       | Orchestrator.Respond _ -> m)
 
 (** Fair quiescence: with external events stopped, run [n] rounds of tick +
@@ -491,13 +497,15 @@ let prop_random_dag_liveness =
     ~name:
       "FLI-3: random DAG interleavings quiesce with no startable-but-unstarted \
        patch" gen_scenario (fun (patches, started, cmds) ->
-      let m = bootstrap patches ~started in
-      let m =
-        List.fold cmds ~init:m ~f:(fun m cmd ->
-            fst (tick (apply_command m cmd)))
-      in
-      let m = quiesce m ~rounds:((2 * List.length patches) + 3) in
-      no_startable_unstarted m)
+      try
+        let m = bootstrap patches ~started in
+        let m =
+          List.fold cmds ~init:m ~f:(fun m cmd ->
+              fst (tick (apply_command m cmd)))
+        in
+        let m = quiesce m ~rounds:((2 * List.length patches) + 3) in
+        no_startable_unstarted m
+      with _ -> false)
 
 (* -- FLI-4 (safety at every step): sibling-Defer implies demand -- *)
 
@@ -548,14 +556,16 @@ let prop_sibling_defer_implies_demand =
       "FLI-4: an unstarted patch deferred on Base_missing_merged_sibling has \
        rebase demand for its base that same tick" gen_scenario
     (fun (patches, started, cmds) ->
-      let m = bootstrap patches ~started in
-      let _final, ok =
-        List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
-            let m = apply_command m cmd in
-            let m, actions = tick m in
-            (m, ok && sibling_defer_implies_demand m actions))
-      in
-      ok)
+      try
+        let m = bootstrap patches ~started in
+        let _final, ok =
+          List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
+              let m = apply_command m cmd in
+              let m, actions = tick m in
+              (m, ok && sibling_defer_implies_demand m actions))
+        in
+        ok
+      with _ -> false)
 
 let () =
   let runner = QCheck_base_runner.run_tests_main in
