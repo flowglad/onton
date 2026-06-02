@@ -166,12 +166,21 @@ let mark_merged t patch_id =
              snapshot. (Today [refresh_base_branch] mutates only [base_branch],
              but re-reading keeps this correct if that ever changes.) The
              [merged] guard is not dead: a dependent can already be merged when
-             this fires, and a merged dep must not be handed a [Rebase]. *)
+             this fires, and a merged dep must not be handed a [Rebase].
+
+             The [has_pr] guard mirrors [detect_rebases]: a PR-less dependent
+             has no branch to absorb into — its eventual Start cuts from the
+             freshly-resolved base, so a queued [Rebase] would sit inert
+             through the cut and then fire against an already-fresh branch:
+             pure waste, and an unnecessary rewrite + CI cycle whenever main
+             moved in between (caught by NUR-3 in
+             [test_fanin_liveness_interleavings.ml]). *)
           match find_agent t dep_id with
           | None -> t
           | Some dep_agent ->
               if
                 dep_agent.Patch_agent.merged
+                || (not (Patch_agent.has_pr dep_agent))
                 || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
               then t
