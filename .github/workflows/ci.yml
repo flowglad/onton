@@ -33,36 +33,31 @@ jobs:
       # per key, so one half-consistent save (e.g. from a cancel-in-progress
       # run) poisoned every later run ("zarith ... META already exists") until
       # manually evicted. A sticky disk is mutable, last-write-wins storage:
-      # a bad state is overwritten by the next good run, and the guard steps
-      # below wipe stale state in ways that also persist — self-healing
-      # instead of self-poisoning.
+      # a bad state is overwritten by the next good run — self-healing instead
+      # of self-poisoning.
+      #
+      # The disk mounts at a side path, NOT at [_opam/]: `opam switch create`
+      # refuses a pre-existing [_opam] directory — even an empty mount point —
+      # so setup-ocaml must see no [_opam] at all. The cached switch is
+      # rsync'd in after setup-ocaml runs and back out after a successful
+      # install.
       - name: Mount opam switch cache
         uses: useblacksmith/stickydisk@13af8883542ca949a717e70fef89d15edbb29d88 # v1
         with:
-          path: ${{ github.workspace }}/_opam
-          # Stable key (no *.opam hash): stickydisk has no restore-keys, so a
-          # hashed key would go cold on every dependency bump. opam reconciles
+          path: ~/.opam-switch-disk
+          # No *.opam hash in the key: stickydisk has no restore-keys, so a
+          # hashed key would go cold on every dependency bump; opam reconciles
           # the switch against *.opam on install, fetching only what changed.
-          key: ${{ github.repository }}-opam-build-${{ runner.os }}
+          # The compiler version IS in the key: a restored switch silently
+          # keeps its old compiler (`opam install` never upgrades the switch
+          # base), so a version bump must start from an empty disk.
+          key: ${{ github.repository }}-opam-build-${{ runner.os }}-${{ env.OCAML_COMPILER }}
 
-      # Guard 1: half-written switch. The marker is deleted here and recreated
-      # only after a successful install, so a run interrupted anywhere in
-      # between — including inside setup-ocaml's switch creation — leaves no
-      # marker, and the next run starts from an empty switch instead of
-      # letting setup-ocaml trip over partial files.
-      - name: Reset switch cache unless last run completed
-        run: |
-          if [ ! -f _opam/.ci-switch-ok ]; then
-            echo "No completion marker — clearing cached switch"
-            find _opam -mindepth 1 -delete
-          fi
-          rm -f _opam/.ci-switch-ok
-
-      # setup-ocaml still caches its opam-root state at [~/.opam/] (compiler
-      # + repo metadata) via actions/cache, keyed separately from the sticky
-      # disk — Guard 2 below handles the two drifting apart. [dune-cache:
-      # true] covers recompilation, and the opam.ocaml.org archive mirror
-      # keeps source fetches fast.
+      # setup-ocaml caches its opam-root state at [~/.opam/] (compiler + repo
+      # metadata) via actions/cache, keyed separately from the sticky disk —
+      # Guard 2 in Install dependencies handles the two drifting apart.
+      # [dune-cache: true] covers recompilation, and the opam.ocaml.org
+      # archive mirror keeps source fetches fast.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: ${{ env.OCAML_COMPILER }}
@@ -74,23 +69,40 @@ jobs:
         # archives behind a CDN, so opam only falls back to upstream on a miss.
         run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
 
+      - name: Restore cached switch
+        # Guard 1: half-written copy. The marker is dropped before the disk
+        # copy is updated and recreated only after it completes (see Install
+        # dependencies), so a job cancelled mid-sync leaves no marker and the
+        # next run simply starts cold instead of restoring partial files —
+        # the historical half-consistent-[_opam/] poisoning scenario.
+        run: |
+          if [ -f "$HOME/.opam-switch-disk/.ci-switch-ok" ]; then
+            echo "Restoring cached switch from sticky disk"
+            rsync -a --delete "$HOME/.opam-switch-disk/_opam/" _opam/
+          else
+            echo "No completion marker on sticky disk — starting cold"
+          fi
+
       - name: Install dependencies
-        # Guard 2: switch/root drift. A cached [_opam/] paired with a fresh
-        # [~/.opam/] (setup-ocaml cache miss) makes opam treat the switch as
-        # new and reinstall packages over files that already exist on disk —
-        # the historical "zarith ... META already exists" failure. On any
-        # install failure, rebuild the switch from scratch and retry once; the
-        # wipe lands on the sticky disk, so the heal persists. `find -delete`
-        # (not `rm -rf _opam`) because _opam is the mount point itself.
+        # Guard 2: switch/root drift. A restored [_opam/] paired with opam
+        # root state it wasn't built against can make opam reinstall packages
+        # over files that already exist on disk — the historical "zarith ...
+        # META already exists" failure. On any install failure, rebuild the
+        # switch from scratch and retry once.
+        #
+        # On success, refresh the disk copy under the Guard 1 marker protocol:
+        # drop marker -> sync -> recreate marker.
         run: |
           if ! opam install . --deps-only --with-test -y; then
-            echo "::warning::opam install failed — wiping cached _opam and rebuilding the switch"
+            echo "::warning::opam install failed — rebuilding the switch from scratch"
             opam switch remove "$PWD" -y || true
-            find _opam -mindepth 1 -delete
+            rm -rf _opam
             opam switch create . "$OCAML_COMPILER" --no-install -y
             opam install . --deps-only --with-test -y
           fi
-          touch _opam/.ci-switch-ok
+          rm -f "$HOME/.opam-switch-disk/.ci-switch-ok"
+          rsync -a --delete _opam/ "$HOME/.opam-switch-disk/_opam/"
+          touch "$HOME/.opam-switch-disk/.ci-switch-ok"
 
       - name: Build
         id: build
