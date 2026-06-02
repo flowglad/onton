@@ -13,7 +13,7 @@ concurrency:
 jobs:
   build-and-test:
     name: Build & Test
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Pin to bash so `${PIPESTATUS[0]}` (a bash-only array) in the Build and
     # Run tests steps is guaranteed — GitHub Actions defaults to bash on Linux
     # in practice, but making it explicit avoids silent breakage if the
@@ -21,23 +21,51 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # Single source for the compiler version: setup-ocaml's switch and the
+      # self-heal rebuild in Install dependencies must agree.
+      OCAML_COMPILER: '5.4.1'
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
 
-      # We deliberately do NOT cache [_opam/] here. setup-ocaml@v3 caches its
-      # own opam-root state at [~/.opam/] (compiler + repo metadata) keyed
-      # separately from anything we'd cache for [_opam/]. Caching the local
-      # switch alongside means the two can drift: a stale [~/.opam/] without
-      # the switch registered makes opam treat [_opam/] as a fresh switch and
-      # try to reinstall packages whose files still exist on disk — the
-      # classic "zarith ... META already exists" symptom we kept hitting
-      # whenever a cancel-in-progress run saved a half-consistent [_opam/].
-      # [dune-cache: true] handles the much larger speed win (avoiding
-      # recompilation), and the opam.ocaml.org archive mirror keeps the
-      # `opam install` step under ~90s by serving precompiled binaries.
+      # Persist the local switch across runs on a Blacksmith sticky disk.
+      # actions/cache was unusable for [_opam/]: it freezes the first entry
+      # per key, so one half-consistent save (e.g. from a cancel-in-progress
+      # run) poisoned every later run ("zarith ... META already exists") until
+      # manually evicted. A sticky disk is mutable, last-write-wins storage:
+      # a bad state is overwritten by the next good run, and the guard steps
+      # below wipe stale state in ways that also persist — self-healing
+      # instead of self-poisoning.
+      - name: Mount opam switch cache
+        uses: useblacksmith/stickydisk@13af8883542ca949a717e70fef89d15edbb29d88 # v1
+        with:
+          path: ${{ github.workspace }}/_opam
+          # Stable key (no *.opam hash): stickydisk has no restore-keys, so a
+          # hashed key would go cold on every dependency bump. opam reconciles
+          # the switch against *.opam on install, fetching only what changed.
+          key: ${{ github.repository }}-opam-build-${{ runner.os }}
+
+      # Guard 1: half-written switch. The marker is deleted here and recreated
+      # only after a successful install, so a run interrupted anywhere in
+      # between — including inside setup-ocaml's switch creation — leaves no
+      # marker, and the next run starts from an empty switch instead of
+      # letting setup-ocaml trip over partial files.
+      - name: Reset switch cache unless last run completed
+        run: |
+          if [ ! -f _opam/.ci-switch-ok ]; then
+            echo "No completion marker — clearing cached switch"
+            find _opam -mindepth 1 -delete
+          fi
+          rm -f _opam/.ci-switch-ok
+
+      # setup-ocaml still caches its opam-root state at [~/.opam/] (compiler
+      # + repo metadata) via actions/cache, keyed separately from the sticky
+      # disk — Guard 2 below handles the two drifting apart. [dune-cache:
+      # true] covers recompilation, and the opam.ocaml.org archive mirror
+      # keeps source fetches fast.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
-          ocaml-compiler: '5.4.1'
+          ocaml-compiler: ${{ env.OCAML_COMPILER }}
           dune-cache: true
 
       - name: Use opam.ocaml.org archive cache
@@ -47,7 +75,22 @@ jobs:
         run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
 
       - name: Install dependencies
-        run: opam install . --deps-only --with-test -y
+        # Guard 2: switch/root drift. A cached [_opam/] paired with a fresh
+        # [~/.opam/] (setup-ocaml cache miss) makes opam treat the switch as
+        # new and reinstall packages over files that already exist on disk —
+        # the historical "zarith ... META already exists" failure. On any
+        # install failure, rebuild the switch from scratch and retry once; the
+        # wipe lands on the sticky disk, so the heal persists. `find -delete`
+        # (not `rm -rf _opam`) because _opam is the mount point itself.
+        run: |
+          if ! opam install . --deps-only --with-test -y; then
+            echo "::warning::opam install failed — wiping cached _opam and rebuilding the switch"
+            opam switch remove "$PWD" -y || true
+            find _opam -mindepth 1 -delete
+            opam switch create . "$OCAML_COMPILER" --no-install -y
+            opam install . --deps-only --with-test -y
+          fi
+          touch _opam/.ci-switch-ok
 
       - name: Build
         id: build
@@ -97,15 +140,18 @@ jobs:
 
   format:
     name: Format Check
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
 
-      # Same reasoning as build-and-test above: do NOT cache [_opam/]. The
-      # manual switch cache drifts from setup-ocaml's [~/.opam/] state and, via
-      # actions/cache's frozen-first-entry behavior, a single half-consistent
-      # [_opam/] poisons every later run ("zarith ... META already exists").
-      # [dune-cache: true] plus the archive mirror cover the speed win.
+      # No sticky disk for [_opam/] here, unlike build-and-test: this job's
+      # switch install happens inside the lint-fmt action (a `uses:` step we
+      # can't wrap in a wipe-and-retry guard), so a stale cached switch would
+      # wedge CI red until someone manually cleared the disk — the same
+      # poisoning failure mode ("zarith ... META already exists") that got
+      # [_opam/] caching removed in the first place. The switch here is tiny
+      # (ocamlformat only); [dune-cache: true] plus the archive mirror cover
+      # the speed win.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
           ocaml-compiler: '5.4.1'
@@ -118,13 +164,13 @@ jobs:
 
   shell-lint:
     name: Shell Lint & Format
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     env:
       SHFMT_VERSION: v3.13.1
       # 2-space indent + case-item indent matches the existing scripts/ style.
       SHFMT_FLAGS: "-i 2 -ci"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
 
       - name: Discover shell scripts
         id: discover
@@ -191,9 +237,9 @@ jobs:
 
   lint-yojson:
     name: No raw Yojson.Safe.Util
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
         with:
           persist-credentials: false
 
