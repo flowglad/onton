@@ -44,17 +44,25 @@ val render_patch_layer :
   ?pr_number:Pr_number.t ->
   ?functional_changes:Functional_change.t list ->
   ?context_resources:Context_resource.t list ->
+  ?ancestors:Patch.t list ->
   base_branch:string ->
   unit ->
   string
-(** Patch-stable middle. Contains the patch heading, dependencies, base-branch
-    note, description, the functional changes the patch owns (if any), changes,
-    files, test stubs, specification (with Pantagruel guide), acceptance
-    criteria, git identifiers, and PR instructions. Ends with a trailing blank
-    line. [functional_changes] should contain only the entries from
-    [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id].
+(** Patch-stable middle. Contains the patch heading, dependencies, a pointer to
+    each ancestor patch's implementation notes (when [ancestors] is non-empty),
+    base-branch note, description, the functional changes the patch owns (if
+    any), changes, files, test stubs, specification (with Pantagruel guide),
+    acceptance criteria, git identifiers, and PR instructions. Ends with a
+    trailing blank line. [functional_changes] should contain only the entries
+    from [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id].
     [context_resources] should contain only resources whose IDs appear in this
-    patch's [required_context]. *)
+    patch's [required_context]. [ancestors] should be
+    {!ancestor_patches}[ gameplan patch] — the note pointers are pure functions
+    of the project name and ancestor ids ({!Project_store.pr_body_artifact_path}
+    — no filesystem probe), so the layer stays byte-identical across a patch's
+    sessions. Start is gated on every unmerged dep having delivered its notes
+    (deps-notes-ready, enforced by [Patch_controller.plan_action_for_patch]), so
+    the files exist by the time the layer is first read. *)
 
 val owned_functional_changes : Gameplan.t -> Patch.t -> Functional_change.t list
 (** Returns the functional changes in the gameplan owned by this patch. Use this
@@ -64,6 +72,13 @@ val owned_functional_changes : Gameplan.t -> Patch.t -> Functional_change.t list
 val required_context_resources :
   Gameplan.t -> Patch.t -> Context_resource.t list
 (** Returns the authoritative context resources required by this patch. *)
+
+val ancestor_patches : Gameplan.t -> Patch.t -> Patch.t list
+(** Returns the transitive ancestor patches of this patch (every patch reachable
+    by walking [dependencies], excluding the patch itself), in ascending
+    patch-id order. Use this when constructing patch layers directly, so
+    composed and manually layered prompts carry the same patch-stable content.
+*)
 
 val render_turn_layer_start : project_name:string -> string
 

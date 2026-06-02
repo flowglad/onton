@@ -739,12 +739,15 @@ struct
                                           Prompt.owned_functional_changes
                                             gameplan patch
                                         in
+                                        let ancestors =
+                                          Prompt.ancestor_patches gameplan patch
+                                        in
                                         let patch_prompt =
                                           Prompt.render_patch_layer
                                             ~project_name patch
                                             ?pr_number:
                                               (Patch_agent.pr_number agent)
-                                            ~functional_changes
+                                            ~functional_changes ~ancestors
                                             ~base_branch:
                                               (Branch.to_string base_branch)
                                             ()
@@ -1330,9 +1333,13 @@ struct
                                                 Prompt.owned_functional_changes
                                                   gameplan p
                                               in
+                                              let ancestors =
+                                                Prompt.ancestor_patches gameplan
+                                                  p
+                                              in
                                               Prompt.render_patch_layer
                                                 ~project_name p ?pr_number
-                                                ~functional_changes
+                                                ~functional_changes ~ancestors
                                                 ~base_branch:base ()
                                           | None -> ""
                                         in
@@ -1897,9 +1904,13 @@ struct
                                                 Prompt.owned_functional_changes
                                                   gameplan p
                                               in
+                                              let ancestors =
+                                                Prompt.ancestor_patches gameplan
+                                                  p
+                                              in
                                               Prompt.render_patch_layer
                                                 ~project_name p ?pr_number
-                                                ~functional_changes
+                                                ~functional_changes ~ancestors
                                                 ~base_branch:
                                                   base_branch_for_layer ()
                                           | None -> ""

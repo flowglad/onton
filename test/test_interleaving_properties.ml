@@ -3011,3 +3011,176 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "PI-AH-9 passed"
+
+(* ========== Notes-gate (deps-notes-ready) deadlock-freedom properties ==========
+
+   The Start gate added for deps-notes-ready defers a child's Start until every
+   unmerged dep has [pr_body_delivered]. Because the gate lives in pure
+   decision logic ([Patch_controller.plan_action_for_patch]) and Pr_body
+   completion is a pure transition ([Orchestrator.apply_respond_outcome]),
+   these properties can drive the full loop without any effectful handler and
+   prove the gate cannot deadlock: under fair scheduling every blocked child is
+   eventually unblocked, and the only blocking terminal state is the visible
+   (and recoverable) [needs_intervention] escalation. *)
+
+(** One fair-scheduling step: tick (reconcile + plan + fire), then complete
+    every busy agent along the happy path — Respond sessions succeed
+    ([Session_ok] + [Respond_ok]), Start sessions land a PR and complete. *)
+let happy_tick orch patches ~pr_counter =
+  let gameplan = make_gameplan patches in
+  let orch, _effects, _actions =
+    Patch_controller.tick orch ~project_name:"test-project" ~gameplan
+  in
+  List.fold (Orchestrator.all_agents orch) ~init:orch
+    ~f:(fun o (a : Patch_agent.t) ->
+      if not a.Patch_agent.busy then o
+      else
+        let pid = a.Patch_agent.patch_id in
+        match a.Patch_agent.current_op with
+        | Some kind ->
+            let o =
+              Orchestrator.apply_session_result o pid Orchestrator.Session_ok
+            in
+            Orchestrator.apply_respond_outcome o pid kind
+              Orchestrator.Respond_ok
+        | None ->
+            let o =
+              if Patch_agent.has_pr a then o
+              else (
+                pr_counter := !pr_counter + 1;
+                Orchestrator.set_pr_number o pid (Pr_number.of_int !pr_counter))
+            in
+            Orchestrator.complete o pid)
+
+(** NG-1: The notes gate is deadlock-free under fair scheduling. On a fresh
+    linear chain, fair happy-path scheduling starts every patch and delivers
+    every patch's notes within a bounded number of ticks. If the gate were
+    stated over a condition the system never makes true, this property would
+    stall at the iteration bound. *)
+let () =
+  let n = 3 in
+  let patches = mk_patches n in
+  let prop_ng1 =
+    QCheck2.Test.make
+      ~name:"NG-1: notes gate is deadlock-free under fair scheduling" ~count:50
+      (QCheck2.Gen.return ()) (fun () ->
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        let pr_counter = ref 0 in
+        let started_and_delivered o =
+          List.for_all patches ~f:(fun (p : Patch.t) ->
+              match Orchestrator.find_agent o p.Patch.id with
+              | None -> false
+              | Some a ->
+                  Patch_agent.has_pr a && a.Patch_agent.pr_body_delivered)
+        in
+        let rec loop o iter =
+          if started_and_delivered o then true
+          else if iter >= 12 then
+            failwith
+              "NG-1: chain did not fully start within the fair-scheduling bound"
+          else loop (happy_tick o patches ~pr_counter) (iter + 1)
+        in
+        loop orch 0)
+  in
+  QCheck2.Test.check_exn prop_ng1;
+  Stdlib.print_endline "NG-1 passed"
+
+(** NG-2: A dep that merges without ever delivering notes (e.g. a human merges
+    the PR before the Pr_body step ran) does not deadlock its child — the gate
+    exempts merged deps because they can never deliver. *)
+let () =
+  let patches = mk_patches 2 in
+  let prop_ng2 =
+    QCheck2.Test.make
+      ~name:"NG-2: early merge without notes does not deadlock the child"
+      ~count:50 (QCheck2.Gen.return ()) (fun () ->
+        let parent = pid_of_idx patches 0 in
+        let child = pid_of_idx patches 1 in
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        let pr_counter = ref 1 in
+        (* Parent starts and lands a PR... *)
+        let orch = happy_tick orch patches ~pr_counter in
+        (* ...then merges before any Pr_body session completes. *)
+        let a = Orchestrator.agent orch parent in
+        if a.Patch_agent.pr_body_delivered then
+          failwith "NG-2: parent notes should not be delivered yet";
+        let orch = Orchestrator.mark_merged orch parent in
+        let rec loop o iter =
+          if Patch_agent.has_pr (Orchestrator.agent o child) then true
+          else if iter >= 6 then
+            failwith "NG-2: child deadlocked behind a merged dep's notes"
+          else loop (happy_tick o patches ~pr_counter) (iter + 1)
+        in
+        loop orch 0)
+  in
+  QCheck2.Test.check_exn prop_ng2;
+  Stdlib.print_endline "NG-2 passed"
+
+(** NG-3: Persistent Pr_body misses do not deadlock silently — the parent
+    surfaces via [needs_intervention] at the miss cap (the child stays gated,
+    which is the intended visible block), and the block is recoverable:
+    [reset_intervention_state] plus one successful Pr_body delivery unblocks the
+    child. *)
+let () =
+  let patches = mk_patches 2 in
+  let prop_ng3 =
+    QCheck2.Test.make
+      ~name:"NG-3: persistent Pr_body miss escalates visibly and is recoverable"
+      ~count:50 (QCheck2.Gen.return ()) (fun () ->
+        let parent = pid_of_idx patches 0 in
+        let child = pid_of_idx patches 1 in
+        let gameplan = make_gameplan patches in
+        let tick o =
+          let o, _effects, _actions =
+            Patch_controller.tick o ~project_name:"test-project" ~gameplan
+          in
+          o
+        in
+        (* Parent starts and lands a PR. *)
+        let orch = Orchestrator.create ~patches ~main_branch:main in
+        let orch = tick orch in
+        let orch =
+          Orchestrator.set_pr_number orch parent (Pr_number.of_int 1)
+        in
+        let orch = Orchestrator.complete orch parent in
+        (* Two consecutive Pr_body sessions that fail to deliver the artifact. *)
+        let miss o =
+          let o = tick o in
+          let a = Orchestrator.agent o parent in
+          if
+            not
+              (Option.equal Operation_kind.equal a.Patch_agent.current_op
+                 (Some Operation_kind.Pr_body))
+          then failwith "NG-3: expected tick to fire Respond(Pr_body)";
+          let o =
+            Orchestrator.apply_session_result o parent Orchestrator.Session_ok
+          in
+          Orchestrator.apply_respond_outcome o parent Operation_kind.Pr_body
+            Orchestrator.Respond_pr_body_miss
+        in
+        let orch = miss orch in
+        let orch = miss orch in
+        let a = Orchestrator.agent orch parent in
+        if not (Patch_agent.needs_intervention a) then
+          failwith "NG-3: miss cap should surface needs_intervention";
+        if Patch_agent.has_pr (Orchestrator.agent orch child) then
+          failwith "NG-3: child must stay gated while notes are undelivered";
+        (* The block is not a silent deadlock: an operator reset plus one
+           successful delivery lets the child through. *)
+        let orch = Orchestrator.reset_intervention_state orch parent in
+        let orch = tick orch in
+        let orch =
+          Orchestrator.apply_session_result orch parent Orchestrator.Session_ok
+        in
+        let orch =
+          Orchestrator.apply_respond_outcome orch parent Operation_kind.Pr_body
+            Orchestrator.Respond_ok
+        in
+        let orch = tick orch in
+        let child_agent = Orchestrator.agent orch child in
+        if not child_agent.Patch_agent.busy then
+          failwith "NG-3: child should start once notes are delivered";
+        true)
+  in
+  QCheck2.Test.check_exn prop_ng3;
+  Stdlib.print_endline "NG-3 passed"

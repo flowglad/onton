@@ -103,8 +103,10 @@ where
 main => Branch.
 merge-target b: Branch => Branch.
 deps-satisfied p: Patch => Bool.
+notes-delivered p: Patch => Bool.
+deps-notes-ready p: Patch => Bool.
 
-PatchCtx ~> Start @ p: Patch, in-gameplan p, deps-satisfied p, ~has-pr p.
+PatchCtx ~> Start @ p: Patch, in-gameplan p, deps-satisfied p, deps-notes-ready p, ~has-pr p.
 ---
 has-pr' p.
 has-session' p.
@@ -113,7 +115,7 @@ satisfies' p.
 base-branch' p = initial-base p.
 
 > Start's preconditions guarantee its postconditions.
-all p: Patch | in-gameplan p and deps-satisfied p and ~has-pr p ->
+all p: Patch | in-gameplan p and deps-satisfied p and deps-notes-ready p and ~has-pr p ->
     has-pr' p and satisfies' p.
 
 where
@@ -239,6 +241,15 @@ is-feedback review-comments.
 > Definition (not invariant):
 >   deps-satisfied p  <->  #(open-pr-deps p) <= 1,
 >                          all deps merged or have PR
+
+> Definition (not invariant):
+>   deps-notes-ready p  <->  all d: deps p | merged d or notes-delivered d
+> notes-delivered d means d's Pr_body step completed: its implementation
+> notes were written to the per-patch artifact and PATCHed onto the PR.
+> Dependent patch prompts point at those notes, so Start waits for them.
+> Merged deps are exempt: a merged patch can never deliver notes after
+> merging, so waiting on it would deadlock; its notes artifact persists
+> on disk if it was delivered while the PR was open.
 
 > Added patches have no deps.
 all p: Patch | ~in-gameplan p -> #(deps p) = 0.
