@@ -55,9 +55,12 @@
     doomed pre-rebase tip and the child's PR is born stale (the
     connector-adapter-shape-unification patch-5 / PR #3811 failure mode). The
     [base_patch_has_conflict] input — the base patch's [has_conflict], set on
-    every path that enqueues [Merge_conflict] and cleared only when resolution
-    lands — holds the gate closed across the whole rebase pipeline: queued
-    [Rebase] → running [Rebase] → conflicted → resolution pushed. *)
+    every path that enqueues [Merge_conflict] — holds the gate closed while the
+    unresolved conflict is known locally. Successful conflict resolution clears
+    the flag before the rewritten branch can launch dependents; a conflict
+    rebase [Noop] also clears it so the flag continues to track GitHub conflict
+    state, with the next poll re-setting it and re-enqueueing [Merge_conflict]
+    if the conflict persists. *)
 
 type defer_reason =
   | Base_patch_busy_with_rebase of { base_branch : string }

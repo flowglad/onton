@@ -319,10 +319,10 @@ let start_eligibility t ~base_contains_merged_siblings base =
                an op (dropping [busy_rebasing]) but the base's tip is only
                rewritten when the queued [Merge_conflict] resolution lands and
                force-pushes. It is set on every path that enqueues
-               [Merge_conflict] and cleared only when resolution completes, so
-               it covers the whole pipeline. The cut source is the *local* base
-               branch, which the resolution rewrites before [has_conflict]
-               clears — so a Start allowed immediately after is fresh. *)
+               [Merge_conflict]. Successful resolution clears it after the
+               local base branch is rewritten; a conflict-resolution [Noop]
+               clears it as a GitHub-state signal, and polling re-sets it if the
+               conflict persists. *)
             ( a.Patch_agent.merged,
               busy_rebasing,
               a.Patch_agent.has_conflict,
