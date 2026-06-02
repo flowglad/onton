@@ -133,10 +133,17 @@ let detect_stale_bases graph views ~has_merged ~branch_of ~main =
     [Start]/[Rebase] stays deferred by the eligibility gate
     ([Base_missing_merged_sibling]) until [B] is fresh.
 
-    Guards mirror the other detectors (has_pr, ~merged, and skip when [B]
-    already has a [Rebase] queued). The [open_pr_deps = 1] guard keeps
-    [sole_open_dep] total and pins this to the "last-but-one dependency merged"
-    edge, where a single rebase of [B] realizes containment for [P]. *)
+    [P] is considered whether or not it has a PR. An *unstarted* [P] (no PR yet)
+    is the case that needs this detector most: its pending [Start (P, base = B)]
+    sits deferred on [Base_missing_merged_sibling], and with no PR of its own no
+    other detector will ever act on [P]'s behalf — without the demand created
+    here the Start would defer until [B] merges, defeating stacked starts. Only
+    [~merged] is required of [P]; rebasability is [B]'s concern
+    ([base_rebasable] below).
+
+    The [open_pr_deps = 1] guard keeps [sole_open_dep] total and pins this to
+    the "last-but-one dependency merged" edge, where a single rebase of [B]
+    realizes containment for [P]. *)
 let detect_sibling_stale_bases graph views ~has_merged =
   let view_by_id =
     List.fold views
@@ -152,11 +159,12 @@ let detect_sibling_stale_bases graph views ~has_merged =
                  (Patch_id.to_string v.id)))
   in
   (* [b] is rebasable only once it has a PR and does not already have a Rebase
-     queued. Guarding on [b]'s own view (not the fan-in patch [v]'s) keeps this
-     detector as disciplined as the other three, which only ever enqueue a
-     rebase for a patch they have validated. In particular, an unstarted/queued
-     dep with no worktree leaves the fan-in patch fail-closed for now; once [b]
-     starts and obtains a PR, the next reconcile tick can enqueue its rebase. *)
+     queued. Guarding on [b]'s own view (and only [b]'s — the fan-in patch [v]
+     may itself be unstarted) keeps this detector as disciplined as the other
+     three, which only ever enqueue a rebase for a patch they have validated.
+     In particular, an unstarted/queued dep with no worktree leaves the fan-in
+     patch fail-closed for now; once [b] starts and obtains a PR, the next
+     reconcile tick can enqueue its rebase. *)
   let base_rebasable b =
     match Map.find view_by_id b with
     | Some bv ->
@@ -168,7 +176,7 @@ let detect_sibling_stale_bases graph views ~has_merged =
   in
   List.filter_map views ~f:(fun v ->
       if
-        v.has_pr && (not v.merged)
+        (not v.merged)
         && List.length (Graph.open_pr_deps graph v.id ~has_merged) = 1
         && not v.base_contains_merged_siblings
       then
