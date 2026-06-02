@@ -7,8 +7,9 @@ open Onton_core.Types
 
     These properties verify from the spec that: 1. Only non-busy, non-merged,
     non-intervention agents with queued operations produce actions. 2. Start
-    only for patches without PRs where deps are satisfied. 3. Respond only for
-    patches with PRs, respecting priority. *)
+    only for patches without PRs where deps are satisfied and every unmerged dep
+    has delivered its implementation notes (deps-notes-ready). 3. Respond only
+    for patches with PRs, respecting priority. *)
 
 let main = Branch.of_string "main"
 
@@ -170,6 +171,35 @@ let () =
         with _ -> false)
   in
 
+  (* deps-notes-ready (spec): every Start target's unmerged deps have
+     delivered their implementation notes. Half the patches get delivered
+     notes so the generator exercises both gate outcomes. *)
+  let prop_start_deps_notes_ready =
+    Test.make
+      ~name:"plan_spawns: Start only when unmerged deps' notes delivered"
+      gen_patch_list_unique (fun patches ->
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch = prepare_with_prs orch patches in
+          let orch =
+            List.foldi patches ~init:orch ~f:(fun i o (p : Patch.t) ->
+                if i % 2 = 0 then
+                  Orchestrator.set_pr_body_delivered o p.Patch.id true
+                else o)
+          in
+          let graph = Orchestrator.graph orch in
+          let has_merged p = (Orchestrator.agent orch p).Patch_agent.merged in
+          let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
+          List.for_all spawns ~f:(fun s ->
+              match Onton.Spawn_logic.classify s with
+              | `Start pid ->
+                  List.for_all (Graph.open_pr_deps graph pid ~has_merged)
+                    ~f:(fun d ->
+                      (Orchestrator.agent orch d).Patch_agent.pr_body_delivered)
+              | `Respond _ | `Rebase _ -> true)
+        with _ -> false)
+  in
+
   (* All patches whose Start preconditions hold do get started (liveness) *)
   let prop_all_startable_started =
     Test.make ~name:"plan_spawns: all startable patches get Start"
@@ -184,16 +214,51 @@ let () =
                 | `Respond _ | `Rebase _ -> None)
           in
           let graph = Orchestrator.graph orch in
+          let has_merged p = (Orchestrator.agent orch p).Patch_agent.merged in
           List.for_all (Graph.all_patch_ids graph) ~f:(fun pid ->
               let a = Orchestrator.agent orch pid in
               if
                 (not (Patch_agent.has_pr a))
                 && (not a.Patch_agent.busy) && (not a.Patch_agent.merged)
-                && Graph.deps_satisfied graph pid
-                     ~has_merged:(fun p ->
-                       (Orchestrator.agent orch p).Patch_agent.merged)
-                     ~has_pr:(fun p ->
-                       Patch_agent.has_pr (Orchestrator.agent orch p))
+                && Graph.deps_satisfied graph pid ~has_merged ~has_pr:(fun p ->
+                    Patch_agent.has_pr (Orchestrator.agent orch p))
+                && List.for_all (Graph.open_pr_deps graph pid ~has_merged)
+                     ~f:(fun d ->
+                       (Orchestrator.agent orch d).Patch_agent.pr_body_delivered)
+              then List.mem started_ids pid ~equal:Patch_id.equal
+              else true)
+        with _ -> false)
+  in
+
+  (* Liveness through the notes gate: once every dep's notes step has
+     completed, every otherwise-startable patch gets its Start. *)
+  let prop_startable_with_notes_started =
+    Test.make
+      ~name:"plan_spawns: startable patches start once dep notes delivered"
+      gen_patch_list_unique (fun patches ->
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch = prepare_with_prs orch patches in
+          let orch =
+            List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
+                Orchestrator.set_pr_body_delivered o p.Patch.id true)
+          in
+          let graph = Orchestrator.graph orch in
+          let has_merged p = (Orchestrator.agent orch p).Patch_agent.merged in
+          let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
+          let started_ids =
+            List.filter_map spawns ~f:(fun s ->
+                match Onton.Spawn_logic.classify s with
+                | `Start pid -> Some pid
+                | `Respond _ | `Rebase _ -> None)
+          in
+          List.for_all (Graph.all_patch_ids graph) ~f:(fun pid ->
+              let a = Orchestrator.agent orch pid in
+              if
+                (not (Patch_agent.has_pr a))
+                && (not a.Patch_agent.busy) && (not a.Patch_agent.merged)
+                && Graph.deps_satisfied graph pid ~has_merged ~has_pr:(fun p ->
+                    Patch_agent.has_pr (Orchestrator.agent orch p))
               then List.mem started_ids pid ~equal:Patch_id.equal
               else true)
         with _ -> false)
@@ -300,7 +365,9 @@ let () =
       prop_intervention_blocks;
       prop_start_no_pr;
       prop_start_deps_satisfied;
+      prop_start_deps_notes_ready;
       prop_all_startable_started;
+      prop_startable_with_notes_started;
       prop_respond_has_pr;
       prop_respond_priority;
       prop_respond_not_rebase;

@@ -86,6 +86,21 @@ val stored_gameplan_path : string -> string
 val sessions_dir : string -> string
 (** Path to the per-session artifact directory root ([sessions/]). *)
 
+val gameplan_artifact_path : string -> string
+(** Absolute path of the agent-readable gameplan copy
+    ([artifacts/gameplan.json]). Lives in the agent-facing [artifacts/] subtree
+    (alongside the per-patch artifact dirs) so patch agents can consult the full
+    gameplan on demand without being pointed at the project-dir root, which
+    holds [config.json] and its token. A pure function of the project name —
+    prompt layers embed it without touching the filesystem. *)
+
+val publish_gameplan_artifact : project_name:string -> unit
+(** Copy the stored JSON gameplan ({!gameplan_json_path}) to
+    {!gameplan_artifact_path} for patch agents to read. No-op when no stored
+    JSON gameplan exists (ad-hoc sessions). Called once at startup, after
+    {!save_gameplan_source} / resume validation, so the copy matches the
+    gameplan the run was parsed from. *)
+
 val pr_body_artifact_path :
   project_name:string -> patch_id:Types.Patch_id.t -> string
 (** Absolute path the agent writes the LLM-authored PR body to. Lives under the

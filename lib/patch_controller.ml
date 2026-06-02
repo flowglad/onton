@@ -351,12 +351,25 @@ let plan_action_for_patch t ~branch_map patch_id =
        is_pr_present rather than has_pr (which is true for [Missing] too). *)
     Patch_agent.is_pr_present (Orchestrator.agent t pid)
   in
+  let notes_delivered pid =
+    (* deps-notes-ready (spec): the child's prompt points at each ancestor's
+       implementation notes ([artifacts/<id>/pr-body.md]), so Start waits for
+       every unmerged dep to finish its Pr_body step. Merged deps are exempt —
+       a merged patch can never deliver notes ([enqueue_pr_body_if_needed]
+       skips merged agents), so waiting on one would deadlock; its artifact
+       persists on disk if it was delivered while open. [pr_body_delivered]
+       is monotone (never reset), so gating at plan time is race-free. *)
+    (Orchestrator.agent t pid).Patch_agent.pr_body_delivered
+  in
   if
     (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
     && Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
+    && List.for_all
+         (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
+         ~f:notes_delivered
   then
     let branch_of pid =
       match Map.find branch_map pid with
@@ -977,6 +990,64 @@ let%test
       | Set_pr_draft { patch_id; draft = false; _ } ->
           Patch_id.equal patch_id child_id
       | Set_pr_draft _ | Set_pr_base _ -> false))
+
+(* Shared fixture for the deps-notes-ready Start gate tests: a parent with an
+   open PR and a child depending on it. *)
+let make_notes_gate_fixture () =
+  let parent_id = Patch_id.of_string "parent" in
+  let child_id = Patch_id.of_string "child" in
+  let mk_patch id branch deps =
+    {
+      Patch.id;
+      title = "test";
+      description = "test";
+      branch;
+      dependencies = deps;
+      spec = "";
+      acceptance_criteria = [];
+      changes = [];
+      files = [];
+      classification = "";
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+      complexity = None;
+      precedents = [];
+      required_context = [];
+    }
+  in
+  let parent_patch = mk_patch parent_id (Branch.of_string "parent-branch") [] in
+  let child_patch =
+    mk_patch child_id (Branch.of_string "child-branch") [ parent_id ]
+  in
+  let patches = [ parent_patch; child_patch ] in
+  let t = Orchestrator.create ~patches ~main_branch:main in
+  let t = Orchestrator.fire t (Orchestrator.Start (parent_id, main)) in
+  let t = Orchestrator.set_pr_number t parent_id (Pr_number.of_int 41) in
+  let t = Orchestrator.complete t parent_id in
+  (parent_id, child_id, patches, t)
+
+let plans_child_start ~child_id ~patches t =
+  List.exists (plan_actions t ~patches) ~f:(function
+    | Orchestrator.Start (p, _) -> Patch_id.equal p child_id
+    | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+
+let%test "plan_actions defers child Start until open dep's notes are delivered"
+    =
+  let parent_id, child_id, patches, t = make_notes_gate_fixture () in
+  (* Parent's PR is open but its Pr_body step has not completed
+     (deps-notes-ready is false), so the child must not start yet. *)
+  (not (plans_child_start ~child_id ~patches t))
+  (* Once the notes are delivered the child becomes startable. *)
+  && plans_child_start ~child_id ~patches
+       (Orchestrator.set_pr_body_delivered t parent_id true)
+
+let%test "plan_actions does not gate child Start on a merged dep's notes" =
+  let parent_id, child_id, patches, t = make_notes_gate_fixture () in
+  (* Parent merges without ever delivering notes (e.g. merged by a human
+     before the Pr_body step ran). A merged dep can never deliver, so the
+     gate must exempt it rather than deadlock the child. *)
+  let t = Orchestrator.mark_merged t parent_id in
+  plans_child_start ~child_id ~patches t
 
 let%test "reconcile_patch emits no effects for merged agent" =
   let patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in

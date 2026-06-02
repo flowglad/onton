@@ -177,6 +177,25 @@ let agents_md_section = function
    [prompts/review.md], [prompts/ci_failure.md], etc.) are no longer
    honoured. *)
 
+(* The gameplan-reference section points agents at the read-only copy
+   published by [Project_store.publish_gameplan_artifact] at startup. The
+   path is a pure function of the project name (no filesystem probe here),
+   so the rendered gameplan layer stays byte-identical across the run. *)
+let gameplan_reference_section ~(project_name : string) : string =
+  Printf.sprintf
+    "\n\
+     ## Full Gameplan Reference\n\n\
+     A read-only copy of the complete gameplan JSON — every patch's full \
+     description, spec, acceptance criteria, and the functional-change \
+     ownership map — is saved at:\n\n\
+     `%s`\n\n\
+     Everything your patch needs is already in this prompt, so most sessions \
+     never read it. Consult it only when you genuinely need cross-patch \
+     context — for example, to check a sibling patch's scope before deciding \
+     whether a change belongs to you. Do not edit the file, and do not take on \
+     work owned by sibling patches.\n"
+    (Project_store.gameplan_artifact_path project_name)
+
 let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
     string =
   let patches_list =
@@ -201,6 +220,7 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
         optional_section ~header:"Current State Analysis"
           gameplan.Gameplan.current_state_analysis );
       ("patches_list", patches_list);
+      ("gameplan_reference_section", gameplan_reference_section ~project_name);
     ]
   in
   render_with_override ~project_name ~name:"gameplan" ~vars ~default:(fun () ->
@@ -215,7 +235,7 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
 {{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
 ## Patches in Gameplan
 {{patches_list}}
-
+{{gameplan_reference_section}}
 |}
         vars)
 
@@ -236,9 +256,45 @@ let format_functional_changes_section (fcs : Functional_change.t list) : string
      exhaustive and each change is owned by exactly one patch, so if a change \
      appears here, no sibling patch will pick it up.\n\n" ^ body ^ "\n"
 
+(* The dependency-notes section points the agent at the implementation notes
+   each ancestor patch's agent records via its Pr_body session
+   ([Project_store.pr_body_artifact_path]). Start is gated on every unmerged
+   dep having delivered its notes (deps-notes-ready in the spec, enforced by
+   [Patch_controller.plan_action_for_patch]), so the files exist by the time
+   this layer is first read — except for an ancestor that merged before its
+   notes step ran. Paths are pure functions of the project name and patch id —
+   no filesystem probe here — so the rendered patch layer stays byte-identical
+   across a patch's sessions. *)
+let dependency_notes_section ~(project_name : string) (ancestors : Patch.t list)
+    : string =
+  if List.is_empty ancestors then ""
+  else
+    let entries =
+      List.map ancestors ~f:(fun (p : Patch.t) ->
+          Printf.sprintf "- Patch %s: %s — `%s`"
+            (Patch_id.to_string p.Patch.id)
+            p.Patch.title
+            (Project_store.pr_body_artifact_path ~project_name
+               ~patch_id:p.Patch.id))
+      |> String.concat ~sep:"\n"
+    in
+    Printf.sprintf
+      "\n\
+       ## Dependency Implementation Notes\n\n\
+       Your worktree already contains the changes from these ancestor patches. \
+       Each patch's agent records implementation notes — key decisions, \
+       deviations from plan, gotchas — at:\n\n\
+       %s\n\n\
+       Like the gameplan reference, these are read-only, on-demand context: \
+       consult a file only when you need to understand a decision your patch \
+       builds on. Each ancestor's notes are recorded before a dependent patch \
+       starts; in the rare case a file is missing, that ancestor merged before \
+       its notes step ran. Do not edit these files.\n"
+      entries
+
 let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
-    ?(functional_changes = []) ?(context_resources = []) ~(base_branch : string)
-    () : string =
+    ?(functional_changes = []) ?(context_resources = []) ?(ancestors = [])
+    ~(base_branch : string) () : string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -314,6 +370,8 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
       ( "functional_changes_section",
         format_functional_changes_section functional_changes );
       ("context_resources_section", format_context_resources context_resources);
+      ( "dependency_notes_section",
+        dependency_notes_section ~project_name ancestors );
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ( "spec_section",
         if String.is_empty patch.spec then ""
@@ -378,7 +436,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 
 ## Dependencies
 {{dependencies}}
-
+{{dependency_notes_section}}
 ## Your Task
 
 {{base_branch_note}}{{description}}
@@ -404,6 +462,26 @@ let required_context_resources (gameplan : Gameplan.t) (patch : Patch.t) :
     ~f:(fun (r : Context_resource.t) ->
       List.mem patch.Patch.required_context r.id ~equal:String.equal)
 
+let ancestor_patches (gameplan : Gameplan.t) (patch : Patch.t) : Patch.t list =
+  let graph = Graph.of_patches gameplan.Gameplan.patches in
+  Graph.transitive_ancestors graph patch.Patch.id
+  |> List.filter_map ~f:(fun id ->
+      List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
+          Patch_id.equal p.Patch.id id))
+
+(* The single source of truth for deriving the patch layer's gameplan-scoped
+   inputs (owned functional changes, required context resources, ancestor
+   notes). Every caller that renders a patch layer for a gameplan patch must
+   go through this — hand-assembling the inputs at a call site is how the
+   long-lived session's cached layer drifts from the composed prompt. *)
+let render_patch_layer_of_gameplan ~project_name ?pr_number (patch : Patch.t)
+    (gameplan : Gameplan.t) ~base_branch =
+  render_patch_layer ~project_name patch ?pr_number
+    ~functional_changes:(owned_functional_changes gameplan patch)
+    ~context_resources:(required_context_resources gameplan patch)
+    ~ancestors:(ancestor_patches gameplan patch)
+    ~base_branch ()
+
 (* When all of [patch], [gameplan], [base_branch] are supplied, returns
    the gameplan+patch prefix; otherwise returns the empty string. Used by
    the layered turn-prompt composers to support callers that don't have a
@@ -412,14 +490,12 @@ let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md () =
   match (patch, gameplan, base_branch) with
   | Some p, Some g, Some b ->
-      let functional_changes = owned_functional_changes g p in
-      let context_resources = required_context_resources g p in
       render_gameplan_layer ~project_name g
       ^ (match agents_md with
         | Some content -> agents_md_section (Some content)
         | None -> "")
-      ^ render_patch_layer ~project_name p ?pr_number ~functional_changes
-          ~context_resources ~base_branch:b ()
+      ^ render_patch_layer_of_gameplan ~project_name ?pr_number p g
+          ~base_branch:b
   | _ -> ""
 
 let render_turn_layer_start ~(project_name : string) : string =
@@ -429,12 +505,10 @@ let render_turn_layer_start ~(project_name : string) : string =
 
 let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
     (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
-  let functional_changes = owned_functional_changes gameplan patch in
-  let context_resources = required_context_resources gameplan patch in
   render_gameplan_layer ~project_name gameplan
   ^ agents_md_section agents_md
-  ^ render_patch_layer ~project_name patch ?pr_number ~functional_changes
-      ~context_resources ~base_branch ()
+  ^ render_patch_layer_of_gameplan ~project_name ?pr_number patch gameplan
+      ~base_branch
   ^ render_turn_layer_start ~project_name
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
@@ -678,7 +752,7 @@ The current PR body is:
 {{pr_body}}
 ---
 {{spec_context}}
-The supervisor will keep this description and specs on the PR. Your job is to write **additional notes** — anything a reviewer needs beyond the gameplan description. The supervisor will append your notes to the PR body under an `## Implementation Notes` header.
+The supervisor will keep this description and specs on the PR. Your job is to write **additional notes** — anything a reviewer needs beyond the gameplan description. The supervisor will append your notes to the PR body under an `## Implementation Notes` header. Agents implementing patches that depend on this one are also pointed at these notes, so they double as a handoff to the work built on top of your changes.
 
 **Write just the notes content (no header) to `{{artifact_path}}`.** This is an absolute path outside the worktree — write it with the Write tool. Do NOT run `gh`, `git`, or any forge command; the supervisor reads the file and PATCHes the PR.
 
@@ -688,6 +762,7 @@ What to include:
 - Anything surprising or non-obvious about the approach.
 - Deviations from the original plan (if any).
 - Important details a reviewer should know.
+- Anything an agent building a dependent patch on top of yours should know: renames, new invariants, API changes, gotchas.
 - A short `Spec/Evidence Mapping` when applicable: spec clause or acceptance criterion satisfied, code path implementing it, required context resource consulted, and test/static check proving it if available.
 
 Do not repeat information already in the description or specs above — add only what's new.
@@ -1547,16 +1622,118 @@ let%test "gameplan_layer is the prefix of render_patch_prompt for both patches"
   String.is_prefix prompt_a ~prefix:g_layer
   && String.is_prefix prompt_b ~prefix:g_layer
 
+let%test "gameplan layer points at the published gameplan artifact copy" =
+  let _, _, gameplan = make_layer_test_fixture () in
+  let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
+  String.is_substring g_layer ~substring:"## Full Gameplan Reference"
+  && String.is_substring g_layer
+       ~substring:("`" ^ Project_store.gameplan_artifact_path "onton" ^ "`")
+  (* The pointer is lazy-disclosure only: the layer must keep withholding
+     sibling patch detail itself (titles only, per the patches list). *)
+  && not (String.is_substring g_layer ~substring:"Pass patch + gameplan")
+
+let%test "patch layer lists ancestor implementation notes for dependents" =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let prompt_a =
+    render_patch_prompt ~project_name:"onton" patch_a gameplan
+      ~base_branch:"main"
+  in
+  let prompt_b =
+    render_patch_prompt ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  let expected_entry =
+    Printf.sprintf "- Patch 1: Add layer helpers — `%s`"
+      (Project_store.pr_body_artifact_path ~project_name:"onton"
+         ~patch_id:patch_a.Patch.id)
+  in
+  String.is_substring prompt_b ~substring:"## Dependency Implementation Notes"
+  && String.is_substring prompt_b ~substring:expected_entry
+  (* A patch with no ancestors gets no section at all. *)
+  && not
+       (String.is_substring prompt_a
+          ~substring:"## Dependency Implementation Notes")
+
+let%test "dependency notes cover transitive ancestors, not just direct deps" =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let patch_c =
+    {
+      patch_b with
+      Patch.id = Patch_id.of_string "3";
+      title = "Stack further";
+      branch = Branch.of_string "feat/patch-3";
+      dependencies = [ Patch_id.of_string "2" ];
+    }
+  in
+  let gameplan =
+    { gameplan with Gameplan.patches = [ patch_a; patch_b; patch_c ] }
+  in
+  let ancestors = ancestor_patches gameplan patch_c in
+  let prompt_c =
+    render_patch_prompt ~project_name:"onton" patch_c gameplan
+      ~base_branch:"feat/patch-2"
+  in
+  let path_of p =
+    Project_store.pr_body_artifact_path ~project_name:"onton"
+      ~patch_id:p.Patch.id
+  in
+  List.equal String.equal
+    (List.map ancestors ~f:(fun p -> Patch_id.to_string p.Patch.id))
+    [ "1"; "2" ]
+  && String.is_substring prompt_c ~substring:(path_of patch_a)
+  && String.is_substring prompt_c ~substring:(path_of patch_b)
+
+let%test "gameplan-derived patch layer carries required context resources" =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let resource =
+    Context_resource.
+      {
+        id = "CR-1";
+        kind = "doc";
+        paths = [ "docs/layers.md" ];
+        why = "Defines the layer contract.";
+        consumed_by = [];
+      }
+  in
+  let patch_b = { patch_b with Patch.required_context = [ "CR-1" ] } in
+  let gameplan =
+    {
+      gameplan with
+      Gameplan.patches = [ patch_a; patch_b ];
+      context_resources = [ resource ];
+    }
+  in
+  let layer =
+    render_patch_layer_of_gameplan ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  let prompt =
+    render_patch_prompt ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  (* The layer is byte-identically embedded in the composed prompt... *)
+  String.is_substring prompt ~substring:layer
+  (* ...and carries the gameplan-derived context resources — the input the
+     runner's hand-assembled call sites used to drop. *)
+  && String.is_substring layer ~substring:"## Required Context Before Editing"
+  && String.is_substring layer ~substring:"CR-1"
+
+let%test "pr body prompt tells the author about dependent patch readers" =
+  let rendered =
+    render_pr_body_prompt ~project_name:"onton" ~pr_number:(Pr_number.of_int 7)
+      ~pr_body:"body" ~spec_suffix:"" ~artifact_path:"/tmp/pr-body.md"
+  in
+  String.is_substring rendered ~substring:"patches that depend on this one"
+
 let%test
     "gameplan + patch layers are the prefix of every layered prompt for one \
      patch" =
   let patch_a, _, gameplan = make_layer_test_fixture () in
   let pr_number = Pr_number.of_int 7 in
   let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
-  let functional_changes = owned_functional_changes gameplan patch_a in
   let p_layer =
-    render_patch_layer ~project_name:"onton" patch_a ~pr_number
-      ~functional_changes ~base_branch:"main" ()
+    render_patch_layer_of_gameplan ~project_name:"onton" ~pr_number patch_a
+      gameplan ~base_branch:"main"
   in
   let agents_md = "Follow AGENTS.md.\nNever use *_exn." in
   let prefix = g_layer ^ agents_md_section (Some agents_md) ^ p_layer in
