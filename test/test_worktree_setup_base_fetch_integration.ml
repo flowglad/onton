@@ -42,18 +42,19 @@ let with_temp_dir f =
   Unix.mkdir dir 0o755;
   (* Worktree paths derive from $HOME (see [Worktree.worktree_dir]); redirect
      HOME into the temp dir so the worktree lives inside our sandbox. Restored
-     (and the sandbox wiped) at exit. *)
+     (and the sandbox wiped) before the next scenario runs. *)
   let prior_home = Stdlib.Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" dir;
-  Stdlib.at_exit (fun () ->
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
       (match prior_home with
       | Some h -> Unix.putenv "HOME" h
       | None -> Unix.putenv "HOME" (Stdlib.Filename.get_temp_dir_name ()));
       try
         Git_env.sh ~dir:"/"
           (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
-      with _ -> ());
-  f dir
+      with _ -> ())
+    (fun () -> f dir)
 
 let setup_origin_with_main ~origin_dir =
   Unix.mkdir origin_dir 0o755;
@@ -164,9 +165,8 @@ let scenario_stale_local_main env =
   sh ~dir:origin_dir "git add dep.txt";
   sh ~dir:origin_dir "git commit -q -m 'dep squash'";
   let origin_tip = git_capture ~dir:origin_dir [ "rev-parse"; "main" ] in
-  assert_string "precondition: local main is stale"
-    (git_capture ~dir:managed_dir [ "rev-parse"; "main" ])
-    clone_time_main;
+  assert_string "precondition: local main is stale" clone_time_main
+    (git_capture ~dir:managed_dir [ "rev-parse"; "main" ]);
   let wt =
     run_ensure env ~managed_dir ~project_name:"stale-main"
       ~pid:(Types.Patch_id.of_string "1")

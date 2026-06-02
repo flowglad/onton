@@ -156,7 +156,13 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                fetch is attempted: {!Start_point_plan.base_start_point} encodes
                the asymmetry, and on fetch/resolve failure it falls back
                fail-open to the local ref with the freshen-rebase detectors as
-               the backstop, exactly the pre-fetch behavior. *)
+               the backstop, exactly the pre-fetch behavior.
+
+               This deliberately shares [Env.fetch_mutex] with the branch fetch
+               above (and the rest of the runtime's fetch traffic). Git updates
+               refs in the same managed clone, so serializing both fetches keeps
+               ref observation ordered at the cost of one more locked network
+               round trip during main-base worktree creation. *)
             let base_is_main =
               Runtime.read runtime (fun snap ->
                   Types.Branch.equal
