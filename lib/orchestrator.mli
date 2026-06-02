@@ -312,10 +312,20 @@ val apply_rebase_result :
   Branch.t ->
   t * rebase_effect list
 (** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->
-    set_base_branch + clear_has_conflict + reset_conflict_noop_count + complete
-    \+ [[Push_branch]]. [Noop] -> set_base_branch + complete + [[]]. [Conflict]
-    -> set_base_branch + set_has_conflict + enqueue Merge_conflict + complete.
-    [Error _] -> set_session_failed + set_tried_fresh + complete. *)
+    set_base_branch + clear_has_conflict + reset_conflict_noop_count + rewrite
+    cascade + complete + [[Push_branch]]. [Noop] -> set_base_branch + complete
+    \+ [[]]. [Conflict] -> set_base_branch + set_has_conflict + enqueue
+    Merge_conflict + complete. [Error _] -> set_session_failed + set_tried_fresh
+    \+ complete.
+
+    The {e rewrite cascade} on [Ok] is the dual of [mark_merged]'s eager
+    enqueue: a completed rebase force-replaces the branch's commits, leaving
+    stacked children (open dependents with PRs whose [branch_rebased_onto] names
+    this branch) on dead history that every name-based detector reads as fresh.
+    Each such child gets a [Rebase] enqueued; each child's own [Ok] re-fires the
+    cascade, so the wave walks an open stack one layer per round, serialized
+    bottom-up by the eligibility gate. [Noop] deliberately does not cascade —
+    the branch was not rewritten. *)
 
 val apply_rebase_with_anchor :
   t ->
@@ -363,11 +373,13 @@ val apply_conflict_rebase_result :
   Branch.t ->
   t * conflict_rebase_decision * rebase_effect list
 (** Apply a rebase outcome during merge-conflict resolution. Pure function. [Ok]
-    -> clear_has_conflict + reset_conflict_noop_count + complete +
-    [Conflict_resolved] + [[Push_branch]]. [Noop] -> clear_has_conflict +
-    increment_conflict_noop_count + complete + [Conflict_resolved] +
-    [[Push_branch]] (local is correct; has_conflict cleared so it purely tracks
-    GitHub state — the poller will re-set and re-enqueue if conflict persists).
+    -> clear_has_conflict + reset_conflict_noop_count + rewrite cascade (see
+    {!apply_rebase_result} — conflict resolution rewrites the branch just like a
+    clean rebase) + complete + [Conflict_resolved] + [[Push_branch]]. [Noop] ->
+    clear_has_conflict + increment_conflict_noop_count + complete +
+    [Conflict_resolved] + [[Push_branch]] (local is correct; has_conflict
+    cleared so it purely tracks GitHub state — the poller will re-set and
+    re-enqueue if conflict persists; no cascade — the branch was not rewritten).
     [Conflict] -> set_has_conflict + [Deliver_to_agent] + [[]]. [Error _] ->
     set_session_failed + complete + [Conflict_failed]. *)
 

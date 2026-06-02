@@ -219,14 +219,21 @@ let apply_command m cmd =
       else
         let pid = pid_of_idx m.patches i in
         let agent = Orchestrator.agent m.orch pid in
-        let merge_conflict_queued =
-          List.mem agent.Patch_agent.queue Operation_kind.Merge_conflict
-            ~equal:Operation_kind.equal
+        (* Mirror the production planner: a respond only fires when it is the
+           highest-priority queued op ([Patch_agent.respond] raises
+           otherwise). The rewrite cascade can legitimately queue a [Rebase]
+           (priority 0) onto a conflicted patch — e.g. its base completed a
+           rebase — and production then runs that rebase first; this command
+           is infeasible until the queue's head is [Merge_conflict] again. *)
+        let merge_conflict_is_next =
+          Option.equal Operation_kind.equal
+            (Patch_agent.highest_priority agent)
+            (Some Operation_kind.Merge_conflict)
         in
         if
           (not agent.Patch_agent.has_conflict)
           || agent.Patch_agent.merged || agent.Patch_agent.busy
-          || not merge_conflict_queued
+          || not merge_conflict_is_next
         then m
         else
           (* Fire the queued [Merge_conflict] respond and resolve it cleanly:
@@ -397,28 +404,48 @@ let sbi_defer_implies_progress m =
 
 (** SBI-3 (rebase drains the queue): the freshness gate's
     [Base_patch_busy_with_rebase] arm only stays sound if a completed rebase
-    actually removes [Rebase] from the agent's queue — otherwise
+    actually removes [Rebase] from {e the rebased agent's own} queue — otherwise
     [runnable_rebase] would latch [true] forever and a just-rebased base would
-    keep deferring. Assert the postcondition directly: any idle (not [busy])
-    agent that is structurally fresh (its local branch sits on its current
-    structural base) must carry no queued [Rebase]. [Patch_agent.complete] after
-    a successful rebase enforces this; this locks it in so a regression in
-    [fire]/[apply_rebase_result]/[complete] would be caught here rather than
-    hidden behind a vacuous liveness pass. *)
-let sbi_completed_rebase_drains_queue m =
-  List.for_all
-    (Map.to_alist (Orchestrator.agents_map m.orch))
-    ~f:(fun (pid, a) ->
-      let structurally_fresh =
-        match a.Patch_agent.branch_rebased_onto with
-        | Some b -> Branch.equal b (initial_base_of m.orch m.patches pid)
-        | None -> false
-      in
-      if (not a.Patch_agent.busy) && structurally_fresh then
-        not
-          (List.mem a.Patch_agent.queue Operation_kind.Rebase
-             ~equal:Operation_kind.equal)
-      else true)
+    keep deferring. Assert the postcondition directly: immediately after a
+    [Rebase_complete i] that actually applied, agent [i] carries no queued
+    [Rebase]. [Patch_agent.complete] after a successful rebase enforces this;
+    locking it in catches a regression in
+    [fire]/[apply_rebase_result]/[complete] rather than hiding it behind a
+    vacuous liveness pass.
+
+    Deliberately scoped to the rebased agent, not to every idle
+    structurally-fresh agent: a completed rebase {e rewrites} its branch, and
+    [Orchestrator.apply_rebase_result] eagerly enqueues a [Rebase] for stacked
+    children sitting on the rewritten branch — children that read structurally
+    fresh by name ([branch_rebased_onto] still names the base) while their
+    history is dead. A queued [Rebase] on such an agent is the rewrite cascade
+    working as designed, not a latch: it does not latch because this very
+    postcondition re-asserts draining when that child's own rebase completes. *)
+let sbi_completed_rebase_drains_queue m pid =
+  let a = Orchestrator.agent m.orch pid in
+  not
+    (List.mem a.Patch_agent.queue Operation_kind.Rebase
+       ~equal:Operation_kind.equal)
+
+(** Whether [Rebase_complete i] would actually apply right now — mirrors
+    [apply_command]'s feasibility guard, so SBI-3 only asserts after a rebase
+    that genuinely ran (infeasible commands are no-ops and prove nothing about
+    queue draining). *)
+let rebase_complete_applies m i =
+  i < List.length m.patches
+  &&
+  let pid = pid_of_idx m.patches i in
+  let agent = Orchestrator.agent m.orch pid in
+  Patch_agent.has_pr agent
+  && (not agent.Patch_agent.merged)
+  && (not agent.Patch_agent.busy)
+  && List.mem agent.Patch_agent.queue Operation_kind.Rebase
+       ~equal:Operation_kind.equal
+  && List.length
+       (Graph.open_pr_deps (Orchestrator.graph m.orch) pid
+          ~has_merged:(fun dep ->
+            (Orchestrator.agent m.orch dep).Patch_agent.merged))
+     <= 1
 
 (* -- Generators -- *)
 
@@ -489,8 +516,34 @@ let prop_completed_rebase_drains_queue =
       let m = bootstrap (mk_patches n_patches) in
       let _final, ok =
         List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
+            (* Capture feasibility on the pre-command state: the command's own
+               application consumes the queued Rebase we are asserting about. *)
+            let applied =
+              match cmd with
+              | Rebase_complete i | Rebase_conflict i ->
+                  (* A conflicted rebase also completes as an op
+                     ([apply_rebase_result Conflict] drains [Rebase] and
+                     enqueues [Merge_conflict]) — the drain postcondition
+                     holds for it too. *)
+                  rebase_complete_applies m i
+              | Main_advanced | Pr_merged _ | Resolve_conflict _
+              | Enqueue_start _ ->
+                  false
+            in
             let m = apply_command m cmd in
-            (m, ok && sbi_completed_rebase_drains_queue m))
+            let ok =
+              ok
+              &&
+              match (cmd, applied) with
+              | (Rebase_complete i | Rebase_conflict i), true ->
+                  sbi_completed_rebase_drains_queue m (pid_of_idx m.patches i)
+              | (Rebase_complete _ | Rebase_conflict _), false
+              | ( ( Main_advanced | Pr_merged _ | Resolve_conflict _
+                  | Enqueue_start _ ),
+                  _ ) ->
+                  true
+            in
+            (m, ok))
       in
       ok)
 

@@ -20,6 +20,15 @@ type patch_view = {
           deps merged into main) or the base branch already carries the merged
           siblings. Drives [detect_sibling_stale_bases] and the Start/Rebase
           gate. *)
+  sibling_rebase_target : Patch_id.t option;
+      (** When [base_contains_merged_siblings] is [false]: the patch in this
+          patch's base chain whose rebase actually moves the missing squash
+          commits one layer closer — the frontier computed by
+          {!Base_containment.stale_chain_rebase_target} (effectfully, by the
+          same caller and oracle as the containment flag). [None] when
+          containment holds or the frontier is undefined (unknown merge SHA,
+          chain interrupted by a multi-open-dep layer). Consumed by
+          [detect_sibling_stale_bases]. *)
 }
 [@@deriving sexp_of]
 
@@ -127,23 +136,40 @@ let detect_stale_bases graph views ~has_merged ~branch_of ~main =
     commits. The other rebase detectors never fix this: [B] is not a dependent
     of the merged sibling, so none of [detect_rebases] / [detect_stale_bases] /
     [detect_notified_base_drift] enqueues [B]'s rebase. This detector creates
-    that demand — it enqueues a [Rebase] of [B] (the dependency), which on its
-    next run rebases onto [Graph.initial_base B] (= main once [B]'s own deps are
-    merged) and thereby absorbs [P]'s merged siblings. [P]'s own
-    [Start]/[Rebase] stays deferred by the eligibility gate
-    ([Base_missing_merged_sibling]) until [B] is fresh.
+    that demand. [P]'s own [Start]/[Rebase] stays deferred by the eligibility
+    gate ([Base_missing_merged_sibling]) until [B] is fresh.
+
+    {b The demand targets the chain frontier, not [B] itself.} The missing
+    sibling's squash commit lives on main; it can only enter [B]'s branch by
+    flowing up the chain of still-open ancestors under [B] — each layer rebasing
+    onto its structural base, bottom-up. Rebasing [B] alone is not enough: when
+    [B] is itself stacked ([B] ← [C] ← … ← main), [B]'s rebase target is [C]'s
+    branch, which lacks the squash just like [B]'s — the rebase completes
+    without absorbing anything, the containment flag stays false, and the
+    detector re-fires forever (the seed-440463877 / seed-7 FLI-3 livelocks; in
+    production, a pointless force-push per poll tick). Demanding the {e whole}
+    chain each tick is also wrong — the re-queued lower rebases keep every layer
+    above deferred on [Base_patch_busy_with_rebase], starving the wave. The
+    per-view [sibling_rebase_target]
+    ({!Base_containment.stale_chain_rebase_target}) is the resolution: the
+    deepest stale layer whose own base already contains the squashes. Healing it
+    moves the frontier up one layer per tick until [B] absorbs the content and
+    the containment flag flips true. (A completed rebase additionally cascades
+    demand to its stacked children eagerly — [Orchestrator.apply_rebase_result]
+    — so in practice the wave often runs ahead of this detector's tick-by-tick
+    re-derivation.)
 
     [P] is considered whether or not it has a PR. An *unstarted* [P] (no PR yet)
     is the case that needs this detector most: its pending [Start (P, base = B)]
     sits deferred on [Base_missing_merged_sibling], and with no PR of its own no
     other detector will ever act on [P]'s behalf — without the demand created
     here the Start would defer until [B] merges, defeating stacked starts. Only
-    [~merged] is required of [P]; rebasability is [B]'s concern
-    ([base_rebasable] below).
+    [~merged] is required of [P]; rebasability is the target layer's concern
+    ([base_rebasable] below — an unstarted target is skipped: it cuts fresh from
+    its base when it starts, healing its layer without a rebase).
 
-    The [open_pr_deps = 1] guard keeps [sole_open_dep] total and pins this to
-    the "last-but-one dependency merged" edge, where a single rebase of [B]
-    realizes containment for [P]. *)
+    The [open_pr_deps = 1] guard pins this to the "last-but-one dependency
+    merged" edge, where healing [B]'s chain realizes containment for [P]. *)
 let detect_sibling_stale_bases graph views ~has_merged =
   let view_by_id =
     List.fold views
@@ -180,8 +206,9 @@ let detect_sibling_stale_bases graph views ~has_merged =
         && List.length (Graph.open_pr_deps graph v.id ~has_merged) = 1
         && not v.base_contains_merged_siblings
       then
-        let b = Graph.sole_open_dep graph v.id ~has_merged in
-        if base_rebasable b then Some (Enqueue_rebase b) else None
+        match v.sibling_rebase_target with
+        | Some target when base_rebasable target -> Some (Enqueue_rebase target)
+        | Some _ | None -> None
       else None)
 
 let plan_operations views ~has_merged ~branch_of ~graph ~main =

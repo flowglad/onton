@@ -166,16 +166,74 @@ let mark_merged t patch_id =
              snapshot. (Today [refresh_base_branch] mutates only [base_branch],
              but re-reading keeps this correct if that ever changes.) The
              [merged] guard is not dead: a dependent can already be merged when
-             this fires, and a merged dep must not be handed a [Rebase]. *)
+             this fires, and a merged dep must not be handed a [Rebase].
+
+             The [has_pr] guard mirrors [detect_rebases]: a PR-less dependent
+             has no branch to absorb into — its eventual Start cuts from the
+             freshly-resolved base, so a queued [Rebase] would sit inert
+             through the cut and then fire against an already-fresh branch:
+             pure waste, and an unnecessary rewrite + CI cycle whenever main
+             moved in between (caught by NUR-3 in
+             [test_fanin_liveness_interleavings.ml]). *)
           match find_agent t dep_id with
           | None -> t
           | Some dep_agent ->
               if
                 dep_agent.Patch_agent.merged
+                || (not (Patch_agent.has_pr dep_agent))
                 || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
               then t
               else enqueue t dep_id Operation_kind.Rebase))
+
+(** Eagerly enqueue a [Rebase] for every dependent whose local branch physically
+    sits on [patch_id]'s just-rewritten branch. The dual of [mark_merged]'s
+    eager enqueue: that one creates rebase demand when a dependency {e merges};
+    this one creates it when a dependency's branch is {e rewritten} (a completed
+    rebase / conflict resolution force-replaces its commits). A stacked child's
+    history then references commits that no longer exist — but every name-based
+    detector reads it as fresh ([branch_rebased_onto] still names the base,
+    [base_branch] agrees, and [detect_sibling_stale_bases] only ever targets the
+    fan-in patch's sole open dep, one layer up). Without this cascade a chain
+    under a fan-in patch livelocks: the sibling detector re-enqueues the
+    top-of-chain rebase every tick, the rebase lands on a base that still lacks
+    the merged sibling's squash, and the fan-in patch never becomes startable
+    (the seed-440463877 FLI-3 counterexample; in production the churn is a
+    pointless force-push per poll tick, healed only if GitHub happens to report
+    a textual conflict).
+
+    Each cascaded rebase that completes re-fires this, so the wave walks the
+    open stack one layer per round in topological order, gated at every step by
+    [Start_eligibility] (a child's rebase defers while its base is itself
+    mid-rebase or conflicted). Guards mirror [mark_merged]'s ([merged], rebase
+    already queued) plus:
+
+    - [has_pr]: an unstarted dependent has no branch yet or will cut from the
+      post-rewrite local ref — no demand needed (and
+      [detect_sibling_stale_bases] covers the unstarted-fan-in case).
+    - [branch_rebased_onto = patch_id's branch]: only children physically on the
+      rewritten branch are stranded; a fan-in dependent based on a different
+      open dep is untouched by this rewrite. *)
+let enqueue_rebase_for_stranded_dependents t patch_id =
+  match find_agent t patch_id with
+  | None -> t
+  | Some rebased ->
+      let rebased_branch = rebased.Patch_agent.branch in
+      Graph.dependents t.graph patch_id
+      |> List.fold ~init:t ~f:(fun t dep_id ->
+          match find_agent t dep_id with
+          | None -> t
+          | Some d ->
+              if
+                d.Patch_agent.merged
+                || (not (Patch_agent.has_pr d))
+                || List.mem d.Patch_agent.queue Operation_kind.Rebase
+                     ~equal:Operation_kind.equal
+                || not
+                     (Option.equal Branch.equal
+                        d.Patch_agent.branch_rebased_onto (Some rebased_branch))
+              then t
+              else enqueue t dep_id Operation_kind.Rebase)
 
 let remove_agent t patch_id =
   {
@@ -621,6 +679,10 @@ let apply_rebase_result t patch_id rebase_result new_base =
       in
       let t = clear_has_conflict t patch_id in
       let t = reset_conflict_noop_count t patch_id in
+      (* The rebase rewrote this branch's commits; stacked children are now on
+         dead history. [Noop] below deliberately does not cascade — the branch
+         was not rewritten. *)
+      let t = enqueue_rebase_for_stranded_dependents t patch_id in
       (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
@@ -699,6 +761,10 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       in
       let t = clear_has_conflict t patch_id in
       let t = reset_conflict_noop_count t patch_id in
+      (* Conflict resolution rewrote this branch's commits just like a clean
+         rebase — cascade demand to stacked children. The [Noop] arm below does
+         not cascade: the branch already contained the target. *)
+      let t = enqueue_rebase_for_stranded_dependents t patch_id in
       let t = complete t patch_id in
       (t, Conflict_resolved, [ Push_branch ])
   | Worktree.Noop ->

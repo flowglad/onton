@@ -501,6 +501,17 @@ struct
             let agents = Orchestrator.all_agents orch in
             let patch_views =
               List.map agents ~f:(fun (a : Patch_agent.t) ->
+                  (* The frontier is only meaningful (and only worth the extra
+                     [is_ancestor] probes) when containment just computed
+                     false; everywhere else the detector ignores it. Same
+                     oracle and inputs as the containment fold above. *)
+                  let sibling_rebase_target =
+                    if a.Patch_agent.base_contains_merged_siblings then None
+                    else
+                      Base_containment.stale_chain_rebase_target ~graph
+                        ~patch_id:a.Patch_agent.patch_id ~has_merged ~merge_sha
+                        ~branch_of ~main ~ancestor_oracle
+                  in
                   Reconciler.
                     {
                       id = a.Patch_agent.patch_id;
@@ -515,6 +526,7 @@ struct
                       branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
                       base_contains_merged_siblings =
                         a.Patch_agent.base_contains_merged_siblings;
+                      sibling_rebase_target;
                     })
             in
             let merged_patches =

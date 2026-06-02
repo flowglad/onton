@@ -33,6 +33,15 @@ type patch_view = {
           [false] when a SHA is not yet known. [true] when the base is main or
           the base branch already carries the merged siblings. Drives
           [detect_sibling_stale_bases] and the Start/Rebase eligibility gate. *)
+  sibling_rebase_target : Types.Patch_id.t option;
+      (** When [base_contains_merged_siblings] is [false]: the patch in this
+          patch's base chain whose rebase actually moves the missing squash
+          commits one layer closer — the frontier computed by
+          {!Base_containment.stale_chain_rebase_target} (effectfully, by the
+          same caller and oracle as the containment flag). [None] when
+          containment holds or the frontier is undefined (no merged deps,
+          unknown merge SHA, chain interrupted by a multi-open-dep layer).
+          Consumed by [detect_sibling_stale_bases]. *)
 }
 [@@deriving sexp_of]
 (** Observable state of a single patch, projected for reconciliation. *)
@@ -93,18 +102,20 @@ val detect_sibling_stale_bases :
   has_merged:(Types.Patch_id.t -> bool) ->
   action list
 (** [detect_sibling_stale_bases graph views ~has_merged] returns
-    [Enqueue_rebase B] for the sole open dependency [B] of every fan-in patch
-    [P] that is not merged, has exactly one open dependency, and whose base does
-    not yet contain its merged siblings
-    ([base_contains_merged_siblings = false]). [P] need not have a PR: an
-    unstarted fan-in patch's deferred [Start (P, base = B)]
-    ([Base_missing_merged_sibling]) relies on exactly this demand to ever become
-    runnable. [B] is enqueued (not [P]); [P]'s own start/rebase is gated
-    separately by [Start_eligibility]. Skips when [B] has no PR yet or already
-    has a [Rebase] queued, so queued/unstarted dependencies are never
-    rebase-enqueued by this detector. This is the demand that the other three
-    detectors miss, because [B] is a *sibling* of [P]'s merged deps, not a
-    dependent of them. *)
+    [Enqueue_rebase] for the [sibling_rebase_target] of every fan-in patch [P]
+    that is not merged, has exactly one open dependency, and whose base does not
+    yet contain its merged siblings ([base_contains_merged_siblings = false]).
+    The target is the {e frontier} of [P]'s base chain — the deepest stale layer
+    whose own base already contains the missing squash commits (see
+    {!Base_containment.stale_chain_rebase_target}); for an unstacked base [B] it
+    is [B] itself. [P] need not have a PR: an unstarted fan-in patch's deferred
+    [Start (P, base = B)] ([Base_missing_merged_sibling]) relies on exactly this
+    demand to ever become runnable. The target is enqueued (not [P]); [P]'s own
+    start/rebase is gated separately by [Start_eligibility]. Skips when the
+    target has no PR yet or already has a [Rebase] queued, so queued/unstarted
+    dependencies are never rebase-enqueued by this detector. This is the demand
+    that the other three detectors miss, because the chain layers are *siblings*
+    of [P]'s merged deps, not dependents of them. *)
 
 val plan_operations :
   patch_view list ->

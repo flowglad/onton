@@ -94,6 +94,7 @@ let gen_rebase_scenario =
                   base_branch = main;
                   branch_rebased_onto = Some main;
                   base_contains_merged_siblings = true;
+                  sibling_rebase_target = None;
                 })
         in
         (graph, views, newly_merged))
@@ -157,6 +158,7 @@ let prop_detect_rebases_skips_already_queued =
                 base_branch = main;
                 branch_rebased_onto = Some main;
                 base_contains_merged_siblings = true;
+                sibling_rebase_target = None;
               })
       in
       return (graph, views, ids))
@@ -195,6 +197,7 @@ let gen_plan_scenario =
                   base_branch = main;
                   branch_rebased_onto = Some main;
                   base_contains_merged_siblings = true;
+                  sibling_rebase_target = None;
                 }))))
 
 let prop_plan_skips_busy =
@@ -363,6 +366,7 @@ let gen_reconcile_scenario =
                   base_branch = main;
                   branch_rebased_onto = Some main;
                   base_contains_merged_siblings = true;
+                  sibling_rebase_target = None;
                 }))))
 
 let prop_reconcile_merges_subset =
@@ -423,7 +427,7 @@ let other_br = Types.Branch.of_string "other"
 
 let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
     ?(base_branch = main_br) ?(branch_rebased_onto = Some main_br)
-    ?(base_contains_merged_siblings = true) () =
+    ?(base_contains_merged_siblings = true) ?(sibling_rebase_target = None) () =
   Reconciler.
     {
       id;
@@ -436,6 +440,7 @@ let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
       base_branch;
       branch_rebased_onto;
       base_contains_merged_siblings;
+      sibling_rebase_target;
     }
 
 let pid s = Types.Patch_id.of_string s
@@ -670,8 +675,15 @@ let fanin_views ~merged ~contains =
         ~f:(fun d -> not (merged_in merged d))
     in
     let base = match open_deps with [ d ] -> branch_of d | _ -> main_br in
+    (* The frontier the poller would compute: in this flat fan-in every open
+       dep's own deps are merged or main-based (its structural base already
+       holds the content), so the frontier is the sole open dep itself when
+       the base is stale. *)
+    let sibling_rebase_target =
+      match (contains, open_deps) with false, [ d ] -> Some d | _ -> None
+    in
     mk_view ~id:(pid "p") ~base_branch:base ~branch_rebased_onto:(Some base)
-      ~base_contains_merged_siblings:contains ()
+      ~base_contains_merged_siblings:contains ~sibling_rebase_target ()
   in
   [
     p_view;
@@ -803,9 +815,14 @@ let prop_fanin_unstarted_p_enqueues_base_rebase =
       let merged = [ pid "d1"; pid "d3" ] in
       let views =
         [
-          (* P is unstarted: no PR, no base recorded yet. *)
+          (* P is unstarted: no PR, no base recorded yet. The frontier the
+             poller would compute is the sole open dep d2 itself (d2's own dep
+             d1 is merged, so d2's structural base is main — the content
+             source). *)
           mk_view ~id:(pid "p") ~has_pr:false ~branch_rebased_onto:None
-            ~base_contains_merged_siblings:false ();
+            ~base_contains_merged_siblings:false
+            ~sibling_rebase_target:(Some (pid "d2"))
+            ();
           mk_view ~id:(pid "d2") ();
         ]
       in
