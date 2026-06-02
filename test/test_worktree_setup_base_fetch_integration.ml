@@ -120,11 +120,11 @@ let empty_gameplan =
 let run_ensure env ~managed_dir ~project_name ~pid ~branch ~base_ref =
   let process_mgr = Eio.Stdenv.process_mgr env in
   let module W = (val Worktree.make ~process_mgr ~repo_root:managed_dir) in
+  let patch = mk_patch ~pid ~branch in
+  let gameplan = { empty_gameplan with Types.Gameplan.patches = [ patch ] } in
   let module Env : Worktree_setup.ENV = struct
     let runtime =
-      Runtime.create ~gameplan:empty_gameplan
-        ~main_branch:(Types.Branch.of_string "main")
-        ()
+      Runtime.create ~gameplan ~main_branch:(Types.Branch.of_string "main") ()
 
     let clock = Eio.Stdenv.clock env
     let fs = Eio.Stdenv.fs env
@@ -135,12 +135,10 @@ let run_ensure env ~managed_dir ~project_name ~pid ~branch ~base_ref =
     let user_config = { User_config.on_worktree_create = None }
   end in
   let module WS = Worktree_setup.Make (W) (Env) in
-  let patch = mk_patch ~pid ~branch in
-  let orch =
-    Orchestrator.create ~patches:[ patch ]
-      ~main_branch:(Types.Branch.of_string "main")
+  let agent =
+    Runtime.read Env.runtime (fun snap ->
+        Orchestrator.agent snap.Runtime.orchestrator pid)
   in
-  let agent = Orchestrator.agent orch pid in
   match
     WS.ensure_worktree ~patch_id:pid ~agent
       ~branch:(Types.Branch.of_string branch)
