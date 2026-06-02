@@ -787,6 +787,37 @@ let prop_fanin_silent_when_base_has_no_pr =
         (Reconciler.detect_sibling_stale_bases graph views
            ~has_merged:(merged_in merged)))
 
+(* The fan-in patch P most in need of this detector is an *unstarted* one: its
+   pending Start(P, base=B) is deferred by Start_eligibility
+   ([Base_missing_merged_sibling]) until B absorbs the merged sibling, and an
+   unstarted P has no PR of its own for any other detector to act on. The
+   detector must therefore fire on P's behalf regardless of P's own PR state —
+   only B's rebasability (PR present, no Rebase queued) gates the emission. *)
+let prop_fanin_unstarted_p_enqueues_base_rebase =
+  QCheck2.Test.make
+    ~name:"sibling: unstarted P (no PR), base stale → rebase sole open dep"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d3" ] in
+      let views =
+        [
+          (* P is unstarted: no PR, no base recorded yet. *)
+          mk_view ~id:(pid "p") ~has_pr:false ~branch_rebased_onto:None
+            ~base_contains_merged_siblings:false ();
+          mk_view ~id:(pid "d2") ();
+        ]
+      in
+      let targets =
+        Reconciler.detect_sibling_stale_bases graph views
+          ~has_merged:(merged_in merged)
+        |> List.filter_map ~f:(function
+          | Reconciler.Enqueue_rebase p -> Some p
+          | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> None)
+      in
+      List.equal Types.Patch_id.equal targets [ pid "d2" ])
+
 (* Only Enqueue_rebase, never other action kinds; total over which-dep-open. *)
 let prop_fanin_only_enqueue_rebase =
   QCheck2.Test.make
@@ -887,6 +918,7 @@ let () =
       prop_fanin_no_rebase_when_contained;
       prop_fanin_idempotent_when_queued;
       prop_fanin_silent_when_base_has_no_pr;
+      prop_fanin_unstarted_p_enqueues_base_rebase;
       prop_fanin_only_enqueue_rebase;
       prop_fanin_silent_off_edge;
       prop_fanin_reconcile_enqueues_base_rebase;
