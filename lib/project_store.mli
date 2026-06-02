@@ -95,9 +95,9 @@ val gameplan_artifact_path : string -> string
     prompt layers embed it without touching the filesystem. *)
 
 val publish_gameplan_artifact : project_name:string -> unit
-(** Copy the stored gameplan ({!stored_gameplan_path}) to
+(** Copy the stored JSON gameplan ({!gameplan_json_path}) to
     {!gameplan_artifact_path} for patch agents to read. No-op when no stored
-    gameplan exists (ad-hoc sessions). Called once at startup, after
+    JSON gameplan exists (ad-hoc sessions). Called once at startup, after
     {!save_gameplan_source} / resume validation, so the copy matches the
     gameplan the run was parsed from. *)
 

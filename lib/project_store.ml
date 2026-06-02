@@ -194,7 +194,7 @@ let save_gameplan_source ~project_name ~source_path =
     try Stdlib.Sys.remove stale with Sys_error _ -> ()
 
 let publish_gameplan_artifact ~project_name =
-  let source = stored_gameplan_path project_name in
+  let source = gameplan_json_path project_name in
   if Stdlib.Sys.file_exists source then (
     let ic = Stdlib.open_in_bin source in
     let content =
@@ -281,6 +281,16 @@ let%test "publish_gameplan_artifact refreshes a stale copy" =
       String.equal
         (read_file_for_test (gameplan_artifact_path project_name))
         "{\"v\": 2}")
+
+let%test "publish_gameplan_artifact does not publish markdown as JSON" =
+  with_temp_data_dir (fun () ->
+      let project_name = "publish-test-markdown" in
+      ensure_dir (project_dir project_name);
+      let oc = Stdlib.open_out_bin (gameplan_path project_name) in
+      Stdlib.output_string oc "# Markdown gameplan";
+      Stdlib.close_out oc;
+      publish_gameplan_artifact ~project_name;
+      not (Stdlib.Sys.file_exists (gameplan_artifact_path project_name)))
 
 let%test "publish_gameplan_artifact is a no-op without a stored gameplan" =
   with_temp_data_dir (fun () ->
