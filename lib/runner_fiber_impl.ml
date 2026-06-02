@@ -735,22 +735,14 @@ struct
                                           Prompt.render_gameplan_layer
                                             ~project_name gameplan
                                         in
-                                        let functional_changes =
-                                          Prompt.owned_functional_changes
-                                            gameplan patch
-                                        in
-                                        let ancestors =
-                                          Prompt.ancestor_patches gameplan patch
-                                        in
                                         let patch_prompt =
-                                          Prompt.render_patch_layer
-                                            ~project_name patch
+                                          Prompt.render_patch_layer_of_gameplan
+                                            ~project_name
                                             ?pr_number:
                                               (Patch_agent.pr_number agent)
-                                            ~functional_changes ~ancestors
+                                            patch gameplan
                                             ~base_branch:
                                               (Branch.to_string base_branch)
-                                            ()
                                         in
                                         let r, _tool_failures =
                                           run_llm_session ~sw ~gameplan_prompt
@@ -1329,18 +1321,10 @@ struct
                                         let patch_prompt =
                                           match patch with
                                           | Some p ->
-                                              let functional_changes =
-                                                Prompt.owned_functional_changes
-                                                  gameplan p
-                                              in
-                                              let ancestors =
-                                                Prompt.ancestor_patches gameplan
-                                                  p
-                                              in
-                                              Prompt.render_patch_layer
-                                                ~project_name p ?pr_number
-                                                ~functional_changes ~ancestors
-                                                ~base_branch:base ()
+                                              Prompt
+                                              .render_patch_layer_of_gameplan
+                                                ~project_name ?pr_number p
+                                                gameplan ~base_branch:base
                                           | None -> ""
                                         in
                                         let result, _tool_failures =
@@ -1900,19 +1884,12 @@ struct
                                         let patch_prompt =
                                           match patch_for_layer with
                                           | Some p ->
-                                              let functional_changes =
-                                                Prompt.owned_functional_changes
-                                                  gameplan p
-                                              in
-                                              let ancestors =
-                                                Prompt.ancestor_patches gameplan
-                                                  p
-                                              in
-                                              Prompt.render_patch_layer
-                                                ~project_name p ?pr_number
-                                                ~functional_changes ~ancestors
+                                              Prompt
+                                              .render_patch_layer_of_gameplan
+                                                ~project_name ?pr_number p
+                                                gameplan
                                                 ~base_branch:
-                                                  base_branch_for_layer ()
+                                                  base_branch_for_layer
                                           | None -> ""
                                         in
                                         let result, tool_failures =

@@ -11,16 +11,18 @@ val substitute_variables : string -> (string * string) list -> string
     Every layered prompt is composed as
 
     {[
-      render_gameplan_layer ^ render_patch_layer ^ render_turn_layer_<kind>
+      render_gameplan_layer
+      ^ render_patch_layer_of_gameplan
+      ^ render_turn_layer_<kind>
     ]}
 
     so prefix-cache hits accumulate at the layer boundaries:
 
     - {!render_gameplan_layer} is byte-identical across every layered prompt in
       a single gameplan run.
-    - {!render_patch_layer} is byte-identical across every layered prompt for
-      one patch agent during a period where [pr_number] and [base_branch] are
-      stable.
+    - {!render_patch_layer_of_gameplan} is byte-identical across every layered
+      prompt for one patch agent during a period where [pr_number] and
+      [base_branch] are stable.
     - The per-kind [render_turn_layer_*] helpers are strictly turn-dynamic.
 
     Project-level overrides are now per-layer: [prompts/gameplan.md],
@@ -38,47 +40,32 @@ val render_gameplan_layer : project_name:string -> Gameplan.t -> string
     so the layer stays byte-identical across the run. Ends with a trailing blank
     line. *)
 
-val render_patch_layer :
+val render_patch_layer_of_gameplan :
   project_name:string ->
-  Patch.t ->
   ?pr_number:Pr_number.t ->
-  ?functional_changes:Functional_change.t list ->
-  ?context_resources:Context_resource.t list ->
-  ?ancestors:Patch.t list ->
+  Patch.t ->
+  Gameplan.t ->
   base_branch:string ->
-  unit ->
   string
 (** Patch-stable middle. Contains the patch heading, dependencies, a pointer to
-    each ancestor patch's implementation notes (when [ancestors] is non-empty),
+    each ancestor patch's implementation notes (when the patch has ancestors),
     base-branch note, description, the functional changes the patch owns (if
-    any), changes, files, test stubs, specification (with Pantagruel guide),
-    acceptance criteria, git identifiers, and PR instructions. Ends with a
-    trailing blank line. [functional_changes] should contain only the entries
-    from [Gameplan.t.functional_changes] whose [owned_by] equals [Patch.t.id].
-    [context_resources] should contain only resources whose IDs appear in this
-    patch's [required_context]. [ancestors] should be
-    {!ancestor_patches}[ gameplan patch] — the note pointers are pure functions
-    of the project name and ancestor ids ({!Project_store.pr_body_artifact_path}
-    — no filesystem probe), so the layer stays byte-identical across a patch's
-    sessions. Start is gated on every unmerged dep having delivered its notes
-    (deps-notes-ready, enforced by [Patch_controller.plan_action_for_patch]), so
-    the files exist by the time the layer is first read. *)
+    any), the required context resources, changes, files, test stubs,
+    specification (with Pantagruel guide), acceptance criteria, git identifiers,
+    and PR instructions. Ends with a trailing blank line.
 
-val owned_functional_changes : Gameplan.t -> Patch.t -> Functional_change.t list
-(** Returns the functional changes in the gameplan owned by this patch. Use this
-    when constructing patch layers directly, so composed and manually layered
-    prompts carry the same patch-stable content. *)
+    The functional changes, context resources, and ancestor list are all derived
+    from the gameplan here — this is deliberately the only exported way to
+    render a patch layer, so a call site cannot hand-assemble the inputs and
+    silently diverge from the composed prompt (the bug class that broke the
+    byte-identical prefix contract for long-lived session layers).
 
-val required_context_resources :
-  Gameplan.t -> Patch.t -> Context_resource.t list
-(** Returns the authoritative context resources required by this patch. *)
-
-val ancestor_patches : Gameplan.t -> Patch.t -> Patch.t list
-(** Returns the transitive ancestor patches of this patch (every patch reachable
-    by walking [dependencies], excluding the patch itself), in ascending
-    patch-id order. Use this when constructing patch layers directly, so
-    composed and manually layered prompts carry the same patch-stable content.
-*)
+    The ancestor note pointers are pure functions of the project name and
+    ancestor ids ([Project_store.pr_body_artifact_path] — no filesystem probe),
+    so the layer stays byte-identical across a patch's sessions. Start is gated
+    on every unmerged dep having delivered its notes (deps-notes-ready, enforced
+    by [Patch_controller.plan_action_for_patch]), so the files exist by the time
+    the layer is first read. *)
 
 val render_turn_layer_start : project_name:string -> string
 

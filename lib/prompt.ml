@@ -469,6 +469,19 @@ let ancestor_patches (gameplan : Gameplan.t) (patch : Patch.t) : Patch.t list =
       List.find gameplan.Gameplan.patches ~f:(fun (p : Patch.t) ->
           Patch_id.equal p.Patch.id id))
 
+(* The single source of truth for deriving the patch layer's gameplan-scoped
+   inputs (owned functional changes, required context resources, ancestor
+   notes). Every caller that renders a patch layer for a gameplan patch must
+   go through this — hand-assembling the inputs at a call site is how the
+   long-lived session's cached layer drifts from the composed prompt. *)
+let render_patch_layer_of_gameplan ~project_name ?pr_number (patch : Patch.t)
+    (gameplan : Gameplan.t) ~base_branch =
+  render_patch_layer ~project_name patch ?pr_number
+    ~functional_changes:(owned_functional_changes gameplan patch)
+    ~context_resources:(required_context_resources gameplan patch)
+    ~ancestors:(ancestor_patches gameplan patch)
+    ~base_branch ()
+
 (* When all of [patch], [gameplan], [base_branch] are supplied, returns
    the gameplan+patch prefix; otherwise returns the empty string. Used by
    the layered turn-prompt composers to support callers that don't have a
@@ -477,15 +490,12 @@ let layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md () =
   match (patch, gameplan, base_branch) with
   | Some p, Some g, Some b ->
-      let functional_changes = owned_functional_changes g p in
-      let context_resources = required_context_resources g p in
-      let ancestors = ancestor_patches g p in
       render_gameplan_layer ~project_name g
       ^ (match agents_md with
         | Some content -> agents_md_section (Some content)
         | None -> "")
-      ^ render_patch_layer ~project_name p ?pr_number ~functional_changes
-          ~context_resources ~ancestors ~base_branch:b ()
+      ^ render_patch_layer_of_gameplan ~project_name ?pr_number p g
+          ~base_branch:b
   | _ -> ""
 
 let render_turn_layer_start ~(project_name : string) : string =
@@ -495,13 +505,10 @@ let render_turn_layer_start ~(project_name : string) : string =
 
 let render_patch_prompt ~(project_name : string) ?agents_md ?pr_number
     (patch : Patch.t) (gameplan : Gameplan.t) ~(base_branch : string) =
-  let functional_changes = owned_functional_changes gameplan patch in
-  let context_resources = required_context_resources gameplan patch in
-  let ancestors = ancestor_patches gameplan patch in
   render_gameplan_layer ~project_name gameplan
   ^ agents_md_section agents_md
-  ^ render_patch_layer ~project_name patch ?pr_number ~functional_changes
-      ~context_resources ~ancestors ~base_branch ()
+  ^ render_patch_layer_of_gameplan ~project_name ?pr_number patch gameplan
+      ~base_branch
   ^ render_turn_layer_start ~project_name
 
 let render_spec_suffix (patch : Patch.t) (gameplan : Gameplan.t) : string =
@@ -1676,6 +1683,41 @@ let%test "dependency notes cover transitive ancestors, not just direct deps" =
   && String.is_substring prompt_c ~substring:(path_of patch_a)
   && String.is_substring prompt_c ~substring:(path_of patch_b)
 
+let%test "gameplan-derived patch layer carries required context resources" =
+  let patch_a, patch_b, gameplan = make_layer_test_fixture () in
+  let resource =
+    Context_resource.
+      {
+        id = "CR-1";
+        kind = "doc";
+        paths = [ "docs/layers.md" ];
+        why = "Defines the layer contract.";
+        consumed_by = [];
+      }
+  in
+  let patch_b = { patch_b with Patch.required_context = [ "CR-1" ] } in
+  let gameplan =
+    {
+      gameplan with
+      Gameplan.patches = [ patch_a; patch_b ];
+      context_resources = [ resource ];
+    }
+  in
+  let layer =
+    render_patch_layer_of_gameplan ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  let prompt =
+    render_patch_prompt ~project_name:"onton" patch_b gameplan
+      ~base_branch:"feat/patch-1"
+  in
+  (* The layer is byte-identically embedded in the composed prompt... *)
+  String.is_substring prompt ~substring:layer
+  (* ...and carries the gameplan-derived context resources — the input the
+     runner's hand-assembled call sites used to drop. *)
+  && String.is_substring layer ~substring:"## Required Context Before Editing"
+  && String.is_substring layer ~substring:"CR-1"
+
 let%test "pr body prompt tells the author about dependent patch readers" =
   let rendered =
     render_pr_body_prompt ~project_name:"onton" ~pr_number:(Pr_number.of_int 7)
@@ -1689,10 +1731,9 @@ let%test
   let patch_a, _, gameplan = make_layer_test_fixture () in
   let pr_number = Pr_number.of_int 7 in
   let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
-  let functional_changes = owned_functional_changes gameplan patch_a in
   let p_layer =
-    render_patch_layer ~project_name:"onton" patch_a ~pr_number
-      ~functional_changes ~base_branch:"main" ()
+    render_patch_layer_of_gameplan ~project_name:"onton" ~pr_number patch_a
+      gameplan ~base_branch:"main"
   in
   let agents_md = "Follow AGENTS.md.\nNever use *_exn." in
   let prefix = g_layer ^ agents_md_section (Some agents_md) ^ p_layer in
