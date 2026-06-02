@@ -546,6 +546,7 @@ let sibling_defer_implies_demand m actions =
             | Start_eligibility.Allow
             | Start_eligibility.Defer
                 ( Start_eligibility.Base_patch_busy_with_rebase _
+                | Start_eligibility.Base_resolving_conflict _
                 | Start_eligibility.Base_not_fresh_for_cut _ ) ->
                 true)
         | _ -> true)

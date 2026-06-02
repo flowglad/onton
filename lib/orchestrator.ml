@@ -265,12 +265,15 @@ let start_eligibility t ~base_contains_merged_siblings base =
     | Some a -> a.Patch_agent.branch
     | None -> t.main_branch
   in
-  let base_patch_merged, base_patch_busy_rebasing, base_structurally_fresh =
+  let ( base_patch_merged,
+        base_patch_busy_rebasing,
+        base_patch_has_conflict,
+        base_structurally_fresh ) =
     match find_patch_by_branch t base with
-    | None -> (false, false, false)
+    | None -> (false, false, false, false)
     | Some bpid -> (
         match find_agent t bpid with
-        | None -> (false, false, false)
+        | None -> (false, false, false, false)
         | Some a ->
             let running_rebase =
               a.Patch_agent.busy
@@ -311,10 +314,22 @@ let start_eligibility t ~base_contains_merged_siblings base =
               | [ d ], Some b -> Branch.equal b (branch_of d)
               | _ -> false
             in
-            (a.Patch_agent.merged, busy_rebasing, structurally_fresh))
+            (* [has_conflict] extends the busy-rebase defer across the
+               conflicted-rebase window: a [Rebase] that conflicts completes as
+               an op (dropping [busy_rebasing]) but the base's tip is only
+               rewritten when the queued [Merge_conflict] resolution lands and
+               force-pushes. It is set on every path that enqueues
+               [Merge_conflict] and cleared only when resolution completes, so
+               it covers the whole pipeline. The cut source is the *local* base
+               branch, which the resolution rewrites before [has_conflict]
+               clears — so a Start allowed immediately after is fresh. *)
+            ( a.Patch_agent.merged,
+              busy_rebasing,
+              a.Patch_agent.has_conflict,
+              structurally_fresh ))
   in
   Start_eligibility.decide ~base_is_main ~base_branch ~base_patch_merged
-    ~base_patch_busy_rebasing ~base_structurally_fresh
+    ~base_patch_busy_rebasing ~base_patch_has_conflict ~base_structurally_fresh
     ~base_contains_merged_siblings
 
 let runnable_messages t =
