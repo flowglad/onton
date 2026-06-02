@@ -144,12 +144,69 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             | Fetch_branch_error msg ->
                 log_event runtime ~patch_id
                   (Printf.sprintf "Pre-create fetch failed (continuing): %s" msg));
+            (* When the base is the main branch, also refresh
+               [refs/remotes/origin/<main>] and cut from its resolved SHA. The
+               orchestrator never advances the local main ref, so cutting from
+               it right after a dependency's squash-merge starts the branch on
+               yesterday's main, missing that dependency's commits — the
+               connector-adapter-shape-unification patch-4 stale cut that
+               forced an immediate freshen rebase (which then conflicted). For
+               a dependency-branch base the local ref is authoritative (its
+               worktree writes locally first; origin lags until push), so no
+               fetch is attempted: {!Start_point_plan.base_start_point} encodes
+               the asymmetry, and on fetch/resolve failure it falls back
+               fail-open to the local ref with the freshen-rebase detectors as
+               the backstop, exactly the pre-fetch behavior.
+
+               This deliberately shares [Env.fetch_mutex] with the branch fetch
+               above (and the rest of the runtime's fetch traffic). Git updates
+               refs in the same managed clone, so serializing both fetches keeps
+               ref observation ordered at the cost of one more locked network
+               round trip during main-base worktree creation. *)
+            let base_is_main =
+              Runtime.read runtime (fun snap ->
+                  Types.Branch.equal
+                    (Orchestrator.main_branch snap.Runtime.orchestrator)
+                    (Types.Branch.of_string base))
+            in
+            let fetched_remote_sha =
+              if not base_is_main then None
+              else
+                match W.fetch_origin_branch ~fetch_lock ~branch:base with
+                | Fetch_branch_ok ->
+                    W.read_branch_sha ~path:(W.resolve_main_root ())
+                      ~ref_name:("refs/remotes/origin/" ^ base)
+                | Fetch_branch_no_remote_ref ->
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "No remote ref for base %s — cutting from the local \
+                          ref"
+                         base);
+                    None
+                | Fetch_branch_error msg ->
+                    log_event runtime ~patch_id
+                      (Printf.sprintf
+                         "Base fetch failed (continuing with possibly-stale \
+                          local %s): %s"
+                         base msg);
+                    None
+            in
+            let start_point =
+              Start_point_plan.base_start_point ~base_branch:base ~base_is_main
+                ~fetched_remote_sha
+            in
+            log_event runtime ~patch_id
+              (Printf.sprintf "Worktree base start point: %s (%s)"
+                 (Start_point_plan.base_start_point_short_label start_point)
+                 (Start_point_plan.base_start_point_ref start_point));
             log_event runtime ~patch_id
               (Printf.sprintf "Creating worktree at %s" path);
             let create_outcome =
               match
                 Eio.Mutex.use_ro worktree_mutex (fun () ->
-                    W.create ~project_name ~patch_id ~branch:br ~base_ref:base)
+                    W.create ~project_name ~patch_id ~branch:br
+                      ~base_ref:
+                        (Start_point_plan.base_start_point_ref start_point))
               with
               | Ok _ -> `Created
               | Error refusal -> `Refused refusal

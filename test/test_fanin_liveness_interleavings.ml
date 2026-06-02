@@ -104,11 +104,12 @@ let deps_satisfied m pid =
     pid ~has_merged:(has_merged_in m.orch) ~has_pr:(fun dep ->
       Patch_agent.is_pr_present (Orchestrator.agent m.orch dep))
 
-(** Start [pid] from [base]: PR appears and the session completes, mirroring the
-    SBI bootstrap (fire Start → set_pr_number → complete). The branch absorbs
-    its base's current merge SHAs (the cut). No-op when already started or when
-    dependencies are not satisfied (cannot cut a worktree off a missing base).
-*)
+(** Start [pid] from [base]: PR appears, implementation notes are delivered, and
+    the session completes, mirroring the SBI bootstrap plus the deps-notes-ready
+    contract (fire Start → set_pr_number → Pr_body delivered → complete). The
+    branch absorbs its base's current merge SHAs (the cut). No-op when already
+    started or when dependencies are not satisfied (cannot cut a worktree off a
+    missing base). *)
 let do_start m pid base =
   let agent = Orchestrator.agent m.orch pid in
   if Patch_agent.has_pr agent || agent.Patch_agent.merged then m
@@ -119,6 +120,7 @@ let do_start m pid base =
       Orchestrator.set_pr_number orch pid
         (Pr_number.of_int (idx_of_pid m.patches pid + 1))
     in
+    let orch = Orchestrator.set_pr_body_delivered orch pid true in
     let orch = Orchestrator.complete orch pid in
     absorb { m with orch } ~branch:agent.Patch_agent.branch ~from:base
 

@@ -298,6 +298,93 @@ let prop_remote_wins_over_local =
       in
       not (is_use_local d))
 
+(* ---------- base_start_point (BSP) ----------
+
+   The brand-new-branch cut's base ref. Invariants, derived from the authority
+   rules (remote canonical for main — the orchestrator never advances local
+   main; local canonical for dependency branches — the dep's worktree writes
+   locally first and origin lags until push):
+
+   - BSP-1 totality/determinism over all inputs.
+   - BSP-2 main base + fetched SHA → cut pinned to that SHA.
+   - BSP-3 a non-main base NEVER cuts from a remote SHA, even if supplied.
+   - BSP-4 main base without a fetched SHA falls back (fail-open) to the local
+     ref — pre-fetch behavior, freshen-rebase detectors as backstop.
+   - BSP-5 the rendered ref is exactly the SHA / the base branch name.
+   - BSP-6 label bounds. *)
+
+type bsp_inputs = {
+  bsp_base_branch : string;
+  bsp_base_is_main : bool;
+  bsp_fetched_remote_sha : string option;
+}
+
+let gen_bsp_inputs : bsp_inputs Gen.t =
+  let open Gen in
+  let* bsp_base_branch = gen_branch_name in
+  let* bsp_base_is_main = bool in
+  let* bsp_fetched_remote_sha = gen_sha_option in
+  return { bsp_base_branch; bsp_base_is_main; bsp_fetched_remote_sha }
+
+let call_bsp i =
+  SP.base_start_point ~base_branch:i.bsp_base_branch
+    ~base_is_main:i.bsp_base_is_main
+    ~fetched_remote_sha:i.bsp_fetched_remote_sha
+
+let prop_bsp_total_deterministic =
+  Test.make ~count:500 ~name:"BSP-1: base_start_point total + deterministic"
+    gen_bsp_inputs (fun i ->
+      try SP.equal_base_start_point (call_bsp i) (call_bsp i) with _ -> false)
+
+let prop_bsp_main_uses_fetched_sha =
+  Test.make ~count:500
+    ~name:"BSP-2: main base + fetched SHA → Base_at_fetched_remote_sha"
+    Gen.(
+      let* base_branch = gen_branch_name in
+      let* sha = gen_sha in
+      return (base_branch, sha))
+    (fun (base_branch, sha) ->
+      SP.equal_base_start_point
+        (SP.base_start_point ~base_branch ~base_is_main:true
+           ~fetched_remote_sha:(Some sha))
+        (SP.Base_at_fetched_remote_sha { sha }))
+
+let prop_bsp_non_main_never_remote =
+  Test.make ~count:500 ~name:"BSP-3: non-main base never cuts from a remote SHA"
+    gen_bsp_inputs (fun i ->
+      SP.equal_base_start_point
+        (call_bsp { i with bsp_base_is_main = false })
+        (SP.Base_at_local_ref { base_branch = i.bsp_base_branch }))
+
+let prop_bsp_main_no_sha_falls_back =
+  Test.make ~count:500
+    ~name:"BSP-4: main base without fetched SHA falls back to the local ref"
+    gen_branch_name (fun base_branch ->
+      SP.equal_base_start_point
+        (SP.base_start_point ~base_branch ~base_is_main:true
+           ~fetched_remote_sha:None)
+        (SP.Base_at_local_ref { base_branch }))
+
+let prop_bsp_ref_rendering =
+  Test.make ~count:500
+    ~name:"BSP-5: base_start_point_ref renders the SHA / the base branch"
+    gen_bsp_inputs (fun i ->
+      let sp = call_bsp i in
+      let rendered = SP.base_start_point_ref sp in
+      match sp with
+      | SP.Base_at_fetched_remote_sha { sha } -> String.equal rendered sha
+      | SP.Base_at_local_ref { base_branch } ->
+          String.equal rendered base_branch)
+
+let prop_bsp_label_bounds =
+  Test.make ~count:500
+    ~name:"BSP-6: base_start_point_short_label non-empty, ≤32, snake_case"
+    gen_bsp_inputs (fun i ->
+      let lbl = SP.base_start_point_short_label (call_bsp i) in
+      (not (String.is_empty lbl))
+      && String.length lbl <= 32
+      && Re.execp label_re lbl)
+
 let () =
   let runner = QCheck_base_runner.run_tests_main in
   ignore
@@ -313,4 +400,10 @@ let () =
          prop_label_bounds;
          prop_variants_reachable;
          prop_remote_wins_over_local;
+         prop_bsp_total_deterministic;
+         prop_bsp_main_uses_fetched_sha;
+         prop_bsp_non_main_never_remote;
+         prop_bsp_main_no_sha_falls_back;
+         prop_bsp_ref_rendering;
+         prop_bsp_label_bounds;
        ])
