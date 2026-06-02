@@ -3064,23 +3064,23 @@ let () =
     QCheck2.Test.make
       ~name:"NG-1: notes gate is deadlock-free under fair scheduling" ~count:50
       (QCheck2.Gen.return ()) (fun () ->
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let pr_counter = ref 0 in
-        let started_and_delivered o =
-          List.for_all patches ~f:(fun (p : Patch.t) ->
-              match Orchestrator.find_agent o p.Patch.id with
-              | None -> false
-              | Some a ->
-                  Patch_agent.has_pr a && a.Patch_agent.pr_body_delivered)
-        in
-        let rec loop o iter =
-          if started_and_delivered o then true
-          else if iter >= 12 then
-            failwith
-              "NG-1: chain did not fully start within the fair-scheduling bound"
-          else loop (happy_tick o patches ~pr_counter) (iter + 1)
-        in
-        loop orch 0)
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let pr_counter = ref 0 in
+          let started_and_delivered o =
+            List.for_all patches ~f:(fun (p : Patch.t) ->
+                match Orchestrator.find_agent o p.Patch.id with
+                | None -> false
+                | Some a ->
+                    Patch_agent.has_pr a && a.Patch_agent.pr_body_delivered)
+          in
+          let rec loop o iter =
+            if started_and_delivered o then true
+            else if iter >= 12 then false
+            else loop (happy_tick o patches ~pr_counter) (iter + 1)
+          in
+          loop orch 0
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop_ng1;
   Stdlib.print_endline "NG-1 passed"
@@ -3094,24 +3094,25 @@ let () =
     QCheck2.Test.make
       ~name:"NG-2: early merge without notes does not deadlock the child"
       ~count:50 (QCheck2.Gen.return ()) (fun () ->
-        let parent = pid_of_idx patches 0 in
-        let child = pid_of_idx patches 1 in
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let pr_counter = ref 1 in
-        (* Parent starts and lands a PR... *)
-        let orch = happy_tick orch patches ~pr_counter in
-        (* ...then merges before any Pr_body session completes. *)
-        let a = Orchestrator.agent orch parent in
-        if a.Patch_agent.pr_body_delivered then
-          failwith "NG-2: parent notes should not be delivered yet";
-        let orch = Orchestrator.mark_merged orch parent in
-        let rec loop o iter =
-          if Patch_agent.has_pr (Orchestrator.agent o child) then true
-          else if iter >= 6 then
-            failwith "NG-2: child deadlocked behind a merged dep's notes"
-          else loop (happy_tick o patches ~pr_counter) (iter + 1)
-        in
-        loop orch 0)
+        try
+          let parent = pid_of_idx patches 0 in
+          let child = pid_of_idx patches 1 in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let pr_counter = ref 1 in
+          (* Parent starts and lands a PR... *)
+          let orch = happy_tick orch patches ~pr_counter in
+          (* ...then merges before any Pr_body session completes. *)
+          let a = Orchestrator.agent orch parent in
+          if a.Patch_agent.pr_body_delivered then false
+          else
+            let orch = Orchestrator.mark_merged orch parent in
+            let rec loop o iter =
+              if Patch_agent.has_pr (Orchestrator.agent o child) then true
+              else if iter >= 6 then false
+              else loop (happy_tick o patches ~pr_counter) (iter + 1)
+            in
+            loop orch 0
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop_ng2;
   Stdlib.print_endline "NG-2 passed"
@@ -3127,60 +3128,66 @@ let () =
     QCheck2.Test.make
       ~name:"NG-3: persistent Pr_body miss escalates visibly and is recoverable"
       ~count:50 (QCheck2.Gen.return ()) (fun () ->
-        let parent = pid_of_idx patches 0 in
-        let child = pid_of_idx patches 1 in
-        let gameplan = make_gameplan patches in
-        let tick o =
-          let o, _effects, _actions =
-            Patch_controller.tick o ~project_name:"test-project" ~gameplan
+        try
+          let parent = pid_of_idx patches 0 in
+          let child = pid_of_idx patches 1 in
+          let gameplan = make_gameplan patches in
+          let tick o =
+            let o, _effects, _actions =
+              Patch_controller.tick o ~project_name:"test-project" ~gameplan
+            in
+            o
           in
-          o
-        in
-        (* Parent starts and lands a PR. *)
-        let orch = Orchestrator.create ~patches ~main_branch:main in
-        let orch = tick orch in
-        let orch =
-          Orchestrator.set_pr_number orch parent (Pr_number.of_int 1)
-        in
-        let orch = Orchestrator.complete orch parent in
-        (* Two consecutive Pr_body sessions that fail to deliver the artifact. *)
-        let miss o =
-          let o = tick o in
-          let a = Orchestrator.agent o parent in
-          if
-            not
-              (Option.equal Operation_kind.equal a.Patch_agent.current_op
-                 (Some Operation_kind.Pr_body))
-          then failwith "NG-3: expected tick to fire Respond(Pr_body)";
-          let o =
-            Orchestrator.apply_session_result o parent Orchestrator.Session_ok
+          (* Parent starts and lands a PR. *)
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch = tick orch in
+          let orch =
+            Orchestrator.set_pr_number orch parent (Pr_number.of_int 1)
           in
-          Orchestrator.apply_respond_outcome o parent Operation_kind.Pr_body
-            Orchestrator.Respond_pr_body_miss
-        in
-        let orch = miss orch in
-        let orch = miss orch in
-        let a = Orchestrator.agent orch parent in
-        if not (Patch_agent.needs_intervention a) then
-          failwith "NG-3: miss cap should surface needs_intervention";
-        if Patch_agent.has_pr (Orchestrator.agent orch child) then
-          failwith "NG-3: child must stay gated while notes are undelivered";
-        (* The block is not a silent deadlock: an operator reset plus one
-           successful delivery lets the child through. *)
-        let orch = Orchestrator.reset_intervention_state orch parent in
-        let orch = tick orch in
-        let orch =
-          Orchestrator.apply_session_result orch parent Orchestrator.Session_ok
-        in
-        let orch =
-          Orchestrator.apply_respond_outcome orch parent Operation_kind.Pr_body
-            Orchestrator.Respond_ok
-        in
-        let orch = tick orch in
-        let child_agent = Orchestrator.agent orch child in
-        if not child_agent.Patch_agent.busy then
-          failwith "NG-3: child should start once notes are delivered";
-        true)
+          let orch = Orchestrator.complete orch parent in
+          (* Two consecutive Pr_body sessions that fail to deliver the
+             artifact. *)
+          let miss o =
+            let o = tick o in
+            let a = Orchestrator.agent o parent in
+            if
+              not
+                (Option.equal Operation_kind.equal a.Patch_agent.current_op
+                   (Some Operation_kind.Pr_body))
+            then None
+            else
+              let o =
+                Orchestrator.apply_session_result o parent
+                  Orchestrator.Session_ok
+              in
+              Some
+                (Orchestrator.apply_respond_outcome o parent
+                   Operation_kind.Pr_body Orchestrator.Respond_pr_body_miss)
+          in
+          match Option.bind (miss orch) ~f:miss with
+          | None -> false
+          | Some orch ->
+              let a = Orchestrator.agent orch parent in
+              if not (Patch_agent.needs_intervention a) then false
+              else if Patch_agent.has_pr (Orchestrator.agent orch child) then
+                false
+              else
+                (* The block is not a silent deadlock: an operator reset plus
+                   one successful Pr_body delivery lets the child through. *)
+                let orch = Orchestrator.reset_intervention_state orch parent in
+                let orch = tick orch in
+                let orch =
+                  Orchestrator.apply_session_result orch parent
+                    Orchestrator.Session_ok
+                in
+                let orch =
+                  Orchestrator.apply_respond_outcome orch parent
+                    Operation_kind.Pr_body Orchestrator.Respond_ok
+                in
+                let orch = tick orch in
+                let child_agent = Orchestrator.agent orch child in
+                child_agent.Patch_agent.busy
+        with _ -> false)
   in
   QCheck2.Test.check_exn prop_ng3;
   Stdlib.print_endline "NG-3 passed"
