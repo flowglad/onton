@@ -58,3 +58,24 @@ let short_label = function
   | Refuse (Local_has_unpushed_commits _) -> "refuse_local_ahead"
   | Refuse Branch_checked_out_in_main_root -> "refuse_main_checkout"
   | Refuse (Worktree_already_registered _) -> "refuse_wt_registered"
+
+type base_start_point =
+  | Base_at_fetched_remote_sha of { sha : sha }
+  | Base_at_local_ref of { base_branch : string }
+[@@deriving show, eq, sexp_of, compare]
+
+let base_start_point ~base_branch ~base_is_main ~fetched_remote_sha =
+  match (base_is_main, fetched_remote_sha) with
+  | true, Some sha -> Base_at_fetched_remote_sha { sha }
+  (* A non-main base never cuts from a remote SHA, even when one is supplied:
+     the dep's worktree writes the local branch first and origin lags until
+     the post-session push, so preferring origin could travel backwards. *)
+  | true, None | false, _ -> Base_at_local_ref { base_branch }
+
+let base_start_point_ref = function
+  | Base_at_fetched_remote_sha { sha } -> sha
+  | Base_at_local_ref { base_branch } -> base_branch
+
+let base_start_point_short_label = function
+  | Base_at_fetched_remote_sha _ -> "base_at_origin_sha"
+  | Base_at_local_ref _ -> "base_at_local_ref"
