@@ -910,8 +910,15 @@ let prop_unrelated_main_advance_inert =
               let m = apply_command m (Unrelated_main_advance i) in
               let m, actions = tick m in
               let no_demand = List.is_empty (enqueued_rebases actions) in
+              let no_plan =
+                Patch_controller.plan_messages m.orch ~patches:m.patches
+                |> List.for_all ~f:(fun msg ->
+                    match Orchestrator.message_action msg with
+                    | Orchestrator.Start _ | Orchestrator.Rebase _ -> false
+                    | Orchestrator.Respond _ -> true)
+              in
               let m, fired = fire_runnable_traced m in
-              (m, ok && no_demand && List.is_empty fired))
+              (m, ok && no_demand && no_plan && List.is_empty fired))
         in
         ok
       with exn ->
