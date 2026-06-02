@@ -177,6 +177,25 @@ let agents_md_section = function
    [prompts/review.md], [prompts/ci_failure.md], etc.) are no longer
    honoured. *)
 
+(* The gameplan-reference section points agents at the read-only copy
+   published by [Project_store.publish_gameplan_artifact] at startup. The
+   path is a pure function of the project name (no filesystem probe here),
+   so the rendered gameplan layer stays byte-identical across the run. *)
+let gameplan_reference_section ~(project_name : string) : string =
+  Printf.sprintf
+    "\n\
+     ## Full Gameplan Reference\n\n\
+     A read-only copy of the complete gameplan JSON — every patch's full \
+     description, spec, acceptance criteria, and the functional-change \
+     ownership map — is saved at:\n\n\
+     `%s`\n\n\
+     Everything your patch needs is already in this prompt, so most sessions \
+     never read it. Consult it only when you genuinely need cross-patch \
+     context — for example, to check a sibling patch's scope before deciding \
+     whether a change belongs to you. Do not edit the file, and do not take on \
+     work owned by sibling patches.\n"
+    (Project_store.gameplan_artifact_path project_name)
+
 let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
     string =
   let patches_list =
@@ -201,6 +220,7 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
         optional_section ~header:"Current State Analysis"
           gameplan.Gameplan.current_state_analysis );
       ("patches_list", patches_list);
+      ("gameplan_reference_section", gameplan_reference_section ~project_name);
     ]
   in
   render_with_override ~project_name ~name:"gameplan" ~vars ~default:(fun () ->
@@ -215,7 +235,7 @@ let render_gameplan_layer ~(project_name : string) (gameplan : Gameplan.t) :
 {{final_state_spec_section}}{{explicit_opinions_section}}{{current_state_section}}
 ## Patches in Gameplan
 {{patches_list}}
-
+{{gameplan_reference_section}}
 |}
         vars)
 
@@ -1546,6 +1566,16 @@ let%test "gameplan_layer is the prefix of render_patch_prompt for both patches"
   in
   String.is_prefix prompt_a ~prefix:g_layer
   && String.is_prefix prompt_b ~prefix:g_layer
+
+let%test "gameplan layer points at the published gameplan artifact copy" =
+  let _, _, gameplan = make_layer_test_fixture () in
+  let g_layer = render_gameplan_layer ~project_name:"onton" gameplan in
+  String.is_substring g_layer ~substring:"## Full Gameplan Reference"
+  && String.is_substring g_layer
+       ~substring:("`" ^ Project_store.gameplan_artifact_path "onton" ^ "`")
+  (* The pointer is lazy-disclosure only: the layer must keep withholding
+     sibling patch detail itself (titles only, per the patches list). *)
+  && not (String.is_substring g_layer ~substring:"Pass patch + gameplan")
 
 let%test
     "gameplan + patch layers are the prefix of every layered prompt for one \

@@ -47,9 +47,16 @@ let stored_gameplan_path project_name =
   let md = gameplan_path project_name in
   if Stdlib.Sys.file_exists md then md else gameplan_json_path project_name
 
+let artifacts_root project_name =
+  Stdlib.Filename.concat (project_dir project_name) "artifacts"
+
 let artifact_dir ~project_name ~patch_id =
-  Stdlib.Filename.concat (project_dir project_name)
-    (Stdlib.Filename.concat "artifacts" (Types.Patch_id.to_string patch_id))
+  Stdlib.Filename.concat
+    (artifacts_root project_name)
+    (Types.Patch_id.to_string patch_id)
+
+let gameplan_artifact_path project_name =
+  Stdlib.Filename.concat (artifacts_root project_name) "gameplan.json"
 
 let pr_body_artifact_path ~project_name ~patch_id =
   Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "pr-body.md"
@@ -186,6 +193,24 @@ let save_gameplan_source ~project_name ~source_path =
   if Stdlib.Sys.file_exists stale then
     try Stdlib.Sys.remove stale with Sys_error _ -> ()
 
+let publish_gameplan_artifact ~project_name =
+  let source = stored_gameplan_path project_name in
+  if Stdlib.Sys.file_exists source then (
+    let ic = Stdlib.open_in_bin source in
+    let content =
+      Stdlib.Fun.protect
+        ~finally:(fun () -> Stdlib.close_in_noerr ic)
+        (fun () -> Stdlib.In_channel.input_all ic)
+    in
+    let dest = gameplan_artifact_path project_name in
+    ensure_dir (Stdlib.Filename.dirname dest);
+    let oc = Stdlib.open_out_bin dest in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_out oc)
+      (fun () ->
+        Stdlib.output_string oc content;
+        Stdlib.flush oc))
+
 let project_exists project_name =
   Stdlib.Sys.file_exists (config_path project_name)
 
@@ -200,3 +225,79 @@ let list_projects () =
                 (Stdlib.Filename.concat dir name)
                 "config.json"))
   else []
+
+(* === Inline tests === *)
+
+(* Mirrors [Session_artifacts]'s test helper: point ONTON_DATA_DIR at a
+   fresh temp dir for the duration of [f], then restore. *)
+let with_temp_data_dir f =
+  let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  let dir = Stdlib.Filename.temp_dir "onton-project-store-" "" in
+  Unix.putenv "ONTON_DATA_DIR" dir;
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      (match old with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None ->
+          (* Tests do not have an unsetenv binding. Restore the resolved
+             default data root so later tests never inherit a deleted temp
+             directory through ONTON_DATA_DIR. *)
+          let default =
+            match Stdlib.Sys.getenv_opt "XDG_DATA_HOME" with
+            | Some xdg -> Stdlib.Filename.concat xdg "onton"
+            | None ->
+                Stdlib.Filename.concat
+                  (Stdlib.Filename.concat (Stdlib.Sys.getenv "HOME")
+                     ".local/share")
+                  "onton"
+          in
+          ensure_dir default;
+          Unix.putenv "ONTON_DATA_DIR" default);
+      try
+        ignore
+          (Stdlib.Sys.command
+             (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir)))
+      with _ -> ())
+    (fun () -> f ())
+
+let read_file_for_test path =
+  let ic = Stdlib.open_in_bin path in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_in_noerr ic)
+    (fun () -> Stdlib.In_channel.input_all ic)
+
+let%test "publish_gameplan_artifact copies the stored gameplan for agents" =
+  with_temp_data_dir (fun () ->
+      let project_name = "publish-test" in
+      ensure_dir (project_dir project_name);
+      let content = "{\"project_name\": \"publish-test\", \"patches\": []}" in
+      let oc = Stdlib.open_out_bin (gameplan_json_path project_name) in
+      Stdlib.output_string oc content;
+      Stdlib.close_out oc;
+      publish_gameplan_artifact ~project_name;
+      let dest = gameplan_artifact_path project_name in
+      Stdlib.Sys.file_exists dest
+      && String.equal (read_file_for_test dest) content)
+
+let%test "publish_gameplan_artifact refreshes a stale copy" =
+  with_temp_data_dir (fun () ->
+      let project_name = "publish-test-refresh" in
+      ensure_dir (project_dir project_name);
+      let write path content =
+        let oc = Stdlib.open_out_bin path in
+        Stdlib.output_string oc content;
+        Stdlib.close_out oc
+      in
+      write (gameplan_json_path project_name) "{\"v\": 1}";
+      publish_gameplan_artifact ~project_name;
+      write (gameplan_json_path project_name) "{\"v\": 2}";
+      publish_gameplan_artifact ~project_name;
+      String.equal
+        (read_file_for_test (gameplan_artifact_path project_name))
+        "{\"v\": 2}")
+
+let%test "publish_gameplan_artifact is a no-op without a stored gameplan" =
+  with_temp_data_dir (fun () ->
+      let project_name = "publish-test-empty" in
+      publish_gameplan_artifact ~project_name;
+      not (Stdlib.Sys.file_exists (gameplan_artifact_path project_name)))

@@ -31,7 +31,12 @@ val substitute_variables : string -> (string * string) list -> string
 val render_gameplan_layer : project_name:string -> Gameplan.t -> string
 (** Gameplan-stable prefix. Contains the project heading, problem statement,
     solution summary, optional final state spec / explicit opinions / current
-    state analysis, and the patches list. Ends with a trailing blank line. *)
+    state analysis, the patches list, and a pointer to the read-only gameplan
+    copy at [Project_store.gameplan_artifact_path] (published once at startup by
+    {!Project_store.publish_gameplan_artifact}) for agents that need cross-patch
+    context on demand. The pointer path is a pure function of the project name,
+    so the layer stays byte-identical across the run. Ends with a trailing blank
+    line. *)
 
 val render_patch_layer :
   project_name:string ->
