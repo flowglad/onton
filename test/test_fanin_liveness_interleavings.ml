@@ -122,12 +122,12 @@ let deps_satisfied m pid =
     contract (fire Start → set_pr_number → Pr_body delivered → complete). The
     notes step matters: the deps-notes-ready Start gate
     ([Patch_controller.plan_action_for_patch]) defers a child's Start until
-    every open dep has [pr_body_delivered] — these tests target rebase
-    freshness liveness, so the model publishes notes promptly; the notes
-    gate's own liveness has its own properties
-    ([test_interleaving_properties.ml]). The branch absorbs its base's current
-    merge SHAs (the cut). No-op when already started or when dependencies are
-    not satisfied (cannot cut a worktree off a missing base). *)
+    every open dep has [pr_body_delivered] — these tests target rebase freshness
+    liveness, so the model publishes notes promptly; the notes gate's own
+    liveness has its own properties ([test_interleaving_properties.ml]). The
+    branch absorbs its base's current merge SHAs (the cut). No-op when already
+    started or when dependencies are not satisfied (cannot cut a worktree off a
+    missing base). *)
 let do_start m pid base =
   let agent = Orchestrator.agent m.orch pid in
   if Patch_agent.has_pr agent || agent.Patch_agent.merged then m
