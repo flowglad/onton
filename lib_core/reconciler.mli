@@ -94,14 +94,17 @@ val detect_sibling_stale_bases :
   action list
 (** [detect_sibling_stale_bases graph views ~has_merged] returns
     [Enqueue_rebase B] for the sole open dependency [B] of every fan-in patch
-    [P] that has a PR, is not merged, has exactly one open dependency, and whose
-    base does not yet contain its merged siblings
-    ([base_contains_merged_siblings = false]). [B] is enqueued (not [P]); [P]'s
-    own start/rebase is gated separately by [Start_eligibility]. Skips when [B]
-    has no PR yet or already has a [Rebase] queued, so queued/unstarted
-    dependencies are never rebase-enqueued by this detector. This is the demand
-    that the other three detectors miss, because [B] is a *sibling* of [P]'s
-    merged deps, not a dependent of them. *)
+    [P] that is not merged, has exactly one open dependency, and whose base does
+    not yet contain its merged siblings
+    ([base_contains_merged_siblings = false]). [P] need not have a PR: an
+    unstarted fan-in patch's deferred [Start (P, base = B)]
+    ([Base_missing_merged_sibling]) relies on exactly this demand to ever become
+    runnable. [B] is enqueued (not [P]); [P]'s own start/rebase is gated
+    separately by [Start_eligibility]. Skips when [B] has no PR yet or already
+    has a [Rebase] queued, so queued/unstarted dependencies are never
+    rebase-enqueued by this detector. This is the demand that the other three
+    detectors miss, because [B] is a *sibling* of [P]'s merged deps, not a
+    dependent of them. *)
 
 val plan_operations :
   patch_view list ->

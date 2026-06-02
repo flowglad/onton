@@ -315,6 +315,10 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     ~poll_interval ~repo_root ~max_concurrency
     ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
     ();
+  (* Refresh the agent-readable gameplan copy under artifacts/ so patch
+     agents can consult the full gameplan on demand (the gameplan layer of
+     every patch prompt points at this path). *)
+  Project_store.publish_gameplan_artifact ~project_name;
   let config =
     {
       Resolved_config.project = Some project_name;

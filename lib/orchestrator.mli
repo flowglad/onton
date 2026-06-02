@@ -440,7 +440,9 @@ val start_eligibility :
 
     Returns [Allow] when the base is main, when the base patch is merged
     (effectively main), or when the base patch's local branch is rebased onto
-    its structurally-correct base ([branch_rebased_onto = Graph.initial_base])
-    and contains the launching patch's merged siblings. Otherwise returns
+    its structurally-correct base ([branch_rebased_onto = Graph.initial_base]),
+    has no unresolved conflict ([has_conflict] — a conflicted rebase keeps the
+    gate closed until the resolution force-pushes the rewritten tip), and
+    contains the launching patch's merged siblings. Otherwise returns
     [Defer reason]. Freshness is dependency-scoped: an unrelated advance of
     [origin/main] never defers a [Start]. See {!Start_eligibility}. *)
