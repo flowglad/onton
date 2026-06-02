@@ -3,8 +3,8 @@ open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 let data_dir () =
   match Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" with
-  | Some d -> d
-  | None -> (
+  | Some d when not (String.is_empty d) -> d
+  | Some _ | None -> (
       match Stdlib.Sys.getenv_opt "XDG_DATA_HOME" with
       | Some xdg -> Stdlib.Filename.concat xdg "onton"
       | None ->
@@ -206,7 +206,7 @@ let publish_gameplan_artifact ~project_name =
     ensure_dir (Stdlib.Filename.dirname dest);
     let oc = Stdlib.open_out_bin dest in
     Stdlib.Fun.protect
-      ~finally:(fun () -> Stdlib.close_out oc)
+      ~finally:(fun () -> Stdlib.close_out_noerr oc)
       (fun () ->
         Stdlib.output_string oc content;
         Stdlib.flush oc))
@@ -238,21 +238,7 @@ let with_temp_data_dir f =
     ~finally:(fun () ->
       (match old with
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
-      | None ->
-          (* Tests do not have an unsetenv binding. Restore the resolved
-             default data root so later tests never inherit a deleted temp
-             directory through ONTON_DATA_DIR. *)
-          let default =
-            match Stdlib.Sys.getenv_opt "XDG_DATA_HOME" with
-            | Some xdg -> Stdlib.Filename.concat xdg "onton"
-            | None ->
-                Stdlib.Filename.concat
-                  (Stdlib.Filename.concat (Stdlib.Sys.getenv "HOME")
-                     ".local/share")
-                  "onton"
-          in
-          ensure_dir default;
-          Unix.putenv "ONTON_DATA_DIR" default);
+      | None -> Unix.putenv "ONTON_DATA_DIR" "");
       try
         ignore
           (Stdlib.Sys.command
