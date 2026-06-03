@@ -310,6 +310,7 @@ type patch_view = {
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
+  merge_queue_entry : Pr_state.merge_queue_entry option;
   pr_missing : bool;
       (** [true] when [pr_number] is set but the remote no longer has the PR.
           Distinguishes "we lost the PR" from "we have the PR" so the row label
@@ -468,6 +469,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     ci_checks = agent.ci_checks;
     recent_stream = [];
     pr_number = Patch_agent.pr_number agent;
+    merge_queue_entry = agent.Patch_agent.merge_queue_entry;
     pr_missing = Patch_agent.is_pr_missing agent;
     base_branch = agent.base_branch;
     worktree_path = agent.worktree_path;
@@ -484,11 +486,28 @@ let patch_view_of_agent (agent : Patch_agent.t)
 
 let styled_status status text = Term.styled (status_style status) text
 
+let render_badge ~style ~indicator ~label =
+  Term.styled style (Printf.sprintf "%s %s" indicator label)
+
 let render_status_badge ?(queued = false) status =
-  let ind = status_indicator status in
-  let lbl = label status in
-  let suffix = if queued then " (queued)" else "" in
-  styled_status status (Printf.sprintf "%s %s%s" ind lbl suffix)
+  let lbl = label status ^ if queued then " (queued)" else "" in
+  render_badge ~style:(status_style status) ~indicator:(status_indicator status)
+    ~label:lbl
+
+let merge_queue_badge_state = function
+  | Pr_state.Mq_queued -> (Awaiting_review, "mq-queued")
+  | Mq_awaiting_checks -> (Awaiting_ci, "mq-awaiting-checks")
+  | Mq_mergeable -> (Approved_idle, "mq-mergeable")
+  | Mq_unmergeable -> (Needs_help, "mq-unmergeable")
+  | Mq_locked -> (Ci_queued, "mq-locked")
+
+let render_merge_queue_badge = function
+  | None -> ""
+  | Some (entry : Pr_state.merge_queue_entry) ->
+      let status, state_label = merge_queue_badge_state entry.state in
+      render_badge ~style:(status_style status)
+        ~indicator:(status_indicator status)
+        ~label:(Printf.sprintf "%s #%d" state_label entry.position)
 
 let is_running_status = function
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
@@ -576,6 +595,10 @@ let automerge_inline_info ~now (pv : patch_view) =
 
 let render_patch_row ~width ~selected ~now (pv : patch_view) =
   let badge = render_status_badge ~queued:(pv_queued pv) pv.status in
+  let queue_badge = render_merge_queue_badge pv.merge_queue_entry in
+  let queue_badge =
+    if String.is_empty queue_badge then "" else " " ^ queue_badge
+  in
   let patch_label =
     let id_str = Patch_id.to_string pv.patch_id in
     let id_short =
@@ -614,8 +637,8 @@ let render_patch_row ~width ~selected ~now (pv : patch_view) =
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s %s %s  %s%s%s%s" cursor patch_label pr_label badge
-         pv.title ci_info dep_info am_info)
+      (Printf.sprintf "%s%s %s %s%s  %s%s%s%s" cursor patch_label pr_label
+         badge queue_badge pv.title ci_info dep_info am_info)
   in
   if selected then Term.styled [ Term.Sgr.bold ] row else row
 
@@ -720,11 +743,17 @@ let detail_info_rows (pv : patch_view) ~width ~now =
   in
   let rule = Term.hrule width in
   let badge = render_status_badge ~queued:(pv_queued pv) pv.status in
+  let queue_badge = render_merge_queue_badge pv.merge_queue_entry in
+  let status_line =
+    if String.is_empty queue_badge then
+      Printf.sprintf "  Status:      %s" badge
+    else Printf.sprintf "  Status:      %s %s" badge queue_badge
+  in
   let lines =
     [
       header;
       rule;
-      Printf.sprintf "  Status:      %s" badge;
+      status_line;
       fit_value "  Patch ID:    " (Patch_id.to_string pv.patch_id);
       fit_value "  Branch:      " (Branch.to_string pv.branch);
       fit_value "  Base:        "

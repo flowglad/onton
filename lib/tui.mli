@@ -102,6 +102,7 @@ type patch_view = {
   ci_checks : Ci_check.t list;
   recent_stream : activity_entry list;
   pr_number : Pr_number.t option;
+  merge_queue_entry : Pr_state.merge_queue_entry option;
   pr_missing : bool;
       (** [true] when [pr_number] is set but the remote no longer has the PR
           ([pr_status = Missing _]). Distinguishes "we lost it" from "we have
