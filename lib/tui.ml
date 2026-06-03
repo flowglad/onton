@@ -24,8 +24,7 @@ type display_status = Display_status.t =
   | Ci_queued
   | Review_queued
   | Findings_queued
-  | Awaiting_ci
-  | Awaiting_review
+  | Awaiting_feedback
   | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
@@ -50,8 +49,7 @@ let label = function
   | Ci_queued -> "ci-queued"
   | Review_queued -> "review-queued"
   | Findings_queued -> "findings-queued"
-  | Awaiting_ci -> "awaiting-ci"
-  | Awaiting_review -> "awaiting-review"
+  | Awaiting_feedback -> "awaiting-feedback"
   | Blocked_by_dep -> "blocked-by-dep"
   | Pending -> "pending"
 
@@ -72,8 +70,7 @@ let color = function
   | Ci_queued -> Term.Sgr.fg_yellow
   | Review_queued -> Term.Sgr.fg_yellow
   | Findings_queued -> Term.Sgr.fg_yellow
-  | Awaiting_ci -> Term.Sgr.fg_blue
-  | Awaiting_review -> Term.Sgr.fg_blue
+  | Awaiting_feedback -> Term.Sgr.fg_blue
   | Blocked_by_dep -> Term.Sgr.fg_blue
   | Pending -> Term.Sgr.fg_default
 
@@ -161,8 +158,7 @@ let status_style = function
   | Rebasing -> [ Term.Sgr.fg_yellow ]
   | Starting | Updating -> [ Term.Sgr.fg_cyan ]
   | Ci_queued | Review_queued | Findings_queued -> [ Term.Sgr.fg_yellow ]
-  | Awaiting_ci -> [ Term.Sgr.fg_blue ]
-  | Awaiting_review -> [ Term.Sgr.fg_blue ]
+  | Awaiting_feedback -> [ Term.Sgr.fg_blue ]
   | Blocked_by_dep -> [ Term.Sgr.fg_blue ]
   | Pending -> [ Term.Sgr.dim ]
 
@@ -177,7 +173,7 @@ let status_indicator = function
   | Rebasing -> "↻"
   | Starting | Updating -> "▶"
   | Ci_queued | Review_queued | Findings_queued -> "◎"
-  | Awaiting_ci | Awaiting_review -> "◎"
+  | Awaiting_feedback -> "◎"
   | Blocked_by_dep -> "◎"
   | Pending -> "·"
 
@@ -495,8 +491,8 @@ let render_status_badge ?(queued = false) status =
     ~label:lbl
 
 let merge_queue_badge_state = function
-  | Pr_state.Mq_queued -> (Awaiting_review, "mq-queued")
-  | Pr_state.Mq_awaiting_checks -> (Awaiting_ci, "mq-awaiting-checks")
+  | Pr_state.Mq_queued -> (Awaiting_feedback, "mq-queued")
+  | Pr_state.Mq_awaiting_checks -> (Awaiting_feedback, "mq-awaiting-checks")
   | Pr_state.Mq_mergeable -> (Approved_idle, "mq-mergeable")
   | Pr_state.Mq_unmergeable -> (Needs_help, "mq-unmergeable")
   | Pr_state.Mq_locked -> (Ci_queued, "mq-locked")
@@ -515,8 +511,7 @@ let is_running_status = function
   | Approved_running ->
       true
   | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
-  | Findings_queued | Awaiting_ci | Awaiting_review | Blocked_by_dep | Pending
-    ->
+  | Findings_queued | Awaiting_feedback | Blocked_by_dep | Pending ->
       false
 
 (** {1 Frame rendering} *)

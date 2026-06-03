@@ -26,11 +26,24 @@ type t =
   | Ci_queued
   | Review_queued
   | Findings_queued
-  | Awaiting_ci
-  | Awaiting_review
+  | Awaiting_feedback
   | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
+
+(** Migration-aware deserializer: the removed [Awaiting_ci]/[Awaiting_review]
+    constructors were collapsed into [Awaiting_feedback], so map them to it when
+    loading activity-log transitions persisted by older versions. Shadows the
+    derived [t_of_yojson] so every consumer — including the derived
+    [Activity_log.Transition_entry] decoder — picks up the migration. *)
+let derived_t_of_yojson = t_of_yojson
+
+let t_of_yojson json =
+  match json with
+  | `List [ `String ("Awaiting_ci" | "Awaiting_review") ]
+  | `String ("Awaiting_ci" | "Awaiting_review") ->
+      Awaiting_feedback
+  | json -> derived_t_of_yojson json
 
 (** A patch is "on main" if its tracked base branch equals the main branch, or
     if no base is tracked (the default before any rebase has happened). When
@@ -67,8 +80,7 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
       Review_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Findings then
       Findings_queued
-    else if State.Patch_ctx.ci_failure_count ctx ~patch_id > 0 then Awaiting_ci
-    else Awaiting_review
+    else Awaiting_feedback
   else Pending
 
 let%test "merged takes priority over everything" =
@@ -212,23 +224,23 @@ let%test "review queued" =
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
-let%test "awaiting ci when failure count > 0" =
+let%test "awaiting feedback with prior ci failures" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
     |> State.Patch_ctx.set_ci_failure_count ~patch_id:(Patch_id.of_string "1")
          ~count:2
   in
-  equal Awaiting_ci
+  equal Awaiting_feedback
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
-let%test "awaiting review default" =
+let%test "awaiting feedback default" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
   in
-  equal Awaiting_review
+  equal Awaiting_feedback
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
@@ -247,3 +259,20 @@ let%test "pending is default" =
   equal Pending
     (derive State.Patch_ctx.empty ~patch_id:(Patch_id.of_string "1")
        ~current_op:None ~main_branch:(Branch.of_string "main"))
+
+(* Backward-compat: snapshots persisted before the collapse stored the removed
+   [Awaiting_ci]/[Awaiting_review] constructors in their activity-log
+   transitions. The compat [t_of_yojson] must map both legacy forms (canonical
+   [`List [`String _]] and bare [`String _]) to [Awaiting_feedback] so those
+   snapshots still load. *)
+let%test "legacy Awaiting_ci decodes to Awaiting_feedback" =
+  equal Awaiting_feedback (t_of_yojson (`List [ `String "Awaiting_ci" ]))
+  && equal Awaiting_feedback (t_of_yojson (`String "Awaiting_ci"))
+
+let%test "legacy Awaiting_review decodes to Awaiting_feedback" =
+  equal Awaiting_feedback (t_of_yojson (`List [ `String "Awaiting_review" ]))
+  && equal Awaiting_feedback (t_of_yojson (`String "Awaiting_review"))
+
+let%test "current statuses round-trip through yojson" =
+  List.for_all [ Awaiting_feedback; Ci_queued; Merged; Pending; Needs_help ]
+    ~f:(fun s -> equal s (t_of_yojson (yojson_of_t s)))
