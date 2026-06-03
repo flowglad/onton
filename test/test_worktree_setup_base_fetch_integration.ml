@@ -57,13 +57,18 @@ let with_temp_dir f =
     (fun () -> f dir)
 
 let setup_origin_with_main ~origin_dir =
-  Unix.mkdir origin_dir 0o755;
-  sh ~dir:origin_dir "git init -q --initial-branch=main";
-  sh ~dir:origin_dir "git config user.email 'test@example.com'";
-  sh ~dir:origin_dir "git config user.name 'Test'";
-  sh ~dir:origin_dir "echo base > README.md";
-  sh ~dir:origin_dir "git add README.md";
-  sh ~dir:origin_dir "git commit -q -m 'base'"
+  let seed_dir = origin_dir ^ ".seed" in
+  Unix.mkdir seed_dir 0o755;
+  sh ~dir:seed_dir "git init -q --initial-branch=main";
+  sh ~dir:seed_dir "git config user.email 'test@example.com'";
+  sh ~dir:seed_dir "git config user.name 'Test'";
+  sh ~dir:seed_dir "echo base > README.md";
+  sh ~dir:seed_dir "git add README.md";
+  sh ~dir:seed_dir "git commit -q -m 'base'";
+  sh
+    (Printf.sprintf "git clone --bare -q %s %s"
+       (Stdlib.Filename.quote seed_dir)
+       (Stdlib.Filename.quote origin_dir))
 
 let clone_into ~origin_dir ~managed_dir =
   sh
@@ -155,14 +160,17 @@ let scenario_stale_local_main env =
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin" in
   let managed_dir = Stdlib.Filename.concat root "managed" in
+  let writer_dir = Stdlib.Filename.concat root "writer" in
   setup_origin_with_main ~origin_dir;
   clone_into ~origin_dir ~managed_dir;
+  clone_into ~origin_dir ~managed_dir:writer_dir;
   let clone_time_main = git_capture ~dir:managed_dir [ "rev-parse"; "main" ] in
   (* The dependency's squash-merge lands on origin main AFTER the clone. *)
-  sh ~dir:origin_dir "echo dep-squash > dep.txt";
-  sh ~dir:origin_dir "git add dep.txt";
-  sh ~dir:origin_dir "git commit -q -m 'dep squash'";
-  let origin_tip = git_capture ~dir:origin_dir [ "rev-parse"; "main" ] in
+  sh ~dir:writer_dir "echo dep-squash > dep.txt";
+  sh ~dir:writer_dir "git add dep.txt";
+  sh ~dir:writer_dir "git commit -q -m 'dep squash'";
+  sh ~dir:writer_dir "git push -q origin main";
+  let origin_tip = git_capture ~dir:writer_dir [ "rev-parse"; "main" ] in
   assert_string "precondition: local main is stale" clone_time_main
     (git_capture ~dir:managed_dir [ "rev-parse"; "main" ]);
   let wt =
@@ -182,9 +190,12 @@ let scenario_dep_base_local_canonical env =
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin" in
   let managed_dir = Stdlib.Filename.concat root "managed" in
+  let writer_dir = Stdlib.Filename.concat root "writer" in
   setup_origin_with_main ~origin_dir;
+  clone_into ~origin_dir ~managed_dir:writer_dir;
   (* Origin has the dep branch at the base commit. *)
-  sh ~dir:origin_dir "git branch dep";
+  sh ~dir:writer_dir "git checkout -q -b dep";
+  sh ~dir:writer_dir "git push -q -u origin dep";
   clone_into ~origin_dir ~managed_dir;
   (* The dep's worktree advanced the local branch; origin lags (unpushed). *)
   sh ~dir:managed_dir "git checkout -q -b dep origin/dep";
