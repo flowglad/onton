@@ -345,9 +345,7 @@ let patch_agent_of_yojson ~gameplan json =
        ~merge_queue_entry:
          (match member "merge_queue_entry" json with
          | `Null -> None
-         | v ->
-             Result.ok
-               (try_of_yojson Pr_state.merge_queue_entry_of_yojson v))
+         | v -> Result.ok (try_of_yojson Pr_state.merge_queue_entry_of_yojson v))
        ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
        ~base_contains_merged_siblings:
          (* Default [false] (fail-closed) when the key is absent — an older
