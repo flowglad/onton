@@ -26,8 +26,7 @@ type t =
   | Ci_queued
   | Review_queued
   | Findings_queued
-  | Awaiting_ci
-  | Awaiting_review
+  | Awaiting_feedback
   | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]
@@ -67,8 +66,7 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
       Review_queued
     else if State.Patch_ctx.is_queued ctx ~patch_id ~kind:Findings then
       Findings_queued
-    else if State.Patch_ctx.ci_failure_count ctx ~patch_id > 0 then Awaiting_ci
-    else Awaiting_review
+    else Awaiting_feedback
   else Pending
 
 let%test "merged takes priority over everything" =
@@ -212,23 +210,23 @@ let%test "review queued" =
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
-let%test "awaiting ci when failure count > 0" =
+let%test "awaiting feedback with prior ci failures" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
     |> State.Patch_ctx.set_ci_failure_count ~patch_id:(Patch_id.of_string "1")
          ~count:2
   in
-  equal Awaiting_ci
+  equal Awaiting_feedback
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
-let%test "awaiting review default" =
+let%test "awaiting feedback default" =
   let ctx =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_has_pr ~patch_id:(Patch_id.of_string "1") ~value:true
   in
-  equal Awaiting_review
+  equal Awaiting_feedback
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 

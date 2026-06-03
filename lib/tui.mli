@@ -23,8 +23,7 @@ type display_status = Display_status.t =
   | Ci_queued
   | Review_queued
   | Findings_queued
-  | Awaiting_ci
-  | Awaiting_review
+  | Awaiting_feedback
   | Blocked_by_dep
   | Pending
 [@@deriving show, eq, sexp_of, compare, yojson]

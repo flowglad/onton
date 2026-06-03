@@ -43,8 +43,7 @@ let gen_status =
       Updating;
       Ci_queued;
       Review_queued;
-      Awaiting_ci;
-      Awaiting_review;
+      Awaiting_feedback;
       Blocked_by_dep;
       Pending;
     ]

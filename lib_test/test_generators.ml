@@ -556,8 +556,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     | Ci_queued -> Ci_queued
     | Review_queued -> Review_queued
     | Findings_queued -> Findings_queued
-    | Awaiting_ci -> Awaiting_ci
-    | Awaiting_review -> Awaiting_review
+    | Awaiting_feedback -> Awaiting_feedback
     | Blocked_by_dep -> Blocked_by_dep
     | Pending -> Pending
   in
@@ -579,8 +578,7 @@ let all_display_statuses : Onton.Tui.display_status list =
       Ci_queued;
       Review_queued;
       Findings_queued;
-      Awaiting_ci;
-      Awaiting_review;
+      Awaiting_feedback;
       Blocked_by_dep;
       Pending;
     ]
