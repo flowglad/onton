@@ -32,7 +32,22 @@ let pr_json ~merge_commit =
 let parse s =
   Onton.Github.parse_response_json ~owner:"flowglad" (Yojson.Safe.from_string s)
 
+let pending_patch_2_parse_merge_queue_and_entry () =
+  (* PENDING: Patch 2 - parse mergeQueue and mergeQueueEntry from GraphQL PR query. *)
+  ()
+
+let pending_patch_3_enqueue_and_dequeue_parsing () =
+  (* PENDING: Patch 3 - enqueue and dequeue mutation response parsing. *)
+  ()
+
+let pending_patch_3_merge_queue_405_detection () =
+  (* PENDING: Patch 3 - is_merge_queue_required_error detects the 405 merge-queue body. *)
+  ()
+
 let () =
+  pending_patch_2_parse_merge_queue_and_entry ();
+  pending_patch_3_enqueue_and_dequeue_parsing ();
+  pending_patch_3_merge_queue_405_detection ();
   (* Open PR: mergeCommit is null. Must parse Ok with merge_commit_sha = None,
      not crash the poll. *)
   (match parse (pr_json ~merge_commit:"null") with

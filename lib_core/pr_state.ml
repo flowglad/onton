@@ -1,8 +1,24 @@
 open Base
+open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 
 type merge_state = Mergeable | Conflicting | Unknown [@@deriving show, eq]
 type check_status = Passing | Failing | Pending [@@deriving show, eq]
 type pr_status = Open | Merged | Closed [@@deriving show, eq]
+
+type merge_queue_entry_state =
+  | Mq_queued
+  | Mq_awaiting_checks
+  | Mq_mergeable
+  | Mq_unmergeable
+  | Mq_locked
+[@@deriving show, eq, sexp_of, compare, yojson]
+
+type merge_queue_entry = {
+  id : string;
+  state : merge_queue_entry_state;
+  position : int;
+}
+[@@deriving show, eq, sexp_of, compare, yojson]
 
 type t = {
   status : pr_status;
@@ -20,6 +36,9 @@ type t = {
           all returned empty. Distinct from [comments] (GitHub review threads)
           because the agent's resolution surface differs — see
           {!Operation_kind.Findings}. *)
+  node_id : string option;
+  merge_queue_required : bool;
+  merge_queue_entry : merge_queue_entry option;
   head_branch : Types.Branch.t option;
   head_oid : string option;
   merge_commit_sha : string option;
@@ -44,6 +63,8 @@ let no_unresolved_comments (st : t) = st.unresolved_comment_count = 0
 let has_conflict (st : t) = equal_merge_state st.merge_state Conflicting
 let ci_failed (st : t) = equal_check_status st.check_status Failing
 let is_fork (st : t) = st.is_fork
+let requires_merge_queue (st : t) = st.merge_queue_required
+let enqueued (st : t) = Option.is_some st.merge_queue_entry
 
 (** Derive the aggregate [check_status] from a list of individual CI check
     conclusions. This is the source of truth for what the orchestrator considers

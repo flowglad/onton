@@ -27,6 +27,8 @@ type t = {
   inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
   merge_ready : bool;
+  merge_queue_required : bool;
+  merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_commit_sha : string option;
       (** Squash/merge commit SHA once this patch's PR is merged (GitHub
           [mergeCommit.oid]). Persisted, because merged agents are not
@@ -173,6 +175,8 @@ let create ~branch patch_id =
     inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
+    merge_queue_required = false;
+    merge_queue_entry = None;
     merge_commit_sha = None;
     (* Defaults to [true] ("no known missing sibling"): the poller recomputes
        this every tick before any fan-in start can become eligible, and a fresh
@@ -224,6 +228,8 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
+    merge_queue_required = false;
+    merge_queue_entry = None;
     merge_commit_sha = None;
     (* Defaults to [true] ("no known missing sibling"): the poller recomputes
        this every tick before any fan-in start can become eligible, and a fresh
@@ -349,6 +355,8 @@ let base_branch_changed t =
   | _ -> false
 
 let set_merge_ready t v = { t with merge_ready = v }
+let set_merge_queue_required t v = { t with merge_queue_required = v }
+let set_merge_queue_entry t merge_queue_entry = { t with merge_queue_entry }
 let set_merge_commit_sha t sha = { t with merge_commit_sha = sha }
 
 let set_base_contains_merged_siblings t v =
@@ -463,14 +471,15 @@ let reset_busy t = if not t.busy then t else { t with busy = false }
 let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
-    ~ci_checks ~merge_ready ~merge_commit_sha ~base_contains_merged_siblings
-    ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
-    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~branch_rebased_onto
-    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
-    ~current_op_state ~current_message_id ~generation ~worktree_path
-    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
-    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
+    ~ci_checks ~merge_ready ~merge_queue_required ~merge_queue_entry
+    ~merge_commit_sha ~base_contains_merged_siblings ~is_draft
+    ~pr_body_delivered ~pr_body_artifact_miss_count ~start_attempts_without_pr
+    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
+    ~push_failure_count ~branch_rebased_onto ~branch_rebased_onto_sha
+    ~anchor_history ~checks_passing ~current_op ~current_op_state
+    ~current_message_id ~generation ~worktree_path ~branch_blocked
+    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
+    ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -490,6 +499,8 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     inflight_human_messages;
     ci_checks;
     merge_ready;
+    merge_queue_required;
+    merge_queue_entry;
     merge_commit_sha;
     base_contains_merged_siblings;
     is_draft;
