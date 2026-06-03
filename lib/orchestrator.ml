@@ -564,6 +564,13 @@ let set_checks_passing t patch_id v =
 let set_merge_ready t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_ready a v)
 
+let set_merge_queue_required t patch_id v =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_queue_required a v)
+
+let set_merge_queue_entry t patch_id entry =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_merge_queue_entry a entry)
+
 let set_merge_commit_sha t patch_id sha =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_commit_sha a sha)
 

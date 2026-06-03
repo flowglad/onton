@@ -117,14 +117,24 @@ let show_error = function
   | Graphql_error msgs ->
       Printf.sprintf "GitHub GraphQL error: %s" (String.concat ~sep:"; " msgs)
 
-type t = { token : string; owner : string; repo : string }
+type t = {
+  token : string;
+  owner : string;
+  repo : string;
+  main_branch : Types.Branch.t;
+}
 
-let create ~token ~owner ~repo = { token; owner; repo }
+let create ~token ~owner ~repo ~main_branch =
+  { token; owner; repo; main_branch }
 
 let graphql_query =
-  {|query($owner: String!, $repo: String!, $number: Int!) {
+  {|query($owner: String!, $repo: String!, $number: Int!, $mergeQueueBranch: String) {
   repository(owner: $owner, name: $repo) {
+    mergeQueue(branch: $mergeQueueBranch) {
+      id
+    }
     pullRequest(number: $number) {
+      id
       state
       isDraft
       mergeable
@@ -133,6 +143,11 @@ let graphql_query =
       headRefOid
       baseRefName
       mergeCommit { oid }
+      mergeQueueEntry {
+        id
+        state
+        position
+      }
       headRepositoryOwner { login }
       commits(last: 1) {
         nodes {
@@ -195,6 +210,7 @@ let build_request_body t (pr : Types.Pr_number.t) =
         ("owner", `String t.owner);
         ("repo", `String t.repo);
         ("number", `Int (Types.Pr_number.to_int pr));
+        ("mergeQueueBranch", `String (Types.Branch.to_string t.main_branch));
       ]
   in
   `Assoc [ ("query", `String graphql_query); ("variables", variables) ]
@@ -204,6 +220,13 @@ let parse_merge_state = function
   | "MERGEABLE" -> Pr_state.Mergeable
   | "CONFLICTING" -> Pr_state.Conflicting
   | _ -> Pr_state.Unknown
+
+let parse_merge_queue_entry_state = function
+  | "QUEUED" -> Pr_state.Mq_queued
+  | "AWAITING_CHECKS" -> Pr_state.Mq_awaiting_checks
+  | "MERGEABLE" -> Pr_state.Mq_mergeable
+  | "UNMERGEABLE" -> Pr_state.Mq_unmergeable
+  | "LOCKED" | _ -> Pr_state.Mq_locked
 
 (* Typed model of the GraphQL PR response. Every nullable scalar/object is an
    [option] ([@yojson.default None] tolerates both a missing key and an explicit
@@ -297,7 +320,19 @@ type review_threads = { nodes : review_thread list [@yojson.default []] }
 type repo_owner = { login : string option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
+type merge_queue = Merge_queue_present
+
+let merge_queue_of_yojson _ = Merge_queue_present
+
+type merge_queue_entry = {
+  id : string option; [@yojson.default None]
+  state : string option; [@yojson.default None]
+  position : int option; [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
 type pull_request = {
+  id : string option; [@yojson.default None]
   state : string;
   mergeable : string option; [@yojson.default None]
   is_draft : bool; [@key "isDraft"] [@yojson.default false]
@@ -307,6 +342,8 @@ type pull_request = {
   head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
   base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
   merge_commit : oid_obj option; [@key "mergeCommit"] [@yojson.default None]
+  merge_queue_entry : merge_queue_entry option;
+      [@key "mergeQueueEntry"] [@yojson.default None]
   commits : commits; [@yojson.default { nodes = [] }]
   review_threads : review_threads;
       [@key "reviewThreads"] [@yojson.default { nodes = [] }]
@@ -316,6 +353,7 @@ type pull_request = {
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type repository = {
+  merge_queue : merge_queue option; [@key "mergeQueue"] [@yojson.default None]
   pull_request : pull_request option; [@key "pullRequest"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
@@ -382,7 +420,8 @@ let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
     outdated;
   }
 
-let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
+let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
+    Pr_state.t =
   let status =
     match pr.state with
     | "MERGED" -> Pr_state.Merged
@@ -438,6 +477,17 @@ let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
     | Some head_owner -> not (String.equal head_owner owner)
     | None -> false
   in
+  let merge_queue_entry =
+    Option.bind pr.merge_queue_entry ~f:(fun entry ->
+        Option.map entry.id ~f:(fun id ->
+            {
+              Pr_state.id;
+              state =
+                Option.value_map entry.state ~default:Pr_state.Mq_locked
+                  ~f:parse_merge_queue_entry_state;
+              position = Option.value entry.position ~default:0;
+            }))
+  in
   {
     Pr_state.status;
     is_draft = pr.is_draft;
@@ -452,9 +502,9 @@ let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
     (* GitHub does not produce review-service findings; the poller in
        [bin/main.ml] augments this list from configured review-service
        backends. *)
-    node_id = None;
-    merge_queue_required = false;
-    merge_queue_entry = None;
+    node_id = pr.id;
+    merge_queue_required;
+    merge_queue_entry;
     head_branch = Option.map pr.head_ref_name ~f:Types.Branch.of_string;
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
@@ -482,10 +532,14 @@ let parse_response_json ~owner json =
       | Error msg -> Error (Json_parse_error msg)
       | Ok { data = None }
       | Ok { data = Some { repository = None } }
-      | Ok { data = Some { repository = Some { pull_request = None } } } ->
+      | Ok { data = Some { repository = Some { pull_request = None; _ } } } ->
           Error (Json_parse_error "pullRequest not found")
-      | Ok { data = Some { repository = Some { pull_request = Some pr } } } ->
-          Ok (pr_state_of_pull_request ~owner pr))
+      | Ok { data = Some { repository = Some repo } } -> (
+          let merge_queue_required = Option.is_some repo.merge_queue in
+          match repo.pull_request with
+          | None -> Error (Json_parse_error "pullRequest not found")
+          | Some pr ->
+              Ok (pr_state_of_pull_request ~owner ~merge_queue_required pr)))
 
 let parse_response ~owner body =
   try parse_response_json ~owner (Yojson.Safe.from_string body)
@@ -1065,9 +1119,9 @@ let%expect_test "show_error transport error includes endpoint" =
   Stdlib.print_endline (show_error err);
   [%expect {| GitHub API POST /graphql → transport error: connection refused |}]
 
-let make ~net ~clock ~token ~owner ~repo :
+let make ~net ~clock ~token ~owner ~repo ~main_branch :
     (module Forge.S with type error = error) =
-  let client = create ~token ~owner ~repo in
+  let client = create ~token ~owner ~repo ~main_branch in
   (* Cache the repo's allowed merge methods across calls; populated lazily on
      the first merge and narrowed if a 405 later reveals a method is disabled. *)
   let merge_methods_cache = ref None in

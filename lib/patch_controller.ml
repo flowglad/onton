@@ -192,6 +192,13 @@ let apply_poll_result t patch_id
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t =
+    Orchestrator.set_merge_queue_required t patch_id
+      poll_result.merge_queue_required
+  in
+  let t =
+    Orchestrator.set_merge_queue_entry t patch_id poll_result.merge_queue_entry
+  in
+  let t =
     let was_draft = (Orchestrator.agent t patch_id).Patch_agent.is_draft in
     let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
     if (not was_draft) && poll_result.is_draft then log "Marked as draft"
