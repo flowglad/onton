@@ -33,8 +33,54 @@ let parse s =
   Onton.Github.parse_response_json ~owner:"flowglad" (Yojson.Safe.from_string s)
 
 let pending_patch_2_parse_merge_queue_and_entry () =
-  (* PENDING: Patch 2 - parse mergeQueue and mergeQueueEntry from GraphQL PR query. *)
-  ()
+  let body =
+    {|{
+      "data": {
+        "repository": {
+          "mergeQueue": { "id": "MQ_main" },
+          "pullRequest": {
+            "id": "PR_node_123",
+            "state": "OPEN",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "mergeStateStatus": "CLEAN",
+            "commits": { "nodes": [] },
+            "reviewThreads": { "nodes": [] },
+            "headRefName": "feature-branch",
+            "headRefOid": "abc123",
+            "baseRefName": "main",
+            "mergeCommit": null,
+            "mergeQueueEntry": {
+              "id": "MQE_node_456",
+              "state": "SOME_FUTURE_STATE",
+              "position": 7
+            },
+            "headRepositoryOwner": { "login": "flowglad" }
+          }
+        }
+      }
+    }|}
+  in
+  match parse body with
+  | Ok st -> (
+      assert (st.Onton_core.Pr_state.node_id = Some "PR_node_123");
+      assert st.Onton_core.Pr_state.merge_queue_required;
+      match st.Onton_core.Pr_state.merge_queue_entry with
+      | Some entry ->
+          assert (String.equal entry.Onton_core.Pr_state.id "MQE_node_456");
+          assert (
+            Onton_core.Pr_state.equal_merge_queue_entry_state
+              entry.Onton_core.Pr_state.state Onton_core.Pr_state.Mq_locked);
+          assert (entry.Onton_core.Pr_state.position = 7);
+          Stdlib.print_endline
+            "  merge queue GraphQL fields: OK (required + entry)"
+      | None ->
+          Stdlib.print_endline "  FAIL: missing parsed merge queue entry";
+          Stdlib.exit 1)
+  | Error e ->
+      Printf.eprintf "  FAIL: merge queue fixture errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
 
 let pending_patch_3_enqueue_and_dequeue_parsing () =
   (* PENDING: Patch 3 - enqueue and dequeue mutation response parsing. *)
