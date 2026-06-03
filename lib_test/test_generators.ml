@@ -296,6 +296,8 @@ let gen_pr_state =
           is_draft;
           merge_state;
           merge_ready;
+          merge_state_status = None;
+          review_decision = None;
           check_status;
           ci_checks;
           ci_checks_truncated;
@@ -351,6 +353,8 @@ let gen_poller =
             is_draft;
             has_conflict;
             merge_ready;
+            merge_state_status = None;
+            review_decision = None;
             merge_queue_required = false;
             merge_queue_entry = None;
             checks_passing;

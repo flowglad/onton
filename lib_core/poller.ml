@@ -9,6 +9,13 @@ type t = {
   is_draft : bool;
   has_conflict : bool;
   merge_ready : bool;
+  merge_state_status : string option; [@yojson.option]
+      (** Raw GitHub [mergeStateStatus] behind [merge_ready]. Diagnostics only:
+          surfaces in the event log so a [merge_ready] flip can be attributed to
+          a transient [UNKNOWN]/[BEHIND] (e.g. a sibling patch merging and
+          advancing the base) rather than a real block. *)
+  review_decision : string option; [@yojson.option]
+      (** Raw GitHub [reviewDecision]. Diagnostics only. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option; [@yojson.option]
   checks_passing : bool;
@@ -49,6 +56,8 @@ let poll ~was_merged (pr : Pr_state.t) =
     is_draft = Pr_state.is_draft pr;
     has_conflict = Pr_state.has_conflict pr;
     merge_ready = Pr_state.merge_ready pr;
+    merge_state_status = pr.Pr_state.merge_state_status;
+    review_decision = pr.Pr_state.review_decision;
     merge_queue_required = Pr_state.requires_merge_queue pr;
     merge_queue_entry = pr.Pr_state.merge_queue_entry;
     checks_passing = Pr_state.checks_passing pr;

@@ -143,6 +143,20 @@ val is_automerge_candidate :
     from any other caller — doing so opens the door to overlapping merge calls.
 *)
 
+val automerge_transient_hold : Patch_agent.t -> main_branch:Branch.t -> bool
+(** [true] when a direct-merge patch has lost [merge_ready] *only* because
+    GitHub is transiently recomputing mergeability
+    ([mergeStateStatus = UNKNOWN]) while every other automerge precondition
+    still holds. This is the benign flap a sibling merge causes: advancing the
+    base invalidates mergeability on every other open PR at once, so they read
+    [UNKNOWN] for a poll or two before settling back to [CLEAN].
+    [reconcile_automerge] preserves the existing deadline in this state instead
+    of clearing it, so the idle window measures real elapsed time rather than
+    restarting on every sibling merge. Scoped to the direct-merge path
+    ([merge_queue_entry = None]) and to [UNKNOWN] alone — a real
+    [BLOCKED]/[DIRTY]/[BEHIND], failing checks, queued feedback, or a hit
+    failure cap all fall through to the normal clear. *)
+
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
 (** Reconcile the automerge deadline for every agent and return decisions to
@@ -151,8 +165,11 @@ val reconcile_automerge :
     - [automerge_inflight] → no-op; the executor owns the deadline and inflight
       transitions via [apply_automerge_success] / [apply_automerge_failure].
     - candidate + no deadline → set deadline at [now +. automerge_idle_timeout].
-    - not candidate + deadline → clear deadline (feedback arrived, CI flipped,
-      automerge disabled, or failure cap hit).
+    - not candidate + deadline, but [automerge_transient_hold] → preserve the
+      deadline unchanged and emit no decision (GitHub is recomputing
+      mergeability after the base advanced; the idle window keeps counting).
+    - not candidate + deadline (and not a transient hold) → clear deadline
+      (feedback arrived, CI flipped, automerge disabled, or failure cap hit).
     - candidate + deadline elapsed → atomically mark the agent
       [automerge_inflight = true] and include in decisions list. The caller MUST
       clear the inflight flag on every exit path, and call either

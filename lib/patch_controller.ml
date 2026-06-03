@@ -192,6 +192,10 @@ let apply_poll_result t patch_id
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t =
+    Orchestrator.set_merge_state_status t patch_id
+      poll_result.merge_state_status
+  in
+  let t =
     Orchestrator.set_merge_queue_required t patch_id
       poll_result.merge_queue_required
   in
@@ -593,6 +597,38 @@ let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
   && List.is_empty agent.Patch_agent.queue
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
 
+(** [true] when a patch has momentarily lost [merge_ready] *only* because GitHub
+    is recomputing mergeability (the raw [mergeStateStatus] is [UNKNOWN]), while
+    every real precondition for automerge still holds. This is the benign flap
+    caused by the base branch advancing — e.g. a sibling patch merging
+    invalidates mergeability on every other open PR at once, so they all read
+    [UNKNOWN] for a poll or two before settling back to [CLEAN].
+
+    When this holds, [reconcile_automerge] preserves the existing
+    [automerge_deadline] instead of clearing it, so the idle window measures
+    real elapsed wall-clock rather than restarting on every sibling merge. We
+    never *fire* a merge in this state (the decision branches require
+    [merge_ready], i.e. [mergeStateStatus = CLEAN]); the hold only protects a
+    timer that is already armed.
+
+    Deliberately scoped to the direct-merge path ([merge_queue_entry = None])
+    and to [UNKNOWN] alone — a real [BLOCKED]/[DIRTY]/[BEHIND], a failing check,
+    new feedback (non-empty queue), or a hit failure cap all fall through to the
+    normal clear. [checks_passing] is required so a genuine CI regression that
+    coincides with an [UNKNOWN] window still resets the timer. *)
+let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
+  (match agent.Patch_agent.merge_state_status with
+    | Some "UNKNOWN" -> true
+    | _ -> false)
+  && (not agent.Patch_agent.automerge_inflight)
+  && (not agent.Patch_agent.merged)
+  && agent.Patch_agent.automerge_enabled
+  && Patch_agent.is_approved_modulo_merge_ready agent ~main_branch
+  && agent.Patch_agent.checks_passing
+  && List.is_empty agent.Patch_agent.queue
+  && agent.Patch_agent.automerge_failure_count < automerge_max_failures
+  && Option.is_none agent.Patch_agent.merge_queue_entry
+
 type merge_action = Direct_merge | Enqueue | Dequeue of string
 [@@deriving show, eq, sexp_of]
 
@@ -702,6 +738,15 @@ let reconcile_automerge t ~now =
           else is_automerge_candidate agent ~main_branch
         in
         match (candidate, agent.Patch_agent.automerge_deadline) with
+        | false, Some _ when automerge_transient_hold agent ~main_branch ->
+            (* merge_ready dropped only because GitHub is recomputing
+               mergeability (mergeStateStatus = UNKNOWN) after the base
+               advanced — typically a sibling patch merging. Hold the existing
+               deadline so the idle window keeps counting real elapsed time
+               instead of restarting on every sibling merge. We do not fire
+               here (firing requires merge_ready / CLEAN); the next CLEAN poll
+               re-qualifies the candidate and the preserved deadline elapses. *)
+            (t, decisions)
         | false, Some _ ->
             (* Feedback arrived, lost approval, CI flipped, or failure cap
                hit: drop the deadline so the next reconcile re-arms a fresh
@@ -1152,6 +1197,8 @@ let%test "no merge-conflict re-enqueue after noop" =
         is_draft = false;
         has_conflict = true;
         merge_ready = false;
+        merge_state_status = None;
+        review_decision = None;
         merge_queue_required = false;
         merge_queue_entry = None;
         checks_passing = false;

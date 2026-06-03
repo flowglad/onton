@@ -139,6 +139,7 @@ let graphql_query =
       isDraft
       mergeable
       mergeStateStatus
+      reviewDecision
       headRefName
       headRefOid
       baseRefName
@@ -350,6 +351,8 @@ type pull_request = {
   is_draft : bool; [@key "isDraft"] [@yojson.default false]
   merge_state_status : string option;
       [@key "mergeStateStatus"] [@yojson.default None]
+  review_decision : string option;
+      [@key "reviewDecision"] [@yojson.default None]
   head_ref_name : string option; [@key "headRefName"] [@yojson.default None]
   head_ref_oid : string option; [@key "headRefOid"] [@yojson.default None]
   base_ref_name : string option; [@key "baseRefName"] [@yojson.default None]
@@ -497,6 +500,8 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     is_draft = pr.is_draft;
     merge_state;
     merge_ready;
+    merge_state_status = pr.merge_state_status;
+    review_decision = pr.review_decision;
     check_status;
     ci_checks;
     ci_checks_truncated;
