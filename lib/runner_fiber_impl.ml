@@ -146,7 +146,8 @@ struct
      windows, and [automerge_inflight] already prevents double-claiming. *)
     Eio.Fiber.List.iter ~max_fibers:4
       (fun Patch_controller.
-             { merge_patch_id = patch_id; merge_pr_number = pr_number } ->
+             { merge_patch_id = patch_id; merge_pr_number = pr_number; action }
+         ->
         let label =
           Printf.sprintf "automerge PR #%d" (Pr_number.to_int pr_number)
         in
@@ -182,6 +183,36 @@ struct
                 Orchestrator.set_automerge_deadline orch patch_id
                   (now_ts +. Patch_controller.automerge_idle_timeout)))
         in
+        let apply_failure () =
+          inflight_cleared := true;
+          Runtime.update_orchestrator runtime (fun orch ->
+              Patch_controller.apply_automerge_failure orch
+                ~now:(Unix.gettimeofday ()) patch_id)
+        in
+        let handle_enqueue_result result =
+          match result with
+          | Ok (Forge.Enqueued entry) ->
+              push_deadline_and_clear_inflight ();
+              log_event runtime ~patch_id
+                (Printf.sprintf
+                   "Automerge enqueued PR #%d in GitHub merge queue (%s, \
+                    position %d)"
+                   (Pr_number.to_int pr_number)
+                   entry.Pr_state.id entry.Pr_state.position)
+          | Ok (Forge.Already_enqueued entry) ->
+              push_deadline_and_clear_inflight ();
+              log_event runtime ~patch_id
+                (Printf.sprintf
+                   "Automerge PR #%d already in GitHub merge queue (%s, \
+                    position %d)"
+                   (Pr_number.to_int pr_number)
+                   entry.Pr_state.id entry.Pr_state.position)
+          | Error err ->
+              apply_failure ();
+              log_event runtime ~patch_id
+                (Printf.sprintf "Automerge enqueue failed — %s"
+                   (Forge.show_error err))
+        in
         Fun.protect ~finally:clear_inflight_if_needed (fun () ->
             (* Re-read the patch just before hitting GitHub. The original
              decision came from an earlier orchestrator snapshot; between then
@@ -198,7 +229,7 @@ struct
                     Orchestrator.find_agent snap.Runtime.orchestrator patch_id
                   with
                   | None -> false
-                  | Some agent ->
+                  | Some agent -> (
                       let main_branch =
                         Orchestrator.main_branch snap.Runtime.orchestrator
                       in
@@ -208,18 +239,34 @@ struct
                        execute, hitting GitHub with the stale [pr_number]
                        would either merge the wrong PR (on the rare chance
                        the old PR is still open) or 405 and bump
-                       [automerge_failure_count] for no reason.
-                       [is_automerge_candidate] gates on everything else (not
-                       merged, automerge enabled, approval, CI, empty queue,
-                       failure cap) and [~ignore_inflight:true] opts out of
-                       the inflight short-circuit that the predicate applies
-                       by default — necessary here because this re-check runs
-                       while we hold the flag. *)
-                      (match Patch_agent.pr_number agent with
+                       [automerge_failure_count] for no reason. *)
+                      let same_pr =
+                        match Patch_agent.pr_number agent with
                         | Some current -> Pr_number.equal current pr_number
-                        | None -> false)
-                      && Patch_controller.is_automerge_candidate
-                           ~ignore_inflight:true agent ~main_branch)
+                        | None -> false
+                      in
+                      same_pr
+                      &&
+                      match action with
+                      | Patch_controller.Direct_merge ->
+                          Patch_controller.is_automerge_candidate
+                            ~ignore_inflight:true agent ~main_branch
+                      | Patch_controller.Enqueue ->
+                          agent.Patch_agent.merge_queue_required
+                          && (not agent.Patch_agent.merged)
+                          && agent.Patch_agent.automerge_enabled
+                          && Patch_agent.is_approved agent ~main_branch
+                          && agent.Patch_agent.checks_passing
+                          && List.is_empty agent.Patch_agent.queue
+                          && agent.Patch_agent.automerge_failure_count
+                             < Patch_controller.automerge_max_failures
+                      | Patch_controller.Dequeue entry_id -> (
+                          (not (Patch_agent.is_approved agent ~main_branch))
+                          &&
+                          match agent.Patch_agent.merge_queue_entry with
+                          | Some entry ->
+                              String.equal entry.Pr_state.id entry_id
+                          | None -> false)))
             in
             if not still_candidate then (
               log_event runtime ~patch_id
@@ -235,50 +282,75 @@ struct
               clear_inflight_if_needed ())
             else
               try
-                match Forge.merge_pr ~pr_number with
-                | Ok Forge.Merge_succeeded ->
-                    inflight_cleared := true;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Patch_controller.apply_automerge_success orch patch_id);
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Automerge complete — PR #%d merged"
-                         (Pr_number.to_int pr_number))
-                | Ok (Forge.Merge_queued msg) ->
-                    (* GitHub accepted the request into its native auto-merge
-                     queue. Not a failure — don't bump the counter. Push the
-                     deadline forward (atomically with clearing [inflight]) so
-                     we don't re-fire before the poller observes the eventual
-                     merge. *)
-                    push_deadline_and_clear_inflight ();
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "Automerge queued by GitHub — awaiting checks (%s)" msg)
-                | Ok Forge.Merge_unconfirmed ->
-                    (* 2xx response with an unexpected shape. Not authoritative
-                     either way — let the poller confirm via PR state rather
-                     than guess. Don't count as failure, but push the
-                     deadline forward (atomic with clearing [inflight]) so we
-                     don't retry every tick. *)
-                    push_deadline_and_clear_inflight ();
-                    log_event runtime ~patch_id
-                      (Printf.sprintf
-                         "%s accepted but merge not confirmed — awaiting poll"
-                         label)
-                | Error err ->
-                    inflight_cleared := true;
-                    Runtime.update_orchestrator runtime (fun orch ->
-                        Patch_controller.apply_automerge_failure orch
-                          ~now:(Unix.gettimeofday ()) patch_id);
-                    log_event runtime ~patch_id
-                      (Printf.sprintf "Automerge failed — %s"
-                         (Forge.show_error err))
+                match action with
+                | Patch_controller.Enqueue ->
+                    handle_enqueue_result (Forge.enqueue_pr ~pr_number)
+                | Patch_controller.Dequeue entry_id -> (
+                    match Forge.dequeue_pr ~entry_id with
+                    | Ok () ->
+                        push_deadline_and_clear_inflight ();
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Automerge dequeued PR #%d from GitHub merge \
+                              queue after approval was lost"
+                             (Pr_number.to_int pr_number))
+                    | Error err ->
+                        push_deadline_and_clear_inflight ();
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Automerge dequeue failed for PR #%d — %s"
+                             (Pr_number.to_int pr_number)
+                             (Forge.show_error err)))
+                | Patch_controller.Direct_merge -> (
+                    match Forge.merge_pr ~pr_number with
+                    | Ok Forge.Merge_succeeded ->
+                        inflight_cleared := true;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Patch_controller.apply_automerge_success orch
+                              patch_id);
+                        log_event runtime ~patch_id
+                          (Printf.sprintf "Automerge complete — PR #%d merged"
+                             (Pr_number.to_int pr_number))
+                    | Ok (Forge.Merge_queued msg) ->
+                        (* GitHub accepted the request into its native auto-merge
+                         queue. Not a failure — don't bump the counter. Push the
+                         deadline forward (atomically with clearing [inflight]) so
+                         we don't re-fire before the poller observes the eventual
+                         merge. *)
+                        push_deadline_and_clear_inflight ();
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Automerge queued by GitHub — awaiting checks (%s)"
+                             msg)
+                    | Ok Forge.Merge_unconfirmed ->
+                        (* 2xx response with an unexpected shape. Not authoritative
+                         either way — let the poller confirm via PR state rather
+                         than guess. Don't count as failure, but push the
+                         deadline forward (atomic with clearing [inflight]) so we
+                         don't retry every tick. *)
+                        push_deadline_and_clear_inflight ();
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "%s accepted but merge not confirmed — awaiting \
+                              poll"
+                             label)
+                    | Error err ->
+                        if Github.is_merge_queue_required_error err then (
+                          log_event runtime ~patch_id
+                            (Printf.sprintf
+                               "Automerge direct merge rejected by GitHub \
+                                merge queue — enqueuing PR #%d"
+                               (Pr_number.to_int pr_number));
+                          handle_enqueue_result (Forge.enqueue_pr ~pr_number))
+                        else (
+                          apply_failure ();
+                          log_event runtime ~patch_id
+                            (Printf.sprintf "Automerge failed — %s"
+                               (Forge.show_error err))))
               with
               | Eio.Cancel.Cancelled _ as exn -> raise exn
               | exn ->
-                  inflight_cleared := true;
-                  Runtime.update_orchestrator runtime (fun orch ->
-                      Patch_controller.apply_automerge_failure orch
-                        ~now:(Unix.gettimeofday ()) patch_id);
+                  apply_failure ();
                   log_event runtime ~patch_id
                     (Printf.sprintf "%s crashed — %s" label
                        (Printexc.to_string exn))))

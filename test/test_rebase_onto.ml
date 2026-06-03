@@ -801,25 +801,25 @@ let () =
     {!Git_env.clean_env} so tests are unaffected when run inside a git hook
     (which would otherwise leak [GIT_DIR] / [GIT_WORK_TREE]). *)
 let git ~process_mgr ~dir args =
-  Eio.Switch.run @@ fun sw ->
   let stdout_buf = Buffer.create 64 in
   let stderr_buf = Buffer.create 64 in
-  let env = Git_env.clean_env () in
-  let child =
-    Eio.Process.spawn ~sw process_mgr ~env
-      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      ([ "git"; "-C"; dir ] @ args)
-  in
-  (match Eio.Process.await child with
-  | `Exited 0 -> ()
-  | `Exited n ->
-      failwith
-        (Printf.sprintf "git %s failed (exit %d): %s"
-           (String.concat ~sep:" " args)
-           n
-           (Buffer.contents stderr_buf))
-  | `Signaled s -> failwith (Printf.sprintf "git signaled %d" s));
+  Eio.Switch.run (fun sw ->
+      let env = Git_env.clean_env () in
+      let child =
+        Eio.Process.spawn ~sw process_mgr ~env
+          ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+          ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+          ([ "git"; "-C"; dir ] @ args)
+      in
+      match Eio.Process.await child with
+      | `Exited 0 -> ()
+      | `Exited n ->
+          failwith
+            (Printf.sprintf "git %s failed (exit %d): %s"
+               (String.concat ~sep:" " args)
+               n
+               (Buffer.contents stderr_buf))
+      | `Signaled s -> failwith (Printf.sprintf "git signaled %d" s));
   String.strip (Buffer.contents stdout_buf)
 
 (** Create a fresh git repo in a temp dir. No initial commit — callers add their
