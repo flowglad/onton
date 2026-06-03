@@ -6,12 +6,13 @@
    into [Json_parse_error] — failing the *entire* poll on every cycle and
    blinding the orchestrator to the PR's state. See [lib/github.ml]. *)
 
-let pr_json ~merge_commit =
+let pr_json ?(merge_queue_entry = "null") ~merge_commit () =
   Printf.sprintf
     {|{
       "data": {
         "repository": {
           "pullRequest": {
+            "id": "PR_node_1",
             "state": "OPEN",
             "mergeable": "MERGEABLE",
             "isDraft": true,
@@ -20,6 +21,7 @@ let pr_json ~merge_commit =
             "reviewThreads": { "nodes": [] },
             "headRefName": "feature-branch",
             "headRefOid": "abc123",
+            "mergeQueueEntry": %s,
             "mergeCommit": %s,
             "baseRefName": "main",
             "headRepositoryOwner": { "login": "flowglad" }
@@ -27,7 +29,7 @@ let pr_json ~merge_commit =
         }
       }
     }|}
-    merge_commit
+    merge_queue_entry merge_commit
 
 let parse s =
   Onton.Github.parse_response_json ~owner:"flowglad" (Yojson.Safe.from_string s)
@@ -158,8 +160,13 @@ let () =
   pending_patch_3_merge_queue_405_detection ();
   (* Open PR: mergeCommit is null. Must parse Ok with merge_commit_sha = None,
      not crash the poll. *)
-  (match parse (pr_json ~merge_commit:"null") with
+  (match parse (pr_json ~merge_commit:"null" ()) with
   | Ok st ->
+      assert (
+        match st.Onton_core.Pr_state.node_id with
+        | Some "PR_node_1" -> true
+        | _ -> false);
+      assert (Option.is_none st.Onton_core.Pr_state.merge_queue_entry);
       assert (Option.is_none st.Onton_core.Pr_state.merge_commit_sha);
       Stdlib.print_endline "  open PR (mergeCommit:null): OK (None)"
   | Error e ->
@@ -167,8 +174,35 @@ let () =
         (Onton.Github.show_error e);
       Stdlib.exit 1);
 
+  (* Enqueued PR: mergeQueueEntry should propagate through normal pr_state
+     parsing, not only through the dedicated enqueue-info query. *)
+  (match
+     parse
+       (pr_json ~merge_commit:"null"
+          ~merge_queue_entry:
+            {|{ "id": "MQE_node_1", "state": "MERGEABLE", "position": 3 }|}
+          ())
+   with
+  | Ok st -> (
+      match st.Onton_core.Pr_state.merge_queue_entry with
+      | Some entry ->
+          assert (String.equal entry.Onton_core.Pr_state.id "MQE_node_1");
+          assert (
+            Onton_core.Pr_state.equal_merge_queue_entry_state
+              entry.Onton_core.Pr_state.state Onton_core.Pr_state.Mq_mergeable);
+          assert (entry.Onton_core.Pr_state.position = 3);
+          Stdlib.print_endline
+            "  enqueued PR (mergeQueueEntry): OK (MQE_node_1)"
+      | None ->
+          Printf.eprintf "  FAIL: enqueued PR missing merge_queue_entry\n";
+          Stdlib.exit 1)
+  | Error e ->
+      Printf.eprintf "  FAIL: enqueued PR poll errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1);
+
   (* Merged PR: mergeCommit present. Must still read the oid through. *)
-  (match parse (pr_json ~merge_commit:{|{ "oid": "deadbeef" }|}) with
+  (match parse (pr_json ~merge_commit:{|{ "oid": "deadbeef" }|} ()) with
   | Ok st ->
       assert (
         match st.Onton_core.Pr_state.merge_commit_sha with

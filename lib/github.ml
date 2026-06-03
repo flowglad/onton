@@ -142,6 +142,7 @@ let graphql_query =
       headRefName
       headRefOid
       baseRefName
+      mergeQueueEntry { id state position }
       mergeCommit { oid }
       mergeQueueEntry {
         id
