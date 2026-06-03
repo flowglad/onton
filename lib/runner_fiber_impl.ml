@@ -239,13 +239,7 @@ struct
                        execute, hitting GitHub with the stale [pr_number]
                        would either merge the wrong PR (on the rare chance
                        the old PR is still open) or 405 and bump
-                       [automerge_failure_count] for no reason.
-                       [is_automerge_candidate] gates on everything else (not
-                       merged, automerge enabled, approval, CI, empty queue,
-                       failure cap) and [~ignore_inflight:true] opts out of
-                       the inflight short-circuit that the predicate applies
-                       by default — necessary here because this re-check runs
-                       while we hold the flag. *)
+                       [automerge_failure_count] for no reason. *)
                       let same_pr =
                         match Patch_agent.pr_number agent with
                         | Some current -> Pr_number.equal current pr_number
@@ -254,10 +248,18 @@ struct
                       same_pr
                       &&
                       match action with
-                      | Patch_controller.Direct_merge | Patch_controller.Enqueue
-                        ->
+                      | Patch_controller.Direct_merge ->
                           Patch_controller.is_automerge_candidate
                             ~ignore_inflight:true agent ~main_branch
+                      | Patch_controller.Enqueue ->
+                          agent.Patch_agent.merge_queue_required
+                          && (not agent.Patch_agent.merged)
+                          && agent.Patch_agent.automerge_enabled
+                          && Patch_agent.is_approved agent ~main_branch
+                          && agent.Patch_agent.checks_passing
+                          && List.is_empty agent.Patch_agent.queue
+                          && agent.Patch_agent.automerge_failure_count
+                             < Patch_controller.automerge_max_failures
                       | Patch_controller.Dequeue entry_id -> (
                           (not (Patch_agent.is_approved agent ~main_branch))
                           &&
