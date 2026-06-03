@@ -295,7 +295,7 @@ struct
                               queue after approval was lost"
                              (Pr_number.to_int pr_number))
                     | Error err ->
-                        apply_failure ();
+                        push_deadline_and_clear_inflight ();
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeue failed for PR #%d — %s"
