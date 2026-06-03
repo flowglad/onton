@@ -274,6 +274,5 @@ let%test "legacy Awaiting_review decodes to Awaiting_feedback" =
   && equal Awaiting_feedback (t_of_yojson (`String "Awaiting_review"))
 
 let%test "current statuses round-trip through yojson" =
-  List.for_all
-    [ Awaiting_feedback; Ci_queued; Merged; Pending; Needs_help ]
+  List.for_all [ Awaiting_feedback; Ci_queued; Merged; Pending; Needs_help ]
     ~f:(fun s -> equal s (t_of_yojson (yojson_of_t s)))
