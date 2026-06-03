@@ -27,6 +27,14 @@ type t = {
   inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
   merge_ready : bool;
+  merge_state_status : string option;
+      (** Raw GitHub [mergeStateStatus] behind [merge_ready] (CLEAN / UNKNOWN /
+          BEHIND / BLOCKED / DIRTY / …); [merge_ready] is [= Some "CLEAN"]. Kept
+          on the agent so [reconcile_automerge] can tell a transient [UNKNOWN]
+          (GitHub recomputing mergeability after the base branch advanced — e.g.
+          a sibling patch merged) apart from a real block, and *hold* the
+          automerge idle timer through the blip instead of resetting it. [None]
+          until first polled and after [clear_pr]. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_commit_sha : string option;
@@ -175,6 +183,7 @@ let create ~branch patch_id =
     inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
+    merge_state_status = None;
     merge_queue_required = false;
     merge_queue_entry = None;
     merge_commit_sha = None;
@@ -228,6 +237,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
+    merge_state_status = None;
     merge_queue_required = false;
     merge_queue_entry = None;
     merge_commit_sha = None;
@@ -355,6 +365,7 @@ let base_branch_changed t =
   | _ -> false
 
 let set_merge_ready t v = { t with merge_ready = v }
+let set_merge_state_status t v = { t with merge_state_status = v }
 let set_merge_queue_required t v = { t with merge_queue_required = v }
 let set_merge_queue_entry t merge_queue_entry = { t with merge_queue_entry }
 let set_merge_commit_sha t sha = { t with merge_commit_sha = sha }
@@ -381,11 +392,19 @@ let on_pre_session_failure t =
 let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
 
-let is_approved t ~main_branch =
-  is_pr_present t && t.merge_ready && (not t.busy)
+(* Every approval precondition *except* [merge_ready] (GitHub
+   [mergeStateStatus = CLEAN]). Factored out so [reconcile_automerge] can
+   recognize a patch that is fully approval-ready and is only missing a [CLEAN]
+   reading because GitHub is transiently recomputing mergeability — see
+   [Patch_controller.automerge_transient_hold]. *)
+let is_approved_modulo_merge_ready t ~main_branch =
+  is_pr_present t && (not t.busy)
   && (not (needs_intervention t))
   && (not t.is_draft) && (not t.branch_blocked)
   && Option.equal Branch.equal t.base_branch (Some main_branch)
+
+let is_approved t ~main_branch =
+  t.merge_ready && is_approved_modulo_merge_ready t ~main_branch
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
@@ -471,15 +490,15 @@ let reset_busy t = if not t.busy then t else { t with busy = false }
 let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
-    ~ci_checks ~merge_ready ~merge_queue_required ~merge_queue_entry
-    ~merge_commit_sha ~base_contains_merged_siblings ~is_draft
-    ~pr_body_delivered ~pr_body_artifact_miss_count ~start_attempts_without_pr
-    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
-    ~push_failure_count ~branch_rebased_onto ~branch_rebased_onto_sha
-    ~anchor_history ~checks_passing ~current_op ~current_op_state
-    ~current_message_id ~generation ~worktree_path ~branch_blocked
-    ~llm_session_id ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ~automerge_failure_count ~delivered_ci_run_ids =
+    ~ci_checks ~merge_ready ~merge_state_status ~merge_queue_required
+    ~merge_queue_entry ~merge_commit_sha ~base_contains_merged_siblings
+    ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
+    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
+    ~context_exhaustion_count ~push_failure_count ~branch_rebased_onto
+    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
+    ~current_op_state ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
+    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -499,6 +518,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     inflight_human_messages;
     ci_checks;
     merge_ready;
+    merge_state_status;
     merge_queue_required;
     merge_queue_entry;
     merge_commit_sha;
@@ -549,6 +569,7 @@ let set_pr_number t pr_number =
         pr_status = Patch_pr_status.set_present t.pr_status pr_number;
         is_draft = true;
         merge_ready = false;
+        merge_state_status = None;
         pr_body_delivered = false;
         checks_passing = false;
         start_attempts_without_pr = 0;
@@ -567,6 +588,7 @@ let clear_pr t =
     pr_status = Patch_pr_status.clear_for_recreate t.pr_status;
     is_draft = false;
     merge_ready = false;
+    merge_state_status = None;
     checks_passing = false;
     ci_checks = [];
     ci_failure_count = 0;
@@ -593,6 +615,7 @@ let mark_pr_missing t =
     pr_status = Patch_pr_status.mark_missing t.pr_status;
     is_draft = false;
     merge_ready = false;
+    merge_state_status = None;
     checks_passing = false;
     ci_checks = [];
   }
@@ -668,6 +691,7 @@ let rebase t ~base_branch =
       | None -> Some base_branch
       | some -> some);
     merge_ready = false;
+    merge_state_status = None;
     checks_passing = false;
   }
 
@@ -718,6 +742,7 @@ let respond t k =
     notified_base_branch =
       (match t.notified_base_branch with None -> t.base_branch | some -> some);
     merge_ready = false;
+    merge_state_status = None;
     checks_passing = false;
   }
 

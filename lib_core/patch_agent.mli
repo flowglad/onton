@@ -34,6 +34,12 @@ type t = private {
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
   merge_ready : bool;
+  merge_state_status : string option;
+      (** Raw GitHub [mergeStateStatus] behind [merge_ready] ([merge_ready] is
+          [= Some "CLEAN"]). Retained so [reconcile_automerge] can hold the
+          automerge idle timer through a transient [UNKNOWN] (GitHub recomputing
+          mergeability after the base advanced) rather than reset it. [None]
+          until first polled / after [clear_pr]. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_commit_sha : string option;
@@ -288,6 +294,9 @@ val base_branch_changed : t -> bool
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
+val set_merge_state_status : t -> string option -> t
+(** Set the raw GitHub [mergeStateStatus] string behind [merge_ready]. *)
+
 val set_merge_queue_required : t -> bool -> t
 (** Set whether the patch's target branch is governed by a merge queue. *)
 
@@ -364,6 +373,12 @@ val set_checks_passing : t -> bool -> t
 
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
+
+val is_approved_modulo_merge_ready : t -> main_branch:Types.Branch.t -> bool
+(** Every approval precondition except [merge_ready]. A patch satisfying this
+    but with [merge_ready = false] is approval-ready and is only missing a
+    [CLEAN] mergeability reading — the basis for holding the automerge timer
+    through a transient [mergeStateStatus = UNKNOWN]. *)
 
 val is_approved : t -> main_branch:Types.Branch.t -> bool
 (** Derived predicate:
@@ -539,6 +554,7 @@ val restore :
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
+  merge_state_status:string option ->
   merge_queue_required:bool ->
   merge_queue_entry:Pr_state.merge_queue_entry option ->
   merge_commit_sha:string option ->

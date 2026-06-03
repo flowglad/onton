@@ -115,6 +115,7 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
 
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
+val set_merge_state_status : t -> Patch_id.t -> string option -> t
 val set_merge_queue_required : t -> Patch_id.t -> bool -> t
 
 val set_merge_queue_entry :

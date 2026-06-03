@@ -25,6 +25,18 @@ type t = {
   is_draft : bool;
   merge_state : merge_state;
   merge_ready : bool;
+  merge_state_status : string option;
+      (** Raw GitHub [mergeStateStatus] (CLEAN / UNKNOWN / BEHIND / BLOCKED /
+          DIRTY / UNSTABLE / HAS_HOOKS / DRAFT). [merge_ready] collapses this to
+          [= CLEAN]; the raw value is retained purely for diagnostics so the
+          event log can explain *why* [merge_ready] flipped — a transient
+          [UNKNOWN] (GitHub recomputing mergeability after the base advanced)
+          vs. a real [BLOCKED]/[DIRTY]. [None] when the forge did not report it.
+      *)
+  review_decision : string option;
+      (** Raw GitHub [reviewDecision] (APPROVED / REVIEW_REQUIRED /
+          CHANGES_REQUESTED / null). Captured for diagnostics only — approval is
+          currently inferred from [merge_ready], not this field. *)
   check_status : check_status;
   ci_checks : Types.Ci_check.t list;
   ci_checks_truncated : bool;

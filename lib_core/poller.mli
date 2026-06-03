@@ -29,6 +29,14 @@ type t = {
   merge_ready : bool;
       (** [true] if GitHub's [mergeStateStatus] is [CLEAN] — all branch
           protection rules (required reviews, checks, etc.) are satisfied. *)
+  merge_state_status : string option; [@yojson.option]
+      (** Raw GitHub [mergeStateStatus] behind [merge_ready]. Diagnostics only:
+          surfaces in the event log so a [merge_ready] flip can be attributed to
+          a transient [UNKNOWN]/[BEHIND] (a sibling merge advancing the base)
+          vs. a real block. [@yojson.option] omits it from event JSON when
+          [None]. *)
+  review_decision : string option; [@yojson.option]
+      (** Raw GitHub [reviewDecision]. Diagnostics only. *)
   merge_queue_required : bool;
       (** [true] when the repository config says this PR's target branch
           requires GitHub's native merge queue. Inert in Patch 1. *)

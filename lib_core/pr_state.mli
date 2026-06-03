@@ -30,6 +30,14 @@ type t = {
   is_draft : bool;
   merge_state : merge_state;
   merge_ready : bool;
+  merge_state_status : string option;
+      (** Raw GitHub [mergeStateStatus]; [merge_ready] is [= CLEAN] of this.
+          Retained for diagnostics — see {!Pr_state.merge_ready} flapping when a
+          sibling merge advances the base and GitHub transiently reports
+          [UNKNOWN]/[BEHIND]. [None] when not reported. *)
+  review_decision : string option;
+      (** Raw GitHub [reviewDecision] (APPROVED / REVIEW_REQUIRED /
+          CHANGES_REQUESTED / null). Diagnostics only. *)
   check_status : check_status;
   ci_checks : Ci_check.t list;
   ci_checks_truncated : bool;
