@@ -302,6 +302,9 @@ let gen_pr_state =
           comments;
           unresolved_comment_count;
           findings = [];
+          node_id = None;
+          merge_queue_required = false;
+          merge_queue_entry = None;
           head_branch;
           head_oid = None;
           base_branch;
@@ -348,6 +351,8 @@ let gen_poller =
             is_draft;
             has_conflict;
             merge_ready;
+            merge_queue_required = false;
+            merge_queue_entry = None;
             checks_passing;
             ci_checks;
             merge_commit_sha = None;

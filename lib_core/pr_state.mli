@@ -10,6 +10,21 @@ type merge_state = Mergeable | Conflicting | Unknown [@@deriving show, eq]
 type check_status = Passing | Failing | Pending [@@deriving show, eq]
 type pr_status = Open | Merged | Closed [@@deriving show, eq]
 
+type merge_queue_entry_state =
+  | Mq_queued
+  | Mq_awaiting_checks
+  | Mq_mergeable
+  | Mq_unmergeable
+  | Mq_locked
+[@@deriving show, eq, sexp_of, compare, yojson]
+
+type merge_queue_entry = {
+  id : string;
+  state : merge_queue_entry_state;
+  position : int;
+}
+[@@deriving show, eq, sexp_of, compare, yojson]
+
 type t = {
   status : pr_status;
   is_draft : bool;
@@ -21,6 +36,9 @@ type t = {
   comments : Comment.t list;
   unresolved_comment_count : int;
   findings : Review_service.finding list;
+  node_id : string option;
+  merge_queue_required : bool;
+  merge_queue_entry : merge_queue_entry option;
   head_branch : Branch.t option;
   head_oid : string option;
   merge_commit_sha : string option;
@@ -44,6 +62,8 @@ val no_unresolved_comments : t -> bool
 val has_conflict : t -> bool
 val ci_failed : t -> bool
 val is_fork : t -> bool
+val requires_merge_queue : t -> bool
+val enqueued : t -> bool
 
 val derive_check_status : Ci_check.t list -> check_status
 (** Aggregate [check_status] from individual CI check conclusions. Source of

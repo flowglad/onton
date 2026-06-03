@@ -452,6 +452,9 @@ let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
     (* GitHub does not produce review-service findings; the poller in
        [bin/main.ml] augments this list from configured review-service
        backends. *)
+    node_id = None;
+    merge_queue_required = false;
+    merge_queue_entry = None;
     head_branch = Option.map pr.head_ref_name ~f:Types.Branch.of_string;
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);

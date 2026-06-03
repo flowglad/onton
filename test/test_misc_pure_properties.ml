@@ -59,6 +59,29 @@ let valid_parser_json ~project_name ~patches_json ~dependency_graph_json =
 }|}
     project_name dependency_graph_json patches_json
 
+let sample_pr_state ~merge_queue_required ~merge_queue_entry =
+  Pr_state.
+    {
+      status = Open;
+      is_draft = false;
+      merge_state = Unknown;
+      merge_ready = false;
+      check_status = Pending;
+      ci_checks = [];
+      ci_checks_truncated = false;
+      comments = [];
+      unresolved_comment_count = 0;
+      findings = [];
+      node_id = None;
+      merge_queue_required;
+      merge_queue_entry;
+      head_branch = None;
+      head_oid = None;
+      merge_commit_sha = None;
+      base_branch = None;
+      is_fork = false;
+    }
+
 let () =
   let open QCheck2 in
   let open Onton_test_support.Test_generators in
@@ -192,6 +215,20 @@ let () =
              (Pr_state.equal_merge_state pr.merge_state Pr_state.Conflicting)
         && Bool.equal (Pr_state.ci_failed pr)
              (Pr_state.equal_check_status pr.check_status Pr_state.Failing))
+  in
+
+  let prop_pr_state_merge_queue_predicates =
+    Test.make ~name:"pr_state: merge-queue predicates reflect fields" ~count:50
+      Gen.(pair bool bool)
+      (fun (merge_queue_required, has_entry) ->
+        let merge_queue_entry =
+          if has_entry then
+            Some Pr_state.{ id = "mqe_123"; state = Mq_queued; position = 0 }
+          else None
+        in
+        let pr = sample_pr_state ~merge_queue_required ~merge_queue_entry in
+        Bool.equal (Pr_state.requires_merge_queue pr) merge_queue_required
+        && Bool.equal (Pr_state.enqueued pr) has_entry)
   in
 
   let prop_invariants_empty_state =
@@ -363,6 +400,7 @@ let () =
       prop_priority_queue_is_sorted_and_unique;
       prop_priority_dequeue_returns_peeked_highest;
       prop_pr_state_predicates;
+      prop_pr_state_merge_queue_predicates;
       prop_invariants_empty_state;
       prop_invariants_negative_ci_detected;
       prop_invariants_busy_without_session_detected;

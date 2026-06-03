@@ -29,6 +29,12 @@ type t = {
   merge_ready : bool;
       (** [true] if GitHub's [mergeStateStatus] is [CLEAN] — all branch
           protection rules (required reviews, checks, etc.) are satisfied. *)
+  merge_queue_required : bool;
+      (** [true] when the repository config says this PR's target branch
+          requires GitHub's native merge queue. Inert in Patch 1. *)
+  merge_queue_entry : Pr_state.merge_queue_entry option; [@yojson.option]
+      (** The current merge-queue entry when the PR is enqueued. Inert in Patch
+          1. [@yojson.option] omits the field from event JSON when [None]. *)
   checks_passing : bool;  (** [true] if CI checks are currently passing. *)
   ci_checks : Ci_check.t list;
       (** Individual CI check results from the most recent poll. *)

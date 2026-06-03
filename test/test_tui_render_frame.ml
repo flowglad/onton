@@ -189,7 +189,12 @@ let test_patches_render_above_activity () =
   | Some p, Some a -> assert (p < a)
   | _ -> assert false
 
+let pending_patch_5_merge_queue_badge () =
+  (* PENDING: Patch 5 - an enqueued patch renders a merge-queue badge with position. *)
+  ()
+
 let () =
+  pending_patch_5_merge_queue_badge ();
   test_header_has_project_and_backend ();
   test_header_truncates_when_too_narrow ();
   test_no_summary_row ();

@@ -338,6 +338,14 @@ let patch_agent_of_yojson ~gameplan json =
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
+       ~merge_queue_required:
+         (Option.value
+            (bool_member_opt "merge_queue_required" json)
+            ~default:false)
+       ~merge_queue_entry:
+         (match member "merge_queue_entry" json with
+         | `Null -> None
+         | v -> Result.ok (try_of_yojson Pr_state.merge_queue_entry_of_yojson v))
        ~merge_commit_sha:(string_member_opt "merge_commit_sha" json)
        ~base_contains_merged_siblings:
          (* Default [false] (fail-closed) when the key is absent — an older
@@ -828,9 +836,9 @@ let%test_module "session_id_sidecars" =
           ~has_conflict:false ~base_branch:None ~notified_base_branch:None
           ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
           ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-          ~merge_ready:false ~merge_commit_sha:None
-          ~base_contains_merged_siblings:true ~is_draft:false
-          ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+          ~merge_ready:false ~merge_queue_required:false ~merge_queue_entry:None
+          ~merge_commit_sha:None ~base_contains_merged_siblings:true
+          ~is_draft:false ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
           ~start_attempts_without_pr:0 ~conflict_noop_count:0
           ~no_commits_push_count:0 ~context_exhaustion_count:0
           ~push_failure_count:0 ~branch_rebased_onto:None
