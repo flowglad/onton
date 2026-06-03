@@ -491,8 +491,8 @@ let render_status_badge ?(queued = false) status =
     ~label:lbl
 
 let merge_queue_badge_state = function
-  | Pr_state.Mq_queued -> (Awaiting_review, "mq-queued")
-  | Pr_state.Mq_awaiting_checks -> (Awaiting_ci, "mq-awaiting-checks")
+  | Pr_state.Mq_queued -> (Awaiting_feedback, "mq-queued")
+  | Pr_state.Mq_awaiting_checks -> (Awaiting_feedback, "mq-awaiting-checks")
   | Pr_state.Mq_mergeable -> (Approved_idle, "mq-mergeable")
   | Pr_state.Mq_unmergeable -> (Needs_help, "mq-unmergeable")
   | Pr_state.Mq_locked -> (Ci_queued, "mq-locked")
