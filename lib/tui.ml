@@ -637,8 +637,8 @@ let render_patch_row ~width ~selected ~now (pv : patch_view) =
   let cursor = if selected then "▸" else " " in
   let row =
     Term.fit_width width
-      (Printf.sprintf "%s%s %s %s%s  %s%s%s%s" cursor patch_label pr_label
-         badge queue_badge pv.title ci_info dep_info am_info)
+      (Printf.sprintf "%s%s %s %s%s  %s%s%s%s" cursor patch_label pr_label badge
+         queue_badge pv.title ci_info dep_info am_info)
   in
   if selected then Term.styled [ Term.Sgr.bold ] row else row
 
@@ -745,8 +745,7 @@ let detail_info_rows (pv : patch_view) ~width ~now =
   let badge = render_status_badge ~queued:(pv_queued pv) pv.status in
   let queue_badge = render_merge_queue_badge pv.merge_queue_entry in
   let status_line =
-    if String.is_empty queue_badge then
-      Printf.sprintf "  Status:      %s" badge
+    if String.is_empty queue_badge then Printf.sprintf "  Status:      %s" badge
     else Printf.sprintf "  Status:      %s %s" badge queue_badge
   in
   let lines =
