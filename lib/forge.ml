@@ -15,6 +15,10 @@ module type S = sig
     | Merge_queued of string
     | Merge_unconfirmed
 
+  type enqueue_result =
+    | Enqueued of Pr_state.merge_queue_entry
+    | Already_enqueued of Pr_state.merge_queue_entry
+
   val pr_state : Types.Pr_number.t -> (Pr_state.t, error) Result.t
 
   val list_prs :
@@ -46,5 +50,9 @@ module type S = sig
       implementation detects the allowed methods (squash/merge/rebase) and picks
       one — callers must not assume squash. *)
 
+  val enqueue_pr :
+    pr_number:Types.Pr_number.t -> (enqueue_result, error) Result.t
+
+  val dequeue_pr : entry_id:string -> (unit, error) Result.t
   val check_repo_access : unit -> (unit, error) Result.t
 end

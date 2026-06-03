@@ -83,12 +83,74 @@ let pending_patch_2_parse_merge_queue_and_entry () =
       Stdlib.exit 1
 
 let pending_patch_3_enqueue_and_dequeue_parsing () =
-  (* PENDING: Patch 3 - enqueue and dequeue mutation response parsing. *)
-  ()
+  let enqueue_body =
+    {|{
+      "data": {
+        "enqueuePullRequest": {
+          "mergeQueueEntry": {
+            "id": "MQE_123",
+            "state": "AWAITING_CHECKS",
+            "position": 7
+          }
+        }
+      }
+    }|}
+  in
+  (match Onton.Github.parse_enqueue_response enqueue_body with
+  | Ok entry ->
+      assert (String.equal entry.Onton_core.Pr_state.id "MQE_123");
+      assert (
+        Onton_core.Pr_state.equal_merge_queue_entry_state
+          entry.Onton_core.Pr_state.state Onton_core.Pr_state.Mq_awaiting_checks);
+      assert (entry.Onton_core.Pr_state.position = 7)
+  | Error e ->
+      Printf.eprintf "  FAIL: enqueue response parse errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1);
+  (match
+     Onton.Github.parse_enqueue_response
+       {|{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"id":"MQE_999","state":"FUTURE_STATE","position":2}}}}|}
+   with
+  | Ok entry ->
+      assert (
+        Onton_core.Pr_state.equal_merge_queue_entry_state
+          entry.Onton_core.Pr_state.state Onton_core.Pr_state.Mq_queued)
+  | Error e ->
+      Printf.eprintf "  FAIL: future enqueue state parse errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1);
+  match
+    Onton.Github.parse_dequeue_response
+      {|{"data":{"dequeuePullRequest":{"clientMutationId":null}}}|}
+  with
+  | Ok () -> ()
+  | Error e ->
+      Printf.eprintf "  FAIL: dequeue response parse errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
 
 let pending_patch_3_merge_queue_405_detection () =
-  (* PENDING: Patch 3 - is_merge_queue_required_error detects the 405 merge-queue body. *)
-  ()
+  let merge_queue_err =
+    Onton.Github.Http_error
+      {
+        meth = "PUT";
+        path = "/repos/o/r/pulls/1/merge";
+        status = 405;
+        body = {|{"message":"Changes must be made through the merge queue"}|};
+      }
+  in
+  let base_modified_err =
+    Onton.Github.Http_error
+      {
+        meth = "PUT";
+        path = "/repos/o/r/pulls/1/merge";
+        status = 405;
+        body = {|{"message":"Base branch was modified"}|};
+      }
+  in
+  assert (Onton.Github.is_merge_queue_required_error merge_queue_err);
+  assert (not (Onton.Github.is_method_not_allowed merge_queue_err));
+  assert (not (Onton.Github.is_merge_queue_required_error base_modified_err))
 
 let () =
   pending_patch_2_parse_merge_queue_and_entry ();
