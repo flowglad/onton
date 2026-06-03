@@ -496,10 +496,10 @@ let render_status_badge ?(queued = false) status =
 
 let merge_queue_badge_state = function
   | Pr_state.Mq_queued -> (Awaiting_review, "mq-queued")
-  | Mq_awaiting_checks -> (Awaiting_ci, "mq-awaiting-checks")
-  | Mq_mergeable -> (Approved_idle, "mq-mergeable")
-  | Mq_unmergeable -> (Needs_help, "mq-unmergeable")
-  | Mq_locked -> (Ci_queued, "mq-locked")
+  | Pr_state.Mq_awaiting_checks -> (Awaiting_ci, "mq-awaiting-checks")
+  | Pr_state.Mq_mergeable -> (Approved_idle, "mq-mergeable")
+  | Pr_state.Mq_unmergeable -> (Needs_help, "mq-unmergeable")
+  | Pr_state.Mq_locked -> (Ci_queued, "mq-locked")
 
 let render_merge_queue_badge = function
   | None -> ""
