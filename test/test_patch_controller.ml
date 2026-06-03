@@ -1369,6 +1369,32 @@ let () =
              (Orchestrator.agent orch pid).Patch_agent.automerge_deadline)
   in
 
+  let pending_patch_4_unapproved_not_enqueued =
+    Test.make
+      ~name:
+        "patch_controller: Patch 4 unapproved queue PR without entry is not \
+         enqueued" QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-unapproved-not-enqueued" in
+        let branch = Branch.of_string "feat/mq-unapproved-not-enqueued" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 405))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~checks_passing:true ~merge_queue_required:true
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        let agent = Orchestrator.agent orch pid in
+        List.is_empty decisions
+        && Option.is_none agent.Patch_agent.automerge_deadline
+        && not agent.Patch_agent.automerge_inflight)
+  in
+
   let pending_patch_4_automerge_dequeue_on_lost_approval =
     Test.make
       ~name:
@@ -1436,6 +1462,7 @@ let () =
     [
       pending_patch_4_automerge_enqueue_action;
       pending_patch_4_automerge_enqueued_idle;
+      pending_patch_4_unapproved_not_enqueued;
       pending_patch_4_automerge_dequeue_on_lost_approval;
       pending_patch_4_unmergeable_counts_as_failure;
       prop_missing_adhoc_does_not_crash_reconcile;

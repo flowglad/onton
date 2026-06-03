@@ -607,14 +607,14 @@ let merge_queue_entry_unmergeable (entry : Pr_state.merge_queue_entry) =
   Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable
 
 let automerge_action (agent : Patch_agent.t) ~main_branch =
+  let approved = Patch_agent.is_approved agent ~main_branch in
   match (agent.Patch_agent.merge_queue_required, agent.merge_queue_entry) with
   | true, Some entry when merge_queue_entry_unmergeable entry -> None
-  | true, Some entry when not (Patch_agent.is_approved agent ~main_branch) ->
-      Some (Dequeue entry.id)
+  | true, Some entry when not approved -> Some (Dequeue entry.id)
   | true, Some _ -> None
-  | true, None -> Some Enqueue
-  | false, Some entry when not (Patch_agent.is_approved agent ~main_branch) ->
-      Some (Dequeue entry.id)
+  | true, None when approved -> Some Enqueue
+  | true, None -> None
+  | false, Some entry when not approved -> Some (Dequeue entry.id)
   | false, Some _ -> None
   | false, None -> Some Direct_merge
 

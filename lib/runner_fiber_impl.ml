@@ -286,14 +286,14 @@ struct
                 | Patch_controller.Dequeue entry_id -> (
                     match Forge.dequeue_pr ~entry_id with
                     | Ok () ->
-                        clear_inflight_if_needed ();
+                        push_deadline_and_clear_inflight ();
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeued PR #%d from GitHub merge \
                               queue after approval was lost"
                              (Pr_number.to_int pr_number))
                     | Error err ->
-                        clear_inflight_if_needed ();
+                        apply_failure ();
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeue failed for PR #%d — %s"
