@@ -116,9 +116,13 @@ val automerge_max_failures : int
     which cannot happen once the cap is hit, so the toggle is the only
     recovery). *)
 
+type merge_action = Direct_merge | Enqueue | Dequeue of string
+[@@deriving show, eq, sexp_of]
+
 type automerge_decision = {
   merge_patch_id : Patch_id.t;
   merge_pr_number : Pr_number.t;
+  action : merge_action;
 }
 [@@deriving show, eq, sexp_of]
 
