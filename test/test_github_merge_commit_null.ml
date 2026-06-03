@@ -72,7 +72,7 @@ let pending_patch_2_parse_merge_queue_and_entry () =
           assert (String.equal entry.Onton_core.Pr_state.id "MQE_node_456");
           assert (
             Onton_core.Pr_state.equal_merge_queue_entry_state
-              entry.Onton_core.Pr_state.state Onton_core.Pr_state.Mq_locked);
+              entry.Onton_core.Pr_state.state Onton_core.Pr_state.Mq_queued);
           assert (entry.Onton_core.Pr_state.position = 7);
           Stdlib.print_endline
             "  merge queue GraphQL fields: OK (required + entry)"
