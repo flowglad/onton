@@ -757,7 +757,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   let forge =
     Github.make ~net ~clock:setup.clock ~token:github_token ~owner:github_owner
-      ~repo:github_repo
+      ~repo:github_repo ~main_branch
   in
   let module Forge = (val forge) in
   let worktree_client =

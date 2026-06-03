@@ -192,6 +192,13 @@ let apply_poll_result t patch_id
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t =
+    Orchestrator.set_merge_queue_required t patch_id
+      poll_result.merge_queue_required
+  in
+  let t =
+    Orchestrator.set_merge_queue_entry t patch_id poll_result.merge_queue_entry
+  in
+  let t =
     let was_draft = (Orchestrator.agent t patch_id).Patch_agent.is_draft in
     let t = Orchestrator.set_is_draft t patch_id poll_result.is_draft in
     if (not was_draft) && poll_result.is_draft then log "Marked as draft"
@@ -566,6 +573,10 @@ let automerge_max_failures = 3
     default prevents a future caller from forgetting the inflight guard. *)
 let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
     ~main_branch =
+  let enqueued_and_still_approved =
+    Option.is_some agent.Patch_agent.merge_queue_entry
+    && Patch_agent.is_approved agent ~main_branch
+  in
   (ignore_inflight || not agent.Patch_agent.automerge_inflight)
   (* [not merged] looks redundant with [reconcile_automerge]'s early-return
      on [agent.merged], but it is specifically load-bearing for the executor
@@ -577,15 +588,46 @@ let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
   && (not agent.Patch_agent.merged)
   && agent.Patch_agent.automerge_enabled
   && Patch_agent.is_approved agent ~main_branch
+  && (not enqueued_and_still_approved)
   && agent.Patch_agent.checks_passing
   && List.is_empty agent.Patch_agent.queue
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
 
+type merge_action = Direct_merge | Enqueue | Dequeue of string
+[@@deriving show, eq, sexp_of]
+
 type automerge_decision = {
   merge_patch_id : Patch_id.t;
   merge_pr_number : Pr_number.t;
+  action : merge_action;
 }
 [@@deriving show, eq, sexp_of]
+
+let merge_queue_entry_unmergeable (entry : Pr_state.merge_queue_entry) =
+  Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable
+
+let automerge_action (agent : Patch_agent.t) ~main_branch =
+  let approved = Patch_agent.is_approved agent ~main_branch in
+  match (agent.Patch_agent.merge_queue_required, agent.merge_queue_entry) with
+  | true, Some entry when merge_queue_entry_unmergeable entry -> None
+  | true, Some entry when not approved -> Some (Dequeue entry.id)
+  | true, Some _ -> None
+  | true, None when approved -> Some Enqueue
+  | true, None -> None
+  | false, Some entry when not approved -> Some (Dequeue entry.id)
+  | false, Some _ -> None
+  | false, None -> Some Direct_merge
+
+let apply_automerge_failure_state t ~now patch_id =
+  let t = Orchestrator.set_automerge_inflight t patch_id false in
+  let t = Orchestrator.increment_automerge_failure_count t patch_id in
+  let agent = Orchestrator.agent t patch_id in
+  if agent.Patch_agent.automerge_failure_count >= automerge_max_failures then
+    Orchestrator.clear_automerge_deadline t patch_id
+  else if not agent.Patch_agent.automerge_enabled then t
+  else
+    Orchestrator.set_automerge_deadline t patch_id
+      (now +. automerge_idle_timeout)
 
 (** Reconcile the automerge deadline for every agent. Returns the updated
     orchestrator and the list of patches whose deadline has now elapsed (the
@@ -640,7 +682,25 @@ let reconcile_automerge t ~now =
            so both guards must stay in sync. *)
         (t, decisions)
       else
-        let candidate = is_automerge_candidate agent ~main_branch in
+        let unmergeable_entry =
+          Option.exists agent.Patch_agent.merge_queue_entry
+            ~f:merge_queue_entry_unmergeable
+        in
+        let approved = Patch_agent.is_approved agent ~main_branch in
+        let cleanup_candidate =
+          Option.is_some agent.Patch_agent.merge_queue_entry && not approved
+        in
+        let candidate =
+          if unmergeable_entry then
+            agent.Patch_agent.automerge_enabled
+            && agent.Patch_agent.automerge_failure_count
+               < automerge_max_failures
+          else if cleanup_candidate then
+            agent.Patch_agent.automerge_enabled
+            && agent.Patch_agent.automerge_failure_count
+               < automerge_max_failures
+          else is_automerge_candidate agent ~main_branch
+        in
         match (candidate, agent.Patch_agent.automerge_deadline) with
         | false, Some _ ->
             (* Feedback arrived, lost approval, CI flipped, or failure cap
@@ -654,11 +714,25 @@ let reconcile_automerge t ~now =
         | true, Some deadline ->
             if Float.( >= ) now deadline then
               match Patch_agent.pr_number agent with
-              | Some pr_number when Patch_agent.is_pr_present agent ->
-                  let t = Orchestrator.set_automerge_inflight t patch_id true in
-                  ( t,
-                    { merge_patch_id = patch_id; merge_pr_number = pr_number }
-                    :: decisions )
+              | Some pr_number when Patch_agent.is_pr_present agent -> (
+                  if unmergeable_entry then
+                    (apply_automerge_failure_state t ~now patch_id, decisions)
+                  else
+                    match automerge_action agent ~main_branch with
+                    | None ->
+                        ( Orchestrator.clear_automerge_deadline t patch_id,
+                          decisions )
+                    | Some action ->
+                        let t =
+                          Orchestrator.set_automerge_inflight t patch_id true
+                        in
+                        ( t,
+                          {
+                            merge_patch_id = patch_id;
+                            merge_pr_number = pr_number;
+                            action;
+                          }
+                          :: decisions ))
               | Some _ | None ->
                   (* Unreachable today because [is_automerge_candidate]
                      requires [is_approved] which requires [has_pr]. Defensive
@@ -690,22 +764,7 @@ let apply_automerge_success t patch_id =
       in flight): writing a deadline would contradict the disabled state and
       stick around until the next tick cleared it. *)
 let apply_automerge_failure t ~now patch_id =
-  let t = Orchestrator.set_automerge_inflight t patch_id false in
-  let t = Orchestrator.increment_automerge_failure_count t patch_id in
-  let agent = Orchestrator.agent t patch_id in
-  if agent.Patch_agent.automerge_failure_count >= automerge_max_failures then
-    (* Clear any existing deadline so the persisted snapshot unambiguously
-       reflects the terminal state; the next reconcile would clear it anyway
-       via the non-candidate path, but leaving it in place between these two
-       events is misleading in traces and on-disk state. *)
-    Orchestrator.clear_automerge_deadline t patch_id
-  else if not agent.Patch_agent.automerge_enabled then
-    (* User disabled automerge while the call was in flight — toggling off
-       already cleared the deadline, so nothing more to do here. *)
-    t
-  else
-    Orchestrator.set_automerge_deadline t patch_id
-      (now +. automerge_idle_timeout)
+  apply_automerge_failure_state t ~now patch_id
 
 let make_orchestrator ~patch_id ~main_branch =
   let patch =
@@ -1093,6 +1152,8 @@ let%test "no merge-conflict re-enqueue after noop" =
         is_draft = false;
         has_conflict = true;
         merge_ready = false;
+        merge_queue_required = false;
+        merge_queue_entry = None;
         checks_passing = false;
         ci_checks = [];
         merge_commit_sha = None;

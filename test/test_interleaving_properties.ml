@@ -397,6 +397,8 @@ let make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
       merge_ready =
         (not has_conflict) && (not merged) && (not ci_failed)
         && not review_comments;
+      merge_queue_required = false;
+      merge_queue_entry = None;
       checks_passing;
       ci_checks = [];
       merge_commit_sha = None;

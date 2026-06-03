@@ -117,14 +117,24 @@ let show_error = function
   | Graphql_error msgs ->
       Printf.sprintf "GitHub GraphQL error: %s" (String.concat ~sep:"; " msgs)
 
-type t = { token : string; owner : string; repo : string }
+type t = {
+  token : string;
+  owner : string;
+  repo : string;
+  main_branch : Types.Branch.t;
+}
 
-let create ~token ~owner ~repo = { token; owner; repo }
+let create ~token ~owner ~repo ~main_branch =
+  { token; owner; repo; main_branch }
 
 let graphql_query =
-  {|query($owner: String!, $repo: String!, $number: Int!) {
+  {|query($owner: String!, $repo: String!, $number: Int!, $mergeQueueBranch: String) {
   repository(owner: $owner, name: $repo) {
+    mergeQueue(branch: $mergeQueueBranch) {
+      id
+    }
     pullRequest(number: $number) {
+      id
       state
       isDraft
       mergeable
@@ -133,6 +143,11 @@ let graphql_query =
       headRefOid
       baseRefName
       mergeCommit { oid }
+      mergeQueueEntry {
+        id
+        state
+        position
+      }
       headRepositoryOwner { login }
       commits(last: 1) {
         nodes {
@@ -195,6 +210,7 @@ let build_request_body t (pr : Types.Pr_number.t) =
         ("owner", `String t.owner);
         ("repo", `String t.repo);
         ("number", `Int (Types.Pr_number.to_int pr));
+        ("mergeQueueBranch", `String (Types.Branch.to_string t.main_branch));
       ]
   in
   `Assoc [ ("query", `String graphql_query); ("variables", variables) ]
@@ -204,6 +220,14 @@ let parse_merge_state = function
   | "MERGEABLE" -> Pr_state.Mergeable
   | "CONFLICTING" -> Pr_state.Conflicting
   | _ -> Pr_state.Unknown
+
+let parse_merge_queue_entry_state = function
+  | "QUEUED" -> Pr_state.Mq_queued
+  | "AWAITING_CHECKS" -> Pr_state.Mq_awaiting_checks
+  | "MERGEABLE" -> Pr_state.Mq_mergeable
+  | "UNMERGEABLE" -> Pr_state.Mq_unmergeable
+  | "LOCKED" -> Pr_state.Mq_locked
+  | _ -> Pr_state.Mq_queued
 
 (* Typed model of the GraphQL PR response. Every nullable scalar/object is an
    [option] ([@yojson.default None] tolerates both a missing key and an explicit
@@ -297,7 +321,30 @@ type review_threads = { nodes : review_thread list [@yojson.default []] }
 type repo_owner = { login : string option [@yojson.default None] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
+type merge_queue = Merge_queue_present
+
+let merge_queue_of_yojson _ = Merge_queue_present
+
+type merge_queue_entry_node = {
+  id : string option; [@yojson.default None]
+  state : string option; [@yojson.default None]
+  position : int option; [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+let merge_queue_entry_of_node (node : merge_queue_entry_node) =
+  match node.id with
+  | None -> None
+  | Some id ->
+      let state =
+        Option.value_map node.state ~default:Pr_state.Mq_queued
+          ~f:parse_merge_queue_entry_state
+      in
+      let position = Option.value node.position ~default:0 in
+      Some { Pr_state.id; state; position }
+
 type pull_request = {
+  id : string option; [@yojson.default None]
   state : string;
   mergeable : string option; [@yojson.default None]
   is_draft : bool; [@key "isDraft"] [@yojson.default false]
@@ -312,10 +359,13 @@ type pull_request = {
       [@key "reviewThreads"] [@yojson.default { nodes = [] }]
   head_repository_owner : repo_owner option;
       [@key "headRepositoryOwner"] [@yojson.default None]
+  merge_queue_entry : merge_queue_entry_node option;
+      [@key "mergeQueueEntry"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type repository = {
+  merge_queue : merge_queue option; [@key "mergeQueue"] [@yojson.default None]
   pull_request : pull_request option; [@key "pullRequest"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
@@ -382,7 +432,8 @@ let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
     outdated;
   }
 
-let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
+let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
+    Pr_state.t =
   let status =
     match pr.state with
     | "MERGED" -> Pr_state.Merged
@@ -438,6 +489,9 @@ let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
     | Some head_owner -> not (String.equal head_owner owner)
     | None -> false
   in
+  let merge_queue_entry =
+    Option.bind pr.merge_queue_entry ~f:merge_queue_entry_of_node
+  in
   {
     Pr_state.status;
     is_draft = pr.is_draft;
@@ -452,6 +506,9 @@ let pr_state_of_pull_request ~owner (pr : pull_request) : Pr_state.t =
     (* GitHub does not produce review-service findings; the poller in
        [bin/main.ml] augments this list from configured review-service
        backends. *)
+    node_id = pr.id;
+    merge_queue_required;
+    merge_queue_entry;
     head_branch = Option.map pr.head_ref_name ~f:Types.Branch.of_string;
     head_oid = pr.head_ref_oid;
     merge_commit_sha = Option.bind pr.merge_commit ~f:(fun o -> o.oid);
@@ -479,14 +536,128 @@ let parse_response_json ~owner json =
       | Error msg -> Error (Json_parse_error msg)
       | Ok { data = None }
       | Ok { data = Some { repository = None } }
-      | Ok { data = Some { repository = Some { pull_request = None } } } ->
+      | Ok { data = Some { repository = Some { pull_request = None; _ } } } ->
           Error (Json_parse_error "pullRequest not found")
-      | Ok { data = Some { repository = Some { pull_request = Some pr } } } ->
-          Ok (pr_state_of_pull_request ~owner pr))
+      | Ok { data = Some { repository = Some repo } } -> (
+          let merge_queue_required = Option.is_some repo.merge_queue in
+          match repo.pull_request with
+          | None -> Error (Json_parse_error "pullRequest not found")
+          | Some pr ->
+              Ok (pr_state_of_pull_request ~owner ~merge_queue_required pr)))
 
 let parse_response ~owner body =
   try parse_response_json ~owner (Yojson.Safe.from_string body)
   with Yojson.Json_error msg -> Error (Json_parse_error msg)
+
+let graphql_errors json =
+  match Json.field "errors" json with
+  | None -> None
+  | Some errors_json -> (
+      match Json.list errors_json with
+      | Some [] -> None
+      | Some errors ->
+          Some (List.filter_map errors ~f:(Json.string_field "message"))
+      | None -> Some [])
+
+let merge_queue_entry_field ~context json =
+  match json with
+  | None -> Error (Json_parse_error (context ^ " missing mergeQueueEntry"))
+  | Some entry_json -> (
+      match Json.try_of_yojson merge_queue_entry_node_of_yojson entry_json with
+      | Error msg -> Error (Json_parse_error msg)
+      | Ok entry_node -> (
+          match merge_queue_entry_of_node entry_node with
+          | Some entry -> Ok entry
+          | None ->
+              Error (Json_parse_error (context ^ " mergeQueueEntry missing id"))
+          ))
+
+let parse_enqueue_response_json json =
+  match graphql_errors json with
+  | Some msgs -> Error (Graphql_error msgs)
+  | None ->
+      let entry_json =
+        Json.field "data" json
+        |> Option.bind ~f:(Json.field "enqueuePullRequest")
+        |> Option.bind ~f:(Json.field "mergeQueueEntry")
+      in
+      merge_queue_entry_field ~context:"enqueuePullRequest" entry_json
+
+let parse_enqueue_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> parse_enqueue_response_json json
+
+let parse_dequeue_response_json json =
+  match graphql_errors json with
+  | Some msgs -> Error (Graphql_error msgs)
+  | None -> (
+      match
+        Json.field "data" json
+        |> Option.bind ~f:(Json.field "dequeuePullRequest")
+      with
+      | Some _ -> Ok ()
+      | None ->
+          Error (Json_parse_error "dequeuePullRequest response missing payload")
+      )
+
+let parse_dequeue_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> parse_dequeue_response_json json
+
+type enqueue_pr_info_pull_request = {
+  enqueue_info_id : string option; [@key "id"] [@yojson.default None]
+  enqueue_info_head_ref_oid : string option;
+      [@key "headRefOid"] [@yojson.default None]
+  enqueue_info_merge_queue_entry : merge_queue_entry_node option;
+      [@key "mergeQueueEntry"] [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type enqueue_pr_info = {
+  node_id : string;
+  head_oid : string;
+  merge_queue_entry : Pr_state.merge_queue_entry option;
+}
+
+let parse_enqueue_pr_info_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> (
+      match graphql_errors json with
+      | Some msgs -> Error (Graphql_error msgs)
+      | None -> (
+          let pr_json =
+            Json.field "data" json
+            |> Option.bind ~f:(Json.field "repository")
+            |> Option.bind ~f:(Json.field "pullRequest")
+          in
+          match pr_json with
+          | None -> Error (Json_parse_error "pullRequest not found")
+          | Some pr_json -> (
+              match
+                Json.try_of_yojson enqueue_pr_info_pull_request_of_yojson
+                  pr_json
+              with
+              | Error msg -> Error (Json_parse_error msg)
+              | Ok pr -> (
+                  match (pr.enqueue_info_id, pr.enqueue_info_head_ref_oid) with
+                  | Some node_id, Some head_oid ->
+                      Ok
+                        {
+                          node_id;
+                          head_oid;
+                          merge_queue_entry =
+                            Option.bind pr.enqueue_info_merge_queue_entry
+                              ~f:merge_queue_entry_of_node;
+                        }
+                  | None, _ ->
+                      Error (Json_parse_error "pullRequest response missing id")
+                  | _, None ->
+                      Error
+                        (Json_parse_error
+                           "pullRequest response missing headRefOid")))))
 
 let https_config () =
   match Ca_certs.authenticator () with
@@ -597,6 +768,37 @@ let pr_state ~net ~clock ?timeout t pr =
     request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
   with
   | Ok resp_str -> parse_response ~owner:t.owner resp_str
+  | Error _ as e -> e
+
+let enqueue_info_query =
+  {|query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      id
+      headRefOid
+      mergeQueueEntry { id state position }
+    }
+  }
+}|}
+
+let build_enqueue_info_request_body t (pr : Types.Pr_number.t) =
+  let variables =
+    `Assoc
+      [
+        ("owner", `String t.owner);
+        ("repo", `String t.repo);
+        ("number", `Int (Types.Pr_number.to_int pr));
+      ]
+  in
+  `Assoc [ ("query", `String enqueue_info_query); ("variables", variables) ]
+  |> Yojson.Safe.to_string
+
+let enqueue_pr_info ~net ~clock ?timeout t pr =
+  let body = build_enqueue_info_request_body t pr in
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
+  with
+  | Ok resp_str -> parse_enqueue_pr_info_response resp_str
   | Error _ as e -> e
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
@@ -775,6 +977,10 @@ type merge_result =
           the patch merged, but also don't count as a failure — the poller will
           observe the real PR state next cycle. *)
 
+type enqueue_result =
+  | Enqueued of Pr_state.merge_queue_entry
+  | Already_enqueued of Pr_state.merge_queue_entry
+
 (** Interpret a 2xx body from [PUT /pulls/:n/merge].
     - Valid JSON with [merged = true] → [Merge_succeeded].
     - Valid JSON with [merged = false] → [Merge_queued msg].
@@ -816,6 +1022,66 @@ let merge_pr ~net ~clock ?timeout t ~pr_number ~merge_method =
   in
   match request ~net ~clock ?timeout t ~meth:`PUT ~path ~body:req_body () with
   | Ok body -> Ok (interpret_merge_response body)
+  | Error _ as e -> e
+
+let enqueue_pull_request_mutation =
+  {|mutation($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) {
+  enqueuePullRequest(input: {
+    pullRequestId: $pullRequestId,
+    expectedHeadOid: $expectedHeadOid
+  }) {
+    mergeQueueEntry { id state position }
+  }
+}|}
+
+let dequeue_pull_request_mutation =
+  {|mutation($id: ID!) {
+  dequeuePullRequest(input: { id: $id }) {
+    clientMutationId
+  }
+}|}
+
+let enqueue_pr ~net ~clock ?timeout t ~pr_number =
+  Result.bind (enqueue_pr_info ~net ~clock ?timeout t pr_number) ~f:(fun info ->
+      match info.merge_queue_entry with
+      | Some entry -> Ok (Already_enqueued entry)
+      | None -> (
+          let req_body =
+            `Assoc
+              [
+                ("query", `String enqueue_pull_request_mutation);
+                ( "variables",
+                  `Assoc
+                    [
+                      ("pullRequestId", `String info.node_id);
+                      ("expectedHeadOid", `String info.head_oid);
+                    ] );
+              ]
+            |> Yojson.Safe.to_string
+          in
+          match
+            request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql"
+              ~body:req_body ()
+          with
+          | Error _ as e -> e
+          | Ok resp ->
+              Result.map (parse_enqueue_response resp) ~f:(fun entry ->
+                  Enqueued entry)))
+
+let dequeue_pr ~net ~clock ?timeout t ~entry_id =
+  let req_body =
+    `Assoc
+      [
+        ("query", `String dequeue_pull_request_mutation);
+        ("variables", `Assoc [ ("id", `String entry_id) ]);
+      ]
+    |> Yojson.Safe.to_string
+  in
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body:req_body
+      ()
+  with
+  | Ok resp -> parse_dequeue_response resp
   | Error _ as e -> e
 
 (* Which merge methods the repository permits. GitHub rejects a [PUT
@@ -881,6 +1147,13 @@ let get_repo_merge_methods ~net ~clock ?timeout t :
 let is_method_not_allowed = function
   | Http_error { status = 405; body; _ } ->
       response_error_message_contains body ~substring:"not allowed"
+  | Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
+  | Transport_error _ ->
+      false
+
+let is_merge_queue_required_error = function
+  | Http_error { status = 405; body; _ } ->
+      response_error_message_contains body ~substring:"merge queue"
   | Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
   | Transport_error _ ->
       false
@@ -1062,9 +1335,9 @@ let%expect_test "show_error transport error includes endpoint" =
   Stdlib.print_endline (show_error err);
   [%expect {| GitHub API POST /graphql → transport error: connection refused |}]
 
-let make ~net ~clock ~token ~owner ~repo :
+let make ~net ~clock ~token ~owner ~repo ~main_branch :
     (module Forge.S with type error = error) =
-  let client = create ~token ~owner ~repo in
+  let client = create ~token ~owner ~repo ~main_branch in
   (* Cache the repo's allowed merge methods across calls; populated lazily on
      the first merge and narrowed if a 405 later reveals a method is disabled. *)
   let merge_methods_cache = ref None in
@@ -1120,6 +1393,10 @@ let make ~net ~clock ~token ~owner ~repo :
       | Merge_queued of string
       | Merge_unconfirmed
 
+    type nonrec enqueue_result = enqueue_result =
+      | Enqueued of Pr_state.merge_queue_entry
+      | Already_enqueued of Pr_state.merge_queue_entry
+
     let pr_state pr_number = pr_state ~net ~clock client pr_number
 
     let list_prs ~branch ?base ~state () =
@@ -1141,6 +1418,8 @@ let make ~net ~clock ~token ~owner ~repo :
       set_draft ~net ~clock client ~pr_number ~draft
 
     let merge_pr ~pr_number = merge_pr_choosing ~pr_number
+    let enqueue_pr ~pr_number = enqueue_pr ~net ~clock client ~pr_number
+    let dequeue_pr ~entry_id = dequeue_pr ~net ~clock client ~entry_id
     let check_repo_access () = check_repo_access_internal ~net ~clock client
   end in
   (module M)

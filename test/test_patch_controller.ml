@@ -50,25 +50,28 @@ let make_orch patch agent =
     ~outbox:(Map.empty (module Message_id))
     ~main_branch:main ()
 
-let make_agent ~patch_id ~branch ~pr_status ~merged ~queue ~base_branch
-    ~is_draft ~pr_body_delivered ~start_attempts_without_pr =
+let make_agent ?(merge_ready = false) ?(merge_queue_required = false)
+    ?(merge_queue_entry = None) ?(checks_passing = false)
+    ?(automerge_enabled = false) ?automerge_deadline
+    ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
+    ~base_branch ~is_draft ~pr_body_delivered ~start_attempts_without_pr () =
   Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-    ~merge_ready:false ~is_draft ~pr_body_delivered
+    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready
+    ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
     ~push_failure_count:0 ~branch_rebased_onto:None
     ~branch_rebased_onto_sha:None ~merge_commit_sha:None
     ~base_contains_merged_siblings:true
-    ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing:false
+    ~anchor_history:Onton_core.Anchor_history.empty ~checks_passing
     ~current_op:None ~current_op_state:Patch_agent.Queued
     ~current_message_id:None ~generation:0 ~worktree_path:None
-    ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
-    ~automerge_deadline:None ~automerge_inflight:false
-    ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+    ~branch_blocked:false ~llm_session_id:None ~automerge_enabled
+    ~automerge_deadline ~automerge_inflight:false ~automerge_failure_count
+    ~delivered_ci_run_ids:[]
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -124,7 +127,7 @@ let () =
       let patch = make_patch pid branch in
       let agent =
         make_agent ~patch_id:pid ~branch ~pr_status ~merged ~queue ~base_branch
-          ~is_draft ~pr_body_delivered ~start_attempts_without_pr
+          ~is_draft ~pr_body_delivered ~start_attempts_without_pr ()
       in
       return (patch, make_gameplan patch, make_orch patch agent))
   in
@@ -189,7 +192,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let orch1, _effects1 =
@@ -233,7 +236,8 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -283,7 +287,8 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:true ~pr_body_delivered:true
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -316,7 +321,7 @@ let () =
         let agent =
           make_agent ~patch_id:pid ~branch ~pr_status:Patch_pr_status.Absent
             ~merged:false ~queue:[] ~base_branch:None ~is_draft:false
-            ~pr_body_delivered:false ~start_attempts_without_pr:2
+            ~pr_body_delivered:false ~start_attempts_without_pr:2 ()
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -348,7 +353,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let orch, effects =
@@ -379,7 +384,7 @@ let () =
         let agent =
           make_agent ~patch_id:pid ~branch ~pr_status:Patch_pr_status.Absent
             ~merged:false ~queue:[] ~base_branch:None ~is_draft:false
-            ~pr_body_delivered:false ~start_attempts_without_pr:2
+            ~pr_body_delivered:false ~start_attempts_without_pr:2 ()
         in
         let orch = make_orch patch agent in
         let orch, effects =
@@ -422,12 +427,13 @@ let () =
             ~notified_base_branch:(Some branch) ~ci_failure_count:3
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true
-            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~context_exhaustion_count:0 ~push_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-            ~merge_commit_sha:None ~base_contains_merged_siblings:true
+            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
+            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~context_exhaustion_count:0
+            ~push_failure_count:0 ~branch_rebased_onto:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -467,12 +473,13 @@ let () =
             ~notified_base_branch:(Some branch) ~ci_failure_count:3
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~is_draft:false ~pr_body_delivered:true
-            ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
-            ~conflict_noop_count:0 ~no_commits_push_count:0
-            ~context_exhaustion_count:0 ~push_failure_count:0
-            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-            ~merge_commit_sha:None ~base_contains_merged_siblings:true
+            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
+            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~context_exhaustion_count:0
+            ~push_failure_count:0 ~branch_rebased_onto:None
+            ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+            ~base_contains_merged_siblings:true
             ~anchor_history:Onton_core.Anchor_history.empty
             ~checks_passing:false ~current_op:None
             ~current_op_state:Patch_agent.Queued ~current_message_id:None
@@ -512,7 +519,8 @@ let () =
             ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:false
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -559,7 +567,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0 ()
           |> fun agent -> Patch_agent.set_branch_rebased_onto agent main
         in
         let orch = make_orch patch agent in
@@ -572,6 +580,8 @@ let () =
               is_draft = true;
               has_conflict = false;
               merge_ready = false;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               checks_passing = true;
               ci_checks = [];
               merge_commit_sha = None;
@@ -602,7 +612,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let poll =
@@ -614,6 +624,8 @@ let () =
               is_draft = true;
               has_conflict = false;
               merge_ready = false;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               checks_passing = false;
               ci_checks = [];
               merge_commit_sha = None;
@@ -653,7 +665,8 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -677,6 +690,8 @@ let () =
               is_draft = false;
               has_conflict = false;
               merge_ready = false;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               checks_passing = false;
               ci_checks = [];
               merge_commit_sha = None;
@@ -719,7 +734,8 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -743,6 +759,8 @@ let () =
               is_draft = false;
               has_conflict = false;
               merge_ready = false;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               checks_passing = false;
               ci_checks = [ check ];
               merge_commit_sha = None;
@@ -768,7 +786,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let poll =
@@ -780,6 +798,8 @@ let () =
               is_draft = true;
               has_conflict = false;
               merge_ready;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               checks_passing;
               ci_checks = [];
               merge_commit_sha = None;
@@ -808,7 +828,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:None ~is_draft:true
-            ~pr_body_delivered:false ~start_attempts_without_pr:0
+            ~pr_body_delivered:false ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let poll =
@@ -820,6 +840,8 @@ let () =
               is_draft = true;
               has_conflict = false;
               merge_ready = false;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               checks_passing = false;
               ci_checks = [];
               merge_commit_sha = None;
@@ -866,7 +888,8 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:true ~pr_body_delivered:false
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:true ~pr_body_delivered:false
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -947,7 +970,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
-            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let _orch', effects =
@@ -977,7 +1000,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:true
-            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let _orch', effects =
@@ -1000,7 +1023,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:true
-            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let orch1, effects1 =
@@ -1028,7 +1051,7 @@ let () =
           make_agent ~patch_id:pid ~branch
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
             ~merged:false ~queue:[] ~base_branch:(Some branch) ~is_draft:false
-            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~pr_body_delivered:true ~start_attempts_without_pr:0 ()
         in
         let orch = make_orch patch agent in
         let obs =
@@ -1043,6 +1066,8 @@ let () =
                     is_draft = false;
                     has_conflict = false;
                     merge_ready = false;
+                    merge_queue_required = false;
+                    merge_queue_entry = None;
                     checks_passing = false;
                     ci_checks = [];
                     merge_commit_sha = None;
@@ -1078,7 +1103,8 @@ let () =
             ~has_conflict:false ~base_branch:None ~notified_base_branch:None
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -1123,7 +1149,8 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~is_draft:false ~pr_body_delivered:true
+            ~merge_ready:false ~merge_queue_required:false
+            ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
             ~context_exhaustion_count:0 ~push_failure_count:0
@@ -1209,6 +1236,8 @@ let () =
               ci_checks = [];
               checks_passing = true;
               merge_ready = false;
+              merge_queue_required = false;
+              merge_queue_entry = None;
               queue = [];
               is_draft = false;
               closed = false;
@@ -1280,8 +1309,162 @@ let () =
                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)))
   in
 
+  let merge_queue_entry ?(state = Pr_state.Mq_queued) ?(position = 1) id =
+    Pr_state.{ id; state; position }
+  in
+
+  let pending_patch_4_automerge_enqueue_action =
+    Test.make
+      ~name:
+        "patch_controller: Patch 4 reconcile chooses Enqueue on queue branch"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-enqueue" in
+        let branch = Branch.of_string "feat/mq-enqueue" in
+        let patch = make_patch pid branch in
+        let pr_number = Pr_number.of_int 401 in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present pr_number) ~merged:false
+            ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:true ~checks_passing:true ~merge_queue_required:true
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        match decisions with
+        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+            Patch_id.equal merge_patch_id pid
+            && Pr_number.equal merge_pr_number pr_number
+            && Patch_controller.equal_merge_action action
+                 Patch_controller.Enqueue
+            && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
+        | _ -> false)
+  in
+
+  let pending_patch_4_automerge_enqueued_idle =
+    Test.make
+      ~name:"patch_controller: Patch 4 enqueued PR yields no merge or enqueue"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-idle" in
+        let branch = Branch.of_string "feat/mq-idle" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 402))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:true ~checks_passing:true ~merge_queue_required:true
+            ~merge_queue_entry:(Some (merge_queue_entry "MQE_idle"))
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        List.is_empty decisions
+        && Option.is_none
+             (Orchestrator.agent orch pid).Patch_agent.automerge_deadline)
+  in
+
+  let pending_patch_4_unapproved_not_enqueued =
+    Test.make
+      ~name:
+        "patch_controller: Patch 4 unapproved queue PR without entry is not \
+         enqueued" QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-unapproved-not-enqueued" in
+        let branch = Branch.of_string "feat/mq-unapproved-not-enqueued" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 405))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~checks_passing:true ~merge_queue_required:true
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        let agent = Orchestrator.agent orch pid in
+        List.is_empty decisions
+        && Option.is_none agent.Patch_agent.automerge_deadline
+        && not agent.Patch_agent.automerge_inflight)
+  in
+
+  let pending_patch_4_automerge_dequeue_on_lost_approval =
+    Test.make
+      ~name:
+        "patch_controller: Patch 4 enqueued PR that lost approval is dequeued"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-dequeue" in
+        let branch = Branch.of_string "feat/mq-dequeue" in
+        let patch = make_patch pid branch in
+        let pr_number = Pr_number.of_int 403 in
+        let entry = merge_queue_entry "MQE_dequeue" in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present pr_number) ~merged:false
+            ~queue:[ Operation_kind.Review_comments ]
+            ~base_branch:(Some main) ~is_draft:false ~pr_body_delivered:true
+            ~start_attempts_without_pr:0 ~merge_ready:false ~checks_passing:true
+            ~merge_queue_required:true ~merge_queue_entry:(Some entry)
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        match decisions with
+        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+            Patch_id.equal merge_patch_id pid
+            && Pr_number.equal merge_pr_number pr_number
+            && Patch_controller.equal_merge_action action
+                 (Patch_controller.Dequeue entry.Pr_state.id)
+            && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
+        | _ -> false)
+  in
+
+  let pending_patch_4_unmergeable_counts_as_failure =
+    Test.make
+      ~name:"patch_controller: Patch 4 UNMERGEABLE entry counts as failure"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-unmergeable" in
+        let branch = Branch.of_string "feat/mq-unmergeable" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 404))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:true ~checks_passing:true ~merge_queue_required:true
+            ~merge_queue_entry:
+              (Some
+                 (merge_queue_entry "MQE_unmergeable"
+                    ~state:Pr_state.Mq_unmergeable))
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        let agent = Orchestrator.agent orch pid in
+        List.is_empty decisions
+        && agent.Patch_agent.automerge_failure_count = 1
+        && (not agent.Patch_agent.automerge_inflight)
+        && Option.is_some agent.Patch_agent.automerge_deadline)
+  in
+
   let suite =
     [
+      pending_patch_4_automerge_enqueue_action;
+      pending_patch_4_automerge_enqueued_idle;
+      pending_patch_4_unapproved_not_enqueued;
+      pending_patch_4_automerge_dequeue_on_lost_approval;
+      pending_patch_4_unmergeable_counts_as_failure;
       prop_missing_adhoc_does_not_crash_reconcile;
       prop_apply_poll_lifts_missing_to_present;
       prop_child_of_missing_parent_not_startable;

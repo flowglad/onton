@@ -65,13 +65,35 @@ type merge_result =
           as non-authoritative: don't mark merged, don't count as failure — the
           poller will observe the real PR state next cycle. *)
 
+type enqueue_result =
+  | Enqueued of Pr_state.merge_queue_entry
+  | Already_enqueued of Pr_state.merge_queue_entry
+
+val parse_enqueue_response :
+  string -> (Pr_state.merge_queue_entry, error) Result.t
+(** Parse an [enqueuePullRequest] GraphQL response body. Pure helper exposed for
+    regression tests. *)
+
+val parse_dequeue_response : string -> (unit, error) Result.t
+(** Parse a [dequeuePullRequest] GraphQL response body. Pure helper exposed for
+    regression tests. *)
+
+val is_method_not_allowed : error -> bool
+(** True only for the REST 405 response GitHub returns when a merge method is
+    disabled for the repository. *)
+
+val is_merge_queue_required_error : error -> bool
+(** True only for the REST 405 response GitHub returns when the branch requires
+    native merge queue use. *)
+
 val make :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->
   token:string ->
   owner:string ->
   repo:string ->
+  main_branch:Types.Branch.t ->
   (module Forge.S with type error = error)
-(** [make ~net ~clock ~token ~owner ~repo] packages a GitHub-backed forge module
-    that closes over the network and time capabilities plus client
+(** [make ~net ~clock ~token ~owner ~repo ~main_branch] packages a GitHub-backed
+    forge module that closes over the network and time capabilities plus client
     configuration. *)

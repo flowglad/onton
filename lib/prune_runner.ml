@@ -78,7 +78,8 @@ let refresh_agents_from_forge ~net ~clock ~(cfg : Project_store.stored_config)
     else
       let module Forge =
         (val Github.make ~net ~clock ~token ~owner:cfg.github_owner
-               ~repo:cfg.github_repo)
+               ~repo:cfg.github_repo
+               ~main_branch:(Types.Branch.of_string cfg.main_branch))
       in
       let results =
         Eio.Fiber.List.map ~max_fibers:16

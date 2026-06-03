@@ -27,6 +27,7 @@ let make_view ~id ~title =
     ci_checks = [];
     recent_stream = [];
     pr_number = None;
+    merge_queue_entry = None;
     pr_missing = false;
     base_branch = None;
     worktree_path = None;
@@ -189,7 +190,27 @@ let test_patches_render_above_activity () =
   | Some p, Some a -> assert (p < a)
   | _ -> assert false
 
+let test_patch_5_merge_queue_badge () =
+  let pv =
+    {
+      (make_view ~id:"1" ~title:"queued patch") with
+      Tui.status = Tui.Approved_idle;
+      Tui.pr_number = Some (Pr_number.of_int 42);
+      Tui.merge_queue_entry =
+        Some
+          {
+            Onton_core.Pr_state.id = "mqe_123";
+            state = Onton_core.Pr_state.Mq_awaiting_checks;
+            position = 3;
+          };
+    }
+  in
+  let frame = render [ pv ] in
+  let lines = plain_lines frame in
+  assert (line_contains lines "mq-awaiting-checks #3")
+
 let () =
+  test_patch_5_merge_queue_badge ();
   test_header_has_project_and_backend ();
   test_header_truncates_when_too_narrow ();
   test_no_summary_row ();

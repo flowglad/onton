@@ -34,6 +34,8 @@ type t = private {
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
   merge_ready : bool;
+  merge_queue_required : bool;
+  merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_commit_sha : string option;
       (** Squash/merge commit SHA once this patch's PR is merged (GitHub
           [mergeCommit.oid]). Persisted, because merged agents are not
@@ -286,6 +288,12 @@ val base_branch_changed : t -> bool
 val set_merge_ready : t -> bool -> t
 (** Set the merge_ready flag from GitHub mergeStateStatus. *)
 
+val set_merge_queue_required : t -> bool -> t
+(** Set whether the patch's target branch is governed by a merge queue. *)
+
+val set_merge_queue_entry : t -> Pr_state.merge_queue_entry option -> t
+(** Set the current merge-queue entry, if any. *)
+
 val set_merge_commit_sha : t -> string option -> t
 (** Record the squash/merge commit SHA (GitHub [mergeCommit.oid]) when the PR is
     observed merged. *)
@@ -531,6 +539,8 @@ val restore :
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
+  merge_queue_required:bool ->
+  merge_queue_entry:Pr_state.merge_queue_entry option ->
   merge_commit_sha:string option ->
   base_contains_merged_siblings:bool ->
   is_draft:bool ->

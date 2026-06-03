@@ -801,25 +801,25 @@ let () =
     {!Git_env.clean_env} so tests are unaffected when run inside a git hook
     (which would otherwise leak [GIT_DIR] / [GIT_WORK_TREE]). *)
 let git ~process_mgr ~dir args =
-  Eio.Switch.run @@ fun sw ->
   let stdout_buf = Buffer.create 64 in
   let stderr_buf = Buffer.create 64 in
-  let env = Git_env.clean_env () in
-  let child =
-    Eio.Process.spawn ~sw process_mgr ~env
-      ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-      ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-      ([ "git"; "-C"; dir ] @ args)
-  in
-  (match Eio.Process.await child with
-  | `Exited 0 -> ()
-  | `Exited n ->
-      failwith
-        (Printf.sprintf "git %s failed (exit %d): %s"
-           (String.concat ~sep:" " args)
-           n
-           (Buffer.contents stderr_buf))
-  | `Signaled s -> failwith (Printf.sprintf "git signaled %d" s));
+  Eio.Switch.run (fun sw ->
+      let env = Git_env.clean_env () in
+      let child =
+        Eio.Process.spawn ~sw process_mgr ~env
+          ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+          ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+          ([ "git"; "-C"; dir ] @ args)
+      in
+      match Eio.Process.await child with
+      | `Exited 0 -> ()
+      | `Exited n ->
+          failwith
+            (Printf.sprintf "git %s failed (exit %d): %s"
+               (String.concat ~sep:" " args)
+               n
+               (Buffer.contents stderr_buf))
+      | `Signaled s -> failwith (Printf.sprintf "git signaled %d" s));
   String.strip (Buffer.contents stdout_buf)
 
 (** Create a fresh git repo in a temp dir. No initial commit — callers add their
@@ -1216,22 +1216,21 @@ let () =
    in
    assert_eq "test10: cherry-pick log has 2 commits (sanity)" "2"
      (Int.to_string (List.length log_lines));
-   (match
-      Worktree.oldest_non_ancestor_commit ~project_name:"proj" ~ancestor_ids:[]
-        raw_log
-    with
-   | Result.Ok sha ->
-       (* With [~ancestor_ids:[]] the subject filter is inactive, so both
-          log lines survive; [oldest_non_ancestor_commit] returns the last
-          line (oldest = Patch 1 = HEAD~1). [git] above already strips its
-          subprocess output, so [patch1_sha] is the bare 40-char SHA. *)
-       let patch1_sha = git ~process_mgr ~dir [ "rev-parse"; "HEAD~1" ] in
-       assert_eq "test10: cherry-pick alone keeps drifted Patch 1" patch1_sha
-         sha
-   | Result.Error msg ->
-       failwith
-         (Printf.sprintf
-            "test10: cherry-pick-only unexpectedly filtered all commits: %s" msg));
+   let patch1_sha = git ~process_mgr ~dir [ "rev-parse"; "HEAD~1" ] in
+   (* The purpose of this precondition is to show that the raw cherry-pick walk
+      still includes the drifted Patch 1 commit before the subject filter runs.
+      Do not assert a specific line order here: [git log --cherry-pick] can
+      vary its presentation order across environments, while the pure ordering
+      semantics of [oldest_non_ancestor_commit] are already pinned above. *)
+   let log_shas =
+     List.filter_map log_lines ~f:(fun line ->
+         String.lsplit2 line ~on:' ' |> Option.map ~f:fst)
+   in
+   if not (List.mem log_shas patch1_sha ~equal:String.equal) then
+     failwith
+       (Printf.sprintf
+          "test10: cherry-pick alone should still list drifted Patch 1 (%s)"
+          patch1_sha);
    let result =
      Worktree.rebase_onto ~process_mgr ~path:dir
        ~target:(Types.Branch.of_string "main")

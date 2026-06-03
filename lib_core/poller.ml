@@ -9,6 +9,8 @@ type t = {
   is_draft : bool;
   has_conflict : bool;
   merge_ready : bool;
+  merge_queue_required : bool;
+  merge_queue_entry : Pr_state.merge_queue_entry option; [@yojson.option]
   checks_passing : bool;
   ci_checks : Types.Ci_check.t list;
   merge_commit_sha : string option; [@yojson.option]
@@ -47,6 +49,8 @@ let poll ~was_merged (pr : Pr_state.t) =
     is_draft = Pr_state.is_draft pr;
     has_conflict = Pr_state.has_conflict pr;
     merge_ready = Pr_state.merge_ready pr;
+    merge_queue_required = Pr_state.requires_merge_queue pr;
+    merge_queue_entry = pr.Pr_state.merge_queue_entry;
     checks_passing = Pr_state.checks_passing pr;
     ci_checks = pr.Pr_state.ci_checks;
     merge_commit_sha = pr.Pr_state.merge_commit_sha;
