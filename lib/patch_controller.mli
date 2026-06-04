@@ -145,17 +145,17 @@ val is_automerge_candidate :
 
 val automerge_transient_hold : Patch_agent.t -> main_branch:Branch.t -> bool
 (** [true] when a direct-merge patch has lost [merge_ready] *only* because
-    GitHub is transiently recomputing mergeability
-    ([mergeStateStatus = UNKNOWN]) while every other automerge precondition
+    GitHub is transiently recomputing mergeability ([mergeability_unknown], i.e.
+    [Pr_state.merge_state = Unknown]) while every other automerge precondition
     still holds. This is the benign flap a sibling merge causes: advancing the
     base invalidates mergeability on every other open PR at once, so they read
-    [UNKNOWN] for a poll or two before settling back to [CLEAN].
+    [Unknown] for a poll or two before settling back to [Mergeable].
     [reconcile_automerge] preserves the existing deadline in this state instead
     of clearing it, so the idle window measures real elapsed time rather than
     restarting on every sibling merge. Scoped to the direct-merge path
-    ([merge_queue_entry = None]) and to [UNKNOWN] alone — a real
-    [BLOCKED]/[DIRTY]/[BEHIND], failing checks, queued feedback, or a hit
-    failure cap all fall through to the normal clear. *)
+    ([merge_queue_entry = None]) and to [Unknown] alone — a conflict, failing
+    checks, queued feedback, or a hit failure cap all fall through to the normal
+    clear. *)
 
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list

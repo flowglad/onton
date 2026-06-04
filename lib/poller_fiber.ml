@@ -182,6 +182,45 @@ struct
       Eio.Mutex.use_rw ~protect:true vanish_logged_mutex (fun () ->
           Stdlib.Hashtbl.remove vanish_logged patch_id)
     in
+    (* Dedup for the merge-readiness divergence diagnostic: log once per distinct
+       (derived_ready, github_status) value, then suppress until it changes or
+       clears. A persistent divergence (e.g. a stale BLOCKED over a ready PR)
+       would otherwise spam the activity log every poll cycle. The divergence
+       itself is computed purely in [Pr_state.merge_ready_divergence_of]; this is
+       only effect (log-emission) management. *)
+    let divergence_logged : (Patch_id.t, string) Stdlib.Hashtbl.t =
+      Stdlib.Hashtbl.create 16
+    in
+    let divergence_logged_mutex = Eio.Mutex.create () in
+    let log_divergence_if_new ~patch_id
+        (divergence : Pr_state.merge_ready_divergence option) =
+      match divergence with
+      | None ->
+          Eio.Mutex.use_rw ~protect:true divergence_logged_mutex (fun () ->
+              Stdlib.Hashtbl.remove divergence_logged patch_id)
+      | Some d ->
+          let key =
+            Printf.sprintf "%b:%s" d.Pr_state.derived_merge_ready
+              d.Pr_state.github_merge_state_status
+          in
+          let is_new =
+            Eio.Mutex.use_ro divergence_logged_mutex (fun () ->
+                not
+                  (Option.equal String.equal
+                     (Stdlib.Hashtbl.find_opt divergence_logged patch_id)
+                     (Some key)))
+          in
+          if is_new then (
+            Runtime_logging.log_event runtime ~patch_id
+              (Printf.sprintf
+                 "Merge-readiness divergence — derived ready=%b but GitHub \
+                  mergeStateStatus=%s (GitHub's rollup is not used for the \
+                  merge decision; it may be stale)"
+                 d.Pr_state.derived_merge_ready
+                 d.Pr_state.github_merge_state_status);
+            Eio.Mutex.use_rw ~protect:true divergence_logged_mutex (fun () ->
+                Stdlib.Hashtbl.replace divergence_logged patch_id key))
+    in
     let rec loop () =
       let intents =
         Runtime.read runtime (fun snap ->
@@ -366,6 +405,8 @@ struct
                       ~pr_number:(Pr_number.to_int pr_number)
                 in
                 let pr_state = { pr_state with Pr_state.findings } in
+                log_divergence_if_new ~patch_id
+                  pr_state.Pr_state.merge_ready_divergence;
                 let branch_in_root =
                   match pr_state.Pr_state.head_branch with
                   | Some b ->

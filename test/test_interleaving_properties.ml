@@ -377,34 +377,32 @@ let gen_atomic_command_seq ~n ~len =
 
 let make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
     ~review_comments =
-  Poller.
-    {
-      queue =
-        (let acc = [] in
-         let acc =
-           if review_comments then Operation_kind.Review_comments :: acc
-           else acc
-         in
-         let acc =
-           if has_conflict then Operation_kind.Merge_conflict :: acc else acc
-         in
-         let acc = if ci_failed then Operation_kind.Ci :: acc else acc in
-         List.rev acc);
-      merged;
-      closed = false;
-      is_draft = false;
-      has_conflict;
-      merge_ready =
-        (not has_conflict) && (not merged) && (not ci_failed)
-        && not review_comments;
-      merge_state_status = None;
-      review_decision = None;
-      merge_queue_required = false;
-      merge_queue_entry = None;
-      checks_passing;
-      ci_checks = [];
-      merge_commit_sha = None;
-    }
+  {
+    Poller.queue =
+      (let acc = [] in
+       let acc =
+         if review_comments then Operation_kind.Review_comments :: acc else acc
+       in
+       let acc =
+         if has_conflict then Operation_kind.Merge_conflict :: acc else acc
+       in
+       let acc = if ci_failed then Operation_kind.Ci :: acc else acc in
+       List.rev acc);
+    merged;
+    closed = false;
+    is_draft = false;
+    merge_state =
+      (if has_conflict then Pr_state.Conflicting else Pr_state.Mergeable);
+    merge_ready =
+      (not has_conflict) && (not merged) && (not ci_failed)
+      && not review_comments;
+    review_decision = None;
+    merge_queue_required = false;
+    merge_queue_entry = None;
+    checks_passing;
+    ci_checks = [];
+    merge_commit_sha = None;
+  }
 
 let apply_reconcile orch patches =
   let branch_of = branch_of_patches patches in

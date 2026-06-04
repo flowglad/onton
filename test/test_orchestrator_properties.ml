@@ -1078,9 +1078,8 @@ let () =
                     merged = true;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1122,9 +1121,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = true;
+                    merge_state = Pr_state.Conflicting;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1167,9 +1165,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1189,6 +1186,56 @@ let () =
                     }
               in
               not (Orchestrator.agent orch' pid).Patch_agent.has_conflict
+        with _ -> false)
+  in
+
+  (* mergeability_unknown is a poll-mirror: after apply_poll_result it equals
+     [poll merge_state = Unknown], unconditionally (no hysteresis, unlike
+     has_conflict). This is what [automerge_transient_hold] reads. *)
+  let prop_poll_mergeability_unknown_mirror =
+    Test.make
+      ~name:
+        "apply_poll_result: mergeability_unknown mirrors merge_state = Unknown"
+      Gen.(pair gen_patch_list_unique gen_merge_state)
+      (fun (patches, merge_state) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.complete orch pid in
+              let poll =
+                Poller.
+                  {
+                    queue = [];
+                    merged = false;
+                    closed = false;
+                    is_draft = false;
+                    merge_state;
+                    merge_ready = false;
+                    review_decision = None;
+                    merge_queue_required = false;
+                    merge_queue_entry = None;
+                    checks_passing = true;
+                    ci_checks = [];
+                    merge_commit_sha = None;
+                  }
+              in
+              let orch', _logs, _newly_blocked =
+                Patch_controller.apply_poll_result orch pid
+                  Patch_controller.
+                    {
+                      poll_result = poll;
+                      base_branch = None;
+                      branch_in_root = false;
+                      worktree_path = None;
+                    }
+              in
+              Bool.equal
+                (Orchestrator.agent orch' pid).Patch_agent.mergeability_unknown
+                (Pr_state.equal_merge_state merge_state Pr_state.Unknown)
         with _ -> false)
   in
 
@@ -1216,9 +1263,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1261,9 +1307,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1315,9 +1360,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1372,9 +1416,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1419,9 +1462,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1488,6 +1530,7 @@ let () =
       prop_poll_merged;
       prop_poll_conflict_set;
       prop_poll_conflict_cleared;
+      prop_poll_mergeability_unknown_mirror;
       prop_poll_conflict_not_cleared_with_local_merge_conflict;
       prop_poll_new_comments;
       prop_send_human_message;

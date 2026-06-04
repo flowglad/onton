@@ -137,6 +137,11 @@ let bool_member_opt key json =
   | `Bool b -> Some b
   | _ -> raise (Decode_error (Printf.sprintf "%s: expected a bool" key))
 
+let legacy_mergeability_unknown json =
+  match string_member_opt "merge_state_status" json with
+  | Some status -> String.equal status "UNKNOWN"
+  | None -> false
+
 let result_all xs =
   List.fold_right xs ~init:(Ok []) ~f:(fun x acc ->
       Result.bind acc ~f:(fun tl -> Result.map x ~f:(fun hd -> hd :: tl)))
@@ -188,8 +193,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         `List (List.map a.inflight_human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("merge_ready", `Bool a.merge_ready);
-      ( "merge_state_status",
-        match a.merge_state_status with None -> `Null | Some s -> `String s );
+      ("mergeability_unknown", `Bool a.mergeability_unknown);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
       ("pr_body_artifact_miss_count", `Int a.pr_body_artifact_miss_count);
@@ -340,7 +344,10 @@ let patch_agent_of_yojson ~gameplan json =
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
-       ~merge_state_status:(string_member_opt "merge_state_status" json)
+       ~mergeability_unknown:
+         (match bool_member_opt "mergeability_unknown" json with
+         | Some v -> v
+         | None -> legacy_mergeability_unknown json)
        ~merge_queue_required:
          (Option.value
             (bool_member_opt "merge_queue_required" json)
@@ -839,7 +846,7 @@ let%test_module "session_id_sidecars" =
           ~has_conflict:false ~base_branch:None ~notified_base_branch:None
           ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
           ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-          ~merge_ready:false ~merge_state_status:None
+          ~merge_ready:false ~mergeability_unknown:false
           ~merge_queue_required:false ~merge_queue_entry:None
           ~merge_commit_sha:None ~base_contains_merged_siblings:true
           ~is_draft:false ~pr_body_delivered:true ~pr_body_artifact_miss_count:0

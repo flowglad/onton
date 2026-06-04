@@ -50,7 +50,7 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~has_conflict ~base_branch:(Some main) ~notified_base_branch:(Some main)
     ~ci_failure_count ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-    ~merge_ready:false ~merge_state_status:None ~merge_queue_required:false
+    ~merge_ready:false ~mergeability_unknown:false ~merge_queue_required:false
     ~merge_queue_entry:None ~is_draft ~pr_body_delivered:true
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
@@ -69,22 +69,21 @@ let make_poll_observation ~branch_in_root ~worktree_path poll_result =
     { poll_result; base_branch = None; branch_in_root; worktree_path }
 
 let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
-  Poller.
-    {
-      queue;
-      merged;
-      closed = false;
-      is_draft;
-      has_conflict;
-      merge_ready = false;
-      merge_state_status = None;
-      review_decision = None;
-      merge_queue_required = false;
-      merge_queue_entry = None;
-      checks_passing;
-      ci_checks = [];
-      merge_commit_sha = None;
-    }
+  {
+    Poller.queue;
+    merged;
+    closed = false;
+    is_draft;
+    merge_state =
+      (if has_conflict then Pr_state.Conflicting else Pr_state.Mergeable);
+    merge_ready = false;
+    review_decision = None;
+    merge_queue_required = false;
+    merge_queue_entry = None;
+    checks_passing;
+    ci_checks = [];
+    merge_commit_sha = None;
+  }
 
 let has_log_matching needle logs =
   List.exists logs ~f:(fun (entry : Patch_controller.poll_log_entry) ->
@@ -175,7 +174,8 @@ let print_case =
     (String.concat ~sep:"," (List.map agent.queue ~f:Operation_kind.to_label))
     (Option.value_map agent.current_op ~default:"none"
        ~f:Operation_kind.to_label)
-    poll.Poller.merged poll.has_conflict poll.checks_passing poll.is_draft
+    poll.Poller.merged (Poller.has_conflict poll) poll.checks_passing
+    poll.is_draft
     (String.concat ~sep:"," (List.map poll.queue ~f:Operation_kind.to_label))
     obs.Patch_controller.branch_in_root
     (Option.value obs.Patch_controller.worktree_path ~default:"none")
@@ -194,7 +194,8 @@ let () =
       (fun (_patch, pid, orch, agent, observation, poll) ->
         try
           if
-            (not agent.Patch_agent.has_conflict) && not poll.Poller.has_conflict
+            (not agent.Patch_agent.has_conflict)
+            && not (Poller.has_conflict poll)
           then
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
@@ -215,7 +216,7 @@ let () =
       ~count:300 ~print:print_case gen_poll_log_case
       (fun (_patch, pid, orch, agent, observation, poll) ->
         try
-          if agent.Patch_agent.has_conflict && poll.Poller.has_conflict then
+          if agent.Patch_agent.has_conflict && Poller.has_conflict poll then
             let _orch, logs, _blocked =
               Patch_controller.apply_poll_result orch pid observation
             in

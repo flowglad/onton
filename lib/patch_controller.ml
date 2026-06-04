@@ -124,7 +124,7 @@ let apply_poll_result t patch_id
     else t
   in
   let t =
-    if poll_result.has_conflict then (
+    if Poller.has_conflict poll_result then (
       let agent = Orchestrator.agent t patch_id in
       if not agent.Patch_agent.has_conflict then log "Merge conflict detected";
       Orchestrator.set_has_conflict t patch_id)
@@ -192,8 +192,8 @@ let apply_poll_result t patch_id
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
   let t =
-    Orchestrator.set_merge_state_status t patch_id
-      poll_result.merge_state_status
+    Orchestrator.set_mergeability_unknown t patch_id
+      (Poller.mergeability_unknown poll_result)
   in
   let t =
     Orchestrator.set_merge_queue_required t patch_id
@@ -558,9 +558,13 @@ let automerge_max_failures = 3
     enabled, the PR is approved, CI is passing, the queue is empty, and the
     consecutive failure count is under [automerge_max_failures]. New feedback
     (Review_comments, Human, Ci, Merge_conflict, Pr_body) enqueues an operation,
-    which fails this check and so resets the deadline. [checks_passing] is
-    derived separately from [merge_ready] and captures CI conclusions that
-    GitHub's [mergeStateStatus] may consider optional.
+    which fails this check and so resets the deadline. [merge_ready] is now
+    component-derived ([Pr_state.merge_ready_of]: mergeable + CI passing +
+    non-blocking review), not GitHub's stale [mergeStateStatus]; the merge
+    *attempt* is the final authority, so a PR deemed ready that GitHub still
+    blocks is rejected by the merge call and backs off via the failure counter.
+    [checks_passing] is retained as a belt-and-suspenders guard alongside the
+    [merge_ready] CI term.
 
     The [not merged] guard is included here because a merged PR can retain a
     stale [merge_ready = true] in the orchestrator snapshot (e.g. the poller
@@ -598,28 +602,30 @@ let is_automerge_candidate ?(ignore_inflight = false) (agent : Patch_agent.t)
   && agent.Patch_agent.automerge_failure_count < automerge_max_failures
 
 (** [true] when a patch has momentarily lost [merge_ready] *only* because GitHub
-    is recomputing mergeability (the raw [mergeStateStatus] is [UNKNOWN]), while
-    every real precondition for automerge still holds. This is the benign flap
-    caused by the base branch advancing — e.g. a sibling patch merging
-    invalidates mergeability on every other open PR at once, so they all read
-    [UNKNOWN] for a poll or two before settling back to [CLEAN].
+    is recomputing mergeability ([mergeability_unknown], i.e.
+    [Pr_state.merge_state = Unknown]), while every real precondition for
+    automerge still holds. This is the benign flap caused by the base branch
+    advancing — e.g. a sibling patch merging invalidates mergeability on every
+    other open PR at once, so they all read [Unknown] for a poll or two before
+    settling back to [Mergeable].
 
     When this holds, [reconcile_automerge] preserves the existing
     [automerge_deadline] instead of clearing it, so the idle window measures
     real elapsed wall-clock rather than restarting on every sibling merge. We
     never *fire* a merge in this state (the decision branches require
-    [merge_ready], i.e. [mergeStateStatus = CLEAN]); the hold only protects a
-    timer that is already armed.
+    [merge_ready], which is component-derived and false while mergeability is
+    [Unknown]); the hold only protects a timer that is already armed.
 
-    Deliberately scoped to the direct-merge path ([merge_queue_entry = None])
-    and to [UNKNOWN] alone — a real [BLOCKED]/[DIRTY]/[BEHIND], a failing check,
-    new feedback (non-empty queue), or a hit failure cap all fall through to the
-    normal clear. [checks_passing] is required so a genuine CI regression that
-    coincides with an [UNKNOWN] window still resets the timer. *)
+    Keyed on the live mergeability component ([mergeability_unknown]), not
+    GitHub's stale [mergeStateStatus] rollup — that field no longer exists on
+    the agent. Deliberately scoped to the direct-merge path
+    ([merge_queue_entry = None]) and to [Unknown] alone — a real conflict
+    ([has_conflict]), a failing check, new feedback (non-empty queue), or a hit
+    failure cap all fall through to the normal clear. [checks_passing] is
+    required so a genuine CI regression that coincides with an [Unknown] window
+    still resets the timer. *)
 let automerge_transient_hold (agent : Patch_agent.t) ~main_branch =
-  (match agent.Patch_agent.merge_state_status with
-    | Some "UNKNOWN" -> true
-    | _ -> false)
+  agent.Patch_agent.mergeability_unknown
   && (not agent.Patch_agent.automerge_inflight)
   && (not agent.Patch_agent.merged)
   && agent.Patch_agent.automerge_enabled
@@ -1195,9 +1201,8 @@ let%test "no merge-conflict re-enqueue after noop" =
         merged = false;
         closed = false;
         is_draft = false;
-        has_conflict = true;
+        merge_state = Pr_state.Conflicting;
         merge_ready = false;
-        merge_state_status = None;
         review_decision = None;
         merge_queue_required = false;
         merge_queue_entry = None;

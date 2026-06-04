@@ -446,9 +446,6 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
   let merge_state =
     Option.value_map pr.mergeable ~default:Pr_state.Unknown ~f:parse_merge_state
   in
-  let merge_ready =
-    match pr.merge_state_status with Some "CLEAN" -> true | _ -> false
-  in
   let check_status, ci_checks, ci_checks_truncated =
     match pr.commits.nodes with
     | [] -> (Pr_state.Pending, [], false)
@@ -471,6 +468,17 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
               else base
             in
             (status, checks, truncated))
+  in
+  let merge_ready =
+    Pr_state.merge_ready_of ~merge_state ~check_status
+      ~review_decision:pr.review_decision
+  in
+  (* Diagnostics only: record when our derived readiness disagrees with GitHub's
+     [mergeStateStatus] rollup. [merge_state_status] is otherwise unused — it is
+     not carried into [Pr_state] state, and no decision reads it. *)
+  let merge_ready_divergence =
+    Pr_state.merge_ready_divergence_of ~merge_ready
+      ~github_merge_state_status:pr.merge_state_status
   in
   let comments =
     List.concat_map pr.review_threads.nodes ~f:(fun thread ->
@@ -500,7 +508,7 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     is_draft = pr.is_draft;
     merge_state;
     merge_ready;
-    merge_state_status = pr.merge_state_status;
+    merge_ready_divergence;
     review_decision = pr.review_decision;
     check_status;
     ci_checks;
