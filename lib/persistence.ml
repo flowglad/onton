@@ -137,6 +137,11 @@ let bool_member_opt key json =
   | `Bool b -> Some b
   | _ -> raise (Decode_error (Printf.sprintf "%s: expected a bool" key))
 
+let legacy_mergeability_unknown json =
+  match string_member_opt "merge_state_status" json with
+  | Some status -> String.equal status "UNKNOWN"
+  | None -> false
+
 let result_all xs =
   List.fold_right xs ~init:(Ok []) ~f:(fun x acc ->
       Result.bind acc ~f:(fun tl -> Result.map x ~f:(fun hd -> hd :: tl)))
@@ -340,9 +345,9 @@ let patch_agent_of_yojson ~gameplan json =
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
        ~mergeability_unknown:
-         (Option.value
-            (bool_member_opt "mergeability_unknown" json)
-            ~default:false)
+         (match bool_member_opt "mergeability_unknown" json with
+         | Some v -> v
+         | None -> legacy_mergeability_unknown json)
        ~merge_queue_required:
          (Option.value
             (bool_member_opt "merge_queue_required" json)

@@ -355,6 +355,46 @@ let () =
           | Error _ -> false
         with _ -> false)
   in
+  let legacy_merge_state_status_decodes_unknown =
+    QCheck2.Test.make
+      ~name:"legacy merge_state_status UNKNOWN decodes to mergeability_unknown"
+      ~count:200
+      QCheck2.Gen.(
+        pair gen_patch_agent_fully_populated
+          (oneof
+             [
+               return (Some "UNKNOWN");
+               return (Some "CLEAN");
+               return (Some "BLOCKED");
+               return None;
+             ]))
+      (fun (agent, legacy_status) ->
+        try
+          let gameplan = gameplan_for_agent agent in
+          let json = Onton.Persistence.patch_agent_to_yojson agent in
+          let json =
+            match json with
+            | `Assoc fields ->
+                let fields =
+                  List.filter fields ~f:(fun (k, _) ->
+                      not (String.equal k "mergeability_unknown"))
+                in
+                let fields =
+                  match legacy_status with
+                  | Some status ->
+                      ("merge_state_status", `String status) :: fields
+                  | None -> fields
+                in
+                `Assoc fields
+            | other -> other
+          in
+          match Onton.Persistence.patch_agent_of_yojson ~gameplan json with
+          | Ok agent' ->
+              Bool.equal agent'.mergeability_unknown
+                (Option.equal String.equal legacy_status (Some "UNKNOWN"))
+          | Error _ -> false
+        with _ -> false)
+  in
   let missing_branch_falls_back_to_gameplan =
     QCheck2.Test.make
       ~name:"missing branch key falls back to gameplan patch branch" ~count:200
@@ -513,6 +553,7 @@ let () =
         pr_status_roundtrip;
         legacy_pr_number_decodes_correctly;
         missing_pr_number_defaults_none;
+        legacy_merge_state_status_decodes_unknown;
         missing_branch_falls_back_to_gameplan;
         adhoc_snapshot_roundtrip;
         adhoc_stack_restore_infers_edge;
