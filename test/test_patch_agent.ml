@@ -723,7 +723,7 @@ let () =
               ~notified_base_branch:None ~ci_failure_count:0
               ~session_fallback:Fresh_available ~human_messages:[]
               ~inflight_human_messages:[] ~ci_checks:a.ci_checks
-              ~merge_ready:false ~merge_state_status:None
+              ~merge_ready:false ~mergeability_unknown:false
               ~merge_queue_required:false ~merge_queue_entry:None
               ~is_draft:false ~pr_body_delivered:false
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
@@ -811,7 +811,7 @@ let () =
               ~base_branch:(Some br) ~notified_base_branch:(Some br)
               ~ci_failure_count:0 ~session_fallback:Fresh_available
               ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-              ~merge_ready:false ~merge_state_status:None
+              ~merge_ready:false ~mergeability_unknown:false
               ~merge_queue_required:false ~merge_queue_entry:None
               ~is_draft:false ~pr_body_delivered:false
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0

@@ -17,6 +17,29 @@ let () =
           let result = Onton_core.Poller.poll ~was_merged:false pr in
           Bool.equal result.Onton_core.Poller.is_draft
             (Onton_core.Pr_state.is_draft pr));
+      (* The tri-state merge_state is passed through verbatim, and the derived
+         accessors agree with it. *)
+      Test.make ~name:"merge_state passed through" ~count:500 gen_pr_state
+        (fun pr ->
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          Onton_core.Pr_state.equal_merge_state
+            result.Onton_core.Poller.merge_state
+            pr.Onton_core.Pr_state.merge_state);
+      Test.make ~name:"Poller.has_conflict iff merge_state = Conflicting"
+        ~count:500 gen_pr_state (fun pr ->
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          Bool.equal
+            (Onton_core.Poller.has_conflict result)
+            (Onton_core.Pr_state.equal_merge_state
+               result.Onton_core.Poller.merge_state
+               Onton_core.Pr_state.Conflicting));
+      Test.make ~name:"Poller.mergeability_unknown iff merge_state = Unknown"
+        ~count:500 gen_pr_state (fun pr ->
+          let result = Onton_core.Poller.poll ~was_merged:false pr in
+          Bool.equal
+            (Onton_core.Poller.mergeability_unknown result)
+            (Onton_core.Pr_state.equal_merge_state
+               result.Onton_core.Poller.merge_state Onton_core.Pr_state.Unknown));
       (* checks_passing is passed through from PR state *)
       Test.make ~name:"checks_passing passed through" ~count:500 gen_pr_state
         (fun pr ->

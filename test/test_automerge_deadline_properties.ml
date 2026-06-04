@@ -3,24 +3,29 @@ open Onton
 open Onton_core
 open Onton_core.Types
 
-(** Property tests for the automerge idle-window ([automerge_deadline]) under a
-    flapping [mergeStateStatus].
+(** Property tests for the automerge idle-window ([automerge_deadline]).
 
-    Background — the bug these properties pin down: [merge_ready] is derived
-    solely from GitHub's [mergeStateStatus = CLEAN]. Whenever the base branch
-    advances (e.g. a sibling patch in the same gameplan merges) GitHub
-    re-computes mergeability for every other open PR, and during that window the
-    status reads [UNKNOWN] for a poll or two before settling back to [CLEAN].
-    The old [reconcile_automerge] treated that transient drop in [merge_ready]
-    as a loss of approval and *cleared* the automerge deadline, then re-armed a
-    fresh idle window on the next [CLEAN] poll. Because sibling merges recur
-    more often than the idle timeout, the countdown reset perpetually and
-    automerge never fired — "whenever a patch merges, all the other automerge
-    counters get reset."
+    [merge_ready] is now component-derived ([Pr_state.merge_ready_of]: mergeable
+    + CI passing + non-blocking review), independent of GitHub's
+      [mergeStateStatus]. Two distinct concerns are pinned down here:
 
-    The fix holds the existing deadline through a transient [UNKNOWN]
-    ([automerge_transient_hold]) instead of resetting it. These properties
-    exhaustively cover the per-tick transition table, the single-patch flap
+    - The sibling-merge flap (the original reason this suite exists): when the
+      base branch advances (e.g. a sibling patch merges) GitHub re-computes
+      mergeability for every other open PR, dropping [merge_ready] to false for
+      a poll or two (mergeability reads [UNKNOWN]) before it settles. The old
+      [reconcile_automerge] treated that transient drop as a loss of approval,
+      *cleared* the automerge deadline, and re-armed a fresh window each time —
+      so with sibling merges recurring faster than the idle timeout, the
+      countdown reset perpetually and automerge never fired. The fix holds the
+      existing deadline through a transient [UNKNOWN]
+      ([automerge_transient_hold]) instead of resetting it.
+
+    - The stale-[BLOCKED] regression (PR #4026, AM-STALE-BLOCK): now that
+      [merge_ready] no longer keys off [mergeStateStatus], a patch that is ready
+      by the component facts but still carries a stale GitHub [BLOCKED] must arm
+      and fire exactly like a CLEAN one.
+
+    These properties cover the per-tick transition table, the single-patch flap
     sequence, and a multi-patch interleaving where each merge induces an
     [UNKNOWN] blip on its siblings. *)
 
@@ -54,7 +59,7 @@ let make_patch pid branch =
 (* Build an agent with a PR present, parameterized over exactly the fields
    [reconcile_automerge] reads. Routed through [Patch_agent.restore] so the
    record stays exhaustive as fields are added. *)
-let make_agent ~patch_id ~branch ~merge_ready ~merge_state_status
+let make_agent ~patch_id ~branch ~merge_ready ~mergeability_unknown
     ~checks_passing ~queue ~is_draft ~busy ~merged ~branch_blocked ~base_branch
     ~merge_queue_required ~merge_queue_entry ~automerge_enabled
     ~automerge_deadline ~automerge_inflight ~automerge_failure_count =
@@ -64,7 +69,7 @@ let make_agent ~patch_id ~branch ~merge_ready ~merge_state_status
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready
-    ~merge_state_status ~merge_queue_required ~merge_queue_entry ~is_draft
+    ~mergeability_unknown ~merge_queue_required ~merge_queue_entry ~is_draft
     ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
     ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
     ~context_exhaustion_count:0 ~push_failure_count:0 ~branch_rebased_onto:None
@@ -97,22 +102,28 @@ let fired_for decisions pid =
 
 (* -- Generators -- *)
 
-(* A non-CLEAN status couples with [merge_ready = false] exactly as the poller
-   derives it ([merge_ready = mergeStateStatus = CLEAN]); CLEAN couples with
-   [true]. *)
-let gen_status =
-  QCheck2.Gen.oneof_list
-    [
-      Some "CLEAN";
-      Some "UNKNOWN";
-      Some "BEHIND";
-      Some "BLOCKED";
-      Some "DIRTY";
-      None;
-    ]
+(* Realistic [(merge_ready, mergeability_unknown)] pairs for the direct-merge
+   generator. Both are now component-derived (see [Pr_state.merge_ready_of] /
+   [merge_state = Unknown]), independent of GitHub's [mergeStateStatus]. The
+   three reachable combinations:
 
-let merge_ready_of status =
-  match status with Some "CLEAN" -> true | _ -> false
+   - [(true, false)]  — ready: mergeable, CI passing, review non-blocking. A
+                        stale GitHub [BLOCKED] would land here too (PR #4026):
+                        readiness no longer reads that field, so it stays ready.
+   - [(false, true)]  — GitHub is recomputing mergeability ([Unknown]); not
+                        ready, and the transient-hold window applies.
+   - [(false, false)] — a known not-ready state (conflict, failing CI, blocking
+                        review, or a stale block that leaves merge_ready false).
+
+   [(true, true)] is unreachable: ready requires [Mergeable], which contradicts
+   [Unknown]. *)
+let gen_ready_unknown =
+  QCheck2.Gen.oneof_list [ (true, false); (false, true); (false, false) ]
+
+(* The flap/multi runs below toggle only between "mergeable" and "recomputing"
+   (a sibling-merge mergeability recompute). [is_clean] true => ready
+   ([(true, false)]); false => recomputing ([(false, true)]). *)
+let ready_unknown_of_clean is_clean = (is_clean, not is_clean)
 
 let gen_deadline ~now =
   (* A mix of: no deadline, an already-elapsed one, and a still-future one,
@@ -128,7 +139,7 @@ let gen_deadline ~now =
    [test_patch_controller]. *)
 let gen_direct_agent ~now =
   QCheck2.Gen.(
-    let* status = gen_status in
+    let* merge_ready, mergeability_unknown = gen_ready_unknown in
     let* checks_passing = bool in
     let* has_feedback = bool in
     let* is_draft = bool in
@@ -143,8 +154,7 @@ let gen_direct_agent ~now =
     return
       (make_agent ~patch_id:pid
          ~branch:(Branch.of_string "feat/p")
-         ~merge_ready:(merge_ready_of status) ~merge_state_status:status
-         ~checks_passing
+         ~merge_ready ~mergeability_unknown ~checks_passing
          ~queue:
            (if has_feedback then [ Operation_kind.Review_comments ] else [])
          ~is_draft ~busy ~merged:false ~branch_blocked
@@ -159,11 +169,11 @@ let pid = Patch_id.of_string "p"
 let () =
   let open QCheck2 in
   (* AM-SAFE: a merge decision is only ever issued for a patch whose
-     [merge_ready] is true (mergeStateStatus = CLEAN). We never fire while
-     GitHub reports UNKNOWN / BEHIND / BLOCKED / DIRTY. *)
+     [merge_ready] is true. [merge_ready] is the component-derived predicate, so
+     this is independent of GitHub's [mergeStateStatus] — a stale BLOCKED on a
+     ready PR may fire, an UNKNOWN/DIRTY (which forces not-ready) never does. *)
   let prop_never_fire_unless_clean =
-    Test.make
-      ~name:"automerge AM-SAFE: never fire unless mergeStateStatus=CLEAN"
+    Test.make ~name:"automerge AM-SAFE: never fire unless merge_ready"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in
@@ -200,11 +210,13 @@ let () =
         && not (fired_for decisions pid))
   in
 
-  (* AM-NOARM: a non-CLEAN status never *creates* a deadline. The idle window is
-     only armed from a CLEAN candidate; an UNKNOWN/BLOCKED blip with no deadline
-     stays at None (we never start a timer on a status we can't act on). *)
+  (* AM-NOARM: a not-[merge_ready] patch never *creates* a deadline. The idle
+     window is only armed from a ready candidate; a not-ready blip with no
+     deadline stays at None (we never start a timer on a patch we can't act on).
+     Note this keys on [merge_ready], not the status: a ready patch carrying a
+     stale BLOCKED *does* arm (that is AM-ARM / AM-STALE-BLOCK). *)
   let prop_no_arm_while_not_clean =
-    Test.make ~name:"automerge AM-NOARM: never arm a deadline while not CLEAN"
+    Test.make ~name:"automerge AM-NOARM: never arm a deadline while not ready"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in
@@ -247,11 +259,13 @@ let () =
         Option.is_none (deadline_of orch' pid) && not (fired_for decisions pid))
   in
 
-  (* AM-ARM: a CLEAN candidate with no deadline arms exactly one idle window at
-     [now + timeout]; with an elapsed deadline it fires Direct_merge. *)
+  (* AM-ARM: a ready candidate with no deadline arms exactly one idle window at
+     [now + timeout]; with an elapsed deadline it fires Direct_merge. Candidacy
+     is component-derived, so this now also covers a ready patch whose
+     mergeStateStatus is a stale BLOCKED/BEHIND. *)
   let prop_clean_candidate_arms_or_fires =
     Test.make
-      ~name:"automerge AM-ARM: CLEAN candidate arms at now+timeout / fires"
+      ~name:"automerge AM-ARM: ready candidate arms at now+timeout / fires"
       ~count:2000
       Gen.(
         let* now = float_range 0.0 1_000_000.0 in
@@ -276,6 +290,36 @@ let () =
               (* not yet elapsed → unchanged, no decision *)
               Option.equal Float.equal (deadline_of orch' pid) (Some d)
               && not (fired_for decisions pid))
+  in
+
+  (* AM-STALE-BLOCK: the PR #4026 regression, stated directly. A patch that is
+     ready by the component facts ([merge_ready = true], mergeability known)
+     must arm the window and fire once it elapses — regardless of whatever stale
+     verdict GitHub's [mergeStateStatus] rollup might have carried (it is no
+     longer on the agent and no longer read). Before the fix [merge_ready] was
+     [mergeStateStatus = CLEAN], so a stale BLOCKED forced [merge_ready = false]
+     and the patch sat in "awaiting feedback" forever. *)
+  let prop_stale_block_still_fires =
+    Test.make
+      ~name:"automerge AM-STALE-BLOCK: ready + stale BLOCKED arms and fires"
+      ~count:1000
+      Gen.(float_range 0.0 1_000_000.0)
+      (fun now ->
+        let agent =
+          make_agent ~patch_id:pid
+            ~branch:(Branch.of_string "feat/p")
+            ~merge_ready:true ~mergeability_unknown:false ~checks_passing:true
+            ~queue:[] ~is_draft:false ~busy:false ~merged:false
+            ~branch_blocked:false ~base_branch:(Some main)
+            ~merge_queue_required:false ~merge_queue_entry:None
+            ~automerge_enabled:true
+            ~automerge_deadline:(Some (now -. 1.0))
+            ~automerge_inflight:false ~automerge_failure_count:0
+        in
+        let orch = make_orch [ (pid, agent) ] in
+        let orch', decisions = Patch_controller.reconcile_automerge orch ~now in
+        fired_for decisions pid
+        && (Orchestrator.agent orch' pid).Patch_agent.automerge_inflight)
   in
 
   (* -- Single-patch flap interleaving -- *)
@@ -304,15 +348,16 @@ let () =
       return (t0, rest))
   in
   let run_flap (t0, rest) =
-    let agent_at ~status ~deadline =
+    let agent_at ~is_clean ~deadline =
+      let merge_ready, mergeability_unknown = ready_unknown_of_clean is_clean in
       make_agent ~patch_id:pid
         ~branch:(Branch.of_string "feat/p")
-        ~merge_ready:(merge_ready_of status) ~merge_state_status:status
-        ~checks_passing:true ~queue:[] ~is_draft:false ~busy:false ~merged:false
-        ~branch_blocked:false ~base_branch:(Some main)
-        ~merge_queue_required:false ~merge_queue_entry:None
-        ~automerge_enabled:true ~automerge_deadline:deadline
-        ~automerge_inflight:false ~automerge_failure_count:0
+        ~merge_ready ~mergeability_unknown ~checks_passing:true ~queue:[]
+        ~is_draft:false ~busy:false ~merged:false ~branch_blocked:false
+        ~base_branch:(Some main) ~merge_queue_required:false
+        ~merge_queue_entry:None ~automerge_enabled:true
+        ~automerge_deadline:deadline ~automerge_inflight:false
+        ~automerge_failure_count:0
     in
     (* Drive the ticks, threading the current deadline. Returns the list of
        (now, is_clean, deadline_after, fired?). *)
@@ -323,8 +368,7 @@ let () =
       List.fold ticks ~init:(t0, None, [])
         ~f:(fun (now, deadline, acc) (is_clean, dt) ->
           let now = Float.( + ) now dt in
-          let status = if is_clean then Some "CLEAN" else Some "UNKNOWN" in
-          let orch = make_orch [ (pid, agent_at ~status ~deadline) ] in
+          let orch = make_orch [ (pid, agent_at ~is_clean ~deadline) ] in
           let orch', decisions =
             Patch_controller.reconcile_automerge orch ~now
           in
@@ -398,22 +442,22 @@ let () =
   in
   let run_multi (k, t0, steps) =
     let ps = pids k in
-    let agent_at p ~status ~deadline =
+    let agent_at p ~is_clean ~deadline =
+      let merge_ready, mergeability_unknown = ready_unknown_of_clean is_clean in
       make_agent ~patch_id:p
         ~branch:(Branch.of_string (Patch_id.to_string p))
-        ~merge_ready:(merge_ready_of status) ~merge_state_status:status
-        ~checks_passing:true ~queue:[] ~is_draft:false ~busy:false ~merged:false
-        ~branch_blocked:false ~base_branch:(Some main)
-        ~merge_queue_required:false ~merge_queue_entry:None
-        ~automerge_enabled:true ~automerge_deadline:deadline
-        ~automerge_inflight:false ~automerge_failure_count:0
+        ~merge_ready ~mergeability_unknown ~checks_passing:true ~queue:[]
+        ~is_draft:false ~busy:false ~merged:false ~branch_blocked:false
+        ~base_branch:(Some main) ~merge_queue_required:false
+        ~merge_queue_entry:None ~automerge_enabled:true
+        ~automerge_deadline:deadline ~automerge_inflight:false
+        ~automerge_failure_count:0
     in
-    (* Build an initial orchestrator: all CLEAN, no deadline. One reconcile to
-       arm them all. *)
+    (* Build an initial orchestrator: all mergeable, no deadline. One reconcile
+       to arm them all. *)
     let orch0 =
       make_orch
-        (List.map ps ~f:(fun p ->
-             (p, agent_at p ~status:(Some "CLEAN") ~deadline:None)))
+        (List.map ps ~f:(fun p -> (p, agent_at p ~is_clean:true ~deadline:None)))
     in
     let orch0, _ = Patch_controller.reconcile_automerge orch0 ~now:t0 in
     (* Per-patch record of every Some-deadline observed. *)
@@ -441,22 +485,25 @@ let () =
                   not (Orchestrator.agent orch p).Patch_agent.merged)
             else None
           in
-          (* Re-stamp every still-open patch's status for this tick: the merging
-             one stays CLEAN; its siblings go UNKNOWN. *)
+          (* Re-stamp every still-open patch's mergeability for this tick: the
+             merging one stays mergeable; its siblings go Unknown (GitHub
+             recomputing on the advanced base). *)
           let orch =
             List.fold ps ~init:orch ~f:(fun orch p ->
                 let a = Orchestrator.agent orch p in
                 if a.Patch_agent.merged then orch
                 else
-                  let status =
+                  let is_clean =
                     match merging with
-                    | Some m when not (Patch_id.equal m p) -> Some "UNKNOWN"
-                    | _ -> Some "CLEAN"
+                    | Some m when not (Patch_id.equal m p) -> false
+                    | _ -> true
                   in
-                  let orch =
-                    Orchestrator.set_merge_ready orch p (merge_ready_of status)
+                  let merge_ready, mergeability_unknown =
+                    ready_unknown_of_clean is_clean
                   in
-                  Orchestrator.set_merge_state_status orch p status)
+                  let orch = Orchestrator.set_merge_ready orch p merge_ready in
+                  Orchestrator.set_mergeability_unknown orch p
+                    mergeability_unknown)
           in
           let orch, _ = Patch_controller.reconcile_automerge orch ~now in
           (* Force the chosen patch to actually merge (the user's premise:
@@ -488,6 +535,7 @@ let () =
       prop_no_arm_while_not_clean;
       prop_real_loss_clears_deadline;
       prop_clean_candidate_arms_or_fires;
+      prop_stale_block_still_fires;
       prop_flap_mono;
       prop_flap_safe;
       prop_flap_live;

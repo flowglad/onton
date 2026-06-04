@@ -50,7 +50,7 @@ let make_orch patch agent =
     ~outbox:(Map.empty (module Message_id))
     ~main_branch:main ()
 
-let make_agent ?(merge_ready = false) ?(merge_state_status = None)
+let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ?(merge_queue_required = false) ?(merge_queue_entry = None)
     ?(checks_passing = false) ?(automerge_enabled = false) ?automerge_deadline
     ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
@@ -60,7 +60,7 @@ let make_agent ?(merge_ready = false) ?(merge_state_status = None)
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready
-    ~merge_state_status ~merge_queue_required ~merge_queue_entry ~is_draft
+    ~mergeability_unknown ~merge_queue_required ~merge_queue_entry ~is_draft
     ~pr_body_delivered ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
     ~push_failure_count:0 ~branch_rebased_onto:None
@@ -236,7 +236,7 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
             ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -288,7 +288,7 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
             ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -429,7 +429,7 @@ let () =
             ~notified_base_branch:(Some branch) ~ci_failure_count:3
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~merge_state_status:None ~merge_queue_required:false
+            ~mergeability_unknown:false ~merge_queue_required:false
             ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
@@ -475,7 +475,7 @@ let () =
             ~notified_base_branch:(Some branch) ~ci_failure_count:3
             ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
             ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready:false
-            ~merge_state_status:None ~merge_queue_required:false
+            ~mergeability_unknown:false ~merge_queue_required:false
             ~merge_queue_entry:None ~is_draft:false ~pr_body_delivered:true
             ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
             ~conflict_noop_count:0 ~no_commits_push_count:0
@@ -521,7 +521,7 @@ let () =
             ~base_branch:(Some branch) ~notified_base_branch:(Some branch)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
             ~pr_body_delivered:false ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -581,9 +581,8 @@ let () =
               merged = false;
               closed = false;
               is_draft = true;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               merge_ready = false;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -627,9 +626,8 @@ let () =
               merged = false;
               closed = false;
               is_draft = true;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               merge_ready = false;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -672,7 +670,7 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
             ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -696,9 +694,8 @@ let () =
               merged = false;
               closed = false;
               is_draft = false;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               merge_ready = false;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -744,7 +741,7 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:1 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
             ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -768,9 +765,8 @@ let () =
               merged = false;
               closed = false;
               is_draft = false;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               merge_ready = false;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -809,9 +805,8 @@ let () =
               merged = false;
               closed = false;
               is_draft = true;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               merge_ready;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -853,9 +848,8 @@ let () =
               merged = false;
               closed = false;
               is_draft = true;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               merge_ready = false;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -905,7 +899,7 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:true
             ~pr_body_delivered:false ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -1082,9 +1076,8 @@ let () =
                     merged = false;
                     closed = false;
                     is_draft = false;
-                    has_conflict = false;
+                    merge_state = Pr_state.Mergeable;
                     merge_ready = false;
-                    merge_state_status = None;
                     review_decision = None;
                     merge_queue_required = false;
                     merge_queue_entry = None;
@@ -1123,7 +1116,7 @@ let () =
             ~has_conflict:false ~base_branch:None ~notified_base_branch:None
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
             ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -1170,7 +1163,7 @@ let () =
             ~base_branch:(Some main) ~notified_base_branch:(Some main)
             ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
             ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
-            ~merge_ready:false ~merge_state_status:None
+            ~merge_ready:false ~mergeability_unknown:false
             ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
             ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
             ~start_attempts_without_pr:0 ~conflict_noop_count:0
@@ -1254,11 +1247,10 @@ let () =
           Poller.
             {
               merged = false;
-              has_conflict = false;
+              merge_state = Pr_state.Mergeable;
               ci_checks = [];
               checks_passing = true;
               merge_ready = false;
-              merge_state_status = None;
               review_decision = None;
               merge_queue_required = false;
               merge_queue_entry = None;
@@ -1491,8 +1483,8 @@ let () =
   let pending_automerge_transient_unknown_holds_deadline =
     Test.make
       ~name:
-        "patch_controller: transient mergeStateStatus=UNKNOWN holds the \
-         automerge deadline" QCheck2.Gen.unit (fun () ->
+        "patch_controller: transient mergeability Unknown holds the automerge \
+         deadline" QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "am-unknown-hold" in
         let branch = Branch.of_string "feat/am-unknown-hold" in
         let patch = make_patch pid branch in
@@ -1501,9 +1493,8 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 910))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
             ~pr_body_delivered:true ~start_attempts_without_pr:0
-            ~merge_ready:false ~merge_state_status:(Some "UNKNOWN")
-            ~checks_passing:true ~automerge_enabled:true
-            ~automerge_deadline:100.0 ()
+            ~merge_ready:false ~mergeability_unknown:true ~checks_passing:true
+            ~automerge_enabled:true ~automerge_deadline:100.0 ()
         in
         let orch = make_orch patch agent in
         let orch, decisions =
@@ -1517,13 +1508,13 @@ let () =
   in
 
   (* Even when the held deadline has already elapsed, we must NOT fire a merge
-     while mergeStateStatus is not CLEAN — firing requires merge_ready. The
-     deadline is held (not cleared), so the next CLEAN poll fires immediately. *)
+     while mergeability is Unknown — firing requires merge_ready. The deadline is
+     held (not cleared), so the next ready poll fires immediately. *)
   let pending_automerge_unknown_never_fires_while_indeterminate =
     Test.make
       ~name:
-        "patch_controller: elapsed deadline does not fire under \
-         mergeStateStatus=UNKNOWN" QCheck2.Gen.unit (fun () ->
+        "patch_controller: elapsed deadline does not fire while mergeability \
+         Unknown" QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "am-unknown-nofire" in
         let branch = Branch.of_string "feat/am-unknown-nofire" in
         let patch = make_patch pid branch in
@@ -1532,9 +1523,8 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 912))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
             ~pr_body_delivered:true ~start_attempts_without_pr:0
-            ~merge_ready:false ~merge_state_status:(Some "UNKNOWN")
-            ~checks_passing:true ~automerge_enabled:true ~automerge_deadline:0.0
-            ()
+            ~merge_ready:false ~mergeability_unknown:true ~checks_passing:true
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
         in
         let orch = make_orch patch agent in
         let orch, decisions =
@@ -1547,13 +1537,15 @@ let () =
         && not agent.Patch_agent.automerge_inflight)
   in
 
-  (* A genuine block (mergeStateStatus=BLOCKED, not the transient UNKNOWN) must
-     still clear the deadline as before — the hold is scoped to UNKNOWN only. *)
+  (* A genuine not-ready that is NOT the transient mergeability-Unknown blip
+     (here: merge_ready false with mergeability known, e.g. a stale BLOCKED that
+     leaves merge_ready false) must still clear the deadline — the hold is scoped
+     to mergeability Unknown only. *)
   let pending_automerge_blocked_clears_deadline =
     Test.make
       ~name:
-        "patch_controller: real mergeStateStatus=BLOCKED clears the automerge \
-         deadline" QCheck2.Gen.unit (fun () ->
+        "patch_controller: not-ready with mergeability known clears the \
+         automerge deadline" QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "am-blocked-clear" in
         let branch = Branch.of_string "feat/am-blocked-clear" in
         let patch = make_patch pid branch in
@@ -1562,9 +1554,8 @@ let () =
             ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 911))
             ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
             ~pr_body_delivered:true ~start_attempts_without_pr:0
-            ~merge_ready:false ~merge_state_status:(Some "BLOCKED")
-            ~checks_passing:true ~automerge_enabled:true
-            ~automerge_deadline:100.0 ()
+            ~merge_ready:false ~mergeability_unknown:false ~checks_passing:true
+            ~automerge_enabled:true ~automerge_deadline:100.0 ()
         in
         let orch = make_orch patch agent in
         let orch, decisions =

@@ -7,15 +7,14 @@ type t = {
   merged : bool;
   closed : bool;
   is_draft : bool;
-  has_conflict : bool;
+  merge_state : Pr_state.merge_state;
+      (** GitHub's tri-state mergeability; source for the [has_conflict] and
+          [mergeability_unknown] accessors. *)
   merge_ready : bool;
-  merge_state_status : string option; [@yojson.option]
-      (** Raw GitHub [mergeStateStatus] behind [merge_ready]. Diagnostics only:
-          surfaces in the event log so a [merge_ready] flip can be attributed to
-          a transient [UNKNOWN]/[BEHIND] (e.g. a sibling patch merging and
-          advancing the base) rather than a real block. *)
   review_decision : string option; [@yojson.option]
-      (** Raw GitHub [reviewDecision]. Diagnostics only. *)
+      (** Raw GitHub [reviewDecision]. An input to [merge_ready] via
+          [Pr_state.merge_ready_of] (REVIEW_REQUIRED/CHANGES_REQUESTED block).
+      *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option; [@yojson.option]
   checks_passing : bool;
@@ -27,6 +26,12 @@ type t = {
           [None]. *)
 }
 [@@deriving show, eq, yojson]
+
+let has_conflict (t : t) =
+  Pr_state.equal_merge_state t.merge_state Pr_state.Conflicting
+
+let mergeability_unknown (t : t) =
+  Pr_state.equal_merge_state t.merge_state Pr_state.Unknown
 
 let poll ~was_merged (pr : Pr_state.t) =
   let unresolved = not (List.is_empty pr.comments) in
@@ -54,9 +59,8 @@ let poll ~was_merged (pr : Pr_state.t) =
     merged = was_merged || Pr_state.merged pr;
     closed = Pr_state.closed pr;
     is_draft = Pr_state.is_draft pr;
-    has_conflict = Pr_state.has_conflict pr;
+    merge_state = pr.Pr_state.merge_state;
     merge_ready = Pr_state.merge_ready pr;
-    merge_state_status = pr.Pr_state.merge_state_status;
     review_decision = pr.Pr_state.review_decision;
     merge_queue_required = Pr_state.requires_merge_queue pr;
     merge_queue_entry = pr.Pr_state.merge_queue_entry;

@@ -256,7 +256,7 @@ let () =
           List.mem result.queue Types.Operation_kind.Merge_conflict
             ~equal:Types.Operation_kind.equal
         in
-        Bool.equal in_queue result.has_conflict)
+        Bool.equal in_queue (Poller.has_conflict result))
   in
   let prop_ci_queue =
     Test.make ~name:"poller: ci in queue iff checks failing"

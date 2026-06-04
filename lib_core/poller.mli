@@ -25,18 +25,18 @@ type t = {
       (** [true] if the PR was closed without merging. The poller should
           re-discover the current open PR for this branch. *)
   is_draft : bool;  (** [true] if the PR is still a draft. *)
-  has_conflict : bool;  (** [true] if the PR has a merge conflict. *)
+  merge_state : Pr_state.merge_state;
+      (** GitHub's tri-state mergeability ([Mergeable]/[Conflicting]/[Unknown]).
+          Source for the derived [has_conflict] and [mergeability_unknown]
+          accessors. [Unknown] means GitHub is recomputing the test-merge (e.g.
+          a sibling merge advanced the base). *)
   merge_ready : bool;
-      (** [true] if GitHub's [mergeStateStatus] is [CLEAN] — all branch
-          protection rules (required reviews, checks, etc.) are satisfied. *)
-  merge_state_status : string option; [@yojson.option]
-      (** Raw GitHub [mergeStateStatus] behind [merge_ready]. Diagnostics only:
-          surfaces in the event log so a [merge_ready] flip can be attributed to
-          a transient [UNKNOWN]/[BEHIND] (a sibling merge advancing the base)
-          vs. a real block. [@yojson.option] omits it from event JSON when
-          [None]. *)
+      (** Component-derived merge readiness ([Pr_state.merge_ready_of]:
+          mergeable + CI passing + non-blocking review). NOT GitHub's
+          [mergeStateStatus]. *)
   review_decision : string option; [@yojson.option]
-      (** Raw GitHub [reviewDecision]. Diagnostics only. *)
+      (** Raw GitHub [reviewDecision]. An input to [merge_ready] upstream
+          ([Pr_state.merge_ready_of]); retained here for the event log. *)
   merge_queue_required : bool;
       (** [true] when the repository config says this PR's target branch
           requires GitHub's native merge queue. Inert in Patch 1. *)
@@ -55,6 +55,13 @@ type t = {
 }
 [@@deriving show, eq, yojson]
 (** The result of polling a single patch's PR state. *)
+
+val has_conflict : t -> bool
+(** [true] when [merge_state = Conflicting]. *)
+
+val mergeability_unknown : t -> bool
+(** [true] when [merge_state = Unknown] — GitHub is recomputing mergeability.
+    Drives [Patch_controller.automerge_transient_hold]. *)
 
 val poll : was_merged:bool -> Pr_state.t -> t
 (** [poll ~was_merged pr_state] computes the patch state updates from the

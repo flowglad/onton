@@ -34,12 +34,16 @@ type t = private {
   inflight_human_messages : string list;
   ci_checks : Types.Ci_check.t list;
   merge_ready : bool;
-  merge_state_status : string option;
-      (** Raw GitHub [mergeStateStatus] behind [merge_ready] ([merge_ready] is
-          [= Some "CLEAN"]). Retained so [reconcile_automerge] can hold the
-          automerge idle timer through a transient [UNKNOWN] (GitHub recomputing
-          mergeability after the base advanced) rather than reset it. [None]
-          until first polled / after [clear_pr]. *)
+      (** Component-derived merge readiness ([Pr_state.merge_ready_of]), not
+          GitHub's [mergeStateStatus]. *)
+  mergeability_unknown : bool;
+      (** Poll-mirror of [Pr_state.merge_state = Unknown] (GitHub recomputing
+          the test-merge, e.g. after a sibling merge advanced the base). Set
+          every poll, no hysteresis. [reconcile_automerge] reads it via
+          [Patch_controller.automerge_transient_hold] to hold the automerge idle
+          timer through the recompute blip. Replaces the former
+          [merge_state_status] string. [false] until first polled / after
+          [clear_pr]. *)
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option;
   merge_commit_sha : string option;
@@ -292,10 +296,11 @@ val base_branch_changed : t -> bool
     agent session has not yet been told about the current base branch. *)
 
 val set_merge_ready : t -> bool -> t
-(** Set the merge_ready flag from GitHub mergeStateStatus. *)
+(** Set the component-derived [merge_ready] flag ([Pr_state.merge_ready_of]). *)
 
-val set_merge_state_status : t -> string option -> t
-(** Set the raw GitHub [mergeStateStatus] string behind [merge_ready]. *)
+val set_mergeability_unknown : t -> bool -> t
+(** Set the [mergeability_unknown] poll-mirror
+    ([Pr_state.merge_state = Unknown]). *)
 
 val set_merge_queue_required : t -> bool -> t
 (** Set whether the patch's target branch is governed by a merge queue. *)
@@ -384,9 +389,10 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
 (** Derived predicate:
     [has_pr && merge_ready && not is_draft && not busy && not needs_intervention
      && base_branch = main_branch]. A patch is only approved when its PR targets
-    [main_branch] directly and is no longer a draft. [merge_ready] reflects
-    GitHub's [mergeStateStatus = CLEAN], which encapsulates required reviews,
-    passing checks, and branch protection. *)
+    [main_branch] directly and is no longer a draft. [merge_ready] is the
+    component-derived readiness ([Pr_state.merge_ready_of]: mergeable + CI
+    passing + non-blocking review), not GitHub's [mergeStateStatus]; the merge
+    attempt is the final authority on branch-protection specifics. *)
 
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. Called from
@@ -554,7 +560,7 @@ val restore :
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
-  merge_state_status:string option ->
+  mergeability_unknown:bool ->
   merge_queue_required:bool ->
   merge_queue_entry:Pr_state.merge_queue_entry option ->
   merge_commit_sha:string option ->

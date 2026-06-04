@@ -296,7 +296,7 @@ let gen_pr_state =
           is_draft;
           merge_state;
           merge_ready;
-          merge_state_status = None;
+          merge_ready_divergence = None;
           review_decision = None;
           check_status;
           ci_checks;
@@ -343,7 +343,7 @@ let gen_poller =
   QCheck2.Gen.(
     let* is_draft = bool in
     map5
-      (fun queue (merged, closed, has_conflict) merge_ready checks_passing
+      (fun queue (merged, closed, merge_state) merge_ready checks_passing
            ci_checks ->
         Onton_core.Poller.
           {
@@ -351,9 +351,8 @@ let gen_poller =
             merged;
             closed;
             is_draft;
-            has_conflict;
+            merge_state;
             merge_ready;
-            merge_state_status = None;
             review_decision = None;
             merge_queue_required = false;
             merge_queue_entry = None;
@@ -361,8 +360,9 @@ let gen_poller =
             ci_checks;
             merge_commit_sha = None;
           })
-      gen_operation_kind_queue (triple bool bool bool) bool bool
-      (list_small gen_ci_check))
+      gen_operation_kind_queue
+      (triple bool bool gen_merge_state)
+      bool bool (list_small gen_ci_check))
 
 (* -- Patch_agent -- *)
 
@@ -421,6 +421,7 @@ let gen_patch_agent_fully_populated =
     let* fallback = gen_session_fallback in
     let* pr_number = option gen_pr_number in
     let* merge_ready = bool in
+    let* mergeability_unknown = bool in
     let* checks_passing = bool in
     let* raw_llm_session_id =
       option (string_size ~gen:printable (int_range 8 36))
@@ -465,6 +466,9 @@ let gen_patch_agent_fully_populated =
       | None -> a
     in
     let a = Onton_core.Patch_agent.set_merge_ready a merge_ready in
+    let a =
+      Onton_core.Patch_agent.set_mergeability_unknown a mergeability_unknown
+    in
     let a = Onton_core.Patch_agent.set_checks_passing a checks_passing in
     return a)
 
