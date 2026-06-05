@@ -222,15 +222,15 @@ Onton has no relational DB and no HTTP API of its own, so the `db` method maps t
 
 - **DoD-1 — Concurrency cap is never exceeded**
   - **Assert**: With `--max-concurrency N`, the number of patch agents in `Running` at any instant is ≤ N.
-  - **Verify by** `ux`: Launch against a gameplan with ≥ 5 dependency-free patches and `--max-concurrency 2`; watch the status table, and cross-check with `git worktree list`.
-  - **Expected**: Never more than 2 agents in `Running` simultaneously; never more than 2 active worktrees.
+  - **Verify by** `ux`: Launch against a gameplan with ≥ 5 dependency-free patches and `--max-concurrency 2`; watch the status table and count agents showing `Running` at each refresh. (Don't use `git worktree list` as a proxy — worktrees persist after an agent finishes and are reused across runs, so the listing reflects lifetime worktrees, not concurrent execution.)
+  - **Expected**: Never more than 2 agents in `Running` simultaneously.
   - **Traces to**: Milestone 3 — concurrency gate in `Spawn_logic` / orchestrator tick.
 
 - **DoD-2 — A patch never starts before its dependencies merge**
   - **Assert**: No agent is in `Running`/`Done` while any of its graph-dependency PRs is unmerged.
   - **Verify by** `db`: Query the persisted state JSON for any agent whose status ≠ `Blocked` but whose dependency PRs are not all `merged`.
   - **Expected**: Empty result set.
-  - **Traces to**: Milestone 1 — `Graph` dependency-satisfaction; Milestone 2 — orchestrator wiring.
+  - **Traces to**: Milestone 2 — the orchestrator's eligibility gate that consults `Graph` dependency-satisfaction before marking an agent runnable.
 
 - **DoD-3 — State survives a restart**
   - **Assert**: Killing and relaunching onton restores in-flight PR numbers and per-agent statuses.
