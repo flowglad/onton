@@ -62,8 +62,9 @@ A gameplan can be **standalone** or part of a **workstream** (a larger project s
 1. Retrieve the workstream definition to understand the broader context
 2. Identify which milestone this gameplan corresponds to
 3. Review the milestone's "Definition of Done" — this informs your acceptance criteria
-4. Ensure your gameplan leaves the codebase in a consistent state
-5. Read the workstream's `Established Precedents` section (plus any milestone-scoped precedents). For each precedent, identify the specific patches in this gameplan that consume it — touch its API, implement its algorithm, depend on its invariants — and attach it to those patches' `precedents` arrays. Do **not** blanket-copy workstream precedents onto every patch; only the ones that actually use the technique. See [Leveraging Established Precedents](#leveraging-established-precedents) for the per-patch shape.
+4. Read the workstream's terminal **Definition of Done (Acceptance Suite)** and pull out every assertion whose `Traces to` names **this** milestone as owner. These are the concrete, observable obligations this gameplan must make true; they should map onto your `acceptanceCriteria` and `finalStateSpec`. You will sharpen them with real artifact names during the [write-back](#writing-back-to-the-parent-workstream).
+5. Ensure your gameplan leaves the codebase in a consistent state
+6. Read the workstream's `Established Precedents` section (plus any milestone-scoped precedents). For each precedent, identify the specific patches in this gameplan that consume it — touch its API, implement its algorithm, depend on its invariants — and attach it to those patches' `precedents` arrays. Do **not** blanket-copy workstream precedents onto every patch; only the ones that actually use the technique. See [Leveraging Established Precedents](#leveraging-established-precedents) for the per-patch shape.
 
 **If no workstream is provided**, treat this as a standalone gameplan.
 
@@ -427,7 +428,7 @@ This matters because the two artifacts have different lifespans. **A workstream 
 
 After the gameplan is finalised, validated, and its `openQuestions` are resolved, **propose a write-back to the workstream and wait for the programmer's approval before applying it.** Do not mutate the workstream silently: it is a shared planning artifact and may live in an external system (e.g. Notion via [[upsert-notion-gameplan]]). Present the intended edits as a diff or a tight summary, get sign-off, then apply them in place — updating existing entries rather than appending duplicates, and never pushing milestone-local detail up to the workstream level.
 
-The list below is not a sequence or priority order. Treat these four categories as independent; collect every applicable item before presenting the write-back summary, regardless of category.
+The list below is not a sequence or priority order. Treat these five categories as independent; collect every applicable item before presenting the write-back summary, regardless of category.
 
 Propose write-backs for:
 
@@ -437,7 +438,15 @@ Propose write-backs for:
 
 3. **Scope and Definition-of-Done reconciliation.** The finalised gameplan rarely matches the milestone's original `Definition of Done` exactly — work gets deferred, pulled forward, or split out. Reconcile the milestone record so its `Definition of Done`, `Unlocks`, and (if the milestone ends GATED) `Operator Actions Before Next Milestone` describe what the gameplan actually commits to. Now that flag names and gated state are concrete, fill in placeholder operator actions with the real flag name and the actual signals to watch. **If planning revealed follow-on work that does not fit this milestone — a deferred cutover, a flag flip and old-code removal, a newly-discovered dependency — propose adding it as a new or later milestone** (with a Definition of Done and dependency edges), rather than letting it evaporate. This is the one write-back permitted to suggest structural changes to the workstream; flag it as such so the programmer can weigh it deliberately.
 
-4. **Status, and a pointer if one is durable.** Mark this milestone as planned so the workstream stays a live index of which milestones are unplanned, planned, or executed. You may add a link to the artifact (`gameplans/<project-name>.json`, or the Notion URL if it was synced) as a convenience, but treat it as potentially dangling — the gameplan may not survive once its patches land. The status itself, and the substance captured in write-backs 1–3, must stand on their own without the link resolving.
+4. **Status, and a pointer if one is durable.** Mark this milestone as planned so the workstream stays a live index of which milestones are unplanned, planned, or executed. You may add a link to the artifact (`gameplans/<project-name>.json`, or the Notion URL if it was synced) as a convenience, but treat it as potentially dangling — the gameplan may not survive once its patches land. The status itself, and the substance captured in the other write-backs (1–3 and 5), must stand on their own without the link resolving.
+
+5. **Acceptance-suite reconciliation.** The workstream ends with a terminal **Definition of Done (Acceptance Suite)** — concrete, observable assertions, each owned by exactly one milestone via its `Traces to`. Planning this gameplan produces the real artifact names the suite needs, and the previous milestone's work has now landed, so make two passes over the suite:
+
+   - **Current milestone — conform the assertions to the *planned* implementation.** For each assertion owned by this milestone, rewrite it to reference the concrete names this gameplan introduces — the actual feature, file/module, class/function, endpoint, table, flag, and command — replacing any placeholder or abstraction left in at workstream-authoring time. Confirm each assertion is genuinely observable via its `api` / `db` / `ux` / `cmd` method against what the gameplan builds, and that its `Traces to` points at a real artifact a patch in this gameplan creates. If the gameplan delivers an observable behavior the suite does not yet assert, add an assertion; if an owned assertion describes behavior this gameplan deliberately does *not* deliver, fix or re-own it (and surface the scope change, per write-back 3). Every owned assertion must map to at least one `acceptanceCriteria` / `finalStateSpec` clause.
+
+   - **Previous milestone — conform the assertions to the *landed* code.** The previous milestone's patches are merged, but its gameplan JSON may be gone — so verify its owned assertions against the **actual codebase**, not against the old gameplan. Open the files, run the queries/commands, hit the endpoints the assertions name. Where reality has drifted from what the assertion says — a renamed file or class, a changed endpoint or flag, a command that no longer exists — correct the assertion to match the landed code so it stays runnable and its `Traces to` resolves. If an assertion now *fails* against landed code (not just drifted naming, but actually-broken behavior), do not quietly rewrite it: flag it as a regression for the programmer.
+
+   This keeps the acceptance suite a living, runnable contract: always conformant to landed code behind the frontier, and always conformant to the planned implementation at the frontier.
 
 ## Specification Language
 
@@ -474,7 +483,7 @@ V2 JSON gameplans are consumed programmatically via the `patches` and `dependenc
 - **Be explicit** — easy to execute patch-by-patch by a coding agent with no context window
 - **Include function signatures** for new/modified functions
 - **Keep it concise** — 10x easier to review than the resulting code
-- **Workstream alignment** — if part of a workstream, acceptance criteria must align with milestone's "Definition of Done"
+- **Workstream alignment** — if part of a workstream, acceptance criteria must align with the milestone's "Definition of Done" and cover every terminal Acceptance-Suite assertion this milestone owns; reconcile both during [write-back](#writing-back-to-the-parent-workstream)
 - **Specs are normative** — the formal specs are the source of truth for what "done" means; prose acceptance criteria are a human-readable summary
 
 ## References
