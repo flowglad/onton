@@ -221,8 +221,8 @@ These are decisions that did NOT produce a citable precedent — rejected librar
 Onton has no relational DB and no HTTP API of its own, so the `db` method maps to its **persisted JSON state store** and `api` maps to the **GitHub API** it polls. The suite is still black-box: each assertion is confirmed by observing running behavior, the state file, GitHub, or the TUI — not by reading orchestrator source.
 
 - **DoD-1 — Concurrency cap is never exceeded**
-  - **Assert**: With `--max-concurrent N`, the number of patch agents in `Running` at any instant is ≤ N.
-  - **Verify by** `ux`: Launch against a gameplan with ≥ 5 dependency-free patches and `--max-concurrent 2`; watch the status table, and cross-check with `git worktree list`.
+  - **Assert**: With `--max-concurrency N`, the number of patch agents in `Running` at any instant is ≤ N.
+  - **Verify by** `ux`: Launch against a gameplan with ≥ 5 dependency-free patches and `--max-concurrency 2`; watch the status table, and cross-check with `git worktree list`.
   - **Expected**: Never more than 2 agents in `Running` simultaneously; never more than 2 active worktrees.
   - **Traces to**: Milestone 3 — concurrency gate in `Spawn_logic` / orchestrator tick.
 

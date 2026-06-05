@@ -207,7 +207,7 @@ Write the workstream-level precedents once, in this skill's output. Do not dupli
 
 6. **Prefer proven precedents over rolling your own.** When a problem has well-known solutions in the literature or industry, cite them in the `Established Precedents` section so every downstream gameplan inherits the same proven design. Conscious decisions to roll your own are fine; cargo-cult avoidance of prior art is not.
 
-7. **The workstream ends with a provable Definition of Done.** The terminal acceptance suite is not optional decoration — it is the contract that says the workstream actually delivered. Every assertion must be observable (api / db / ux), independently checkable, and traced back to the code change that makes it true, so a failing assertion root-causes itself. If a promised capability has no assertion that would catch its absence, the workstream is not done — it is untested.
+7. **The workstream ends with a provable Definition of Done.** The terminal acceptance suite is not optional decoration — it is the contract that says the workstream actually delivered. Every assertion must be observable (api / db / ux / cmd), independently checkable, and traced back to the code change that makes it true, so a failing assertion root-causes itself. If a promised capability has no assertion that would catch its absence, the workstream is not done — it is untested.
 
 ## Recording
 
