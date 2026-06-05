@@ -112,6 +112,34 @@ Once milestones are identified, work out the order:
 - Which can be parallelized?
 - Are there decision points where the path forward depends on what you learn?
 
+### Phase 6: Define the Terminal Definition of Done
+
+Once the milestones are sequenced, define the workstream's **terminal Definition of Done** — the single acceptance suite that subsumes every milestone's individual DoD. The distinction matters:
+
+- A **milestone DoD** answers *"is the codebase in a safe, consistent state to pause here?"* It is allowed to talk about white-box facts — modules exist, the build is green, a parser handles a format.
+- The **terminal DoD** answers *"is the entire workstream's promised end state real, and can an outside observer prove it?"* It is black-box: behavior and state a coding agent can confirm against a running copy of the software and its database, without reading the source to decide whether the assertion passed.
+
+This is the most important deliverable for verification, so build it deliberately with the user. Work through every capability promised across all milestones and convert each into one or more **assertions**. Each assertion has four parts:
+
+1. **Assert** — an unambiguously true-or-false statement about observable behavior or state. Not "billing works" but "POSTing a valid charge to `/v1/charges` returns `201` and inserts exactly one row in `charges` with `status = 'succeeded'`." If you cannot phrase it as a single proposition that is either true or false, it is not concrete enough yet.
+2. **Verify by** — the concrete observation method. Pick whichever the assertion actually needs; common kinds:
+   - `api` — endpoint, method, payload, and the expected response (status + body shape).
+   - `db` — the exact query (SQL or equivalent) and the expected result set. For systems with no relational DB, this generalizes to any persisted state store — a JSON state file, a key-value store, an object's serialized form.
+   - `ux` — the user-facing steps and the expected rendered state.
+   - `cmd` — a command/script/CI job to run and the expected exit code, stdout, emitted artifact, or build/test outcome. This is the workhorse for infra, tooling, and CI workstreams (e.g. "push a one-line change touching only `src/agent`; `detect-affected-packages` outputs exactly `[agent-domain]` and the `test-agent-core` job is skipped"). Includes git/filesystem state, generated files, and dependency-lint rules firing.
+   If you cannot name how to observe it, the assertion is not yet testable — keep refining or drop it.
+3. **Expected** — the specific observable result that confirms the assertion holds.
+4. **Traces to** — which milestone and which code artifact (module, file, migration, endpoint, table) makes it true. This is the root-causing hook: when the assertion fails, the agent should be able to jump straight to the change responsible instead of bisecting the whole workstream.
+
+This shape is deliberately the **Given-When-Then** structure from BDD / executable-specification practice: `Verify by` is the *Given* (starting state) and *When* (action), `Expected` is the *Then* (observable consequence). Following that discipline keeps each assertion phrased as observable behavior rather than implementation detail — and the established BDD rules apply directly: keep each scenario **atomic** (one aspect of functionality) and **independent** (no ordering dependency on other assertions), so a single failure localizes cleanly. The `Traces to` field extends the classic format with the code-traceability that an autonomous agent needs to root-cause, not just detect, a regression.
+
+Guidance while drafting the suite:
+
+- **Subsume, don't restate.** Every behavioral promise spread across the milestone DoDs must reappear here as at least one observable assertion. If a milestone DoD promised a capability and no terminal assertion proves it, you have a coverage gap.
+- **Prefer behavior over structure.** "The code compiles" / "module X exists" belong in milestone DoDs, not here.
+- **Include negatives and invariants, not just happy paths.** What the system must *reject*, what must *never* appear in the DB, what must hold *under retries or concurrency*. Negative assertions catch regressions that happy-path checks miss.
+- **Keep assertions atomic and independent.** One assertion should exercise one subsystem so a single failure localizes to a single `Traces to` target. Avoid compound assertions that pass or fail for several unrelated reasons.
+
 ## Milestone Structure
 
 Each milestone should have:
@@ -151,6 +179,7 @@ Key sections:
 - **Dependency Graph** — milestone dependencies in tooling-compatible format
 - **Open Questions** — unresolved questions for the workstream
 - **Decisions Made** — key decisions that are NOT precedents (philosophy, rejected libraries, framing choices) with rationale
+- **Definition of Done (Acceptance Suite)** — the terminal section: a sequence of concrete, independently-verifiable assertions (each with an observation method and a traceback to the owning milestone/artifact) that subsume all milestone DoDs. This always comes last.
 
 ## Handoff to write-gameplan
 
@@ -176,6 +205,8 @@ Write the workstream-level precedents once, in this skill's output. Do not dupli
 5. **Don't over-plan.** Later milestones can be less detailed than early ones. You'll learn things as you go.
 
 6. **Prefer proven precedents over rolling your own.** When a problem has well-known solutions in the literature or industry, cite them in the `Established Precedents` section so every downstream gameplan inherits the same proven design. Conscious decisions to roll your own are fine; cargo-cult avoidance of prior art is not.
+
+7. **The workstream ends with a provable Definition of Done.** The terminal acceptance suite is not optional decoration — it is the contract that says the workstream actually delivered. Every assertion must be observable (api / db / ux), independently checkable, and traced back to the code change that makes it true, so a failing assertion root-causes itself. If a promised capability has no assertion that would catch its absence, the workstream is not done — it is untested.
 
 ## Recording
 
