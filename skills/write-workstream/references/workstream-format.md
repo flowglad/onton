@@ -54,6 +54,24 @@ Cross-cutting prior art (libraries, algorithms, patterns, papers, RFCs, canonica
 
 ## Decisions Made
 [Key technical or product decisions made during planning, with rationale]
+
+## Definition of Done (Acceptance Suite)
+
+The terminal acceptance suite for the whole workstream. This section always comes last. Every assertion is independently verifiable by a coding agent with the codebase, a running copy of the software, and the database — without reading source to decide whether it passed. Together these assertions subsume every milestone's Definition of Done: every behavioral promise made anywhere in the workstream reappears here as at least one observable check.
+
+Each assertion follows a Given-When-Then shape: `Verify by` is the given/when, `Expected` is the then. Keep them atomic (one aspect each) and independent (no ordering dependency), so a failure localizes to a single `Traces to` target. `Verify by` kind is one of `api`, `db`, `ux`, `cmd` (run a command / CI job / build and observe exit code, output, artifact, or git/filesystem state — the workhorse for infra and tooling workstreams).
+
+- **DoD-1 — [short name]**
+  - **Assert**: [an unambiguously true/false statement about observable behavior or state]
+  - **Verify by** `api` | `db` | `ux` | `cmd`: [exact procedure — endpoint + method + payload, the SQL/state query, the UI steps, or the command + expected exit code/output]
+  - **Expected**: [the observable result that confirms the assertion]
+  - **Traces to**: Milestone N — [module / file / migration / endpoint / table that implements it]
+
+- **DoD-2 — [short name]**
+  - **Assert**: ...
+  - **Verify by** `db`: ...
+  - **Expected**: ...
+  - **Traces to**: ...
 ```
 
 ---
@@ -197,3 +215,37 @@ These are decisions that did NOT produce a citable precedent — rejected librar
 | Lwt rejected in favor of Eio | Lwt is callback-based and harder to reason about than Eio's structured fibers. Recorded here as a rejected alternative — the chosen precedent is documented in `Established Precedents`. |
 | Raw ANSI TUI (no library) | No OCaml TUI library supports the rendering model we need (incremental updates, alternate screen, raw key input). A conscious decision to roll our own — no precedent applies. Revisit if a suitable library emerges. |
 | Spec is source of truth | When the code disagrees with the formal spec, the code is wrong. Tests are derived from the spec, not from current behavior. Project philosophy rather than an external precedent. |
+
+## Definition of Done (Acceptance Suite)
+
+Onton has no relational DB and no HTTP API of its own, so the `db` method maps to its **persisted JSON state store** and `api` maps to the **GitHub API** it polls. The suite is still black-box: each assertion is confirmed by observing running behavior, the state file, GitHub, or the TUI — not by reading orchestrator source.
+
+- **DoD-1 — Concurrency cap is never exceeded**
+  - **Assert**: With `--max-concurrency N`, the number of patch agents in `Running` at any instant is ≤ N.
+  - **Verify by** `ux`: Launch against a gameplan with ≥ 5 dependency-free patches and `--max-concurrency 2`; watch the status table and count agents showing `Running` at each refresh. (Don't use `git worktree list` as a proxy — worktrees persist after an agent finishes and are reused across runs, so the listing reflects lifetime worktrees, not concurrent execution.)
+  - **Expected**: Never more than 2 agents in `Running` simultaneously.
+  - **Traces to**: Milestone 3 — concurrency gate in `Spawn_logic` / orchestrator tick.
+
+- **DoD-2 — A patch never starts before its dependencies merge**
+  - **Assert**: No agent is in `Running`/`Done` while any of its graph-dependency PRs is unmerged.
+  - **Verify by** `db`: Query the persisted state JSON for any agent whose status ≠ `Blocked` but whose dependency PRs are not all `merged`.
+  - **Expected**: Empty result set.
+  - **Traces to**: Milestone 2 — the orchestrator's eligibility gate that consults `Graph` dependency-satisfaction before marking an agent runnable.
+
+- **DoD-3 — State survives a restart**
+  - **Assert**: Killing and relaunching onton restores in-flight PR numbers and per-agent statuses.
+  - **Verify by** `ux` + `db`: Start a run, note PR numbers and statuses in the table, send SIGINT, relaunch; diff the state JSON before and after.
+  - **Expected**: Identical agent set, PR numbers, and statuses after relaunch.
+  - **Traces to**: Milestone 4 — PR-number persistence + persistence migration.
+
+- **DoD-4 — Review-feedback comments are de-duplicated**
+  - **Assert**: The orchestrator posts each unique review-feedback comment to a PR at most once across poll cycles.
+  - **Verify by** `api`: After two poll cycles with no new review activity, fetch the PR's comments via the GitHub API.
+  - **Expected**: No duplicate comment bodies; the tracked comment IDs in the state JSON match the comments present on the PR.
+  - **Traces to**: Milestone 4 — GitHub comment-ID tracking.
+
+- **DoD-5 — Rebases are orchestrator-executed, not agent-executed**
+  - **Assert**: When a dependency PR merges, the orchestrator rebases the dependent branches onto the new main.
+  - **Verify by** `ux` + `git`: Merge a dependency PR; inspect a dependent branch's `git log` / merge-base.
+  - **Expected**: The dependent branch's base equals the merged main SHA, and the rebase appears in orchestrator activity (not agent) logs.
+  - **Traces to**: Milestone 5 — orchestrator-executed rebase spec fix.
