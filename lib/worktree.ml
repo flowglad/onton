@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain worktree-parser *)
+
 open Base
 
 type t = { patch_id : Types.Patch_id.t; branch : Types.Branch.t; path : string }

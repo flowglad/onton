@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain event-log *)
+
 open Types
 
 (** Append-only JSONL event log for diagnosing session state issues.

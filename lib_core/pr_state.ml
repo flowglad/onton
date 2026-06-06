@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain pr-state *)
+
 open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 

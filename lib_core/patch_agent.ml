@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain patch-agent *)
+
 open Base
 open Types
 open Operation_kind

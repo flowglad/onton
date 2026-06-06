@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain pr-state *)
+
 open Types
 
 (** Forge-agnostic pull request state.

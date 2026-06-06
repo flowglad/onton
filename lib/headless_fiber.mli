@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain headless-fiber *)
+
 module Headless_env : sig
   module type S = sig
     val runtime : Runtime.t

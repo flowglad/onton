@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain rlimit *)
+
 (** Tests for [Onton.Rlimit]: POSIX RLIMIT_NOFILE bindings.
 
     We exercise [get_nofile] and [try_raise_nofile_soft] in-process; we do not
@@ -37,4 +40,15 @@ let () =
   test_get_returns_sane_limits ();
   test_try_raise_is_capped_at_hard ();
   test_try_raise_noop_when_already_sufficient ();
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"try_raise never returns soft above hard" ~count:5
+       QCheck2.Gen.(int_range 1 4096)
+       (fun target ->
+         let after = try_raise_nofile_soft ~target in
+         after.soft <= after.hard));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"get_nofile returns sane limits" ~count:5
+       QCheck2.Gen.unit (fun () ->
+         let lim = get_nofile () in
+         lim.soft > 0 && lim.hard >= lim.soft));
   print_endline "test_rlimit: OK"

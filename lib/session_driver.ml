@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain orchestrator *)
+
 open Base
 
 let truncate s n =

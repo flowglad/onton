@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain review-backend *)
+
 (** Configured review-source the poller queries in addition to the forge.
 
     Each entry corresponds to one server Onton polls for findings. Only the

@@ -1,3 +1,6 @@
+(* @archlint.module value
+   @archlint.domain term-key *)
+
 (** Pure types for keyboard input events.
 
     The effectful read functions (stdin polling, escape-sequence parsing) live

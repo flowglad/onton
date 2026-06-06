@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain activity-log *)
+
 open Base
 
 (** Activity log for tracking patch state transitions and system events.

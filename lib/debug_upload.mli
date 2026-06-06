@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain debug-upload *)
+
 (** Upload project debug state for remote troubleshooting.
 
     Collects snapshot, event log, config, and gameplan; scrubs secrets; uploads

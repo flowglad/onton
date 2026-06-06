@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain worktree-parser *)
+
 open Base
 open Onton
 open Onton_core
@@ -1250,4 +1253,12 @@ let () =
    assert_eq "test10: exactly 3 commits" "3" (Int.to_string (List.length lines));
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  Stdlib.print_endline "All rebase_onto integration tests passed."
+  Stdlib.print_endline "All rebase_onto integration tests passed.";
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"worktree parser public surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore Worktree_parser.classify_push_result;
+         ignore Worktree_parser.normalize_path;
+         ignore Worktree_parser.parse_commit_count;
+         ignore Worktree_parser.push_gate_from_count;
+         true))

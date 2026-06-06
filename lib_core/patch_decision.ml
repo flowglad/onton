@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain patch-decision *)
+
 open Base
 open Types
 

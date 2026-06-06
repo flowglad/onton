@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain rebase-decision *)
+
 open Base
 
 (* ── Structured plan ─────────────────────────────────────────────────── *)

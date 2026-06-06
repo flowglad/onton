@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain startup-reconciler *)
+
 open Types
 
 (** Startup reconciliation: discover existing GitHub PRs, recover worktrees, and

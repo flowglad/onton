@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain session-meta *)
+
 open Base
 
 external unsetenv_stub : string -> unit = "caml_onton_unsetenv"

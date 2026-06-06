@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain display-status *)
+
 open Base
 open Types
 

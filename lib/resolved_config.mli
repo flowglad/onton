@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain resolved-config *)
+
 open Onton_core.Types
 
 type config = {

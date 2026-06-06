@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain rediscover-decision *)
+
 open Base
 open Onton_core
 open Onton_core.Types
@@ -123,6 +126,13 @@ let prop_independent_of_patch_id_and_pr_number =
           RD.{ patch_id = p2; pr_number = n2; in_gameplan; result } ))
     (fun (a, b) -> same_tag (RD.classify a) (RD.classify b))
 
+let prop_classify_vanish_log_total =
+  Test.make ~name:"classify_vanish_log is total" ~count:500
+    Gen.(pair gen_any_input bool)
+    (fun (input, already_logged) ->
+      match RD.classify_vanish_log (RD.classify input) ~already_logged with
+      | Log_emit | Log_skip -> true)
+
 let suite =
   [
     prop_classify_total;
@@ -132,6 +142,7 @@ let suite =
     prop_ok_none_adhoc_is_mark_missing;
     prop_error_is_log;
     prop_independent_of_patch_id_and_pr_number;
+    prop_classify_vanish_log_total;
   ]
 
 let () =

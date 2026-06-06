@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain backend-routing *)
+
 (** Pure decision: which [(backend, model)] tuple should drive a given patch's
     session?
 

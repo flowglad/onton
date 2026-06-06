@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain priority *)
+
 open Base
 open Types
 module Ok = Operation_kind

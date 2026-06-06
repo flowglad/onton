@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain json *)
+
 open Base
 open Onton_core
 
@@ -96,6 +99,42 @@ let strip_ansi_known_sequences =
       in
       String.equal (Claude_event_parser.strip_ansi raw) "red\nplain\tbody")
 
+let json_accessors_are_total =
+  QCheck2.Test.make ~name:"Json accessors are total" ~count:1000 gen_yojson
+    (fun json ->
+      try
+        ignore (Json.field "field" json);
+        ignore (Json.string json);
+        ignore (Json.int json);
+        ignore (Json.bool json);
+        ignore (Json.list json);
+        ignore (Json.assoc json);
+        ignore (Json.string_field "field" json);
+        ignore (Json.int_field "field" json);
+        ignore (Json.bool_field "field" json);
+        ignore (Json.try_of_yojson (fun value -> value) json);
+        true
+      with _ -> false)
+
+let claude_public_surface_is_linked =
+  QCheck2.Test.make ~name:"claude parser public surface is linked"
+    QCheck2.Gen.unit (fun () ->
+      ignore Claude_event_parser.auto_model;
+      ignore Claude_event_parser.bare_args;
+      ignore Claude_event_parser.budget_cap_args;
+      ignore Claude_event_parser.build_args;
+      ignore Claude_event_parser.build_stream_args;
+      ignore Claude_event_parser.find_json_start;
+      ignore Claude_event_parser.ignore_warn;
+      ignore Claude_event_parser.max_turns_for;
+      ignore Claude_event_parser.model_args;
+      ignore Claude_event_parser.no_env;
+      ignore Claude_event_parser.parse_stream_event;
+      ignore Claude_event_parser.parse_stream_events;
+      ignore Claude_event_parser.session_init_of_json;
+      ignore Claude_event_parser.with_api_key;
+      true)
+
 (* ─────────────────────────────────────────────────────────────────────────
    Tests
    ───────────────────────────────────────────────────────────────────────── *)
@@ -125,6 +164,8 @@ let () =
       strip_ansi_does_not_grow;
       strip_ansi_removes_stray_controls;
       strip_ansi_known_sequences;
+      json_accessors_are_total;
+      claude_public_surface_is_linked;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

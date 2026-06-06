@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain orchestrator *)
+
 open Base
 open Onton
 open Onton_core
@@ -498,3 +501,48 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-11 passed"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"orchestrator public surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore Orchestrator.all_messages;
+         ignore Orchestrator.apply_anchor_events;
+         ignore Orchestrator.apply_conflict_rebase_with_anchor;
+         ignore Orchestrator.apply_rebase_with_anchor;
+         ignore Orchestrator.clear_automerge_deadline;
+         ignore Orchestrator.clear_branch_blocked;
+         ignore Orchestrator.clear_has_conflict;
+         ignore Orchestrator.clear_pr;
+         ignore Orchestrator.clear_session_fallback;
+         ignore Orchestrator.current_message;
+         ignore Orchestrator.find_message;
+         ignore Orchestrator.increment_automerge_failure_count;
+         ignore Orchestrator.mark_message_obsolete;
+         ignore Orchestrator.mark_patch_pending_messages_obsolete_except;
+         ignore Orchestrator.mark_running;
+         ignore Orchestrator.message_patch_id;
+         ignore Orchestrator.message_status;
+         ignore Orchestrator.on_pr_discovery_failure;
+         ignore Orchestrator.reset_automerge_failure_count;
+         ignore Orchestrator.reset_ci_failure_count;
+         ignore Orchestrator.reset_conflict_noop_count;
+         ignore Orchestrator.resume_message;
+         ignore Orchestrator.set_automerge_deadline;
+         ignore Orchestrator.set_automerge_enabled;
+         ignore Orchestrator.set_automerge_inflight;
+         ignore Orchestrator.set_branch_blocked;
+         ignore Orchestrator.set_branch_rebased_onto_sha;
+         ignore Orchestrator.set_ci_checks;
+         ignore Orchestrator.set_is_draft;
+         ignore Orchestrator.set_main_branch;
+         ignore Orchestrator.set_merge_queue_entry;
+         ignore Orchestrator.set_merge_queue_required;
+         ignore Orchestrator.set_merge_ready;
+         ignore Orchestrator.set_mergeability_unknown;
+         ignore Orchestrator.set_notified_base_branch;
+         ignore Orchestrator.set_worktree_path;
+         ignore Patch_controller.apply_automerge_failure;
+         ignore Patch_controller.apply_automerge_success;
+         true));
+  Stdlib.print_endline "orchestrator public surface linked"

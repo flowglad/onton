@@ -1,3 +1,6 @@
+(* @archlint.module value
+   @archlint.domain poll-outcome *)
+
 open Base
 
 (** Per-patch terminal outcome of a single GitHub poll attempt.

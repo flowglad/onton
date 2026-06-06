@@ -1,3 +1,6 @@
+(* @archlint.module state
+   @archlint.domain session-meta *)
+
 type t = {
   list_selected : int ref;
   detail_scroll : int ref;

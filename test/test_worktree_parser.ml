@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain worktree-parser *)
+
 open Base
 open Onton_core
 open Onton_core.Types

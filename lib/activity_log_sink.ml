@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain activity-log *)
+
 let sink ~update () =
   let consume = function
     | Telemetry.Event.Free_form { patch_id; message; _ } ->

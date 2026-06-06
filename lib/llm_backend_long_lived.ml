@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain llm-backend-long-lived *)
+
 open Base
 
 type result = Llm_backend.result = {

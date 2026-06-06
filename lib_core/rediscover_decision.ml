@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain rediscover-decision *)
+
 open Base
 open Types
 

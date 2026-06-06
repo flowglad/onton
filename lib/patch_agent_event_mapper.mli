@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain patch-agent-event-mapper *)
+
 open Base
 
 (** Total mapping from patch-agent stdio RPC events into onton's canonical

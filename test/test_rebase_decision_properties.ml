@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain rebase-decision *)
+
 open Base
 open Onton_core
 

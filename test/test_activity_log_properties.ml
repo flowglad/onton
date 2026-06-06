@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain activity-log *)
+
 open Base
 open Onton_core
 
@@ -232,6 +235,12 @@ let prop_trim_large_max_unchanged =
       let trimmed = Activity_log.trim log ~max:10_000 in
       Activity_log.equal log trimmed)
 
+let prop_stream_kind_of_raw_total =
+  QCheck2.Test.make ~name:"stream_kind_of_raw is total" ~count:200
+    QCheck2.Gen.string_small (fun raw ->
+      ignore (Activity_log.stream_kind_of_raw ~channel:`Stdout raw);
+      true)
+
 let () =
   let suite =
     [
@@ -246,6 +255,7 @@ let () =
       prop_trim_idempotent;
       prop_trim_zero_empty;
       prop_trim_large_max_unchanged;
+      prop_stream_kind_of_raw_total;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

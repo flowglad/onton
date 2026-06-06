@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain runtime-logging *)
+
 (** Tiny convenience wrappers around [Telemetry_dispatch.emit] for the two most
     common activity-log shapes. The [Runtime.t] argument is retained so callers
     do not need to know that activity logging is routed through Telemetry sinks.

@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain spawn-logic *)
+
 type spawn = Orchestrator.action
 
 let plan_spawns orch ~patches = Patch_controller.plan_actions orch ~patches

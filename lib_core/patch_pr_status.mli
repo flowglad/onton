@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain patch-pr-status *)
+
 open Types
 
 (** The lifecycle state of a patch's GitHub pull request.

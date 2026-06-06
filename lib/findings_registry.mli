@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain findings-registry *)
+
 (** Runtime side-table mapping a review-service finding id to the backend it
     came from.
 

@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain json *)
+
 open Base
 
 type route = { backend : string; model : string option }

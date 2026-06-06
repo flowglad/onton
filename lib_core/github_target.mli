@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain github-target *)
+
 (** Pure GitHub forge target logic.
 
     [owner] and [repo] are generic git-forge concepts; this module captures the

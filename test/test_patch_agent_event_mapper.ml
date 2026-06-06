@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain patch-agent-event-mapper *)
+
 open Base
 open Onton
 open Onton_core
@@ -132,6 +135,12 @@ let prop_deterministic =
         (Patch_agent_event_mapper.map_event event)
         (Patch_agent_event_mapper.map_event event))
 
+let prop_public_surface_is_linked =
+  QCheck2.Test.make ~name:"Patch_agent_event_mapper > public surface is linked"
+    QCheck2.Gen.unit (fun () ->
+      ignore Patch_agent_event_mapper.parse_stop_reason;
+      true)
+
 let () =
   let suite =
     [
@@ -142,6 +151,7 @@ let () =
       prop_stop_reason_mapping_contract;
       prop_whitespace_code_uses_message;
       prop_deterministic;
+      prop_public_surface_is_linked;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

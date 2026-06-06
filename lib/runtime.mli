@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain runtime *)
+
 open Types
 
 (** Shared mutable runtime state, protected by an Eio mutex.

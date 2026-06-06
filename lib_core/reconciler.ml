@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain reconciler *)
+
 open Base
 open Types
 

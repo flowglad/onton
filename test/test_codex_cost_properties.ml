@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain codex-cost *)
+
 open Base
 open Onton_core
 
@@ -485,6 +488,11 @@ let prop_interleaving_state_independent_of_order =
       let s2, _ = fold_turns ~model ~cap:None (List.rev usages) in
       Int64.equal s1.cumulative_nano_usd s2.cumulative_nano_usd)
 
+let prop_float_usd_of_nano_usd_is_non_negative =
+  QCheck2.Test.make ~name:"float_usd_of_nano_usd is non-negative" ~count:200
+    QCheck2.Gen.(map Int64.of_int (int_range 0 1_000_000))
+    (fun nanos -> Float.(Codex_cost.float_usd_of_nano_usd nanos >= 0.0))
+
 (* ---------- Runner ---------- *)
 
 let () =
@@ -516,6 +524,7 @@ let () =
       prop_interleaving_final_result_count_equals_turn_count;
       prop_interleaving_error_is_sticky;
       prop_interleaving_state_independent_of_order;
+      prop_float_usd_of_nano_usd_is_non_negative;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

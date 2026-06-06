@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain term *)
+
 (** Low-level ANSI terminal primitives.
 
     Provides SGR styling, cursor/screen control, keyboard input parsing, mouse

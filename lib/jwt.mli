@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain jwt *)
+
 (** Minimal RS256 JWT signer for the review-service backend.
 
     Mints short-lived tokens whose claims match the review-service spec:

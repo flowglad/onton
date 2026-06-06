@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain json *)
+
 open Base
 
 (* Tests for the total JSON accessors in Onton_core.Json. The contract under

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain session-artifacts *)
+
 val create :
   project_name:string ->
   patch_id:Types.Patch_id.t ->

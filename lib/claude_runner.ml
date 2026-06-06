@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain pi-event-parser *)
+
 open Base
 
 (* Pure parsing, ANSI scrubbing, and CLI-arg construction live in

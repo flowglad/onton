@@ -1,3 +1,6 @@
+(* @archlint.module value
+   @archlint.domain forge *)
+
 (** Forge interface: consumer-facing abstraction over forge operations.
 
     Each forge implementation (GitHub, GitLab, etc.) satisfies this signature.

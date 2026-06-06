@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain rlimit *)
+
 (** Thin POSIX bindings for [RLIMIT_NOFILE] (per-process open-file cap).
 
     onton needs a generous FD limit because it opens many pipes (per-LLM and

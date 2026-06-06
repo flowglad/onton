@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain patch-pr-status *)
+
 open Base
 open Onton_core
 open Onton_core.Types
@@ -144,6 +147,16 @@ let prop_set_present_idempotent =
       let twice = Patch_pr_status.set_present once n in
       Patch_pr_status.equal once twice)
 
+let prop_classify_recovery_on_observe_total =
+  Test.make ~name:"classify_recovery_on_observe is total" ~count:200 gen_any
+    (fun t ->
+      match Patch_pr_status.classify_recovery_on_observe t with
+      | Lift_to_present n -> (
+          match t with
+          | Missing n' -> Pr_number.equal n n'
+          | Absent | Present _ -> false)
+      | No_recovery_needed -> not (Patch_pr_status.is_missing t))
+
 let prop_legacy_never_produces_missing =
   Test.make ~name:"legacy formats never produce Missing" ~count:100
     Gen.(oneof [ return `Null; map Pr_number.yojson_of_t gen_pr_number ])
@@ -173,6 +186,7 @@ let suite =
     prop_classify_mark_missing_agrees;
     prop_classify_set_present_total;
     prop_set_present_idempotent;
+    prop_classify_recovery_on_observe_total;
   ]
 
 let () =

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain git-env *)
+
 (** A scrubbed [Unix.environment ()] for spawning [git] subprocesses.
 
     Any inherited [GIT_*] variable can override the [-C path] flag, redirect git

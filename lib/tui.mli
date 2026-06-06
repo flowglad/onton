@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain tui *)
+
 open Base
 open Types
 

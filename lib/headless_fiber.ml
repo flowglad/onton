@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain activity-log *)
+
 open Base
 open Types
 

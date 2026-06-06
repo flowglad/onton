@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain json *)
+
 open Base
 
 (** Pure stream-json event parser, ANSI scrubber, and CLI-arg builders for

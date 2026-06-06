@@ -1,3 +1,6 @@
+(* @archlint.module state
+   @archlint.domain orchestrator *)
+
 open Onton
 open Onton_core
 open Onton_core.Types

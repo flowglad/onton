@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain patch-agent *)
+
 open Base
 
 (** Per-patch agent state machine.

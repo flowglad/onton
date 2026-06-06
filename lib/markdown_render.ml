@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain markdown-render *)
+
 open Base
 
 (** Markdown-to-ANSI terminal renderer using cmarkit (CommonMark parser).

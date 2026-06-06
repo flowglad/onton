@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain start-eligibility *)
+
 (** Pure decision: is a [Start] action eligible to fire right now, given whether
     its base patch's local branch has already incorporated the merged form of
     its dependencies?

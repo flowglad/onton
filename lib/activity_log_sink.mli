@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain activity-log-sink *)
+
 val sink :
   update:((Activity_log.t -> Activity_log.t) -> unit) ->
   unit ->

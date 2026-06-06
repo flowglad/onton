@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain run-classification *)
+
 open Base
 
 (** Pure classification of Claude runner outcomes.

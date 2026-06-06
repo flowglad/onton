@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain run-classification *)
+
 open Base
 open Onton_core
 
@@ -212,6 +215,11 @@ let () =
         | Success _ | Session_failed _ ->
             false)
   in
+  let prop_is_context_exhausted_public_surface =
+    Test.make ~name:"is_context_exhausted recognizes overflow terms" ~count:100
+      Gen.string (fun suffix ->
+        is_context_exhausted ("model_context_window_exceeded " ^ suffix))
+  in
 
   let suite =
     [
@@ -227,6 +235,7 @@ let () =
       prop_no_continue_uses_exit_code;
       prop_context_exhausted;
       prop_timeout_beats_context_exhausted;
+      prop_is_context_exhausted_public_surface;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

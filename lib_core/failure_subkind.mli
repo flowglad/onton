@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain failure-subkind *)
+
 open Base
 
 type t =

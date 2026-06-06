@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain session-id *)
+
 open Base
 
 let rng_ready =

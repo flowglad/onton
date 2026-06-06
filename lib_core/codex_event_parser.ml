@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain codex-event-parser *)
+
 open Base
 
 (** Pure NDJSON event parser for [codex exec --json] output.
