@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain review-backend *)
+
 (* Regression test for the null-[mergeCommit] poll crash.
 
    Every open/draft/unmerged PR comes back from GitHub with

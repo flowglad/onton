@@ -1,3 +1,6 @@
+(* @archlint.module exempt
+   @archlint.exempt-reason framework-boundary *)
+
 open Base
 
 let configured_github_token = ref None

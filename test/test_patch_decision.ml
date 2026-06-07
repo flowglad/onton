@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain patch-decision *)
+
 open Base
 open Onton_core.Types
 open Onton_core.Patch_agent
@@ -1079,4 +1082,9 @@ let () =
     QCheck2.Test.check_exn prop;
     Stdlib.print_endline "AS-P5 passed"
   in
-  ()
+  ();
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"patch decision public surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore respond_delivery;
+         true))

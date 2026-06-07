@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain repo-config *)
+
 (** Per-repo configuration loaded from
     [~/.config/onton/<owner>/<repo>/config.json] (the same directory layout the
     [User_config] hook lives in — see [User_config.config_dir]).

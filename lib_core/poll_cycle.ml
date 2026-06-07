@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain poll-cycle *)
+
 open Base
 open Types
 

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain persistence-fiber *)
+
 open Onton_core.Types
 
 module Persistence_env : sig

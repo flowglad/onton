@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain project-lock *)
+
 (** Process-level advisory lock on a project data directory.
 
     At most one onton process may hold the lock for a given project at a time.

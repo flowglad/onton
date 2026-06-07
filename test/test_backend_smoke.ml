@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain review-backend *)
+
 open Base
 open Onton
 open Onton_core
@@ -381,3 +384,18 @@ exit 0|}
     Stdio.printf "%d backend smoke test(s) failed\n" !failures;
     Stdlib.exit 1)
   else Stdio.printf "all backend smoke tests passed\n"
+
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"process_line_strip ignores blank lines" ~count:100
+       QCheck2.Gen.string_small (fun whitespace ->
+         let blank = String.map whitespace ~f:(fun _ -> ' ') in
+         List.is_empty
+           (process_line_strip
+              (fun _ -> [ Types.Stream_event.Turn_started ])
+              blank)));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"review backend parser public surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore Review_backend.parse_array;
+         true))

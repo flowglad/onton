@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain review-service *)
+
 open Base
 open Onton_core
 
@@ -257,6 +260,17 @@ let prop_resolve_request_shape =
           && Bool.equal reason_present (Option.is_some req.reason)
       | _ -> false)
 
+let prop_public_parser_surface_is_linked =
+  QCheck2.Test.make ~name:"review service parser public surface is linked"
+    QCheck2.Gen.unit (fun () ->
+      ignore Review_service.parse_error_message;
+      ignore Review_service.parse_finding;
+      ignore Review_service.parse_findings_response;
+      ignore Review_service.parse_resolve_response;
+      ignore Review_service.parse_resolve_response_string;
+      ignore Review_service.parse_wontfix_artifact;
+      true)
+
 let () =
   let suite =
     [
@@ -270,6 +284,7 @@ let () =
       prop_resolve_kind_round_trip;
       prop_resolve_request_to_yojson_total;
       prop_resolve_request_shape;
+      prop_public_parser_surface_is_linked;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

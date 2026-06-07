@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain patch-agent *)
+
 (** Regression tests for [Tui.human_intervention_reason].
 
     The misleading-banner bug: a patch pushed into needs-intervention by a high

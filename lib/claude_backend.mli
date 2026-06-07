@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain claude-backend *)
+
 val create :
   name:string ->
   model:string option ->

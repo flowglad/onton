@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain patch-agent-backend *)
+
 open Base
 
 (** Patch-agent long-lived backend parity contract.

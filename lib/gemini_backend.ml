@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain pi-event-parser *)
+
 open Base
 
 (* Pure parser + CLI-arg builder live in [Gemini_event_parser] (lib_core/).

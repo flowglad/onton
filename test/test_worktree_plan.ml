@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain worktree-plan *)
+
 open Base
 open Onton_core.Types
 open Onton_core.Worktree_plan
@@ -154,6 +157,9 @@ let () =
       Test.make
         ~name:"ensures_worktree_before_fs: lone Ensure_worktree is accepted"
         Gen.unit (fun () -> ensures_worktree_before_fs [ Ensure_worktree ]);
+      Test.make ~name:"origin_of prefixes origin" gen_branch (fun branch ->
+          Branch.equal (origin_of branch)
+            (Branch.of_string ("origin/" ^ Branch.to_string branch)));
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

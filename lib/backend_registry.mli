@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain backend-registry *)
+
 (** Lazy cache of backend instances keyed by [(backend_name, model)].
 
     A run can route different patches to different backends (see

@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain backend-routing *)
+
 open Base
 open Onton_core
 
@@ -230,6 +233,13 @@ let () =
     Test.make ~name:"is_auto_model: None -> false" ~count:1 (Gen.return ())
       (fun () -> not (Backend_routing.is_auto_model None))
   in
+  let prop_public_surface_is_linked =
+    Test.make ~name:"backend routing public surface is linked" Gen.unit
+      (fun () ->
+        ignore Backend_routing.resolve_auto;
+        ignore Backend_routing.resolve_pair;
+        true)
+  in
 
   let suite =
     [
@@ -242,6 +252,7 @@ let () =
       prop_total;
       prop_is_auto_model_case_insensitive;
       prop_is_auto_model_none;
+      prop_public_surface_is_linked;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

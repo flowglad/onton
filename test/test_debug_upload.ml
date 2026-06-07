@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain failure-subkind *)
+
 open Base
 open Onton
 open Onton_core
@@ -148,6 +151,35 @@ let setup_project () =
 
 let () =
   Random.self_init ();
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"telemetry route selects interested sinks"
+       ~count:100 QCheck2.Gen.bool (fun interested ->
+         let sink =
+           {
+             Telemetry.Sink.name = "debug-upload-route-test";
+             interested_in = (fun _ -> interested);
+             consume = (fun _ -> ());
+           }
+         in
+         let routed =
+           Telemetry.route ~sinks:[ sink ]
+             (Telemetry.Event.Free_form
+                {
+                  patch_id = None;
+                  level = Telemetry.Event.Info;
+                  message = "debug";
+                })
+         in
+         Bool.equal (List.length routed = 1) interested));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"failure subkind JSON surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore Failure_subkind.init_info_of_yojson;
+         ignore Failure_subkind.t_of_yojson;
+         ignore Failure_subkind.to_string;
+         ignore Failure_subkind.yojson_of_init_info;
+         ignore Failure_subkind.yojson_of_t;
+         true));
   let project_name = setup_project () in
   let bundle =
     Debug_upload.build_bundle ~project_name ~version:"1.2.3-test"

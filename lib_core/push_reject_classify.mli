@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain push-reject-classify *)
+
 (** Pure classifier for [git push] server-side rejection messages.
 
     [classify_push_result] in [Worktree_parser] decides that a push was rejected

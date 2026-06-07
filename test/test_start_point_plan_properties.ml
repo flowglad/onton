@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain start-point-plan *)
+
 open Base
 open Onton_core
 

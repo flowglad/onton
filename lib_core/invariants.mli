@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain invariants *)
+
 type violation = { invariant : string; details : string }
 [@@deriving show, eq, sexp_of]
 

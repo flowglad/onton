@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain worktree-setup *)
+
 (** Worktree provisioning for a patch.
 
     The runner and the worktree-plan executor both need to materialise a

@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain start-point-plan *)
+
 open Base
 
 type sha = string [@@deriving show, eq, sexp_of, compare]

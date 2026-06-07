@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain prune-runner *)
+
 val run_prune :
   net:_ Eio.Net.t -> clock:_ Eio.Time.clock -> refresh:bool -> unit -> int
 (** Remove stored projects whose gameplan patches are all merged.

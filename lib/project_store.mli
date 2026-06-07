@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain project-store *)
+
 (** Project-level data directory management.
 
     Persists project configuration and gameplan sources to

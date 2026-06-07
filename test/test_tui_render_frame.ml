@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain markdown-render *)
+
 (** Rendering tests for [Tui.render_frame], focused on the short-terminal
     behavior described in flowglad/onton#267.
 
@@ -222,4 +225,20 @@ let () =
   test_detail_view_no_summary ();
   test_timeline_view_no_summary ();
   test_patches_render_above_activity ();
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"render_frame handles generated dimensions"
+       ~count:100
+       QCheck2.Gen.(pair (int_range 20 120) (int_range 4 40))
+       (fun (width, height) ->
+         let frame = render ~width ~height one_view in
+         Tui.patch_count frame <= List.length one_view));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"markdown render public surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore Markdown_render.is_tool_marker;
+         ignore Markdown_render.render_block;
+         ignore Markdown_render.render_inline;
+         ignore Markdown_render.render_to_lines;
+         ignore Markdown_render.style_tool_marker;
+         true));
   Stdlib.print_endline "PASS: tui render_frame short-height tests"

@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain orchestrator *)
+
 let () =
   let patches =
     [

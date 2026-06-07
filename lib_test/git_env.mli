@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain test-support *)
+
 (** Test helpers for spawning [git] without inheriting a poisoned environment.
 
     When [dune runtest] runs inside this project's pre-commit hook, git sets

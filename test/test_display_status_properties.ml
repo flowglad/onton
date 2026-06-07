@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain display-status *)
+
 open Base
 open Onton_core
 
@@ -158,6 +161,13 @@ let prop_blocked_by_dep_requires_off_main =
       Display_status.equal Blocked_by_dep
         (Display_status.derive ctx ~patch_id ~current_op:None ~main_branch))
 
+let prop_public_surface_is_linked =
+  QCheck2.Test.make ~name:"display status public surface is linked"
+    QCheck2.Gen.unit (fun () ->
+      ignore Display_status.is_on_main;
+      ignore Display_status.t_of_yojson;
+      true)
+
 let () =
   let suite =
     [
@@ -167,6 +177,7 @@ let () =
       prop_approved_busy_is_running;
       prop_pending_when_no_pr;
       prop_blocked_by_dep_requires_off_main;
+      prop_public_surface_is_linked;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

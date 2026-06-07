@@ -1,3 +1,6 @@
+(* @archlint.module state
+   @archlint.domain session-meta *)
+
 open Base
 
 let registry : Telemetry.Sink.t list ref = ref []

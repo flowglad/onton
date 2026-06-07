@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain test-support *)
+
 open Base
 
 let clean_env = Onton.Git_env.clean_env

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain start-point-plan *)
+
 (** Pure decision: what start point should a worktree's branch be created from,
     given the observed state of local and remote refs?
 

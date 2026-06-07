@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain review-service *)
+
 (** Pure parsers for the review-service HTTP API.
 
     The review-service is a separate review backend (alongside GitHub review

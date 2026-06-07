@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain review-service *)
+
 (** Live-host probe for the review-service findings API.
 
     Drives [Review_service_client] (and therefore [Jwt]) against a real server.

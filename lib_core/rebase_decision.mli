@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain rebase-decision *)
+
 (** Pure decision: what arguments should the orchestrator pass to [git rebase]
     when re-basing a patch branch?
 

@@ -1,3 +1,6 @@
+(* @archlint.module stateTest
+   @archlint.domain orchestrator *)
+
 open Base
 open Onton_core.Types
 open Onton_test_support.Test_generators

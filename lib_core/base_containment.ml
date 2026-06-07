@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain base-containment *)
+
 open Base
 
 let contains_merged_siblings ~graph ~patch_id ~has_merged ~merge_sha ~branch_of

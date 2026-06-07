@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain review-service *)
+
 let read_artifact path =
   if not (Stdlib.Sys.file_exists path) then Ok ""
   else

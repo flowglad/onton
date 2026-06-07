@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain claude-process *)
+
 open Base
 
 (** A Claude session's status. *)

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain codex-backend *)
+
 val create :
   model:string option ->
   process_mgr:_ Eio.Process.mgr ->

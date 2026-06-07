@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain patch-controller *)
+
 open Types
 
 type github_effect =

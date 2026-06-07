@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain patch-agent-rpc *)
+
 open Base
 
 type command =

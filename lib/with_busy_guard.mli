@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain with-busy-guard *)
+
 module type ENV = sig
   val runtime : Runtime.t
   val event_log : Event_log.t

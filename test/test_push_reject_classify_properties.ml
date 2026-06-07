@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain push-reject-classify *)
+
 open Base
 open Onton_core
 

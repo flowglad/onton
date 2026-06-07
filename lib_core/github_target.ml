@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain github-target *)
+
 open Base
 
 let owner_re = Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9-]{0,38}$|} |> Re.compile

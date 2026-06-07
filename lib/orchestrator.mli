@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain orchestrator *)
+
 open Base
 open Types
 

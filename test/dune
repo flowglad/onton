@@ -114,6 +114,91 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_anchor_state_properties)
+ (modules test_anchor_state_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_anchor_history_properties)
+ (modules test_anchor_history_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_claude_process_properties)
+ (modules test_claude_process_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_content_gate_properties)
+ (modules test_content_gate_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_graph_properties)
+ (modules test_graph_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_invariants_properties)
+ (modules test_invariants_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_state_properties)
+ (modules test_state_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_pr_state_properties)
+ (modules test_pr_state_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_token_scrub_properties)
+ (modules test_token_scrub_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_backend_event_parser_properties)
+ (modules test_backend_event_parser_properties)
+ (libraries onton_core qcheck-core yojson))
+
+(test
+ (name test_gemini_event_parser_properties)
+ (modules test_gemini_event_parser_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_opencode_event_parser_properties)
+ (modules test_opencode_event_parser_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_pi_event_parser_properties)
+ (modules test_pi_event_parser_properties)
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_session_id_properties)
+ (modules test_session_id_properties)
+ (libraries onton qcheck-core))
+
+(test
+ (name test_resolved_config_properties)
+ (modules test_resolved_config_properties)
+ (libraries onton onton_core qcheck-core))
+
+(test
+ (name test_claude_backend_properties)
+ (modules test_claude_backend_properties)
+ (libraries onton eio eio_main qcheck-core))
+
+(test
+ (name test_runtime_logging_properties)
+ (modules test_runtime_logging_properties)
+ (libraries onton onton_core qcheck-core))
+
+(test
  (name test_rebase_state_machine)
  (modules test_rebase_state_machine)
  (libraries onton_core)
@@ -177,12 +262,17 @@
 (test
  (name test_tui_input)
  (modules test_tui_input)
- (libraries onton_core))
+ (libraries onton_core qcheck-core))
+
+(test
+ (name test_session_meta_state_properties)
+ (modules test_session_meta_state_properties)
+ (libraries onton_core qcheck-core))
 
 (test
  (name test_tui_render_frame)
  (modules test_tui_render_frame)
- (libraries onton onton_core base))
+ (libraries onton onton_core base qcheck-core))
 
 (test
  (name test_intervention_reason)
@@ -197,7 +287,7 @@
 (test
  (name test_git_env)
  (modules test_git_env)
- (libraries onton unix))
+ (libraries onton onton_core qcheck-core unix))
 
 (test
  (name test_persistence_properties)
@@ -402,7 +492,7 @@
 (test
  (name test_backend_smoke)
  (modules test_backend_smoke)
- (libraries onton onton_core eio eio_main)
+ (libraries onton onton_core eio eio_main qcheck-core)
  (deps (package onton))
  (action
   (setenv ONTON_SETSID_EXEC
@@ -427,7 +517,7 @@
 (test
  (name test_rlimit)
  (modules test_rlimit)
- (libraries onton onton_core))
+ (libraries onton onton_core qcheck-core))
 
 (test
  (name test_telemetry_migration)
@@ -442,7 +532,7 @@
 (test
  (name test_debug_upload)
  (modules test_debug_upload)
- (libraries onton onton_core unix))
+ (libraries onton onton_core qcheck-core unix))
 
 (test
  (name test_dependency_injection_functors)

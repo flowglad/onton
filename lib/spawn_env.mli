@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain spawn-env *)
+
 val per_patch_env :
   project_name:string -> patch_id:Types.Patch_id.t -> (string * string) list
 (** Per-patch config-dir overrides for headless agent CLIs. Creates the backing

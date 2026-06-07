@@ -1,4 +1,8 @@
+(* @archlint.module test
+   @archlint.domain priority *)
+
 open Onton
+open Onton_core
 
 external unsetenv_stub : string -> unit = "caml_onton_unsetenv"
 
@@ -69,4 +73,11 @@ let test_clean_env_scrubs_git_and_installs_auth () =
             (String.equal token "configured-token")
       | None -> failwith "GITHUB_TOKEN missing")
 
-let () = test_clean_env_scrubs_git_and_installs_auth ()
+let () =
+  test_clean_env_scrubs_git_and_installs_auth ();
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"priority public surface is linked"
+       QCheck2.Gen.unit (fun () ->
+         ignore Priority.highest_priority;
+         ignore Priority.is_feedback;
+         true))

@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain orchestrator *)
+
 open Base
 
 module type ENV = sig

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain spawn-logic *)
+
 open Base
 open Types
 

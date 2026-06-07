@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain json *)
+
 open Base
 
 type t = Yojson.Safe.t

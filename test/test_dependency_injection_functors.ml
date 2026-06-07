@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain session-meta *)
+
 open Onton
 open Onton_core
 open Onton_core.Types

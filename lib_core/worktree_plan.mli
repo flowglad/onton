@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain worktree-plan *)
+
 (** Pure plans for sequences of worktree operations.
 
     Every plan is a list of {!op}. The fundamental safety invariant — enforced

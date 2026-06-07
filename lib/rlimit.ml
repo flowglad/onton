@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain rlimit *)
+
 type limits = { soft : int; hard : int }
 
 external get_nofile_stub : unit -> int * int = "caml_onton_getrlimit_nofile"

@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain session-meta *)
+
 module type SESSION_DRIVER = sig
   type long_lived_session
 

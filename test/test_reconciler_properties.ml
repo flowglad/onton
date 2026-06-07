@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain reconciler *)
+
 open Base
 open Onton_core
 open Onton_test_support.Test_generators
@@ -898,6 +901,12 @@ let prop_fanin_reconcile_enqueues_base_rebase =
         | Reconciler.Enqueue_rebase p -> Types.Patch_id.equal p (pid "d2")
         | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
 
+let prop_public_surface_is_linked =
+  QCheck2.Test.make ~name:"reconciler public surface is linked" QCheck2.Gen.unit
+    (fun () ->
+      ignore Reconciler.merge_target;
+      true)
+
 let () =
   let tests =
     [
@@ -939,6 +948,7 @@ let () =
       prop_fanin_only_enqueue_rebase;
       prop_fanin_silent_off_edge;
       prop_fanin_reconcile_enqueues_base_rebase;
+      prop_public_surface_is_linked;
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

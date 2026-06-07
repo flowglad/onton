@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain run-env *)
+
 module type S = sig
   val runtime : Runtime.t
   val clock : float Eio.Time.clock_ty Eio.Time.clock

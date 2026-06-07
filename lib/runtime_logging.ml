@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain runtime-logging *)
+
 let log_event _runtime ?patch_id msg =
   Telemetry_dispatch.emit
     (Telemetry.Event.Free_form

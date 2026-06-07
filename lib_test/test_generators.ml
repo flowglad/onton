@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain test-support *)
+
 open Base
 open Onton_core.Types
 

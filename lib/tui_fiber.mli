@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain tui-fiber *)
+
 open Onton_core.Types
 
 module Tui_env : sig

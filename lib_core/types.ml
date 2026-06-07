@@ -1,3 +1,6 @@
+(* @archlint.module state
+   @archlint.domain anchor *)
+
 open Base
 open Ppx_yojson_conv_lib.Yojson_conv.Primitives
 

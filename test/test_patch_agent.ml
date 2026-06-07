@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain patch-agent *)
+
 open Base
 open Onton_core.Types
 open Onton_core.Patch_agent
@@ -1131,6 +1134,52 @@ let () =
         (fun (pid, br, pr) ->
           let a = create_adhoc ~patch_id:pid ~branch:br ~pr_number:pr in
           Branch.equal a.branch br);
+      Test.make ~name:"patch agent public surface is linked" Gen.unit (fun () ->
+          ignore add_human_messages;
+          ignore anchor_history;
+          ignore bump_generation;
+          ignore clear_automerge_deadline;
+          ignore clear_branch_blocked;
+          ignore clear_pr;
+          ignore clear_session_fallback;
+          ignore highest_priority;
+          ignore increment_automerge_failure_count;
+          ignore increment_conflict_noop_count;
+          ignore increment_no_commits_push_count;
+          ignore increment_push_failure_count;
+          ignore intervention_reason;
+          ignore is_approved_modulo_merge_ready;
+          ignore mark_inflight_human_messages_delivered;
+          ignore mark_running;
+          ignore on_context_exhausted;
+          ignore on_pre_session_failure;
+          ignore on_session_failure;
+          ignore record_anchor;
+          ignore reset_automerge_failure_count;
+          ignore reset_busy;
+          ignore reset_ci_failure_count;
+          ignore reset_conflict_noop_count;
+          ignore reset_context_exhaustion_count;
+          ignore reset_no_commits_push_count;
+          ignore reset_pr_body_artifact_miss_count;
+          ignore reset_push_failure_count;
+          ignore resume_current_message;
+          ignore set_automerge_deadline;
+          ignore set_automerge_enabled;
+          ignore set_automerge_inflight;
+          ignore set_base_contains_merged_siblings;
+          ignore set_branch_blocked;
+          ignore set_branch_rebased_onto;
+          ignore set_branch_rebased_onto_sha;
+          ignore set_checks_passing;
+          ignore set_current_message_id;
+          ignore set_llm_session_id;
+          ignore set_merge_commit_sha;
+          ignore set_merge_queue_entry;
+          ignore set_merge_queue_required;
+          ignore set_mergeability_unknown;
+          ignore set_worktree_path;
+          true);
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

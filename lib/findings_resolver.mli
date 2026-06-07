@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain findings-resolver *)
+
 (** Post-Findings-session resolution: read the agent's wontfix artifact and POST
     [resolve] verbs back to the originating review backends.
 

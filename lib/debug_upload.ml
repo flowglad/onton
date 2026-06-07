@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain failure-subkind *)
+
 module Unix_ = Unix
 open Base
 

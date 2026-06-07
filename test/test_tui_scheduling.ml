@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain session-meta *)
+
 (* Regression test: blocking read wrapped in run_in_systhread must not starve
    the Eio scheduler.
 

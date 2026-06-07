@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain push-plan *)
+
 open Base
 
 type sha = string [@@deriving show, eq, sexp_of, compare]

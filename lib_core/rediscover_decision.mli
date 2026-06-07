@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain rediscover-decision *)
+
 open Types
 
 (** Pure decision layer between [StartupReconciler.discover_pr]'s effectful PR

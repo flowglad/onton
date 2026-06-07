@@ -1,3 +1,6 @@
+(* @archlint.module core
+   @archlint.domain patch-pr-status *)
+
 open Base
 open Types
 

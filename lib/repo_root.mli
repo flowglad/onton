@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain repo-root *)
+
 (** Normalize a user-supplied repo-root path to the absolute main working tree.
 
     Users may invoke [onton] from any directory inside a git repository,

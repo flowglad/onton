@@ -1,3 +1,6 @@
+(* @archlint.module interface
+   @archlint.domain tui-state *)
+
 type t = {
   list_selected : int ref;
   detail_scroll : int ref;

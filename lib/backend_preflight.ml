@@ -1,3 +1,6 @@
+(* @archlint.module shell
+   @archlint.domain priority *)
+
 open Base
 
 let command_for_backend = function
