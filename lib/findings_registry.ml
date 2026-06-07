@@ -1,5 +1,5 @@
 (* @archlint.module exempt
-   @archlint.exempt-reason framework-boundary *)
+   @archlint.exempt-reason effect-boundary *)
 
 type entry = {
   backend_name : string;
