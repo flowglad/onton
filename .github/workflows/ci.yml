@@ -260,3 +260,21 @@ jobs:
       # scripts/yojson-util-allowlist.txt.
       - name: check-no-raw-yojson
         run: bash scripts/check-no-raw-yojson.sh
+
+  archlint:
+    name: Archlint
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
+        with:
+          persist-credentials: false
+
+      # Architecture conformance, enforced from the standalone archlint suite.
+      # The composite action checks archlint out into its own action path and
+      # brings the OCaml toolchain it needs (its own ocaml/setup-ocaml switch,
+      # independent of this repo's build job), so this stays self-contained:
+      # only the OCaml adapter runs, against our source root.
+      - uses: flowglad/archlint@v1
+        with:
+          adapter: ocaml
+          ocaml-root: .
