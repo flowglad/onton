@@ -129,7 +129,7 @@ let () =
          in
          let a =
            List.fold_left
-             (fun a step -> try step a with _ -> a)
+             (fun a step -> try step a with Invalid_argument _ -> a)
              (agent ()) transitions
          in
          let _history = Patch_agent.anchor_history a in
