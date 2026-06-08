@@ -116,6 +116,151 @@ let json_accessors_are_total =
         true
       with _ -> false)
 
+let gen_complexity =
+  let open QCheck2.Gen in
+  oneof [ return None; map (fun k -> Some k) (int_range (-5) 10) ]
+
+(* [auto_model] always names a concrete model. *)
+let claude_auto_model_is_total =
+  QCheck2.Test.make ~name:"claude auto_model names a model for any complexity"
+    ~count:200 gen_complexity (fun complexity ->
+      match Claude_event_parser.auto_model ~complexity with
+      | Some m -> String.length m > 0
+      | None -> false)
+
+(* [max_turns_for] is positive for any complexity. *)
+let claude_max_turns_for_is_positive =
+  QCheck2.Test.make ~name:"claude max_turns_for is positive" ~count:200
+    gen_complexity (fun complexity ->
+      Claude_event_parser.max_turns_for ~complexity > 0)
+
+(* [model_args] emits ["--model"; m] for a non-empty model and [] otherwise. *)
+let claude_model_args_round_trips =
+  QCheck2.Test.make ~name:"claude model_args wraps non-empty model" ~count:200
+    QCheck2.Gen.(option string_small)
+    (fun model ->
+      let args = Claude_event_parser.model_args model in
+      match model with
+      | Some m when not (String.is_empty m) ->
+          List.equal String.equal args [ "--model"; m ]
+      | _ -> List.is_empty args)
+
+(* Build an env oracle from the generated [api_key]: it answers
+   [ANTHROPIC_API_KEY] with the generated value (and [None] for everything
+   else). [bare_args] emits [--bare] iff that value is non-blank. The constant
+   oracles [no_env] and [with_api_key] anchor the two extremes. *)
+let claude_bare_args_tracks_api_key =
+  QCheck2.Test.make ~name:"claude bare_args tracks ANTHROPIC_API_KEY presence"
+    ~count:200
+    QCheck2.Gen.(option string_small)
+    (fun api_key ->
+      let oracle = function "ANTHROPIC_API_KEY" -> api_key | _ -> None in
+      let args = Claude_event_parser.bare_args ~getenv_opt:oracle in
+      let expected_bare =
+        match api_key with
+        | Some k -> not (String.is_empty (String.strip k))
+        | None -> false
+      in
+      let got_bare = not (List.is_empty args) in
+      Bool.equal got_bare expected_bare
+      (* anchor with the constant oracles supplied by the parser *)
+      && List.is_empty
+           (Claude_event_parser.bare_args ~getenv_opt:Claude_event_parser.no_env)
+      && List.equal String.equal
+           (Claude_event_parser.bare_args
+              ~getenv_opt:Claude_event_parser.with_api_key)
+           [ "--bare" ])
+
+(* [budget_cap_args] only emits a cap flag when [ONTON_BUDGET_CAP_USD] parses to
+   a positive float. Feed the generated string through a custom oracle and check
+   the membership of "--max-budget-usd" matches that predicate. [ignore_warn]
+   absorbs the warning on unparseable input. *)
+let claude_budget_cap_args_tracks_env =
+  QCheck2.Test.make ~name:"claude budget_cap_args tracks ONTON_BUDGET_CAP_USD"
+    ~count:200
+    QCheck2.Gen.(
+      oneof
+        [
+          map (fun f -> Float.to_string f) (float_range (-5.) 5.); string_small;
+        ])
+    (fun raw ->
+      let oracle = function "ONTON_BUDGET_CAP_USD" -> Some raw | _ -> None in
+      let args =
+        Claude_event_parser.budget_cap_args ~getenv_opt:oracle
+          ~warn:Claude_event_parser.ignore_warn ()
+      in
+      let expect_cap =
+        match Float.of_string_opt (String.strip raw) with
+        | Some cap -> Float.( > ) cap 0.
+        | None -> false
+      in
+      let got_cap = List.mem args "--max-budget-usd" ~equal:String.equal in
+      Bool.equal got_cap expect_cap
+      (* anchor: [no_env] never produces a cap flag *)
+      && List.is_empty
+           (Claude_event_parser.budget_cap_args
+              ~getenv_opt:Claude_event_parser.no_env
+              ~warn:Claude_event_parser.ignore_warn ()))
+
+(* [build_args] always threads the prompt and the resume session id through. *)
+let claude_build_args_carry_prompt =
+  QCheck2.Test.make ~name:"claude build_args carry prompt and resume" ~count:200
+    QCheck2.Gen.(pair string_small (option string_small))
+    (fun (prompt, resume_session) ->
+      let args =
+        Claude_event_parser.build_args ~getenv_opt:Claude_event_parser.no_env
+          ~warn:Claude_event_parser.ignore_warn ~model:None ~complexity:None
+          ~prompt ~resume_session
+      in
+      List.mem args prompt ~equal:String.equal
+      &&
+      match resume_session with
+      | Some id -> List.mem args id ~equal:String.equal
+      | None -> true)
+
+(* [build_stream_args] threads the prompt through (with no minted session). *)
+let claude_build_stream_args_carry_prompt =
+  QCheck2.Test.make ~name:"claude build_stream_args carry prompt" ~count:200
+    QCheck2.Gen.string_small (fun prompt ->
+      let args =
+        Claude_event_parser.build_stream_args
+          ~getenv_opt:Claude_event_parser.no_env
+          ~warn:Claude_event_parser.ignore_warn ~model:None ~complexity:None
+          ~prompt ~minted_session_id:None ~resume_session:None
+      in
+      List.mem args prompt ~equal:String.equal)
+
+(* [find_json_start] never grows the string and is idempotent. *)
+let claude_find_json_start_idempotent =
+  QCheck2.Test.make ~name:"claude find_json_start is idempotent" ~count:1000
+    gen_string (fun s ->
+      let once = Claude_event_parser.find_json_start s in
+      String.length once <= String.length s
+      && String.equal once (Claude_event_parser.find_json_start once))
+
+(* [session_init_of_json] yields exactly one Session_init when session_id is
+   present, and [] otherwise. *)
+let claude_session_init_of_json_round_trips =
+  QCheck2.Test.make ~name:"claude session_init_of_json keys on session_id"
+    ~count:200 QCheck2.Gen.string_small (fun id ->
+      let json = `Assoc [ ("session_id", `String id) ] in
+      match Claude_event_parser.session_init_of_json json with
+      | [ _ ] -> true
+      | _ -> false)
+
+(* [parse_stream_event] agrees with the head of [parse_stream_events]. *)
+let claude_parse_stream_event_matches_head =
+  QCheck2.Test.make
+    ~name:"claude parse_stream_event matches parse_stream_events head"
+    ~count:1000 gen_json_line (fun line ->
+      match
+        ( Claude_event_parser.parse_stream_event line,
+          Claude_event_parser.parse_stream_events line )
+      with
+      | None, [] -> true
+      | Some e, head :: _ -> Types.Stream_event.equal e head
+      | _ -> false)
+
 let claude_public_surface_is_linked =
   QCheck2.Test.make ~name:"claude parser public surface is linked"
     QCheck2.Gen.unit (fun () ->
@@ -165,6 +310,16 @@ let () =
       strip_ansi_removes_stray_controls;
       strip_ansi_known_sequences;
       json_accessors_are_total;
+      claude_auto_model_is_total;
+      claude_max_turns_for_is_positive;
+      claude_model_args_round_trips;
+      claude_bare_args_tracks_api_key;
+      claude_budget_cap_args_tracks_env;
+      claude_build_args_carry_prompt;
+      claude_build_stream_args_carry_prompt;
+      claude_find_json_start_idempotent;
+      claude_session_init_of_json_round_trips;
+      claude_parse_stream_event_matches_head;
       claude_public_surface_is_linked;
     ]
   in

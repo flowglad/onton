@@ -901,11 +901,44 @@ let prop_fanin_reconcile_enqueues_base_rebase =
         | Reconciler.Enqueue_rebase p -> Types.Patch_id.equal p (pid "d2")
         | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
 
-let prop_public_surface_is_linked =
-  QCheck2.Test.make ~name:"reconciler public surface is linked" QCheck2.Gen.unit
+(* merge_target agrees with Graph.initial_base over the fan-in graph for any
+   subset of merged deps that leaves at most one open dep (its precondition),
+   and yields main when every dep is merged. *)
+let prop_merge_target_matches_initial_base =
+  QCheck2.Test.make ~name:"merge_target = initial_base (<=1 open dep)"
+    ~count:300
+    QCheck2.Gen.(oneof_list [ "d1"; "d2"; "d3" ])
+    (fun open_dep ->
+      let graph = fanin_graph () in
+      (* Mark every dep except [open_dep] as merged, so P has exactly one open
+         dep — the precondition for both merge_target and initial_base. *)
+      let merged =
+        List.filter
+          [ pid "d1"; pid "d2"; pid "d3" ]
+          ~f:(fun d -> not (Types.Patch_id.equal d (pid open_dep)))
+      in
+      let has_merged = merged_in merged in
+      let mt =
+        Reconciler.merge_target graph (pid "p") ~has_merged ~branch_of
+          ~main:main_br
+      in
+      let ib =
+        Graph.initial_base graph (pid "p") ~has_merged ~branch_of ~main:main_br
+      in
+      Types.Branch.equal mt ib
+      && Types.Branch.equal mt (branch_of (pid open_dep)))
+
+(* When all deps are merged, P has no open deps and merge_target is main. *)
+let prop_merge_target_all_merged_is_main =
+  QCheck2.Test.make ~name:"merge_target = main when all deps merged" ~count:1
+    QCheck2.Gen.(return ())
     (fun () ->
-      ignore Reconciler.merge_target;
-      true)
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d2"; pid "d3" ] in
+      Types.Branch.equal
+        (Reconciler.merge_target graph (pid "p") ~has_merged:(merged_in merged)
+           ~branch_of ~main:main_br)
+        main_br)
 
 let () =
   let tests =
@@ -948,7 +981,8 @@ let () =
       prop_fanin_only_enqueue_rebase;
       prop_fanin_silent_off_edge;
       prop_fanin_reconcile_enqueues_base_rebase;
-      prop_public_surface_is_linked;
+      prop_merge_target_matches_initial_base;
+      prop_merge_target_all_merged_is_main;
     ]
   in
   List.iter tests ~f:(fun t -> QCheck2.Test.check_exn t);

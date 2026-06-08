@@ -232,6 +232,61 @@ let () =
        (fun (width, height) ->
          let frame = render ~width ~height one_view in
          Tui.patch_count frame <= List.length one_view));
+  (* [is_tool_marker] is true exactly when the (stripped) line starts with the
+     injected "[tool: " prefix; build both shapes from generated text. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"is_tool_marker detects the tool prefix" ~count:200
+       QCheck2.Gen.(pair bool (string_size (int_range 0 12)))
+       (fun (mark, rest) ->
+         (* Keep a non-space token after the prefix: is_tool_marker strips the
+            line first, so a bare "[tool: " would lose its trailing space. *)
+         let line = if mark then "[tool: read " ^ rest else "plain " ^ rest in
+         Bool.equal (Markdown_render.is_tool_marker line) mark));
+  (* [style_tool_marker] preserves the underlying text (only adds ANSI), so
+     stripping ANSI recovers the original line. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"style_tool_marker preserves text under strip_ansi"
+       ~count:200
+       (* Plain letters only: arbitrary bytes could include ESC sequences that
+          strip_ansi would also remove, which is not what this property is about. *)
+       QCheck2.Gen.(string_size ~gen:(char_range 'a' 'z') (int_range 0 16))
+       (fun line ->
+         String.equal
+           (Onton.Term.strip_ansi (Markdown_render.style_tool_marker line))
+           line));
+  (* [render_to_lines] is total over arbitrary markdown-ish input and never
+     introduces embedded newlines within a single emitted line. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"render_to_lines is total and line-split"
+       ~count:200
+       QCheck2.Gen.(string_size (int_range 0 40))
+       (fun s ->
+         try
+           let lines = Markdown_render.render_to_lines s in
+           List.for_all lines ~f:(fun l -> not (String.contains l '\n'))
+         with _ -> false));
+  (* [render_block] is total over the block parsed from generated text. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"render_block is total over parsed blocks"
+       ~count:200
+       QCheck2.Gen.(string_size (int_range 0 40))
+       (fun s ->
+         try
+           let block =
+             Cmarkit.Doc.block (Cmarkit.Doc.of_string ~strict:false s)
+           in
+           let lines = Markdown_render.render_block block in
+           List.length lines >= 0
+         with _ -> false));
+  (* [render_inline] on a plain Text inline returns the text verbatim (it is the
+     identity branch of the renderer). *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"render_inline returns plain text verbatim"
+       ~count:200
+       QCheck2.Gen.(string_size (int_range 0 24))
+       (fun s ->
+         let inline = Cmarkit.Inline.Text (s, Cmarkit.Meta.none) in
+         String.equal (Markdown_render.render_inline inline) s));
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"markdown render public surface is linked"
        QCheck2.Gen.unit (fun () ->

@@ -141,7 +141,9 @@
 (test
  (name test_invariants_properties)
  (modules test_invariants_properties)
- (libraries onton_core qcheck-core))
+ (libraries onton_core qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
 
 (test
  (name test_state_properties)
@@ -151,7 +153,9 @@
 (test
  (name test_pr_state_properties)
  (modules test_pr_state_properties)
- (libraries onton_core qcheck-core))
+ (libraries onton_core qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
 
 (test
  (name test_token_scrub_properties)
@@ -272,12 +276,12 @@
 (test
  (name test_tui_render_frame)
  (modules test_tui_render_frame)
- (libraries onton onton_core base qcheck-core))
+ (libraries onton onton_core base qcheck-core cmarkit))
 
 (test
  (name test_intervention_reason)
  (modules test_intervention_reason)
- (libraries onton onton_core))
+ (libraries onton onton_core qcheck-core))
 
 (test
  (name test_stream_parser)
@@ -287,7 +291,9 @@
 (test
  (name test_git_env)
  (modules test_git_env)
- (libraries onton onton_core qcheck-core unix))
+ (libraries onton onton_core qcheck-core unix)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
 
 (test
  (name test_persistence_properties)
@@ -321,7 +327,9 @@
 (test
  (name test_patch_decision)
  (modules test_patch_decision)
- (libraries onton_core qcheck-core))
+ (libraries onton_core qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
 
 (test
  (name test_worktree_plan)
@@ -377,9 +385,10 @@
 (test
  (name test_push_plan_integration)
  (modules test_push_plan_integration)
- (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)
- (ocamlopt_flags (:standard -w -40-42))
- (ocamlc_flags (:standard -w -40-42)))
+ (libraries onton onton_core onton_test_support eio eio_main eio.unix unix
+   qcheck-core)
+ (ocamlopt_flags (:standard -w -40-42-4))
+ (ocamlc_flags (:standard -w -40-42-4)))
 
 (test
  (name test_backend_routing)

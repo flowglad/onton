@@ -1083,6 +1083,45 @@ let () =
     Stdlib.print_endline "AS-P5 passed"
   in
   ();
+  (* Property: a freshly-created agent that has a PR but is not busy is always
+     stale for a Human delivery — [respond_delivery] must return [Respond_stale]
+     regardless of the generated patch id / branch. This generates real input
+     and drives it through [respond_delivery]. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"respond_delivery: not-busy agent is stale"
+       ~count:200
+       QCheck2.Gen.(pair gen_pid gen_branch)
+       (fun (pid, br) ->
+         let a = with_pr pid br in
+         equal_respond_delivery
+           (respond_delivery ~agent:a ~kind:Operation_kind.Human
+              ~pre_fire_agent:None ~prefetched_comments:[]
+              ~prefetched_findings:[] ~main_branch:"main")
+           Respond_stale));
+  (* Property: a busy Human delivery sourced from a pre_fire agent that carries
+     at least one human message always [Deliver]s a Human_payload echoing those
+     messages. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"respond_delivery: human messages are delivered"
+       ~count:200
+       QCheck2.Gen.(
+         triple gen_pid gen_branch
+           (list_size (int_range 1 4) (string_size (int_range 1 8))))
+       (fun (pid, br, msgs) ->
+         let pre_fire =
+           List.fold msgs ~init:(with_pr pid br) ~f:(fun a m ->
+               add_human_message a m)
+         in
+         let a = enqueue pre_fire Operation_kind.Human in
+         let a = respond a Operation_kind.Human in
+         match
+           respond_delivery ~agent:a ~kind:Operation_kind.Human
+             ~pre_fire_agent:(Some pre_fire) ~prefetched_comments:[]
+             ~prefetched_findings:[] ~main_branch:"main"
+         with
+         | Deliver { payload = Human_payload { messages }; _ } ->
+             Int.equal (List.length messages) (List.length msgs)
+         | Deliver _ | Skip_empty | Respond_stale -> false));
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"patch decision public surface is linked"
        QCheck2.Gen.unit (fun () ->
