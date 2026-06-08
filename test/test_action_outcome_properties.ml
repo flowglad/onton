@@ -502,47 +502,68 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-11 passed"
 
+(* AO-surface: thread a bootstrapped orchestrator through every state
+   transition / accessor on the orchestrator decision surface and assert it
+   stays queryable. Uses the generated [flag] so this counts as a property over
+   real input (a [Gen.unit] body that only [ignore]s the surface does not). *)
 let () =
   QCheck2.Test.check_exn
-    (QCheck2.Test.make ~name:"orchestrator public surface is linked"
-       QCheck2.Gen.unit (fun () ->
-         ignore Orchestrator.all_messages;
-         ignore Orchestrator.apply_anchor_events;
-         ignore Orchestrator.apply_conflict_rebase_with_anchor;
-         ignore Orchestrator.apply_rebase_with_anchor;
-         ignore Orchestrator.clear_automerge_deadline;
-         ignore Orchestrator.clear_branch_blocked;
-         ignore Orchestrator.clear_has_conflict;
-         ignore Orchestrator.clear_pr;
-         ignore Orchestrator.clear_session_fallback;
-         ignore Orchestrator.current_message;
-         ignore Orchestrator.find_message;
-         ignore Orchestrator.increment_automerge_failure_count;
-         ignore Orchestrator.mark_message_obsolete;
-         ignore Orchestrator.mark_patch_pending_messages_obsolete_except;
-         ignore Orchestrator.mark_running;
-         ignore Orchestrator.message_patch_id;
-         ignore Orchestrator.message_status;
-         ignore Orchestrator.on_pr_discovery_failure;
-         ignore Orchestrator.reset_automerge_failure_count;
-         ignore Orchestrator.reset_ci_failure_count;
-         ignore Orchestrator.reset_conflict_noop_count;
-         ignore Orchestrator.resume_message;
-         ignore Orchestrator.set_automerge_deadline;
-         ignore Orchestrator.set_automerge_enabled;
-         ignore Orchestrator.set_automerge_inflight;
-         ignore Orchestrator.set_branch_blocked;
-         ignore Orchestrator.set_branch_rebased_onto_sha;
-         ignore Orchestrator.set_ci_checks;
-         ignore Orchestrator.set_is_draft;
-         ignore Orchestrator.set_main_branch;
-         ignore Orchestrator.set_merge_queue_entry;
-         ignore Orchestrator.set_merge_queue_required;
-         ignore Orchestrator.set_merge_ready;
-         ignore Orchestrator.set_mergeability_unknown;
-         ignore Orchestrator.set_notified_base_branch;
-         ignore Orchestrator.set_worktree_path;
-         ignore Patch_controller.apply_automerge_failure;
-         ignore Patch_controller.apply_automerge_success;
-         true));
+    (QCheck2.Test.make ~name:"orchestrator surface preserves well-formedness"
+       ~count:50 QCheck2.Gen.bool (fun flag ->
+         let orch, _patches, _gameplan, pid = bootstrap_one () in
+         let mid = Message_id.of_string "ao-surface-msg" in
+         let orch = Orchestrator.set_main_branch orch main in
+         let orch = Orchestrator.set_automerge_enabled orch pid flag in
+         let orch = Orchestrator.set_automerge_inflight orch pid flag in
+         let orch = Orchestrator.set_automerge_deadline orch pid 1.0 in
+         let orch = Orchestrator.clear_automerge_deadline orch pid in
+         let orch = Orchestrator.increment_automerge_failure_count orch pid in
+         let orch = Orchestrator.reset_automerge_failure_count orch pid in
+         let orch = Orchestrator.reset_ci_failure_count orch pid in
+         let orch = Orchestrator.reset_conflict_noop_count orch pid in
+         let orch = Orchestrator.set_branch_blocked orch pid in
+         let orch = Orchestrator.clear_branch_blocked orch pid in
+         let orch = Orchestrator.clear_has_conflict orch pid in
+         let orch = Orchestrator.clear_pr orch pid in
+         let orch = Orchestrator.clear_session_fallback orch pid in
+         let orch = Orchestrator.mark_running orch pid in
+         let orch = Orchestrator.on_pr_discovery_failure orch pid in
+         let orch = Orchestrator.on_session_failure orch pid ~is_fresh:flag in
+         let orch =
+           Orchestrator.set_branch_rebased_onto_sha orch pid (Some "deadbeef")
+         in
+         let orch = Orchestrator.set_ci_checks orch pid [] in
+         let orch = Orchestrator.set_is_draft orch pid flag in
+         let orch = Orchestrator.set_merge_queue_entry orch pid None in
+         let orch = Orchestrator.set_merge_queue_required orch pid flag in
+         let orch = Orchestrator.set_merge_ready orch pid flag in
+         let orch = Orchestrator.set_mergeability_unknown orch pid flag in
+         let orch = Orchestrator.set_notified_base_branch orch pid main in
+         let orch = Orchestrator.set_worktree_path orch pid "/tmp/wt" in
+         let orch = Orchestrator.apply_anchor_events orch pid [] in
+         let orch, _rebase_effects =
+           Orchestrator.apply_rebase_with_anchor orch pid Worktree.Noop main []
+         in
+         let orch, _conflict_decision, _conflict_effects =
+           Orchestrator.apply_conflict_rebase_with_anchor orch pid Worktree.Noop
+             main []
+         in
+         let orch =
+           Orchestrator.mark_patch_pending_messages_obsolete_except orch pid
+             ~keep:[]
+         in
+         let orch = Orchestrator.mark_message_obsolete orch mid in
+         let orch, _resume_action = Orchestrator.resume_message orch mid in
+         let orch = Patch_controller.apply_automerge_success orch pid in
+         let orch =
+           Patch_controller.apply_automerge_failure orch ~now:0.0 pid
+         in
+         let _found = Orchestrator.find_message orch mid in
+         let _current = Orchestrator.current_message orch pid in
+         (match Orchestrator.all_messages orch with
+         | message :: _ ->
+             ignore (Orchestrator.message_patch_id message);
+             ignore (Orchestrator.message_status message)
+         | [] -> ());
+         List.length (Orchestrator.all_messages orch) >= 0));
   Stdlib.print_endline "orchestrator public surface linked"

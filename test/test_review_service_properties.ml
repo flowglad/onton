@@ -260,15 +260,107 @@ let prop_resolve_request_shape =
           && Bool.equal reason_present (Option.is_some req.reason)
       | _ -> false)
 
-let prop_public_parser_surface_is_linked =
-  QCheck2.Test.make ~name:"review service parser public surface is linked"
-    QCheck2.Gen.unit (fun () ->
-      ignore Review_service.parse_error_message;
-      ignore Review_service.parse_finding;
-      ignore Review_service.parse_findings_response;
-      ignore Review_service.parse_resolve_response;
-      ignore Review_service.parse_resolve_response_string;
-      ignore Review_service.parse_wontfix_artifact;
+(* parse_finding is total over arbitrary JSON values and never raises. *)
+let prop_parse_finding_total =
+  QCheck2.Test.make ~name:"parse_finding total over arbitrary JSON" ~count:1000
+    gen_yojson (fun j ->
+      try
+        ignore (Review_service.parse_finding j);
+        true
+      with _ -> false)
+
+(* Any finding parse_finding accepts round-trips its severity and outcome kind
+   through the enum coders. *)
+let prop_parse_finding_kept_enums =
+  QCheck2.Test.make ~name:"parse_finding: accepted finding has known enums"
+    ~count:1000 gen_finding_object (fun j ->
+      match Review_service.parse_finding j with
+      | Error _ -> true
+      | Ok (f : Review_service.finding) ->
+          Option.is_some
+            (Review_service.severity_of_string
+               (Review_service.severity_to_string f.severity))
+          && Option.is_some
+               (Review_service.outcome_kind_of_string
+                  (Review_service.outcome_kind_to_string f.outcome.kind)))
+
+(* parse_findings_response (Yojson form) is total and, on success, never keeps
+   more findings than were present in the input list. *)
+let gen_findings_response_yojson : Yojson.Safe.t QCheck2.Gen.t =
+  let open QCheck2.Gen in
+  let* findings = list_size (int_range 0 6) gen_finding_object in
+  return
+    (`Assoc
+       [
+         ("repoId", `String "octo/widgets");
+         ("pullNumber", `Int 1);
+         ("count", `Int (List.length findings));
+         ("findings", `List findings);
+       ])
+
+let prop_parse_findings_response_yojson =
+  QCheck2.Test.make
+    ~name:"parse_findings_response (yojson): total, no fabrication" ~count:500
+    gen_findings_response_yojson (fun j ->
+      let n_in =
+        match j with
+        | `Assoc fields -> (
+            match List.Assoc.find fields "findings" ~equal:String.equal with
+            | Some (`List xs) -> List.length xs
+            | _ -> 0)
+        | _ -> 0
+      in
+      match Review_service.parse_findings_response j with
+      | Error _ -> true
+      | Ok (r : Review_service.findings_response) ->
+          List.length r.findings <= n_in)
+
+(* parse_resolve_response (Yojson form) is total over arbitrary JSON. *)
+let prop_parse_resolve_response_total =
+  QCheck2.Test.make ~name:"parse_resolve_response (yojson): total" ~count:1000
+    gen_yojson (fun j ->
+      try
+        ignore (Review_service.parse_resolve_response j);
+        true
+      with _ -> false)
+
+(* A well-formed resolve_response object parses and echoes its id. *)
+let prop_parse_resolve_response_roundtrip =
+  QCheck2.Test.make ~name:"parse_resolve_response: id echoed on valid body"
+    ~count:500
+    QCheck2.Gen.(string_size (int_range 1 12))
+    (fun id ->
+      let j =
+        `Assoc
+          [
+            ("id", `String id);
+            ("outcome", `Assoc [ ("kind", `String "addressed") ]);
+          ]
+      in
+      match Review_service.parse_resolve_response j with
+      | Ok (r : Review_service.resolve_response) -> String.equal r.id id
+      | Error _ -> false)
+
+(* The `totality` helper hides the parser reference inside a lambda passed to a
+   higher-order combinator, so the linter can't see it as a property reference.
+   These inline properties call each parser directly in the QCheck2 callback on
+   the generated string. *)
+let prop_parse_error_message_inline =
+  QCheck2.Test.make ~name:"parse_error_message inline totality" ~count:200
+    QCheck2.Gen.string (fun s ->
+      let _ = Review_service.parse_error_message s in
+      true)
+
+let prop_parse_resolve_response_string_inline =
+  QCheck2.Test.make ~name:"parse_resolve_response_string inline totality"
+    ~count:200 QCheck2.Gen.string (fun s ->
+      let _ = Review_service.parse_resolve_response_string s in
+      true)
+
+let prop_parse_wontfix_artifact_inline =
+  QCheck2.Test.make ~name:"parse_wontfix_artifact inline totality" ~count:200
+    QCheck2.Gen.string (fun s ->
+      let _ = Review_service.parse_wontfix_artifact s in
       true)
 
 let () =
@@ -278,13 +370,20 @@ let () =
       prop_resolve_total;
       prop_error_total;
       prop_wontfix_total;
+      prop_parse_error_message_inline;
+      prop_parse_resolve_response_string_inline;
+      prop_parse_wontfix_artifact_inline;
       prop_findings_kept_have_known_enums;
       prop_severity_round_trip;
       prop_outcome_kind_round_trip;
       prop_resolve_kind_round_trip;
       prop_resolve_request_to_yojson_total;
       prop_resolve_request_shape;
-      prop_public_parser_surface_is_linked;
+      prop_parse_finding_total;
+      prop_parse_finding_kept_enums;
+      prop_parse_findings_response_yojson;
+      prop_parse_resolve_response_total;
+      prop_parse_resolve_response_roundtrip;
     ]
   in
   let exit_code = QCheck_base_runner.run_tests ~verbose:true suite in

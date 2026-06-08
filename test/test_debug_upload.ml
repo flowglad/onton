@@ -171,6 +171,53 @@ let () =
                 })
          in
          Bool.equal (List.length routed = 1) interested));
+  (* [yojson_of_t] then [t_of_yojson] round-trips every subkind, including the
+     payload-carrying [Api_error] and [Other] constructors. [to_string] must be
+     total. *)
+  let gen_subkind : Failure_subkind.t QCheck2.Gen.t =
+    QCheck2.Gen.oneof
+      [
+        QCheck2.Gen.return Failure_subkind.Ok;
+        QCheck2.Gen.return Failure_subkind.Auth_unavailable;
+        QCheck2.Gen.return Failure_subkind.Network_error;
+        QCheck2.Gen.return Failure_subkind.Timed_out;
+        QCheck2.Gen.return Failure_subkind.Context_exhausted;
+        QCheck2.Gen.return Failure_subkind.No_session_to_resume;
+        QCheck2.Gen.return Failure_subkind.Empty_response;
+        QCheck2.Gen.return Failure_subkind.Process_error;
+        QCheck2.Gen.map
+          (fun status -> Failure_subkind.Api_error { status })
+          (QCheck2.Gen.option (QCheck2.Gen.int_range 100 599));
+        QCheck2.Gen.map
+          (fun s -> Failure_subkind.Other s)
+          (QCheck2.Gen.string_size (QCheck2.Gen.int_range 0 8));
+      ]
+  in
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"Failure_subkind t yojson round-trip" ~count:500
+       gen_subkind (fun subkind ->
+         let round_trip =
+           Failure_subkind.t_of_yojson (Failure_subkind.yojson_of_t subkind)
+         in
+         Failure_subkind.equal round_trip subkind
+         && String.length (Failure_subkind.to_string subkind) >= 0));
+  (* [yojson_of_init_info] then [init_info_of_yojson] round-trips init_info. *)
+  let gen_opt_string =
+    QCheck2.Gen.option (QCheck2.Gen.string_size (QCheck2.Gen.int_range 0 8))
+  in
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"Failure_subkind init_info yojson round-trip"
+       ~count:300
+       QCheck2.Gen.(triple gen_opt_string gen_opt_string gen_opt_string)
+       (fun (api_key_source, model, claude_code_version) ->
+         let init =
+           { Failure_subkind.api_key_source; model; claude_code_version }
+         in
+         let round_trip =
+           Failure_subkind.init_info_of_yojson
+             (Failure_subkind.yojson_of_init_info init)
+         in
+         Failure_subkind.equal_init_info round_trip init));
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"failure subkind JSON surface is linked"
        QCheck2.Gen.unit (fun () ->

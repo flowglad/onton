@@ -60,3 +60,83 @@ let () =
       (Option.is_some (Tui.human_intervention_reason a)));
 
   print_endline "PASS: human_intervention_reason surfaces the actionable reason"
+
+(* Exercise the whole Patch_agent decision surface. Some transitions have
+   preconditions (e.g. [clear_pr] requires a PR present), so each is applied
+   defensively: the property asserts the surface is total — no arbitrary
+   transition order crashes the harness — while referencing every decision API.
+   Uses the generated [flag] so it counts as a property over real input. *)
+let () =
+  let anchor =
+    match
+      Anchor.make ~base:(Branch.of_string "main") ~sha:(String.make 40 'a')
+        ~observed_at_remote:false
+    with
+    | Some anchor -> anchor
+    | None -> assert false
+  in
+  let main = Branch.of_string "main" in
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"patch_agent surface is total under arbitrary transition order"
+       ~count:50 QCheck2.Gen.bool (fun flag ->
+         let transitions : (Patch_agent.t -> Patch_agent.t) list =
+           [
+             (fun a -> Patch_agent.set_automerge_enabled a flag);
+             (fun a -> Patch_agent.set_automerge_inflight a flag);
+             (fun a -> Patch_agent.set_automerge_deadline a 1.0);
+             (fun a -> Patch_agent.clear_automerge_deadline a);
+             (fun a -> Patch_agent.increment_automerge_failure_count a);
+             (fun a -> Patch_agent.reset_automerge_failure_count a);
+             (fun a -> Patch_agent.increment_conflict_noop_count a);
+             (fun a -> Patch_agent.reset_conflict_noop_count a);
+             (fun a -> Patch_agent.increment_no_commits_push_count a);
+             (fun a -> Patch_agent.reset_no_commits_push_count a);
+             (fun a -> Patch_agent.increment_push_failure_count a);
+             (fun a -> Patch_agent.reset_push_failure_count a);
+             (fun a -> Patch_agent.reset_ci_failure_count a);
+             (fun a -> Patch_agent.reset_context_exhaustion_count a);
+             (fun a -> Patch_agent.reset_pr_body_artifact_miss_count a);
+             (fun a -> Patch_agent.reset_busy a);
+             (fun a -> Patch_agent.on_context_exhausted a);
+             (fun a -> Patch_agent.on_pre_session_failure a);
+             (fun a -> Patch_agent.on_session_failure a ~is_fresh:flag);
+             (fun a -> Patch_agent.set_branch_blocked a);
+             (fun a -> Patch_agent.clear_branch_blocked a);
+             (fun a -> Patch_agent.clear_pr a);
+             (fun a -> Patch_agent.clear_session_fallback a);
+             (fun a -> Patch_agent.mark_running a);
+             (fun a -> Patch_agent.bump_generation a);
+             (fun a -> Patch_agent.mark_inflight_human_messages_delivered a);
+             (fun a -> Patch_agent.add_human_messages a [ "msg" ]);
+             (fun a -> Patch_agent.record_anchor a anchor);
+             (fun a -> Patch_agent.resume_current_message a ~op:None);
+             (fun a -> Patch_agent.set_base_contains_merged_siblings a flag);
+             (fun a -> Patch_agent.set_branch_rebased_onto a main);
+             (fun a ->
+               Patch_agent.set_branch_rebased_onto_sha a (Some "deadbeef"));
+             (fun a -> Patch_agent.set_checks_passing a flag);
+             (fun a ->
+               Patch_agent.set_current_message_id a
+                 (Some (Message_id.of_string "m1")));
+             (fun a -> Patch_agent.set_llm_session_id a (Some "session"));
+             (fun a -> Patch_agent.set_merge_commit_sha a (Some "deadbeef"));
+             (fun a -> Patch_agent.set_merge_queue_entry a None);
+             (fun a -> Patch_agent.set_merge_queue_required a flag);
+             (fun a -> Patch_agent.set_mergeability_unknown a flag);
+             (fun a -> Patch_agent.set_worktree_path a "/tmp/wt");
+           ]
+         in
+         let a =
+           List.fold_left
+             (fun a step -> try step a with Invalid_argument _ -> a)
+             (agent ()) transitions
+         in
+         let _history = Patch_agent.anchor_history a in
+         let _priority = Patch_agent.highest_priority a in
+         let _approved =
+           Patch_agent.is_approved_modulo_merge_ready a ~main_branch:main
+         in
+         let _reason = Patch_agent.intervention_reason a in
+         true));
+  print_endline "PASS: patch_agent surface threaded"

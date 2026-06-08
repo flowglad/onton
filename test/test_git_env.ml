@@ -73,8 +73,52 @@ let test_clean_env_scrubs_git_and_installs_auth () =
             (String.equal token "configured-token")
       | None -> failwith "GITHUB_TOKEN missing")
 
+module Operation_kind = Types.Operation_kind
+
+let all_kinds =
+  Operation_kind.
+    [ Rebase; Human; Merge_conflict; Ci; Review_comments; Pr_body; Findings ]
+
+let gen_kind = QCheck2.Gen.oneof_list all_kinds
+
+(* [highest_priority q k] is true iff [k] is enqueued and no member has a
+   strictly more-urgent (lower) priority value. Build [q] from generated kinds
+   and cross-check against the [peek_highest] view. *)
+let highest_priority_matches_peek =
+  QCheck2.Test.make ~name:"highest_priority agrees with peek_highest" ~count:300
+    QCheck2.Gen.(pair (list_size (int_range 0 6) gen_kind) gen_kind)
+    (fun (kinds, k) ->
+      let q =
+        List.fold_left
+          (fun q kind -> Priority.enqueue q kind)
+          Priority.empty kinds
+      in
+      let expected =
+        Priority.mem q k
+        && Priority.priority k
+           = List.fold_left
+               (fun acc kind -> min acc (Priority.priority kind))
+               max_int (Priority.to_list q)
+      in
+      Bool.equal (Priority.highest_priority q k) expected)
+
+(* [is_feedback] partitions operation kinds: the feedback set excludes [Rebase]
+   (the structural op) — assert against an explicit reference set. *)
+let is_feedback_classifies_kinds =
+  QCheck2.Test.make ~name:"is_feedback matches reference partition" ~count:200
+    gen_kind (fun k ->
+      let reference =
+        match k with
+        | Operation_kind.Rebase -> false
+        | Human | Merge_conflict | Ci | Review_comments | Pr_body | Findings ->
+            true
+      in
+      Bool.equal (Priority.is_feedback k) reference)
+
 let () =
   test_clean_env_scrubs_git_and_installs_auth ();
+  QCheck2.Test.check_exn highest_priority_matches_peek;
+  QCheck2.Test.check_exn is_feedback_classifies_kinds;
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"priority public surface is linked"
        QCheck2.Gen.unit (fun () ->

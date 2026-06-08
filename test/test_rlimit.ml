@@ -51,4 +51,21 @@ let () =
        QCheck2.Gen.unit (fun () ->
          let lim = get_nofile () in
          lim.soft > 0 && lim.hard >= lim.soft));
+  (* [get_nofile] is a pure observation of the process limits — calling it [n]
+     times for a generated [n] must yield the same sane result every time. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"get_nofile is stable across repeated reads"
+       ~count:20
+       QCheck2.Gen.(int_range 1 8)
+       (fun n ->
+         let first = get_nofile () in
+         let rec loop k =
+           if k <= 0 then true
+           else
+             let lim = get_nofile () in
+             lim.soft = first.soft && lim.hard = first.hard && lim.soft > 0
+             && lim.hard >= lim.soft
+             && loop (k - 1)
+         in
+         loop n));
   print_endline "test_rlimit: OK"

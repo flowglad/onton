@@ -223,10 +223,68 @@ let scenario_happy_path env =
       (Printf.sprintf "happy_path: remote feat=%s expected %s" remote_sha
          local_sha)
 
+(* ── Property: Push_plan.to_push_reject_classify_rejection mapping ────────────
+
+   The escalation contract (see push_plan.mli): local-state refusals route to
+   [Some (Local_state_unsafe { reason })] where [reason] is the planner's
+   [short_label] for that decision; the two refusals with dedicated
+   non-rejection handlers map to [None]. Generate every refusal shape and assert
+   the partition. *)
+let gen_refusal : Push_plan.refusal QCheck2.Gen.t =
+  let open QCheck2.Gen in
+  let gen_sha = string_size ~gen:(char_range 'a' 'f') (int_range 7 40) in
+  let gen_branch_name =
+    string_size ~gen:(char_range 'a' 'z') (int_range 1 12)
+  in
+  oneof
+    [
+      return Push_plan.No_commits_ahead_of_base;
+      return Push_plan.Worktree_missing;
+      map
+        (fun branch -> Push_plan.Branch_ref_missing { branch })
+        gen_branch_name;
+      map2
+        (fun expected got -> Push_plan.Branch_switched { expected; got })
+        gen_branch_name (option gen_branch_name);
+      map2
+        (fun local_sha remote_sha ->
+          Push_plan.Local_missing_remote_commits { local_sha; remote_sha })
+        gen_sha gen_sha;
+    ]
+
+let to_rejection_partition =
+  QCheck2.Test.make ~name:"to_push_reject_classify_rejection partition"
+    ~count:300 gen_refusal (fun refusal ->
+      match Push_plan.to_push_reject_classify_rejection refusal with
+      | None -> (
+          (* Only the two handler-owned refusals map to None. *)
+          match refusal with
+          | Push_plan.No_commits_ahead_of_base | Push_plan.Worktree_missing ->
+              true
+          | _ -> false)
+      | Some (Push_reject_classify.Local_state_unsafe { reason }) -> (
+          (* Local-state refusals carry the planner's short_label as reason. *)
+          match refusal with
+          | Push_plan.Branch_switched _
+          | Push_plan.Local_missing_remote_commits _
+          | Push_plan.Branch_ref_missing _ ->
+              String.equal reason
+                (Push_plan.short_label (Push_plan.Refuse refusal))
+          | _ -> false)
+      | Some
+          ( Push_reject_classify.Workflow_scope_missing
+          | Push_reject_classify.Branch_protection
+          | Push_reject_classify.Push_pattern_block
+          | Push_reject_classify.Lease_violation
+          | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _
+            ) ->
+          false)
+
 let () =
   Eio_main.run @@ fun env ->
   Stdlib.print_endline "Worktree.force_push_with_lease + Push_plan integration:";
   scenario_branch_switched env;
   scenario_local_missing_remote env;
   scenario_happy_path env;
+  QCheck2.Test.check_exn to_rejection_partition;
   Stdlib.print_endline "All push-plan integration scenarios passed."

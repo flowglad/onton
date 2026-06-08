@@ -394,6 +394,27 @@ let () =
            (process_line_strip
               (fun _ -> [ Types.Stream_event.Turn_started ])
               blank)));
+  (* [parse_array] on a null/empty array yields [Ok []]; on a non-array JSON
+     scalar it yields an [Error]. We generate the choice of input and assert the
+     corresponding outcome. *)
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"review backend parse_array on empty inputs"
+       ~count:200
+       QCheck2.Gen.(oneof_list [ `Null; `List [] ])
+       (fun json ->
+         match
+           Review_backend.parse_array ~known_kinds:[ "review-service" ] json
+         with
+         | Ok entries -> List.is_empty entries
+         | Error _ -> false));
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"review backend parse_array on scalars errors"
+       ~count:200 QCheck2.Gen.int (fun n ->
+         match
+           Review_backend.parse_array ~known_kinds:[ "review-service" ] (`Int n)
+         with
+         | Ok _ -> false
+         | Error _ -> true));
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"review backend parser public surface is linked"
        QCheck2.Gen.unit (fun () ->

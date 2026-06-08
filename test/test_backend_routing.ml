@@ -233,6 +233,70 @@ let () =
     Test.make ~name:"is_auto_model: None -> false" ~count:1 (Gen.return ())
       (fun () -> not (Backend_routing.is_auto_model None))
   in
+  let prop_resolve_pair_cli_wins =
+    Test.make ~name:"resolve_pair: non-empty cli backend/model take precedence"
+      ~count:500
+      (Gen.tup4 gen_backend_name gen_backend_name gen_backend_name
+         gen_backend_name)
+      (fun (cli_backend, stored_backend, repo_default, built_in_backend) ->
+        let cli_model = "opus" in
+        let backend, model =
+          Backend_routing.resolve_pair ~cli_backend ~cli_model ~stored_backend
+            ~stored_model:"sonnet"
+            ~repo_config:
+              { Repo_config.empty with default_backend = Some repo_default }
+            ~built_in_backend
+        in
+        String.equal backend cli_backend && String.equal model cli_model)
+  in
+
+  let prop_resolve_pair_total_non_empty_backend =
+    Test.make
+      ~name:"resolve_pair: total — backend never empty, falls back to built-in"
+      ~count:500
+      (Gen.tup3 gen_backend_name
+         (Gen.oneof_list [ "sonnet"; "" ])
+         (Gen.oneof_list [ "opus"; "" ]))
+      (fun (built_in_backend, cli_model, stored_model) ->
+        let backend, _model =
+          Backend_routing.resolve_pair ~cli_backend:"" ~cli_model
+            ~stored_backend:"" ~stored_model ~repo_config:Repo_config.empty
+            ~built_in_backend
+        in
+        String.equal backend built_in_backend)
+  in
+
+  let prop_resolve_auto_inlines_auto =
+    Test.make
+      ~name:"resolve_auto: Some \"auto\" model is replaced by auto_model result"
+      ~count:500 (Gen.tup3 gen_backend_name gen_route_model gen_complexity)
+      (fun (backend, auto_result, complexity) ->
+        let decision = { Backend_routing.backend; model = Some "auto" } in
+        let resolved =
+          Backend_routing.resolve_auto decision
+            ~auto_model:(fun ~complexity:_ -> auto_result)
+            ~complexity
+        in
+        String.equal resolved.backend backend
+        && Option.equal String.equal resolved.model auto_result)
+  in
+
+  let prop_resolve_auto_leaves_explicit =
+    Test.make ~name:"resolve_auto: explicit model is left unchanged" ~count:500
+      (Gen.tup3 gen_backend_name
+         (Gen.oneof_list [ "opus"; "sonnet"; "gpt-5.5" ])
+         gen_complexity)
+      (fun (backend, explicit, complexity) ->
+        let decision = { Backend_routing.backend; model = Some explicit } in
+        let resolved =
+          Backend_routing.resolve_auto decision
+            ~auto_model:(fun ~complexity:_ -> Some "SHOULD-NOT-APPEAR")
+            ~complexity
+        in
+        String.equal resolved.backend backend
+        && Option.equal String.equal resolved.model (Some explicit))
+  in
+
   let prop_public_surface_is_linked =
     Test.make ~name:"backend routing public surface is linked" Gen.unit
       (fun () ->
@@ -252,6 +316,10 @@ let () =
       prop_total;
       prop_is_auto_model_case_insensitive;
       prop_is_auto_model_none;
+      prop_resolve_pair_cli_wins;
+      prop_resolve_pair_total_non_empty_backend;
+      prop_resolve_auto_inlines_auto;
+      prop_resolve_auto_leaves_explicit;
       prop_public_surface_is_linked;
     ]
   in

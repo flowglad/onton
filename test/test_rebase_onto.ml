@@ -1253,12 +1253,135 @@ let () =
    assert_eq "test10: exactly 3 commits" "3" (Int.to_string (List.length lines));
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
-  Stdlib.print_endline "All rebase_onto integration tests passed.";
-  QCheck2.Test.check_exn
-    (QCheck2.Test.make ~name:"worktree parser public surface is linked"
-       QCheck2.Gen.unit (fun () ->
-         ignore Worktree_parser.classify_push_result;
-         ignore Worktree_parser.normalize_path;
-         ignore Worktree_parser.parse_commit_count;
-         ignore Worktree_parser.push_gate_from_count;
-         true))
+  Stdlib.print_endline "All rebase_onto integration tests passed."
+
+(* ───────────────────────────────────────────────────────────────────────
+   Pure property tests for the remaining [Worktree_parser] decision APIs
+   ([normalize_path], [parse_commit_count], [push_gate_from_count],
+   [classify_push_result], plus [is_ancestor_patch_subject],
+   [parse_push_porcelain], [parse_rebase_merge_state]) referenced via the
+   core module directly.
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  (* normalize_path: an absolute path is left as-is up to trailing-slash /
+     trailing "/." normalization, and the result never ends in a bare "/"
+     (for inputs longer than one char) nor in "/.". *)
+  let prop_normalize_path_idempotent =
+    (* Segments of lowercase letters joined by single slashes, then an
+       absolute root. A second normalization pass is a no-op. *)
+    Test.make ~name:"normalize_path: idempotent over absolute paths" ~count:300
+      Gen.(
+        list_size (int_range 1 5)
+          (string_size ~gen:(char_range 'a' 'z') (int_range 1 6)))
+      (fun segs ->
+        let path = "/" ^ String.concat ~sep:"/" segs in
+        let once = Worktree_parser.normalize_path ~cwd:"/tmp" path in
+        let twice = Worktree_parser.normalize_path ~cwd:"/tmp" once in
+        String.equal once twice && String.equal once path)
+  in
+  (* parse_commit_count: nonzero exit -> None; exit 0 with an integer body ->
+     Some that integer (stripped). *)
+  let prop_parse_commit_count =
+    Test.make ~name:"parse_commit_count: code/body contract" ~count:300
+      Gen.(pair (int_range 0 5) (int_range 0 1000))
+      (fun (code, n) ->
+        let stdout = Printf.sprintf "  %d \n" n in
+        match Worktree_parser.parse_commit_count ~code ~stdout with
+        | None -> code <> 0
+        | Some parsed -> code = 0 && parsed = n)
+  in
+  (* push_gate_from_count: Some 0 -> Skip_no_commits; everything else (None or
+     positive/negative count) -> Proceed. *)
+  let prop_push_gate_from_count =
+    Test.make ~name:"push_gate_from_count: only Some 0 skips" ~count:300
+      Gen.(option int)
+      (fun count ->
+        match Worktree_parser.push_gate_from_count count with
+        | Worktree_parser.Skip_no_commits -> (
+            match count with Some 0 -> true | _ -> false)
+        | Worktree_parser.Proceed -> (
+            match count with Some 0 -> false | _ -> true))
+  in
+  (* classify_push_result: exit 0 with a '=' porcelain flag is Push_up_to_date;
+     exit 0 otherwise is Push_ok. Uses generated stdout via the flag char. *)
+  let prop_classify_push_result_ok =
+    Test.make ~name:"classify_push_result: exit 0 maps via porcelain flag"
+      ~count:300
+      Gen.(oneof_list [ '='; '*'; ' '; '+' ])
+      (fun flag ->
+        let stdout =
+          Printf.sprintf
+            "To github.com:o/r.git\n\
+             %c\trefs/heads/b:refs/heads/b\t[summary]\n\
+             Done\n"
+            flag
+        in
+        match
+          Worktree_parser.classify_push_result ~code:0 ~stdout ~stderr:""
+        with
+        | Worktree_parser.Push_up_to_date -> Char.equal flag '='
+        | Worktree_parser.Push_ok -> not (Char.equal flag '=')
+        | Worktree_parser.Push_no_commits | Worktree_parser.Push_rejected _
+        | Worktree_parser.Push_worktree_missing | Worktree_parser.Push_error _
+          ->
+            false)
+  in
+  (* is_ancestor_patch_subject: empty project_name never matches any subject. *)
+  let prop_is_ancestor_empty_project =
+    Test.make ~name:"is_ancestor_patch_subject: empty project never matches"
+      ~count:300 Gen.string (fun subject ->
+        not
+          (Worktree_parser.is_ancestor_patch_subject ~project_name:""
+             ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
+             subject))
+  in
+  (* parse_push_porcelain: feeding a single porcelain line returns that line's
+     leading flag char. *)
+  let prop_parse_push_porcelain_flag =
+    Test.make ~name:"parse_push_porcelain: returns the leading flag char"
+      ~count:300
+      Gen.(oneof_list [ '+'; '!'; '='; '*' ])
+      (fun flag ->
+        let stdout =
+          Printf.sprintf "To x\n%c\trefs/heads/b:refs/heads/b\t[s]\nDone\n" flag
+        in
+        match Worktree_parser.parse_push_porcelain stdout with
+        | Some c -> Char.equal c flag
+        | None -> false)
+  in
+  (* parse_rebase_merge_state: with non-blank onto + upstream, always Some, and
+     old_base is the stripped upstream contents. *)
+  let prop_parse_rebase_merge_state_some =
+    Test.make ~name:"parse_rebase_merge_state: non-blank onto/upstream -> Some"
+      ~count:300
+      Gen.(
+        pair
+          (string_size ~gen:(char_range 'a' 'f') (int_range 6 12))
+          (string_size ~gen:(char_range 'a' 'f') (int_range 6 12)))
+      (fun (onto, upstream) ->
+        match
+          Worktree_parser.parse_rebase_merge_state ~onto_contents:(onto ^ "\n")
+            ~upstream_contents:(upstream ^ "\n")
+            ~orig_head_contents:"deadbeef\n" ~log_format_h_s:"sha1 subj\n"
+            ~project_name:"" ~ancestor_ids:[] ~target:"main"
+        with
+        | Some ci ->
+            String.equal ci.Worktree_parser.old_base upstream
+            && String.equal ci.Worktree_parser.target "main"
+        | None -> false)
+  in
+  let suite =
+    [
+      prop_normalize_path_idempotent;
+      prop_parse_commit_count;
+      prop_push_gate_from_count;
+      prop_classify_push_result_ok;
+      prop_is_ancestor_empty_project;
+      prop_parse_push_porcelain_flag;
+      prop_parse_rebase_merge_state_some;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode

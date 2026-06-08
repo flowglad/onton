@@ -161,6 +161,53 @@ let prop_blocked_by_dep_requires_off_main =
       Display_status.equal Blocked_by_dep
         (Display_status.derive ctx ~patch_id ~current_op:None ~main_branch))
 
+(* [is_on_main] reflects the tracked base branch: equal to main ⇒ true, any
+   other branch ⇒ false. Generate the base-branch name and assert the
+   equivalence. *)
+let prop_is_on_main_matches_base =
+  QCheck2.Test.make ~name:"is_on_main ⇔ base_branch = main_branch" ~count:200
+    QCheck2.Gen.(oneof_list [ "main"; "feature/foo"; "dev"; "release" ])
+    (fun name ->
+      let ctx =
+        State.Patch_ctx.set_base_branch State.Patch_ctx.empty ~patch_id
+          ~branch:(Types.Branch.of_string name)
+      in
+      Bool.equal
+        (Display_status.is_on_main ctx ~patch_id ~main_branch)
+        (String.equal name "main"))
+
+let gen_status : Display_status.t QCheck2.Gen.t =
+  QCheck2.Gen.oneof_list
+    Display_status.
+      [
+        Merged;
+        Needs_help;
+        Approved_idle;
+        Approved_running;
+        Fixing_ci;
+        Addressing_review;
+        Addressing_findings;
+        Resolving_conflict;
+        Responding_to_human;
+        Writing_pr_body;
+        Rebasing;
+        Starting;
+        Updating;
+        Ci_queued;
+        Review_queued;
+        Findings_queued;
+        Awaiting_feedback;
+        Blocked_by_dep;
+        Pending;
+      ]
+
+(* [yojson_of_t] then [t_of_yojson] round-trips every status value. *)
+let prop_yojson_round_trip =
+  QCheck2.Test.make ~name:"t_of_yojson ∘ yojson_of_t = id" ~count:500 gen_status
+    (fun status ->
+      Display_status.equal status
+        (Display_status.t_of_yojson (Display_status.yojson_of_t status)))
+
 let prop_public_surface_is_linked =
   QCheck2.Test.make ~name:"display status public surface is linked"
     QCheck2.Gen.unit (fun () ->
@@ -177,6 +224,8 @@ let () =
       prop_approved_busy_is_running;
       prop_pending_when_no_pr;
       prop_blocked_by_dep_requires_off_main;
+      prop_is_on_main_matches_base;
+      prop_yojson_round_trip;
       prop_public_surface_is_linked;
     ]
   in

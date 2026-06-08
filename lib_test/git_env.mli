@@ -1,5 +1,5 @@
-(* @archlint.module test
-   @archlint.domain test-support *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-facade *)
 
 (** Test helpers for spawning [git] without inheriting a poisoned environment.
 
