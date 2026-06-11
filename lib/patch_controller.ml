@@ -272,13 +272,18 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
   let t = Orchestrator.set_base_branch t patch_id base_branch in
   if merged then Orchestrator.mark_merged t patch_id else t
 
-let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
-  let patch_id = patch.id in
+(* PR base / draft reconciliation shared by gameplan and ad-hoc agents.
+   [allow_draft_flip] scopes the mark-for-review ratchet to gameplan patches:
+   onton opened those PRs as drafts and owns the draft→ready transition,
+   whereas an ad-hoc PR's draft bit belongs to whoever created the PR. The
+   base retarget applies to every managed agent — a PR left targeting a merged
+   dependency's branch diffs against frozen pre-merge history, so GitHub
+   reports conflicts that no rebase onto main can clear (the local rebase
+   noops, the poller re-reads the stale base, and the two spin forever). *)
+let reconcile_pr_settings t patch_id ~allow_draft_flip =
   let agent = Orchestrator.agent t patch_id in
-  if agent.Patch_agent.merged then (t, [])
-  else
-    let t = enqueue_pr_body_if_needed t patch_id agent in
-    let agent = Orchestrator.agent t patch_id in
+  if agent.Patch_agent.merged then []
+  else begin
     let effects = ref [] in
     (* Gate on [is_pr_present]: emitting Set_pr_draft / Set_pr_base against a
        [Missing] PR would 404 against GitHub. A gameplan patch can in
@@ -326,7 +331,7 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
                 && agent.pr_body_delivered && (not agent.has_conflict)
                 && (not rebase_pending) && agent.checks_passing
               in
-              if agent.is_draft && ready_for_review then
+              if allow_draft_flip && agent.is_draft && ready_for_review then
                 effects :=
                   Set_pr_draft { patch_id; pr_number; draft = false }
                   :: !effects;
@@ -337,12 +342,44 @@ let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
             end
         | None -> ())
     | Some _ | None -> ());
-    (t, List.rev !effects)
+    List.rev !effects
+  end
+
+let reconcile_patch t ~project_name:_ ~gameplan:_ ~(patch : Patch.t) =
+  let patch_id = patch.id in
+  let agent = Orchestrator.agent t patch_id in
+  if agent.Patch_agent.merged then (t, [])
+  else
+    let t = enqueue_pr_body_if_needed t patch_id agent in
+    (t, reconcile_pr_settings t patch_id ~allow_draft_flip:true)
 
 let reconcile_all t ~project_name ~gameplan =
-  List.fold gameplan.Gameplan.patches ~init:(t, []) ~f:(fun (orch, acc) patch ->
-      let orch, effects = reconcile_patch orch ~project_name ~gameplan ~patch in
-      (orch, acc @ effects))
+  let t, gameplan_effects =
+    List.fold gameplan.Gameplan.patches ~init:(t, [])
+      ~f:(fun (orch, acc) patch ->
+        let orch, effects =
+          reconcile_patch orch ~project_name ~gameplan ~patch
+        in
+        (orch, acc @ effects))
+  in
+  (* Ad-hoc agents (tracked but not in the gameplan) get the same base
+     retarget; they never get the draft flip, and no Pr_body demand — the PR
+     body contract is a gameplan artifact. Without this pass an ad-hoc PR
+     whose base branch merged is never retargeted on GitHub, and the
+     stale-base rebase loop above re-fires on every poll. *)
+  let gameplan_pids =
+    Set.of_list
+      (module Patch_id)
+      (List.map gameplan.Gameplan.patches ~f:(fun p -> p.Patch.id))
+  in
+  let adhoc_effects =
+    Orchestrator.all_agents t
+    |> List.filter ~f:(fun (a : Patch_agent.t) ->
+        not (Set.mem gameplan_pids a.Patch_agent.patch_id))
+    |> List.concat_map ~f:(fun (a : Patch_agent.t) ->
+        reconcile_pr_settings t a.Patch_agent.patch_id ~allow_draft_flip:false)
+  in
+  (t, gameplan_effects @ adhoc_effects)
 
 let branch_map_of_patches patches =
   List.fold patches
@@ -1190,6 +1227,101 @@ let%test "reconcile_patch emits no effects for merged agent" =
       ~patch
   in
   List.is_empty effects
+
+(* -- Ad-hoc PR base reconciliation (regression: PR #4347 stale-base loop) -- *)
+
+let empty_gameplan =
+  Gameplan.
+    {
+      project_name = "proj";
+      repo_owner = "";
+      repo_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "";
+      patches = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+      functional_changes = [];
+      context_resources = [];
+    }
+
+let make_adhoc_orchestrator ~base_branch =
+  let t = Orchestrator.create ~patches:[] ~main_branch:main in
+  let t =
+    Orchestrator.add_agent t ~patch_id:pid
+      ~branch:(Branch.of_string "adhoc-branch")
+      ~base_branch ~pr_number:(Pr_number.of_int 47)
+  in
+  (* [add_agent] deliberately does not seed [agent.base_branch]; the poller
+     owns it. Simulate the poll having observed the PR's base on GitHub. *)
+  Orchestrator.set_base_branch t pid base_branch
+
+let%test "reconcile_all retargets a stale ad-hoc PR base and converges" =
+  (* The PR #4347 shape: an ad-hoc PR left targeting a dependency branch that
+     has since merged and is no longer tracked. The structural base is main,
+     so reconcile must emit exactly one Set_pr_base — and once GitHub
+     acknowledges it, the next reconcile must be a fixpoint (no re-emit, no
+     poller/rebase loop). *)
+  let stale = Branch.of_string "merged-dep-branch" in
+  let t = make_adhoc_orchestrator ~base_branch:stale in
+  let t, effects =
+    reconcile_all t ~project_name:"proj" ~gameplan:empty_gameplan
+  in
+  let retarget =
+    Set_pr_base { patch_id = pid; pr_number = Pr_number.of_int 47; base = main }
+  in
+  List.equal equal_github_effect effects [ retarget ]
+  &&
+  let t = apply_github_effect_success t retarget in
+  let _, effects' =
+    reconcile_all t ~project_name:"proj" ~gameplan:empty_gameplan
+  in
+  List.is_empty effects'
+
+let%test "reconcile_all leaves an ad-hoc PR stacked on an open branch alone" =
+  let parent_pid = Patch_id.of_string "p-parent" in
+  let parent_branch = Branch.of_string "parent-branch" in
+  let t = Orchestrator.create ~patches:[] ~main_branch:main in
+  let t =
+    Orchestrator.add_agent t ~patch_id:parent_pid ~branch:parent_branch
+      ~base_branch:main ~pr_number:(Pr_number.of_int 46)
+  in
+  let t = Orchestrator.set_base_branch t parent_pid main in
+  let t =
+    Orchestrator.add_agent t ~patch_id:pid
+      ~branch:(Branch.of_string "adhoc-branch")
+      ~base_branch:parent_branch ~pr_number:(Pr_number.of_int 47)
+  in
+  let t = Orchestrator.set_base_branch t pid parent_branch in
+  let _, effects =
+    reconcile_all t ~project_name:"proj" ~gameplan:empty_gameplan
+  in
+  List.is_empty effects
+
+let%test "reconcile_all never flips an ad-hoc PR's draft bit" =
+  let t = make_adhoc_orchestrator ~base_branch:main in
+  (* Reach the exact fixpoint where a gameplan patch would be marked ready:
+     based on main, rebased onto main, body delivered (ad-hoc default), no
+     conflict, CI green — and currently draft. *)
+  let t = Orchestrator.set_is_draft t pid true in
+  let t = Orchestrator.set_checks_passing t pid true in
+  let t, _ = Orchestrator.apply_rebase_result t pid Worktree.Noop main in
+  let _, effects =
+    reconcile_all t ~project_name:"proj" ~gameplan:empty_gameplan
+  in
+  List.is_empty effects
+  (* Counterfactual: the same state under the gameplan ratchet does flip the
+     draft bit — proving the ad-hoc pass is what suppresses it, not some other
+     unmet precondition. *)
+  && List.equal equal_github_effect
+       (reconcile_pr_settings t pid ~allow_draft_flip:true)
+       [
+         Set_pr_draft
+           { patch_id = pid; pr_number = Pr_number.of_int 47; draft = false };
+       ]
 
 let%test "no merge-conflict re-enqueue after noop" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
