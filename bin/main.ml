@@ -1481,7 +1481,8 @@ let main_cmd ~pr_ops =
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
           Prune_runner.run_prune ~net:(Eio.Stdenv.net env)
-            ~clock:(Eio.Stdenv.clock env) ~refresh:(not no_refresh) () )
+            ~clock:(Eio.Stdenv.clock env) ~github_token
+            ~refresh:(not no_refresh) () )
     else if upload_debug then (
       match project with
       | None ->

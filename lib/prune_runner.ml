@@ -87,8 +87,8 @@ let refresh_agents_from_forge
             errors = 0;
             skipped_reason =
               Some
-                "no GitHub token available (set GITHUB_TOKEN or log in with \
-                 `gh`)";
+                "no GitHub token available (pass --token, set GITHUB_TOKEN, or \
+                 log in with `gh`)";
           } )
     | Some forge ->
         let module Forge = (val forge) in
@@ -213,20 +213,26 @@ let kept_reason ~base ~refresh_summary =
   | None -> base
   | Some note -> Stdlib.Printf.sprintf "%s (%s)" base note
 
-let run_prune ~net ~clock ~refresh () =
+let run_prune ~net ~clock ~github_token ~refresh () =
   let slugs = Project_store.list_projects () in
   if List.is_empty slugs then (
     Stdlib.Printf.printf "No stored projects to consider.\n";
     0)
   else
-    (* Resolve the GitHub token once for the whole prune run from
-       GITHUB_TOKEN / [gh auth token] — it is no longer persisted per project.
-       Skipped under [--no-refresh] since no forge queries happen. [make_forge]
-       closes over the run-wide [net]/[clock]/[token] so per-project
-       classification only supplies the owner/repo/branch that actually vary,
-       and yields [None] when no token is available so the refresh is reported
-       as skipped rather than failing. *)
-    let token = if refresh then Managed_repo.infer_github_token () else "" in
+    (* Resolve the GitHub token once for the whole prune run. Prefer the
+       explicit CLI/env value, then fall back to [gh auth token]; tokens are no
+       longer persisted per project. Skipped under [--no-refresh] since no forge
+       queries happen. [make_forge] closes over the run-wide [net]/[clock]/
+       [token] so per-project classification only supplies the
+       owner/repo/branch that actually vary, and yields [None] when no token is
+       available so the refresh is reported as skipped rather than failing. *)
+    let token =
+      if not refresh then ""
+      else
+        let explicit = String.strip github_token in
+        if String.is_empty explicit then Managed_repo.infer_github_token ()
+        else explicit
+    in
     let make_forge ~owner ~repo ~main_branch =
       if String.is_empty token then None
       else Some (Github.make ~net ~clock ~token ~owner ~repo ~main_branch)
