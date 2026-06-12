@@ -65,7 +65,14 @@ val reconcile_all :
   project_name:string ->
   gameplan:Gameplan.t ->
   Orchestrator.t * github_effect list
-(** Reconcile all gameplan patches. Ad-hoc patches are ignored. *)
+(** Reconcile all gameplan patches, then every ad-hoc (non-gameplan) agent.
+    Ad-hoc agents receive only the PR base retarget ([Set_pr_base]) — never the
+    draft→ready flip or a Pr_body demand: onton owns the draft lifecycle only
+    for PRs it opened itself, and the PR body contract is a gameplan artifact.
+    The base retarget must cover ad-hoc agents: without it, an ad-hoc PR whose
+    base branch merges is never retargeted on GitHub, GitHub keeps diffing the
+    PR against the frozen pre-merge base (phantom conflicts no rebase can
+    clear), and the poller/rebase pair loops until intervention. *)
 
 val plan_actions :
   Orchestrator.t -> patches:Patch.t list -> Orchestrator.action list
