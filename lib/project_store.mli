@@ -35,7 +35,6 @@ val ensure_dir : string -> unit
 
 type stored_config = {
   project_name : string;
-  github_token : string;
   github_owner : string;
   github_repo : string;
   backend : string;
@@ -54,7 +53,6 @@ type stored_config = {
 
 val save_config :
   project_name:string ->
-  github_token:string ->
   github_owner:string ->
   github_repo:string ->
   backend:string ->

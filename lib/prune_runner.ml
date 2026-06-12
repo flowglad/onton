@@ -62,65 +62,74 @@ let refresh_candidates (agents : Patch_agent.t Map.M(Patch_id).t) =
     recorded PR number. Returns the (possibly updated) agents map and a
     [refresh_summary]. Forge errors are tolerated — the corresponding agent is
     left untouched, classification proceeds with its stored [merged] flag. *)
-let refresh_agents_from_forge ~net ~clock ~(cfg : Project_store.stored_config)
+let refresh_agents_from_forge
+    ~(make_forge :
+       owner:string ->
+       repo:string ->
+       main_branch:Branch.t ->
+       (module Forge.S with type error = Github.error) option)
+    ~(cfg : Project_store.stored_config)
     ~(agents : Patch_agent.t Map.M(Patch_id).t) =
   let candidates = refresh_candidates agents in
   if List.is_empty candidates then
     ( agents,
       { attempted = 0; newly_merged = 0; errors = 0; skipped_reason = None } )
   else
-    let token = String.strip cfg.Project_store.github_token in
-    if String.is_empty token then
-      ( agents,
-        {
-          attempted = 0;
-          newly_merged = 0;
-          errors = 0;
-          skipped_reason = Some "no GitHub token in stored config";
-        } )
-    else
-      let module Forge =
-        (val Github.make ~net ~clock ~token ~owner:cfg.github_owner
-               ~repo:cfg.github_repo
-               ~main_branch:(Types.Branch.of_string cfg.main_branch))
-      in
-      let results =
-        Eio.Fiber.List.map ~max_fibers:16
-          (fun (patch_id, pr_number) ->
-            let result =
-              try
-                Result.map_error (Forge.pr_state pr_number) ~f:(fun _ -> ())
-              with
-              | Eio.Cancel.Cancelled _ as exn -> raise exn
-              | _ -> Error ()
-            in
-            (patch_id, pr_number, result))
-          candidates
-      in
-      let attempted = List.length results in
-      let agents, newly_merged, errors =
-        List.fold results ~init:(agents, 0, 0)
-          ~f:(fun (agents, merged_count, errs) (patch_id, _pr_number, result) ->
-            match result with
-            | Error _ -> (agents, merged_count, errs + 1)
-            | Ok pr_state ->
-                if Pr_state.merged pr_state then
-                  let agents =
-                    Map.change agents patch_id ~f:(function
-                      | None -> None
-                      | Some agent ->
-                          (* Record the merge-commit SHA we already have in
+    match
+      make_forge ~owner:cfg.github_owner ~repo:cfg.github_repo
+        ~main_branch:(Types.Branch.of_string cfg.main_branch)
+    with
+    | None ->
+        ( agents,
+          {
+            attempted = 0;
+            newly_merged = 0;
+            errors = 0;
+            skipped_reason =
+              Some
+                "no GitHub token available (pass --token, set GITHUB_TOKEN, or \
+                 log in with `gh`)";
+          } )
+    | Some forge ->
+        let module Forge = (val forge) in
+        let results =
+          Eio.Fiber.List.map ~max_fibers:16
+            (fun (patch_id, pr_number) ->
+              let result =
+                try
+                  Result.map_error (Forge.pr_state pr_number) ~f:(fun _ -> ())
+                with
+                | Eio.Cancel.Cancelled _ as exn -> raise exn
+                | _ -> Error ()
+              in
+              (patch_id, pr_number, result))
+            candidates
+        in
+        let attempted = List.length results in
+        let agents, newly_merged, errors =
+          List.fold results ~init:(agents, 0, 0)
+            ~f:(fun
+                (agents, merged_count, errs) (patch_id, _pr_number, result) ->
+              match result with
+              | Error _ -> (agents, merged_count, errs + 1)
+              | Ok pr_state ->
+                  if Pr_state.merged pr_state then
+                    let agents =
+                      Map.change agents patch_id ~f:(function
+                        | None -> None
+                        | Some agent ->
+                            (* Record the merge-commit SHA we already have in
                              hand so dependents' base-containment gate can
                              ancestry-check it without waiting for a re-poll. *)
-                          Some
-                            (Patch_agent.set_merge_commit_sha
-                               (Patch_agent.mark_merged agent)
-                               pr_state.Pr_state.merge_commit_sha))
-                  in
-                  (agents, merged_count + 1, errs)
-                else (agents, merged_count, errs))
-      in
-      (agents, { attempted; newly_merged; errors; skipped_reason = None })
+                            Some
+                              (Patch_agent.set_merge_commit_sha
+                                 (Patch_agent.mark_merged agent)
+                                 pr_state.Pr_state.merge_commit_sha))
+                    in
+                    (agents, merged_count + 1, errs)
+                  else (agents, merged_count, errs))
+        in
+        (agents, { attempted; newly_merged; errors; skipped_reason = None })
 
 let format_refresh_summary (s : refresh_summary) =
   let pr_word n = if n = 1 then "PR" else "PRs" in
@@ -147,7 +156,7 @@ let format_refresh_summary (s : refresh_summary) =
         in
         Some (String.concat ~sep:", " parts)
 
-let classify_project ~net ~clock ~refresh ~slug =
+let classify_project ~make_forge ~refresh ~slug =
   let snap_path = Project_store.snapshot_path slug in
   if not (Stdlib.Sys.file_exists snap_path) then (No_snapshot, None)
   else
@@ -171,7 +180,7 @@ let classify_project ~net ~clock ~refresh ~slug =
                     } )
             | Ok cfg ->
                 let agents, summary =
-                  refresh_agents_from_forge ~net ~clock ~cfg ~agents
+                  refresh_agents_from_forge ~make_forge ~cfg ~agents
                 in
                 (agents, Some summary)
         in
@@ -204,12 +213,30 @@ let kept_reason ~base ~refresh_summary =
   | None -> base
   | Some note -> Stdlib.Printf.sprintf "%s (%s)" base note
 
-let run_prune ~net ~clock ~refresh () =
+let run_prune ~net ~clock ~github_token ~refresh () =
   let slugs = Project_store.list_projects () in
   if List.is_empty slugs then (
     Stdlib.Printf.printf "No stored projects to consider.\n";
     0)
   else
+    (* Resolve the GitHub token once for the whole prune run. Prefer the
+       explicit CLI/env value, then fall back to [gh auth token]; tokens are no
+       longer persisted per project. Skipped under [--no-refresh] since no forge
+       queries happen. [make_forge] closes over the run-wide [net]/[clock]/
+       [token] so per-project classification only supplies the
+       owner/repo/branch that actually vary, and yields [None] when no token is
+       available so the refresh is reported as skipped rather than failing. *)
+    let token =
+      if not refresh then ""
+      else
+        let explicit = String.strip github_token in
+        if String.is_empty explicit then Managed_repo.infer_github_token ()
+        else explicit
+    in
+    let make_forge ~owner ~repo ~main_branch =
+      if String.is_empty token then None
+      else Some (Github.make ~net ~clock ~token ~owner ~repo ~main_branch)
+    in
     let removed = ref [] in
     let kept = ref [] in
     let errors = ref [] in
@@ -245,7 +272,7 @@ let run_prune ~net ~clock ~refresh () =
                      ~finally:(fun () -> Project_lock.release lock)
                      (fun () ->
                        let status, refresh_summary =
-                         classify_project ~net ~clock ~refresh ~slug
+                         classify_project ~make_forge ~refresh ~slug
                        in
                        (match status with
                        | All_merged -> remove_path project_dir

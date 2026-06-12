@@ -83,7 +83,6 @@ let ensure_dir path =
 
 type stored_config = {
   project_name : string;
-  github_token : string;
   github_owner : string;
   github_repo : string;
   backend : string;
@@ -100,15 +99,14 @@ type stored_config = {
 }
 [@@deriving yojson]
 
-let save_config ~project_name ~github_token ~github_owner ~github_repo ~backend
-    ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency
+let save_config ~project_name ~github_owner ~github_repo ~backend ~model
+    ~main_branch ~poll_interval ~repo_root ~max_concurrency
     ?(url_scheme : string option = None) () =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
     {
       project_name;
-      github_token;
       github_owner;
       github_repo;
       backend;
@@ -157,6 +155,14 @@ let migrate_backend_model fields =
   in
   ("backend", `String backend) :: ("model", `String model) :: without
 
+(* Drop fields that were persisted by older versions but are no longer part of
+   [stored_config]. [stored_config_of_yojson] is strict (no
+   [allow_extra_fields]), so a legacy [github_token] key would otherwise fail to
+   parse. The token is now resolved per run (env / [gh auth token]) and never
+   persisted; see [Managed_repo.infer_github_token]. *)
+let drop_legacy_fields fields =
+  List.filter fields ~f:(fun (k, _) -> not (String.equal k "github_token"))
+
 let load_config ~project_name =
   let path = config_path project_name in
   try
@@ -169,7 +175,9 @@ let load_config ~project_name =
     let json = Yojson.Safe.from_string content in
     match json with
     | `Assoc fields ->
-        Ok (stored_config_of_yojson (`Assoc (migrate_backend_model fields)))
+        Ok
+          (stored_config_of_yojson
+             (`Assoc (drop_legacy_fields (migrate_backend_model fields))))
     | _ -> Ok (stored_config_of_yojson json)
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
@@ -300,3 +308,39 @@ let%test "publish_gameplan_artifact is a no-op without a stored gameplan" =
       let project_name = "publish-test-empty" in
       publish_gameplan_artifact ~project_name;
       not (Stdlib.Sys.file_exists (gameplan_artifact_path project_name)))
+
+(* A config written by an older version still carries a [github_token] key.
+   [stored_config_of_yojson] is strict, so [load_config] must drop the legacy
+   key (via [drop_legacy_fields]) rather than fail to parse. *)
+let%test "load_config tolerates a legacy persisted github_token" =
+  with_temp_data_dir (fun () ->
+      let project_name = "legacy-token" in
+      ensure_dir (project_dir project_name);
+      let legacy =
+        {|{"project_name":"legacy-token","github_token":"ghp_stale","github_owner":"o","github_repo":"r","backend":"claude","model":"sonnet","main_branch":"main","poll_interval":5.0,"repo_root":"/tmp/r","max_concurrency":4}|}
+      in
+      let oc = Stdlib.open_out_bin (config_path project_name) in
+      Stdlib.output_string oc legacy;
+      Stdlib.close_out oc;
+      match load_config ~project_name with
+      | Ok cfg ->
+          String.equal cfg.github_owner "o" && String.equal cfg.github_repo "r"
+      | Error _ -> false)
+
+(* The token is no longer persisted: [save_config] must not write a
+   [github_token] key, and the config it writes must round-trip through
+   [load_config]. *)
+let%test "save_config persists no github_token and round-trips" =
+  with_temp_data_dir (fun () ->
+      let project_name = "no-token" in
+      save_config ~project_name ~github_owner:"o" ~github_repo:"r"
+        ~backend:"claude" ~model:"sonnet" ~main_branch:"main" ~poll_interval:5.0
+        ~repo_root:"/tmp/r" ~max_concurrency:4 ();
+      let raw = read_file_for_test (config_path project_name) in
+      (not (String.is_substring raw ~substring:"github_token"))
+      &&
+      match load_config ~project_name with
+      | Ok cfg ->
+          String.equal cfg.project_name project_name
+          && String.equal cfg.github_owner "o"
+      | Error _ -> false)

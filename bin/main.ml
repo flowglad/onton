@@ -312,8 +312,8 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     resolve_backend_model ~cli_backend ~cli_model ~stored_backend ~stored_model
       ~repo_config
   in
-  Project_store.save_config ~project_name ~github_token ~github_owner
-    ~github_repo ~backend ~model
+  Project_store.save_config ~project_name ~github_owner ~github_repo ~backend
+    ~model
     ~main_branch:(Branch.to_string main_branch)
     ~poll_interval ~repo_root ~max_concurrency
     ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
@@ -542,14 +542,6 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
               | Ok stored ->
                   (* CLI flags override stored config; stored config overrides
                      git-remote inference *)
-                  let merge_cli_stored cli stored_val =
-                    let c = Base.String.strip cli in
-                    if Base.String.is_empty c then stored_val else c
-                  in
-                  let token_from_stored =
-                    merge_cli_stored github_token
-                      stored.Project_store.github_token
-                  in
                   (* Always route through [Repo_root.normalize] — including
                      the stored value — so legacy configs that persisted a
                      worktree path (or a trailing [/.]) self-heal on load. *)
@@ -558,9 +550,15 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                     | Some rr -> Repo_root.normalize rr
                     | None -> Repo_root.normalize stored.Project_store.repo_root
                   in
+                  (* The GitHub token is resolved fresh on every run from the
+                     CLI flag / [GITHUB_TOKEN] / [gh auth token] — it is never
+                     persisted. Passing the raw CLI flag (empty when absent)
+                     lets [resolve_github_credentials] fall through to
+                     [gh auth token], so a token rotated after project creation
+                     takes effect on resume instead of a stale stored value
+                     winning. *)
                   let token, inferred_owner, inferred_repo =
-                    resolve_github_credentials ~github_token:token_from_stored
-                      ~repo_root
+                    resolve_github_credentials ~github_token ~repo_root
                   in
                   (* Precedence on resume: gameplan > stored config > inferred
                      from git remote. Gameplan-authored sessions have non-empty
@@ -1335,7 +1333,11 @@ let github_token_arg =
   let open Cmdliner in
   Arg.(
     value & opt string ""
-    & info [ "token" ] ~docv:"TOKEN" ~doc:"GitHub API token."
+    & info [ "token" ] ~docv:"TOKEN"
+        ~doc:
+          "GitHub API token. Resolved fresh on every run (falls back to \
+           GITHUB_TOKEN, then `gh auth token`) and never persisted to the \
+           project config."
         ~env:(Cmd.Env.info "GITHUB_TOKEN"))
 
 let backend_arg =
@@ -1457,7 +1459,7 @@ let no_refresh_arg =
         ~doc:
           "When pruning, skip the forge reconciliation step and rely solely on \
            the [merged] flag stored in each project's snapshot. Useful offline \
-           or when forge tokens have been rotated.")
+           or when `gh` is not authenticated.")
 
 let auto_merge_arg =
   let open Cmdliner in
@@ -1479,7 +1481,8 @@ let main_cmd ~pr_ops =
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
           Prune_runner.run_prune ~net:(Eio.Stdenv.net env)
-            ~clock:(Eio.Stdenv.clock env) ~refresh:(not no_refresh) () )
+            ~clock:(Eio.Stdenv.clock env) ~github_token
+            ~refresh:(not no_refresh) () )
     else if upload_debug then (
       match project with
       | None ->
