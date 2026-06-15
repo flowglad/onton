@@ -88,7 +88,11 @@ let test_activity_log_free_form () =
   let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
   Onton.Telemetry_dispatch.with_sink
-    ~sink:(Onton.Activity_log_sink.sink ~update ()) (fun () ->
+    ~sink:
+      (Onton.Activity_log_sink.sink
+         ~main_branch:(Types.Branch.of_string "main")
+         ~update ())
+    (fun () ->
       Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Free_form
            {
@@ -113,7 +117,11 @@ let test_activity_log_stream_drops_untagged () =
   let update f = log := f !log in
   let patch_id = Types.Patch_id.of_string "patch-5" in
   Onton.Telemetry_dispatch.with_sink
-    ~sink:(Onton.Activity_log_sink.sink ~update ()) (fun () ->
+    ~sink:
+      (Onton.Activity_log_sink.sink
+         ~main_branch:(Types.Branch.of_string "main")
+         ~update ())
+    (fun () ->
       Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Stream
            {
@@ -150,7 +158,11 @@ let test_activity_log_stream_accepts_tagged () =
          ])
   in
   Onton.Telemetry_dispatch.with_sink
-    ~sink:(Onton.Activity_log_sink.sink ~update ()) (fun () ->
+    ~sink:
+      (Onton.Activity_log_sink.sink
+         ~main_branch:(Types.Branch.of_string "main")
+         ~update ())
+    (fun () ->
       Onton.Telemetry_dispatch.emit
         (Telemetry.Event.Stream
            {
@@ -174,6 +186,72 @@ let test_activity_log_stream_accepts_tagged () =
       fail
         (Printf.sprintf "expected one stream entry, got %d"
            (List.length entries))
+
+let agent_json ?(busy = false) patch_id =
+  `Assoc
+    [
+      ("patch_id", Types.Patch_id.yojson_of_t patch_id);
+      ("pr_status", `Assoc [ ("kind", `String "absent") ]);
+      ("pr_number", `Null);
+      ("busy", `Bool busy);
+      ("merged", `Bool false);
+      ("satisfies", `Bool false);
+      ("base_branch", `Null);
+      ("queue", `List []);
+      ("current_op", `Null);
+      ("session_fallback", `String "Fresh_available");
+      ("ci_failure_count", `Int 0);
+      ("start_attempts_without_pr", `Int 0);
+      ("conflict_noop_count", `Int 0);
+      ("no_commits_push_count", `Int 0);
+      ("context_exhaustion_count", `Int 0);
+      ("push_failure_count", `Int 0);
+      ("pr_body_artifact_miss_count", `Int 0);
+    ]
+
+let test_activity_log_records_status_transition () =
+  let log = ref Activity_log.empty in
+  let update f = log := f !log in
+  let patch_id = Types.Patch_id.of_string "patch-5" in
+  Onton.Telemetry_dispatch.with_sink
+    ~sink:
+      (Onton.Activity_log_sink.sink
+         ~main_branch:(Types.Branch.of_string "main")
+         ~update ())
+    (fun () ->
+      Onton.Telemetry_dispatch.emit
+        (Telemetry.Event.Action
+           {
+             patch_id;
+             session_uuid = None;
+             payload =
+               `Assoc
+                 [
+                   ("action", `String "Start");
+                   ("agent_before", agent_json patch_id);
+                   ("agent_after", agent_json ~busy:true patch_id);
+                 ];
+           }));
+  match Activity_log.recent_transitions !log ~limit:1 with
+  | [ transition ] ->
+      if
+        not
+          (Display_status.equal
+             transition.Activity_log.Transition_entry.from_status
+             Display_status.Pending)
+      then fail "expected transition from pending";
+      if
+        not
+          (Display_status.equal
+             transition.Activity_log.Transition_entry.to_status
+             Display_status.Starting)
+      then fail "expected transition to starting";
+      expect_equal_string ~name:"action" "Start"
+        transition.Activity_log.Transition_entry.action
+  | transitions ->
+      fail
+        (Printf.sprintf "expected one transition, got %d"
+           (List.length transitions))
 
 let test_pre_migration_events_jsonl_loads () =
   let line =
@@ -224,4 +302,5 @@ let () =
   test_activity_log_free_form ();
   test_activity_log_stream_drops_untagged ();
   test_activity_log_stream_accepts_tagged ();
+  test_activity_log_records_status_transition ();
   test_pre_migration_events_jsonl_loads ()
