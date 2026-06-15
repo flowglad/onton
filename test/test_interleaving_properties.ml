@@ -3038,26 +3038,38 @@ let happy_tick orch patches ~pr_counter =
   let orch, _effects, _actions =
     Patch_controller.tick orch ~project_name:"test-project" ~gameplan
   in
+  let orch =
+    List.fold (Orchestrator.all_agents orch) ~init:orch
+      ~f:(fun o (a : Patch_agent.t) ->
+        if not a.Patch_agent.busy then o
+        else
+          let pid = a.Patch_agent.patch_id in
+          match a.Patch_agent.current_op with
+          | Some kind ->
+              let o =
+                Orchestrator.apply_session_result o pid Orchestrator.Session_ok
+              in
+              Orchestrator.apply_respond_outcome o pid kind
+                Orchestrator.Respond_ok
+          | None ->
+              let o =
+                if Patch_agent.has_pr a then o
+                else (
+                  pr_counter := !pr_counter + 1;
+                  Orchestrator.set_pr_number o pid
+                    (Pr_number.of_int !pr_counter))
+              in
+              Orchestrator.complete o pid)
+  in
+  (* Fair happy path: CI passes for every landed PR. The child Start gate now
+     requires each open dep to be CI-green ([open_dep_review_ready]) as well as
+     notes-delivered, so without this the chain would stall at the iteration
+     bound — a false deadlock that has nothing to do with the notes gate. *)
   List.fold (Orchestrator.all_agents orch) ~init:orch
     ~f:(fun o (a : Patch_agent.t) ->
-      if not a.Patch_agent.busy then o
-      else
-        let pid = a.Patch_agent.patch_id in
-        match a.Patch_agent.current_op with
-        | Some kind ->
-            let o =
-              Orchestrator.apply_session_result o pid Orchestrator.Session_ok
-            in
-            Orchestrator.apply_respond_outcome o pid kind
-              Orchestrator.Respond_ok
-        | None ->
-            let o =
-              if Patch_agent.has_pr a then o
-              else (
-                pr_counter := !pr_counter + 1;
-                Orchestrator.set_pr_number o pid (Pr_number.of_int !pr_counter))
-            in
-            Orchestrator.complete o pid)
+      if Patch_agent.has_pr a then
+        Orchestrator.set_checks_passing o a.Patch_agent.patch_id true
+      else o)
 
 (** NG-1: The notes gate is deadlock-free under fair scheduling. On a fresh
     linear chain, fair happy-path scheduling starts every patch and delivers
@@ -3191,6 +3203,9 @@ let () =
                   Orchestrator.apply_respond_outcome orch parent
                     Operation_kind.Pr_body Orchestrator.Respond_ok
                 in
+                (* The child Start gate also requires the dep to be CI-green, so
+                   fair recovery includes CI passing alongside notes delivery. *)
+                let orch = Orchestrator.set_checks_passing orch parent true in
                 let orch = tick orch in
                 let child_agent = Orchestrator.agent orch child in
                 child_agent.Patch_agent.busy

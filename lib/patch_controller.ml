@@ -272,6 +272,57 @@ let apply_replacement_pr t patch_id ~pr_number ~base_branch ~merged =
   let t = Orchestrator.set_base_branch t patch_id base_branch in
   if merged then Orchestrator.mark_merged t patch_id else t
 
+(* The mark-for-review "ready for review" fixpoint for a patch, read from
+   orchestrator state. A PR has reached it when its expected base is [main]
+   (every dependency merged), its PR body is delivered, no merge conflict is
+   active, its local branch is actually rebased onto that base, and CI is green.
+   [branch_rebased_onto] lags [expected_base] until the Rebase action lands,
+   and [has_conflict] is set the moment a rebase or push surfaces a conflict —
+   both must clear before the fixpoint holds. Gates the draft flip in
+   [reconcile_pr_settings].
+
+   With more than one open dep the expected base is not yet a single branch
+   ([Graph.initial_base] would raise), so the fixpoint is unreachable: [false]. *)
+let ready_for_review t patch_id =
+  let agent = Orchestrator.agent t patch_id in
+  let graph = Orchestrator.graph t in
+  let has_merged pid = (Orchestrator.agent t pid).Patch_agent.merged in
+  List.length (Graph.open_pr_deps graph patch_id ~has_merged) <= 1
+  &&
+  let branch_of pid = (Orchestrator.agent t pid).Patch_agent.branch in
+  let expected_base =
+    Graph.initial_base graph patch_id ~has_merged ~branch_of
+      ~main:(Orchestrator.main_branch t)
+  in
+  let rebase_pending =
+    match agent.Patch_agent.branch_rebased_onto with
+    | Some b -> not (Branch.equal b expected_base)
+    | None -> true
+  in
+  Branch.equal expected_base (Orchestrator.main_branch t)
+  && agent.Patch_agent.pr_body_delivered
+  && (not agent.Patch_agent.has_conflict)
+  && (not rebase_pending) && agent.Patch_agent.checks_passing
+
+(* The gate a child's Start waits on for its sole open-PR dependency: the
+   dependency's PR body is delivered, no merge conflict is active, and CI is
+   green. This is the [ready_for_review] set MINUS its "targets main / rebased
+   onto main" conjuncts — a child may legitimately start stacked on a
+   dependency that is itself still mid-chain (not yet drained to main), so
+   requiring the dependency to be on main would needlessly serialize deep
+   stacks. It strengthens the older deps-notes-ready gate ([pr_body_delivered]
+   alone) with the dependency's mergeability ([not has_conflict]) and CI health.
+
+   Deadlock-free: every conjunct is a property of the dependency itself, never
+   of the dependent, so gating introduces no wait cycle. Merged deps are exempt
+   at the call site ([Graph.open_pr_deps] filters them out), so a human-merged
+   parent that never delivered notes / went green cannot strand its child. *)
+let open_dep_review_ready t pid =
+  let a = Orchestrator.agent t pid in
+  a.Patch_agent.pr_body_delivered
+  && (not a.Patch_agent.has_conflict)
+  && a.Patch_agent.checks_passing
+
 (* PR base / draft reconciliation shared by gameplan and ad-hoc agents.
    [allow_draft_flip] scopes the mark-for-review ratchet to gameplan patches:
    onton opened those PRs as drafts and owns the draft→ready transition,
@@ -310,28 +361,13 @@ let reconcile_pr_settings t patch_id ~allow_draft_flip =
               in
               (* Mark-for-review is a one-way ratchet: we only emit
                  [draft = false]. Re-drafting a ready PR is disruptive to
-                 reviewers, so the controller defers the transition until
-                 the patch has reached a fixpoint and then never flips back.
-
-                 The fixpoint requires the PR body to be delivered, the
-                 expected base to be [main] (all deps merged), the local
-                 branch to actually be rebased onto that base (otherwise a
-                 pending rebase could still surface a conflict), no active
-                 merge conflict, and CI green. [branch_rebased_onto] lags
-                 [expected_base] until the Rebase action lands, and
-                 [has_conflict] is set the moment a rebase or push surfaces
-                 a conflict — both must clear before we open for review. *)
-              let rebase_pending =
-                match agent.branch_rebased_onto with
-                | Some b -> not (Branch.equal b expected_base)
-                | None -> true
-              in
-              let ready_for_review =
-                Branch.equal expected_base (Orchestrator.main_branch t)
-                && agent.pr_body_delivered && (not agent.has_conflict)
-                && (not rebase_pending) && agent.checks_passing
-              in
-              if allow_draft_flip && agent.is_draft && ready_for_review then
+                 reviewers, so the controller defers the transition until the
+                 patch reaches the [ready_for_review] fixpoint and then never
+                 flips back. *)
+              if
+                allow_draft_flip && agent.is_draft
+                && ready_for_review t patch_id
+              then
                 effects :=
                   Set_pr_draft { patch_id; pr_number; draft = false }
                   :: !effects;
@@ -402,25 +438,21 @@ let plan_action_for_patch t ~branch_map patch_id =
        is_pr_present rather than has_pr (which is true for [Missing] too). *)
     Patch_agent.is_pr_present (Orchestrator.agent t pid)
   in
-  let notes_delivered pid =
-    (* deps-notes-ready (spec): the child's prompt points at each ancestor's
-       implementation notes ([artifacts/<id>/pr-body.md]), so Start waits for
-       every unmerged dep to finish its Pr_body step. Merged deps are exempt —
-       a merged patch can never deliver notes ([enqueue_pr_body_if_needed]
-       skips merged agents), so waiting on one would deadlock; its artifact
-       persists on disk if it was delivered while open. [pr_body_delivered]
-       is monotone (never reset), so gating at plan time is race-free. *)
-    (Orchestrator.agent t pid).Patch_agent.pr_body_delivered
-  in
   if
     (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
     && Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
+    (* A child may only Start once its sole open-PR dependency is itself
+       review-ready ([open_dep_review_ready]): PR body delivered, no conflict,
+       CI green. This subsumes the older deps-notes-ready gate
+       ([pr_body_delivered] is one of its conjuncts). Merged deps are exempt:
+       [open_pr_deps] filters them out, so a human-merged parent that never
+       delivered notes can never strand its child. *)
     && List.for_all
          (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
-         ~f:notes_delivered
+         ~f:(fun dep -> open_dep_review_ready t dep)
   then
     let branch_of pid =
       match Map.find branch_map pid with
@@ -1181,17 +1213,26 @@ let plans_child_start ~child_id ~patches t =
     | Orchestrator.Start (p, _) -> Patch_id.equal p child_id
     | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
 
-let%test "plan_actions defers child Start until open dep's notes are delivered"
-    =
+let%test
+    "plan_actions defers child Start until open dep reaches ready-for-review" =
   let parent_id, child_id, patches, t = make_notes_gate_fixture () in
-  (* Parent's PR is open but its Pr_body step has not completed
-     (deps-notes-ready is false), so the child must not start yet. *)
+  (* The parent (started on main, rebased, no conflict) has neither delivered
+     its notes nor gone CI-green, so it has not reached the ready-for-review
+     fixpoint: the child must not start yet. *)
   (not (plans_child_start ~child_id ~patches t))
-  (* Once the notes are delivered the child becomes startable. *)
-  && plans_child_start ~child_id ~patches
-       (Orchestrator.set_pr_body_delivered t parent_id true)
+  (* Notes alone are no longer sufficient — the shared fixpoint also requires
+     the dep's CI to be green. *)
+  && (not
+        (plans_child_start ~child_id ~patches
+           (Orchestrator.set_pr_body_delivered t parent_id true)))
+  (* Once the dep is both notes-delivered and CI-green it is ready for review,
+     and the child becomes startable. *)
+  &&
+  let t = Orchestrator.set_pr_body_delivered t parent_id true in
+  let t = Orchestrator.set_checks_passing t parent_id true in
+  plans_child_start ~child_id ~patches t
 
-let%test "plan_actions does not gate child Start on a merged dep's notes" =
+let%test "plan_actions does not gate child Start on a merged dep" =
   let parent_id, child_id, patches, t = make_notes_gate_fixture () in
   (* Parent merges without ever delivering notes (e.g. merged by a human
      before the Pr_body step ran). A merged dep can never deliver, so the
