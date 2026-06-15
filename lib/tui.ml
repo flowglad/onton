@@ -1204,6 +1204,7 @@ let render_checks_overlay ~width ~height ~scroll_offset (pv : patch_view) =
   let title =
     let label =
       if total = 0 then " CI Checks"
+      else if vis_count = 0 then Printf.sprintf " CI Checks (– of %d)" total
       else
         Printf.sprintf " CI Checks (%d–%d of %d)" (offset + 1)
           (offset + vis_count) total

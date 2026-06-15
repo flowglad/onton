@@ -265,6 +265,19 @@ let test_checks_overlay_clamps_offset () =
   assert (clamped > 0);
   assert (clamped <= 40)
 
+(* When no check rows can fit, the title should not report an inverted range. *)
+let test_checks_overlay_zero_visible_range () =
+  let pv =
+    { (make_view ~id:"1" ~title:"overlay") with Tui.ci_checks = make_checks 40 }
+  in
+  let lines, clamped =
+    Tui.render_checks_overlay ~width:80 ~height:3 ~scroll_offset:0 pv
+  in
+  let lines = List.map lines ~f:Onton.Term.strip_ansi in
+  assert (clamped = 0);
+  assert (line_contains lines "CI Checks (– of 40)");
+  assert (not (line_contains lines "CI Checks (1–0 of 40)"))
+
 let test_patch_5_merge_queue_badge () =
   let pv =
     {
@@ -299,6 +312,7 @@ let () =
   test_detail_inline_ci_checks_under_cap ();
   test_checks_overlay_lists_all ();
   test_checks_overlay_clamps_offset ();
+  test_checks_overlay_zero_visible_range ();
   test_timeline_view_no_summary ();
   test_patches_render_above_activity ();
   QCheck2.Test.check_exn
