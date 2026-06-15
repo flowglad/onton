@@ -59,6 +59,20 @@ let () =
       (Patch_agent.needs_intervention a)
       (Option.is_some (Tui.human_intervention_reason a)));
 
+  (* Rebase/worktree failures have their own intervention reason and must not
+     be reported as repeated LLM session failures. *)
+  let rebase_stuck =
+    a |> Patch_agent.increment_rebase_failure_count
+    |> Patch_agent.increment_rebase_failure_count
+  in
+  assert (Patch_agent.needs_intervention rebase_stuck);
+  (match Tui.human_intervention_reason rebase_stuck with
+  | None -> assert false
+  | Some msg ->
+      assert (contains msg "rebase");
+      assert (contains msg "2");
+      assert (not (contains msg "session")));
+
   print_endline "PASS: human_intervention_reason surfaces the actionable reason"
 
 (* Exercise the whole Patch_agent decision surface. Some transitions have
@@ -94,6 +108,8 @@ let () =
              (fun a -> Patch_agent.reset_no_commits_push_count a);
              (fun a -> Patch_agent.increment_push_failure_count a);
              (fun a -> Patch_agent.reset_push_failure_count a);
+             (fun a -> Patch_agent.increment_rebase_failure_count a);
+             (fun a -> Patch_agent.reset_rebase_failure_count a);
              (fun a -> Patch_agent.reset_ci_failure_count a);
              (fun a -> Patch_agent.reset_context_exhaustion_count a);
              (fun a -> Patch_agent.reset_pr_body_artifact_miss_count a);
