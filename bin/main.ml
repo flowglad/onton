@@ -930,7 +930,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   Telemetry_dispatch.register_sink (Event_log.sink event_log);
   Telemetry_dispatch.register_sink
-    (Activity_log_sink.sink
+    (Activity_log_sink.sink ~main_branch
        ~update:(Runtime.update_activity_log setup.runtime)
        ());
   let review_clients =

@@ -9,8 +9,7 @@ let log_event runtime ?patch_id msg =
 
 let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
     ~(map_event : Activity_log.Event.t -> 'a)
-    ~(map_transition : Activity_log.Transition_entry.t -> 'a)
-    ~(map_stream : Activity_log.Stream_entry.t -> 'a) =
+    ~(map_transition : Activity_log.Transition_entry.t -> 'a) =
   let events =
     List.map (Activity_log.recent_events log ~limit) ~f:(fun e ->
         (e.Activity_log.Event.timestamp, map_event e))
@@ -19,22 +18,7 @@ let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
     List.map (Activity_log.recent_transitions log ~limit) ~f:(fun t ->
         (t.Activity_log.Transition_entry.timestamp, map_transition t))
   in
-  let stream =
-    List.map (Activity_log.recent_stream_entries log ~limit) ~f:(fun s ->
-        (s.Activity_log.Stream_entry.timestamp, map_stream s))
-  in
-  List.sort (events @ transitions @ stream) ~compare
-
-let format_stream_kind (kind : Activity_log.Stream_entry.kind) =
-  match kind with
-  | Activity_log.Stream_entry.Tool_use (name, input) ->
-      if String.length input > 0 then Printf.sprintf "Tool %s — %s" name input
-      else Printf.sprintf "Tool %s" name
-  | Activity_log.Stream_entry.Text_chunk text -> text
-  | Activity_log.Stream_entry.Finished reason ->
-      Printf.sprintf "Finished — %s" reason
-  | Activity_log.Stream_entry.Stream_error msg ->
-      Printf.sprintf "Stream error — %s" msg
+  List.sort (events @ transitions) ~compare
 
 let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
   merged_log_entries ~log ~limit
@@ -56,14 +40,6 @@ let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
           to_label = Tui.label t.Activity_log.Transition_entry.to_status;
           action = t.Activity_log.Transition_entry.action;
           timestamp = t.Activity_log.Transition_entry.timestamp;
-        })
-    ~map_stream:(fun (s : Activity_log.Stream_entry.t) ->
-      Tui.Event
-        {
-          patch_id =
-            Some (Patch_id.to_string s.Activity_log.Stream_entry.patch_id);
-          message = format_stream_kind s.Activity_log.Stream_entry.kind;
-          timestamp = s.Activity_log.Stream_entry.timestamp;
         })
   |> List.map ~f:snd
 
