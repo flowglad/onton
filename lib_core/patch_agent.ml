@@ -72,6 +72,11 @@ type t = {
           task does not fit one context window and needs a human. Reset on a
           successful session. *)
   push_failure_count : int;
+  rebase_failure_count : int;
+      (** Consecutive worktree rebase failures ([Worktree.Error]) since the last
+          successful/noop rebase. At [>= 2] contributes to [needs_intervention].
+          Kept separate from [session_fallback] so git fetch/ref-lock failures
+          are not rendered as LLM session failures. *)
   branch_rebased_onto : Branch.t option;
   branch_rebased_onto_sha : string option;
   anchor_history : Anchor_history.t;
@@ -135,7 +140,8 @@ let pr_number t = Patch_pr_status.pr_number t.pr_status
 let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
     ~session_given_up ~human_in_queue ~ci_failure_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~pr_body_artifact_miss_count =
+    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+    ~pr_body_artifact_miss_count =
   if merged then None
   else if session_given_up then Some "session_fallback=given_up"
   else if is_pr_missing then Some "pr_missing"
@@ -159,6 +165,7 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
   else if no_commits_push_count >= 2 then Some "no_commits_push_count>=2"
   else if context_exhaustion_count >= 2 then Some "context_exhaustion_count>=2"
   else if push_failure_count >= 3 then Some "push_failure_count>=3"
+  else if rebase_failure_count >= 2 then Some "rebase_failure_count>=2"
   else if pr_body_artifact_miss_count >= 2 then
     Some "pr_body_artifact_miss_count>=2"
   else None
@@ -175,6 +182,7 @@ let intervention_reason t =
     ~no_commits_push_count:t.no_commits_push_count
     ~context_exhaustion_count:t.context_exhaustion_count
     ~push_failure_count:t.push_failure_count
+    ~rebase_failure_count:t.rebase_failure_count
     ~pr_body_artifact_miss_count:t.pr_body_artifact_miss_count
 
 let needs_intervention t = Option.is_some (intervention_reason t)
@@ -182,12 +190,13 @@ let needs_intervention t = Option.is_some (intervention_reason t)
 let needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
     ~session_given_up ~human_in_queue ~ci_failure_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~pr_body_artifact_miss_count =
+    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+    ~pr_body_artifact_miss_count =
   Option.is_some
     (intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
        ~session_given_up ~human_in_queue ~ci_failure_count
        ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-       ~context_exhaustion_count ~push_failure_count
+       ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
        ~pr_body_artifact_miss_count)
 
 let create ~branch patch_id =
@@ -226,6 +235,7 @@ let create ~branch patch_id =
     no_commits_push_count = 0;
     context_exhaustion_count = 0;
     push_failure_count = 0;
+    rebase_failure_count = 0;
     branch_rebased_onto = None;
     branch_rebased_onto_sha = None;
     anchor_history = Anchor_history.empty;
@@ -280,6 +290,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     no_commits_push_count = 0;
     context_exhaustion_count = 0;
     push_failure_count = 0;
+    rebase_failure_count = 0;
     branch_rebased_onto = None;
     branch_rebased_onto_sha = None;
     anchor_history = Anchor_history.empty;
@@ -368,6 +379,11 @@ let increment_push_failure_count t =
   { t with push_failure_count = t.push_failure_count + 1 }
 
 let reset_push_failure_count t = { t with push_failure_count = 0 }
+
+let increment_rebase_failure_count t =
+  { t with rebase_failure_count = t.rebase_failure_count + 1 }
+
+let reset_rebase_failure_count t = { t with rebase_failure_count = 0 }
 
 let increment_pr_body_artifact_miss_count t =
   { t with pr_body_artifact_miss_count = t.pr_body_artifact_miss_count + 1 }
@@ -510,6 +526,7 @@ let reset_intervention_state t =
     no_commits_push_count = 0;
     context_exhaustion_count = 0;
     push_failure_count = 0;
+    rebase_failure_count = 0;
     pr_body_artifact_miss_count = 0;
   }
 
@@ -522,11 +539,12 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~merge_queue_entry ~merge_commit_sha ~base_contains_merged_siblings
     ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~branch_rebased_onto
-    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
-    ~current_op_state ~current_message_id ~generation ~worktree_path
-    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
-    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids =
+    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+    ~branch_rebased_onto ~branch_rebased_onto_sha ~anchor_history
+    ~checks_passing ~current_op ~current_op_state ~current_message_id
+    ~generation ~worktree_path ~branch_blocked ~llm_session_id
+    ~automerge_enabled ~automerge_deadline ~automerge_inflight
+    ~automerge_failure_count ~delivered_ci_run_ids =
   {
     patch_id;
     branch;
@@ -559,6 +577,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     no_commits_push_count;
     context_exhaustion_count;
     push_failure_count;
+    rebase_failure_count;
     branch_rebased_onto;
     branch_rebased_onto_sha;
     anchor_history;

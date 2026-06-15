@@ -189,9 +189,13 @@ let scenario_happy_path env =
   setup_origin ~origin_dir;
   setup_seed_clone ~origin_dir ~managed_dir;
   sh ~dir:managed_dir "git checkout -q -b feat";
-  sh ~dir:managed_dir "echo work > work.txt";
+  sh ~dir:managed_dir "echo shared > work.txt";
   sh ~dir:managed_dir "git add work.txt";
-  sh ~dir:managed_dir "git commit -q -m 'feat work'";
+  sh ~dir:managed_dir "git commit -q -m 'shared feat work'";
+  sh ~dir:managed_dir "git push -q -u origin feat";
+  sh ~dir:managed_dir "echo local > local.txt";
+  sh ~dir:managed_dir "git add local.txt";
+  sh ~dir:managed_dir "git commit -q -m 'local feat work'";
   let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
   let outcome =
     Worktree.force_push_with_lease ~process_mgr ~path:managed_dir

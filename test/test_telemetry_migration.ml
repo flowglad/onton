@@ -206,6 +206,7 @@ let agent_json ?(busy = false) patch_id =
       ("no_commits_push_count", `Int 0);
       ("context_exhaustion_count", `Int 0);
       ("push_failure_count", `Int 0);
+      ("rebase_failure_count", `Int 0);
       ("pr_body_artifact_miss_count", `Int 0);
     ]
 

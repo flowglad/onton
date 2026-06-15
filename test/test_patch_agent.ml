@@ -673,6 +673,38 @@ let () =
             && (not (needs_intervention a))
             && a.pr_body_artifact_miss_count = 0
           with _ -> false);
+      (* -- rebase failure counter uses its own intervention budget -- *)
+      Test.make ~name:"2 rebase failures trigger intervention" ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = increment_rebase_failure_count a in
+            let one_failure = not (needs_intervention a) in
+            let a = increment_rebase_failure_count a in
+            one_failure && needs_intervention a
+            && equal_session_fallback a.session_fallback Fresh_available
+          with _ -> false);
+      Test.make ~name:"reset_intervention_state clears rebase_failure_count"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          try
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = increment_rebase_failure_count a in
+            let a = increment_rebase_failure_count a in
+            let triggered = needs_intervention a in
+            let a = reset_intervention_state a in
+            triggered
+            && (not (needs_intervention a))
+            && a.rebase_failure_count = 0
+          with _ -> false);
       (* -- reset_intervention_state clears derived intervention -- *)
       Test.make ~name:"reset_intervention_state clears intervention" ~count:1
         Gen.(pure (pid0, br0))
@@ -732,8 +764,9 @@ let () =
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
               ~context_exhaustion_count:0 ~push_failure_count:0
-              ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-              ~merge_commit_sha:None ~base_contains_merged_siblings:true
+              ~rebase_failure_count:0 ~branch_rebased_onto:None
+              ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+              ~base_contains_merged_siblings:true
               ~anchor_history:Onton_core.Anchor_history.empty
               ~checks_passing:false ~current_op:None
               ~current_op_state:Onton_core.Patch_agent.Queued
@@ -820,8 +853,9 @@ let () =
               ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr:0
               ~conflict_noop_count:0 ~no_commits_push_count:0
               ~context_exhaustion_count:0 ~push_failure_count:0
-              ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
-              ~merge_commit_sha:None ~base_contains_merged_siblings:true
+              ~rebase_failure_count:0 ~branch_rebased_onto:None
+              ~branch_rebased_onto_sha:None ~merge_commit_sha:None
+              ~base_contains_merged_siblings:true
               ~anchor_history:Onton_core.Anchor_history.empty
               ~checks_passing:false ~current_op:None
               ~current_op_state:Onton_core.Patch_agent.Queued

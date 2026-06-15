@@ -90,6 +90,11 @@ type t = private {
           ([Push_reject_classify.is_permanent]) short-circuits this counter by
           setting [session_fallback = Given_up] directly — see
           {!Orchestrator.apply_session_result}. *)
+  rebase_failure_count : int;
+      (** Consecutive worktree rebase failures ([Worktree.Error]) since the last
+          successful/noop rebase. At [>= 2] contributes to [needs_intervention].
+          Kept separate from [session_fallback] so git fetch/ref-lock failures
+          are not rendered as LLM session failures. *)
   branch_rebased_onto : Types.Branch.t option;
   branch_rebased_onto_sha : string option;
       (** SHA the base ref resolved to at the time of the most recent successful
@@ -188,6 +193,7 @@ val intervention_reason_of_fields :
   no_commits_push_count:int ->
   context_exhaustion_count:int ->
   push_failure_count:int ->
+  rebase_failure_count:int ->
   pr_body_artifact_miss_count:int ->
   string option
 (** Raw-field form of {!intervention_reason}. This is the canonical pure
@@ -205,7 +211,7 @@ val needs_intervention : t -> bool
       [(not has_pr) && start_attempts_without_pr >= 2],
       [conflict_noop_count >= 2], [no_commits_push_count >= 2],
       [context_exhaustion_count >= 2], [push_failure_count >= 3],
-      [pr_body_artifact_miss_count >= 2]. *)
+      [rebase_failure_count >= 2], [pr_body_artifact_miss_count >= 2]. *)
 
 val needs_intervention_of_fields :
   merged:bool ->
@@ -219,6 +225,7 @@ val needs_intervention_of_fields :
   no_commits_push_count:int ->
   context_exhaustion_count:int ->
   push_failure_count:int ->
+  rebase_failure_count:int ->
   pr_body_artifact_miss_count:int ->
   bool
 (** [Option.is_some (intervention_reason_of_fields ...)]. *)
@@ -398,6 +405,16 @@ val reset_push_failure_count : t -> t
 (** Reset [push_failure_count] to 0. Called on a successful push ([Push_ok] /
     [Push_up_to_date]) in [Orchestrator.apply_session_result]. *)
 
+val increment_rebase_failure_count : t -> t
+(** Record a worktree rebase failure. At [>= 2], [needs_intervention] triggers —
+    repeated fetch/ref-lock/rebase setup failures require operator attention and
+    should not be reported as LLM session failures. *)
+
+val reset_rebase_failure_count : t -> t
+(** Reset [rebase_failure_count] to 0. Called on successful/noop rebase paths.
+    Leaves [session_fallback] untouched because LLM session-failure intervention
+    state is independent from rebase/worktree recovery. *)
+
 val increment_pr_body_artifact_miss_count : t -> t
 (** Record a Pr_body session that ended without durable PR body delivery. Called
     from [Orchestrator.apply_respond_outcome] on [Respond_pr_body_miss], which
@@ -445,9 +462,9 @@ val reset_intervention_state : t -> t
 (** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
     [start_attempts_without_pr] to 0, [conflict_noop_count] to 0,
     [no_commits_push_count] to 0, [context_exhaustion_count] to 0,
-    [push_failure_count] to 0, and [pr_body_artifact_miss_count] to 0. Used
-    after manual resolution (e.g., sending a human message) to give the patch a
-    fresh start. *)
+    [push_failure_count] to 0, [rebase_failure_count] to 0, and
+    [pr_body_artifact_miss_count] to 0. Used after manual resolution (e.g.,
+    sending a human message) to give the patch a fresh start. *)
 
 val set_branch_blocked : t -> t
 (** Set the branch-blocked flag (branch is checked out in repo root). *)
@@ -610,6 +627,7 @@ val restore :
   no_commits_push_count:int ->
   context_exhaustion_count:int ->
   push_failure_count:int ->
+  rebase_failure_count:int ->
   branch_rebased_onto:Types.Branch.t option ->
   branch_rebased_onto_sha:string option ->
   anchor_history:Anchor_history.t ->

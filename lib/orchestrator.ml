@@ -681,11 +681,13 @@ type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
 let apply_rebase_result t patch_id rebase_result new_base =
   match rebase_result with
   | Worktree.Ok ->
-      (* TODO: consider calling [reset_intervention_state] on a successful
-         rebase — a fresh base may well have resolved the CI failure, noop
-         cycle, or other condition that latched [needs_intervention]. Left
-         conservative for now: rebase only clears conflict-specific state. *)
+      (* Successful rebase proves the worktree/git path recovered. Keep other
+         intervention counters conservative, but clear the rebase-specific
+         budget. *)
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
+      in
       let t =
         update_agent t patch_id ~f:(fun a ->
             Patch_agent.set_branch_rebased_onto a new_base)
@@ -699,6 +701,9 @@ let apply_rebase_result t patch_id rebase_result new_base =
       (complete t patch_id, [ Push_branch ])
   | Worktree.Noop ->
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
+      in
       (* Noop: the local branch already contains [new_base] in its history,
          so the branch is (transitively) based on it. Record this so the
          drift detector doesn't re-fire. Push even on Noop — the remote may
@@ -710,12 +715,16 @@ let apply_rebase_result t patch_id rebase_result new_base =
       (complete t patch_id, [ Push_branch ])
   | Worktree.Conflict _ ->
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
+      in
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (complete t patch_id, [])
   | Worktree.Error _ ->
-      let t = set_session_failed t patch_id in
-      let t = set_tried_fresh t patch_id in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
+      in
       (complete t patch_id, [])
 
 let fold_anchor_events t patch_id events =
@@ -769,6 +778,9 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
   | Worktree.Ok ->
       let t = set_base_branch t patch_id new_base in
       let t =
+        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
+      in
+      let t =
         update_agent t patch_id ~f:(fun a ->
             Patch_agent.set_branch_rebased_onto a new_base)
       in
@@ -788,6 +800,9 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
          eventually trigger intervention. *)
       let t = set_base_branch t patch_id new_base in
       let t =
+        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
+      in
+      let t =
         update_agent t patch_id ~f:(fun a ->
             Patch_agent.set_branch_rebased_onto a new_base)
       in
@@ -797,10 +812,15 @@ let apply_conflict_rebase_result t patch_id rebase_result new_base =
       (t, Conflict_resolved, [ Push_branch ])
   | Worktree.Conflict _ ->
       let t = set_base_branch t patch_id new_base in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count
+      in
       let t = set_has_conflict t patch_id in
       (t, Deliver_to_agent, [])
   | Worktree.Error _ ->
-      let t = set_session_failed t patch_id in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.increment_rebase_failure_count
+      in
       let t = complete t patch_id in
       (t, Conflict_failed, [])
 

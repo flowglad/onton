@@ -205,6 +205,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("no_commits_push_count", `Int a.no_commits_push_count);
       ("context_exhaustion_count", `Int a.context_exhaustion_count);
       ("push_failure_count", `Int a.push_failure_count);
+      ("rebase_failure_count", `Int a.rebase_failure_count);
       ( "branch_rebased_onto",
         match a.branch_rebased_onto with
         | None -> `Null
@@ -387,6 +388,8 @@ let patch_agent_of_yojson ~gameplan json =
             ~default:0)
        ~push_failure_count:
          (Option.value (int_member_opt "push_failure_count" json) ~default:0)
+       ~rebase_failure_count:
+         (Option.value (int_member_opt "rebase_failure_count" json) ~default:0)
        ~branch_rebased_onto_sha:
          (string_member_opt "branch_rebased_onto_sha" json)
        ~anchor_history:
@@ -855,14 +858,14 @@ let%test_module "session_id_sidecars" =
           ~is_draft:false ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
           ~start_attempts_without_pr:0 ~conflict_noop_count:0
           ~no_commits_push_count:0 ~context_exhaustion_count:0
-          ~push_failure_count:0 ~branch_rebased_onto:None
-          ~branch_rebased_onto_sha:None ~anchor_history:Anchor_history.empty
-          ~checks_passing:false ~current_op:None
-          ~current_op_state:Patch_agent.Queued ~current_message_id:None
-          ~generation:0 ~worktree_path:None ~branch_blocked:false
-          ~llm_session_id ~automerge_enabled:false ~automerge_deadline:None
-          ~automerge_inflight:false ~automerge_failure_count:0
-          ~delivered_ci_run_ids:[]
+          ~push_failure_count:0 ~rebase_failure_count:0
+          ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+          ~anchor_history:Anchor_history.empty ~checks_passing:false
+          ~current_op:None ~current_op_state:Patch_agent.Queued
+          ~current_message_id:None ~generation:0 ~worktree_path:None
+          ~branch_blocked:false ~llm_session_id ~automerge_enabled:false
+          ~automerge_deadline:None ~automerge_inflight:false
+          ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
       in
       let orch =
         Orchestrator.restore

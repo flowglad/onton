@@ -72,6 +72,8 @@ let needs_intervention fields =
       (Option.value (int_member fields "context_exhaustion_count") ~default:0)
     ~push_failure_count:
       (Option.value (int_member fields "push_failure_count") ~default:0)
+    ~rebase_failure_count:
+      (Option.value (int_member fields "rebase_failure_count") ~default:0)
     ~pr_body_artifact_miss_count:
       (Option.value
          (int_member fields "pr_body_artifact_miss_count")

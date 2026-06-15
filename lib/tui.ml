@@ -368,6 +368,11 @@ let human_intervention_reason (agent : Patch_agent.t) =
             "git push failed %d times \xe2\x80\x94 check branch protection or \
              remote state"
             agent.Patch_agent.push_failure_count
+      | "rebase_failure_count>=2" ->
+          Printf.sprintf
+            "git rebase failed %d times \xe2\x80\x94 check the activity log \
+             for the fetch or worktree error"
+            agent.Patch_agent.rebase_failure_count
       | "pr_body_artifact_miss_count>=2" ->
           "PR body delivery blocked repeatedly \xe2\x80\x94 check the PR \
            description requirements"

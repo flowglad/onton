@@ -59,7 +59,56 @@ let () =
       (Patch_agent.needs_intervention a)
       (Option.is_some (Tui.human_intervention_reason a)));
 
+  (* Rebase/worktree failures have their own intervention reason and must not
+     be reported as repeated LLM session failures. *)
+  let rebase_stuck =
+    a |> Patch_agent.increment_rebase_failure_count
+    |> Patch_agent.increment_rebase_failure_count
+  in
+  assert (Patch_agent.needs_intervention rebase_stuck);
+  (match Tui.human_intervention_reason rebase_stuck with
+  | None -> assert false
+  | Some msg ->
+      assert (contains msg "rebase");
+      assert (contains msg "2");
+      assert (not (contains msg "session")));
+
   print_endline "PASS: human_intervention_reason surfaces the actionable reason"
+
+let assert_raw_fields ~merged ~has_pr ~is_pr_missing ~session_given_up
+    ~human_in_queue ~ci_failure_count ~start_attempts_without_pr
+    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
+    ~push_failure_count ~rebase_failure_count ~pr_body_artifact_miss_count
+    ~expected =
+  let reason =
+    Patch_agent.intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
+      ~session_given_up ~human_in_queue ~ci_failure_count
+      ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
+      ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+      ~pr_body_artifact_miss_count
+  in
+  assert (Option.equal String.equal reason expected);
+  assert (
+    Bool.equal
+      (Patch_agent.needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
+         ~session_given_up ~human_in_queue ~ci_failure_count
+         ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
+         ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+         ~pr_body_artifact_miss_count)
+      (Option.is_some expected))
+
+let () =
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:false ~ci_failure_count:0
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:2
+    ~pr_body_artifact_miss_count:0 ~expected:(Some "rebase_failure_count>=2");
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:true ~ci_failure_count:3
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
+    ~pr_body_artifact_miss_count:0 ~expected:None;
+  print_endline "PASS: raw intervention field decisions stay in lockstep"
 
 (* Exercise the whole Patch_agent decision surface. Some transitions have
    preconditions (e.g. [clear_pr] requires a PR present), so each is applied
@@ -94,6 +143,8 @@ let () =
              (fun a -> Patch_agent.reset_no_commits_push_count a);
              (fun a -> Patch_agent.increment_push_failure_count a);
              (fun a -> Patch_agent.reset_push_failure_count a);
+             (fun a -> Patch_agent.increment_rebase_failure_count a);
+             (fun a -> Patch_agent.reset_rebase_failure_count a);
              (fun a -> Patch_agent.reset_ci_failure_count a);
              (fun a -> Patch_agent.reset_context_exhaustion_count a);
              (fun a -> Patch_agent.reset_pr_body_artifact_miss_count a);
@@ -144,7 +195,7 @@ let () =
              ~ci_failure_count:3 ~start_attempts_without_pr:0
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
-             ~pr_body_artifact_miss_count:0
+             ~rebase_failure_count:0 ~pr_body_artifact_miss_count:0
          in
          let needs_from_fields =
            Patch_agent.needs_intervention_of_fields ~merged:false ~has_pr:false
@@ -152,7 +203,24 @@ let () =
              ~ci_failure_count:3 ~start_attempts_without_pr:0
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
-             ~pr_body_artifact_miss_count:0
+             ~rebase_failure_count:0 ~pr_body_artifact_miss_count:0
          in
-         Bool.equal needs_from_fields (Option.is_some reason_from_fields)));
+         let rebase_reason =
+           Patch_agent.intervention_reason_of_fields ~merged:false ~has_pr:true
+             ~is_pr_missing:false ~session_given_up:false ~human_in_queue:false
+             ~ci_failure_count:0 ~start_attempts_without_pr:0
+             ~conflict_noop_count:0 ~no_commits_push_count:0
+             ~context_exhaustion_count:0 ~push_failure_count:0
+             ~rebase_failure_count:2 ~pr_body_artifact_miss_count:0
+         in
+         let rebase_needs_intervention =
+           Patch_agent.needs_intervention_of_fields ~merged:false ~has_pr:true
+             ~is_pr_missing:false ~session_given_up:false ~human_in_queue:false
+             ~ci_failure_count:0 ~start_attempts_without_pr:0
+             ~conflict_noop_count:0 ~no_commits_push_count:0
+             ~context_exhaustion_count:0 ~push_failure_count:0
+             ~rebase_failure_count:2 ~pr_body_artifact_miss_count:0
+         in
+         Bool.equal needs_from_fields (Option.is_some reason_from_fields)
+         && Bool.equal rebase_needs_intervention (Option.is_some rebase_reason)));
   print_endline "PASS: patch_agent surface threaded"

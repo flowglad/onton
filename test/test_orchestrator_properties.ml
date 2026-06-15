@@ -574,9 +574,9 @@ let () =
         with _ -> false)
   in
 
-  (* Error -> session failed + tried_fresh *)
+  (* Error -> rebase failure budget, not session fallback *)
   let prop_rebase_error_fails =
-    Test.make ~name:"apply_rebase_result: Error -> session failed"
+    Test.make ~name:"apply_rebase_result: Error -> rebase failure"
       (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
         try
           match patches with
@@ -592,8 +592,127 @@ let () =
               let a = Orchestrator.agent orch' pid in
               (not a.Patch_agent.busy)
               && Patch_agent.equal_session_fallback
-                   a.Patch_agent.session_fallback Patch_agent.Given_up
+                   a.Patch_agent.session_fallback Patch_agent.Fresh_available
+              && a.Patch_agent.rebase_failure_count = 1
               && List.is_empty effects
+        with _ -> false)
+  in
+
+  let prop_rebase_error_budget_triggers_intervention =
+    Test.make ~name:"apply_rebase_result: repeated Error -> rebase intervention"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error 1") new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error 2") new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              a.Patch_agent.rebase_failure_count = 2
+              && Patch_agent.needs_intervention a
+              && Option.equal String.equal
+                   (Patch_agent.intervention_reason a)
+                   (Some "rebase_failure_count>=2")
+              && Patch_agent.equal_session_fallback
+                   a.Patch_agent.session_fallback Patch_agent.Fresh_available
+        with _ -> false)
+  in
+
+  let prop_rebase_success_resets_rebase_failure_budget =
+    Test.make ~name:"apply_rebase_result: Ok resets rebase failure intervention"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error 1") new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error 2") new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              a.Patch_agent.rebase_failure_count = 0
+              && (not (Patch_agent.needs_intervention a))
+              && Patch_agent.equal_session_fallback
+                   a.Patch_agent.session_fallback Patch_agent.Fresh_available
+        with _ -> false)
+  in
+
+  let prop_rebase_success_preserves_session_fallback =
+    Test.make
+      ~name:"apply_rebase_result: Ok preserves session-fallback intervention"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.set_session_failed orch pid in
+              let orch = Orchestrator.set_tried_fresh orch pid in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error") new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              a.Patch_agent.rebase_failure_count = 0
+              && Patch_agent.needs_intervention a
+              && Option.equal String.equal
+                   (Patch_agent.intervention_reason a)
+                   (Some "session_fallback=given_up")
+              && Patch_agent.equal_session_fallback
+                   a.Patch_agent.session_fallback Patch_agent.Given_up
+        with _ -> false)
+  in
+
+  let prop_rebase_conflict_resets_rebase_failure_budget =
+    Test.make
+      ~name:
+        "apply_rebase_result: Conflict resets prior rebase failure before retry"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error 1") new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid stub_conflict new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error 2") new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              a.Patch_agent.rebase_failure_count = 1
+              && not (Patch_agent.needs_intervention a)
         with _ -> false)
   in
 
@@ -837,7 +956,7 @@ let () =
         with _ -> false)
   in
 
-  (* Error -> Conflict_failed, not busy, session failed *)
+  (* Error -> Conflict_failed, not busy, rebase failure budget *)
   let prop_conflict_rebase_error =
     Test.make ~name:"apply_conflict_rebase_result: Error -> Conflict_failed"
       (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
@@ -857,8 +976,40 @@ let () =
                 Orchestrator.Conflict_failed
               && (not a.Patch_agent.busy)
               && Patch_agent.equal_session_fallback
-                   a.Patch_agent.session_fallback Patch_agent.Tried_fresh
+                   a.Patch_agent.session_fallback Patch_agent.Fresh_available
+              && a.Patch_agent.rebase_failure_count = 1
               && List.is_empty effects
+        with _ -> false)
+  in
+
+  let prop_conflict_rebase_conflict_resets_rebase_failure_budget =
+    Test.make
+      ~name:
+        "apply_conflict_rebase_result: Conflict resets prior rebase failure \
+         before retry" (Gen.pair gen_patch_list_unique gen_branch)
+      (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _, _ =
+                Orchestrator.apply_conflict_rebase_result orch pid
+                  (Worktree.Error "test error 1") new_base
+              in
+              let orch, _, _ =
+                Orchestrator.apply_conflict_rebase_result orch pid stub_conflict
+                  new_base
+              in
+              let orch, _, _ =
+                Orchestrator.apply_conflict_rebase_result orch pid
+                  (Worktree.Error "test error 2") new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              a.Patch_agent.rebase_failure_count = 1
+              && not (Patch_agent.needs_intervention a)
         with _ -> false)
   in
 
@@ -1513,6 +1664,10 @@ let () =
       prop_rebase_ok_clears_conflict;
       prop_rebase_noop_preserves_conflict;
       prop_rebase_error_fails;
+      prop_rebase_error_budget_triggers_intervention;
+      prop_rebase_success_resets_rebase_failure_budget;
+      prop_rebase_success_preserves_session_fallback;
+      prop_rebase_conflict_resets_rebase_failure_budget;
       prop_rebase_push_ok;
       prop_rebase_push_up_to_date;
       prop_rebase_push_rejected;
@@ -1523,6 +1678,7 @@ let () =
       prop_conflict_rebase_conflict;
       prop_conflict_rebase_no_self_enqueue;
       prop_conflict_rebase_error;
+      prop_conflict_rebase_conflict_resets_rebase_failure_budget;
       prop_conflict_rebase_sets_base;
       prop_conflict_push_resolved_ok;
       prop_conflict_push_resolved_rejected;
