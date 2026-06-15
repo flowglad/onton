@@ -195,7 +195,7 @@ let () =
              ~ci_failure_count:3 ~start_attempts_without_pr:0
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
-             ~pr_body_artifact_miss_count:0
+             ~rebase_failure_count:0 ~pr_body_artifact_miss_count:0
          in
          let needs_from_fields =
            Patch_agent.needs_intervention_of_fields ~merged:false ~has_pr:false
@@ -203,7 +203,24 @@ let () =
              ~ci_failure_count:3 ~start_attempts_without_pr:0
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
-             ~pr_body_artifact_miss_count:0
+             ~rebase_failure_count:0 ~pr_body_artifact_miss_count:0
          in
-         Bool.equal needs_from_fields (Option.is_some reason_from_fields)));
+         let rebase_reason =
+           Patch_agent.intervention_reason_of_fields ~merged:false ~has_pr:true
+             ~is_pr_missing:false ~session_given_up:false ~human_in_queue:false
+             ~ci_failure_count:0 ~start_attempts_without_pr:0
+             ~conflict_noop_count:0 ~no_commits_push_count:0
+             ~context_exhaustion_count:0 ~push_failure_count:0
+             ~rebase_failure_count:2 ~pr_body_artifact_miss_count:0
+         in
+         let rebase_needs_intervention =
+           Patch_agent.needs_intervention_of_fields ~merged:false ~has_pr:true
+             ~is_pr_missing:false ~session_given_up:false ~human_in_queue:false
+             ~ci_failure_count:0 ~start_attempts_without_pr:0
+             ~conflict_noop_count:0 ~no_commits_push_count:0
+             ~context_exhaustion_count:0 ~push_failure_count:0
+             ~rebase_failure_count:2 ~pr_body_artifact_miss_count:0
+         in
+         Bool.equal needs_from_fields (Option.is_some reason_from_fields)
+         && Bool.equal rebase_needs_intervention (Option.is_some rebase_reason)));
   print_endline "PASS: patch_agent surface threaded"
