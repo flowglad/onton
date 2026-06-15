@@ -53,32 +53,29 @@ let session_given_up fields =
   | Some _ | None -> false
 
 let needs_intervention fields =
-  if bool_member fields "merged" then false
-  else
-    let queue = operation_list_member fields "queue" in
-    let human_in_queue =
-      List.mem queue Operation_kind.Human ~equal:Operation_kind.equal
-    in
-    if session_given_up fields then true
-    else if is_pr_missing fields then true
-    else if human_in_queue then false
-    else
-      Option.value (int_member fields "ci_failure_count") ~default:0 >= 3
-      || (not (has_pr fields))
-         && Option.value
-              (int_member fields "start_attempts_without_pr")
-              ~default:0
-            >= 2
-      || Option.value (int_member fields "conflict_noop_count") ~default:0 >= 2
-      || Option.value (int_member fields "no_commits_push_count") ~default:0
-         >= 2
-      || Option.value (int_member fields "context_exhaustion_count") ~default:0
-         >= 2
-      || Option.value (int_member fields "push_failure_count") ~default:0 >= 3
-      || Option.value
-           (int_member fields "pr_body_artifact_miss_count")
-           ~default:0
-         >= 2
+  let queue = operation_list_member fields "queue" in
+  Patch_agent.needs_intervention_of_fields
+    ~merged:(bool_member fields "merged")
+    ~has_pr:(has_pr fields) ~is_pr_missing:(is_pr_missing fields)
+    ~session_given_up:(session_given_up fields)
+    ~human_in_queue:
+      (List.mem queue Operation_kind.Human ~equal:Operation_kind.equal)
+    ~ci_failure_count:
+      (Option.value (int_member fields "ci_failure_count") ~default:0)
+    ~start_attempts_without_pr:
+      (Option.value (int_member fields "start_attempts_without_pr") ~default:0)
+    ~conflict_noop_count:
+      (Option.value (int_member fields "conflict_noop_count") ~default:0)
+    ~no_commits_push_count:
+      (Option.value (int_member fields "no_commits_push_count") ~default:0)
+    ~context_exhaustion_count:
+      (Option.value (int_member fields "context_exhaustion_count") ~default:0)
+    ~push_failure_count:
+      (Option.value (int_member fields "push_failure_count") ~default:0)
+    ~pr_body_artifact_miss_count:
+      (Option.value
+         (int_member fields "pr_body_artifact_miss_count")
+         ~default:0)
 
 let display_status_of_agent_json ~main_branch json =
   let fields = assoc_fields json in

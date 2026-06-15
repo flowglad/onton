@@ -176,6 +176,24 @@ val intervention_reason : t -> string option
     in the event log so operators can grep "why is this patch stuck?" by reason.
 *)
 
+val intervention_reason_of_fields :
+  merged:bool ->
+  has_pr:bool ->
+  is_pr_missing:bool ->
+  session_given_up:bool ->
+  human_in_queue:bool ->
+  ci_failure_count:int ->
+  start_attempts_without_pr:int ->
+  conflict_noop_count:int ->
+  no_commits_push_count:int ->
+  context_exhaustion_count:int ->
+  push_failure_count:int ->
+  pr_body_artifact_miss_count:int ->
+  string option
+(** Raw-field form of {!intervention_reason}. This is the canonical pure
+    decision for callers that reconstruct agent status from persisted telemetry
+    instead of holding a {!t}. *)
+
 val needs_intervention : t -> bool
 (** [Option.is_some (intervention_reason t)]. Derived predicate. True iff the
     agent is not [merged] AND any of:
@@ -188,6 +206,22 @@ val needs_intervention : t -> bool
       [conflict_noop_count >= 2], [no_commits_push_count >= 2],
       [context_exhaustion_count >= 2], [push_failure_count >= 3],
       [pr_body_artifact_miss_count >= 2]. *)
+
+val needs_intervention_of_fields :
+  merged:bool ->
+  has_pr:bool ->
+  is_pr_missing:bool ->
+  session_given_up:bool ->
+  human_in_queue:bool ->
+  ci_failure_count:int ->
+  start_attempts_without_pr:int ->
+  conflict_noop_count:int ->
+  no_commits_push_count:int ->
+  context_exhaustion_count:int ->
+  push_failure_count:int ->
+  pr_body_artifact_miss_count:int ->
+  bool
+(** [Option.is_some (intervention_reason_of_fields ...)]. *)
 
 (** {2 Spec actions} *)
 
