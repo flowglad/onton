@@ -224,6 +224,12 @@ let () =
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch = prepare_with_prs orch patches in
+          let orch =
+            List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
+                let o = Orchestrator.set_pr_body_delivered o p.Patch.id true in
+                Orchestrator.set_checks_passing o p.Patch.id true)
+          in
           let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
           let started_ids =
             List.filter_map spawns ~f:(fun s ->
@@ -240,9 +246,9 @@ let () =
                 && (not a.Patch_agent.busy) && (not a.Patch_agent.merged)
                 && Graph.deps_satisfied graph pid ~has_merged ~has_pr:(fun p ->
                     Patch_agent.has_pr (Orchestrator.agent orch p))
-                && List.for_all (Graph.open_pr_deps graph pid ~has_merged)
-                     ~f:(fun d ->
-                       (Orchestrator.agent orch d).Patch_agent.pr_body_delivered)
+                && List.for_all
+                     (Graph.open_pr_deps graph pid ~has_merged)
+                     ~f:(open_dep_review_ready orch)
               then List.mem started_ids pid ~equal:Patch_id.equal
               else true)
         with _ -> false)
