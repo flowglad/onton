@@ -656,6 +656,37 @@ let () =
         with _ -> false)
   in
 
+  let prop_rebase_success_preserves_session_fallback =
+    Test.make
+      ~name:"apply_rebase_result: Ok preserves session-fallback intervention"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch = Orchestrator.set_session_failed orch pid in
+              let orch = Orchestrator.set_tried_fresh orch pid in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid
+                  (Worktree.Error "test error") new_base
+              in
+              let orch, _ =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let a = Orchestrator.agent orch pid in
+              a.Patch_agent.rebase_failure_count = 0
+              && Patch_agent.needs_intervention a
+              && Option.equal String.equal
+                   (Patch_agent.intervention_reason a)
+                   (Some "session_fallback=given_up")
+              && Patch_agent.equal_session_fallback
+                   a.Patch_agent.session_fallback Patch_agent.Given_up
+        with _ -> false)
+  in
+
   (* ========== apply_rebase_push_result properties ========== *)
 
   (* Push_ok -> Rebase_push_ok, no conflict *)
@@ -1575,6 +1606,7 @@ let () =
       prop_rebase_error_fails;
       prop_rebase_error_budget_triggers_intervention;
       prop_rebase_success_resets_rebase_failure_budget;
+      prop_rebase_success_preserves_session_fallback;
       prop_rebase_push_ok;
       prop_rebase_push_up_to_date;
       prop_rebase_push_rejected;

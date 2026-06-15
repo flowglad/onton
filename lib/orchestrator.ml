@@ -683,7 +683,7 @@ let apply_rebase_result t patch_id rebase_result new_base =
   | Worktree.Ok ->
       (* Successful rebase proves the worktree/git path recovered. Keep other
          intervention counters conservative, but clear the rebase-specific
-         budget and legacy session-fallback poison from old rebase failures. *)
+         budget. *)
       let t = set_base_branch t patch_id new_base in
       let t =
         update_agent t patch_id ~f:Patch_agent.reset_rebase_failure_count

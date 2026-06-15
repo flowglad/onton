@@ -383,8 +383,7 @@ let reset_push_failure_count t = { t with push_failure_count = 0 }
 let increment_rebase_failure_count t =
   { t with rebase_failure_count = t.rebase_failure_count + 1 }
 
-let reset_rebase_failure_count t =
-  { t with rebase_failure_count = 0; session_fallback = Fresh_available }
+let reset_rebase_failure_count t = { t with rebase_failure_count = 0 }
 
 let increment_pr_body_artifact_miss_count t =
   { t with pr_body_artifact_miss_count = t.pr_body_artifact_miss_count + 1 }

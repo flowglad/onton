@@ -412,9 +412,8 @@ val increment_rebase_failure_count : t -> t
 
 val reset_rebase_failure_count : t -> t
 (** Reset [rebase_failure_count] to 0. Called on successful/noop rebase paths.
-    Also clears [session_fallback] so a successful manual/system rebase can
-    recover legacy agents that were previously poisoned by rebase errors using
-    the session-fallback field. *)
+    Leaves [session_fallback] untouched because LLM session-failure intervention
+    state is independent from rebase/worktree recovery. *)
 
 val increment_pr_body_artifact_miss_count : t -> t
 (** Record a Pr_body session that ended without durable PR body delivery. Called
