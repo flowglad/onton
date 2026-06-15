@@ -186,12 +186,13 @@ let () =
         with _ -> false)
   in
 
-  (* deps-notes-ready (spec): every Start target's unmerged deps have
-     delivered their implementation notes. Half the patches get delivered
-     notes so the generator exercises both gate outcomes. *)
-  let prop_start_deps_notes_ready =
+  (* open-dep-review-ready: every Start target's unmerged open-PR deps have
+     delivered implementation notes, have no conflict, and have green CI. Half
+     the patches get notes plus CI-green so the generator exercises both gate
+     outcomes. *)
+  let prop_start_deps_review_ready_alternating =
     Test.make
-      ~name:"plan_spawns: Start only when unmerged deps' notes delivered"
+      ~name:"plan_spawns: Start only when unmerged deps are review-ready"
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
@@ -211,9 +212,9 @@ let () =
           List.for_all spawns ~f:(fun s ->
               match Onton.Spawn_logic.classify s with
               | `Start pid ->
-                  List.for_all (Graph.open_pr_deps graph pid ~has_merged)
-                    ~f:(fun d ->
-                      (Orchestrator.agent orch d).Patch_agent.pr_body_delivered)
+                  List.for_all
+                    (Graph.open_pr_deps graph pid ~has_merged)
+                    ~f:(open_dep_review_ready orch)
               | `Respond _ | `Rebase _ -> true)
         with _ -> false)
   in
@@ -423,7 +424,7 @@ let () =
       prop_intervention_blocks;
       prop_start_no_pr;
       prop_start_deps_satisfied;
-      prop_start_deps_notes_ready;
+      prop_start_deps_review_ready_alternating;
       prop_all_startable_started;
       prop_start_deps_ready_for_review;
       prop_startable_with_ready_deps_started;
