@@ -858,8 +858,12 @@ let assert_rebase_noop label = function
 
 let assert_rebase_conflict label = function
   | Worktree.Conflict _ -> ()
-  | Worktree.Ok | Worktree.Noop | Worktree.Error _ ->
-      failwith (Printf.sprintf "%s: expected Conflict" label)
+  | Worktree.Ok ->
+      failwith (Printf.sprintf "%s: expected Conflict, got Ok" label)
+  | Worktree.Noop ->
+      failwith (Printf.sprintf "%s: expected Conflict, got Noop" label)
+  | Worktree.Error msg ->
+      failwith (Printf.sprintf "%s: expected Conflict, got Error: %s" label msg)
 
 (** Simulate squash-merge of [branch] into main: checkout main, create a single
     new commit with the same tree diff, then delete [branch]. *)
