@@ -524,6 +524,7 @@ type frame = {
   width : int;
   detail_at_bottom : bool;
   detail_scroll_offset : int;
+  checks_scroll_offset : int;
   patches_start_row : int;
   patches_scroll_offset : int;
   patch_count : int;
@@ -727,6 +728,52 @@ let render_activity (entries : activity_entry list) =
     in
     header :: lines
 
+(** Deduplicate CI checks by name, keeping the most recent result by
+    [started_at]. ISO 8601 timestamps sort lexicographically. Original
+    first-seen order is preserved. Shared between the inline detail info rows
+    and the scrollable checks overlay so both agree on what to show. *)
+let dedup_ci_checks (checks : Ci_check.t list) =
+  let seen = Hashtbl.create (module String) in
+  List.iter checks ~f:(fun (c : Ci_check.t) ->
+      match Hashtbl.find seen c.name with
+      | Some (prev : Ci_check.t) ->
+          let newer =
+            match (c.started_at, prev.started_at) with
+            | Some a, Some b -> String.( >= ) a b
+            | Some _, None -> true
+            | None, Some _ -> false
+            | None, None -> false
+          in
+          if newer then Hashtbl.set seen ~key:c.name ~data:c
+      | None -> Hashtbl.set seen ~key:c.name ~data:c);
+  let emitted = Hashtbl.create (module String) in
+  List.filter_map checks ~f:(fun (c : Ci_check.t) ->
+      if Hashtbl.mem emitted c.name then None
+      else (
+        Hashtbl.set emitted ~key:c.name ~data:();
+        Some (Hashtbl.find_exn seen c.name)))
+
+(** Render a single CI check as an icon + name + conclusion, with [indent]
+    leading spaces. Shared between the inline detail rows and the checks
+    overlay. *)
+let render_ci_check_row ~indent (c : Ci_check.t) =
+  let failure_conclusions = Patch_decision.failure_conclusions in
+  let icon =
+    if String.equal c.conclusion "success" then
+      Term.styled [ Term.Sgr.fg_green ] "✓"
+    else if List.mem failure_conclusions c.conclusion ~equal:String.equal then
+      Term.styled [ Term.Sgr.fg_red ] "✗"
+    else Term.styled [ Term.Sgr.fg_yellow ] "?"
+  in
+  Printf.sprintf "%s%s %s: %s" indent icon c.name c.conclusion
+
+(** Maximum number of CI checks shown inline in the detail info section. Beyond
+    this, an ellipsis row points at the scrollable checks overlay so the checks
+    cannot crowd the transcript and metadata off the screen. Kept a fixed
+    constant (not height-derived) so [detail_info_height] stays a pure function
+    of the check count. *)
+let max_inline_ci_checks = 8
+
 (** Build the info rows for a detail view. Shared between [render_detail] and
     [detail_info_height] to keep them in sync. [~now] is the wall-clock time the
     frame is rendered against — threaded in rather than read from
@@ -844,45 +891,21 @@ let detail_info_rows (pv : patch_view) ~width ~now =
   let ci_section =
     if List.is_empty pv.ci_checks then []
     else
-      let failure_conclusions = Patch_decision.failure_conclusions in
-      (* Deduplicate by name, keeping the most recent result by started_at.
-         ISO 8601 timestamps sort lexicographically. *)
-      let deduped =
-        let seen = Hashtbl.create (module String) in
-        List.iter pv.ci_checks ~f:(fun (c : Ci_check.t) ->
-            match Hashtbl.find seen c.name with
-            | Some (prev : Ci_check.t) ->
-                let newer =
-                  match (c.started_at, prev.started_at) with
-                  | Some a, Some b -> String.( >= ) a b
-                  | Some _, None -> true
-                  | None, Some _ -> false
-                  | None, None -> false
-                in
-                if newer then Hashtbl.set seen ~key:c.name ~data:c
-            | None -> Hashtbl.set seen ~key:c.name ~data:c);
-        (* Preserve original order by filtering to first-seen names *)
-        let emitted = Hashtbl.create (module String) in
-        List.filter_map pv.ci_checks ~f:(fun (c : Ci_check.t) ->
-            if Hashtbl.mem emitted c.name then None
-            else (
-              Hashtbl.set emitted ~key:c.name ~data:();
-              Some (Hashtbl.find_exn seen c.name)))
-      in
+      let deduped = dedup_ci_checks pv.ci_checks in
+      let total = List.length deduped in
+      let shown = List.take deduped max_inline_ci_checks in
       let ci_header = [ ""; Term.styled [ Term.Sgr.bold ] "  CI Checks" ] in
-      let ci_rows =
-        List.map deduped ~f:(fun (c : Ci_check.t) ->
-            let icon =
-              if String.equal c.conclusion "success" then
-                Term.styled [ Term.Sgr.fg_green ] "✓"
-              else if
-                List.mem failure_conclusions c.conclusion ~equal:String.equal
-              then Term.styled [ Term.Sgr.fg_red ] "✗"
-              else Term.styled [ Term.Sgr.fg_yellow ] "?"
-            in
-            Printf.sprintf "    %s %s: %s" icon c.name c.conclusion)
+      let ci_rows = List.map shown ~f:(render_ci_check_row ~indent:"    ") in
+      let overflow =
+        if total > max_inline_ci_checks then
+          [
+            Term.styled [ Term.Sgr.dim ]
+              (Printf.sprintf "    … %d more — press c to view all"
+                 (total - max_inline_ci_checks));
+          ]
+        else []
       in
-      ci_header @ ci_rows
+      ci_header @ ci_rows @ overflow
   in
   lines @ op_line @ intervention @ ci_section
 
@@ -1040,8 +1063,8 @@ let render_footer ~width ~view_mode ?prompt_line () =
                -:remove  m:manage  o:open browser  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  esc/backspace:back  enter:message  m:manage  o:open \
-               browser  t:timeline  h:help"
+              " q:quit  esc/backspace:back  enter:message  c:checks  m:manage  \
+               o:open browser  t:timeline  h:help"
         | Timeline_view ->
             Term.styled [ Term.Sgr.dim ]
               " q:quit  esc/backspace:back  ↑/↓:scroll  t:list  h:help"
@@ -1084,6 +1107,7 @@ let render_help_overlay ~width ~height =
           "PgUp      Page up (10 lines)";
           "PgDn      Page down (10 lines)";
           "Enter     Send message";
+          "c         View all CI checks";
           "m         Manage patch";
           "o         Open PR in browser";
           "Esc/Bksp  Back to list";
@@ -1159,6 +1183,58 @@ let render_manage_overlay ~width ~height ~automerge_enabled ~needs_intervention
   let visible = List.sub content ~pos:0 ~len:overlay_h in
   let pad_line line = if width <= 0 then "" else Term.fit_width width line in
   List.map visible ~f:pad_line
+
+(** Full-screen, scrollable list of a patch's CI checks. Opened by hotkey from
+    the detail view when the inline section is capped. Returns the rendered
+    lines and the clamped scroll offset (written back to [checks_scroll] so
+    delta-based input stays in range, mirroring [render_detail]). Only one
+    scroll offset is ever live at a time: while this overlay is up the detail
+    transcript scroll is dormant. *)
+let render_checks_overlay ~width ~height ~scroll_offset (pv : patch_view) =
+  let deduped = dedup_ci_checks pv.ci_checks in
+  let total = List.length deduped in
+  let dismiss = Term.styled [ Term.Sgr.dim ] "(↑/↓ scroll · esc to close)" in
+  (* Reserve the title plus a possible top and bottom indicator. *)
+  let content_visible = Int.max 0 (height - 3) in
+  let max_off =
+    if total > content_visible then total - content_visible else 0
+  in
+  let offset = Int.max 0 (Int.min scroll_offset max_off) in
+  let vis_count = Int.min content_visible (Int.max 0 (total - offset)) in
+  let title =
+    let label =
+      if total = 0 then " CI Checks"
+      else
+        Printf.sprintf " CI Checks (%d–%d of %d)" (offset + 1)
+          (offset + vis_count) total
+    in
+    Term.styled
+      [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
+      (Printf.sprintf "%s  %s" label dismiss)
+  in
+  let top_ind =
+    if offset > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf "  ↑ %d above" offset) ]
+    else []
+  in
+  let bot_ind =
+    let below = max_off - offset in
+    if below > 0 then
+      [ Term.styled [ Term.Sgr.dim ] (Printf.sprintf "  ↓ %d below" below) ]
+    else []
+  in
+  let rows =
+    if total = 0 then
+      [ Term.styled [ Term.Sgr.dim ] "  (no CI checks reported)" ]
+    else
+      List.sub deduped ~pos:offset ~len:vis_count
+      |> List.map ~f:(render_ci_check_row ~indent:"  ")
+  in
+  let content = (title :: top_ind) @ rows @ bot_ind in
+  let overlay_h = Int.max 0 (Int.min (List.length content) (height - 1)) in
+  let visible = List.sub content ~pos:0 ~len:overlay_h in
+  let pad_line line = if width <= 0 then "" else Term.fit_width width line in
+  (List.map visible ~f:pad_line, offset)
 
 (** Number of info lines render_detail produces for a patch. Derived from
     [detail_info_rows] so the two cannot drift. Width only affects truncation,
@@ -1238,35 +1314,56 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     ~(activity : activity_entry list) ~project_name ~backend_name ~show_help
-    ~show_manage ~now ?(transcript = "") ?status_msg ?prompt_line
-    (views : patch_view list) =
+    ~show_checks ~checks_scroll ~show_manage ~now ?(transcript = "") ?status_msg
+    ?prompt_line (views : patch_view list) =
   let no_patches =
     {
       lines = [];
       width;
       detail_at_bottom = false;
       detail_scroll_offset = 0;
+      checks_scroll_offset = checks_scroll;
       patches_start_row = 0;
       patches_scroll_offset = 0;
       patch_count = 0;
     }
   in
+  (* The patch the overlays (manage, checks) act on: the focused patch in detail
+     view, or the selected row in list view. *)
+  let overlay_target_pv () =
+    match view_mode with
+    | Detail_view patch_id ->
+        List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
+    | List_view ->
+        let count = List.length views in
+        if count = 0 then None
+        else
+          let idx = Int.max 0 (Int.min selected (count - 1)) in
+          List.nth views idx
+    | Timeline_view -> None
+  in
   if show_help then
     let overlay = render_help_overlay ~width ~height in
     { no_patches with lines = overlay }
+  else if show_checks then
+    match overlay_target_pv () with
+    | Some pv ->
+        let overlay, clamped =
+          render_checks_overlay ~width ~height ~scroll_offset:checks_scroll pv
+        in
+        { no_patches with lines = overlay; checks_scroll_offset = clamped }
+    | None ->
+        (* No patch in focus — nothing to show. Render a dismissable notice
+           rather than dereferencing an absent patch. *)
+        let line =
+          Term.styled
+            [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
+            " CI Checks  (no patch selected — esc to close)"
+        in
+        let pad = if width <= 0 then "" else Term.fit_width width line in
+        { no_patches with lines = [ pad ] }
   else if show_manage then
-    let target_pv =
-      match view_mode with
-      | Detail_view patch_id ->
-          List.find views ~f:(fun pv -> Patch_id.equal pv.patch_id patch_id)
-      | List_view ->
-          let count = List.length views in
-          if count = 0 then None
-          else
-            let idx = Int.max 0 (Int.min selected (count - 1)) in
-            List.nth views idx
-      | Timeline_view -> None
-    in
+    let target_pv = overlay_target_pv () in
     let automerge_enabled =
       Option.value_map target_pv ~default:false ~f:(fun pv ->
           pv.automerge_enabled)
@@ -1397,6 +1494,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
 let frame_to_string (frame : frame) = String.concat ~sep:"\n" frame.lines ^ "\n"
 let detail_at_bottom frame = frame.detail_at_bottom
 let detail_scroll_offset frame = frame.detail_scroll_offset
+let checks_scroll_offset frame = frame.checks_scroll_offset
 let patches_start_row frame = frame.patches_start_row
 let patches_scroll_offset frame = frame.patches_scroll_offset
 let patch_count frame = frame.patch_count

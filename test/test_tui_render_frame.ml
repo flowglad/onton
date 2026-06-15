@@ -50,8 +50,8 @@ let plain_lines frame =
 let render ?(width = 80) ?(height = 24) ?(view_mode = Tui.List_view)
     ?(activity = []) ?(project_name = "demo") ?(backend_name = "claude") views =
   Tui.render_frame ~width ~height ~selected:0 ~scroll_offset:0 ~view_mode
-    ~activity ~project_name ~backend_name ~show_help:false ~show_manage:false
-    ~now:0.0 views
+    ~activity ~project_name ~backend_name ~show_help:false ~show_checks:false
+    ~checks_scroll:0 ~show_manage:false ~now:0.0 views
 
 let one_view = [ make_view ~id:"1" ~title:"first patch" ]
 
@@ -193,6 +193,78 @@ let test_patches_render_above_activity () =
   | Some p, Some a -> assert (p < a)
   | _ -> assert false
 
+let make_checks n =
+  List.init n ~f:(fun i ->
+      {
+        Ci_check.name = Printf.sprintf "check-%d" i;
+        conclusion = (if i = 0 then "failure" else "pending");
+        details_url = None;
+        description = None;
+        started_at = None;
+        id = None;
+      })
+
+let count_check_rows lines =
+  List.count lines ~f:(fun line -> String.is_substring line ~substring:"check-")
+
+(* Inline detail section: with more than the cap, only the cap is shown plus an
+   ellipsis pointing at the overlay; metadata and footer survive. *)
+let test_detail_inline_ci_checks_capped () =
+  let pv =
+    {
+      (make_view ~id:"1" ~title:"many checks") with
+      Tui.ci_checks = make_checks 40;
+    }
+  in
+  let frame =
+    render ~height:60 ~view_mode:(Tui.Detail_view pv.Tui.patch_id) [ pv ]
+  in
+  let lines = plain_lines frame in
+  assert (count_check_rows lines = 8);
+  assert (line_contains lines "32 more");
+  assert (line_contains lines "press c to view all");
+  (* Metadata and footer are not crowded out. *)
+  assert (line_contains lines "Patch ID:");
+  assert (line_contains lines "h:help")
+
+(* At or below the cap, every check is shown inline and there is no ellipsis. *)
+let test_detail_inline_ci_checks_under_cap () =
+  let pv =
+    {
+      (make_view ~id:"1" ~title:"few checks") with
+      Tui.ci_checks = make_checks 5;
+    }
+  in
+  let frame =
+    render ~height:60 ~view_mode:(Tui.Detail_view pv.Tui.patch_id) [ pv ]
+  in
+  let lines = plain_lines frame in
+  assert (count_check_rows lines = 5);
+  assert (not (line_contains lines "more — press c"))
+
+(* The overlay lists more than the inline cap and reports the total. *)
+let test_checks_overlay_lists_all () =
+  let pv =
+    { (make_view ~id:"1" ~title:"overlay") with Tui.ci_checks = make_checks 40 }
+  in
+  let lines, _ =
+    Tui.render_checks_overlay ~width:80 ~height:50 ~scroll_offset:0 pv
+  in
+  let lines = List.map lines ~f:Onton.Term.strip_ansi in
+  assert (count_check_rows lines > 8);
+  assert (line_contains lines "of 40")
+
+(* A large scroll offset clamps to the last page. *)
+let test_checks_overlay_clamps_offset () =
+  let pv =
+    { (make_view ~id:"1" ~title:"overlay") with Tui.ci_checks = make_checks 40 }
+  in
+  let _, clamped =
+    Tui.render_checks_overlay ~width:80 ~height:20 ~scroll_offset:9999 pv
+  in
+  assert (clamped > 0);
+  assert (clamped <= 40)
+
 let test_patch_5_merge_queue_badge () =
   let pv =
     {
@@ -223,6 +295,10 @@ let () =
   test_list_view_activity_squeezed_partial ();
   test_frame_anchored_at_top ();
   test_detail_view_no_summary ();
+  test_detail_inline_ci_checks_capped ();
+  test_detail_inline_ci_checks_under_cap ();
+  test_checks_overlay_lists_all ();
+  test_checks_overlay_clamps_offset ();
   test_timeline_view_no_summary ();
   test_patches_render_above_activity ();
   QCheck2.Test.check_exn
