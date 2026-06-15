@@ -323,9 +323,9 @@ val apply_rebase_result :
 (** Apply a rebase outcome to the orchestrator state. Pure function. [Ok] ->
     set_base_branch + reset_rebase_failure_count + clear_has_conflict +
     reset_conflict_noop_count + rewrite cascade + complete + [[Push_branch]].
-    [Noop] -> set_base_branch + reset_rebase_failure_count + complete + [[]].
-    [Conflict] -> set_base_branch + reset_rebase_failure_count +
-    set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
+    [Noop] -> set_base_branch + reset_rebase_failure_count + complete +
+    [[Push_branch]]. [Conflict] -> set_base_branch + reset_rebase_failure_count
+    \+ set_has_conflict + enqueue Merge_conflict + complete. [Error _] ->
     increment_rebase_failure_count + complete.
 
     The {e rewrite cascade} on [Ok] is the dual of [mark_merged]'s eager
@@ -383,18 +383,18 @@ val apply_conflict_rebase_result :
   Branch.t ->
   t * conflict_rebase_decision * rebase_effect list
 (** Apply a rebase outcome during merge-conflict resolution. Pure function. [Ok]
-    -> reset_rebase_failure_count + clear_has_conflict +
+    -> set_base_branch + reset_rebase_failure_count + clear_has_conflict +
     reset_conflict_noop_count + rewrite cascade (see {!apply_rebase_result} —
     conflict resolution rewrites the branch just like a clean rebase) + complete
-    + [Conflict_resolved] + [[Push_branch]]. [Noop] ->
+    + [Conflict_resolved] + [[Push_branch]]. [Noop] -> set_base_branch +
       reset_rebase_failure_count + clear_has_conflict +
       increment_conflict_noop_count + complete + [Conflict_resolved] +
       [[Push_branch]] (local is correct; has_conflict cleared so it purely
       tracks GitHub state — the poller will re-set and re-enqueue if conflict
       persists; no cascade — the branch was not rewritten). [Conflict] ->
-      reset_rebase_failure_count + set_has_conflict + [Deliver_to_agent] + [[]].
-      [Error _] -> increment_rebase_failure_count + complete +
-      [Conflict_failed]. *)
+      set_base_branch + reset_rebase_failure_count + set_has_conflict +
+      [Deliver_to_agent] + [[]]. [Error _] -> increment_rebase_failure_count +
+      complete + [Conflict_failed]. *)
 
 val apply_conflict_rebase_with_anchor :
   t ->
