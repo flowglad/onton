@@ -11,8 +11,9 @@ open Onton_core.Types
     These properties verify from the spec that: 1. Only non-busy, non-merged,
     non-intervention agents with queued operations produce actions. 2. Start
     only for patches without PRs where deps are satisfied and every unmerged dep
-    has delivered its implementation notes (deps-notes-ready). 3. Respond only
-    for patches with PRs, respecting priority. *)
+    is itself review-ready — notes delivered, no conflict, and CI green
+    ([open_dep_review_ready]). 3. Respond only for patches with PRs, respecting
+    priority. *)
 
 let main = Branch.of_string "main"
 
@@ -49,6 +50,17 @@ let prepare_with_prs orch patches =
         let o = Orchestrator.set_pr_number o p.Patch.id (Pr_number.of_int 1) in
         Orchestrator.complete o p.Patch.id
       else o)
+
+(* Spec spelling-out of the gate a child's Start now waits on for its open-PR
+   dependency — written independently of [Patch_controller] so the properties
+   test the spec, not the implementation. A dep is review-ready when its PR body
+   is delivered, CI is green, and no conflict is active. Deliberately does NOT
+   require the dep to be on [main] / rebased: a child may start stacked on a
+   mid-chain dep, so the gate omits [ready_for_review]'s base conjuncts. *)
+let open_dep_review_ready orch d =
+  let a = Orchestrator.agent orch d in
+  a.Patch_agent.pr_body_delivered && a.Patch_agent.checks_passing
+  && not a.Patch_agent.has_conflict
 
 (* ========== Property 1: only eligible agents produce spawns ========== *)
 
@@ -233,18 +245,49 @@ let () =
         with _ -> false)
   in
 
-  (* Liveness through the notes gate: once every dep's notes step has
-     completed, every otherwise-startable patch gets its Start. *)
-  let prop_startable_with_notes_started =
+  (* Safety: every Start target's open-PR deps have reached the ready-for-review
+     fixpoint — the new restriction. Drive both notes and CI-green so the
+     frontier deps actually satisfy it and the property bites. *)
+  let prop_start_deps_ready_for_review =
     Test.make
-      ~name:"plan_spawns: startable patches start once dep notes delivered"
+      ~name:"plan_spawns: Start only when open deps are ready-for-review"
       gen_patch_list_unique (fun patches ->
         try
           let orch = Orchestrator.create ~patches ~main_branch:main in
           let orch = prepare_with_prs orch patches in
           let orch =
             List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
-                Orchestrator.set_pr_body_delivered o p.Patch.id true)
+                let o = Orchestrator.set_pr_body_delivered o p.Patch.id true in
+                Orchestrator.set_checks_passing o p.Patch.id true)
+          in
+          let graph = Orchestrator.graph orch in
+          let has_merged p = (Orchestrator.agent orch p).Patch_agent.merged in
+          let spawns = Onton.Spawn_logic.plan_spawns orch ~patches in
+          List.for_all spawns ~f:(fun s ->
+              match Onton.Spawn_logic.classify s with
+              | `Start pid ->
+                  List.for_all
+                    (Graph.open_pr_deps graph pid ~has_merged)
+                    ~f:(open_dep_review_ready orch)
+              | `Respond _ | `Rebase _ -> true)
+        with _ -> false)
+  in
+
+  (* Liveness through the new gate: once every frontier dep is both
+     notes-delivered and CI-green (so it has reached the ready-for-review
+     fixpoint), every patch whose open deps are all ready gets its Start. *)
+  let prop_startable_with_ready_deps_started =
+    Test.make
+      ~name:
+        "plan_spawns: startable patches start once deps reach ready-for-review"
+      gen_patch_list_unique (fun patches ->
+        try
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch = prepare_with_prs orch patches in
+          let orch =
+            List.fold patches ~init:orch ~f:(fun o (p : Patch.t) ->
+                let o = Orchestrator.set_pr_body_delivered o p.Patch.id true in
+                Orchestrator.set_checks_passing o p.Patch.id true)
           in
           let graph = Orchestrator.graph orch in
           let has_merged p = (Orchestrator.agent orch p).Patch_agent.merged in
@@ -262,6 +305,9 @@ let () =
                 && (not a.Patch_agent.busy) && (not a.Patch_agent.merged)
                 && Graph.deps_satisfied graph pid ~has_merged ~has_pr:(fun p ->
                     Patch_agent.has_pr (Orchestrator.agent orch p))
+                && List.for_all
+                     (Graph.open_pr_deps graph pid ~has_merged)
+                     ~f:(open_dep_review_ready orch)
               then List.mem started_ids pid ~equal:Patch_id.equal
               else true)
         with _ -> false)
@@ -370,7 +416,8 @@ let () =
       prop_start_deps_satisfied;
       prop_start_deps_notes_ready;
       prop_all_startable_started;
-      prop_startable_with_notes_started;
+      prop_start_deps_ready_for_review;
+      prop_startable_with_ready_deps_started;
       prop_respond_has_pr;
       prop_respond_priority;
       prop_respond_not_rebase;

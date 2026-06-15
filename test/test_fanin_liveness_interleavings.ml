@@ -142,6 +142,12 @@ let do_start m pid base =
         (Pr_number.of_int (idx_of_pid m.patches pid + 1))
     in
     let orch = Orchestrator.set_pr_body_delivered orch pid true in
+    (* The child Start gate ([open_dep_review_ready]) now also requires the
+       open dep to be CI-green, alongside notes. Like notes, CI health is not
+       what this suite tests (it targets rebase-freshness liveness — see the
+       module note), so publish it promptly so the gate never interferes; the
+       Start gate's own liveness lives in [test_interleaving_properties.ml]. *)
+    let orch = Orchestrator.set_checks_passing orch pid true in
     let orch = Orchestrator.complete orch pid in
     absorb { m with orch } ~branch:agent.Patch_agent.branch ~from:base
 
@@ -180,10 +186,16 @@ let do_rebase_traced m pid base =
     let own_set = absorbed_of m (Branch.to_string agent.Patch_agent.branch) in
     let anchor_before = agent.Patch_agent.branch_rebased_onto in
     let orch = Orchestrator.fire m.orch (Orchestrator.Rebase (pid, base)) in
+    (* [Patch_agent.rebase] clears [checks_passing] (the force-push re-runs CI).
+       Under fair scheduling CI re-passes promptly; this suite neutralizes the
+       CI gate (see [do_start]) so the child Start gate ([open_dep_review_ready])
+       never spuriously blocks on a mid-flight rebase. Re-establish it after the
+       rebase completes. *)
     if Set.is_subset base_set ~of_:own_set then
       let orch, _effects =
         Orchestrator.apply_rebase_result orch pid Worktree.Noop base
       in
+      let orch = Orchestrator.set_checks_passing orch pid true in
       ( { m with orch },
         Some
           {
@@ -197,6 +209,7 @@ let do_rebase_traced m pid base =
       let orch, _effects =
         Orchestrator.apply_rebase_result orch pid Worktree.Ok base
       in
+      let orch = Orchestrator.set_checks_passing orch pid true in
       ( absorb { m with orch } ~branch:agent.Patch_agent.branch ~from:base,
         Some
           {
