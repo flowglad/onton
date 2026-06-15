@@ -113,6 +113,8 @@ struct
       input_mode;
       prompt_line;
       show_help;
+      show_checks;
+      checks_scroll;
       status_msg;
       patches_start_row;
       patches_scroll_offset;
@@ -175,12 +177,14 @@ struct
         Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
           ~view_mode:!view_mode ~activity ~project_name:Env.project_name
           ~backend_name:Env.backend_name ~show_help:!show_help
+          ~show_checks:!show_checks ~checks_scroll:!checks_scroll
           ~show_manage:
             (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
           ~now ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line
           views
       in
       detail_scroll := Tui.detail_scroll_offset frame;
+      checks_scroll := Tui.checks_scroll_offset frame;
       if Tui.detail_at_bottom frame then detail_follow := true;
       patches_start_row := Tui.patches_start_row frame;
       patches_scroll_offset := Tui.patches_scroll_offset frame;
@@ -205,6 +209,8 @@ struct
       input_mode;
       prompt_line;
       show_help;
+      show_checks;
+      checks_scroll;
       status_msg;
       patches_start_row;
       patches_scroll_offset;
@@ -258,6 +264,34 @@ struct
           eof_count := 0;
           if !show_help then (
             show_help := false;
+            loop ())
+          else if !show_checks then (
+            (* Dedicated, self-contained scroll region. The detail transcript
+               scroll stays dormant while this is up, preserving the "one live
+               scroll offset" invariant. Render clamps [checks_scroll]. *)
+            (match key with
+            | Term.Key.Escape | Term.Key.Char ('q' | 'c') ->
+                show_checks := false
+            | Term.Key.Up | Term.Key.Char 'k' ->
+                checks_scroll := Int.max 0 (!checks_scroll - 1)
+            | Term.Key.Down | Term.Key.Char 'j' ->
+                checks_scroll := Int.max 0 (!checks_scroll + 1)
+            | Term.Key.Page_up ->
+                checks_scroll := Int.max 0 (!checks_scroll - 10)
+            | Term.Key.Page_down ->
+                checks_scroll := Int.max 0 (!checks_scroll + 10)
+            | Term.Key.Mouse (Term_key.Scroll { dir; _ }) ->
+                let delta =
+                  match dir with Term_key.Up -> -3 | Term_key.Down -> 3
+                in
+                checks_scroll := Int.max 0 (!checks_scroll + delta)
+            | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab | Term.Key.Paste _
+            | Term.Key.Backspace | Term.Key.Left | Term.Key.Right
+            | Term.Key.Home | Term.Key.End | Term.Key.Delete | Term.Key.F _
+            | Term.Key.Ctrl _
+            | Term.Key.Mouse (Term_key.Click _)
+            | Term.Key.Unknown _ ->
+                ());
             loop ())
           else if Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch
           then (
@@ -842,6 +876,14 @@ struct
                    | Tui.List_view -> Option.is_some (selected_pid ())
                    | Tui.Timeline_view -> false ->
                 input_mode := Tui_input.Manage_patch;
+                loop ()
+            | Term.Key.Char 'c'
+              when match !view_mode with
+                   | Tui.Detail_view _ -> true
+                   | Tui.List_view -> Option.is_some (selected_pid ())
+                   | Tui.Timeline_view -> false ->
+                show_checks := true;
+                checks_scroll := 0;
                 loop ()
             | Term.Key.Char _ | Term.Key.Enter | Term.Key.Tab
             | Term.Key.Backspace | Term.Key.Escape | Term.Key.Up | Term.Key.Down

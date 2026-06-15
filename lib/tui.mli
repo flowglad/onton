@@ -139,6 +139,11 @@ val detail_scroll_offset : frame -> int
 (** The actual clamped scroll offset used for the detail view. Written back to
     the detail_scroll ref so delta-based input produces sensible values. *)
 
+val checks_scroll_offset : frame -> int
+(** The actual clamped scroll offset used for the CI checks overlay. Written
+    back to the checks_scroll ref so delta-based input stays in range. When the
+    overlay is not shown this round-trips the input value unchanged. *)
+
 val patches_start_row : frame -> int
 (** 1-indexed terminal row where the first patch line is rendered in list view.
     Returns 0 for non-list views. *)
@@ -177,6 +182,15 @@ val render_manage_overlay :
   needs_intervention:bool ->
   string list
 
+val render_checks_overlay :
+  width:int ->
+  height:int ->
+  scroll_offset:int ->
+  patch_view ->
+  string list * int
+(** Full-screen scrollable list of a patch's CI checks. Returns the rendered
+    lines and the clamped scroll offset. *)
+
 type prompt_info = { prompt_text : string; cursor_col : int }
 
 val render_frame :
@@ -189,6 +203,8 @@ val render_frame :
   project_name:string ->
   backend_name:string ->
   show_help:bool ->
+  show_checks:bool ->
+  checks_scroll:int ->
   show_manage:bool ->
   now:float ->
   ?transcript:string ->
