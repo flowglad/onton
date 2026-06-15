@@ -199,7 +199,10 @@ let () =
           let orch =
             List.foldi patches ~init:orch ~f:(fun i o (p : Patch.t) ->
                 if i % 2 = 0 then
-                  Orchestrator.set_pr_body_delivered o p.Patch.id true
+                  let o =
+                    Orchestrator.set_pr_body_delivered o p.Patch.id true
+                  in
+                  Orchestrator.set_checks_passing o p.Patch.id true
                 else o)
           in
           let graph = Orchestrator.graph orch in
