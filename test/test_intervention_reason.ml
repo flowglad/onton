@@ -75,6 +75,41 @@ let () =
 
   print_endline "PASS: human_intervention_reason surfaces the actionable reason"
 
+let assert_raw_fields ~merged ~has_pr ~is_pr_missing ~session_given_up
+    ~human_in_queue ~ci_failure_count ~start_attempts_without_pr
+    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
+    ~push_failure_count ~rebase_failure_count ~pr_body_artifact_miss_count
+    ~expected =
+  let reason =
+    Patch_agent.intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
+      ~session_given_up ~human_in_queue ~ci_failure_count
+      ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
+      ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+      ~pr_body_artifact_miss_count
+  in
+  assert (Option.equal String.equal reason expected);
+  assert (
+    Bool.equal
+      (Patch_agent.needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
+         ~session_given_up ~human_in_queue ~ci_failure_count
+         ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
+         ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
+         ~pr_body_artifact_miss_count)
+      (Option.is_some expected))
+
+let () =
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:false ~ci_failure_count:0
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:2
+    ~pr_body_artifact_miss_count:0 ~expected:(Some "rebase_failure_count>=2");
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:true ~ci_failure_count:3
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
+    ~pr_body_artifact_miss_count:0 ~expected:None;
+  print_endline "PASS: raw intervention field decisions stay in lockstep"
+
 (* Exercise the whole Patch_agent decision surface. Some transitions have
    preconditions (e.g. [clear_pr] requires a PR present), so each is applied
    defensively: the property asserts the surface is total — no arbitrary
