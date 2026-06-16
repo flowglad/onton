@@ -93,6 +93,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_automerge_state_properties)
+ (modules test_automerge_state_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_push_reject_classify_properties)
  (modules test_push_reject_classify_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)

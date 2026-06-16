@@ -193,6 +193,14 @@ val apply_automerge_success : Orchestrator.t -> Patch_id.t -> Orchestrator.t
 (** Mark the patch as merged, clear the automerge deadline, clear the inflight
     flag, and reset the failure counter. *)
 
+val apply_merge_queue_entered :
+  Orchestrator.t -> Patch_id.t -> Pr_state.merge_queue_entry -> Orchestrator.t
+(** Record that the PR is in GitHub's merge queue, regardless of whether that
+    was learned from an automerge enqueue response, manual enqueue, or polling.
+    Being in the merge queue is terminal for the automerge timer: the next
+    useful transition comes from polling GitHub's queue state, not from another
+    automerge fire. *)
+
 val apply_automerge_failure :
   Orchestrator.t -> now:float -> Patch_id.t -> Orchestrator.t
 (** Record a failed merge call: clear the inflight flag and increment the

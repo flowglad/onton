@@ -192,10 +192,16 @@ struct
               Patch_controller.apply_automerge_failure orch
                 ~now:(Unix.gettimeofday ()) patch_id)
         in
+        let record_enqueued_and_clear_inflight entry =
+          if not !inflight_cleared then (
+            inflight_cleared := true;
+            Runtime.update_orchestrator runtime (fun orch ->
+                Patch_controller.apply_merge_queue_entered orch patch_id entry))
+        in
         let handle_enqueue_result result =
           match result with
           | Ok (Forge.Enqueued entry) ->
-              push_deadline_and_clear_inflight ();
+              record_enqueued_and_clear_inflight entry;
               log_event runtime ~patch_id
                 (Printf.sprintf
                    "Automerge enqueued PR #%d in GitHub merge queue (%s, \
@@ -203,7 +209,7 @@ struct
                    (Pr_number.to_int pr_number)
                    entry.Pr_state.id entry.Pr_state.position)
           | Ok (Forge.Already_enqueued entry) ->
-              push_deadline_and_clear_inflight ();
+              record_enqueued_and_clear_inflight entry;
               log_event runtime ~patch_id
                 (Printf.sprintf
                    "Automerge PR #%d already in GitHub merge queue (%s, \

@@ -124,6 +124,16 @@ val set_merge_queue_required : t -> Patch_id.t -> bool -> t
 val set_merge_queue_entry :
   t -> Patch_id.t -> Pr_state.merge_queue_entry option -> t
 
+val observe_merge_queue :
+  t ->
+  Patch_id.t ->
+  required:bool ->
+  entry:Pr_state.merge_queue_entry option ->
+  t
+(** Apply a poll observation of merge-queue state. Delegates the agent-level
+    state rule to {!Automerge_state.observe_merge_queue}, including clearing any
+    stale automerge deadline once a queue entry is present. *)
+
 val set_merge_commit_sha : t -> Patch_id.t -> string option -> t
 val set_base_contains_merged_siblings : t -> Patch_id.t -> bool -> t
 val set_is_draft : t -> Patch_id.t -> bool -> t
@@ -149,11 +159,26 @@ val mark_inflight_human_messages_delivered : t -> Patch_id.t -> t
     {!Patch_agent.mark_inflight_human_messages_delivered}. *)
 
 val set_automerge_enabled : t -> Patch_id.t -> bool -> t
+
 val set_automerge_deadline : t -> Patch_id.t -> float -> t
+(** Arm an automerge deadline via {!Automerge_state.arm_deadline}. If the patch
+    is already known to be in the merge queue, this clears the deadline instead
+    of recording an incoherent timer. *)
+
 val clear_automerge_deadline : t -> Patch_id.t -> t
 val set_automerge_inflight : t -> Patch_id.t -> bool -> t
 val increment_automerge_failure_count : t -> Patch_id.t -> t
 val reset_automerge_failure_count : t -> Patch_id.t -> t
+
+val entered_merge_queue : t -> Patch_id.t -> Pr_state.merge_queue_entry -> t
+(** Record that the PR is now in GitHub's merge queue, regardless of whether
+    that was learned from an automerge enqueue response, manual enqueue, or
+    polling. Delegates to {!Automerge_state.entered_merge_queue}. *)
+
+val apply_automerge_failure_state :
+  t -> Patch_id.t -> retry_deadline:float -> max_failures:int -> t
+(** Apply the pure automerge failure/backoff transition from
+    {!Automerge_state.merge_call_failed}. *)
 
 (** {2 Queries} *)
 

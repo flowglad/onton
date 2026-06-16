@@ -577,6 +577,10 @@ let set_merge_queue_entry t patch_id entry =
   update_agent t patch_id ~f:(fun a ->
       Patch_agent.set_merge_queue_entry a entry)
 
+let observe_merge_queue t patch_id ~required ~entry =
+  update_agent t patch_id ~f:(fun a ->
+      Automerge_state.observe_merge_queue a ~required ~entry)
+
 let set_merge_commit_sha t patch_id sha =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_commit_sha a sha)
 
@@ -628,8 +632,7 @@ let set_automerge_enabled t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_automerge_enabled a v)
 
 let set_automerge_deadline t patch_id deadline =
-  update_agent t patch_id ~f:(fun a ->
-      Patch_agent.set_automerge_deadline a deadline)
+  update_agent t patch_id ~f:(fun a -> Automerge_state.arm_deadline a deadline)
 
 let clear_automerge_deadline t patch_id =
   update_agent t patch_id ~f:Patch_agent.clear_automerge_deadline
@@ -642,6 +645,14 @@ let increment_automerge_failure_count t patch_id =
 
 let reset_automerge_failure_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.reset_automerge_failure_count
+
+let entered_merge_queue t patch_id entry =
+  update_agent t patch_id ~f:(fun a ->
+      Automerge_state.entered_merge_queue a entry)
+
+let apply_automerge_failure_state t patch_id ~retry_deadline ~max_failures =
+  update_agent t patch_id ~f:(fun a ->
+      Automerge_state.merge_call_failed a ~retry_deadline ~max_failures)
 
 (** {2 Queries} *)
 
