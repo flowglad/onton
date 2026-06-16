@@ -41,6 +41,15 @@ let assert_fatal_raised_contains name ~substring f =
 
 let () =
   assert_fatal "poller" (fun () -> ());
+  (match
+     Supervisor_guard.wrap ~return_is_normal:true ~name:"startup-reconciler"
+       ~is_normal_quit:(fun _ -> false)
+       ~log:(fun _ -> failwith "normal startup return should not log")
+       (fun () -> ())
+       ()
+   with
+  | () -> ()
+  | exception _ -> failwith "one-shot startup return should be normal");
   assert_fatal_raised_contains "runner" ~substring:"boom" (fun () ->
       failwith "boom");
 

@@ -6,10 +6,13 @@ open Base
 type termination = Returned | Cancelled | Quit | Raised of string
 [@@deriving show, eq]
 
+type return_policy = Return_is_fatal | Return_is_normal [@@deriving show, eq]
+
 type fatal_reason = Returned_unexpectedly | Raised_unexpectedly of string
 [@@deriving show, eq]
 
 type decision =
+  | Normal_return
   | Normal_quit
   | Propagate_cancel
   | Fatal of { name : string; reason : fatal_reason }
@@ -18,14 +21,17 @@ type decision =
 type cleanup_state = Cleanup_pending | Cleanup_done [@@deriving show, eq]
 type exit_decision = Defer_exit_until_cleanup | Exit_now [@@deriving show, eq]
 
-let classify ~name ~quit_is_normal termination =
+let classify ~name ~quit_is_normal ~return_policy termination =
   match termination with
   | Cancelled -> Propagate_cancel
   | Quit when quit_is_normal -> Normal_quit
   | Quit ->
       Fatal
         { name; reason = Raised_unexpectedly "TUI quit escaped non-TUI fiber" }
-  | Returned -> Fatal { name; reason = Returned_unexpectedly }
+  | Returned -> (
+      match return_policy with
+      | Return_is_normal -> Normal_return
+      | Return_is_fatal -> Fatal { name; reason = Returned_unexpectedly })
   | Raised detail -> Fatal { name; reason = Raised_unexpectedly detail }
 
 let message ~name reason =
@@ -44,13 +50,16 @@ let%test_module "supervisor decision" =
   (module struct
     let%test "normal return is fatal" =
       match
-        classify ~name:"poller" ~quit_is_normal:false (Returned : termination)
+        classify ~name:"poller" ~quit_is_normal:false
+          ~return_policy:Return_is_fatal
+          (Returned : termination)
       with
       | Fatal { reason; _ } -> equal_fatal_reason reason Returned_unexpectedly
-      | Normal_quit | Propagate_cancel -> false
+      | Normal_return | Normal_quit | Propagate_cancel -> false
 
     let%test "cancel is propagated" =
       equal_decision
-        (classify ~name:"poller" ~quit_is_normal:false Cancelled)
+        (classify ~name:"poller" ~quit_is_normal:false
+           ~return_policy:Return_is_fatal Cancelled)
         Propagate_cancel
   end)

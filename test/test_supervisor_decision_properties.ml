@@ -26,55 +26,71 @@ let gen_termination =
       map (fun detail -> Supervisor_decision.Raised detail) gen_detail;
     ]
 
+let gen_return_policy =
+  QCheck2.Gen.oneof_list
+    Supervisor_decision.[ Return_is_fatal; Return_is_normal ]
+
 let is_fatal = function
   | Supervisor_decision.Fatal _ -> true
-  | Normal_quit | Propagate_cancel -> false
+  | Normal_return | Normal_quit | Propagate_cancel -> false
 
 let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"supervisor classify is total" ~count:1_000
-       QCheck2.Gen.(triple gen_name bool gen_termination)
-       (fun (name, quit_is_normal, termination) ->
+       QCheck2.Gen.(quad gen_name bool gen_return_policy gen_termination)
+       (fun (name, quit_is_normal, return_policy, termination) ->
          try
            ignore
-             (Supervisor_decision.classify ~name ~quit_is_normal termination);
+             (Supervisor_decision.classify ~name ~quit_is_normal ~return_policy
+                termination);
            true
          with _ -> false));
 
   QCheck2.Test.check_exn
-    (QCheck2.Test.make ~name:"normal return is always fatal" ~count:300
+    (QCheck2.Test.make ~name:"normal return is fatal for long-lived fibers"
+       ~count:300
        QCheck2.Gen.(pair gen_name bool)
        (fun (name, quit_is_normal) ->
          match
            Supervisor_decision.classify ~name ~quit_is_normal
-             Supervisor_decision.Returned
+             ~return_policy:Return_is_fatal Supervisor_decision.Returned
          with
          | Fatal { name = actual; reason } ->
              String.equal actual name
              && Supervisor_decision.equal_fatal_reason reason
                   Returned_unexpectedly
-         | Normal_quit | Propagate_cancel -> false));
+         | Normal_return | Normal_quit | Propagate_cancel -> false));
+
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make ~name:"normal return is normal for one-shot fibers"
+       ~count:300
+       QCheck2.Gen.(pair gen_name bool)
+       (fun (name, quit_is_normal) ->
+         Supervisor_decision.equal_decision
+           (Supervisor_decision.classify ~name ~quit_is_normal
+              ~return_policy:Return_is_normal Supervisor_decision.Returned)
+           Supervisor_decision.Normal_return));
 
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"unexpected exception is always fatal" ~count:300
-       QCheck2.Gen.(triple gen_name bool gen_detail)
-       (fun (name, quit_is_normal, detail) ->
+       QCheck2.Gen.(quad gen_name bool gen_return_policy gen_detail)
+       (fun (name, quit_is_normal, return_policy, detail) ->
          match
-           Supervisor_decision.classify ~name ~quit_is_normal
+           Supervisor_decision.classify ~name ~quit_is_normal ~return_policy
              (Supervisor_decision.Raised detail)
          with
          | Fatal { name = actual; reason } ->
              String.equal actual name
              && Supervisor_decision.equal_fatal_reason reason
                   (Raised_unexpectedly detail)
-         | Normal_quit | Propagate_cancel -> false));
+         | Normal_return | Normal_quit | Propagate_cancel -> false));
 
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"cancellation is never fatal" ~count:300
-       QCheck2.Gen.(pair gen_name bool)
-       (fun (name, quit_is_normal) ->
+       QCheck2.Gen.(triple gen_name bool gen_return_policy)
+       (fun (name, quit_is_normal, return_policy) ->
          Supervisor_decision.equal_decision
-           (Supervisor_decision.classify ~name ~quit_is_normal
+           (Supervisor_decision.classify ~name ~quit_is_normal ~return_policy
               Supervisor_decision.Cancelled)
            Supervisor_decision.Propagate_cancel));
 
@@ -84,11 +100,11 @@ let () =
        (fun (name, quit_is_normal) ->
          match
            Supervisor_decision.classify ~name ~quit_is_normal
-             Supervisor_decision.Quit
+             ~return_policy:Return_is_fatal Supervisor_decision.Quit
          with
          | Normal_quit -> quit_is_normal
          | Fatal _ -> not quit_is_normal
-         | Propagate_cancel -> false));
+         | Normal_return | Propagate_cancel -> false));
 
   QCheck2.Test.check_exn
     (QCheck2.Test.make
@@ -110,7 +126,7 @@ let () =
          let fatal_seen =
            List.exists events ~f:(fun (name, termination) ->
                Supervisor_decision.classify ~name ~quit_is_normal:false
-                 termination
+                 ~return_policy:Return_is_fatal termination
                |> is_fatal)
          in
          let final_state_running =
@@ -119,10 +135,10 @@ let () =
                else
                  match
                    Supervisor_decision.classify ~name ~quit_is_normal:false
-                     termination
+                     ~return_policy:Return_is_fatal termination
                  with
                  | Fatal _ -> false
-                 | Normal_quit | Propagate_cancel -> true)
+                 | Normal_return | Normal_quit | Propagate_cancel -> true)
          in
          (not fatal_seen) || not final_state_running));
 

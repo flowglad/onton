@@ -1002,14 +1002,16 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
     log_event setup.runtime message;
     Printf.eprintf "onton: %s\n%!" message
   in
-  let guard_fiber ?(quit_is_normal = false) name f () =
-    Supervisor_guard.wrap ~quit_is_normal ~name
+  let guard_fiber ?(quit_is_normal = false) ?(return_is_normal = false) name f
+      () =
+    Supervisor_guard.wrap ~quit_is_normal ~return_is_normal ~name
       ~is_normal_quit:(function Fibers.Tui.Quit -> true | _ -> false)
       ~log:log_fatal f ()
   in
   let common_fibers =
     [
-      guard_fiber "startup-reconciler" cap.reconciliation_fiber;
+      guard_fiber ~return_is_normal:true "startup-reconciler"
+        cap.reconciliation_fiber;
       guard_fiber "poller" (fun () -> Fibers.Poller.run cap.startup_reconciler);
       guard_fiber "persistence" (fun () -> Fibers.Persistence.run ());
     ]
