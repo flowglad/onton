@@ -998,19 +998,14 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
     ignore
       (Persistence.save ~path:(Project_store.snapshot_path project_name) snap)
   in
+  let log_fatal message =
+    log_event setup.runtime message;
+    Printf.eprintf "onton: %s\n%!" message
+  in
   let guard_fiber ?(quit_is_normal = false) name f () =
-    try f () with
-    | Fibers.Tui.Quit when quit_is_normal -> raise Fibers.Tui.Quit
-    | Eio.Cancel.Cancelled _ as exn -> raise exn
-    | exn ->
-        let message =
-          Printf.sprintf "Fatal supervisor fiber error (%s) — %s" name
-            (Printexc.to_string exn)
-        in
-        log_event setup.runtime message;
-        Printf.eprintf "onton: %s\n%!" message;
-        save_snapshot ();
-        Stdlib.exit 1
+    Supervisor_guard.wrap ~quit_is_normal ~name
+      ~is_normal_quit:(function Fibers.Tui.Quit -> true | _ -> false)
+      ~log:log_fatal f ()
   in
   let common_fibers =
     [
@@ -1019,31 +1014,42 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
       guard_fiber "persistence" (fun () -> Fibers.Persistence.run ());
     ]
   in
-  if headless then
-    Eio.Fiber.all
-      (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
-      :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
-      :: common_fibers)
+  if headless then (
+    try
+      Eio.Fiber.all
+        (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
+        :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
+        :: common_fibers)
+    with Supervisor_guard.Fatal_supervisor_error _ ->
+      save_snapshot ();
+      Stdlib.exit 1)
   else
     let raw_state = Term.Raw.enter () in
-    Fun.protect
-      ~finally:(fun () ->
-        Term.Raw.clear_suspend_handlers ();
-        Term.Raw.leave raw_state;
-        Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
-        save_snapshot ())
-      (fun () ->
-        Term.Raw.install_suspend_handlers raw_state;
-        try
-          Eio.Fiber.all
-            (guard_fiber ~quit_is_normal:true "tui" (fun () ->
-                 Fibers.Tui.run ())
-            :: guard_fiber ~quit_is_normal:true "tui-input" (fun () ->
-                Fibers.Tui.run_input ())
-            :: guard_fiber "runner" (fun () ->
-                Fibers.Runner.run ~status_msg:tui_state.status_msg ())
-            :: common_fibers)
-        with Fibers.Tui.Quit -> ())
+    try
+      Fun.protect
+        ~finally:(fun () ->
+          Term.Raw.clear_suspend_handlers ();
+          Term.Raw.leave raw_state;
+          Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
+          save_snapshot ())
+        (fun () ->
+          Term.Raw.install_suspend_handlers raw_state;
+          try
+            Eio.Fiber.all
+              (guard_fiber ~quit_is_normal:true "tui" (fun () ->
+                   Fibers.Tui.run ())
+              :: guard_fiber ~quit_is_normal:true "tui-input" (fun () ->
+                  Fibers.Tui.run_input ())
+              :: guard_fiber "runner" (fun () ->
+                  Fibers.Runner.run ~status_msg:tui_state.status_msg ())
+              :: common_fibers)
+          with Fibers.Tui.Quit -> ())
+    with Supervisor_guard.Fatal_supervisor_error _ -> (
+      match
+        Supervisor_decision.exit_after_fatal Supervisor_decision.Cleanup_done
+      with
+      | Supervisor_decision.Exit_now -> Stdlib.exit 1
+      | Supervisor_decision.Defer_exit_until_cleanup -> assert false)
 
 (** Trailing-positional PR operations parsed from the command line. *)
 type pr_op = Add_pr of Pr_number.t | Remove_pr of Pr_number.t
