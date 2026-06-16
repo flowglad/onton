@@ -15,6 +15,17 @@ let mk_patches = Onton_test_support.Test_generators.mk_linear_patches
 let make_gameplan = Onton_test_support.Test_generators.make_test_gameplan
 let pid_of_idx = Onton_test_support.Test_generators.pid_of_idx
 
+let gen_merge_queue_entry =
+  let open QCheck2.Gen in
+  let states =
+    Pr_state.
+      [ Mq_queued; Mq_awaiting_checks; Mq_mergeable; Mq_unmergeable; Mq_locked ]
+  in
+  map3
+    (fun id state position -> Pr_state.{ id; state; position })
+    (string_size ~gen:(char_range 'a' 'z') (int_range 1 16))
+    (oneof_list states) (int_range 0 99)
+
 (** Bootstrap a single-patch orchestrator with an idle agent that has a PR. *)
 let bootstrap_one () =
   let patches = mk_patches 1 in
@@ -567,3 +578,79 @@ let () =
          | [] -> ());
          List.length (Orchestrator.all_messages orch) >= 0));
   Stdlib.print_endline "orchestrator public surface linked"
+
+(* AO-MQ: merge-queue/automerge failure wrappers preserve the shared
+   agent-level automerge invariants when reached through the orchestrator and
+   patch-controller public surfaces. *)
+let () =
+  QCheck2.Test.check_exn
+    (QCheck2.Test.make
+       ~name:"AO-MQ: merge queue wrappers clear stale automerge timers"
+       ~count:200
+       QCheck2.Gen.(triple bool gen_merge_queue_entry gen_merge_queue_entry)
+       (fun (required, observed_entry, entered_entry) ->
+         try
+           let orch, _patches, _gameplan, pid = bootstrap_one () in
+           let orch = Orchestrator.set_automerge_enabled orch pid true in
+           let orch = Orchestrator.set_automerge_inflight orch pid true in
+           let orch = Orchestrator.set_automerge_deadline orch pid 10.0 in
+           let orch =
+             Orchestrator.apply_automerge_failure_state orch pid
+               ~retry_deadline:20.0 ~max_failures:3
+           in
+           let after_failure = Orchestrator.agent orch pid in
+           if after_failure.Patch_agent.automerge_inflight then
+             QCheck2.Test.fail_reportf
+               "apply_automerge_failure_state left inflight=true";
+           if after_failure.Patch_agent.automerge_failure_count <> 1 then
+             QCheck2.Test.fail_reportf
+               "apply_automerge_failure_state did not increment failures";
+           let orch =
+             Orchestrator.observe_merge_queue orch pid ~required
+               ~entry:(Some observed_entry)
+           in
+           let after_observe = Orchestrator.agent orch pid in
+           if not after_observe.Patch_agent.merge_queue_required then
+             QCheck2.Test.fail_reportf
+               "observe_merge_queue with entry did not require merge queue";
+           if
+             not
+               (Option.equal Pr_state.equal_merge_queue_entry
+                  after_observe.Patch_agent.merge_queue_entry
+                  (Some observed_entry))
+           then
+             QCheck2.Test.fail_reportf
+               "observe_merge_queue did not record observed entry";
+           if Option.is_some after_observe.Patch_agent.automerge_deadline then
+             QCheck2.Test.fail_reportf
+               "observe_merge_queue left a stale automerge deadline";
+           let orch = Orchestrator.entered_merge_queue orch pid entered_entry in
+           let after_entered = Orchestrator.agent orch pid in
+           if
+             not
+               (Option.equal Pr_state.equal_merge_queue_entry
+                  after_entered.Patch_agent.merge_queue_entry
+                  (Some entered_entry))
+           then
+             QCheck2.Test.fail_reportf
+               "entered_merge_queue did not replace queue entry";
+           let orch =
+             Orchestrator.set_automerge_inflight orch pid true |> fun orch ->
+             Orchestrator.set_automerge_deadline orch pid 30.0 |> fun orch ->
+             Orchestrator.increment_automerge_failure_count orch pid
+           in
+           let orch =
+             Patch_controller.apply_merge_queue_entered orch pid observed_entry
+           in
+           let after_controller = Orchestrator.agent orch pid in
+           Option.equal Pr_state.equal_merge_queue_entry
+             after_controller.Patch_agent.merge_queue_entry
+             (Some observed_entry)
+           && after_controller.Patch_agent.merge_queue_required
+           && Option.is_none after_controller.Patch_agent.automerge_deadline
+           && (not after_controller.Patch_agent.automerge_inflight)
+           && after_controller.Patch_agent.automerge_failure_count = 0
+         with
+         | QCheck2.Test.Test_fail _ as exn -> raise exn
+         | _ -> false));
+  Stdlib.print_endline "AO-MQ passed"

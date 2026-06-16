@@ -212,11 +212,9 @@ let apply_poll_result t patch_id
       (Poller.mergeability_unknown poll_result)
   in
   let t =
-    Orchestrator.set_merge_queue_required t patch_id
-      poll_result.merge_queue_required
-  in
-  let t =
-    Orchestrator.set_merge_queue_entry t patch_id poll_result.merge_queue_entry
+    Orchestrator.observe_merge_queue t patch_id
+      ~required:poll_result.merge_queue_required
+      ~entry:poll_result.merge_queue_entry
   in
   let t =
     let was_draft = (Orchestrator.agent t patch_id).Patch_agent.is_draft in
@@ -752,15 +750,9 @@ let automerge_action (agent : Patch_agent.t) ~main_branch =
   | false, None -> Some Direct_merge
 
 let apply_automerge_failure_state t ~now patch_id =
-  let t = Orchestrator.set_automerge_inflight t patch_id false in
-  let t = Orchestrator.increment_automerge_failure_count t patch_id in
-  let agent = Orchestrator.agent t patch_id in
-  if agent.Patch_agent.automerge_failure_count >= automerge_max_failures then
-    Orchestrator.clear_automerge_deadline t patch_id
-  else if not agent.Patch_agent.automerge_enabled then t
-  else
-    Orchestrator.set_automerge_deadline t patch_id
-      (now +. automerge_idle_timeout)
+  Orchestrator.apply_automerge_failure_state t patch_id
+    ~retry_deadline:(now +. automerge_idle_timeout)
+    ~max_failures:automerge_max_failures
 
 (** Reconcile the automerge deadline for every agent. Returns the updated
     orchestrator and the list of patches whose deadline has now elapsed (the
@@ -884,6 +876,9 @@ let apply_automerge_success t patch_id =
   let t = Orchestrator.clear_automerge_deadline t patch_id in
   let t = Orchestrator.set_automerge_inflight t patch_id false in
   Orchestrator.reset_automerge_failure_count t patch_id
+
+let apply_merge_queue_entered t patch_id entry =
+  Orchestrator.entered_merge_queue t patch_id entry
 
 (** Apply the durable state change that follows a failed merge call. Clears the
     inflight flag and increments the failure counter. Pushes the deadline out by
