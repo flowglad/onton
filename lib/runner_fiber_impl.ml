@@ -1231,9 +1231,18 @@ struct
                         | None, _ -> Some "no PR number"
                         | Some _, None -> Some "fetch failed"
                         | Some _, Some pr_state ->
+                            let agent_has_merge_queue_failure =
+                              Runtime.read runtime (fun snap ->
+                                  Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id)
+                              |> fun agent ->
+                              Base.List.exists agent.Patch_agent.ci_checks
+                                ~f:Ci_check.is_merge_queue_failure
+                            in
                             if
                               Base.List.exists pr_state.Pr_state.ci_checks
                                 ~f:Ci_check.is_failure
+                              || agent_has_merge_queue_failure
                             then None
                             else (
                               log_event runtime ~patch_id
@@ -1265,7 +1274,10 @@ struct
                                    [agent.ci_checks] reflects the fresh
                                    list. *)
                                   (match (is_ci, fresh_pr_state) with
-                                  | true, Some pr_state ->
+                                  | true, Some pr_state
+                                    when Base.List.exists
+                                           pr_state.Pr_state.ci_checks
+                                           ~f:Ci_check.is_failure ->
                                       Runtime.update_orchestrator runtime
                                         (fun orch ->
                                           Orchestrator.set_ci_checks orch
