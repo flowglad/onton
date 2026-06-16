@@ -440,37 +440,31 @@ struct
                       | Tui.List_view | Tui.Timeline_view -> ())
                 | Tui_input.Prompt_broadcast ->
                     if not (String.is_empty line) then begin
-                      let views =
+                      (* Broadcast goes to every agent that has a live session,
+                         including ones parked in needs-intervention — a human
+                         broadcast resets their intervention state and gives
+                         them direction. Agents that never started a session
+                         (Pending, etc.) have nothing to receive it, and merged
+                         agents are terminal, so both are skipped via the
+                         [has_session]/[merged] predicate rather than by display
+                         status. *)
+                      let targets =
                         Runtime.read Env.runtime (fun snap ->
-                            Tui.views_of_orchestrator
-                              ~orchestrator:snap.Runtime.orchestrator
-                              ~gameplan:snap.Runtime.gameplan ~activity:[]
-                              ~resolve_routing:Env.resolve_routing ())
+                            Orchestrator.all_agents snap.Runtime.orchestrator
+                            |> List.filter ~f:(fun (a : Patch_agent.t) ->
+                                a.Patch_agent.has_session
+                                && not a.Patch_agent.merged)
+                            |> List.map ~f:(fun (a : Patch_agent.t) ->
+                                a.Patch_agent.patch_id))
                       in
-                      let active =
-                        List.filter views ~f:(fun (pv : Tui.patch_view) ->
-                            (not
-                               (Tui.equal_display_status pv.Tui.status
-                                  Tui.Merged))
-                            && (not
-                                  (Tui.equal_display_status pv.Tui.status
-                                     Tui.Pending))
-                            && (not
-                                  (Tui.equal_display_status pv.Tui.status
-                                     Tui.Needs_help))
-                            && not
-                                 (Tui.equal_display_status pv.Tui.status
-                                    Tui.Blocked_by_dep))
-                      in
-                      let count = List.length active in
-                      List.iter active ~f:(fun (pv : Tui.patch_view) ->
+                      let count = List.length targets in
+                      List.iter targets ~f:(fun patch_id ->
                           Runtime.update_orchestrator Env.runtime (fun orch ->
-                              Orchestrator.send_human_message orch
-                                pv.Tui.patch_id line));
+                              Orchestrator.send_human_message orch patch_id line));
                       log_event Env.runtime
                         (Printf.sprintf "Broadcast to %s — %s"
-                           (pluralize count "active patch"
-                              ~plural:"active patches")
+                           (pluralize count "patch with a session"
+                              ~plural:"patches with a session")
                            line)
                     end
                 | Tui_input.Prompt_pr -> (
