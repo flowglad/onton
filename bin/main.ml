@@ -1046,12 +1046,10 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
                   Fibers.Runner.run ~status_msg:tui_state.status_msg ())
               :: common_fibers)
           with Fibers.Tui.Quit -> ())
-    with Supervisor_guard.Fatal_supervisor_error _ -> (
-      match
-        Supervisor_decision.exit_after_fatal Supervisor_decision.Cleanup_done
-      with
-      | Supervisor_decision.Exit_now -> Stdlib.exit 1
-      | Supervisor_decision.Defer_exit_until_cleanup -> assert false)
+    with Supervisor_guard.Fatal_supervisor_error _ ->
+      (* Fun.protect's [finally] has already restored the terminal and saved the
+         runtime snapshot. *)
+      Stdlib.exit 1
 
 (** Trailing-positional PR operations parsed from the command line. *)
 type pr_op = Add_pr of Pr_number.t | Remove_pr of Pr_number.t
