@@ -28,7 +28,8 @@ val arm_deadline : Patch_agent.t -> float -> Patch_agent.t
 
 val merge_call_failed :
   Patch_agent.t -> retry_deadline:float -> max_failures:int -> Patch_agent.t
-(** Apply a failed merge/enqueue/dequeue call. Clears inflight, increments the
+(** Apply a failed merge or enqueue call. Clears inflight, increments the
     failure counter, and arms [retry_deadline] only if automerge remains
     enabled, the failure cap has not been reached, and the PR is not already
-    known to be in the merge queue. *)
+    known to be in the merge queue. Dequeue failures are handled separately by
+    the runner and do not increment the automerge failure count. *)
