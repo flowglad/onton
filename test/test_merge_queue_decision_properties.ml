@@ -104,13 +104,26 @@ let base_ejection_poll =
 let previous_entry =
   Pr_state.{ id = "MQE_1"; state = Mq_awaiting_checks; position = 1 }
 
+let visible_failure (poll : Poller.t) =
+  List.exists poll.ci_checks ~f:Ci_check.is_failure
+
 let expected_ejection ~previous_entry (poll : Poller.t) =
   Option.is_some previous_entry
   && poll.merge_queue_required
   && Option.is_none poll.merge_queue_entry
   && (not poll.merged) && (not poll.closed) && poll.merge_ready
   && poll.checks_passing
-  && not (List.exists poll.ci_checks ~f:Ci_check.is_failure)
+  && not (visible_failure poll)
+
+let expected_unmergeable (poll : Poller.t) =
+  let has_unmergeable_entry =
+    Option.exists poll.merge_queue_entry ~f:(fun entry ->
+        Pr_state.equal_merge_queue_entry_state entry.state
+          Pr_state.Mq_unmergeable)
+  in
+  poll.merge_queue_required && has_unmergeable_entry && (not poll.merged)
+  && (not poll.closed) && poll.checks_passing
+  && not (visible_failure poll)
 
 let prop_totality =
   QCheck2.Test.make ~name:"MQD total over arbitrary prior entry + poll"
@@ -131,6 +144,13 @@ let prop_exact_predicate =
         (Merge_queue_decision.should_treat_ejection_as_ci_failure
            ~previous_entry poll)
         (expected_ejection ~previous_entry poll))
+
+let prop_exact_unmergeable_predicate =
+  QCheck2.Test.make ~name:"MQD unmergeable iff every predicate term holds"
+    ~count:2000 gen_poll_result (fun poll ->
+      Bool.equal
+        (Merge_queue_decision.should_treat_unmergeable_as_ci_failure poll)
+        (expected_unmergeable poll))
 
 let boundary_cases =
   [
@@ -166,6 +186,29 @@ let boundary_cases =
     ("ejected", Some previous_entry, base_ejection_poll, true);
   ]
 
+let unmergeable_poll =
+  {
+    base_ejection_poll with
+    Poller.merge_queue_entry =
+      Some Pr_state.{ id = "MQE_2"; state = Mq_unmergeable; position = 4 };
+  }
+
+let unmergeable_boundary_cases =
+  [
+    ( "queue not required",
+      { unmergeable_poll with merge_queue_required = false },
+      false );
+    ("merged", { unmergeable_poll with merged = true }, false);
+    ("closed", { unmergeable_poll with closed = true }, false);
+    ( "checks not passing",
+      { unmergeable_poll with checks_passing = false },
+      false );
+    ( "current failure already visible",
+      { unmergeable_poll with ci_checks = [ failing_check ] },
+      false );
+    ("unmergeable", unmergeable_poll, true);
+  ]
+
 let prop_boundary_cases =
   QCheck2.Test.make ~name:"MQD boundary guard matrix" ~count:1 QCheck2.Gen.unit
     (fun () ->
@@ -176,20 +219,34 @@ let prop_boundary_cases =
                ~previous_entry poll)
             expected))
 
+let prop_unmergeable_boundary_cases =
+  QCheck2.Test.make ~name:"MQD unmergeable boundary guard matrix" ~count:1
+    QCheck2.Gen.unit (fun () ->
+      List.for_all unmergeable_boundary_cases ~f:(fun (_name, poll, expected) ->
+          Bool.equal
+            (Merge_queue_decision.should_treat_unmergeable_as_ci_failure poll)
+            expected))
+
 let prop_apply_shape =
-  QCheck2.Test.make ~name:"MQD apply rewrites only ejection cases" ~count:2000
+  QCheck2.Test.make ~name:"MQD apply rewrites only merge-queue failure cases"
+    ~count:2000
     QCheck2.Gen.(pair gen_previous_entry gen_poll_result)
     (fun (previous_entry, poll) ->
       let result = Merge_queue_decision.apply ~previous_entry poll in
-      if expected_ejection ~previous_entry poll then
-        result.merge_queue_ejected
+      if expected_ejection ~previous_entry poll || expected_unmergeable poll
+      then
+        Bool.equal result.merge_queue_ejected
+          (expected_ejection ~previous_entry poll)
+        && Bool.equal result.merge_queue_unmergeable (expected_unmergeable poll)
         && List.exists result.poll_result.queue ~f:(Operation_kind.equal Ci)
         && (not result.poll_result.merge_ready)
         && (not result.poll_result.checks_passing)
         && List.exists result.poll_result.ci_checks
              ~f:Ci_check.is_merge_queue_failure
       else
-        (not result.merge_queue_ejected) && Poller.equal result.poll_result poll)
+        (not result.merge_queue_ejected)
+        && (not result.merge_queue_unmergeable)
+        && Poller.equal result.poll_result poll)
 
 let prop_idempotent =
   QCheck2.Test.make ~name:"MQD apply is idempotent for a fixed prior entry"
@@ -201,6 +258,7 @@ let prop_idempotent =
         Merge_queue_decision.apply ~previous_entry first.poll_result
       in
       (not second.merge_queue_ejected)
+      && (not second.merge_queue_unmergeable)
       && Poller.equal second.poll_result first.poll_result)
 
 let prop_interleaving_threaded_prior_state =
@@ -216,14 +274,25 @@ let prop_interleaving_threaded_prior_state =
         List.fold polls ~init:(initial_previous_entry, true)
           ~f:(fun (previous_entry, ok) poll ->
             let result = Merge_queue_decision.apply ~previous_entry poll in
-            let expected = expected_ejection ~previous_entry poll in
+            let expected =
+              expected_ejection ~previous_entry poll
+              || expected_unmergeable poll
+            in
             let local_ok =
-              Bool.equal result.merge_queue_ejected expected
+              let synthetic_failure =
+                List.exists result.poll_result.ci_checks
+                  ~f:Ci_check.is_merge_queue_failure
+              in
+              Bool.equal
+                (result.merge_queue_ejected || result.merge_queue_unmergeable)
+                expected
               &&
-              if result.merge_queue_ejected then
-                Option.is_none result.poll_result.merge_queue_entry
-                && List.exists result.poll_result.ci_checks
-                     ~f:Ci_check.is_merge_queue_failure
+              if result.merge_queue_ejected || result.merge_queue_unmergeable
+              then
+                synthetic_failure
+                && (not result.poll_result.checks_passing)
+                && List.exists result.poll_result.queue
+                     ~f:(Operation_kind.equal Ci)
               else true
             in
             (result.poll_result.merge_queue_entry, ok && local_ok))
@@ -235,7 +304,9 @@ let () =
     [
       prop_totality;
       prop_exact_predicate;
+      prop_exact_unmergeable_predicate;
       prop_boundary_cases;
+      prop_unmergeable_boundary_cases;
       prop_apply_shape;
       prop_idempotent;
       prop_interleaving_threaded_prior_state;

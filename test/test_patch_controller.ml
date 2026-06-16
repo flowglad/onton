@@ -1536,9 +1536,10 @@ let () =
         | _ -> false)
   in
 
-  let pending_patch_4_unmergeable_counts_as_failure =
+  let pending_patch_4_unmergeable_clears_automerge_deadline =
     Test.make
-      ~name:"patch_controller: Patch 4 UNMERGEABLE entry counts as failure"
+      ~name:
+        "patch_controller: Patch 4 UNMERGEABLE entry clears automerge deadline"
       QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "mq-unmergeable" in
         let branch = Branch.of_string "feat/mq-unmergeable" in
@@ -1561,9 +1562,9 @@ let () =
         in
         let agent = Orchestrator.agent orch pid in
         List.is_empty decisions
-        && agent.Patch_agent.automerge_failure_count = 1
+        && agent.Patch_agent.automerge_failure_count = 0
         && (not agent.Patch_agent.automerge_inflight)
-        && Option.is_some agent.Patch_agent.automerge_deadline)
+        && Option.is_none agent.Patch_agent.automerge_deadline)
   in
 
   (* A direct-merge patch that is approval-ready in every respect but reads
@@ -1667,7 +1668,7 @@ let () =
       pending_patch_4_automerge_enqueued_idle;
       pending_patch_4_unapproved_not_enqueued;
       pending_patch_4_automerge_dequeue_on_lost_approval;
-      pending_patch_4_unmergeable_counts_as_failure;
+      pending_patch_4_unmergeable_clears_automerge_deadline;
       prop_missing_adhoc_does_not_crash_reconcile;
       prop_apply_poll_lifts_missing_to_present;
       prop_child_of_missing_parent_not_startable;

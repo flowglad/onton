@@ -217,9 +217,9 @@ module Ci_check = struct
       details_url = None;
       description =
         Some
-          "GitHub removed this PR from the merge queue after merge queue \
-           checks failed. Inspect the merge queue or Actions history for the \
-           failing synthetic queue run.";
+          "GitHub reported a merge queue failure for this PR. It may have been \
+           removed after queue checks failed, or marked unmergeable while \
+           still in the queue.";
       started_at = None;
       id = None;
     }
