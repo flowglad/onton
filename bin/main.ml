@@ -1040,8 +1040,8 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
             Eio.Fiber.all
               (guard_fiber ~quit_is_normal:true "tui" (fun () ->
                    Fibers.Tui.run ())
-              :: guard_fiber ~quit_is_normal:true "tui-input" (fun () ->
-                  Fibers.Tui.run_input ())
+              :: guard_fiber ~quit_is_normal:true ~return_is_normal:true
+                   "tui-input" (fun () -> Fibers.Tui.run_input ())
               :: guard_fiber "runner" (fun () ->
                   Fibers.Runner.run ~status_msg:tui_state.status_msg ())
               :: common_fibers)
