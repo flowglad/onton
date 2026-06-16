@@ -24,8 +24,8 @@ let observe_merge_queue agent ~required ~entry =
   | Some entry -> entered_merge_queue agent entry
   | None ->
       let agent = Patch_agent.set_merge_queue_required agent required in
-      let agent = Patch_agent.set_merge_queue_entry agent None in
-      clear_deadline_if_enqueued agent
+      let agent = clear_deadline_if_enqueued agent in
+      Patch_agent.set_merge_queue_entry agent None
 
 let arm_deadline agent deadline =
   if Option.is_some agent.Patch_agent.merge_queue_entry then

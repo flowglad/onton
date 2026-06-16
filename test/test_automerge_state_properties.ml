@@ -101,6 +101,27 @@ let prop_observe_entry_is_entered_merge_queue =
       let entered = Automerge_state.entered_merge_queue agent entry in
       Patch_agent.equal observed entered)
 
+let prop_observe_none_ejection_clears_stale_deadline =
+  QCheck2.Test.make
+    ~name:
+      "automerge_state MQ-EJECT: observing no entry clears stale queue timer"
+    ~count:1000
+    QCheck2.Gen.(triple bool gen_merge_queue_entry (int_range 0 10_000))
+    (fun (required, entry, deadline) ->
+      let agent =
+        base_agent () |> fun agent ->
+        Patch_agent.set_merge_queue_required agent true |> fun agent ->
+        Patch_agent.set_merge_queue_entry agent (Some entry) |> fun agent ->
+        Patch_agent.set_automerge_deadline agent (Float.of_int deadline)
+      in
+      let agent =
+        Automerge_state.observe_merge_queue agent ~required ~entry:None
+      in
+      Bool.equal agent.Patch_agent.merge_queue_required required
+      && Option.is_none agent.Patch_agent.merge_queue_entry
+      && Option.is_none agent.Patch_agent.automerge_deadline
+      && Automerge_state.merge_queue_timer_invariant agent)
+
 let prop_failure_does_not_rearm_when_already_enqueued =
   QCheck2.Test.make
     ~name:"automerge_state MQ-FAIL: failure cannot re-arm an enqueued patch"
@@ -140,6 +161,7 @@ let () =
     [
       prop_entered_merge_queue_shape;
       prop_observe_entry_is_entered_merge_queue;
+      prop_observe_none_ejection_clears_stale_deadline;
       prop_failure_does_not_rearm_when_already_enqueued;
       prop_interleavings_preserve_invariant;
     ] ~f:(fun test -> QCheck2.Test.check_exn test)
