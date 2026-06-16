@@ -512,6 +512,9 @@ module Key_io = struct
 
   [@@@ocaml.warning "-45"] (* scroll_dir.Up/Down vs Key.Up/Down both in scope *)
 
+  type read_result = No_input | Eof | Key of Term_key.t
+  type first_byte = No_first_byte | First_byte_eof | First_byte of char
+
   (** Read a single byte from stdin, returning None on EOF/error. Runs in a
       systhread so it does not block the Eio event loop. *)
   let read_byte () =
@@ -536,6 +539,20 @@ module Key_io = struct
               let n = Unix.read Unix.stdin buf 0 1 in
               if n = 0 then None else Some (Bytes.get buf 0)
             with _ -> None))
+
+  (** Poll for the first byte of a key press. Unlike [read_byte], this never
+      parks a systhread indefinitely, so TUI input remains cancellable. *)
+  let poll_first_byte () =
+    Eio_unix.run_in_systhread (fun () ->
+        try
+          let ready, _, _ = Unix.select [ Unix.stdin ] [] [] 0.05 in
+          match ready with
+          | [] -> No_first_byte
+          | _ ->
+              let buf = Bytes.create 1 in
+              let n = Unix.read Unix.stdin buf 0 1 in
+              if n = 0 then First_byte_eof else First_byte (Bytes.get buf 0)
+        with _ -> First_byte_eof)
 
   (** Read bracketed paste content until the paste-end CSI sequence
       ([ESC\[201~]). *)
@@ -748,6 +765,21 @@ module Key_io = struct
         if code >= 1 && code <= 26 then
           Some (Ctrl (Char.of_int_exn (code + 96)))
         else Some (Char c)
+
+  (** Poll and parse a single key press. Returns [No_input] when no byte is
+      available yet, giving the caller a cancellation/yield point. *)
+  let poll () =
+    match poll_first_byte () with
+    | No_first_byte -> No_input
+    | First_byte_eof -> Eof
+    | First_byte '\027' -> Key (parse_escape ())
+    | First_byte ('\r' | '\n') -> Key Enter
+    | First_byte '\t' -> Key Tab
+    | First_byte ('\127' | '\008') -> Key Backspace
+    | First_byte c ->
+        let code = Char.to_int c in
+        if code >= 1 && code <= 26 then Key (Ctrl (Char.of_int_exn (code + 96)))
+        else Key (Char c)
 end
 
 let%test "enable_mouse is correct" =
