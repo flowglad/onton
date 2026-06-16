@@ -30,6 +30,9 @@ let gen_return_policy =
   QCheck2.Gen.oneof_list
     Supervisor_decision.[ Return_is_fatal; Return_is_normal ]
 
+let gen_cleanup_state =
+  QCheck2.Gen.oneof_list Supervisor_decision.[ Cleanup_pending; Cleanup_done ]
+
 let is_fatal = function
   | Supervisor_decision.Fatal _ -> true
   | Normal_return | Normal_quit | Propagate_cancel -> false
@@ -108,14 +111,17 @@ let () =
 
   QCheck2.Test.check_exn
     (QCheck2.Test.make
-       ~name:"fatal exits are deferred until cleanup has completed" ~count:1
-       QCheck2.Gen.unit (fun () ->
+       ~name:"fatal exits are deferred until cleanup has completed" ~count:100
+       gen_cleanup_state (fun cleanup_state ->
+         let expected =
+           match cleanup_state with
+           | Supervisor_decision.Cleanup_pending ->
+               Supervisor_decision.Defer_exit_until_cleanup
+           | Cleanup_done -> Supervisor_decision.Exit_now
+         in
          Supervisor_decision.equal_exit_decision
-           (Supervisor_decision.exit_after_fatal Cleanup_pending)
-           Defer_exit_until_cleanup
-         && Supervisor_decision.equal_exit_decision
-              (Supervisor_decision.exit_after_fatal Cleanup_done)
-              Exit_now));
+           (Supervisor_decision.exit_after_fatal cleanup_state)
+           expected));
 
   QCheck2.Test.check_exn
     (QCheck2.Test.make
