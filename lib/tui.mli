@@ -158,11 +158,12 @@ val patch_count : frame -> int
 
 val human_intervention_reason : Onton_core.Patch_agent.t -> string option
 (** The human-facing, actionable banner line for why a patch needs intervention,
-    or [None] when it does not. Translates the authoritative reason code from
-    {!Onton_core.Patch_agent.intervention_reason} (which is driven by the
-    agent's own failure counters) into operator-readable text. This is the
-    source the detail banner trusts first, ahead of any scraped activity-log
-    event. *)
+    or [None] when it does not need operator attention. Translates the
+    authoritative reason code from {!Onton_core.Patch_agent.intervention_reason}
+    (which is driven by the agent's own failure counters) into operator-readable
+    text, and also surfaces worktree branch collisions that intentionally block
+    runner work. This is the source the detail banner trusts first, ahead of any
+    scraped activity-log event. *)
 
 val views_of_orchestrator :
   orchestrator:Orchestrator.t ->

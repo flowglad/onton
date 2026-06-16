@@ -7,9 +7,10 @@
     CI-failure count rendered "runner: pushed after session" — the most recent
     (and innocuous) activity-log line — instead of the actionable reason. The
     fix makes the banner derive from the agent's own failure counters via
-    [Patch_agent.intervention_reason]. These tests pin that: the human reason is
-    present exactly when the agent needs intervention, and a CI-stuck agent
-    reports the CI failure, never a push event. *)
+    [Patch_agent.intervention_reason]. These tests pin that counter-based human
+    reasons stay aligned with raw intervention, branch-blocked agents still get
+    an operator-facing reason, and a CI-stuck agent reports the CI failure,
+    never a push event. *)
 
 open Onton
 open Onton_core
@@ -59,6 +60,17 @@ let () =
       (Patch_agent.needs_intervention a)
       (Option.is_some (Tui.human_intervention_reason a)));
 
+  (* A repo-root branch collision is not a PatchAgent failure-threshold
+     intervention, but it does require operator attention. The TUI must surface
+     it as needs-help instead of leaving the row looking queued and inert. *)
+  let branch_blocked = Patch_agent.set_branch_blocked a in
+  assert (not (Patch_agent.needs_intervention branch_blocked));
+  (match Tui.human_intervention_reason branch_blocked with
+  | None -> assert false
+  | Some msg ->
+      assert (contains msg "repo root");
+      assert (contains msg "branch"));
+
   (* Rebase/worktree failures have their own intervention reason and must not
      be reported as repeated LLM session failures. *)
   let rebase_stuck =
@@ -74,6 +86,75 @@ let () =
       assert (not (contains msg "session")));
 
   print_endline "PASS: human_intervention_reason surfaces the actionable reason"
+
+let make_patch ?(deps = []) ~id ~branch ~title () =
+  Patch.
+    {
+      id;
+      title;
+      description = "";
+      branch;
+      dependencies = deps;
+      spec = "";
+      acceptance_criteria = [];
+      files = [];
+      classification = "";
+      changes = [];
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+      complexity = None;
+      precedents = [];
+      required_context = [];
+    }
+
+let make_gameplan patches =
+  Gameplan.
+    {
+      project_name = "test-project";
+      repo_owner = "";
+      repo_name = "";
+      problem_statement = "";
+      solution_summary = "";
+      final_state_spec = "";
+      patches;
+      functional_changes = [];
+      context_resources = [];
+      current_state_analysis = "";
+      explicit_opinions = "";
+      acceptance_criteria = [];
+      open_questions = [];
+    }
+
+let () =
+  let patch_id = Patch_id.of_string "patch-1" in
+  let patch =
+    make_patch ~id:patch_id
+      ~branch:(Branch.of_string "codex/fix")
+      ~title:"fix" ()
+  in
+  let gameplan = make_gameplan [ patch ] in
+  let orchestrator =
+    Orchestrator.create ~patches:gameplan.Gameplan.patches
+      ~main_branch:(Branch.of_string "main")
+    |> fun orchestrator -> Orchestrator.set_branch_blocked orchestrator patch_id
+  in
+  let views =
+    Tui.views_of_orchestrator ~orchestrator ~gameplan ~activity:[]
+      ~resolve_routing:(fun ~complexity:_ ->
+        { Backend_routing.backend = "claude"; model = None })
+      ()
+  in
+  match views with
+  | [ view ] ->
+      assert (Tui.equal_display_status view.Tui.status Tui.Needs_help);
+      assert view.Tui.needs_intervention;
+      (match view.Tui.intervention_reason with
+      | Some msg ->
+          assert (contains msg "repo root");
+          assert (contains msg "branch")
+      | None -> assert false);
+      print_endline "PASS: branch-blocked patches render as needs-help"
+  | _ -> assert false
 
 let assert_raw_fields ~merged ~has_pr ~is_pr_missing ~session_given_up
     ~human_in_queue ~ci_failure_count ~start_attempts_without_pr

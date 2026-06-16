@@ -89,7 +89,8 @@ let display_status_of_agent_json ~main_branch json =
     State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:(bool_member fields "merged")
     |> State.Patch_ctx.set_needs_intervention ~patch_id
-         ~value:(needs_intervention fields)
+         ~value:
+           (needs_intervention fields || bool_member fields "branch_blocked")
     |> State.Patch_ctx.set_approved ~patch_id
          ~value:(bool_member fields "satisfies")
     |> State.Patch_ctx.set_busy ~patch_id ~value:(bool_member fields "busy")
@@ -109,6 +110,22 @@ let display_status_of_agent_json ~main_branch json =
   in
   Display_status.derive ctx ~patch_id ~current_op:(current_op_member fields)
     ~main_branch
+
+let%test "branch_blocked activity-log agent renders needs-help" =
+  let patch_id = "patch-1" in
+  let status =
+    display_status_of_agent_json ~main_branch:(Branch.of_string "main")
+      (`Assoc
+         [
+           ("patch_id", `String patch_id);
+           ("merged", `Bool false);
+           ("branch_blocked", `Bool true);
+           ("busy", `Bool false);
+           ("satisfies", `Bool false);
+           ("queue", `List [ Operation_kind.yojson_of_t Review_comments ]);
+         ])
+  in
+  Display_status.equal status Display_status.Needs_help
 
 let transition_action ~default_kind payload =
   let fields = assoc_fields payload in

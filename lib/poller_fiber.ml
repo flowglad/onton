@@ -458,28 +458,34 @@ struct
       (* Phase 2: Single atomic update — apply all poll results + reconcile.
        This prevents the runner from seeing an intermediate state where
        poll results are applied but the reconciler hasn't run yet. *)
-      let per_patch_sides, reconcile_logs =
+      let poll_events, per_patch_sides, reconcile_logs =
         Runtime.update_orchestrator_returning runtime (fun orch ->
             (* Apply all poll results *)
-            let orch, sides =
-              List.fold observations ~init:(orch, [])
+            let orch, poll_events, sides =
+              List.fold observations ~init:(orch, [], [])
                 ~f:(fun
-                    (orch, sides) (patch_id, obs, failed_ci, ci_truncated) ->
+                    (orch, poll_events, sides)
+                    (patch_id, obs, failed_ci, ci_truncated)
+                  ->
                   match Orchestrator.find_agent orch patch_id with
-                  | None -> (orch, sides)
+                  | None -> (orch, poll_events, sides)
                   | Some agent_before ->
                       let orch, log_entries, newly_blocked =
                         Patch_controller.apply_poll_result orch patch_id obs
                       in
                       let agent_after = Orchestrator.agent orch patch_id in
-                      Event_log.log_poll event_log ~patch_id
-                        ~poll_result:obs.Patch_controller.poll_result
-                        ~agent_before ~agent_after
-                        ~logs:
-                          (List.map log_entries
-                             ~f:(fun (e : Patch_controller.poll_log_entry) ->
-                               e.Patch_controller.message));
+                      let log_messages =
+                        List.map log_entries
+                          ~f:(fun (e : Patch_controller.poll_log_entry) ->
+                            e.Patch_controller.message)
+                      in
                       ( orch,
+                        ( patch_id,
+                          obs.Patch_controller.poll_result,
+                          agent_before,
+                          agent_after,
+                          log_messages )
+                        :: poll_events,
                         ( patch_id,
                           log_entries,
                           newly_blocked,
@@ -594,9 +600,13 @@ struct
                       Orchestrator.enqueue orch pid Operation_kind.Rebase
                   | Reconciler.Start_operation _ -> orch)
             in
-            (orch, (List.rev sides, List.rev !rec_logs)))
+            (orch, (List.rev poll_events, List.rev sides, List.rev !rec_logs)))
       in
       (* Phase 3: Side effects — outside the lock *)
+      List.iter poll_events
+        ~f:(fun (patch_id, poll_result, agent_before, agent_after, logs) ->
+          Event_log.log_poll event_log ~patch_id ~poll_result ~agent_before
+            ~agent_after ~logs);
       List.iter per_patch_sides
         ~f:(fun
             (patch_id, log_entries, newly_blocked, _failed_ci, ci_truncated) ->
