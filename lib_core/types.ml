@@ -207,6 +207,25 @@ module Ci_check = struct
 
   let is_success (c : t) =
     List.mem success_conclusions c.conclusion ~equal:String.equal
+
+  let merge_queue_failure_name = "GitHub merge queue"
+
+  let merge_queue_failure () =
+    {
+      name = merge_queue_failure_name;
+      conclusion = "failure";
+      details_url = None;
+      description =
+        Some
+          "GitHub reported a merge queue failure for this PR. It may have been \
+           removed after queue checks failed, or marked unmergeable while \
+           still in the queue.";
+      started_at = None;
+      id = None;
+    }
+
+  let is_merge_queue_failure (c : t) =
+    String.equal c.name merge_queue_failure_name && is_failure c
 end
 
 module Pr_url = struct

@@ -203,6 +203,8 @@ module Ci_check : sig
 
   val is_failure : t -> bool
   val is_success : t -> bool
+  val merge_queue_failure : unit -> t
+  val is_merge_queue_failure : t -> bool
 end
 
 module Pr_url : sig
