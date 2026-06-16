@@ -555,18 +555,22 @@ module Key_io = struct
   (** Poll for the first byte of a key press. Unlike [read_byte], this never
       parks a systhread indefinitely, so TUI input remains cancellable. *)
   let poll_first_byte () =
-    Eio_unix.run_in_systhread (fun () ->
-        try
-          let ready, _, _ = Unix.select [ Unix.stdin ] [] [] 0.05 in
-          match ready with
-          | [] -> No_first_byte
-          | _ ->
-              let buf = Bytes.create 1 in
-              let n = Unix.read Unix.stdin buf 0 1 in
-              if n = 0 then First_byte_eof else First_byte (Bytes.get buf 0)
-        with
-        | Unix.Unix_error (Unix.EINTR, _, _) -> No_first_byte
-        | _ -> First_byte_eof)
+    let result =
+      Eio_unix.run_in_systhread (fun () ->
+          try
+            let ready, _, _ = Unix.select [ Unix.stdin ] [] [] 0.05 in
+            match ready with
+            | [] -> No_first_byte
+            | _ ->
+                let buf = Bytes.create 1 in
+                let n = Unix.read Unix.stdin buf 0 1 in
+                if n = 0 then First_byte_eof else First_byte (Bytes.get buf 0)
+          with
+          | Unix.Unix_error (Unix.EINTR, _, _) -> No_first_byte
+          | _ -> First_byte_eof)
+    in
+    Eio.Fiber.yield ();
+    result
 
   (** Read bracketed paste content until the paste-end CSI sequence
       ([ESC\[201~]). *)
