@@ -993,39 +993,63 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
   let module WorktreeClient = (val cap.worktree_client) in
   let module Fibers = Make_fibers (Forge) (WorktreeClient) (Fiber_env) in
   let { Resolved_config.headless; project_name; _ } = setup.config in
+  let save_snapshot () =
+    let snap = Runtime.snapshot_unsync setup.runtime in
+    ignore
+      (Persistence.save ~path:(Project_store.snapshot_path project_name) snap)
+  in
+  let log_fatal message =
+    log_event setup.runtime message;
+    Printf.eprintf "onton: %s\n%!" message
+  in
+  let guard_fiber ?(quit_is_normal = false) ?(return_is_normal = false) name f
+      () =
+    Supervisor_guard.wrap ~quit_is_normal ~return_is_normal ~name
+      ~is_normal_quit:(function Fibers.Tui.Quit -> true | _ -> false)
+      ~log:log_fatal f ()
+  in
   let common_fibers =
     [
-      cap.reconciliation_fiber;
-      (fun () -> Fibers.Poller.run cap.startup_reconciler);
-      (fun () -> Fibers.Persistence.run ());
+      guard_fiber ~return_is_normal:true "startup-reconciler"
+        cap.reconciliation_fiber;
+      guard_fiber "poller" (fun () -> Fibers.Poller.run cap.startup_reconciler);
+      guard_fiber "persistence" (fun () -> Fibers.Persistence.run ());
     ]
   in
-  if headless then
-    Eio.Fiber.all
-      ((fun () -> Fibers.Headless.run ())
-      :: (fun () -> Fibers.Runner.run ())
-      :: common_fibers)
+  if headless then (
+    try
+      Eio.Fiber.all
+        (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
+        :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
+        :: common_fibers)
+    with Supervisor_guard.Fatal_supervisor_error _ ->
+      save_snapshot ();
+      Stdlib.exit 1)
   else
     let raw_state = Term.Raw.enter () in
-    Fun.protect
-      ~finally:(fun () ->
-        Term.Raw.clear_suspend_handlers ();
-        Term.Raw.leave raw_state;
-        Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
-        let snap = Runtime.snapshot_unsync setup.runtime in
-        ignore
-          (Persistence.save
-             ~path:(Project_store.snapshot_path project_name)
-             snap))
-      (fun () ->
-        Term.Raw.install_suspend_handlers raw_state;
-        try
-          Eio.Fiber.all
-            ((fun () -> Fibers.Tui.run ())
-            :: (fun () -> Fibers.Tui.run_input ())
-            :: (fun () -> Fibers.Runner.run ~status_msg:tui_state.status_msg ())
-            :: common_fibers)
-        with Fibers.Tui.Quit -> ())
+    try
+      Fun.protect
+        ~finally:(fun () ->
+          Term.Raw.clear_suspend_handlers ();
+          Term.Raw.leave raw_state;
+          Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
+          save_snapshot ())
+        (fun () ->
+          Term.Raw.install_suspend_handlers raw_state;
+          try
+            Eio.Fiber.all
+              (guard_fiber ~quit_is_normal:true "tui" (fun () ->
+                   Fibers.Tui.run ())
+              :: guard_fiber ~quit_is_normal:true ~return_is_normal:true
+                   "tui-input" (fun () -> Fibers.Tui.run_input ())
+              :: guard_fiber "runner" (fun () ->
+                  Fibers.Runner.run ~status_msg:tui_state.status_msg ())
+              :: common_fibers)
+          with Fibers.Tui.Quit -> ())
+    with Supervisor_guard.Fatal_supervisor_error _ ->
+      (* Fun.protect's [finally] has already restored the terminal and saved the
+         runtime snapshot. *)
+      Stdlib.exit 1
 
 (** Trailing-positional PR operations parsed from the command line. *)
 type pr_op = Add_pr of Pr_number.t | Remove_pr of Pr_number.t

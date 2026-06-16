@@ -58,6 +58,27 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_supervisor_decision_properties)
+ (modules test_supervisor_decision_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_supervisor_guard)
+ (modules test_supervisor_guard)
+ (libraries onton onton_core eio eio_main)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
+ (name test_term_key_io)
+ (modules test_term_key_io)
+ (libraries onton eio_main unix)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_github_target_properties)
  (modules test_github_target_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)

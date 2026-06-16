@@ -1647,6 +1647,87 @@ let () =
   QCheck2.Test.check_exn prop_pi9;
   Stdlib.print_endline "PI-9 passed"
 
+(** PI-9b: Stale/empty CI delivery does not suppress a later failed run.
+
+    Regression for the page-step-authority incident: a CI response can be
+    dispatched for an older failure, then become skip-empty because the branch
+    was force-pushed and fresh checks are still pending. When a later poll sees
+    a different failed CheckRun id, the patch must get [Ci] queued again rather
+    than sitting idle with failing checks. *)
+let () =
+  let prop_pi9b =
+    QCheck2.Test.make
+      ~name:"PI-9b: new failed CI run after skip-empty delivery is re-enqueued"
+      QCheck2.Gen.(
+        let* old_run_id = int_range 1 1_000_000 in
+        let* delta = int_range 1 1_000_000 in
+        return (old_run_id, old_run_id + delta))
+      (fun (old_run_id, new_run_id) ->
+        let patches = mk_patches 1 in
+        match patches with
+        | [] -> true
+        | first :: _ ->
+            let pid = first.Patch.id in
+            let orch = bootstrap patches in
+            let orch =
+              Orchestrator.record_delivered_ci_run_ids orch pid [ old_run_id ]
+            in
+            let orch = Orchestrator.enqueue orch pid Operation_kind.Ci in
+            let orch =
+              Orchestrator.fire orch
+                (Orchestrator.Respond (pid, Operation_kind.Ci))
+            in
+            let orch =
+              Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+                Orchestrator.Respond_skip_empty
+            in
+            let skipped = Orchestrator.agent orch pid in
+            let check =
+              Ci_check.
+                {
+                  name = "Lint";
+                  conclusion = "failure";
+                  details_url = None;
+                  description = None;
+                  started_at = None;
+                  id = Some new_run_id;
+                }
+            in
+            let poll_result =
+              {
+                Poller.queue = [ Operation_kind.Ci ];
+                merged = false;
+                closed = false;
+                is_draft = false;
+                merge_state = Pr_state.Mergeable;
+                merge_ready = false;
+                review_decision = None;
+                merge_queue_required = false;
+                merge_queue_entry = None;
+                checks_passing = false;
+                ci_checks = [ check ];
+                merge_commit_sha = None;
+              }
+            in
+            let orch, _logs, _blocked =
+              Patch_controller.apply_poll_result orch pid
+                Patch_controller.
+                  {
+                    poll_result;
+                    base_branch = None;
+                    branch_in_root = false;
+                    worktree_path = None;
+                  }
+            in
+            let agent = Orchestrator.agent orch pid in
+            Int.equal skipped.Patch_agent.ci_failure_count 0
+            && (not skipped.Patch_agent.busy)
+            && List.mem agent.Patch_agent.queue Operation_kind.Ci
+                 ~equal:Operation_kind.equal)
+  in
+  QCheck2.Test.check_exn prop_pi9b;
+  Stdlib.print_endline "PI-9b passed"
+
 (** PI-10: Random interleavings with ad-hoc patches preserve invariants.
     Exercises Add_adhoc/Remove_adhoc commands alongside the standard vocabulary,
     including the case where ad-hoc patches are removed while busy. *)

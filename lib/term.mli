@@ -145,7 +145,13 @@ val disable_mouse : string
 module Key = Term_key
 
 module Key_io : sig
+  type read_result = No_input | Eof | Key of Term_key.t
+
   val read : unit -> Term_key.t option
   (** Read and parse a single key press. Blocks until input is available. Must
       be called while in raw mode. *)
+
+  val poll : unit -> read_result
+  (** Poll and parse a single key press. Returns [No_input] when no byte is
+      available yet. Must be called while in raw mode. *)
 end

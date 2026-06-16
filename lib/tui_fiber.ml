@@ -251,8 +251,11 @@ struct
     let last_click_row = ref (-1) in
     let rec loop () =
       sync_input ();
-      match Term.Key_io.read () with
-      | None ->
+      match Term.Key_io.poll () with
+      | No_input ->
+          Eio.Fiber.yield ();
+          loop ()
+      | Eof ->
           eof_count := !eof_count + 1;
           if !eof_count >= 10 then
             log_event Env.runtime
@@ -260,7 +263,7 @@ struct
           else (
             Eio.Fiber.yield ();
             loop ())
-      | Some key -> (
+      | Key key -> (
           eof_count := 0;
           if !show_help then (
             show_help := false;

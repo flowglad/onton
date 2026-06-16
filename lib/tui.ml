@@ -335,48 +335,56 @@ type patch_view = {
    A reason code we don't recognise falls through to the raw code rather than a
    generic message: an unmapped real reason is still more actionable than a
    misleading one, and it flags that a new code needs a phrasing here. *)
+let display_needs_intervention (agent : Patch_agent.t) =
+  Patch_agent.needs_intervention agent || agent.Patch_agent.branch_blocked
+
 let human_intervention_reason (agent : Patch_agent.t) =
-  Option.map (Patch_agent.intervention_reason agent) ~f:(fun code ->
-      match code with
-      | "session_fallback=given_up" ->
-          "Agent gave up after repeated session failures \xe2\x80\x94 needs \
-           manual fix or restart"
-      | "pr_missing" ->
-          "PR is missing from the remote \xe2\x80\x94 recreate it or \
-           investigate why it vanished"
-      | "ci_failure_count>=3" ->
-          Printf.sprintf
-            "CI failed %d times in a row \xe2\x80\x94 fix the failing checks \
-             below"
-            agent.Patch_agent.ci_failure_count
-      | "start_attempts_without_pr>=2" ->
-          Printf.sprintf
-            "Could not open a PR after %d attempts \xe2\x80\x94 open it \
-             manually or check repo access"
-            agent.Patch_agent.start_attempts_without_pr
-      | "conflict_noop_count>=2" ->
-          "Stuck resolving merge conflicts against base \xe2\x80\x94 resolve \
-           them manually"
-      | "no_commits_push_count>=2" ->
-          "Sessions keep producing no commits to push \xe2\x80\x94 the task \
-           may be done or mis-scoped"
-      | "context_exhaustion_count>=2" ->
-          "Context window exhausted repeatedly \xe2\x80\x94 split the patch \
-           into smaller pieces"
-      | "push_failure_count>=3" ->
-          Printf.sprintf
-            "git push failed %d times \xe2\x80\x94 check branch protection or \
-             remote state"
-            agent.Patch_agent.push_failure_count
-      | "rebase_failure_count>=2" ->
-          Printf.sprintf
-            "git rebase failed %d times \xe2\x80\x94 check the activity log \
-             for the fetch or worktree error"
-            agent.Patch_agent.rebase_failure_count
-      | "pr_body_artifact_miss_count>=2" ->
-          "PR body delivery blocked repeatedly \xe2\x80\x94 check the PR \
-           description requirements"
-      | other -> other)
+  if agent.Patch_agent.branch_blocked then
+    Some
+      "Branch is checked out in the repo root - switch the repo root to \
+       another branch before onton can manage this patch"
+  else
+    Option.map (Patch_agent.intervention_reason agent) ~f:(fun code ->
+        match code with
+        | "session_fallback=given_up" ->
+            "Agent gave up after repeated session failures \xe2\x80\x94 needs \
+             manual fix or restart"
+        | "pr_missing" ->
+            "PR is missing from the remote \xe2\x80\x94 recreate it or \
+             investigate why it vanished"
+        | "ci_failure_count>=3" ->
+            Printf.sprintf
+              "CI failed %d times in a row \xe2\x80\x94 fix the failing checks \
+               below"
+              agent.Patch_agent.ci_failure_count
+        | "start_attempts_without_pr>=2" ->
+            Printf.sprintf
+              "Could not open a PR after %d attempts \xe2\x80\x94 open it \
+               manually or check repo access"
+              agent.Patch_agent.start_attempts_without_pr
+        | "conflict_noop_count>=2" ->
+            "Stuck resolving merge conflicts against base \xe2\x80\x94 resolve \
+             them manually"
+        | "no_commits_push_count>=2" ->
+            "Sessions keep producing no commits to push \xe2\x80\x94 the task \
+             may be done or mis-scoped"
+        | "context_exhaustion_count>=2" ->
+            "Context window exhausted repeatedly \xe2\x80\x94 split the patch \
+             into smaller pieces"
+        | "push_failure_count>=3" ->
+            Printf.sprintf
+              "git push failed %d times \xe2\x80\x94 check branch protection \
+               or remote state"
+              agent.Patch_agent.push_failure_count
+        | "rebase_failure_count>=2" ->
+            Printf.sprintf
+              "git rebase failed %d times \xe2\x80\x94 check the activity log \
+               for the fetch or worktree error"
+              agent.Patch_agent.rebase_failure_count
+        | "pr_body_artifact_miss_count>=2" ->
+            "PR body delivery blocked repeatedly \xe2\x80\x94 check the PR \
+             description requirements"
+        | other -> other)
 
 let patch_view_of_agent (agent : Patch_agent.t)
     ~(patches_by_id : Patch.t Map.M(Patch_id).t) ~(graph : Graph.t)
@@ -399,11 +407,12 @@ let patch_view_of_agent (agent : Patch_agent.t)
     | None -> agent.Patch_agent.branch
   in
   let current_op = agent.Patch_agent.current_op in
+  let needs_intervention = display_needs_intervention agent in
   let ctx =
     ( State.Patch_ctx.empty
     |> State.Patch_ctx.set_merged ~patch_id ~value:agent.merged
     |> State.Patch_ctx.set_needs_intervention ~patch_id
-         ~value:(Patch_agent.needs_intervention agent)
+         ~value:needs_intervention
     |> State.Patch_ctx.set_busy ~patch_id ~value:agent.busy
     |> State.Patch_ctx.set_has_pr ~patch_id ~value:(Patch_agent.has_pr agent)
     |> State.Patch_ctx.set_approved ~patch_id
@@ -425,12 +434,15 @@ let patch_view_of_agent (agent : Patch_agent.t)
           match Map.find agents_by_id dep_id with
           | Some dep_agent ->
               let dep_op = dep_agent.Patch_agent.current_op in
+              let dep_needs_intervention =
+                display_needs_intervention dep_agent
+              in
               let dep_ctx =
                 ( State.Patch_ctx.empty
                 |> State.Patch_ctx.set_merged ~patch_id:dep_id
                      ~value:dep_agent.merged
                 |> State.Patch_ctx.set_needs_intervention ~patch_id:dep_id
-                     ~value:(Patch_agent.needs_intervention dep_agent)
+                     ~value:dep_needs_intervention
                 |> State.Patch_ctx.set_busy ~patch_id:dep_id
                      ~value:dep_agent.busy
                 |> State.Patch_ctx.set_has_pr ~patch_id:dep_id
@@ -468,7 +480,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     dep_ids;
     has_pr = Patch_agent.has_pr agent;
     has_conflict = agent.has_conflict;
-    needs_intervention = Patch_agent.needs_intervention agent;
+    needs_intervention;
     human_messages = List.length agent.human_messages;
     ci_checks = agent.ci_checks;
     recent_stream = [];
