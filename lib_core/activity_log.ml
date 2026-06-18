@@ -43,6 +43,19 @@ module Stream_entry = struct
   let create ~timestamp ~patch_id ~kind = { timestamp; patch_id; kind }
 end
 
+(* A single row of the user-facing activity feed: either a status transition or
+   a free-form event, carrying its own timestamp so the two streams can be
+   interleaved chronologically. Stream entries are deliberately excluded — they
+   are replay diagnostics, not feed rows (see [stream_kind_of_raw]). *)
+module Merged_entry = struct
+  type t = Transition of Transition_entry.t | Event of Event.t
+  [@@deriving show, eq, sexp_of, compare]
+
+  let timestamp = function
+    | Transition t -> t.Transition_entry.timestamp
+    | Event e -> e.Event.timestamp
+end
+
 type t = {
   transitions : Transition_entry.t list;
   events : Event.t list;
@@ -90,6 +103,24 @@ let stream_kind_of_raw ~channel:_ raw =
 let recent_transitions t ~limit = List.take t.transitions limit
 let recent_events t ~limit = List.take t.events limit
 let recent_stream_entries t ~limit = List.take t.stream_entries limit
+
+let merged_recent t ~limit =
+  (* Merge *then* truncate. Truncating each source to [limit] before merging
+     would hand the union a non-uniform density: a high-rate source (events)
+     floods the recent window while a low-rate source (transitions) stretches
+     far into the past, so the feed reads dense at the top and sparse at the
+     bottom. Capping each source at [limit] first is still a sound upper bound —
+     the [limit] newest of the union can draw at most [limit] from either
+     source — so we keep only the [limit] newest of the merged, sorted result. *)
+  let entries =
+    List.map (recent_events t ~limit) ~f:(fun e -> Merged_entry.Event e)
+    @ List.map (recent_transitions t ~limit) ~f:(fun tr ->
+        Merged_entry.Transition tr)
+  in
+  List.take
+    (List.stable_sort entries ~compare:(fun a b ->
+         Float.descending (Merged_entry.timestamp a) (Merged_entry.timestamp b)))
+    limit
 
 let trim t ~max =
   {
