@@ -7,41 +7,29 @@ open Types
 let log_event runtime ?patch_id msg =
   Runtime_logging.log_event runtime ?patch_id msg
 
-let merged_log_entries ~(log : Activity_log.t) ~limit ~compare
-    ~(map_event : Activity_log.Event.t -> 'a)
-    ~(map_transition : Activity_log.Transition_entry.t -> 'a) =
-  let events =
-    List.map (Activity_log.recent_events log ~limit) ~f:(fun e ->
-        (e.Activity_log.Event.timestamp, map_event e))
-  in
-  let transitions =
-    List.map (Activity_log.recent_transitions log ~limit) ~f:(fun t ->
-        (t.Activity_log.Transition_entry.timestamp, map_transition t))
-  in
-  List.sort (events @ transitions) ~compare
-
 let activity_entries_of_log ?(limit = 10) (log : Activity_log.t) =
-  merged_log_entries ~log ~limit
-    ~compare:(fun (t1, _) (t2, _) -> Float.descending t1 t2)
-    ~map_event:(fun (e : Activity_log.Event.t) ->
-      Tui.Event
-        {
-          patch_id =
-            Option.map e.Activity_log.Event.patch_id ~f:Patch_id.to_string;
-          message = e.Activity_log.Event.message;
-          timestamp = e.Activity_log.Event.timestamp;
-        })
-    ~map_transition:(fun (t : Activity_log.Transition_entry.t) ->
-      Tui.Transition
-        {
-          patch_id = Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
-          from_label = Tui.label t.Activity_log.Transition_entry.from_status;
-          to_status = t.Activity_log.Transition_entry.to_status;
-          to_label = Tui.label t.Activity_log.Transition_entry.to_status;
-          action = t.Activity_log.Transition_entry.action;
-          timestamp = t.Activity_log.Transition_entry.timestamp;
-        })
-  |> List.map ~f:snd
+  Activity_log.merged_recent log ~limit
+  |> List.map ~f:(function
+    | Activity_log.Merged_entry.Event (e : Activity_log.Event.t) ->
+        Tui.Event
+          {
+            patch_id =
+              Option.map e.Activity_log.Event.patch_id ~f:Patch_id.to_string;
+            message = e.Activity_log.Event.message;
+            timestamp = e.Activity_log.Event.timestamp;
+          }
+    | Activity_log.Merged_entry.Transition (t : Activity_log.Transition_entry.t)
+      ->
+        Tui.Transition
+          {
+            patch_id =
+              Patch_id.to_string t.Activity_log.Transition_entry.patch_id;
+            from_label = Tui.label t.Activity_log.Transition_entry.from_status;
+            to_status = t.Activity_log.Transition_entry.to_status;
+            to_label = Tui.label t.Activity_log.Transition_entry.to_status;
+            action = t.Activity_log.Transition_entry.action;
+            timestamp = t.Activity_log.Transition_entry.timestamp;
+          })
 
 let pluralize ?plural n singular =
   let many = match plural with Some p -> p | None -> singular ^ "s" in

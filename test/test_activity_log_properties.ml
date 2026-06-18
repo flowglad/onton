@@ -235,6 +235,102 @@ let prop_trim_large_max_unchanged =
       let trimmed = Activity_log.trim log ~max:10_000 in
       Activity_log.equal log trimmed)
 
+(* ─────────────────────────────────────────────────────────────────────────
+   merged_recent: the user-facing feed = the [limit] newest of the union of
+   transitions and events, interleaved by timestamp. Spec derived from the .mli.
+   ───────────────────────────────────────────────────────────────────────── *)
+
+let timestamp_descending a b =
+  Float.descending
+    (Activity_log.Merged_entry.timestamp a)
+    (Activity_log.Merged_entry.timestamp b)
+
+let prop_merged_length_bound =
+  QCheck2.Test.make ~name:"merged_recent returns at most ~limit entries"
+    ~count:300
+    QCheck2.Gen.(pair gen_log (int_range (-5) 50))
+    (fun (log, limit) ->
+      List.length (Activity_log.merged_recent log ~limit) <= Int.max 0 limit)
+
+let prop_merged_descending =
+  QCheck2.Test.make ~name:"merged_recent is sorted newest-first by timestamp"
+    ~count:300
+    QCheck2.Gen.(pair gen_log (int_range 0 50))
+    (fun (log, limit) ->
+      let entries = Activity_log.merged_recent log ~limit in
+      List.is_sorted entries ~compare:timestamp_descending)
+
+(* A log whose insertion order is strictly increasing, distinct timestamps —
+   mirroring production, where entries are appended as time advances. Under this
+   ordering [recent_*] returns exactly the newest-by-timestamp entries, so
+   [merged_recent] must equal the globally newest [limit] rows of the union. The
+   random-timestamp [gen_log] above deliberately does not hold that coincidence,
+   so it can't express this property. *)
+type payload =
+  | P_event of Types.Patch_id.t option * string
+  | P_transition of
+      Types.Patch_id.t * Display_status.t * Display_status.t * string
+
+let gen_payload =
+  let open QCheck2.Gen in
+  oneof
+    [
+      map2
+        (fun pid msg -> P_event (pid, msg))
+        (option gen_patch_id)
+        (string_size (int_range 0 32));
+      (let* pid = gen_patch_id in
+       let* from_status = gen_status in
+       let* to_status = gen_status in
+       let* action = string_size (int_range 0 16) in
+       pure (P_transition (pid, from_status, to_status, action)));
+    ]
+
+let build_ordered_log payloads =
+  List.foldi payloads ~init:Activity_log.empty ~f:(fun i log p ->
+      let timestamp = Float.of_int (i + 1) in
+      match p with
+      | P_event (patch_id, message) ->
+          Activity_log.add_event log
+            (Activity_log.Event.create ~timestamp ?patch_id message)
+      | P_transition (patch_id, from_status, to_status, action) ->
+          Activity_log.add_transition log
+            (Activity_log.Transition_entry.create ~timestamp ~patch_id
+               ~from_status ~to_status ~action))
+
+let gen_ordered_log =
+  QCheck2.Gen.(map build_ordered_log (list_size (int_range 0 32) gen_payload))
+
+let prop_merged_matches_union_take =
+  (* The defining property: merging before truncating must yield exactly the
+     [limit] newest rows of the *whole* union — never a per-source slice. This
+     is what keeps the feed's density uniform rather than dense-at-top. The old
+     take-per-source-then-merge implementation returned up to 2*limit rows and
+     fails this on length. *)
+  QCheck2.Test.make
+    ~name:"merged_recent = newest limit of the union (time-ordered log)"
+    ~count:300
+    QCheck2.Gen.(pair gen_ordered_log (int_range 0 50))
+    (fun (log, limit) ->
+      let big = 10_000 in
+      let union =
+        List.map (Activity_log.recent_events log ~limit:big) ~f:(fun e ->
+            Activity_log.Merged_entry.Event e)
+        @ List.map (Activity_log.recent_transitions log ~limit:big) ~f:(fun t ->
+            Activity_log.Merged_entry.Transition t)
+      in
+      let expected =
+        List.take (List.stable_sort union ~compare:timestamp_descending) limit
+      in
+      List.equal Activity_log.Merged_entry.equal
+        (Activity_log.merged_recent log ~limit)
+        expected)
+
+let prop_merged_negative_limit_empty =
+  QCheck2.Test.make ~name:"merged_recent with limit <= 0 returns []" ~count:200
+    QCheck2.Gen.(pair gen_log (int_range (-20) 0))
+    (fun (log, limit) -> List.is_empty (Activity_log.merged_recent log ~limit))
+
 let prop_stream_kind_of_raw_total =
   QCheck2.Test.make ~name:"stream_kind_of_raw is total" ~count:200
     QCheck2.Gen.string_small (fun raw ->
@@ -255,6 +351,10 @@ let () =
       prop_trim_idempotent;
       prop_trim_zero_empty;
       prop_trim_large_max_unchanged;
+      prop_merged_length_bound;
+      prop_merged_descending;
+      prop_merged_matches_union_take;
+      prop_merged_negative_limit_empty;
       prop_stream_kind_of_raw_total;
     ]
   in

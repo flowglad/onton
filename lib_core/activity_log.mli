@@ -56,6 +56,14 @@ module Stream_entry : sig
   val create : timestamp:float -> patch_id:Types.Patch_id.t -> kind:kind -> t
 end
 
+module Merged_entry : sig
+  type t = Transition of Transition_entry.t | Event of Event.t
+  [@@deriving show, eq, sexp_of, compare]
+
+  val timestamp : t -> float
+  (** The entry's timestamp, regardless of which stream it came from. *)
+end
+
 type t [@@deriving show, eq, sexp_of, compare]
 
 val empty : t
@@ -76,6 +84,18 @@ val recent_events : t -> limit:int -> Event.t list
 (** Return the most recent [limit] events (newest first). Returns an empty list
     if [limit <= 0]. Returns all events if [limit] exceeds the number of
     entries. *)
+
+val merged_recent : t -> limit:int -> Merged_entry.t list
+(** The [limit] most recent transitions and events, interleaved into a single
+    timestamp-descending feed (newest first). Returns an empty list if
+    [limit <= 0], and at most [limit] entries otherwise.
+
+    The two streams are merged *before* truncation, not after: this is the
+    [limit] newest rows of their union, so the feed's density is uniform over
+    time rather than dense-at-top/sparse-at-bottom (which is what taking [limit]
+    from each stream and concatenating would produce when the streams have
+    different rates). Stream entries are excluded — they are replay diagnostics,
+    not user-facing feed rows. *)
 
 val add_stream_entry : t -> Stream_entry.t -> t
 (** Prepend a stream entry to the log. *)
