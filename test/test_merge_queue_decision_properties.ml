@@ -65,7 +65,9 @@ let gen_poll_result =
         is_draft;
         merge_state;
         merge_ready;
+        head_oid = None;
         review_decision = None;
+        unresolved_comment_count = 0;
         merge_queue_required;
         merge_queue_entry;
         checks_passing;
@@ -93,7 +95,9 @@ let base_ejection_poll =
       is_draft = false;
       merge_state = Pr_state.Mergeable;
       merge_ready = true;
+      head_oid = None;
       review_decision = Some "APPROVED";
+      unresolved_comment_count = 0;
       merge_queue_required = true;
       merge_queue_entry = None;
       checks_passing = true;

@@ -118,6 +118,9 @@ val record_delivered_ci_run_ids : t -> Patch_id.t -> int list -> t
 
 val set_checks_passing : t -> Patch_id.t -> bool -> t
 val set_merge_ready : t -> Patch_id.t -> bool -> t
+val set_head_oid : t -> Patch_id.t -> string option -> t
+val set_review_decision : t -> Patch_id.t -> string option -> t
+val set_unresolved_comment_count : t -> Patch_id.t -> int -> t
 val set_mergeability_unknown : t -> Patch_id.t -> bool -> t
 val set_merge_queue_required : t -> Patch_id.t -> bool -> t
 
@@ -167,6 +170,8 @@ val set_automerge_deadline : t -> Patch_id.t -> float -> t
 
 val clear_automerge_deadline : t -> Patch_id.t -> t
 val set_automerge_inflight : t -> Patch_id.t -> bool -> t
+val set_review_requested_for_oid : t -> Patch_id.t -> string option -> t
+val set_review_request_inflight : t -> Patch_id.t -> bool -> t
 val increment_automerge_failure_count : t -> Patch_id.t -> t
 val reset_automerge_failure_count : t -> Patch_id.t -> t
 

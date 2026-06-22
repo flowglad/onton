@@ -74,7 +74,7 @@ let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ~current_message_id:None ~generation:0 ~worktree_path:None
     ~branch_blocked:false ~llm_session_id:None ~automerge_enabled
     ~automerge_deadline ~automerge_inflight:false ~automerge_failure_count
-    ~delivered_ci_run_ids:[]
+    ~delivered_ci_run_ids:[] ()
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -252,7 +252,7 @@ let () =
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         begin try
@@ -304,7 +304,7 @@ let () =
             ~current_message_id:None ~generation:0 ~worktree_path:None
             ~branch_blocked:false ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         let _orch, effects =
@@ -446,7 +446,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         let actions =
@@ -493,7 +493,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         let actions =
@@ -540,7 +540,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         (* Apply effects in a loop until convergence (max 5 rounds). *)
@@ -588,7 +588,9 @@ let () =
               is_draft = true;
               merge_state = Pr_state.Mergeable;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing = true;
@@ -633,7 +635,9 @@ let () =
               is_draft = true;
               merge_state = Pr_state.Mergeable;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing = false;
@@ -689,7 +693,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         let poll =
@@ -701,7 +705,9 @@ let () =
               is_draft = false;
               merge_state = Pr_state.Mergeable;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing = false;
@@ -760,7 +766,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[ run_id ]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[ run_id ] ()
         in
         let orch = make_orch patch agent in
         let poll =
@@ -772,7 +778,9 @@ let () =
               is_draft = false;
               merge_state = Pr_state.Mergeable;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing = false;
@@ -827,7 +835,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[ old_run_id ]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[ old_run_id ] ()
         in
         let orch = make_orch patch agent in
         let orch =
@@ -858,7 +866,9 @@ let () =
               is_draft = false;
               merge_state = Pr_state.Mergeable;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing = false;
@@ -899,7 +909,9 @@ let () =
               is_draft = true;
               merge_state = Pr_state.Mergeable;
               merge_ready;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing;
@@ -942,7 +954,9 @@ let () =
               is_draft = true;
               merge_state = Pr_state.Mergeable;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               checks_passing = false;
@@ -1005,7 +1019,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch = make_orch patch agent in
         begin try
@@ -1170,7 +1184,9 @@ let () =
                     is_draft = false;
                     merge_state = Pr_state.Mergeable;
                     merge_ready = false;
+                    head_oid = None;
                     review_decision = None;
+                    unresolved_comment_count = 0;
                     merge_queue_required = false;
                     merge_queue_entry = None;
                     checks_passing = false;
@@ -1222,7 +1238,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch =
           Orchestrator.restore
@@ -1269,7 +1285,7 @@ let () =
             ~generation:0 ~worktree_path:None ~branch_blocked:false
             ~llm_session_id:None ~automerge_enabled:false
             ~automerge_deadline:None ~automerge_inflight:false
-            ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
         in
         let orch =
           Orchestrator.restore
@@ -1343,7 +1359,9 @@ let () =
               ci_checks = [];
               checks_passing = true;
               merge_ready = false;
+              head_oid = None;
               review_decision = None;
+              unresolved_comment_count = 0;
               merge_queue_required = false;
               merge_queue_entry = None;
               queue = [];

@@ -196,6 +196,12 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         `List (List.map a.inflight_human_messages ~f:(fun s -> `String s)) );
       ("ci_checks", `List (List.map a.ci_checks ~f:Ci_check.yojson_of_t));
       ("merge_ready", `Bool a.merge_ready);
+      ( "head_oid",
+        Option.value_map a.head_oid ~default:`Null ~f:(fun s -> `String s) );
+      ( "review_decision",
+        Option.value_map a.review_decision ~default:`Null ~f:(fun s ->
+            `String s) );
+      ("unresolved_comment_count", `Int a.unresolved_comment_count);
       ("mergeability_unknown", `Bool a.mergeability_unknown);
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
@@ -240,6 +246,10 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       (* [automerge_inflight] is intentionally not persisted: it guards an
          in-flight GitHub call, which cannot still be running across a
          supervisor restart. Deserialization hard-codes [false] to match. *)
+      ( "review_requested_for_oid",
+        Option.value_map a.review_requested_for_oid ~default:`Null ~f:(fun s ->
+            `String s) );
+      ("review_request_inflight", `Bool a.review_request_inflight);
       ("automerge_failure_count", `Int a.automerge_failure_count);
       ( "delivered_ci_run_ids",
         `List (List.map a.delivered_ci_run_ids ~f:(fun i -> `Int i)) );
@@ -348,6 +358,12 @@ let patch_agent_of_yojson ~gameplan json =
        ~ci_failure_count:(int_member "ci_failure_count" json)
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
+       ~head_oid:(string_member_opt "head_oid" json)
+       ~review_decision:(string_member_opt "review_decision" json)
+       ~unresolved_comment_count:
+         (Option.value
+            (int_member_opt "unresolved_comment_count" json)
+            ~default:0)
        ~mergeability_unknown:
          (match bool_member_opt "mergeability_unknown" json with
          | Some v -> v
@@ -465,6 +481,12 @@ let patch_agent_of_yojson ~gameplan json =
             supervisor restart refers to a merge call that cannot still be
             running. Assuming [false] is the safe recovery default. *)
          false
+       ~review_requested_for_oid:
+         (string_member_opt "review_requested_for_oid" json)
+       ~review_request_inflight:
+         (Option.value
+            (bool_member_opt "review_request_inflight" json)
+            ~default:false)
        ~automerge_failure_count:
          (Option.value
             (int_member_opt "automerge_failure_count" json)
@@ -474,7 +496,8 @@ let patch_agent_of_yojson ~gameplan json =
          | `List items ->
              List.filter_map items ~f:(fun j -> Json.int j)
              |> List.dedup_and_sort ~compare:Int.compare
-         | _ -> []))
+         | _ -> [])
+       ())
 
 (* ---------- Activity_log ---------- *)
 
@@ -865,7 +888,7 @@ let%test_module "session_id_sidecars" =
           ~current_message_id:None ~generation:0 ~worktree_path:None
           ~branch_blocked:false ~llm_session_id ~automerge_enabled:false
           ~automerge_deadline:None ~automerge_inflight:false
-          ~automerge_failure_count:0 ~delivered_ci_run_ids:[]
+          ~automerge_failure_count:0 ~delivered_ci_run_ids:[] ()
       in
       let orch =
         Orchestrator.restore

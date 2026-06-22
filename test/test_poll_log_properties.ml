@@ -65,7 +65,7 @@ let make_agent ~patch_id ~branch ~has_conflict ~ci_failure_count ~current_op
     ~current_message_id:None ~generation:0 ~worktree_path ~branch_blocked
     ~llm_session_id:None ~automerge_enabled:false ~automerge_deadline:None
     ~automerge_inflight:false ~automerge_failure_count:0
-    ~delivered_ci_run_ids:[]
+    ~delivered_ci_run_ids:[] ()
 
 let make_poll_observation ~branch_in_root ~worktree_path poll_result =
   Patch_controller.
@@ -80,7 +80,9 @@ let make_poll ~has_conflict ~merged ~checks_passing ~is_draft ~queue =
     merge_state =
       (if has_conflict then Pr_state.Conflicting else Pr_state.Mergeable);
     merge_ready = false;
+    head_oid = None;
     review_decision = None;
+    unresolved_comment_count = 0;
     merge_queue_required = false;
     merge_queue_entry = None;
     checks_passing;

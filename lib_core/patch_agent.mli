@@ -39,6 +39,9 @@ type t = private {
   merge_ready : bool;
       (** Component-derived merge readiness ([Pr_state.merge_ready_of]), not
           GitHub's [mergeStateStatus]. *)
+  head_oid : string option;
+  review_decision : string option;
+  unresolved_comment_count : int;
   mergeability_unknown : bool;
       (** Poll-mirror of [Pr_state.merge_state = Unknown] (GitHub recomputing
           the test-merge, e.g. after a sibling merge advanced the base). Set
@@ -131,6 +134,8 @@ type t = private {
   automerge_enabled : bool;
   automerge_deadline : float option;
   automerge_inflight : bool;
+  review_requested_for_oid : string option;
+  review_request_inflight : bool;
   automerge_failure_count : int;
   delivered_ci_run_ids : int list;
       (** CheckRun [databaseId]s already delivered as CI feedback. Sorted and
@@ -342,6 +347,10 @@ val base_branch_changed : t -> bool
 val set_merge_ready : t -> bool -> t
 (** Set the component-derived [merge_ready] flag ([Pr_state.merge_ready_of]). *)
 
+val set_head_oid : t -> string option -> t
+val set_review_decision : t -> string option -> t
+val set_unresolved_comment_count : t -> int -> t
+
 val set_mergeability_unknown : t -> bool -> t
 (** Set the [mergeability_unknown] poll-mirror
     ([Pr_state.merge_state = Unknown]). *)
@@ -448,6 +457,8 @@ val is_approved : t -> main_branch:Types.Branch.t -> bool
     passing + non-blocking review), not GitHub's [mergeStateStatus]; the merge
     attempt is the final authority on branch-protection specifics. *)
 
+val should_request_review : t -> main_branch:Types.Branch.t -> bool
+
 val increment_ci_failure_count : t -> t
 (** Increment the CI failure counter. Called from
     [Orchestrator.apply_respond_outcome] on [Respond_ok] for a Ci delivery, so
@@ -524,6 +535,9 @@ val set_automerge_inflight : t -> bool -> t
 (** Set the [automerge_inflight] flag. The reconciler sets it [true] when it
     claims a merge decision; the caller clears it on every exit path (success,
     failure, exception). *)
+
+val set_review_requested_for_oid : t -> string option -> t
+val set_review_request_inflight : t -> bool -> t
 
 val increment_automerge_failure_count : t -> t
 (** Record a failed automerge call. After [automerge_max_failures] consecutive
@@ -614,6 +628,9 @@ val restore :
   inflight_human_messages:string list ->
   ci_checks:Types.Ci_check.t list ->
   merge_ready:bool ->
+  ?head_oid:string option ->
+  ?review_decision:string option ->
+  ?unresolved_comment_count:int ->
   mergeability_unknown:bool ->
   merge_queue_required:bool ->
   merge_queue_entry:Pr_state.merge_queue_entry option ->
@@ -642,8 +659,11 @@ val restore :
   automerge_enabled:bool ->
   automerge_deadline:float option ->
   automerge_inflight:bool ->
+  ?review_requested_for_oid:string option ->
+  ?review_request_inflight:bool ->
   automerge_failure_count:int ->
   delivered_ci_run_ids:int list ->
+  unit ->
   t
 (** Reconstruct agent state from persisted field values. Bypasses precondition
     checks — use only for deserialization. *)

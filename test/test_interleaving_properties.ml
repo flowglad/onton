@@ -399,7 +399,9 @@ let make_poll_result ~has_conflict ~merged ~ci_failed ~checks_passing
     merge_ready =
       (not has_conflict) && (not merged) && (not ci_failed)
       && not review_comments;
+    head_oid = None;
     review_decision = None;
+    unresolved_comment_count = 0;
     merge_queue_required = false;
     merge_queue_entry = None;
     checks_passing;
@@ -1701,7 +1703,9 @@ let () =
                 is_draft = false;
                 merge_state = Pr_state.Mergeable;
                 merge_ready = false;
+                head_oid = None;
                 review_decision = None;
+                unresolved_comment_count = 0;
                 merge_queue_required = false;
                 merge_queue_entry = None;
                 checks_passing = false;
