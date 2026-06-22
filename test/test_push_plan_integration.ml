@@ -133,11 +133,12 @@ let scenario_local_missing_remote env =
      makes local a strict ancestor of origin/feat while keeping
      commits_ahead_of_base > 0, so the ancestry refusal is not pre-empted by
      No_commits_ahead_of_base. *)
-  sh ~dir:managed_dir "git checkout -q main";
+  (* Rewind the checked-out branch in place so HEAD stays on [feat]. The
+     previous main -> branch -f -> feat hop was enough for CI to occasionally
+     observe the branch-switched guard instead of the stale-local refusal. *)
   sh ~dir:managed_dir
-    (Printf.sprintf "git branch -f feat %s"
+    (Printf.sprintf "git reset -q --hard %s"
        (Stdlib.Filename.quote shared_feat_sha));
-  sh ~dir:managed_dir "git checkout -q feat";
   (* Sanity: local feat != remote feat. *)
   let local_feat = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
   if String.equal local_feat remote_feat_sha then
