@@ -483,10 +483,10 @@ let should_request_review t ~main_branch =
   && Option.equal Branch.equal t.base_branch (Some main_branch)
   && Option.equal String.equal t.review_decision (Some "REVIEW_REQUIRED")
   &&
-  match t.head_oid with
+  (match t.head_oid with
   | None -> false
   | Some head_oid ->
-      not (Option.equal String.equal (Some head_oid) t.review_requested_for_oid)
+      not (Option.equal String.equal (Some head_oid) t.review_requested_for_oid))
   && not t.review_request_inflight
 
 let increment_ci_failure_count t =
