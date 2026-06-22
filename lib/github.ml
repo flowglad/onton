@@ -923,6 +923,20 @@ let update_pr_base ~net ~clock ?timeout t ~pr_number ~base =
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
+(** Request review from a team on a PR via REST API. *)
+let request_review ~net ~clock ?timeout t ~pr_number ~team_slug =
+  let path =
+    Printf.sprintf "/repos/%s/%s/pulls/%d/requested_reviewers" t.owner t.repo
+      (Types.Pr_number.to_int pr_number)
+  in
+  let req_body =
+    `Assoc [ ("team_reviewers", `List [ `String team_slug ]) ]
+    |> Yojson.Safe.to_string
+  in
+  match request ~net ~clock ?timeout t ~meth:`POST ~path ~body:req_body () with
+  | Ok _ -> Ok ()
+  | Error _ as e -> e
+
 (** Fetch the GraphQL node ID for a PR via REST API. *)
 let pr_node_id ~net ~clock ?timeout t ~pr_number =
   let path =
@@ -1429,6 +1443,9 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
 
     let update_pr_base ~pr_number ~base =
       update_pr_base ~net ~clock client ~pr_number ~base
+
+    let request_review ~pr_number ~team_slug =
+      request_review ~net ~clock client ~pr_number ~team_slug
 
     let set_draft ~pr_number ~draft =
       set_draft ~net ~clock client ~pr_number ~draft
