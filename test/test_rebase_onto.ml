@@ -1267,8 +1267,8 @@ let () =
               msg)
    in
    assert_eq "test10: subject-filter keeps Patch 7 as oldest surviving commit"
-     (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ])
-     oldest_kept;
+     oldest_kept
+     (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ]);
    let old_base = git ~process_mgr ~dir [ "rev-parse"; oldest_kept ^ "~1" ] in
    assert_eq "test10: old_base is drifted Patch 1 after subject filtering"
      patch1_sha old_base;
