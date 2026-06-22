@@ -1112,6 +1112,7 @@ let () =
           let a = complete a in
           let draft_case = make_ready (set_is_draft a true) in
           let busy_case =
+            (* no complete - busy = true *)
             make_ready
               (create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br)
           in
