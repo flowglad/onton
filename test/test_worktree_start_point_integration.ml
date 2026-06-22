@@ -57,17 +57,18 @@ let () =
   (* main: base -> ahead. [base] is a strict ancestor of [ahead]. *)
   let base_sha = commit ~dir ~file:"f.txt" ~content:"base" ~msg:"base" in
   let ahead_sha = commit ~dir ~file:"f.txt" ~content:"work" ~msg:"work" in
+  (* A STALE local [feat] left at [base] — the PR #315 state. Use a real
+     [git branch] under [refs/heads], not a fabricated remote-tracking ref:
+     resolving a [refs/remotes/origin] ref created by [update-ref] without a
+     configured [origin] is rejected by older git, and is irrelevant anyway —
+     [read_repo_ref_sha] is just [rev-parse --verify <name>] and is
+     namespace-agnostic, so real branch refs exercise its full contract. *)
+  Git_env.run_git ~cwd:dir [ "branch"; "feat"; base_sha ];
   (* Two commits diverging off [base] (each adds a different file). *)
   Git_env.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "ldiv"; base_sha ];
   let l_sha = commit ~dir ~file:"l.txt" ~content:"l" ~msg:"L" in
   Git_env.run_git ~cwd:dir [ "checkout"; "-q"; "-b"; "rdiv"; base_sha ];
   let r_sha = commit ~dir ~file:"r.txt" ~content:"r" ~msg:"R" in
-  (* Model the PR #315 state directly: a STALE local [feat] left at [base], and
-     a remote-tracking [origin/feat] that is AHEAD at [ahead]. Set with
-     [update-ref] so there is no clone-materialization step to be flaky. *)
-  Git_env.run_git ~cwd:dir [ "update-ref"; "refs/heads/feat"; base_sha ];
-  Git_env.run_git ~cwd:dir
-    [ "update-ref"; "refs/remotes/origin/feat"; ahead_sha ];
 
   let read ref_name =
     Worktree.read_repo_ref_sha ~process_mgr ~repo_root:dir ~ref_name
@@ -76,18 +77,20 @@ let () =
     Worktree.compute_repo_ancestry ~process_mgr ~repo_root:dir ~local ~remote
   in
 
-  (* read_repo_ref_sha resolves both ref namespaces and reports absence. *)
-  assert_sha_opt "read local heads/feat (stale)" ~want:(Some base_sha)
+  (* read_repo_ref_sha resolves existing refs to their SHA and reports absence
+     as None. [main] is at [ahead] (two commits); [feat] is the stale branch. *)
+  assert_sha_opt "read heads/feat (stale)" ~want:(Some base_sha)
     (read "refs/heads/feat");
-  assert_sha_opt "read remote origin/feat (ahead)" ~want:(Some ahead_sha)
-    (read "refs/remotes/origin/feat");
+  assert_sha_opt "read heads/main (ahead)" ~want:(Some ahead_sha)
+    (read "refs/heads/main");
   assert_sha_opt "read absent ref is None" ~want:None
     (read "refs/heads/does-not-exist");
   Stdlib.print_endline "  read_repo_ref_sha: OK";
 
   (* compute_repo_ancestry classifies all four determinate relationships. The
-     PR #315 case is [Remote_ahead]: a stale local must be detected as behind
-     the remote so the planner resets to it. *)
+     PR #315 case is [Remote_ahead]: a stale local ([base]) must be detected as
+     behind the remote tip ([ahead]) so the planner resets to it. The SHAs are
+     passed directly — the function takes commit SHAs, not ref names. *)
   assert_ancestry "stale local vs ahead remote"
     ~want:Start_point_plan.Remote_ahead
     (ancestry ~local:base_sha ~remote:ahead_sha);
