@@ -139,6 +139,11 @@ let scenario_local_missing_remote env =
   sh ~dir:managed_dir
     (Printf.sprintf "git reset -q --hard %s"
        (Stdlib.Filename.quote shared_feat_sha));
+  (* Reassert [feat] as the checked-out branch after the rewind. In CI we've
+     seen HEAD remain at the right commit while [rev-parse --abbrev-ref HEAD]
+     reports a different branch, which routes this fixture into the
+     branch-switched refusal instead of the intended stale-local refusal. *)
+  sh ~dir:managed_dir "git checkout -q -B feat";
   (* Sanity: local feat != remote feat. *)
   let local_feat = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
   if String.equal local_feat remote_feat_sha then
