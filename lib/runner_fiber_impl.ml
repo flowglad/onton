@@ -368,8 +368,8 @@ struct
 
   let request_review_permanent_error = function
     | Github.Http_error { status; _ } -> status >= 400 && status < 500
-    | Github.Timeout _ | Github.Transport_error _ | Github.Json_parse_error _
-    | Github.Graphql_error _ ->
+    | Github.Json_parse_error _ -> true
+    | Github.Timeout _ | Github.Transport_error _ | Github.Graphql_error _ ->
         false
 
   let reconcile_and_execute_review_requests ~runtime ~team_slug =
@@ -400,6 +400,14 @@ struct
                     (Some head_oid)
                 in
                 Orchestrator.set_review_request_inflight orch patch_id false))
+        in
+        let live_head_oid ~default =
+          Runtime.read runtime (fun snap ->
+              match
+                Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+              with
+              | None -> default
+              | Some agent -> Option.value agent.Patch_agent.head_oid ~default)
         in
         Fun.protect ~finally:clear_inflight_if_needed (fun () ->
             let current_head_oid =
@@ -442,6 +450,7 @@ struct
                            (Pr_number.to_int pr_number))
                   | Error err ->
                       if request_review_permanent_error err then (
+                        let head_oid = live_head_oid ~default:head_oid in
                         record_requested_and_clear_inflight head_oid;
                         log_event runtime ~patch_id
                           (Printf.sprintf
