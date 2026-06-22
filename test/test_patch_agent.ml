@@ -1004,8 +1004,7 @@ let () =
           let a = set_is_draft a false in
           let a = set_review_requested_for_oid a None in
           let a = set_review_request_inflight a false in
-          ignore (should_request_review a ~main_branch:br0);
-          true);
+          should_request_review a ~main_branch:br0);
       Test.make ~name:"should_request_review false when checks not passing"
         ~count:1
         Gen.(pure (pid0, br0))
@@ -1018,8 +1017,7 @@ let () =
           let a = set_checks_passing a false in
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
-          ignore (should_request_review a ~main_branch:br0);
-          true);
+          not (should_request_review a ~main_branch:br0));
       Test.make ~name:"should_request_review false with unresolved comments"
         ~count:1
         Gen.(pure (pid0, br0))
@@ -1033,8 +1031,7 @@ let () =
           let a = set_unresolved_comment_count a 1 in
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
-          ignore (should_request_review a ~main_branch:br0);
-          true);
+          not (should_request_review a ~main_branch:br0));
       Test.make
         ~name:
           "should_request_review false when review approved or changes \
@@ -1054,8 +1051,7 @@ let () =
               let a = set_unresolved_comment_count a 0 in
               let a = set_head_oid a (Some "deadbeef") in
               let a = set_review_decision a decision in
-              ignore (should_request_review a ~main_branch:br0);
-              true));
+              not (should_request_review a ~main_branch:br0)));
       Test.make
         ~name:
           "should_request_review false when already requested for current head \
@@ -1073,8 +1069,7 @@ let () =
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
           let a = set_review_requested_for_oid a (Some "deadbeef") in
-          ignore (should_request_review a ~main_branch:br0);
-          true);
+          not (should_request_review a ~main_branch:br0));
       Test.make ~name:"should_request_review false when a request is inflight"
         ~count:1
         Gen.(pure (pid0, br0))
@@ -1089,8 +1084,7 @@ let () =
           let a = set_head_oid a (Some "deadbeef") in
           let a = set_review_decision a (Some "REVIEW_REQUIRED") in
           let a = set_review_request_inflight a true in
-          ignore (should_request_review a ~main_branch:br0);
-          true);
+          not (should_request_review a ~main_branch:br0));
       Test.make
         ~name:
           "should_request_review false when draft, busy, needs_intervention, \
@@ -1135,11 +1129,10 @@ let () =
             let a = complete a in
             make_ready a
           in
-          ignore (should_request_review draft_case ~main_branch:br0);
-          ignore (should_request_review busy_case ~main_branch:br0);
-          ignore (should_request_review intervention_case ~main_branch:br0);
-          ignore (should_request_review other_base_case ~main_branch:br0);
-          true);
+          not (should_request_review draft_case ~main_branch:br0)
+          && not (should_request_review busy_case ~main_branch:br0)
+          && not (should_request_review intervention_case ~main_branch:br0)
+          && not (should_request_review other_base_case ~main_branch:br0));
       Test.make ~name:"set_pr_number resets bootstrap lifecycle facts" ~count:1
         Gen.(pure pid0)
         (fun pid ->
