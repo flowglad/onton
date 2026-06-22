@@ -19,6 +19,7 @@ module Runner_env = struct
     val repo : string
     val main_branch : Branch.t
     val max_concurrency : int
+    val review_team : string option
     val patch_agent_provider : string option
     val patch_agent_effort : string option
     val findings_registry : Findings_registry.t
@@ -363,6 +364,104 @@ struct
                   log_event runtime ~patch_id
                     (Printf.sprintf "%s crashed — %s" label
                        (Printexc.to_string exn))))
+      decisions
+
+  let request_review_permanent_error = function
+    | Github.Http_error { status; _ } -> status >= 400 && status < 500
+    | Github.Timeout _ | Github.Transport_error _ | Github.Json_parse_error _
+    | Github.Graphql_error _ ->
+        false
+
+  let reconcile_and_execute_review_requests ~runtime ~team_slug =
+    let decisions =
+      Runtime.update_orchestrator_returning runtime (fun orch ->
+          Patch_controller.reconcile_review_requests orch)
+    in
+    Eio.Fiber.List.iter ~max_fibers:4
+      (fun Patch_controller.{ review_patch_id = patch_id; review_pr_number } ->
+        let pr_number = review_pr_number in
+        let label =
+          Printf.sprintf "request review for PR #%d"
+            (Pr_number.to_int pr_number)
+        in
+        let inflight_cleared = ref false in
+        let clear_inflight_if_needed () =
+          if not !inflight_cleared then (
+            inflight_cleared := true;
+            Runtime.update_orchestrator runtime (fun orch ->
+                Orchestrator.set_review_request_inflight orch patch_id false))
+        in
+        let record_requested_and_clear_inflight head_oid =
+          if not !inflight_cleared then (
+            inflight_cleared := true;
+            Runtime.update_orchestrator runtime (fun orch ->
+                let orch =
+                  Orchestrator.set_review_requested_for_oid orch patch_id
+                    (Some head_oid)
+                in
+                Orchestrator.set_review_request_inflight orch patch_id false))
+        in
+        Fun.protect ~finally:clear_inflight_if_needed (fun () ->
+            let current_head_oid =
+              Runtime.read runtime (fun snap ->
+                  match
+                    Orchestrator.find_agent snap.Runtime.orchestrator patch_id
+                  with
+                  | None -> None
+                  | Some agent ->
+                      let same_pr =
+                        match Patch_agent.pr_number agent with
+                        | Some current -> Pr_number.equal current pr_number
+                        | None -> false
+                      in
+                      let main_branch =
+                        Orchestrator.main_branch snap.Runtime.orchestrator
+                      in
+                      let request_candidate =
+                        let agent =
+                          Patch_agent.set_review_request_inflight agent false
+                        in
+                        Patch_agent.should_request_review agent ~main_branch
+                      in
+                      if same_pr && request_candidate then agent.head_oid
+                      else None)
+            in
+            match current_head_oid with
+            | None ->
+                log_event runtime ~patch_id
+                  (Printf.sprintf "%s skipped — no longer a candidate" label);
+                clear_inflight_if_needed ()
+            | Some head_oid -> (
+                try
+                  match Forge.request_review ~pr_number ~team_slug with
+                  | Ok () ->
+                      record_requested_and_clear_inflight head_oid;
+                      log_event runtime ~patch_id
+                        (Printf.sprintf
+                           "Requested review from team %s for PR #%d" team_slug
+                           (Pr_number.to_int pr_number))
+                  | Error err ->
+                      if request_review_permanent_error err then (
+                        record_requested_and_clear_inflight head_oid;
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Review request for PR #%d failed permanently — %s"
+                             (Pr_number.to_int pr_number)
+                             (Forge.show_error err)))
+                      else (
+                        clear_inflight_if_needed ();
+                        log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Review request for PR #%d failed — %s"
+                             (Pr_number.to_int pr_number)
+                             (Forge.show_error err)))
+                with
+                | Eio.Cancel.Cancelled _ as exn -> raise exn
+                | exn ->
+                    clear_inflight_if_needed ();
+                    log_event runtime ~patch_id
+                      (Printf.sprintf "%s crashed — %s" label
+                         (Printexc.to_string exn)))))
       decisions
 
   let read_optional_file path =
@@ -2362,5 +2461,26 @@ struct
           | Ok () -> amloop ()
         in
         amloop ());
+    (match Env.review_team with
+    | None -> ()
+    | Some team_slug ->
+        Eio.Fiber.fork_daemon ~sw (fun () ->
+            let rec review_loop () =
+              (try
+                 reconcile_and_execute_review_requests ~runtime ~team_slug
+               with
+              | Eio.Cancel.Cancelled _ as exn -> raise exn
+              | exn ->
+                  log_event runtime
+                    (Printf.sprintf "review-request fiber error — %s"
+                       (Printexc.to_string exn)));
+              match
+                try Ok (Eio.Time.sleep clock 1.0)
+                with Eio.Cancel.Cancelled _ -> Error `Cancelled
+              with
+              | Error `Cancelled -> `Stop_daemon
+              | Ok () -> review_loop ()
+            in
+            review_loop ()));
     loop sw
 end

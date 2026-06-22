@@ -742,6 +742,12 @@ type automerge_decision = {
 }
 [@@deriving show, eq, sexp_of]
 
+type review_request_decision = {
+  review_patch_id : Patch_id.t;
+  review_pr_number : Pr_number.t;
+}
+[@@deriving show, eq, sexp_of]
+
 let merge_queue_entry_unmergeable (entry : Pr_state.merge_queue_entry) =
   Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable
 
@@ -877,6 +883,25 @@ let reconcile_automerge t ~now =
                      tick. *)
                   (Orchestrator.clear_automerge_deadline t patch_id, decisions)
             else (t, decisions))
+  |> fun (t, decisions) -> (t, List.rev decisions)
+
+let reconcile_review_requests t =
+  let agents = Orchestrator.all_agents t in
+  let main_branch = Orchestrator.main_branch t in
+  List.fold agents ~init:(t, []) ~f:(fun (t, decisions) agent ->
+      let patch_id = agent.Patch_agent.patch_id in
+      if Patch_agent.should_request_review agent ~main_branch then
+        match Patch_agent.pr_number agent with
+        | Some pr_number when Patch_agent.is_pr_present agent ->
+            let t = Orchestrator.set_review_request_inflight t patch_id true in
+            ( t,
+              { review_patch_id = patch_id; review_pr_number = pr_number }
+              :: decisions )
+        | Some _ | None ->
+            (* Defensive: [should_request_review] currently requires [has_pr],
+               but a Missing PR must not produce a GitHub mutation. *)
+            (t, decisions)
+      else (t, decisions))
   |> fun (t, decisions) -> (t, List.rev decisions)
 
 let apply_automerge_success t patch_id =

@@ -11,6 +11,7 @@ module Runner_env : sig
     val repo : string
     val main_branch : Branch.t
     val max_concurrency : int
+    val review_team : string option
     val patch_agent_provider : string option
     val patch_agent_effort : string option
     val findings_registry : Findings_registry.t

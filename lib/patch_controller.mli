@@ -136,6 +136,12 @@ type automerge_decision = {
 }
 [@@deriving show, eq, sexp_of]
 
+type review_request_decision = {
+  review_patch_id : Patch_id.t;
+  review_pr_number : Pr_number.t;
+}
+[@@deriving show, eq, sexp_of]
+
 val is_automerge_candidate :
   ?ignore_inflight:bool -> Patch_agent.t -> main_branch:Branch.t -> bool
 (** A patch is a candidate to START a new automerge call when it is not already
@@ -188,6 +194,15 @@ val reconcile_automerge :
       failure counter reaches [automerge_max_failures], after which
       reconciliation stops issuing merge calls until the user disables and
       re-enables automerge. *)
+
+val reconcile_review_requests :
+  Orchestrator.t -> Orchestrator.t * review_request_decision list
+(** Claim every patch that currently needs a human review request. For each
+    claimed patch, sets [review_request_inflight = true] and returns the PR
+    number to request review for. The caller MUST clear the inflight flag on
+    every exit path, and records [review_requested_for_oid] only once the Forge
+    request is known to have succeeded or has failed permanently for that head.
+*)
 
 val apply_automerge_success : Orchestrator.t -> Patch_id.t -> Orchestrator.t
 (** Mark the patch as merged, clear the automerge deadline, clear the inflight
