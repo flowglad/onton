@@ -197,12 +197,19 @@ let scenario_happy_path env =
   sh ~dir:managed_dir "echo local > local.txt";
   sh ~dir:managed_dir "git add local.txt";
   sh ~dir:managed_dir "git commit -q -m 'local feat work'";
-  (* Some CI/git combinations leave HEAD symbolically on [feat] but make the
-     named branch ref temporarily unreadable to [rev-parse --verify]. Refresh
-     the branch ref in place so this fixture exercises the push path rather
-     than failing on incidental local-ref bookkeeping. *)
-  sh ~dir:managed_dir "git update-ref refs/heads/feat HEAD";
+  (* Some CI/git combinations leave HEAD on [feat] but make
+     [refs/heads/feat] intermittently unreadable to [rev-parse --verify].
+     Refresh the branch through git's normal branch machinery and assert the
+     named ref is visible before exercising the push path. *)
+  sh ~dir:managed_dir "git checkout -q -B feat";
+  let feat_ref_sha =
+    git_capture ~dir:managed_dir [ "rev-parse"; "--verify"; "refs/heads/feat" ]
+  in
   let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  if not (String.equal feat_ref_sha local_sha) then
+    failwith
+      (Printf.sprintf "precondition: refs/heads/feat=%s expected %s" feat_ref_sha
+         local_sha);
   let outcome =
     Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
