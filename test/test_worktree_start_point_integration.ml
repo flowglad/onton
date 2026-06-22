@@ -38,13 +38,13 @@ let with_temp_dir f =
   in
   Unix.mkdir dir 0o755;
   (* Worktree paths derive from $HOME (see [Worktree.worktree_dir]); redirect
-     HOME into the temp dir so the worktree lives inside our sandbox and is
-     wiped by at_exit. Without this, [~/worktrees/<project>/patch-<id>]
-     persists across scenarios and the [Sys.file_exists path] short-circuit
-     in [Worktree.create] returns a stale Ok from a previous run. *)
+     HOME into the temp dir so the worktree lives inside our sandbox. Restore
+     it before the next scenario runs; otherwise a failed/aborted scenario can
+     strand later ones on the previous temp HOME and reuse stale worktrees. *)
   let prior_home = Stdlib.Sys.getenv_opt "HOME" in
   Unix.putenv "HOME" dir;
-  Stdlib.at_exit (fun () ->
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
       (match prior_home with
       | Some h -> Unix.putenv "HOME" h
       | None ->
@@ -52,14 +52,11 @@ let with_temp_dir f =
              about to delete would strand later [worktree_dir] lookups on a
              dangling path. Point it at a directory that exists. *)
           Unix.putenv "HOME" (Stdlib.Filename.get_temp_dir_name ()));
-      let cleanup_temp_dir () =
-        try
-          Git_env.sh ~dir:"/"
-            (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
-        with _ -> ()
-      in
-      cleanup_temp_dir ());
-  f dir
+      try
+        Git_env.sh ~dir:"/"
+          (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote dir))
+      with _ -> ())
+    (fun () -> f dir)
 
 (* Delegate to the scrubbed-env helpers in {!Onton_test_support.Git_env}. These
    fixtures run under [dune runtest], which the pre-commit hook invokes with the
@@ -136,6 +133,10 @@ let scenario_remote_ahead_of_stale_local env =
   let remote_feat_sha = git_capture ~dir:origin_dir [ "rev-parse"; "HEAD" ] in
   sh ~dir:origin_dir "git checkout -q main";
   clone_into ~origin_dir ~managed_dir;
+  (* Some git clone modes only materialize the remote HEAD tracking ref in the
+     managed clone. Force origin/feat to exist so this scenario asserts the
+     stale-local-vs-remote-ahead branch selection, not clone transport quirks. *)
+  sh ~dir:managed_dir "git fetch -q origin feat:refs/remotes/origin/feat";
   (* Set up the stale local branch — points at main (the PR base), missing
      the work commit. This mirrors the #315 state. *)
   let main_sha = git_capture ~dir:managed_dir [ "rev-parse"; "origin/main" ] in
@@ -143,7 +144,12 @@ let scenario_remote_ahead_of_stale_local env =
     (Printf.sprintf "git branch feat %s" (Stdlib.Filename.quote main_sha));
   (* Verify the precondition: local feat == origin/main, NOT origin/feat. *)
   let local_feat_pre = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
+  let remote_feat_pre =
+    git_capture ~dir:managed_dir [ "rev-parse"; "origin/feat" ]
+  in
   assert_string "precondition: local feat is stale" main_sha local_feat_pre;
+  assert_string "precondition: remote feat is ahead" remote_feat_sha
+    remote_feat_pre;
   let res =
     Worktree.create ~process_mgr ~repo_root:managed_dir
       ~project_name:"stale-local"

@@ -356,7 +356,9 @@ let gen_poller =
             is_draft;
             merge_state;
             merge_ready;
+            head_oid = None;
             review_decision = None;
+            unresolved_comment_count = 0;
             merge_queue_required = false;
             merge_queue_entry = None;
             checks_passing;

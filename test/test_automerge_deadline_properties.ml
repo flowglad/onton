@@ -83,7 +83,7 @@ let make_agent ~patch_id ~branch ~merge_ready ~mergeability_unknown
     ~current_op_state:(if busy then Patch_agent.Running else Patch_agent.Queued)
     ~current_message_id:None ~generation:0 ~worktree_path:None ~branch_blocked
     ~llm_session_id:None ~automerge_enabled ~automerge_deadline
-    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids:[]
+    ~automerge_inflight ~automerge_failure_count ~delivered_ci_run_ids:[] ()
 
 let make_orch agents_alist =
   let patches =

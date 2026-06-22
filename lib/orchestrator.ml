@@ -567,6 +567,17 @@ let set_checks_passing t patch_id v =
 let set_merge_ready t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_merge_ready a v)
 
+let set_head_oid t patch_id head_oid =
+  update_agent t patch_id ~f:(fun a -> Patch_agent.set_head_oid a head_oid)
+
+let set_review_decision t patch_id review_decision =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_review_decision a review_decision)
+
+let set_unresolved_comment_count t patch_id unresolved_comment_count =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_unresolved_comment_count a unresolved_comment_count)
+
 let set_mergeability_unknown t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_mergeability_unknown a v)
 
@@ -639,6 +650,14 @@ let clear_automerge_deadline t patch_id =
 
 let set_automerge_inflight t patch_id v =
   update_agent t patch_id ~f:(fun a -> Patch_agent.set_automerge_inflight a v)
+
+let set_review_requested_for_oid t patch_id oid =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_review_requested_for_oid a oid)
+
+let set_review_request_inflight t patch_id v =
+  update_agent t patch_id ~f:(fun a ->
+      Patch_agent.set_review_request_inflight a v)
 
 let increment_automerge_failure_count t patch_id =
   update_agent t patch_id ~f:Patch_agent.increment_automerge_failure_count

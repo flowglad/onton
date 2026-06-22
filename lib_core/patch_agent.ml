@@ -30,6 +30,9 @@ type t = {
   inflight_human_messages : string list;
   ci_checks : Ci_check.t list;
   merge_ready : bool;
+  head_oid : string option;
+  review_decision : string option;
+  unresolved_comment_count : int;
   mergeability_unknown : bool;
       (** Poll-mirror of [Pr_state.merge_state = Unknown]: GitHub is currently
           recomputing the test-merge (e.g. a sibling patch merged and advanced
@@ -109,6 +112,8 @@ type t = {
           decision and the moment the merge call resolves (success or failure).
           Prevents a second overlapping tick from issuing the same merge call.
       *)
+  review_requested_for_oid : string option;
+  review_request_inflight : bool;
   automerge_failure_count : int;
       (** Consecutive merge-call failures. After [automerge_max_failures] the
           patch is no longer an automerge candidate until the user re-toggles
@@ -219,6 +224,9 @@ let create ~branch patch_id =
     inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
+    head_oid = None;
+    review_decision = None;
+    unresolved_comment_count = 0;
     mergeability_unknown = false;
     merge_queue_required = false;
     merge_queue_entry = None;
@@ -250,6 +258,8 @@ let create ~branch patch_id =
     automerge_enabled = false;
     automerge_deadline = None;
     automerge_inflight = false;
+    review_requested_for_oid = None;
+    review_request_inflight = false;
     automerge_failure_count = 0;
     delivered_ci_run_ids = [];
   }
@@ -274,6 +284,9 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     inflight_human_messages = [];
     ci_checks = [];
     merge_ready = false;
+    head_oid = None;
+    review_decision = None;
+    unresolved_comment_count = 0;
     mergeability_unknown = false;
     merge_queue_required = false;
     merge_queue_entry = None;
@@ -305,6 +318,8 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     automerge_enabled = false;
     automerge_deadline = None;
     automerge_inflight = false;
+    review_requested_for_oid = None;
+    review_request_inflight = false;
     automerge_failure_count = 0;
     delivered_ci_run_ids = [];
   }
@@ -408,6 +423,12 @@ let base_branch_changed t =
   | _ -> false
 
 let set_merge_ready t v = { t with merge_ready = v }
+let set_head_oid t head_oid = { t with head_oid }
+let set_review_decision t review_decision = { t with review_decision }
+
+let set_unresolved_comment_count t unresolved_comment_count =
+  { t with unresolved_comment_count }
+
 let set_mergeability_unknown t v = { t with mergeability_unknown = v }
 let set_merge_queue_required t v = { t with merge_queue_required = v }
 let set_merge_queue_entry t merge_queue_entry = { t with merge_queue_entry }
@@ -449,6 +470,8 @@ let is_approved_modulo_merge_ready t ~main_branch =
 
 let is_approved t ~main_branch =
   t.merge_ready && is_approved_modulo_merge_ready t ~main_branch
+
+let should_request_review _t ~main_branch:_ = false
 
 let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
@@ -499,6 +522,11 @@ let set_automerge_deadline t deadline =
 let clear_automerge_deadline t = { t with automerge_deadline = None }
 let set_automerge_inflight t v = { t with automerge_inflight = v }
 
+let set_review_requested_for_oid t oid =
+  { t with review_requested_for_oid = oid }
+
+let set_review_request_inflight t v = { t with review_request_inflight = v }
+
 let increment_automerge_failure_count t =
   { t with automerge_failure_count = t.automerge_failure_count + 1 }
 
@@ -535,7 +563,8 @@ let reset_busy t = if not t.busy then t else { t with busy = false }
 let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
     ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
-    ~ci_checks ~merge_ready ~mergeability_unknown ~merge_queue_required
+    ~ci_checks ~merge_ready ?(head_oid = None) ?(review_decision = None)
+    ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
     ~merge_queue_entry ~merge_commit_sha ~base_contains_merged_siblings
     ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
@@ -544,7 +573,8 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~checks_passing ~current_op ~current_op_state ~current_message_id
     ~generation ~worktree_path ~branch_blocked ~llm_session_id
     ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ~automerge_failure_count ~delivered_ci_run_ids =
+    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
+    ~automerge_failure_count ~delivered_ci_run_ids () =
   {
     patch_id;
     branch;
@@ -564,6 +594,9 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     inflight_human_messages;
     ci_checks;
     merge_ready;
+    head_oid;
+    review_decision;
+    unresolved_comment_count;
     mergeability_unknown;
     merge_queue_required;
     merge_queue_entry;
@@ -592,6 +625,8 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     automerge_enabled;
     automerge_deadline;
     automerge_inflight;
+    review_requested_for_oid;
+    review_request_inflight;
     automerge_failure_count;
     delivered_ci_run_ids;
   }
@@ -616,6 +651,9 @@ let set_pr_number t pr_number =
         pr_status = Patch_pr_status.set_present t.pr_status pr_number;
         is_draft = true;
         merge_ready = false;
+        head_oid = None;
+        review_decision = None;
+        unresolved_comment_count = 0;
         mergeability_unknown = false;
         pr_body_delivered = false;
         checks_passing = false;
@@ -635,6 +673,9 @@ let clear_pr t =
     pr_status = Patch_pr_status.clear_for_recreate t.pr_status;
     is_draft = false;
     merge_ready = false;
+    head_oid = None;
+    review_decision = None;
+    unresolved_comment_count = 0;
     mergeability_unknown = false;
     checks_passing = false;
     ci_checks = [];
@@ -662,6 +703,9 @@ let mark_pr_missing t =
     pr_status = Patch_pr_status.mark_missing t.pr_status;
     is_draft = false;
     merge_ready = false;
+    head_oid = None;
+    review_decision = None;
+    unresolved_comment_count = 0;
     mergeability_unknown = false;
     checks_passing = false;
     ci_checks = [];

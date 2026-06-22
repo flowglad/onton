@@ -207,6 +207,14 @@ let apply_poll_result t patch_id
             Orchestrator.enqueue acc patch_id kind)
   in
   let t = Orchestrator.set_merge_ready t patch_id poll_result.merge_ready in
+  let t = Orchestrator.set_head_oid t patch_id poll_result.head_oid in
+  let t =
+    Orchestrator.set_review_decision t patch_id poll_result.review_decision
+  in
+  let t =
+    Orchestrator.set_unresolved_comment_count t patch_id
+      poll_result.unresolved_comment_count
+  in
   let t =
     Orchestrator.set_mergeability_unknown t patch_id
       (Poller.mergeability_unknown poll_result)
@@ -1387,7 +1395,9 @@ let%test "no merge-conflict re-enqueue after noop" =
         is_draft = false;
         merge_state = Pr_state.Conflicting;
         merge_ready = false;
+        head_oid = None;
         review_decision = None;
+        unresolved_comment_count = 0;
         merge_queue_required = false;
         merge_queue_entry = None;
         checks_passing = false;
@@ -1451,7 +1461,9 @@ let%test "apply_poll_result turns merge queue ejection into CI feedback" =
         is_draft = false;
         merge_state = Pr_state.Mergeable;
         merge_ready = true;
+        head_oid = None;
         review_decision = Some "APPROVED";
+        unresolved_comment_count = 0;
         merge_queue_required = true;
         merge_queue_entry = None;
         checks_passing = true;
@@ -1491,7 +1503,9 @@ let%test
         is_draft = false;
         merge_state = Pr_state.Mergeable;
         merge_ready = true;
+        head_oid = None;
         review_decision = Some "APPROVED";
+        unresolved_comment_count = 0;
         merge_queue_required = true;
         merge_queue_entry =
           Some Pr_state.{ id = "MQE_2"; state = Mq_unmergeable; position = 4 };

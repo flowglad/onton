@@ -218,6 +218,15 @@ let () =
              (fun a -> Patch_agent.clear_automerge_deadline a);
              (fun a -> Patch_agent.increment_automerge_failure_count a);
              (fun a -> Patch_agent.reset_automerge_failure_count a);
+             (fun a -> Patch_agent.set_head_oid a (Some "deadbeef"));
+             (fun a ->
+               Patch_agent.set_review_decision a (Some "REVIEW_REQUIRED"));
+             (fun a ->
+               Patch_agent.set_unresolved_comment_count a
+                 (if flag then 1 else 0));
+             (fun a ->
+               Patch_agent.set_review_requested_for_oid a (Some "deadbeef"));
+             (fun a -> Patch_agent.set_review_request_inflight a flag);
              (fun a -> Patch_agent.increment_conflict_noop_count a);
              (fun a -> Patch_agent.reset_conflict_noop_count a);
              (fun a -> Patch_agent.increment_no_commits_push_count a);
@@ -268,6 +277,9 @@ let () =
          let _priority = Patch_agent.highest_priority a in
          let _approved =
            Patch_agent.is_approved_modulo_merge_ready a ~main_branch:main
+         in
+         let _should_request_review =
+           Patch_agent.should_request_review a ~main_branch:main
          in
          let _reason = Patch_agent.intervention_reason a in
          let reason_from_fields =

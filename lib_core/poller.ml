@@ -14,10 +14,12 @@ type t = {
       (** GitHub's tri-state mergeability; source for the [has_conflict] and
           [mergeability_unknown] accessors. *)
   merge_ready : bool;
+  head_oid : string option; [@yojson.option]
   review_decision : string option; [@yojson.option]
       (** Raw GitHub [reviewDecision]. An input to [merge_ready] via
           [Pr_state.merge_ready_of] (REVIEW_REQUIRED/CHANGES_REQUESTED block).
       *)
+  unresolved_comment_count : int; [@yojson.default 0]
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option; [@yojson.option]
   checks_passing : bool;
@@ -64,7 +66,9 @@ let poll ~was_merged (pr : Pr_state.t) =
     is_draft = Pr_state.is_draft pr;
     merge_state = pr.Pr_state.merge_state;
     merge_ready = Pr_state.merge_ready pr;
+    head_oid = pr.Pr_state.head_oid;
     review_decision = pr.Pr_state.review_decision;
+    unresolved_comment_count = pr.Pr_state.unresolved_comment_count;
     merge_queue_required = Pr_state.requires_merge_queue pr;
     merge_queue_entry = pr.Pr_state.merge_queue_entry;
     checks_passing = Pr_state.checks_passing pr;
