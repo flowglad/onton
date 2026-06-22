@@ -19,7 +19,7 @@ type t = {
       (** Raw GitHub [reviewDecision]. An input to [merge_ready] via
           [Pr_state.merge_ready_of] (REVIEW_REQUIRED/CHANGES_REQUESTED block).
       *)
-  unresolved_comment_count : int;
+  unresolved_comment_count : int; [@yojson.default 0]
   merge_queue_required : bool;
   merge_queue_entry : Pr_state.merge_queue_entry option; [@yojson.option]
   checks_passing : bool;

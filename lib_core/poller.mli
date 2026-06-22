@@ -41,7 +41,7 @@ type t = {
   review_decision : string option; [@yojson.option]
       (** Raw GitHub [reviewDecision]. An input to [merge_ready] upstream
           ([Pr_state.merge_ready_of]); retained here for the event log. *)
-  unresolved_comment_count : int;
+  unresolved_comment_count : int; [@yojson.default 0]
   merge_queue_required : bool;
       (** [true] when the repository config says this PR's target branch
           requires GitHub's native merge queue. Inert in Patch 1. *)
