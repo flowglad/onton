@@ -37,6 +37,9 @@ type t = {
       (** Top-level [default.model] from the config file. [Some "auto"] (case-
           insensitive) activates [routing] in the same way as [--model auto].
           [Some other] pins a specific model. [None] means "not configured". *)
+  review_team : string option;
+      (** Top-level [review_team] slug from the config file. [None] keeps the
+          review-request feature disabled for this repo. *)
   complexity_routes : (int * route) list;
       (** Sparse map indexed by complexity (1/2/3). Stored as an alist because
           the set is tiny and the lookup is per-patch — fast enough. Missing
