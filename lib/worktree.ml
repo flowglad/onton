@@ -538,6 +538,13 @@ let oldest_non_ancestor_commit = Worktree_parser.oldest_non_ancestor_commit
     the upstream as [old_base], not [onto]. *)
 let parse_rebase_merge_state = Worktree_parser.parse_rebase_merge_state
 
+type onto_anchor = Worktree_parser.onto_anchor =
+  | Anchor of string
+  | No_anchor of string
+[@@deriving show, eq, sexp_of, compare]
+
+let classify_onto_anchor = Worktree_parser.classify_onto_anchor
+
 (** Find the old base commit for [--onto] rebase by identifying which commits on
     our branch are unique (not in target). Uses patch-id matching via
     [git log --cherry-pick], and additionally strips commits whose subject
@@ -571,16 +578,20 @@ let find_old_base ~process_mgr ~path ~target ~project_name ~ancestor_ids =
   else
     match classify_unique_commits ~project_name ~ancestor_ids stdout with
     | Result.Error msg -> Result.Error msg
-    | Result.Ok (commits, oldest_sha) ->
+    | Result.Ok (commits, oldest_sha) -> (
         let code, stdout, stderr =
           run_git_exit_code ~process_mgr
             [ "git"; "-C"; path; "rev-parse"; Printf.sprintf "%s~1" oldest_sha ]
         in
-        if code <> 0 then
-          Result.Error
-            (Printf.sprintf "rev-parse oldest~1 failed (exit %d): %s" code
-               (String.strip stderr))
-        else Result.Ok (String.strip stdout, commits)
+        (* An empty anchor (oldest is a root commit, or the running git resolves
+           [<root>~1] to "" with exit 0) must NOT reach [git rebase --onto] — it
+           aborts there with "invalid upstream ''". Route both the failed and
+           blank cases to [Error] so [rebase_onto] takes the plain/upstream
+           fallback. See [Worktree_parser.classify_onto_anchor]. *)
+        match Worktree_parser.classify_onto_anchor ~code ~stdout with
+        | Worktree_parser.Anchor old_base -> Result.Ok (old_base, commits)
+        | Worktree_parser.No_anchor reason ->
+            Result.Error (Printf.sprintf "%s: %s" reason (String.strip stderr)))
 
 let classify_fetch_result = Worktree_parser.classify_fetch_result
 

@@ -288,6 +288,22 @@ val parse_rebase_merge_state :
     commits cannot be enumerated. [onto_contents] is the rebase destination SHA;
     [upstream_contents] is the old-base SHA used as the recovery [old_base]. *)
 
+type onto_anchor = Worktree_parser.onto_anchor =
+  | Anchor of string
+  | No_anchor of string
+[@@deriving show, eq, sexp_of, compare]
+
+val classify_onto_anchor : code:int -> stdout:string -> onto_anchor
+(** Pure: interpret the [git rev-parse <oldest>~1] probe whose result becomes
+    the [--onto] old-base anchor in [find_old_base], from its exit [code] and
+    [stdout]. [Anchor sha] on success with a non-blank SHA; [No_anchor reason]
+    when git failed {e or} returned a blank SHA on exit 0. The blank-on-success
+    case occurs when the oldest unique commit is a root commit (no parent) on
+    git versions that resolve [<root>~1] to "" rather than erroring; feeding
+    that "" to [git rebase --onto target ""] aborts with [invalid upstream ''],
+    so the caller treats [No_anchor] as a detection failure and falls back to
+    the plain/upstream rebase form. *)
+
 type rebase_result = Worktree_parser.rebase_result =
   | Ok
   | Noop

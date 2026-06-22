@@ -186,6 +186,35 @@ let oldest_non_ancestor_commit ~project_name ~ancestor_ids log_output =
     (classify_unique_commits ~project_name ~ancestor_ids log_output)
     ~f:snd
 
+type onto_anchor =
+  | Anchor of string
+      (** resolved old-base SHA for [git rebase --onto target <sha>] *)
+  | No_anchor of string  (** no usable anchor (reason); caller must fall back *)
+[@@deriving show, eq, sexp_of, compare]
+
+(** Pure: interpret the [git rev-parse <oldest>~1] probe that resolves the
+    [--onto] old-base anchor, from its exit [code] and [stdout].
+
+    [No_anchor] when git failed (non-zero [code]) {e or} returned a blank SHA on
+    success. The blank-on-success case is the load-bearing one: it arises when
+    the oldest unique commit is a root commit (no parent), and some git versions
+    resolve [<root>~1] to an empty string with exit 0 rather than erroring.
+    Trusting that empty string fed [""] straight into
+    [git rebase --onto target ""], which aborts with
+    [fatal: invalid upstream ''] (observed only on CI's older git; newer git
+    exits non-zero for the same input and so took the failure branch). Treating
+    both as [No_anchor] routes the caller to the documented plain/upstream
+    rebase fallback instead of passing an empty upstream to git. *)
+let classify_onto_anchor ~code ~stdout =
+  if code <> 0 then
+    No_anchor (Printf.sprintf "rev-parse oldest~1 failed (exit %d)" code)
+  else
+    let s = String.strip stdout in
+    if String.is_empty s then
+      No_anchor
+        "rev-parse oldest~1 returned empty (oldest unique commit has no parent)"
+    else Anchor s
+
 (** Assemble a [conflict_info] from the contents of [.git/rebase-merge/onto],
     [.git/rebase-merge/upstream], and [.git/rebase-merge/orig-head] together
     with [git log --format=%H %s <upstream>..<orig-head>]. Returns [None] only
