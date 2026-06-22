@@ -197,6 +197,11 @@ let scenario_happy_path env =
   sh ~dir:managed_dir "echo local > local.txt";
   sh ~dir:managed_dir "git add local.txt";
   sh ~dir:managed_dir "git commit -q -m 'local feat work'";
+  (* Some CI/git combinations leave HEAD symbolically on [feat] but make the
+     named branch ref temporarily unreadable to [rev-parse --verify]. Refresh
+     the branch ref in place so this fixture exercises the push path rather
+     than failing on incidental local-ref bookkeeping. *)
+  sh ~dir:managed_dir "git update-ref refs/heads/feat HEAD";
   let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
   let outcome =
     Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
