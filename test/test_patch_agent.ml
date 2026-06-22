@@ -982,6 +982,164 @@ let () =
             let a = set_is_draft a true in
             not (is_approved a ~main_branch:br0)
           with _ -> false);
+      (* PENDING: Patch 5 - should_request_review properties. These stubs
+         compile against the Patch 3 placeholder but do not assert the final
+         predicate yet. *)
+      Test.make
+        ~name:
+          "should_request_review true when ready except REVIEW_REQUIRED on \
+           fresh head"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = set_merge_ready a true in
+          let a = set_checks_passing a true in
+          let a = set_head_oid a (Some "deadbeef") in
+          let a = set_review_decision a (Some "REVIEW_REQUIRED") in
+          let a = set_unresolved_comment_count a 0 in
+          let a = set_is_draft a false in
+          let a = set_review_requested_for_oid a None in
+          let a = set_review_request_inflight a false in
+          ignore (should_request_review a ~main_branch:br0);
+          true);
+      Test.make ~name:"should_request_review false when checks not passing"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = set_merge_ready a false in
+          let a = set_checks_passing a false in
+          let a = set_head_oid a (Some "deadbeef") in
+          let a = set_review_decision a (Some "REVIEW_REQUIRED") in
+          ignore (should_request_review a ~main_branch:br0);
+          true);
+      Test.make ~name:"should_request_review false with unresolved comments"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = set_merge_ready a true in
+          let a = set_checks_passing a true in
+          let a = set_unresolved_comment_count a 1 in
+          let a = set_head_oid a (Some "deadbeef") in
+          let a = set_review_decision a (Some "REVIEW_REQUIRED") in
+          ignore (should_request_review a ~main_branch:br0);
+          true);
+      Test.make
+        ~name:
+          "should_request_review false when review approved or changes \
+           requested"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let decisions = [ Some "APPROVED"; Some "CHANGES_REQUESTED" ] in
+          List.for_all decisions ~f:(fun decision ->
+              let a =
+                create ~branch:br pid |> fun a ->
+                start_with_pr a ~base_branch:br
+              in
+              let a = complete a in
+              let a = set_merge_ready a true in
+              let a = set_checks_passing a true in
+              let a = set_unresolved_comment_count a 0 in
+              let a = set_head_oid a (Some "deadbeef") in
+              let a = set_review_decision a decision in
+              ignore (should_request_review a ~main_branch:br0);
+              true));
+      Test.make
+        ~name:
+          "should_request_review false when already requested for current head \
+           oid"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = set_merge_ready a true in
+          let a = set_checks_passing a true in
+          let a = set_unresolved_comment_count a 0 in
+          let a = set_head_oid a (Some "deadbeef") in
+          let a = set_review_decision a (Some "REVIEW_REQUIRED") in
+          let a = set_review_requested_for_oid a (Some "deadbeef") in
+          ignore (should_request_review a ~main_branch:br0);
+          true);
+      Test.make ~name:"should_request_review false when a request is inflight"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let a = set_merge_ready a true in
+          let a = set_checks_passing a true in
+          let a = set_unresolved_comment_count a 0 in
+          let a = set_head_oid a (Some "deadbeef") in
+          let a = set_review_decision a (Some "REVIEW_REQUIRED") in
+          let a = set_review_request_inflight a true in
+          ignore (should_request_review a ~main_branch:br0);
+          true);
+      Test.make
+        ~name:
+          "should_request_review false when draft, busy, needs_intervention, \
+           or base is not main"
+        ~count:1
+        Gen.(pure (pid0, br0))
+        (fun (pid, br) ->
+          let make_ready a =
+            let a = set_merge_ready a true in
+            let a = set_checks_passing a true in
+            let a = set_unresolved_comment_count a 0 in
+            let a = set_head_oid a (Some "deadbeef") in
+            let a = set_review_decision a (Some "REVIEW_REQUIRED") in
+            a
+          in
+          let a =
+            create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+          in
+          let a = complete a in
+          let draft_case = make_ready (set_is_draft a true) in
+          let busy_case =
+            (* no complete - busy = true *)
+            make_ready
+              (create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br)
+          in
+          let intervention_case =
+            let a =
+              create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br
+            in
+            let a = complete a in
+            let a = increment_ci_failure_count a in
+            let a = increment_ci_failure_count a in
+            let a = increment_ci_failure_count a in
+            make_ready a
+          in
+          let other_base = Branch.of_string "feature/dep" in
+          let other_base_case =
+            let a =
+              create ~branch:br pid |> fun a ->
+              start_with_pr a ~base_branch:other_base
+            in
+            let a = complete a in
+            make_ready a
+          in
+          ignore (should_request_review draft_case ~main_branch:br0);
+          ignore (should_request_review busy_case ~main_branch:br0);
+          ignore (should_request_review intervention_case ~main_branch:br0);
+          ignore (should_request_review other_base_case ~main_branch:br0);
+          true);
       Test.make ~name:"set_pr_number resets bootstrap lifecycle facts" ~count:1
         Gen.(pure pid0)
         (fun pid ->
