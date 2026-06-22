@@ -208,8 +208,8 @@ let scenario_happy_path env =
   let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
   if not (String.equal feat_ref_sha local_sha) then
     failwith
-      (Printf.sprintf "precondition: refs/heads/feat=%s expected %s" feat_ref_sha
-         local_sha);
+      (Printf.sprintf "precondition: refs/heads/feat=%s expected %s"
+         feat_ref_sha local_sha);
   let outcome =
     Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
