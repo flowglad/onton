@@ -987,7 +987,8 @@ let () =
          predicate yet. *)
       Test.make
         ~name:
-          "should_request_review true when ready except REVIEW_REQUIRED on fresh head"
+          "should_request_review true when ready except REVIEW_REQUIRED on \
+           fresh head"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -1036,7 +1037,8 @@ let () =
           true);
       Test.make
         ~name:
-          "should_request_review false when review approved or changes requested"
+          "should_request_review false when review approved or changes \
+           requested"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -1056,7 +1058,8 @@ let () =
               true));
       Test.make
         ~name:
-          "should_request_review false when already requested for current head oid"
+          "should_request_review false when already requested for current head \
+           oid"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -1090,7 +1093,8 @@ let () =
           true);
       Test.make
         ~name:
-          "should_request_review false when draft, busy, needs_intervention, or base is not main"
+          "should_request_review false when draft, busy, needs_intervention, \
+           or base is not main"
         ~count:1
         Gen.(pure (pid0, br0))
         (fun (pid, br) ->
@@ -1108,7 +1112,8 @@ let () =
           let a = complete a in
           let draft_case = make_ready (set_is_draft a true) in
           let busy_case =
-            make_ready (create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br)
+            make_ready
+              (create ~branch:br pid |> fun a -> start_with_pr a ~base_branch:br)
           in
           let intervention_case =
             let a =
