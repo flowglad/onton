@@ -55,16 +55,20 @@ let make_orch patch agent =
 
 let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ?(merge_queue_required = false) ?(merge_queue_entry = None)
-    ?(checks_passing = false) ?(automerge_enabled = false) ?automerge_deadline
-    ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
-    ~base_branch ~is_draft ~pr_body_delivered ~start_attempts_without_pr () =
+    ?(checks_passing = false) ?(head_oid = None) ?(review_decision = None)
+    ?(unresolved_comment_count = 0) ?(review_requested_for_oid = None)
+    ?(review_request_inflight = false) ?(automerge_enabled = false)
+    ?automerge_deadline ?(automerge_failure_count = 0) ~patch_id ~branch
+    ~pr_status ~merged ~queue ~base_branch ~is_draft ~pr_body_delivered
+    ~start_attempts_without_pr () =
   Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
     ~busy:false ~merged ~queue ~satisfies:false ~changed:false
     ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
     ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
     ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready
-    ~mergeability_unknown ~merge_queue_required ~merge_queue_entry ~is_draft
-    ~pr_body_delivered ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
+    ~head_oid ~review_decision ~unresolved_comment_count ~mergeability_unknown
+    ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered
+    ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
     ~push_failure_count:0 ~rebase_failure_count:0 ~branch_rebased_onto:None
     ~branch_rebased_onto_sha:None ~merge_commit_sha:None
@@ -73,8 +77,9 @@ let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ~current_op:None ~current_op_state:Patch_agent.Queued
     ~current_message_id:None ~generation:0 ~worktree_path:None
     ~branch_blocked:false ~llm_session_id:None ~automerge_enabled
-    ~automerge_deadline ~automerge_inflight:false ~automerge_failure_count
-    ~delivered_ci_run_ids:[] ()
+    ~automerge_deadline ~automerge_inflight:false ~review_requested_for_oid
+    ~review_request_inflight ~automerge_failure_count ~delivered_ci_run_ids:[]
+    ()
 
 let has_draft_effect effects =
   List.exists effects ~f:(function
@@ -1707,8 +1712,85 @@ let () =
         && Option.is_none agent.Patch_agent.automerge_deadline)
   in
 
+  let review_request_claims_ready_required_pr =
+    Test.make ~name:"patch_controller: review request reconcile claims ready PR"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "review-request-ready" in
+        let branch = Branch.of_string "feat/review-request-ready" in
+        let patch = make_patch pid branch in
+        let pr_number = Pr_number.of_int 377 in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present pr_number) ~merged:false
+            ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~checks_passing:true
+            ~head_oid:(Some "head-ready")
+            ~review_decision:(Some "REVIEW_REQUIRED") ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions = Patch_controller.reconcile_review_requests orch in
+        match decisions with
+        | [ { Patch_controller.review_patch_id; review_pr_number } ] ->
+            Patch_id.equal review_patch_id pid
+            && Pr_number.equal review_pr_number pr_number
+            && (Orchestrator.agent orch pid).Patch_agent.review_request_inflight
+        | _ -> false)
+  in
+
+  let review_request_inflight_is_not_reclaimed =
+    Test.make
+      ~name:"patch_controller: review request reconcile skips inflight PR"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "review-request-inflight" in
+        let branch = Branch.of_string "feat/review-request-inflight" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 378))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~checks_passing:true
+            ~head_oid:(Some "head-inflight")
+            ~review_decision:(Some "REVIEW_REQUIRED")
+            ~review_request_inflight:true ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions = Patch_controller.reconcile_review_requests orch in
+        let agent = Orchestrator.agent orch pid in
+        List.is_empty decisions && agent.Patch_agent.review_request_inflight)
+  in
+
+  let review_request_current_head_is_not_reclaimed =
+    Test.make
+      ~name:
+        "patch_controller: review request reconcile skips already-requested \
+         head"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "review-request-current-head" in
+        let branch = Branch.of_string "feat/review-request-current-head" in
+        let patch = make_patch pid branch in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 379))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~checks_passing:true
+            ~head_oid:(Some "head-requested")
+            ~review_decision:(Some "REVIEW_REQUIRED")
+            ~review_requested_for_oid:(Some "head-requested") ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions = Patch_controller.reconcile_review_requests orch in
+        let agent = Orchestrator.agent orch pid in
+        List.is_empty decisions && not agent.Patch_agent.review_request_inflight)
+  in
+
   let suite =
     [
+      review_request_claims_ready_required_pr;
+      review_request_inflight_is_not_reclaimed;
+      review_request_current_head_is_not_reclaimed;
       pending_automerge_transient_unknown_holds_deadline;
       pending_automerge_unknown_never_fires_while_indeterminate;
       pending_automerge_blocked_clears_deadline;
