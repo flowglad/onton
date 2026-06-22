@@ -255,6 +255,11 @@ let scenario_local_strictly_ahead env =
   let shared_sha = git_capture ~dir:origin_dir [ "rev-parse"; "HEAD" ] in
   sh ~dir:origin_dir "git checkout -q main";
   clone_into ~origin_dir ~managed_dir;
+  (* Non-bare clone defaults do not reliably materialize non-HEAD remote
+     branches as remote-tracking refs. Fetch [feat] explicitly so the scenario
+     deterministically exercises the local-ahead-vs-remote planner branch
+     instead of the separate local-only path. *)
+  sh ~dir:managed_dir "git fetch -q origin feat:refs/remotes/origin/feat";
   (* Build a local that strictly contains origin/feat plus extra commits. *)
   sh ~dir:managed_dir
     (Printf.sprintf "git checkout -q -b feat %s"

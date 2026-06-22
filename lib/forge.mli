@@ -45,6 +45,9 @@ module type S = sig
   val update_pr_base :
     pr_number:Types.Pr_number.t -> base:Types.Branch.t -> (unit, error) Result.t
 
+  val request_review :
+    pr_number:Types.Pr_number.t -> team_slug:string -> (unit, error) Result.t
+
   val set_draft :
     pr_number:Types.Pr_number.t -> draft:bool -> (unit, error) Result.t
 

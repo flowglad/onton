@@ -133,11 +133,17 @@ let scenario_local_missing_remote env =
      makes local a strict ancestor of origin/feat while keeping
      commits_ahead_of_base > 0, so the ancestry refusal is not pre-empted by
      No_commits_ahead_of_base. *)
-  sh ~dir:managed_dir "git checkout -q main";
+  (* Rewind the checked-out branch in place so HEAD stays on [feat]. The
+     previous main -> branch -f -> feat hop was enough for CI to occasionally
+     observe the branch-switched guard instead of the stale-local refusal. *)
   sh ~dir:managed_dir
-    (Printf.sprintf "git branch -f feat %s"
+    (Printf.sprintf "git reset -q --hard %s"
        (Stdlib.Filename.quote shared_feat_sha));
-  sh ~dir:managed_dir "git checkout -q feat";
+  (* Reassert [feat] as the checked-out branch after the rewind. In CI we've
+     seen HEAD remain at the right commit while [rev-parse --abbrev-ref HEAD]
+     reports a different branch, which routes this fixture into the
+     branch-switched refusal instead of the intended stale-local refusal. *)
+  sh ~dir:managed_dir "git checkout -q -B feat";
   (* Sanity: local feat != remote feat. *)
   let local_feat = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
   if String.equal local_feat remote_feat_sha then
@@ -196,7 +202,19 @@ let scenario_happy_path env =
   sh ~dir:managed_dir "echo local > local.txt";
   sh ~dir:managed_dir "git add local.txt";
   sh ~dir:managed_dir "git commit -q -m 'local feat work'";
+  (* Some CI/git combinations leave HEAD on [feat] but make
+     [refs/heads/feat] intermittently unreadable to [rev-parse --verify].
+     Refresh the branch through git's normal branch machinery and assert the
+     named ref is visible before exercising the push path. *)
+  sh ~dir:managed_dir "git checkout -q -B feat";
+  let feat_ref_sha =
+    git_capture ~dir:managed_dir [ "rev-parse"; "--verify"; "refs/heads/feat" ]
+  in
   let local_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  if not (String.equal feat_ref_sha local_sha) then
+    failwith
+      (Printf.sprintf "precondition: refs/heads/feat=%s expected %s"
+         feat_ref_sha local_sha);
   let outcome =
     Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
