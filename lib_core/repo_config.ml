@@ -352,7 +352,8 @@ let%test "parse_string: review_team whitespace-only -> None" =
 let%test "parse_string: non-string review_team rejected" =
   let raw = {|{"review_team":123,"routing":{"1":{"backend":"claude"}}}|} in
   match parse_string ~known_backends:[ "claude" ] raw with
-  | Error msg -> String.is_substring msg ~substring:"review_team must be a string"
+  | Error msg ->
+      String.is_substring msg ~substring:"review_team must be a string"
   | Ok _ -> false
 
 let%test "parse_string: reviewBackends-only config" =
