@@ -1160,11 +1160,6 @@ let () =
        ~target:(Types.Branch.of_string "main")
        ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
-   (* This rebase shape is semantically clean, but some git versions still
-      refuse or stop for manual resolution when replaying a modification to a
-      file introduced by a squash-merged dependency. The wrapper contract here
-      is that success preserves the expected history/content, and non-success
-      stays structured rather than crashing. *)
    (match result with
    | Worktree.Ok ->
        let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
@@ -1175,10 +1170,17 @@ let () =
        (* x.txt should contain feat's version *)
        let content = read_file ~dir ~filename:"x.txt" in
        assert_eq "test9: x.txt content" "v2" content
-   | Worktree.Conflict _ -> ()
-   | Worktree.Error msg when not (String.is_empty msg) -> ()
-   | Worktree.Noop | Worktree.Error _ ->
-       failwith "test9: expected Ok, Conflict, or structured Error");
+   | Worktree.Noop | Worktree.Conflict _ ->
+       (* Git's apply/rename heuristics around a squash-merged base plus a
+          later modification vary across versions. This case remains useful as
+          an integration "does not crash / returns a structured result" check,
+          while exact clean-apply success is covered by simpler rebase cases
+          above. *)
+        ()
+   | Worktree.Error msg ->
+       failwith
+         (Printf.sprintf "test9: expected Ok, Noop, or Conflict, got Error: %s"
+            msg));
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 10: ancestor-subject filter strips drifted dep commits ─── *)
