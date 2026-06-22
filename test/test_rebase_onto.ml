@@ -1176,7 +1176,7 @@ let () =
           an integration "does not crash / returns a structured result" check,
           while exact clean-apply success is covered by simpler rebase cases
           above. *)
-        ()
+       ()
    | Worktree.Error msg ->
        failwith
          (Printf.sprintf "test9: expected Ok, Noop, or Conflict, got Error: %s"
