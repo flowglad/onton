@@ -1193,21 +1193,19 @@ let () =
    commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
    |> ignore;
    git ~process_mgr ~dir [ "checkout"; "-b"; "dep" ] |> ignore;
-   commit_file ~process_mgr ~dir ~filename:"dep.txt" ~content:"dep-v1"
-     ~msg:"[proj] Patch 1: add dep.txt"
-   |> ignore;
-   git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
-   (* Simulate the drift: rewrite dep.txt with content-level differences
-      (not just whitespace — git patch-id normalizes trailing whitespace)
-      so the patch-id of feat's amended dep commit ≠ the patch-id of
-      main's squash. Amend the Patch 1 commit with different content. *)
-   let dep_path = Stdlib.Filename.concat dir "dep.txt" in
-   let oc = Stdlib.open_out dep_path in
-   Stdlib.output_string oc "dep-v1-drift";
-   Stdlib.close_out oc;
-   git ~process_mgr ~dir [ "add"; "dep.txt" ] |> ignore;
-   git ~process_mgr ~dir [ "commit"; "--amend"; "--no-edit" ] |> ignore;
-   commit_file ~process_mgr ~dir ~filename:"mine.txt" ~content:"mine"
+  commit_file ~process_mgr ~dir ~filename:"dep.txt" ~content:"dep-v1"
+    ~msg:"[proj] Patch 1: add dep.txt"
+  |> ignore;
+  git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
+  (* Simulate the drift with a fresh branch-local recommit of Patch 1 rather
+     than [commit --amend]. This keeps the scenario identical
+     (same subject, different patch-id from main's squash) while avoiding the
+     occasional amend-specific instability seen in CI. *)
+  git ~process_mgr ~dir [ "reset"; "--hard"; "HEAD~1" ] |> ignore;
+  commit_file ~process_mgr ~dir ~filename:"dep.txt" ~content:"dep-v1-drift"
+    ~msg:"[proj] Patch 1: add dep.txt"
+  |> ignore;
+  commit_file ~process_mgr ~dir ~filename:"mine.txt" ~content:"mine"
      ~msg:"[proj] Patch 7: add mine.txt"
    |> ignore;
    squash_merge ~process_mgr ~dir ~branch:"dep";
