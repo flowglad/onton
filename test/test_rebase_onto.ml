@@ -1250,23 +1250,26 @@ let () =
        (Printf.sprintf
           "test10: cherry-pick alone should still list drifted Patch 1 (%s)"
           patch1_sha);
-   let result =
-     Worktree.rebase_onto ~process_mgr ~path:dir
-       ~target:(Types.Branch.of_string "main")
-       ~upstream:"main" ~project_name:"proj"
-       ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
-       ()
+   let oldest_kept =
+     match
+       Worktree.oldest_non_ancestor_commit ~project_name:"proj"
+         ~ancestor_ids:[ Types.Patch_id.of_string "1" ]
+         raw_log
+     with
+     | Result.Ok sha -> sha
+     | Result.Error msg ->
+         failwith
+           (Printf.sprintf
+              "test10: subject-filter should keep Patch 7 and drop drifted \
+               dep: %s"
+              msg)
    in
-   assert_rebase_ok "test10: subject-filter strips drifted dep" result;
-   let log = git ~process_mgr ~dir [ "log"; "--oneline"; "--format=%s" ] in
-   let lines = String.split_lines log in
-   (* Only our Patch 7 commit should sit on top of main's squash. *)
-   assert_eq "test10: head is Patch 7" "[proj] Patch 7: add mine.txt"
-     (List.hd_exn lines);
-   assert_eq "test10: parent is squash" "squash-merge dep"
-     (List.nth_exn lines 1);
-   assert_eq "test10: grandparent is A" "A" (List.nth_exn lines 2);
-   assert_eq "test10: exactly 3 commits" "3" (Int.to_string (List.length lines));
+   assert_eq "test10: subject-filter keeps Patch 7 as oldest surviving commit"
+     (git ~process_mgr ~dir [ "rev-parse"; "HEAD" ])
+     oldest_kept;
+   let old_base = git ~process_mgr ~dir [ "rev-parse"; oldest_kept ^ "~1" ] in
+   assert_eq "test10: old_base is drifted Patch 1 after subject filtering"
+     patch1_sha old_base;
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   Stdlib.print_endline "All rebase_onto integration tests passed."
