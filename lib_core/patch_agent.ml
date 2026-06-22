@@ -472,21 +472,19 @@ let is_approved t ~main_branch =
   t.merge_ready && is_approved_modulo_merge_ready t ~main_branch
 
 let should_request_review t ~main_branch =
-  has_pr t
-  && (not t.has_conflict)
+  has_pr t && (not t.has_conflict)
   && (not t.mergeability_unknown)
   && t.checks_passing
   && t.unresolved_comment_count = 0
-  && (not t.is_draft)
-  && (not t.busy)
+  && (not t.is_draft) && (not t.busy)
   && (not (needs_intervention t))
   && Option.equal Branch.equal t.base_branch (Some main_branch)
   && Option.equal String.equal t.review_decision (Some "REVIEW_REQUIRED")
-  &&
-  (match t.head_oid with
-  | None -> false
-  | Some head_oid ->
-      not (Option.equal String.equal (Some head_oid) t.review_requested_for_oid))
+  && (match t.head_oid with
+    | None -> false
+    | Some head_oid ->
+        not
+          (Option.equal String.equal (Some head_oid) t.review_requested_for_oid))
   && not t.review_request_inflight
 
 let increment_ci_failure_count t =

@@ -1129,9 +1129,9 @@ let () =
             let a = complete a in
             make_ready a
           in
-          not (should_request_review draft_case ~main_branch:br0)
-          && not (should_request_review busy_case ~main_branch:br0)
-          && not (should_request_review intervention_case ~main_branch:br0)
+          (not (should_request_review draft_case ~main_branch:br0))
+          && (not (should_request_review busy_case ~main_branch:br0))
+          && (not (should_request_review intervention_case ~main_branch:br0))
           && not (should_request_review other_base_case ~main_branch:br0));
       Test.make ~name:"set_pr_number resets bootstrap lifecycle facts" ~count:1
         Gen.(pure pid0)
