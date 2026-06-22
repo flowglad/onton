@@ -343,6 +343,18 @@ let%test "parse_string: review_team present -> parsed" =
   | Ok t -> Option.equal String.equal t.review_team (Some "platform")
   | Error _ -> false
 
+let%test "parse_string: review_team whitespace-only -> None" =
+  let raw = {|{"review_team":"   ","routing":{"1":{"backend":"claude"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t -> Option.is_none t.review_team
+  | Error _ -> false
+
+let%test "parse_string: non-string review_team rejected" =
+  let raw = {|{"review_team":123,"routing":{"1":{"backend":"claude"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Error msg -> String.is_substring msg ~substring:"review_team must be a string"
+  | Ok _ -> false
+
 let%test "parse_string: reviewBackends-only config" =
   let raw =
     {|{"reviewBackends":[{"name":"a","kind":"review-service","baseUrl":"https://x","auth":{"appId":"1","privateKeyPath":"/k"}}]}|}
