@@ -314,6 +314,86 @@ let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
           add_worktree_for_existing_branch ~process_mgr ~repo_root ~path
             ~branch_str)
 
+(* The effectful operations [create] performs, factored into an injectable
+   record so the wiring — short-circuit, ref reads, ancestry, decision, action
+   dispatch — can be exercised with in-memory fakes instead of a live git
+   repository. {!create} supplies the git-backed implementation via {!git_io};
+   tests supply scripted ref states. Mirrors the pure/effectful split already
+   used for [classify_push_result], [push_gate_from_count], etc. *)
+type create_io = {
+  worktree_exists : path:string -> bool;
+      (** The [Sys.file_exists path] short-circuit: when [true], [create] trusts
+          the existing worktree and skips every git operation below. *)
+  check_ref_collision : branch_str:string -> unit;
+      (** Case-insensitive ref-collision guard; raises to abort creation. *)
+  read_ref : ref_name:string -> string option;
+      (** Resolve a ref to its SHA, or [None] when the ref is absent. *)
+  ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
+      (** Two-way ancestry between an existing local and remote SHA. *)
+  execute_action :
+    path:string -> branch_str:string -> Start_point_plan.action -> unit;
+      (** Run the git commands realising the planner's chosen action. *)
+}
+
+(* Wiring of [create], parameterised over its effects. Given [io], it reads the
+   local/remote refs, computes ancestry only when both sides exist, consults the
+   pure {!Start_point_plan.plan}, and either executes the action or surfaces the
+   refusal. [create] is exactly this with the git-backed [io]; the split exists
+   so the control flow (including the short-circuit and the refusal mapping) can
+   be unit-tested without spawning git.
+
+   [branch_checked_out_in_main_root] and [existing_worktree_path] are checked by
+   [Worktree_setup.ensure_worktree] before this point — we pass [false]/[None]
+   so the planner's totality contract is preserved without redoing the work. *)
+let create_with_io ~io ~project_name ~patch_id ~branch ~base_ref :
+    (t, Start_point_plan.refusal) Result.t =
+  let path = worktree_dir ~project_name ~patch_id in
+  let branch_str = Types.Branch.to_string branch in
+  if io.worktree_exists ~path then Result.Ok { patch_id; branch; path }
+  else (
+    io.check_ref_collision ~branch_str;
+    let local_ref = io.read_ref ~ref_name:("refs/heads/" ^ branch_str) in
+    let remote_ref =
+      io.read_ref ~ref_name:("refs/remotes/origin/" ^ branch_str)
+    in
+    let ancestry =
+      match (local_ref, remote_ref) with
+      | Some l, Some r -> io.ancestry ~local:l ~remote:r
+      | _ -> Start_point_plan.Unknown
+    in
+    let decision =
+      Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
+        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
+        ~existing_worktree_path:None
+    in
+    match decision with
+    | Refuse refusal -> Result.Error refusal
+    | Plan action ->
+        io.execute_action ~path ~branch_str action;
+        Result.Ok { patch_id; branch; path })
+
+(* The production [create_io]: every operation backed by a real git invocation
+   against [repo_root]. The [worktree_exists] short-circuit is keyed only on
+   [$HOME] + [project_name] + [patch_id] (see {!worktree_dir}); callers must
+   guarantee an isolated [$HOME] so a stale [~/worktrees/<project>/patch-<id>]
+   from a prior run cannot make it return a spurious Ok. *)
+let git_io ~process_mgr ~repo_root : create_io =
+  {
+    worktree_exists = (fun ~path -> Stdlib.Sys.file_exists path);
+    check_ref_collision =
+      (fun ~branch_str ->
+        check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str);
+    read_ref =
+      (fun ~ref_name -> read_repo_ref_sha ~process_mgr ~repo_root ~ref_name);
+    ancestry =
+      (fun ~local ~remote ->
+        compute_repo_ancestry ~process_mgr ~repo_root ~local ~remote);
+    execute_action =
+      (fun ~path ~branch_str action ->
+        execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
+          action);
+  }
+
 (* [Worktree.create] consults [Start_point_plan] before executing any git
    command, ensuring the worktree starts at the right commit regardless of
    whether the user's local clone has a stale branch ref. See the [.mli] doc
@@ -324,48 +404,9 @@ let execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
    refusals through the orchestrator's [needs_intervention] path. *)
 let create ~process_mgr ~repo_root ~project_name ~patch_id ~branch ~base_ref :
     (t, Start_point_plan.refusal) Result.t =
-  let path = worktree_dir ~project_name ~patch_id in
-  let branch_str = Types.Branch.to_string branch in
-  (* The destination is keyed only on [$HOME] + [project_name] + [patch_id]
-     (see {!worktree_dir}). When the path already exists we trust it and skip
-     the git setup, so callers must guarantee an isolated [$HOME] — in
-     particular, tests redirect HOME into a temp sandbox so a stale
-     [~/worktrees/<project>/patch-<id>] from a prior run cannot make this
-     short-circuit return a spurious Ok. *)
-  if Stdlib.Sys.file_exists path then Result.Ok { patch_id; branch; path }
-  else (
-    check_case_insensitive_ref_collision ~process_mgr ~repo_root branch_str;
-    let local_ref =
-      read_repo_ref_sha ~process_mgr ~repo_root
-        ~ref_name:("refs/heads/" ^ branch_str)
-    in
-    let remote_ref =
-      read_repo_ref_sha ~process_mgr ~repo_root
-        ~ref_name:("refs/remotes/origin/" ^ branch_str)
-    in
-    let ancestry =
-      match (local_ref, remote_ref) with
-      | Some l, Some r ->
-          compute_repo_ancestry ~process_mgr ~repo_root ~local:l ~remote:r
-      | _ -> Start_point_plan.Unknown
-    in
-    (* [branch_checked_out_in_main_root] and [existing_worktree_path] are
-       checked by [Worktree_setup.ensure_worktree] before this point — we
-       pass [false]/[None] so the planner's totality contract is preserved
-       without redoing the work. If [Worktree.create] is ever called from
-       a caller that does not pre-check, those inputs should be supplied
-       there. *)
-    let decision =
-      Start_point_plan.plan ~local_ref ~remote_ref ~ancestry
-        ~base_branch:base_ref ~branch_checked_out_in_main_root:false
-        ~existing_worktree_path:None
-    in
-    match decision with
-    | Refuse refusal -> Result.Error refusal
-    | Plan action ->
-        execute_start_point_action ~process_mgr ~repo_root ~path ~branch_str
-          action;
-        Result.Ok { patch_id; branch; path })
+  create_with_io
+    ~io:(git_io ~process_mgr ~repo_root)
+    ~project_name ~patch_id ~branch ~base_ref
 
 let remove ~process_mgr ~repo_root t =
   process_run_retry process_mgr
