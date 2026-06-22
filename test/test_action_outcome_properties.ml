@@ -530,6 +530,18 @@ let () =
          let orch = Orchestrator.clear_automerge_deadline orch pid in
          let orch = Orchestrator.increment_automerge_failure_count orch pid in
          let orch = Orchestrator.reset_automerge_failure_count orch pid in
+         let orch = Orchestrator.set_head_oid orch pid (Some "deadbeef") in
+         let orch =
+           Orchestrator.set_review_decision orch pid (Some "REVIEW_REQUIRED")
+         in
+         let orch =
+           Orchestrator.set_unresolved_comment_count orch pid
+             (if flag then 1 else 0)
+         in
+         let orch =
+           Orchestrator.set_review_requested_for_oid orch pid (Some "deadbeef")
+         in
+         let orch = Orchestrator.set_review_request_inflight orch pid flag in
          let orch = Orchestrator.reset_ci_failure_count orch pid in
          let orch = Orchestrator.reset_conflict_noop_count orch pid in
          let orch = Orchestrator.set_branch_blocked orch pid in
