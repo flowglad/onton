@@ -404,6 +404,11 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_worktree_create_wiring)
+ (modules test_worktree_create_wiring)
+ (libraries onton onton_core base))
+
+(test
  (name test_worktree_start_point_integration)
  (modules test_worktree_start_point_integration)
  (libraries onton onton_core onton_test_support eio eio_main eio.unix unix)

@@ -8,6 +8,7 @@ type route = { backend : string; model : string option }
 type t = {
   default_backend : string option;
   default_model : string option;
+  review_team : string option;
   complexity_routes : (int * route) list;
   review_backends : Review_backend.t list;
 }
@@ -16,6 +17,7 @@ let empty =
   {
     default_backend = None;
     default_model = None;
+    review_team = None;
     complexity_routes = [];
     review_backends = [];
   }
@@ -152,19 +154,29 @@ let parse_string ~known_backends
           let review_backends_json =
             Option.value (Json.field "reviewBackends" json) ~default:`Null
           in
+          let review_team_result =
+            match Json.field "review_team" json with
+            | None -> Ok None
+            | Some (`String s) when String.is_empty (String.strip s) -> Ok None
+            | Some (`String s) -> Ok (Some (String.strip s))
+            | Some _ -> Error "review_team must be a string"
+          in
           Result.bind (parse_default ~known_backends default_json)
             ~f:(fun (default_backend, default_model) ->
-              Result.bind (parse_routing ~known_backends routing)
-                ~f:(fun routes ->
-                  Result.map
-                    (Review_backend.parse_array ~known_kinds:known_review_kinds
-                       review_backends_json) ~f:(fun review_backends ->
-                      {
-                        default_backend;
-                        default_model;
-                        complexity_routes = routes;
-                        review_backends;
-                      })))
+              Result.bind review_team_result ~f:(fun review_team ->
+                  Result.bind (parse_routing ~known_backends routing)
+                    ~f:(fun routes ->
+                      Result.map
+                        (Review_backend.parse_array
+                           ~known_kinds:known_review_kinds review_backends_json)
+                        ~f:(fun review_backends ->
+                          {
+                            default_backend;
+                            default_model;
+                            review_team;
+                            complexity_routes = routes;
+                            review_backends;
+                          }))))
       | _ -> Error "config.json: top-level value must be an object")
 
 let load ~config_dir ~known_backends ?known_review_kinds () =
@@ -316,6 +328,33 @@ let%test "parse_string: reviewBackends absent -> empty list" =
   match parse_string ~known_backends:[ "claude" ] raw with
   | Ok t -> List.is_empty t.review_backends
   | Error _ -> false
+
+let%test "parse_string: review_team absent -> None" =
+  let raw = {|{"routing":{"1":{"backend":"claude"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t -> Option.is_none t.review_team
+  | Error _ -> false
+
+let%test "parse_string: review_team present -> parsed" =
+  let raw =
+    {|{"review_team":"platform","routing":{"1":{"backend":"claude"}}}|}
+  in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t -> Option.equal String.equal t.review_team (Some "platform")
+  | Error _ -> false
+
+let%test "parse_string: review_team whitespace-only -> None" =
+  let raw = {|{"review_team":"   ","routing":{"1":{"backend":"claude"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Ok t -> Option.is_none t.review_team
+  | Error _ -> false
+
+let%test "parse_string: non-string review_team rejected" =
+  let raw = {|{"review_team":123,"routing":{"1":{"backend":"claude"}}}|} in
+  match parse_string ~known_backends:[ "claude" ] raw with
+  | Error msg ->
+      String.is_substring msg ~substring:"review_team must be a string"
+  | Ok _ -> false
 
 let%test "parse_string: reviewBackends-only config" =
   let raw =

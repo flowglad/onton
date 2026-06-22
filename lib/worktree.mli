@@ -75,6 +75,56 @@ val create :
     ({!Worktree_setup.ensure_worktree}) before this function runs; this function
     passes [false] / [None] to the planner. *)
 
+type create_io = {
+  worktree_exists : path:string -> bool;
+  check_ref_collision : branch_str:string -> unit;
+  read_ref : ref_name:string -> string option;
+  ancestry : local:string -> remote:string -> Start_point_plan.ancestry;
+  execute_action :
+    path:string -> branch_str:string -> Start_point_plan.action -> unit;
+}
+(** The effectful operations {!create} performs. Factored out so the wiring can
+    be tested with in-memory fakes instead of a live git repository:
+    [worktree_exists] drives the short-circuit, [read_ref]/[ancestry] feed
+    {!Start_point_plan.plan}, and [execute_action] realises its decision. *)
+
+val create_with_io :
+  io:create_io ->
+  project_name:string ->
+  patch_id:Types.Patch_id.t ->
+  branch:Types.Branch.t ->
+  base_ref:string ->
+  (t, Start_point_plan.refusal) Result.t
+(** The control flow of {!create}, parameterised over its effects. Reads the
+    local and remote refs via [io], computes ancestry only when both exist,
+    consults {!Start_point_plan.plan}, and either runs [io.execute_action] or
+    returns the refusal. {!create} is this with the git-backed [io]. Exposed so
+    the short-circuit, planner dispatch, and refusal mapping can be exercised
+    without spawning git. *)
+
+val read_repo_ref_sha :
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  ref_name:string ->
+  string option
+(** Resolve [ref_name] to its SHA in [repo_root] via [git rev-parse --verify],
+    or [None] if the ref does not exist or git fails. The git-backed primitive
+    behind {!create_io.read_ref}; exposed so an integration test can verify it
+    reads [refs/heads/<branch>] and [refs/remotes/origin/<branch>] correctly
+    against a real repo. *)
+
+val compute_repo_ancestry :
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  local:string ->
+  remote:string ->
+  Start_point_plan.ancestry
+(** Classify the two-way ancestor relationship between [local] and [remote] via
+    two [git merge-base --is-ancestor] probes (or [Unknown] if either fails).
+    The git-backed primitive behind {!create_io.ancestry}; exposed so an
+    integration test can verify the [Equal]/[Remote_ahead]/[Local_ahead]/
+    [Diverged] classification against real commits. *)
+
 (** Outcome of [fetch_origin_branch]. The [Fetch_branch_no_remote_ref] case is
     the routine "brand-new branch — no upstream yet" state, which trips on the
     very first creation of every patch worktree and is not a failure; callers
@@ -237,6 +287,22 @@ val parse_rebase_merge_state :
     still surfaces the [git rebase --onto target old_base] command even when the
     commits cannot be enumerated. [onto_contents] is the rebase destination SHA;
     [upstream_contents] is the old-base SHA used as the recovery [old_base]. *)
+
+type onto_anchor = Worktree_parser.onto_anchor =
+  | Anchor of string
+  | No_anchor of string
+[@@deriving show, eq, sexp_of, compare]
+
+val classify_onto_anchor : code:int -> stdout:string -> onto_anchor
+(** Pure: interpret the [git rev-parse <oldest>~1] probe whose result becomes
+    the [--onto] old-base anchor in [find_old_base], from its exit [code] and
+    [stdout]. [Anchor sha] on success with a non-blank SHA; [No_anchor reason]
+    when git failed {e or} returned a blank SHA on exit 0. The blank-on-success
+    case occurs when the oldest unique commit is a root commit (no parent) on
+    git versions that resolve [<root>~1] to "" rather than erroring; feeding
+    that "" to [git rebase --onto target ""] aborts with [invalid upstream ''],
+    so the caller treats [No_anchor] as a detection failure and falls back to
+    the plain/upstream rebase form. *)
 
 type rebase_result = Worktree_parser.rebase_result =
   | Ok

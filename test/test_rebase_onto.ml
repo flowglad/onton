@@ -100,6 +100,58 @@ let () =
   if errcode <> 0 then Stdlib.exit errcode
 
 (* ───────────────────────────────────────────────────────────────────────
+   Pure tests for [Worktree.classify_onto_anchor] — the guard that keeps an
+   empty [--onto] old-base anchor from reaching [git rebase --onto] (which
+   aborts with "invalid upstream ''"). Regression for the CI-only failure where
+   older git resolved [<root>~1] to "" with exit 0.
+   ─────────────────────────────────────────────────────────────────────── *)
+
+let () =
+  let open QCheck2 in
+  let is_anchor expected = function
+    | Worktree.Anchor s -> String.equal s expected
+    | Worktree.No_anchor _ -> false
+  in
+  let is_no_anchor = function
+    | Worktree.No_anchor _ -> true
+    | Worktree.Anchor _ -> false
+  in
+  (* A non-blank SHA on exit 0 is the anchor, trimmed of surrounding whitespace.
+     git appends a trailing newline; classify must strip it. *)
+  let prop_ok_sha =
+    Test.make ~name:"classify_onto_anchor: exit 0 + sha -> Anchor sha"
+      ~count:200
+      Gen.(string_size ~gen:(char_range 'a' 'f') (int_range 1 40))
+      (fun sha ->
+        is_anchor sha
+          (Worktree.classify_onto_anchor ~code:0 ~stdout:(sha ^ "\n")))
+  in
+  (* The load-bearing case: exit 0 but a blank SHA (root commit on older git)
+     must be No_anchor, NOT Anchor "" — that empty string is what produced
+     "git rebase --onto target ''". *)
+  let prop_blank_on_success_is_no_anchor =
+    Test.make ~name:"classify_onto_anchor: exit 0 + blank -> No_anchor"
+      ~count:200
+      Gen.(oneof_list [ ""; "\n"; "  "; " \n "; "\t" ])
+      (fun stdout ->
+        is_no_anchor (Worktree.classify_onto_anchor ~code:0 ~stdout))
+  in
+  (* Non-zero exit is always No_anchor regardless of stdout. *)
+  let prop_nonzero_is_no_anchor =
+    Test.make ~name:"classify_onto_anchor: exit != 0 -> No_anchor" ~count:200
+      Gen.(pair (int_range 1 255) string)
+      (fun (code, stdout) ->
+        is_no_anchor (Worktree.classify_onto_anchor ~code ~stdout))
+  in
+  let suite =
+    [
+      prop_ok_sha; prop_blank_on_success_is_no_anchor; prop_nonzero_is_no_anchor;
+    ]
+  in
+  let errcode = QCheck_base_runner.run_tests ~verbose:true suite in
+  if errcode <> 0 then Stdlib.exit errcode
+
+(* ───────────────────────────────────────────────────────────────────────
    Pure tests for [Worktree.is_ancestor_patch_subject] and
    [Worktree.oldest_non_ancestor_commit]
    ─────────────────────────────────────────────────────────────────────── *)
