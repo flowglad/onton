@@ -171,6 +171,7 @@ struct
         let repo = Env.config.github_repo
         let main_branch = Env.config.main_branch
         let max_concurrency = Env.config.max_concurrency
+        let review_team = Env.config.repo_config.review_team
         let patch_agent_provider = Env.config.patch_agent_provider
         let patch_agent_effort = Env.config.patch_agent_effort
         let findings_registry = Env.findings_registry

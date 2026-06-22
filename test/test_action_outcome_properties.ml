@@ -581,6 +581,9 @@ let () =
          let orch =
            Patch_controller.apply_automerge_failure orch ~now:0.0 pid
          in
+         let _orch, _review_request_decisions =
+           Patch_controller.reconcile_review_requests orch
+         in
          let _found = Orchestrator.find_message orch mid in
          let _current = Orchestrator.current_message orch pid in
          (match Orchestrator.all_messages orch with

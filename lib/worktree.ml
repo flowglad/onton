@@ -211,7 +211,7 @@ let fetch_origin_branch ~fetch_lock ~process_mgr ~repo_root ~branch_str =
               repo_root;
               "fetch";
               "origin";
-              branch_str ^ ":refs/remotes/origin/" ^ branch_str;
+              "+refs/heads/" ^ branch_str ^ ":refs/remotes/origin/" ^ branch_str;
             ]
         in
         Worktree_parser.classify_fetch_branch_result ~code ~stderr
