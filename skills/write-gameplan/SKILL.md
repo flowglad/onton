@@ -109,6 +109,33 @@ Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR)
 
 The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
 
+## Ground Every Reference in Real Code
+
+The gameplanning agent runs **inside a checkout of the target repo** (see [One Repo Per Gameplan](#one-repo-per-gameplan)), so it can open any repo file and inspect any installed or vendored dependency. The two most common mechanical defects in executed gameplans — **a named path that does not exist** and **a symbol referenced under the wrong name** — are eliminable at authoring time by reading the workspace. Read it before naming anything.
+
+### Rule 1 — Ground every reference you can resolve
+
+Before you write a file path, module, function, type, field, constant, enum value, command name, or signature into *any* field — `requiredChanges[].file` / `.signature`, `patches[].files[].path`, `contextResources[].paths`, `testMap[].file`, a `changes` step, or a `spec` — **resolve it against the actual code**:
+
+- **Repo source.** Open the file; confirm the path exists. For a file the gameplan *creates*, confirm its parent directory and sibling naming convention are real. Confirm every symbol is spelled exactly as it appears in the code — the real export name, the real enum/constant value (not a display string or a paraphrase), and the real test-file convention (`foo.test.ts` vs `foo.unit.test.ts` is a recurring miss).
+- **Inspectable dependencies.** If a patch calls into a third-party library that is installed or vendored in the checkout (`node_modules`, vendored modules, type stubs, generated clients), read its actual declarations before specifying the call shape. Do not reconstruct an API from memory when the real types are on disk.
+- **Signatures.** When you give a `signature` for a new or modified function, make it consistent with the real types it must accept and return — look those types up; do not invent them.
+
+If you assert a path or symbol you did not verify, you are guessing, and the patch agent inherits the guess with no way to know it was one.
+
+### Rule 2 — Mark, don't invent, what you cannot ground
+
+Some references are genuinely *not* resolvable from the workspace, and those must not be silently invented either:
+
+- A file the gameplan will create does not exist yet — name it and mark it `action: create`. That is grounding the *convention*, not asserting the file is present.
+- A fact that lives in an **external system** the agent cannot inspect — whether a live SaaS integration actually exposes a particular API/tool, the shape of a third-party webhook, a value held only in a dashboard or secret store — is not a thing to guess into a `spec`. Route it to `openQuestions` or the relevant `operationalConsiderations` sub-field (e.g. `externalSystemAccess`) so it is resolved deliberately.
+
+The dividing line is precisely **inspectability from the gameplanning state**: ground what the checkout can answer; surface what it cannot. Do not let an un-inspectable external fact masquerade as a grounded one.
+
+### Rule 3 — Give multi-patch surfaces one shared anchor
+
+When more than one patch touches the same file or symbol — patch 1 introduces a type that patches 3 and 5 consume, two patches edit the same registry, a stub patch and its implementation patch share a test file — **name that file/symbol with one concrete, identical reference everywhere it appears.** Choose the exact path and exported identifier once, then reuse it verbatim across every patch's `files`, `changes`, `requiredChanges`, and `contextResources`. Prefer routing the shared surface through a `contextResources` entry whose `consumedBy` lists every patch that depends on it, so they all read the same authoritative description. The failure this prevents: two patch agents, working concurrently in isolated worktrees with no view of each other, each inventing a slightly different name for the same thing — and the pieces failing to fit together at merge.
+
 ## Context Resources
 
 `contextResources` names authoritative context that an implementing patch agent must read before editing. This is for existing code, contracts, docs, tests, or predecessor surfaces that constrain implementation. It is not a dumping ground for general background.
@@ -159,7 +186,21 @@ Each patch has a spec module describing the invariants that must hold after THAT
 
 **Spec-writing guidance**: Use progressive disclosure (top-down structure). Never guess domain details — if something is unclear, note it in `openQuestions`.
 
-Every functional change should map to at least one per-patch or final-state spec clause when the chosen spec language can express it. If a context resource defines a contract the patch preserves, name that contract in the spec prose/invariant so implementers and reviewers can trace the resource to the code obligation.
+Every functional change should map to at least one per-patch or final-state spec clause when the chosen spec language can express it. If a context resource defines a contract the patch preserves, name that contract in the spec's invariants so implementers and reviewers can trace the resource to the code obligation.
+
+#### Complete the contract in the spec
+
+The per-patch `spec` is the **sole source of truth for the behavioral contract** — sharpen it in the spec itself; do not restate the contract in `changes` or elsewhere. After wrong references (see [Ground Every Reference in Real Code](#ground-every-reference-in-real-code)), the largest class of executed-gameplan defects is a contract that named the right things but left a case unspecified: an unhandled error, the inverse of a specified operation, an undefined boundary. These are observable behavior at the interface — what preconditions, postconditions, and invariants exist to pin down — not implementation detail. Specify that behavior; leave the mechanism that satisfies it to the implementer.
+
+A spec is complete when, for every rule it introduces or changes, the contract is **total over that rule's input domain**. In Pantagruel:
+
+- **Fallible results are sum types with every arm covered.** If a grounded function can fail, model the result as a sum (`Outcome = Ok + RateLimited + Invalid.`) and constrain the rule into the whole sum — never spec only the success arm. The failure arms must match the real error union you grounded in the code, not a guessed subset.
+- **Case analysis is exhaustive.** Use `cond … , true => …` so the final arm closes coverage; `pant --check` flags a `cond` whose arms miss inputs. Every variant of a grounded enum/sum is handled or explicitly excluded.
+- **Partiality is a written precondition, not an omission.** A rule with no guard asserts totality (`owner d: Document => User.`); if a rule is partial, the guard *is* the precondition (`f x: T, valid? x => …`) — write it so "what must hold of the input" is on the page. A missing guard is a claim of totality; mean it.
+- **Inverse and sibling operations are specified together.** Spec `create` ⇒ say what `update`/`delete` do (or that they are structurally rejected); spec `add` ⇒ `remove`. Declaring one member of an operation family and leaving the rest to the implementer is the single most common omission.
+- **Invariants quantify over the whole domain.** A property that must hold at several sites (every place a secret is logged, every consumer of a changed row) is `all x: Site | …`, not an assertion about one representative — the universal *is* the claim that no site is unhandled.
+
+Ground each of these against the code you already opened — the enum's real members, the function's real error union, the actual callers — so the completeness check has an **external oracle** (the grounded types plus `pant --check`'s exhaustiveness and contradiction analysis), not just re-reading. A case you cannot resolve from the workspace goes to `openQuestions` (Rule 2 above); never close it by guessing it into the contract.
 
 ## Patch Classification
 
@@ -173,7 +214,7 @@ Each patch includes a `classification` field:
 
 ## Functional Change Ownership
 
-A gameplan whose patches share responsibility for a behavioral change vaguely fails in a predictable way: each patch implementer reads the prose narrative, sees the change mentioned, and assumes a different patch owns it. The change falls through the cracks. The whole point of decomposing a gameplan into mergeable patches is defeated when a behavior is described as a gameplan-level concept that has no single named owner.
+When two patches share responsibility for a behavioral change, each implementer sees it mentioned and assumes the other owns it, so the change falls through the cracks — a behavior described only at the gameplan level, with no single owning patch.
 
 The `functionalChanges` array prevents this. It is an **exhaustive enumeration** of every functional or behavioural delta the gameplan introduces, with each entry assigned to exactly one owning patch.
 
@@ -208,6 +249,19 @@ Downstream consumers (notably onton's patch prompt renderer) read `functionalCha
 - Write each entry as the **outcome**, not the mechanism. "Merged patches are skipped instead of queued" is correct; "Add a merged-check branch to disposition" is an implementation step and belongs in `patches[].changes`.
 - Cross-check against `problemStatement`, `solutionSummary`, and `acceptanceCriteria`: every behavioral promise made there must correspond to at least one `functionalChange` entry. If you cannot point at the owning patch for a sentence in the problem statement, the gameplan has a gap.
 - Cross-check against `finalStateSpec`: every behavioral invariant in the spec should map to a functional change that introduces it (the spec says *what is true at the end*; the functional change says *which patch made it true*).
+
+## Patch Boundaries (Frames and No-Ops)
+
+[Functional Change Ownership](#functional-change-ownership) makes the *behavior* partition correct — every observable change has exactly one owning patch (total and disjoint). The same discipline must hold for the *file* partition, and each patch must make a real change. Two recurring defects come from skipping this: a patch whose change spills into files it never listed, and a patch whose change was already true (a no-op). Both are detectable at authoring time against the grounded code.
+
+**A patch's `files` array is its frame condition.** In contract terms a routine has not only pre/postconditions but a *frame* — the exclusive set of locations it may write (this is JML's `assignable`/`modifies` clause; separation logic calls the touched region the *footprint*). The `files` list is exactly that: the patch's complete and exclusive write-set. Validate it as one:
+
+- **Complete** — walking the patch's `changes` and `spec` against the grounded code, every file that must be edited to deliver the change is in `files`. If delivering the functional change forces an edit to a consumer, a registry, a barrel export, or a type the patch didn't list, the frame is incomplete — add the file or rescope the patch. The "consumers" axis of [Complete the contract in the spec](#complete-the-contract-in-the-spec) feeds this: every consumer you must update is part of the frame.
+- **Exclusive / disjoint** — no two patches that can run concurrently (no dependency edge between them) may write the same file or symbol. Overlapping frames are the merge collision the isolated-worktree execution model cannot reconcile. If two patches must touch one surface, either serialize them with a `dependencyGraph` edge or route the shared surface through one owning patch (cf. [Rule 3 — shared anchor](#rule-3--give-multi-patch-surfaces-one-shared-anchor)).
+
+**Each patch must be non-vacuous.** A patch whose postcondition already holds in the grounded pre-state is a no-op — satisfied *vacuously*, the way "every request is followed by a grant" holds in a system that makes no requests. Mechanical test: remove the patch and check whether its postcondition still holds against the grounded code; if it does, the patch is empty. If the field already exists, the route is already registered, or the type already has the variant, drop the patch or rescope it to the work actually missing.
+
+**Decompose by what changes together, not by execution flow.** Parnas's module criterion applies to patches: partitioning by flow ("first do A, then B, then C") tends to produce patches with overlapping frames and vague ownership, because one surface gets touched at several flow steps. Partitioning by *what changes together* — a type with its consumers, a registry with its entries — yields disjoint frames and clean single ownership, which is what makes concurrent worktree execution safe.
 
 ## Operational Considerations
 
@@ -386,13 +440,17 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 2. **Context-resource fit** — the validator confirms routing is bidirectional and references resolve. Manually confirm that docs/evals/reference patches actually name the implementation or contract they describe — a resource attached to a patch that never reads it is dead weight.
 
-3. **Spec/evidence completeness** — for each functional change, confirm a spec or acceptance criterion expresses it, a patch implements it, the required context (if any) is attached, and a test/static check is expected to prove it.
+3. **Spec/evidence completeness** — for each functional change, confirm a spec or acceptance criterion expresses it, a patch implements it, the required context (if any) is attached, and a test/static check is expected to prove it. Then confirm each rule a patch's spec introduces or changes is **total over its input domain** — see [Complete the contract in the spec](#complete-the-contract-in-the-spec). Unresolvable cases belong in `openQuestions`, not guessed into the contract.
 
 4. **Operational considerations are substantive** (`operationalConsiderationsSubstantive`) — every `operationalConsiderations` sub-field is required by the schema, but presence ≠ engagement. Confirm each sub-field names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than platitudes. "Not applicable" only with a brief gameplan-specific justification. See [Operational Considerations](#operational-considerations).
 
 5. **Atomicity** (`gameplanIsAtomicAndAutonomous`) — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm no patch is conditional on another's outcome, no `changes` step expects a human between patches (flag flip, manual script, dashboard check, decision branch), and no patch implies an observation/soak window. If any slipped in, re-decompose as a multi-milestone workstream via [[write-workstream]].
 
-6. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
+6. **Reference grounding** — for every file path and symbol the gameplan names (`requiredChanges`, `files`, `signature`s, `contextResources[].paths`, `testMap[].file`, and symbol references inside `changes`/`spec` prose), confirm it resolves against the real workspace per [Ground Every Reference in Real Code](#ground-every-reference-in-real-code): existing paths open, created paths follow a real sibling convention, symbols match the actual exports/enums/test-file names, and dependency call shapes match on-disk declarations. Confirm any fact you *couldn't* ground (external-system behavior) lives in `openQuestions`/`operationalConsiderations` rather than asserted in a spec. Confirm every surface touched by more than one patch is named with one identical reference across those patches.
+
+7. **Patch boundaries** — for each patch, confirm its `files` frame is **complete** (delivers the functional change with no edits spilling into unlisted files) and **exclusive** (no patch that can run concurrently writes the same file/symbol), and that the patch is **non-vacuous** (its postcondition is not already true of the grounded current surface). See [Patch Boundaries (Frames and No-Ops)](#patch-boundaries-frames-and-no-ops).
+
+8. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
 
 ## Resolving Open Questions
 
@@ -458,7 +516,7 @@ We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for
 
 - **Language reference**: `https://raw.githubusercontent.com/subsetpark/pantagruel/refs/heads/master/REFERENCE.md` — fetch this for syntax details
 - **Parse validation**: covered by `scripts/validate.py` (see [Verification](#verification)). Bare `pant <file.pant>` type-checks; exit 0 = well-formed; on 0.22, success is silent.
-- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
+- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. Run it whenever a per-patch spec uses `cond` case analysis or sum-type coverage, to confirm the contract is total over its input domain (see [Complete the contract in the spec](#complete-the-contract-in-the-spec)). `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
 - **Module naming**: final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_DECISION`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
 - **Style**:
   - Progressive disclosure (top-down chapter structure); keep per-patch specs self-contained (redeclare referenced domains/rules rather than importing)
@@ -466,6 +524,7 @@ We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for
   - Enum-like values are best modelled as nullary lowercase rules returning the domain: `skip => Disposition.` (not `Skip => Disposition.` — uppercase rule names will not parse)
   - Rules with multiple parameters use **comma-separated typed params**, not arrows: `inline-decisions rf: RunnerFiber, p: Patch => Nat0.` (not `rf: RunnerFiber -> Patch => Nat0.`)
   - Every chapter needs at least one declaration in its head before the `---` separator; if a patch introduces no new invariants, redeclare the prior chapter's domains/rules so the module is self-contained
+  - Make contracts total: model fallible results as sum types (`Outcome = Ok + RateLimited.`) and constrain the rule across all arms; close `cond` case analysis with a final `true => …` arm; declare rules total (no guard) unless partiality is intended, where the guard states the precondition. See [Complete the contract in the spec](#complete-the-contract-in-the-spec)
 
 ### Using a different spec language
 
@@ -482,7 +541,8 @@ V2 JSON gameplans are consumed programmatically via the `patches` and `dependenc
 
 - **Be explicit** — easy to execute patch-by-patch by a coding agent with no context window
 - **Include function signatures** for new/modified functions
-- **Keep it concise** — 10x easier to review than the resulting code
+- **Ground every reference** — resolve every file path and symbol against the real checkout before naming it, and give any surface multiple patches touch one shared, identical reference. See [Ground Every Reference in Real Code](#ground-every-reference-in-real-code)
+- **Keep it concise** — it must stay far easier to review than the code it produces (the core principle above)
 - **Workstream alignment** — if part of a workstream, acceptance criteria must align with the milestone's "Definition of Done" and cover every terminal Acceptance-Suite assertion this milestone owns; reconcile both during [write-back](#writing-back-to-the-parent-workstream)
 - **Specs are normative** — the formal specs are the source of truth for what "done" means; prose acceptance criteria are a human-readable summary
 

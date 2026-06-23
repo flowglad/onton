@@ -172,10 +172,20 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
                     (Orchestrator.main_branch snap.Runtime.orchestrator)
                     (Types.Branch.of_string base))
             in
+            let rec fetch_base attempt =
+              match W.fetch_origin_branch ~fetch_lock ~branch:base with
+              | Fetch_branch_ok as result -> result
+              | Fetch_branch_no_remote_ref as result -> result
+              | Fetch_branch_error _ as result ->
+                  if attempt >= 3 then result
+                  else (
+                    Eio.Fiber.yield ();
+                    fetch_base (attempt + 1))
+            in
             let fetched_remote_sha =
               if not base_is_main then None
               else
-                match W.fetch_origin_branch ~fetch_lock ~branch:base with
+                match fetch_base 1 with
                 | Fetch_branch_ok ->
                     W.read_branch_sha ~path:(W.resolve_main_root ())
                       ~ref_name:("refs/remotes/origin/" ^ base)
