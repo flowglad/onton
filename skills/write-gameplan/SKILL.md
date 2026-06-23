@@ -188,6 +188,20 @@ Each patch has a spec module describing the invariants that must hold after THAT
 
 Every functional change should map to at least one per-patch or final-state spec clause when the chosen spec language can express it. If a context resource defines a contract the patch preserves, name that contract in the spec prose/invariant so implementers and reviewers can trace the resource to the code obligation.
 
+#### Complete the contract in the spec
+
+The per-patch `spec` is the **sole source of truth for the behavioral contract** — do not restate it in prose in `changes` or elsewhere; sharpen it *in the spec itself*. After wrong references (see [Ground Every Reference in Real Code](#ground-every-reference-in-real-code)), the largest class of executed-gameplan defects is a contract that named the right things and then left a case unspecified: an error the implementer had to invent a response for, the inverse of an operation that was specified, a value whose boundary was undefined. These are not implementation details to defer — they are the observable behavior at the interface, which is exactly what a contract (preconditions, postconditions, invariants) exists to pin down. Specifying them is not "implementing twice"; only choosing the mechanism that satisfies them is.
+
+A spec is complete when, for every rule it introduces or changes, the contract is **total over that rule's input domain**. In Pantagruel:
+
+- **Fallible results are sum types with every arm covered.** If a grounded function can fail, model the result as a sum (`Outcome = Ok + RateLimited + Invalid.`) and constrain the rule into the whole sum — never spec only the success arm. The failure arms must match the real error union you grounded in the code, not a guessed subset.
+- **Case analysis is exhaustive.** Use `cond … , true => …` so the final arm closes coverage; `pant --check` flags a `cond` whose arms miss inputs. Every variant of a grounded enum/sum is handled or explicitly excluded.
+- **Partiality is a written precondition, not an omission.** A rule with no guard asserts totality (`owner d: Document => User.`); if a rule is partial, the guard *is* the precondition (`f x: T, valid? x => …`) — write it so "what must hold of the input" is on the page. A missing guard is a claim of totality; mean it.
+- **Inverse and sibling operations are specified together.** Spec `create` ⇒ say what `update`/`delete` do (or that they are structurally rejected); spec `add` ⇒ `remove`. Declaring one member of an operation family and leaving the rest to the implementer is the single most common omission.
+- **Invariants quantify over the whole domain.** A property that must hold at several sites (every place a secret is logged, every consumer of a changed row) is `all x: Site | …`, not an assertion about one representative — the universal *is* the claim that no site is unhandled.
+
+Ground every one of these against the code you already opened: the enum's real members, the function's real error union, the actual callers. That gives the completeness check an **external oracle** — the grounded types plus `pant --check`'s exhaustiveness and contradiction analysis — instead of relying on re-reading the spec and hoping to spot the hole. A case you genuinely cannot resolve from the workspace goes to `openQuestions`; an unspecified case is never closed by guessing it into the contract.
+
 ## Patch Classification
 
 Each patch includes a `classification` field:
@@ -413,7 +427,7 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 2. **Context-resource fit** — the validator confirms routing is bidirectional and references resolve. Manually confirm that docs/evals/reference patches actually name the implementation or contract they describe — a resource attached to a patch that never reads it is dead weight.
 
-3. **Spec/evidence completeness** — for each functional change, confirm a spec or acceptance criterion expresses it, a patch implements it, the required context (if any) is attached, and a test/static check is expected to prove it.
+3. **Spec/evidence completeness** — for each functional change, confirm a spec or acceptance criterion expresses it, a patch implements it, the required context (if any) is attached, and a test/static check is expected to prove it. Then, for each rule a patch's spec introduces or changes, confirm the contract is **total over its input domain** per [Complete the contract in the spec](#complete-the-contract-in-the-spec): fallible results cover every error arm, `cond` case analysis is exhaustive, partial rules state their guard, and operation families (create/update/delete) are specified together. An unresolvable case belongs in `openQuestions`, not guessed into the contract.
 
 4. **Operational considerations are substantive** (`operationalConsiderationsSubstantive`) — every `operationalConsiderations` sub-field is required by the schema, but presence ≠ engagement. Confirm each sub-field names concrete surfaces in *this* gameplan (specific runtimes, formats, code paths, stateful writes) rather than platitudes. "Not applicable" only with a brief gameplan-specific justification. See [Operational Considerations](#operational-considerations).
 
@@ -487,7 +501,7 @@ We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for
 
 - **Language reference**: `https://raw.githubusercontent.com/subsetpark/pantagruel/refs/heads/master/REFERENCE.md` — fetch this for syntax details
 - **Parse validation**: covered by `scripts/validate.py` (see [Verification](#verification)). Bare `pant <file.pant>` type-checks; exit 0 = well-formed; on 0.22, success is silent.
-- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
+- **SMT verification (optional)**: `pant --check <file.pant>` runs SMT-based invariant/precondition checks (requires `z3` or `cvc5`). Use this to catch contradictions, unreachable states, and violated invariants — not a replacement for the parse check. Run it whenever a per-patch spec uses `cond` case analysis or sum-type coverage, to confirm the contract is total over its input domain (see [Complete the contract in the spec](#complete-the-contract-in-the-spec)). `--bound N` sets the domain-element bound (default 3); `--solver z3|cvc5` picks a solver. The validator does not run `--check`; invoke it manually when you want SMT coverage.
 - **Module naming**: final-state spec uses `<PROJECT_NAME>` (e.g., `EXTRACT_DECISION`); per-patch specs use `<PROJECT_NAME>_PATCH_<N>`
 - **Style**:
   - Progressive disclosure (top-down chapter structure); keep per-patch specs self-contained (redeclare referenced domains/rules rather than importing)
@@ -495,6 +509,7 @@ We use [Pantagruel](https://github.com/subsetpark/pantagruel) — a language for
   - Enum-like values are best modelled as nullary lowercase rules returning the domain: `skip => Disposition.` (not `Skip => Disposition.` — uppercase rule names will not parse)
   - Rules with multiple parameters use **comma-separated typed params**, not arrows: `inline-decisions rf: RunnerFiber, p: Patch => Nat0.` (not `rf: RunnerFiber -> Patch => Nat0.`)
   - Every chapter needs at least one declaration in its head before the `---` separator; if a patch introduces no new invariants, redeclare the prior chapter's domains/rules so the module is self-contained
+  - Make contracts total: model fallible results as sum types (`Outcome = Ok + RateLimited.`) and constrain the rule across all arms; close `cond` case analysis with a final `true => …` arm; declare rules total (no guard) unless partiality is intended, where the guard states the precondition. See [Complete the contract in the spec](#complete-the-contract-in-the-spec)
 
 ### Using a different spec language
 
