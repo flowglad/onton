@@ -175,7 +175,8 @@ module Make (W : Worktree.S) (Env : ENV) : S = struct
             let rec fetch_base attempt =
               match W.fetch_origin_branch ~fetch_lock ~branch:base with
               | Fetch_branch_ok as result -> result
-              | (Fetch_branch_no_remote_ref | Fetch_branch_error _) as result ->
+              | Fetch_branch_no_remote_ref as result -> result
+              | Fetch_branch_error _ as result ->
                   if attempt >= 3 then result
                   else (
                     Eio.Fiber.yield ();
