@@ -214,7 +214,7 @@ Each patch includes a `classification` field:
 
 ## Functional Change Ownership
 
-A gameplan whose patches share responsibility for a behavioral change vaguely fails in a predictable way: each patch implementer reads the prose narrative, sees the change mentioned, and assumes a different patch owns it. The change falls through the cracks. The whole point of decomposing a gameplan into mergeable patches is defeated when a behavior is described as a gameplan-level concept that has no single named owner.
+When two patches share responsibility for a behavioral change, each implementer sees it mentioned and assumes the other owns it, so the change falls through the cracks — a behavior described only at the gameplan level, with no single owning patch.
 
 The `functionalChanges` array prevents this. It is an **exhaustive enumeration** of every functional or behavioural delta the gameplan introduces, with each entry assigned to exactly one owning patch.
 
@@ -542,7 +542,7 @@ V2 JSON gameplans are consumed programmatically via the `patches` and `dependenc
 - **Be explicit** — easy to execute patch-by-patch by a coding agent with no context window
 - **Include function signatures** for new/modified functions
 - **Ground every reference** — resolve every file path and symbol against the real checkout before naming it, and give any surface multiple patches touch one shared, identical reference. See [Ground Every Reference in Real Code](#ground-every-reference-in-real-code)
-- **Keep it concise** — 10x easier to review than the resulting code
+- **Keep it concise** — it must stay far easier to review than the code it produces (the core principle above)
 - **Workstream alignment** — if part of a workstream, acceptance criteria must align with the milestone's "Definition of Done" and cover every terminal Acceptance-Suite assertion this milestone owns; reconcile both during [write-back](#writing-back-to-the-parent-workstream)
 - **Specs are normative** — the formal specs are the source of truth for what "done" means; prose acceptance criteria are a human-readable summary
 
