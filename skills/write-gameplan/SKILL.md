@@ -109,6 +109,33 @@ Each patch object must have: `number`, `classification` (INFRA\|GATED\|BEHAVIOR)
 
 The inline `spec` and `finalStateSpec` string fields in the JSON are the **sole source of truth** for formal specifications. Do not maintain separate spec files alongside the gameplan. For verification, extract the strings and validate them with the spec language's toolchain (see [Specification Language](#specification-language) below). Do not persist the extracted files.
 
+## Ground Every Reference in Real Code
+
+The gameplanning agent runs **inside a checkout of the target repo** (see [One Repo Per Gameplan](#one-repo-per-gameplan)). It can open any file in the repo and inspect any dependency that is installed or vendored in that checkout. Use that access. A gameplan's value collapses the moment a patch agent opens the file the spec named and the path, function, type, or field isn't there — and the two most common mechanical defects in executed gameplans are exactly these: **a named file/path that does not exist** and **a symbol referenced under the wrong name**. Both are eliminable at authoring time, because the answer was sitting in the workspace the whole time.
+
+### Rule 1 — Ground every reference you can resolve
+
+Before you write a file path, module, function, type, field, constant, enum value, command name, or signature into *any* field — `requiredChanges[].file` / `.signature`, `patches[].files[].path`, `contextResources[].paths`, a `changes` step, or a `spec` — **resolve it against the actual code**:
+
+- **Repo source.** Open the file; confirm the path exists. For a file the gameplan *creates*, confirm its parent directory and sibling naming convention are real. Confirm every symbol is spelled exactly as it appears in the code — the real export name, the real enum/constant value (not a display string or a paraphrase), and the real test-file convention (`foo.test.ts` vs `foo.unit.test.ts` is a recurring miss).
+- **Inspectable dependencies.** If a patch calls into a third-party library that is installed or vendored in the checkout (`node_modules`, vendored modules, type stubs, generated clients), read its actual declarations before specifying the call shape. Do not reconstruct an API from memory when the real types are on disk.
+- **Signatures.** When you give a `signature` for a new or modified function, make it consistent with the real types it must accept and return — look those types up; do not invent them.
+
+If you assert a path or symbol you did not verify, you are guessing, and the patch agent inherits the guess with no way to know it was one.
+
+### Rule 2 — Mark, don't invent, what you cannot ground
+
+Some references are genuinely *not* resolvable from the workspace, and those must not be silently invented either:
+
+- A file the gameplan will create does not exist yet — name it and mark it `action: create`. That is grounding the *convention*, not asserting the file is present.
+- A fact that lives in an **external system** the agent cannot inspect — whether a live SaaS integration actually exposes a particular API/tool, the shape of a third-party webhook, a value held only in a dashboard or secret store — is not a thing to guess into a `spec`. Route it to `openQuestions` or the relevant `operationalConsiderations` sub-field (e.g. `externalSystemAccess`) so it is resolved deliberately.
+
+The dividing line is precisely **inspectability from the gameplanning state**: ground what the checkout can answer; surface what it cannot. Do not let an un-inspectable external fact masquerade as a grounded one.
+
+### Rule 3 — Give multi-patch surfaces one shared anchor
+
+When more than one patch touches the same file or symbol — patch 1 introduces a type that patches 3 and 5 consume, two patches edit the same registry, a stub patch and its implementation patch share a test file — **name that file/symbol with one concrete, identical reference everywhere it appears.** Choose the exact path and exported identifier once, then reuse it verbatim across every patch's `files`, `changes`, `requiredChanges`, and `contextResources`. Prefer routing the shared surface through a `contextResources` entry whose `consumedBy` lists every patch that depends on it, so they all read the same authoritative description. The failure this prevents: two patch agents, working concurrently in isolated worktrees with no view of each other, each inventing a slightly different name for the same thing — and the pieces failing to fit together at merge.
+
 ## Context Resources
 
 `contextResources` names authoritative context that an implementing patch agent must read before editing. This is for existing code, contracts, docs, tests, or predecessor surfaces that constrain implementation. It is not a dumping ground for general background.
@@ -392,7 +419,9 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 
 5. **Atomicity** (`gameplanIsAtomicAndAutonomous`) — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm no patch is conditional on another's outcome, no `changes` step expects a human between patches (flag flip, manual script, dashboard check, decision branch), and no patch implies an observation/soak window. If any slipped in, re-decompose as a multi-milestone workstream via [[write-workstream]].
 
-6. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
+6. **Reference grounding** — for every file path and symbol the gameplan names (`requiredChanges`, `files`, `signature`s, `contextResources[].paths`, and symbol references inside `changes`/`spec` prose), confirm it resolves against the real workspace per [Ground Every Reference in Real Code](#ground-every-reference-in-real-code): existing paths open, created paths follow a real sibling convention, symbols match the actual exports/enums/test-file names, and dependency call shapes match on-disk declarations. Confirm any fact you *couldn't* ground (external-system behavior) lives in `openQuestions`/`operationalConsiderations` rather than asserted in a spec. Confirm every surface touched by more than one patch is named with one identical reference across those patches.
+
+7. **Remaining checklist booleans** — once the items above hold, set every other `mergabilityChecklist` boolean honestly based on the gameplan content and the validator's PASS.
 
 ## Resolving Open Questions
 
@@ -482,6 +511,7 @@ V2 JSON gameplans are consumed programmatically via the `patches` and `dependenc
 
 - **Be explicit** — easy to execute patch-by-patch by a coding agent with no context window
 - **Include function signatures** for new/modified functions
+- **Ground every reference** — resolve every file path and symbol against the real checkout before naming it, and give any surface multiple patches touch one shared, identical reference. See [Ground Every Reference in Real Code](#ground-every-reference-in-real-code)
 - **Keep it concise** — 10x easier to review than the resulting code
 - **Workstream alignment** — if part of a workstream, acceptance criteria must align with the milestone's "Definition of Done" and cover every terminal Acceptance-Suite assertion this milestone owns; reconcile both during [write-back](#writing-back-to-the-parent-workstream)
 - **Specs are normative** — the formal specs are the source of truth for what "done" means; prose acceptance criteria are a human-readable summary
