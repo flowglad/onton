@@ -1423,11 +1423,20 @@ struct
                                                         from removal event"
                                                        (Base.List.length real));
                                                   real
-                                              | Ok [] | Error _ ->
+                                              | Ok [] ->
                                                   log_event runtime ~patch_id
                                                     "No merge-queue removal \
                                                      checks available — using \
                                                      placeholder";
+                                                  synthetic_checks
+                                              | Error e ->
+                                                  log_event runtime ~patch_id
+                                                    (Printf.sprintf
+                                                       "Failed to fetch \
+                                                        merge-queue removal \
+                                                        checks (%s) — using \
+                                                        placeholder"
+                                                       (Forge.show_error e));
                                                   synthetic_checks)
                                           | None -> synthetic_checks
                                       in
