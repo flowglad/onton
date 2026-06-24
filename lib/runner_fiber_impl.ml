@@ -1398,9 +1398,58 @@ struct
                                           agent.Patch_agent.ci_checks
                                           ~f:Ci_check.is_merge_queue_failure
                                       in
+                                      (* The synthetic placeholder only tells the
+                                         agent "merge queue failed". When it is
+                                         present, fetch the real failing checks
+                                         from the removal event's [beforeCommit]
+                                         (the merge-group commit GitHub ran) and
+                                         prefer them; fall back to the
+                                         placeholder on empty/error. *)
+                                      let merge_queue_checks =
+                                        if Base.List.is_empty synthetic_checks
+                                        then []
+                                        else
+                                          match pr_number with
+                                          | Some pr_num -> (
+                                              match
+                                                Forge.merge_queue_removal_checks
+                                                  ~pr_number:pr_num
+                                              with
+                                              | Ok (_ :: _ as real) ->
+                                                  log_event runtime ~patch_id
+                                                    (Printf.sprintf
+                                                       "Fetched %d failing \
+                                                        merge-queue check(s) \
+                                                        from removal event"
+                                                       (Base.List.length real));
+                                                  (* Keep the synthetic marker
+                                                     too: downstream freshness
+                                                     and retry logic treats
+                                                     [Ci_check.is_merge_queue_failure]
+                                                     as the durable signal that
+                                                     the PR was ejected from the
+                                                     queue. *)
+                                                  synthetic_checks @ real
+                                              | Ok [] ->
+                                                  log_event runtime ~patch_id
+                                                    "No merge-queue removal \
+                                                     checks available — using \
+                                                     placeholder";
+                                                  synthetic_checks
+                                              | Error e ->
+                                                  log_event runtime ~patch_id
+                                                    (Printf.sprintf
+                                                       "Failed to fetch \
+                                                        merge-queue removal \
+                                                        checks (%s) — using \
+                                                        placeholder"
+                                                       (Forge.show_error e));
+                                                  synthetic_checks)
+                                          | None -> synthetic_checks
+                                      in
                                       let ci_checks =
                                         pr_state.Pr_state.ci_checks
-                                        @ synthetic_checks
+                                        @ merge_queue_checks
                                       in
                                       Runtime.update_orchestrator runtime
                                         (fun orch ->

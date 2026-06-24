@@ -16,6 +16,11 @@
  (libraries onton onton_core yojson))
 
 (test
+ (name test_github_merge_queue_removal)
+ (modules test_github_merge_queue_removal)
+ (libraries onton onton_core base))
+
+(test
  (name test_json)
  (modules test_json)
  (libraries onton_core base yojson ppx_yojson_conv_lib))
