@@ -1422,7 +1422,14 @@ struct
                                                         merge-queue check(s) \
                                                         from removal event"
                                                        (Base.List.length real));
-                                                  real
+                                                  (* Keep the synthetic marker
+                                                     too: downstream freshness
+                                                     and retry logic treats
+                                                     [Ci_check.is_merge_queue_failure]
+                                                     as the durable signal that
+                                                     the PR was ejected from the
+                                                     queue. *)
+                                                  synthetic_checks @ real
                                               | Ok [] ->
                                                   log_event runtime ~patch_id
                                                     "No merge-queue removal \

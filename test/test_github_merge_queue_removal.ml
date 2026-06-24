@@ -88,6 +88,39 @@ let test_mixed_returns_only_failures () =
       assert (Option.is_none (find "Lint"));
       Stdlib.print_endline "  mixed rollup → only failures: OK"
 
+let truncated_event =
+  {|[{
+    "createdAt": "2026-06-24T20:55:00Z",
+    "reason": "The merge commit failed required status checks.",
+    "beforeCommit": {
+      "oid": "mergegroupsha123",
+      "statusCheckRollup": {
+        "state": "FAILURE",
+        "contexts": {
+          "pageInfo": { "hasNextPage": true },
+          "nodes": [
+            { "__typename": "CheckRun", "databaseId": 222,
+              "name": "integration-tests", "conclusion": "FAILURE",
+              "detailsUrl": "https://gh/checks/222", "text": "assertion failed",
+              "startedAt": null }
+          ]
+        }
+      }
+    }
+  }]|}
+
+let test_truncated_rollup_is_ok_empty () =
+  match parse (removal_body ~nodes:truncated_event) with
+  | Ok [] ->
+      Stdlib.print_endline "  truncated rollup → Ok [] keeps placeholder: OK"
+  | Ok _ ->
+      Stdlib.Printf.eprintf "  FAIL: truncated rollup returned partial checks\n";
+      Stdlib.exit 1
+  | Error e ->
+      Stdlib.Printf.eprintf "  FAIL: truncated rollup errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
+
 let test_empty_timeline_is_ok_empty () =
   match parse (removal_body ~nodes:"[]") with
   | Ok [] -> Stdlib.print_endline "  empty timeline → Ok []: OK"
@@ -136,6 +169,7 @@ let test_graphql_errors_propagate () =
 
 let () =
   test_mixed_returns_only_failures ();
+  test_truncated_rollup_is_ok_empty ();
   test_empty_timeline_is_ok_empty ();
   test_null_before_commit_is_ok_empty ();
   test_missing_pull_request_is_ok_empty ();

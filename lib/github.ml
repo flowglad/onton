@@ -700,7 +700,9 @@ type merge_queue_removal_pull_request = {
 let checks_of_commit (c : commit) : Types.Ci_check.t list =
   match c.status_check_rollup with
   | None -> []
-  | Some rollup -> List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
+  | Some rollup ->
+      if rollup.contexts.page_info.has_next_page then []
+      else List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
 
 let parse_merge_queue_removal_response body =
   match Yojson.Safe.from_string body with
@@ -876,7 +878,8 @@ let enqueue_pr_info ~net ~clock ?timeout t pr =
 
 (* [last: 1] yields the most recent removal — the failure that ejected the PR.
    [contexts(first: 100)] is unpaginated, matching [graphql_query]'s documented
-   cap; failing checks are few and fall within the first page. *)
+   cap. A truncated rollup is treated as unknown so callers keep their synthetic
+   merge-queue placeholder instead of replacing it with a partial failure list. *)
 let merge_queue_removal_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
