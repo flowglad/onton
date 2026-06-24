@@ -81,6 +81,13 @@ val parse_dequeue_response : string -> (unit, error) Result.t
 (** Parse a [dequeuePullRequest] GraphQL response body. Pure helper exposed for
     regression tests. *)
 
+val parse_merge_queue_removal_response :
+  string -> (Types.Ci_check.t list, error) Result.t
+(** Parse a merge-queue removal-event GraphQL response body into the failing
+    checks of the most recent removal's [beforeCommit] (the merge-group commit).
+    [Ok []] when there is no removal event / no failing checks. Pure helper
+    exposed for regression tests. *)
+
 val is_method_not_allowed : error -> bool
 (** True only for the REST 405 response GitHub returns when a merge method is
     disabled for the repository. *)

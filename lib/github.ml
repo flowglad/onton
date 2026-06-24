@@ -675,6 +675,63 @@ let parse_enqueue_pr_info_response body =
                         (Json_parse_error
                            "pullRequest response missing headRefOid")))))
 
+(* Merge-queue removal checks. GitHub runs merge-queue CI on the ephemeral
+   merge-group commit, not the PR head, so [pr_state]'s PR-head rollup never
+   sees those failures. The [RemovedFromMergeQueueEvent.beforeCommit] is that
+   merge-group commit; its [statusCheckRollup] is the run shown in the PR's
+   "N of M checks passed" removal panel. We reuse [commit] (its [oid] is
+   ignored via allow-extra-fields) and [ci_check_of_context] verbatim. *)
+type removal_event_node = {
+  before_commit : commit option; [@key "beforeCommit"] [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type removal_timeline_items = {
+  nodes : removal_event_node list; [@yojson.default []]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type merge_queue_removal_pull_request = {
+  timeline_items : removal_timeline_items;
+      [@key "timelineItems"] [@yojson.default { nodes = [] }]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+let checks_of_commit (c : commit) : Types.Ci_check.t list =
+  match c.status_check_rollup with
+  | None -> []
+  | Some rollup -> List.filter_map rollup.contexts.nodes ~f:ci_check_of_context
+
+let parse_merge_queue_removal_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> (
+      match graphql_errors json with
+      | Some msgs -> Error (Graphql_error msgs)
+      | None -> (
+          let pr_json =
+            Json.field "data" json
+            |> Option.bind ~f:(Json.field "repository")
+            |> Option.bind ~f:(Json.field "pullRequest")
+          in
+          match pr_json with
+          (* A missing PR / absent timeline is "no removal event", not an error:
+             [Ok []] tells the caller to keep the synthetic placeholder. *)
+          | None -> Ok []
+          | Some pr_json -> (
+              match
+                Json.try_of_yojson merge_queue_removal_pull_request_of_yojson
+                  pr_json
+              with
+              | Error msg -> Error (Json_parse_error msg)
+              | Ok pr ->
+                  let checks =
+                    List.concat_map pr.timeline_items.nodes ~f:(fun n ->
+                        Option.value_map n.before_commit ~default:[]
+                          ~f:checks_of_commit)
+                  in
+                  Ok (List.filter checks ~f:Types.Ci_check.is_failure))))
+
 let https_config () =
   match Ca_certs.authenticator () with
   | Error (`Msg msg) -> Error ("TLS CA setup failed: " ^ msg)
@@ -815,6 +872,74 @@ let enqueue_pr_info ~net ~clock ?timeout t pr =
     request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
   with
   | Ok resp_str -> parse_enqueue_pr_info_response resp_str
+  | Error _ as e -> e
+
+(* [last: 1] yields the most recent removal — the failure that ejected the PR.
+   [contexts(first: 100)] is unpaginated, matching [graphql_query]'s documented
+   cap; failing checks are few and fall within the first page. *)
+let merge_queue_removal_query =
+  {|query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+        nodes {
+          ... on RemovedFromMergeQueueEvent {
+            createdAt
+            reason
+            beforeCommit {
+              oid
+              statusCheckRollup {
+                state
+                contexts(first: 100) {
+                  pageInfo { hasNextPage }
+                  nodes {
+                    ... on CheckRun {
+                      __typename
+                      databaseId
+                      name
+                      conclusion
+                      detailsUrl
+                      text
+                      startedAt
+                    }
+                    ... on StatusContext {
+                      __typename
+                      context
+                      state
+                      targetUrl
+                      description
+                      createdAt
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}|}
+
+let build_merge_queue_removal_request_body t (pr : Types.Pr_number.t) =
+  let variables =
+    `Assoc
+      [
+        ("owner", `String t.owner);
+        ("repo", `String t.repo);
+        ("number", `Int (Types.Pr_number.to_int pr));
+      ]
+  in
+  `Assoc
+    [ ("query", `String merge_queue_removal_query); ("variables", variables) ]
+  |> Yojson.Safe.to_string
+
+let merge_queue_removal_checks ~net ~clock ?timeout t pr =
+  let body = build_merge_queue_removal_request_body t pr in
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
+  with
+  | Ok resp_str -> parse_merge_queue_removal_response resp_str
   | Error _ as e -> e
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
@@ -1428,6 +1553,9 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
       | Already_enqueued of Pr_state.merge_queue_entry
 
     let pr_state pr_number = pr_state ~net ~clock client pr_number
+
+    let merge_queue_removal_checks ~pr_number =
+      merge_queue_removal_checks ~net ~clock client pr_number
 
     let list_prs ~branch ?base ~state () =
       match base with
