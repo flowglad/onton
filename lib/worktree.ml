@@ -797,7 +797,14 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
         if String.is_empty s then None else Some s
       else None
   in
-  let branch_ref_sha = read_sha ("refs/heads/" ^ branch_str) in
+  let branch_ref_sha =
+    match read_sha ("refs/heads/" ^ branch_str) with
+    | Some _ as sha -> sha
+    | None -> (
+        match worktree_head_branch with
+        | Some head when String.equal head branch_str -> read_sha branch_str
+        | Some _ | None -> None)
+  in
   let remote_tracking_sha = read_sha ("refs/remotes/origin/" ^ branch_str) in
   let ancestry : Push_plan.ancestry =
     if not worktree_path_exists then Push_plan.Unknown
