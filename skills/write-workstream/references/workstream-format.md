@@ -9,7 +9,7 @@
 [2-4 sentences describing the end state and why it matters]
 
 ## Current State
-[Brief description of where the codebase is today relative to this vision]
+[Brief description of where the codebase is today relative to this vision. Ground this in the actual code — read the subsystems the workstream touches and state what you verified, not how you assume the architecture is wired. This section is the foundation every milestone rests on; a wrong claim here ("there is no X", "every Y works via Z") propagates into invented milestones. See "Ground the Workstream in the Real Codebase" in SKILL.md.]
 
 ## Key Challenges
 [Bullet list of the hardest parts or biggest unknowns]
