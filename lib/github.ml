@@ -1009,11 +1009,10 @@ let fetch_all_contexts ~net ~clock ?timeout t ~oid :
     (Types.Ci_check.t list, error) Result.t =
   let rec loop ~after ~page acc =
     if page >= max_context_pages then (
-      Stdlib.prerr_endline
-        (Printf.sprintf
-           "onton: statusCheckRollup contexts exceeded %d pages for commit %s \
-            — using partial list"
-           max_context_pages oid);
+      Eio.traceln
+        "onton: statusCheckRollup contexts exceeded %d pages for commit %s — \
+         using partial list"
+        max_context_pages oid;
       Ok (List.concat (List.rev acc)))
     else
       let body = build_contexts_request_body t ~oid ~after in
