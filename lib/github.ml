@@ -267,30 +267,34 @@ type context_node = {
 
 type page_info = {
   has_next_page : bool; [@key "hasNextPage"] [@yojson.default false]
+  end_cursor : string option; [@key "endCursor"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type contexts = {
   page_info : page_info;
-      [@key "pageInfo"] [@yojson.default { has_next_page = false }]
+      [@key "pageInfo"]
+      [@yojson.default { has_next_page = false; end_cursor = None }]
   nodes : context_node list; [@yojson.default []]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type status_check_rollup = {
   contexts : contexts;
-      [@yojson.default { page_info = { has_next_page = false }; nodes = [] }]
+      [@yojson.default
+        { page_info = { has_next_page = false; end_cursor = None }; nodes = [] }]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type commit = {
+  oid : string option; [@yojson.default None]
   status_check_rollup : status_check_rollup option;
       [@key "statusCheckRollup"] [@yojson.default None]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
 type commit_node = {
-  commit : commit; [@yojson.default { status_check_rollup = None }]
+  commit : commit; [@yojson.default { oid = None; status_check_rollup = None }]
 }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
@@ -420,6 +424,128 @@ let ci_check_of_context (n : context_node) : Types.Ci_check.t option =
             id = None;
           })
   | Some _ | None -> None
+
+let graphql_errors json =
+  match Json.field "errors" json with
+  | None -> None
+  | Some errors_json -> (
+      match Json.list errors_json with
+      | Some [] -> None
+      | Some errors ->
+          Some (List.filter_map errors ~f:(Json.string_field "message"))
+      | None -> Some [])
+
+(* Paginated fetch of a commit's [statusCheckRollup.contexts], keyed by commit
+   OID via [repository.object]. The main poll query and the merge-queue-removal
+   query both cap contexts at [first: 100] and so go stale on PRs with >100
+   checks; this query (looped over [after:]) recovers the complete list. Keyed by
+   OID rather than re-traversing [commits(last:1)] / [timelineItems] so the same
+   loop serves both the PR-head commit and the ephemeral merge-group
+   [beforeCommit]. The node selection mirrors [graphql_query] verbatim. *)
+let contexts_by_oid_query =
+  {|query($owner: String!, $repo: String!, $oid: GitObjectID!, $after: String) {
+  repository(owner: $owner, name: $repo) {
+    object(oid: $oid) {
+      ... on Commit {
+        statusCheckRollup {
+          contexts(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              ... on CheckRun {
+                __typename
+                databaseId
+                name
+                conclusion
+                detailsUrl
+                text
+                startedAt
+              }
+              ... on StatusContext {
+                __typename
+                context
+                state
+                targetUrl
+                description
+                createdAt
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}|}
+
+let build_contexts_request_body t ~oid ~after =
+  let variables =
+    `Assoc
+      [
+        ("owner", `String t.owner);
+        ("repo", `String t.repo);
+        ("oid", `String oid);
+        ("after", match after with Some c -> `String c | None -> `Null);
+      ]
+  in
+  `Assoc [ ("query", `String contexts_by_oid_query); ("variables", variables) ]
+  |> Yojson.Safe.to_string
+
+type contexts_commit = {
+  status_check_rollup : status_check_rollup option;
+      [@key "statusCheckRollup"] [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type contexts_repository = {
+  obj : contexts_commit option; [@key "object"] [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type contexts_data = {
+  repository : contexts_repository option; [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type contexts_response = { data : contexts_data option [@yojson.default None] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+(* Parse one page of the [contexts_by_oid_query] response into its mapped checks
+   plus the [(has_next_page, end_cursor)] needed to drive pagination. A missing
+   object/rollup is a non-error empty page (the commit may be gc'd or carry no
+   rollup) — the loop simply stops. Pure; total on malformed input. *)
+let parse_contexts_page_json json :
+    (Types.Ci_check.t list * bool * string option, error) Result.t =
+  match graphql_errors json with
+  | Some msgs -> Error (Graphql_error msgs)
+  | None -> (
+      match Json.try_of_yojson contexts_response_of_yojson json with
+      | Error msg -> Error (Json_parse_error msg)
+      | Ok r ->
+          let contexts =
+            r.data
+            |> Option.bind ~f:(fun (d : contexts_data) -> d.repository)
+            |> Option.bind ~f:(fun (repo : contexts_repository) -> repo.obj)
+            |> Option.bind ~f:(fun (c : contexts_commit) ->
+                c.status_check_rollup)
+            |> Option.map ~f:(fun (rollup : status_check_rollup) ->
+                rollup.contexts)
+          in
+          let checks =
+            match contexts with
+            | None -> []
+            | Some ctx -> List.filter_map ctx.nodes ~f:ci_check_of_context
+          in
+          let has_next_page, end_cursor =
+            match contexts with
+            | None -> (false, None)
+            | Some ctx -> (ctx.page_info.has_next_page, ctx.page_info.end_cursor)
+          in
+          Ok (checks, has_next_page, end_cursor))
+
+let parse_contexts_page body :
+    (Types.Ci_check.t list * bool * string option, error) Result.t =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> parse_contexts_page_json json
 
 let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
   let id =
@@ -565,16 +691,6 @@ let parse_response ~owner body =
   try parse_response_json ~owner (Yojson.Safe.from_string body)
   with Yojson.Json_error msg -> Error (Json_parse_error msg)
 
-let graphql_errors json =
-  match Json.field "errors" json with
-  | None -> None
-  | Some errors_json -> (
-      match Json.list errors_json with
-      | Some [] -> None
-      | Some errors ->
-          Some (List.filter_map errors ~f:(Json.string_field "message"))
-      | None -> Some [])
-
 let merge_queue_entry_field ~context json =
   match json with
   | None -> Error (Json_parse_error (context ^ " missing mergeQueueEntry"))
@@ -679,8 +795,9 @@ let parse_enqueue_pr_info_response body =
    merge-group commit, not the PR head, so [pr_state]'s PR-head rollup never
    sees those failures. The [RemovedFromMergeQueueEvent.beforeCommit] is that
    merge-group commit; its [statusCheckRollup] is the run shown in the PR's
-   "N of M checks passed" removal panel. We reuse [commit] (its [oid] is
-   ignored via allow-extra-fields) and [ci_check_of_context] verbatim. *)
+   "N of M checks passed" removal panel. We reuse [commit] (capturing its [oid]
+   so a truncated rollup can be re-fetched by OID) and [ci_check_of_context]
+   verbatim. *)
 type removal_event_node = {
   before_commit : commit option; [@key "beforeCommit"] [@yojson.default None]
 }
@@ -733,6 +850,46 @@ let parse_merge_queue_removal_response body =
                           ~f:checks_of_commit)
                   in
                   Ok (List.filter checks ~f:Types.Ci_check.is_failure))))
+
+(* Detect a {e truncated} merge-group rollup and surface the [beforeCommit] OID
+   so the I/O layer can paginate it (mirrors the [pr_state] truncation handling).
+   [parse_merge_queue_removal_response] returns [Ok []] on truncation — correct
+   for a pure parser that only sees page 1 — and this companion tells the wrapper
+   when that empty result is hiding more pages. [Some oid] only when the latest
+   removal event's rollup reports [hasNextPage] and carries an OID; [None]
+   otherwise (no event, complete rollup, missing OID, or malformed body). Pure;
+   total on malformed input. *)
+let parse_merge_queue_removal_pagination body : string option =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error _ -> None
+  | json -> (
+      match graphql_errors json with
+      | Some _ -> None
+      | None -> (
+          let pr_json =
+            Json.field "data" json
+            |> Option.bind ~f:(Json.field "repository")
+            |> Option.bind ~f:(Json.field "pullRequest")
+          in
+          match pr_json with
+          | None -> None
+          | Some pr_json -> (
+              match
+                Json.try_of_yojson merge_queue_removal_pull_request_of_yojson
+                  pr_json
+              with
+              | Error _ -> None
+              | Ok pr ->
+                  List.find_map pr.timeline_items.nodes ~f:(fun n ->
+                      match n.before_commit with
+                      | None -> None
+                      | Some c ->
+                          let truncated =
+                            Option.value_map c.status_check_rollup
+                              ~default:false ~f:(fun rollup ->
+                                rollup.contexts.page_info.has_next_page)
+                          in
+                          if truncated then c.oid else None))))
 
 let https_config () =
   match Ca_certs.authenticator () with
@@ -837,13 +994,72 @@ let check_repo_access_internal ~net ~clock ?timeout t =
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
+(* Runaway guard: at 100 contexts/page this caps a single rollup at 2500 checks,
+   far above any real PR while bounding the request count if GitHub ever returns
+   a non-terminating cursor. *)
+let max_context_pages = 25
+
+(* Fetch every page of a commit's [statusCheckRollup.contexts], following the
+   [endCursor] until exhausted, and return the complete mapped check list. Only
+   invoked on the rare truncated rollup (>100 contexts); the first page is
+   re-fetched here too, trading one extra request for not threading the first
+   query's cursor through [Pr_state.t]. Any request/parse error aborts and is
+   propagated so callers can fall back to their conservative behavior. *)
+let fetch_all_contexts ~net ~clock ?timeout t ~oid :
+    (Types.Ci_check.t list, error) Result.t =
+  let rec loop ~after ~page acc =
+    if page >= max_context_pages then (
+      Eio.traceln
+        "onton: statusCheckRollup contexts exceeded %d pages for commit %s — \
+         using partial list"
+        max_context_pages oid;
+      Ok (List.concat (List.rev acc)))
+    else
+      let body = build_contexts_request_body t ~oid ~after in
+      match
+        request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
+      with
+      | Error _ as e -> e
+      | Ok resp_str -> (
+          match parse_contexts_page resp_str with
+          | Error _ as e -> e
+          | Ok (checks, has_next_page, end_cursor) -> (
+              let acc = checks :: acc in
+              match (has_next_page, end_cursor) with
+              | true, (Some _ as cursor) ->
+                  loop ~after:cursor ~page:(page + 1) acc
+              (* hasNextPage with no cursor would loop forever — stop with what we
+                 have rather than spin. *)
+              | true, None | false, _ -> Ok (List.concat (List.rev acc))))
+  in
+  loop ~after:None ~page:0 []
+
 let pr_state ~net ~clock ?timeout t pr =
   let body = build_request_body t pr in
   match
     request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
   with
-  | Ok resp_str -> parse_response ~owner:t.owner resp_str
   | Error _ as e -> e
+  | Ok resp_str -> (
+      match parse_response ~owner:t.owner resp_str with
+      | Error _ as e -> e
+      | Ok state -> (
+          if
+            (* The first-page rollup was complete: trust it as-is. *)
+            not state.Pr_state.ci_checks_truncated
+          then Ok state
+          else
+            (* >100 contexts: the parser conservatively downgraded a passing
+               rollup to Pending. Paginate the full set and re-derive. On a
+               missing head OID or any pagination failure, keep the conservative
+               state — identical to pre-pagination behavior, never worse. *)
+            match state.Pr_state.head_oid with
+            | None -> Ok state
+            | Some oid -> (
+                match fetch_all_contexts ~net ~clock ?timeout t ~oid with
+                | Error _ -> Ok state
+                | Ok all_checks ->
+                    Ok (Pr_state.with_resolved_checks state ~all_checks))))
 
 let enqueue_info_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
@@ -877,9 +1093,11 @@ let enqueue_pr_info ~net ~clock ?timeout t pr =
   | Error _ as e -> e
 
 (* [last: 1] yields the most recent removal — the failure that ejected the PR.
-   [contexts(first: 100)] is unpaginated, matching [graphql_query]'s documented
-   cap. A truncated rollup is treated as unknown so callers keep their synthetic
-   merge-queue placeholder instead of replacing it with a partial failure list. *)
+   [contexts(first: 100)] fetches the first page; on a truncated rollup (>100
+   contexts) [merge_queue_removal_checks] re-fetches the complete list by
+   [beforeCommit] OID via [fetch_all_contexts], so a merge-group with many checks
+   still surfaces its real failures instead of falling back to the synthetic
+   placeholder. *)
 let merge_queue_removal_query =
   {|query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -942,8 +1160,20 @@ let merge_queue_removal_checks ~net ~clock ?timeout t pr =
   match
     request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body ()
   with
-  | Ok resp_str -> parse_merge_queue_removal_response resp_str
   | Error _ as e -> e
+  | Ok resp_str -> (
+      match parse_merge_queue_removal_pagination resp_str with
+      (* Complete first page (or no event): the pure parser already has the full
+         failure list. *)
+      | None -> parse_merge_queue_removal_response resp_str
+      (* >100 contexts on the merge-group commit: paginate by OID and filter to
+         failures over the complete set. On any pagination failure, fall back to
+         the pure parser (which returns [Ok []] for the truncated case), keeping
+         the synthetic placeholder rather than a partial list. *)
+      | Some oid -> (
+          match fetch_all_contexts ~net ~clock ?timeout t ~oid with
+          | Ok all -> Ok (List.filter all ~f:Types.Ci_check.is_failure)
+          | Error _ -> parse_merge_queue_removal_response resp_str))
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
     of [(pr_number, base_branch, merged)] for non-CLOSED PRs, newest first. Pure

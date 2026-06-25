@@ -88,6 +88,20 @@ val parse_merge_queue_removal_response :
     [Ok []] when there is no removal event / no failing checks. Pure helper
     exposed for regression tests. *)
 
+val parse_contexts_page :
+  string -> (Types.Ci_check.t list * bool * string option, error) Result.t
+(** Parse one page of the OID-keyed [statusCheckRollup.contexts] pagination
+    query into [(checks, has_next_page, end_cursor)]. A missing object/rollup
+    yields an empty page with [has_next_page = false]. Pure helper exposed for
+    regression tests. *)
+
+val parse_merge_queue_removal_pagination : string -> string option
+(** [Some oid] when the latest merge-queue removal event's [beforeCommit] rollup
+    is truncated ([hasNextPage]) and carries an OID — the signal that
+    [parse_merge_queue_removal_response]'s [Ok []] is hiding further pages that
+    the caller should paginate by OID. [None] otherwise. Pure helper exposed for
+    regression tests. *)
+
 val is_method_not_allowed : error -> bool
 (** True only for the REST 405 response GitHub returns when a merge method is
     disabled for the repository. *)

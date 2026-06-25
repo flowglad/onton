@@ -168,6 +168,56 @@ let prop_derive_check_status =
       if has_failure then Pr_state.equal_check_status result Pr_state.Failing
       else Pr_state.equal_check_status result Pr_state.Passing)
 
+let prop_with_resolved_checks =
+  QCheck2.Test.make
+    ~name:"with_resolved_checks replaces checks and recomputes derived fields"
+    ~count:300
+    QCheck2.Gen.(
+      triple gen_merge_state gen_check_status
+        (list_size (int_range 0 6)
+           (oneof_list
+              [
+                "success";
+                "skipped";
+                "neutral";
+                "failure";
+                "error";
+                "cancelled";
+                "in_progress";
+              ])))
+    (fun (merge_state, initial_check_status, conclusions) ->
+      let all_checks = List.map (fun c -> gen_ci_check c) conclusions in
+      let divergence =
+        Some
+          {
+            Pr_state.github_merge_state_status = "BLOCKED";
+            derived_merge_ready = true;
+          }
+      in
+      let st =
+        {
+          base with
+          Pr_state.merge_state;
+          review_decision = Some "APPROVED";
+          check_status = initial_check_status;
+          ci_checks = [ gen_ci_check "cancelled" ];
+          ci_checks_truncated = true;
+          merge_ready = false;
+          merge_ready_divergence = divergence;
+        }
+      in
+      let result = Pr_state.with_resolved_checks st ~all_checks in
+      let expected_check_status = Pr_state.derive_check_status all_checks in
+      result.Pr_state.ci_checks = all_checks
+      && (not result.Pr_state.ci_checks_truncated)
+      && Pr_state.equal_check_status result.Pr_state.check_status
+           expected_check_status
+      && Bool.equal result.Pr_state.merge_ready
+           (Pr_state.merge_ready_of ~merge_state
+              ~check_status:expected_check_status
+              ~review_decision:st.Pr_state.review_decision)
+      && result.Pr_state.merge_ready_divergence = divergence)
+
 (* merge_ready_divergence_of: Some iff a status was reported and the verdicts
    disagree (github_ready = status="CLEAN"). *)
 let prop_merge_ready_divergence =
@@ -201,4 +251,5 @@ let () =
   QCheck2.Test.check_exn prop_no_unresolved_comments;
   QCheck2.Test.check_exn prop_merge_queue_predicates;
   QCheck2.Test.check_exn prop_derive_check_status;
+  QCheck2.Test.check_exn prop_with_resolved_checks;
   QCheck2.Test.check_exn prop_merge_ready_divergence

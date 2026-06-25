@@ -167,6 +167,33 @@ let derive_check_status (checks : Types.Ci_check.t list) : check_status =
   then Passing
   else Pending
 
+(** Recompute the rollup-derived fields after the {e complete} (paginated) check
+    list is known. The poll query fetches only the first page of
+    [statusCheckRollup.contexts]; when that page is truncated the parser
+    conservatively downgrades a derived [Passing] to [Pending] (it cannot prove
+    page 2+ also passes). Once the effectful layer has fetched every page it
+    calls this with the full list to replace that conservative verdict with the
+    real one — [check_status] re-derived over [all_checks], [merge_ready]
+    re-derived from it, and [ci_checks_truncated] cleared.
+
+    [merge_ready_divergence] is intentionally left untouched: it is
+    diagnostics-only (logged once, never a decision input, never persisted) and
+    recomputing it would require the raw [mergeStateStatus], which is not
+    carried on [t]. *)
+let with_resolved_checks (st : t) ~(all_checks : Types.Ci_check.t list) : t =
+  let check_status = derive_check_status all_checks in
+  let merge_ready =
+    merge_ready_of ~merge_state:st.merge_state ~check_status
+      ~review_decision:st.review_decision
+  in
+  {
+    st with
+    ci_checks = all_checks;
+    ci_checks_truncated = false;
+    check_status;
+    merge_ready;
+  }
+
 (* -- review_blocking -- *)
 
 let%test "review_blocking: REVIEW_REQUIRED blocks" =
@@ -331,3 +358,93 @@ let%test "divergence: exhaustive spec agreement" =
                     String.equal d.github_merge_state_status status
                     && Bool.equal d.derived_merge_ready merge_ready
                 | None -> false)))
+
+(* -- with_resolved_checks -- *)
+
+let check ~conclusion : Types.Ci_check.t =
+  {
+    Types.Ci_check.name = "c";
+    conclusion;
+    details_url = None;
+    description = None;
+    started_at = None;
+    id = None;
+  }
+
+(* A truncated, conservatively-Pending state: the first page was all-passing but
+   [ci_checks_truncated] forced [check_status = Pending] and [merge_ready =
+   false] upstream. This is the wedged shape [with_resolved_checks] must undo. *)
+let truncated_pending_state : t =
+  {
+    status = Open;
+    is_draft = false;
+    merge_state = Mergeable;
+    merge_ready = false;
+    merge_ready_divergence = None;
+    review_decision = None;
+    check_status = Pending;
+    ci_checks = [ check ~conclusion:"success" ];
+    ci_checks_truncated = true;
+    comments = [];
+    unresolved_comment_count = 0;
+    findings = [];
+    node_id = None;
+    merge_queue_required = false;
+    merge_queue_entry = None;
+    head_branch = None;
+    head_oid = Some "deadbeef";
+    merge_commit_sha = None;
+    base_branch = None;
+    is_fork = false;
+  }
+
+let%test "with_resolved_checks: all-passing full set recovers Passing + ready" =
+  let all = List.init 102 ~f:(fun _ -> check ~conclusion:"success") in
+  let st = with_resolved_checks truncated_pending_state ~all_checks:all in
+  equal_check_status st.check_status Passing
+  && st.merge_ready
+  && (not st.ci_checks_truncated)
+  && List.length st.ci_checks = 102
+
+let%test "with_resolved_checks: neutral/skipped count as passing" =
+  let all =
+    [
+      check ~conclusion:"success";
+      check ~conclusion:"skipped";
+      check ~conclusion:"neutral";
+    ]
+  in
+  let st = with_resolved_checks truncated_pending_state ~all_checks:all in
+  equal_check_status st.check_status Passing && st.merge_ready
+
+let%test
+    "with_resolved_checks: a failure on a later page stays Failing + not ready"
+    =
+  let all =
+    check ~conclusion:"failure"
+    :: List.init 50 ~f:(fun _ -> check ~conclusion:"success")
+  in
+  let st = with_resolved_checks truncated_pending_state ~all_checks:all in
+  equal_check_status st.check_status Failing && not st.merge_ready
+
+let%test "with_resolved_checks: a still-running check keeps Pending + not ready"
+    =
+  let all =
+    check ~conclusion:"pending"
+    :: List.init 50 ~f:(fun _ -> check ~conclusion:"success")
+  in
+  let st = with_resolved_checks truncated_pending_state ~all_checks:all in
+  equal_check_status st.check_status Pending && not st.merge_ready
+
+let%test "with_resolved_checks: a blocking review still gates readiness" =
+  let all = [ check ~conclusion:"success" ] in
+  let st =
+    with_resolved_checks
+      { truncated_pending_state with review_decision = Some "REVIEW_REQUIRED" }
+      ~all_checks:all
+  in
+  equal_check_status st.check_status Passing && not st.merge_ready
+
+let%test "with_resolved_checks: always clears the truncated flag" =
+  let st = with_resolved_checks truncated_pending_state ~all_checks:[] in
+  not st.ci_checks_truncated

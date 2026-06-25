@@ -167,6 +167,93 @@ let test_graphql_errors_propagate () =
       Stdlib.Printf.eprintf "  FAIL: graphql errors did not propagate\n";
       Stdlib.exit 1
 
+(* -- parse_merge_queue_removal_pagination -- *)
+
+let paginate = Onton.Github.parse_merge_queue_removal_pagination
+
+(* A truncated merge-group rollup must surface its beforeCommit OID so the I/O
+   layer knows the [Ok []] from [parse] is hiding more pages. *)
+let test_pagination_detects_truncated_oid () =
+  match paginate (removal_body ~nodes:truncated_event) with
+  | Some "mergegroupsha123" ->
+      Stdlib.print_endline "  truncated rollup → Some oid: OK"
+  | _ ->
+      Stdlib.Printf.eprintf "  FAIL: truncated rollup did not surface oid\n";
+      Stdlib.exit 1
+
+(* A complete rollup (hasNextPage:false) needs no pagination → None. *)
+let test_pagination_none_when_complete () =
+  match paginate (removal_body ~nodes:mixed_event) with
+  | None -> Stdlib.print_endline "  complete rollup → None: OK"
+  | Some _ ->
+      Stdlib.Printf.eprintf "  FAIL: complete rollup asked for pagination\n";
+      Stdlib.exit 1
+
+let test_pagination_none_when_empty () =
+  match paginate (removal_body ~nodes:"[]") with
+  | None -> Stdlib.print_endline "  empty timeline → None: OK"
+  | Some _ ->
+      Stdlib.Printf.eprintf "  FAIL: empty timeline asked for pagination\n";
+      Stdlib.exit 1
+
+(* -- parse_contexts_page -- *)
+
+let parse_page = Onton.Github.parse_contexts_page
+
+let contexts_page_body ~has_next ~cursor ~nodes =
+  Printf.sprintf
+    {|{ "data": { "repository": { "object": {
+      "statusCheckRollup": { "contexts": {
+        "pageInfo": { "hasNextPage": %b, "endCursor": %s },
+        "nodes": %s
+      } } } } } }|}
+    has_next cursor nodes
+
+let test_contexts_page_parses_checks_and_cursor () =
+  let nodes =
+    {|[
+      { "__typename": "CheckRun", "databaseId": 1, "name": "build",
+        "conclusion": "SUCCESS", "detailsUrl": null, "text": null,
+        "startedAt": null },
+      { "__typename": "StatusContext", "context": "legacy",
+        "state": "FAILURE", "targetUrl": null, "description": null,
+        "createdAt": null }
+    ]|}
+  in
+  match
+    parse_page (contexts_page_body ~has_next:true ~cursor:{|"CURSOR2"|} ~nodes)
+  with
+  | Ok (checks, true, Some "CURSOR2") when List.length checks = 2 ->
+      Stdlib.print_endline "  contexts page → checks + next cursor: OK"
+  | Ok _ ->
+      Stdlib.Printf.eprintf "  FAIL: contexts page parsed wrong shape\n";
+      Stdlib.exit 1
+  | Error e ->
+      Stdlib.Printf.eprintf "  FAIL: contexts page errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
+
+(* A missing object (gc'd commit / no rollup) is a non-error terminal page. *)
+let test_contexts_page_missing_object_is_terminal () =
+  match parse_page {|{ "data": { "repository": { "object": null } } }|} with
+  | Ok ([], false, None) ->
+      Stdlib.print_endline "  missing object → empty terminal page: OK"
+  | Ok _ ->
+      Stdlib.Printf.eprintf
+        "  FAIL: missing object returned non-terminal page\n";
+      Stdlib.exit 1
+  | Error e ->
+      Stdlib.Printf.eprintf "  FAIL: missing object errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
+
+let test_contexts_page_graphql_errors_propagate () =
+  match parse_page {|{ "errors": [ { "message": "boom" } ] }|} with
+  | Error _ -> Stdlib.print_endline "  contexts page graphql errors → Error: OK"
+  | Ok _ ->
+      Stdlib.Printf.eprintf "  FAIL: contexts page swallowed graphql errors\n";
+      Stdlib.exit 1
+
 let () =
   test_mixed_returns_only_failures ();
   test_truncated_rollup_is_ok_empty ();
@@ -174,4 +261,10 @@ let () =
   test_null_before_commit_is_ok_empty ();
   test_missing_pull_request_is_ok_empty ();
   test_graphql_errors_propagate ();
+  test_pagination_detects_truncated_oid ();
+  test_pagination_none_when_complete ();
+  test_pagination_none_when_empty ();
+  test_contexts_page_parses_checks_and_cursor ();
+  test_contexts_page_missing_object_is_terminal ();
+  test_contexts_page_graphql_errors_propagate ();
   Stdlib.print_endline "test_github_merge_queue_removal: OK"
