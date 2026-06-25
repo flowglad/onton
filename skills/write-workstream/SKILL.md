@@ -40,6 +40,28 @@ Conversely, if every step of the work could in principle be handed to an autonom
 
 When you draft a milestone, write the **operator instructions that come *after* it** as part of the milestone's record (in `Definition of Done`, `Why this is a safe pause point`, or a dedicated "Operator Actions Before Next Milestone" subsection). The handoff from one milestone to the next is a first-class part of the workstream, because that handoff is precisely what cannot exist inside a gameplan.
 
+## Ground the Workstream in the Real Codebase
+
+The workstreaming agent runs **inside a checkout of the target repo** — it can open any file and inspect any installed or vendored dependency. A workstream's entire milestone structure rests on one factual question: **what does the codebase already provide, and what must actually be built?** Get that wrong and the damage is *structural*, not cosmetic — you spend a milestone building something that already exists, flag a "riskiest decision" the code already settled, or sequence around a dependency that already landed. Where a mis-grounded gameplan names a wrong path or a misspelled symbol, a mis-grounded workstream is wrong about *what work exists at all*, and every downstream gameplan inherits the error. So read the code before you assert the current state, before you call a challenge hard, and before you make anything a milestone deliverable.
+
+**This does not contradict "don't assume the path" (above).** Those are two different objects. The *path* — how to get from here to the vision — is the user's to shape through dialogue, and you must stay open about it. The *current state* — what the system does today — is a fact in the checkout, and you must establish it by reading, not narrate it from how you assume the architecture must work. The failure this section prevents is exactly the confusion of "stay open about the solution" with "invent the present." The transcript that motivated this skill did real research and *still* shipped a milestone plan built on a primitive that already existed, an open question the code already answered, and a dependency it never checked. Doing some exploration is not the bar; grounding the load-bearing structural claims is.
+
+### Rule 1 — Establish the Current State from the code, not from a mental model
+
+The `Current State` section is the foundation every milestone rests on. Before writing it, search the actual code for each subsystem the workstream touches and confirm how it works *today*. A claim like "there is no native push receiver; every connector is either Composio-delivery or poll-based" is load-bearing and binary — it is either true in the code or it isn't — and when it's wrong (e.g. a generic, source-pluggable delivery pipeline already serves several non-Composio sources), every milestone built on top inherits the mistake. Write what you verified; do not describe the architecture from how you assume it must be wired.
+
+### Rule 2 — Never make a milestone build something that already exists
+
+This is the workstream-level analogue of a vacuous (no-op) patch. Before you posit net-new work — a new primitive, a new abstraction, a new pipeline, a new receiver — **search for it first.** The motivating transcript made "build a shared native inbound ingestion primitive" the riskiest deliverable of an early milestone; that primitive already existed in the repo (an event-bus spine plus a source-pluggable delivery consumer that several connectors already rode). A milestone whose deliverable is already present is not a milestone — rescope it to the work genuinely missing, or delete it. Concretely: whenever you catch yourself writing "build X" or "design a new Y," your *next* action is to grep the checkout and confirm X/Y is actually absent.
+
+### Rule 3 — A "riskiest decision" the checkout can answer is not an open question
+
+Workstreams legitimately carry open questions — but only for facts the workspace cannot settle. The transcript promoted "enqueue-to-ingest via the queue vs. a direct shared insert helper, across the `@fg/ingest` leaf boundary" to the workstream's **top open question and riskiest design decision** — yet the existing sources already crossed that exact boundary one way, and reading them resolved it outright. Before you promote something to `Open Questions` or call it the riskiest decision, check whether the code already demonstrates the answer. Reserve open questions for genuine unknowns — external-system behavior, product direction, a value held only in a dashboard or secret store. This is the same dividing line [[write-gameplan]] draws: **ground what the checkout can answer; surface only what it cannot.**
+
+### Rule 4 — Verify claimed dependencies on other work before sequencing around them
+
+A workstream often references other workstreams or in-flight efforts — "depends on the Event Bus work," or "deliberately does *not* depend on it because it hasn't landed yet." Whether a prerequisite has actually landed is a **fact in the code**, not a thing to assume. The transcript recorded an explicit decision to be independent of the Internal Event Bus workstream and only discovered — when the user finally asked it to check — that the workstream had fully landed, which collapsed several milestones of invented work into "reuse what's already there." Before you draw a dependency edge to (or an explicit independence from) another effort, confirm its current state in the checkout.
+
 ## Discovery Process
 
 ### Phase 1: Understand the Vision
@@ -50,13 +72,13 @@ Start by understanding what the user wants to achieve:
 - What problem does this solve for your users/business?
 - What does success look like?
 - Are there any hard constraints (deadlines, dependencies on other teams, etc.)?
-- What's the current state of the codebase in this area?
+- What's the current state of the codebase in this area? **Answer this from the code, not from the user's framing or your own assumptions** — read the relevant subsystems before you write the `Current State` section (see [Ground the Workstream in the Real Codebase](#ground-the-workstream-in-the-real-codebase)).
 
 ### Phase 2: Identify Key Challenges
 
 Once you understand the vision, explore the complexity:
 
-- What are the hardest parts of this project?
+- What are the hardest parts of this project? **Confirm each hard part isn't already solved in the repo** before naming it a challenge — the most expensive workstream errors flag as "risky to build" something the codebase already provides (see [Rule 2](#rule-2--never-make-a-milestone-build-something-that-already-exists)).
 - What are you most uncertain about?
 - Are there areas where you need to make technical decisions but aren't sure what the right choice is?
 - What could go wrong?
@@ -98,11 +120,12 @@ Common workstream-level precedent categories (not exhaustive):
 Work with the user to break the work into milestones. For each potential milestone, validate:
 
 1. **Is it a natural pause point?** Could someone stop here and the codebase would be fine?
-2. **Is the scope clear?** Can you articulate what changes are needed?
-3. **What's the definition of done?** What is true about the codebase when this is complete?
-4. **What does it unlock?** What becomes possible after this milestone?
-5. **Could every patch inside this milestone be executed by an autonomous orchestrator with no human in the loop and no run-time decisions?** If not, the milestone is still hiding a sub-pause and must be split further. Gameplans cannot contain inter-patch pauses, observation windows, manual operations, or outcome-conditional decisions — those must each become their own milestone boundary.
-6. **What happens between this milestone and the next?** If the answer is anything other than "nothing — the next gameplan starts immediately," capture the operator instructions (flag flip, observation window, script to run, decision criteria, abort conditions) explicitly so they ship with the milestone.
+2. **Does it build something that doesn't already exist?** Before committing a deliverable, grep the checkout to confirm the thing the milestone "builds" is genuinely absent. A milestone that re-builds an existing primitive, pipeline, or abstraction is vacuous — rescope it to the work actually missing, or drop it (see [Rule 2](#rule-2--never-make-a-milestone-build-something-that-already-exists)).
+3. **Is the scope clear?** Can you articulate what changes are needed?
+4. **What's the definition of done?** What is true about the codebase when this is complete?
+5. **What does it unlock?** What becomes possible after this milestone?
+6. **Could every patch inside this milestone be executed by an autonomous orchestrator with no human in the loop and no run-time decisions?** If not, the milestone is still hiding a sub-pause and must be split further. Gameplans cannot contain inter-patch pauses, observation windows, manual operations, or outcome-conditional decisions — those must each become their own milestone boundary.
+7. **What happens between this milestone and the next?** If the answer is anything other than "nothing — the next gameplan starts immediately," capture the operator instructions (flag flip, observation window, script to run, decision criteria, abort conditions) explicitly so they ship with the milestone.
 
 ### Phase 5: Sequence and Dependencies
 
@@ -195,19 +218,21 @@ Write the workstream-level precedents once, in this skill's output. Do not dupli
 
 ## Important Principles
 
-1. **Don't rush to solutions.** The user came to you with a vague idea. Help them refine it through questions before proposing milestones.
+1. **Ground the current state in the code, not in assumptions.** Read the subsystems the workstream touches before you write the `Current State`, name a challenge, or make anything a milestone deliverable. Don't build what already exists, don't flag a "riskiest decision" the checkout already answers, and don't sequence around a dependency you never verified. See [Ground the Workstream in the Real Codebase](#ground-the-workstream-in-the-real-codebase). (Staying open about the *path* is different — that's the "don't rush to solutions" principle below; the *present* is a fact to verify.)
 
-2. **Every milestone must be a safe stopping point.** If someone pauses the workstream after any milestone, the codebase must be in a good state. No "we'll fix this in the next milestone" situations.
+2. **Don't rush to solutions.** The user came to you with a vague idea. Help them refine it through questions before proposing milestones.
 
-3. **Prefer smaller milestones.** A workstream with 8 small gameplans is better than one with 3 large ones. Smaller milestones = more frequent safe pause points = less risk.
+3. **Every milestone must be a safe stopping point.** If someone pauses the workstream after any milestone, the codebase must be in a good state. No "we'll fix this in the next milestone" situations.
 
-4. **Surface uncertainty early.** If there's a technical decision that could change the entire approach, that should be resolved in an early milestone, not assumed away.
+4. **Prefer smaller milestones.** A workstream with 8 small gameplans is better than one with 3 large ones. Smaller milestones = more frequent safe pause points = less risk.
 
-5. **Don't over-plan.** Later milestones can be less detailed than early ones. You'll learn things as you go.
+5. **Surface uncertainty early.** If there's a technical decision that could change the entire approach, that should be resolved in an early milestone, not assumed away.
 
-6. **Prefer proven precedents over rolling your own.** When a problem has well-known solutions in the literature or industry, cite them in the `Established Precedents` section so every downstream gameplan inherits the same proven design. Conscious decisions to roll your own are fine; cargo-cult avoidance of prior art is not.
+6. **Don't over-plan.** Later milestones can be less detailed than early ones. You'll learn things as you go.
 
-7. **The workstream ends with a provable Definition of Done.** The terminal acceptance suite is not optional decoration — it is the contract that says the workstream actually delivered. Every assertion must be observable (api / db / ux / cmd), independently checkable, and traced back to the code change that makes it true, so a failing assertion root-causes itself. If a promised capability has no assertion that would catch its absence, the workstream is not done — it is untested.
+7. **Prefer proven precedents over rolling your own.** When a problem has well-known solutions in the literature or industry, cite them in the `Established Precedents` section so every downstream gameplan inherits the same proven design. Conscious decisions to roll your own are fine; cargo-cult avoidance of prior art is not.
+
+8. **The workstream ends with a provable Definition of Done.** The terminal acceptance suite is not optional decoration — it is the contract that says the workstream actually delivered. Every assertion must be observable (api / db / ux / cmd), independently checkable, and traced back to the code change that makes it true, so a failing assertion root-causes itself. If a promised capability has no assertion that would catch its absence, the workstream is not done — it is untested.
 
 ## Recording
 
