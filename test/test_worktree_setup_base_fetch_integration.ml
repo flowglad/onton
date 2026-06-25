@@ -85,6 +85,31 @@ let assert_string label want got =
   if not (String.equal want got) then
     failwith (Printf.sprintf "%s: expected %S got %S" label want got)
 
+let remote_head_sha ~dir ~ref_name =
+  match
+    git_capture ~dir [ "ls-remote"; "origin"; "refs/heads/" ^ ref_name ]
+    |> String.lsplit2 ~on:'\t'
+  with
+  | Some (sha, _) when not (String.is_empty sha) -> Some sha
+  | _ -> None
+
+let wait_for_remote_head ~dir ~ref_name ~sha =
+  let rec loop attempts_left =
+    match remote_head_sha ~dir ~ref_name with
+    | Some visible when String.equal visible sha -> visible
+    | _ when attempts_left > 0 ->
+        Unix.sleepf 0.05;
+        loop (attempts_left - 1)
+    | Some visible ->
+        failwith
+          (Printf.sprintf
+             "remote %s did not advertise pushed tip: expected %S got %S"
+             ref_name sha visible)
+    | None ->
+        failwith (Printf.sprintf "remote %s did not advertise any tip" ref_name)
+  in
+  loop 40
+
 let mk_patch ~pid ~branch =
   Types.Patch.
     {
@@ -173,7 +198,10 @@ let scenario_stale_local_main env =
   sh ~dir:writer_dir "git add dep.txt";
   sh ~dir:writer_dir "git commit -q -m 'dep squash'";
   sh ~dir:writer_dir "git push -q origin main";
-  let origin_tip = git_capture ~dir:writer_dir [ "rev-parse"; "main" ] in
+  let pushed_tip = git_capture ~dir:writer_dir [ "rev-parse"; "main" ] in
+  let origin_tip =
+    wait_for_remote_head ~dir:managed_dir ~ref_name:"main" ~sha:pushed_tip
+  in
   assert_string "precondition: local main is stale" clone_time_main
     (git_capture ~dir:managed_dir [ "rev-parse"; "main" ]);
   let wt =
