@@ -14,6 +14,7 @@ module Tui_env : sig
     val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
     val tui_state : Tui_state.t
     val backend_name : string
+    val version : string
     val resolve_routing : complexity:int option -> Backend_routing.decision
     val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
 

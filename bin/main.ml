@@ -138,6 +138,7 @@ module type FIBER_ENV = sig
   val branch_of : Patch_id.t -> Branch.t
   val resolve_routing : complexity:int option -> Backend_routing.decision
   val backend_name : string
+  val version : string
 
   val pick_backend :
     complexity:int option -> Backend_registry.kind * Backend_routing.decision
@@ -226,6 +227,7 @@ struct
         let transcripts = Env.transcripts
         let tui_state = Env.tui_state
         let backend_name = Env.backend_name
+        let version = Env.version
         let resolve_routing = Env.resolve_routing
         let find_pr_number = Env.find_pr_number
         let register_pr_number = Env.register_pr_number
@@ -978,6 +980,7 @@ let build_fiber_env (setup : runtime_setup) (cap : constructed_capabilities)
     let branch_of = cap.branch_of
     let resolve_routing = cap.resolve_routing
     let backend_name = cap.backend_name
+    let version = Version.s
     let pick_backend = cap.pick_backend
     let find_pr_number = cap.find_pr_number
     let register_pr_number = cap.register_pr_number
