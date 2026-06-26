@@ -141,18 +141,28 @@ let run_git ~process_mgr args =
    [compute_ancestry], so the worktree-creation planner inputs can be gathered
    before the type re-exports and the heavier rebase/push functions below. *)
 let run_git_exit_code ~process_mgr args =
-  Eio.Switch.run @@ fun sw ->
-  let stdout_buf = Buffer.create 0 in
+  let stdout_buf = Buffer.create 256 in
   let stderr_buf = Buffer.create 64 in
   let env = Stdlib.Lazy.force clean_git_env in
-  let child =
-    retry_transient_spawn (fun () ->
-        Eio.Process.spawn ~sw process_mgr ~env
-          ~stdout:(Eio.Flow.buffer_sink stdout_buf)
-          ~stderr:(Eio.Flow.buffer_sink stderr_buf)
-          args)
-  in
+  (* [Eio.Process.await] reports the exit status but does NOT wait for the
+     internal fibers that copy the child's stdout/stderr pipes into these
+     buffers (only [Eio.Process.run] documents that it does). Reading
+     [Buffer.contents] inside the switch — right after [await] — therefore
+     races the copy fibers: under scheduling load the buffer can still be empty
+     or partial when read. That manifested as a flaky [rev-parse --abbrev-ref
+     HEAD] returning "" → [worktree_head_branch = None] → a spurious
+     branch-switched push refusal. The switch only releases (and so joins the
+     copy fibers) when its body returns, so read the buffers *after*
+     [Eio.Switch.run] completes. *)
   let code =
+    Eio.Switch.run @@ fun sw ->
+    let child =
+      retry_transient_spawn (fun () ->
+          Eio.Process.spawn ~sw process_mgr ~env
+            ~stdout:(Eio.Flow.buffer_sink stdout_buf)
+            ~stderr:(Eio.Flow.buffer_sink stderr_buf)
+            args)
+    in
     match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
   in
   (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
