@@ -165,7 +165,12 @@ let run_git_exit_code ~process_mgr args =
     in
     match Eio.Process.await child with `Exited c -> c | `Signaled s -> 128 + s
   in
-  (code, Buffer.contents stdout_buf, Buffer.contents stderr_buf)
+  (* Read the buffers only here, after [Eio.Switch.run] has returned: that join
+     point is what guarantees the copy fibers have finished. Bind them outside
+     the switch body explicitly so this stays obvious. *)
+  let stdout = Buffer.contents stdout_buf in
+  let stderr = Buffer.contents stderr_buf in
+  (code, stdout, stderr)
 
 (* Read a ref's SHA from the main repo (NOT a worktree). Returns [None] if the
    ref does not exist or git fails. Used by [Worktree.create] to feed inputs to
