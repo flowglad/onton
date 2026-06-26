@@ -259,6 +259,70 @@ let format_functional_changes_section (fcs : Functional_change.t list) : string
      exhaustive and each change is owned by exactly one patch, so if a change \
      appears here, no sibling patch will pick it up.\n\n" ^ body ^ "\n"
 
+let format_trace_node (n : Trace_node.t) : string =
+  let sym =
+    match n.Trace_node.symbol with
+    | Some s when not (String.is_empty (String.strip s)) ->
+        Printf.sprintf " `%s`" s
+    | _ -> ""
+  in
+  let status =
+    if String.equal n.Trace_node.status "created" then
+      " *(created by this gameplan)*"
+    else ""
+  in
+  Printf.sprintf "`%s`%s%s" n.Trace_node.file sym status
+
+let format_trace_path (nodes : Trace_node.t list) : string =
+  List.map nodes ~f:format_trace_node |> String.concat ~sep:" → "
+
+let format_reachability_traces_section (traces : Reachability_trace.t list) :
+    string =
+  if List.is_empty traces then ""
+  else
+    let body =
+      List.map traces ~f:(fun (t : Reachability_trace.t) ->
+          List.filter_opt
+            [
+              Some (Printf.sprintf "- **%s**" t.Reachability_trace.observable);
+              Some
+                (Printf.sprintf "  - Live path (entry → leaf): %s"
+                   (format_trace_path t.Reachability_trace.path));
+              (match t.Reachability_trace.test_path with
+              | Some (_ :: _ as ns) ->
+                  Some
+                    (Printf.sprintf "  - Test seam: %s" (format_trace_path ns))
+              | _ -> None);
+              (match t.Reachability_trace.runtime_reachability_note with
+              | Some s when not (String.is_empty (String.strip s)) ->
+                  Some (Printf.sprintf "  - Runtime reachability: %s" s)
+              | _ -> None);
+            ]
+          |> String.concat ~sep:"\n")
+      |> String.concat ~sep:"\n"
+    in
+    "\n\
+     ## Reachability Traces You Must Deliver\n\n\
+     Each observable below is produced by a real call/import/reference path \
+     from its entry point to the leaf. Your edit must land on a node of the \
+     path — do not change a symbol that is not on it, and do not add code in a \
+     surface the path never reaches. Keep the path reachable end to end.\n\n"
+    ^ body ^ "\n"
+
+(* Concise variant for the PR body: shows reviewers which surface the patch
+   targets without the implementing-agent instructions. *)
+let format_reachability_traces_pr (traces : Reachability_trace.t list) : string
+    =
+  if List.is_empty traces then ""
+  else
+    let body =
+      List.map traces ~f:(fun (t : Reachability_trace.t) ->
+          Printf.sprintf "- **%s**\n  - %s" t.Reachability_trace.observable
+            (format_trace_path t.Reachability_trace.path))
+      |> String.concat ~sep:"\n"
+    in
+    "\n## Reachability\n\n" ^ body ^ "\n"
+
 (* The dependency-notes section points the agent at the implementation notes
    each ancestor patch's agent records via its Pr_body session
    ([Project_store.pr_body_artifact_path]). Start is gated on every unmerged
@@ -296,8 +360,9 @@ let dependency_notes_section ~(project_name : string) (ancestors : Patch.t list)
       entries
 
 let render_patch_layer ~(project_name : string) (patch : Patch.t) ?pr_number
-    ?(functional_changes = []) ?(context_resources = []) ?(ancestors = [])
-    ~(base_branch : string) () : string =
+    ?(functional_changes = []) ?(context_resources = [])
+    ?(reachability_traces = []) ?(ancestors = []) ~(base_branch : string) () :
+    string =
   let patch_id = Patch_id.to_string patch.Patch.id in
   let deps =
     match patch.Patch.dependencies with
@@ -372,6 +437,8 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
       ("files", format_list patch.Patch.files);
       ( "functional_changes_section",
         format_functional_changes_section functional_changes );
+      ( "reachability_traces_section",
+        format_reachability_traces_section reachability_traces );
       ("context_resources_section", format_context_resources context_resources);
       ( "dependency_notes_section",
         dependency_notes_section ~project_name ancestors );
@@ -443,7 +510,7 @@ The supervisor opens the draft PR after your first commit lands on the remote, w
 ## Your Task
 
 {{base_branch_note}}{{description}}
-{{functional_changes_section}}{{context_resources_section}}{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
+{{functional_changes_section}}{{reachability_traces_section}}{{context_resources_section}}{{changes_section}}{{files_section}}{{precedents_section}}{{test_stubs_introduced_section}}{{test_stubs_implemented_section}}{{spec_section}}{{acceptance_criteria_section}}
 ## Git Instructions
 - Branch: {{branch}}
 - Base branch: {{base_branch}}
@@ -465,6 +532,12 @@ let required_context_resources (gameplan : Gameplan.t) (patch : Patch.t) :
     ~f:(fun (r : Context_resource.t) ->
       List.mem patch.Patch.required_context r.id ~equal:String.equal)
 
+let owned_reachability_traces (gameplan : Gameplan.t) (patch : Patch.t) :
+    Reachability_trace.t list =
+  List.filter gameplan.Gameplan.reachability_traces
+    ~f:(fun (t : Reachability_trace.t) ->
+      Patch_id.equal t.Reachability_trace.owned_by patch.Patch.id)
+
 let ancestor_patches (gameplan : Gameplan.t) (patch : Patch.t) : Patch.t list =
   let graph = Graph.of_patches gameplan.Gameplan.patches in
   Graph.transitive_ancestors graph patch.Patch.id
@@ -482,6 +555,7 @@ let render_patch_layer_of_gameplan ~project_name ?pr_number (patch : Patch.t)
   render_patch_layer ~project_name patch ?pr_number
     ~functional_changes:(owned_functional_changes gameplan patch)
     ~context_resources:(required_context_resources gameplan patch)
+    ~reachability_traces:(owned_reachability_traces gameplan patch)
     ~ancestors:(ancestor_patches gameplan patch)
     ~base_branch ()
 
@@ -557,6 +631,7 @@ let%test "render_spec_suffix: both empty" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -596,6 +671,7 @@ let%test "render_spec_suffix: gameplan spec only" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -638,6 +714,7 @@ let%test "render_spec_suffix: patch spec only" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -680,6 +757,7 @@ let%test "render_spec_suffix: both present" =
       patches = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];
@@ -713,6 +791,9 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
       ("changes_section", optional_list_section ~header:"Changes" patch.changes);
       ("gameplan_spec_section", "");
       ("patch_spec_section", "");
+      ( "reachability_section",
+        format_reachability_traces_pr (owned_reachability_traces gameplan patch)
+      );
       ( "acceptance_criteria_section",
         optional_list_section ~header:"Acceptance Criteria"
           patch.acceptance_criteria );
@@ -727,7 +808,7 @@ let render_pr_description ~(project_name : string) (patch : Patch.t)
         {|## Patch {{patch_id}}: {{title}}
 
 {{description}}
-{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
+{{changes_section}}{{gameplan_spec_section}}{{patch_spec_section}}{{reachability_section}}{{acceptance_criteria_section}}{{files_section}}{{precedents_section}}|}
         vars)
 
 let render_pr_body_prompt ~(project_name : string) ~(pr_number : Pr_number.t)
@@ -1337,6 +1418,7 @@ let%test "patch prompt includes title and deps" =
           ];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let result =
@@ -1417,6 +1499,7 @@ let%test "patch prompt static prefix is byte-identical across patches" =
         patches = [ patch_1; patch_2 ];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let prompt_1 =
@@ -1471,6 +1554,7 @@ let%test "agents_md content appears in static prefix when Some" =
         patches = [ patch ];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let prompt =
@@ -1521,6 +1605,7 @@ let%test "agents_md section is omitted when None" =
         patches = [ patch ];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let prompt =
@@ -1606,6 +1691,7 @@ let make_layer_test_fixture () =
             };
           ];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   (patch_a, patch_b, gameplan)

@@ -65,6 +65,50 @@ let validate_functional_changes ~patches ~functional_changes =
   in
   loop (Set.empty (module String)) functional_changes
 
+let validate_reachability_traces ~patches ~functional_changes
+    ~reachability_traces =
+  let patch_ids =
+    List.map patches ~f:(fun p -> p.Types.Patch.id)
+    |> Set.of_list (module Types.Patch_id)
+  in
+  let fc_owner =
+    List.fold functional_changes
+      ~init:(Map.empty (module String))
+      ~f:(fun acc (fc : Types.Functional_change.t) ->
+        Map.set acc ~key:fc.id ~data:fc.owned_by)
+  in
+  let rec loop = function
+    | [] -> Ok ()
+    | (t : Types.Reachability_trace.t) :: rest -> (
+        if not (Set.mem patch_ids t.owned_by) then
+          Error
+            (Printf.sprintf
+               "reachabilityTrace %S is ownedBy nonexistent patch %s"
+               t.observable
+               (Types.Patch_id.to_string t.owned_by))
+        else
+          match t.traces_to with
+          | None -> loop rest
+          | Some fc_id -> (
+              match Map.find fc_owner fc_id with
+              | None ->
+                  Error
+                    (Printf.sprintf
+                       "reachabilityTrace %S tracesTo nonexistent \
+                        functionalChange %s"
+                       t.observable fc_id)
+              | Some owner when not (Types.Patch_id.equal owner t.owned_by) ->
+                  Error
+                    (Printf.sprintf
+                       "reachabilityTrace %S tracesTo %s (ownedBy patch %s) \
+                        but the trace is ownedBy patch %s — they must match"
+                       t.observable fc_id
+                       (Types.Patch_id.to_string owner)
+                       (Types.Patch_id.to_string t.owned_by))
+              | Some _ -> loop rest))
+  in
+  loop reachability_traces
+
 let valid_context_resource_kinds =
   [
     "existing-implementation";
@@ -439,6 +483,93 @@ let parse_json_string input =
           | _ ->
               raise (Parse_error "contextResources must be an array of objects")
         in
+        let reachability_traces =
+          let trace_node_of_json obj =
+            let file =
+              match obj |> member "file" with
+              | `String s -> s
+              | _ ->
+                  raise
+                    (Parse_error
+                       "reachabilityTraces[].path[].file must be a string")
+            in
+            let symbol =
+              match obj |> member "symbol" with
+              | `String s -> Some s
+              | _ -> None
+            in
+            let status =
+              match obj |> member "status" with
+              | `String s -> s
+              | _ ->
+                  raise
+                    (Parse_error
+                       "reachabilityTraces[].path[].status must be a string")
+            in
+            { Types.Trace_node.file; symbol; status }
+          in
+          match json |> member "reachabilityTraces" with
+          | `Null -> []
+          | `List items ->
+              List.map items ~f:(fun obj ->
+                  let observable =
+                    match obj |> member "observable" with
+                    | `String s -> s
+                    | _ ->
+                        raise
+                          (Parse_error
+                             "reachabilityTraces[].observable must be a string")
+                  in
+                  let traces_to =
+                    match obj |> member "tracesTo" with
+                    | `String s -> Some s
+                    | _ -> None
+                  in
+                  let owned_by =
+                    match patch_id_of_json (obj |> member "ownedBy") with
+                    | Some id -> id
+                    | None ->
+                        raise
+                          (Parse_error
+                             "reachabilityTraces[].ownedBy must be an integer \
+                              or alphanumeric patch id")
+                  in
+                  let path =
+                    match obj |> member "path" with
+                    | `Null -> []
+                    | `List nodes -> List.map nodes ~f:trace_node_of_json
+                    | _ ->
+                        raise
+                          (Parse_error
+                             "reachabilityTraces[].path must be an array")
+                  in
+                  let test_path =
+                    match obj |> member "testPath" with
+                    | `Null -> None
+                    | `List nodes -> Some (List.map nodes ~f:trace_node_of_json)
+                    | _ ->
+                        raise
+                          (Parse_error
+                             "reachabilityTraces[].testPath must be an array \
+                              or null")
+                  in
+                  let runtime_reachability_note =
+                    match obj |> member "runtimeReachabilityNote" with
+                    | `String s -> Some s
+                    | _ -> None
+                  in
+                  {
+                    Types.Reachability_trace.observable;
+                    traces_to;
+                    owned_by;
+                    path;
+                    test_path;
+                    runtime_reachability_note;
+                  })
+          | _ ->
+              raise
+                (Parse_error "reachabilityTraces must be an array of objects")
+        in
         let open_questions =
           match json |> member "openQuestions" with
           | `Null -> []
@@ -590,27 +721,34 @@ let parse_json_string input =
                       validate_context_resources ~patches ~context_resources
                     with
                     | Error e -> Error e
-                    | Ok () ->
-                        Ok
-                          {
-                            gameplan =
+                    | Ok () -> (
+                        match
+                          validate_reachability_traces ~patches
+                            ~functional_changes ~reachability_traces
+                        with
+                        | Error e -> Error e
+                        | Ok () ->
+                            Ok
                               {
-                                Types.Gameplan.project_name;
-                                repo_owner;
-                                repo_name;
-                                problem_statement;
-                                solution_summary;
-                                final_state_spec;
-                                patches;
-                                functional_changes;
-                                context_resources;
-                                current_state_analysis;
-                                explicit_opinions;
-                                acceptance_criteria;
-                                open_questions;
-                              };
-                            dependency_graph = dep_graph;
-                          })))
+                                gameplan =
+                                  {
+                                    Types.Gameplan.project_name;
+                                    repo_owner;
+                                    repo_name;
+                                    problem_statement;
+                                    solution_summary;
+                                    final_state_spec;
+                                    patches;
+                                    functional_changes;
+                                    context_resources;
+                                    reachability_traces;
+                                    current_state_analysis;
+                                    explicit_opinions;
+                                    acceptance_criteria;
+                                    open_questions;
+                                  };
+                                dependency_graph = dep_graph;
+                              }))))
       with Parse_error msg ->
         Error (Printf.sprintf "JSON structure error: %s" msg))
 

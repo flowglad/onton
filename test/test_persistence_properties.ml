@@ -48,6 +48,7 @@ let gameplan_for_agent (agent : Onton_core.Patch_agent.t) =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 (** Compare two snapshots field by field. Orchestrator.t is opaque without [eq],
@@ -134,6 +135,7 @@ let () =
                 open_questions = [];
                 functional_changes = [];
                 context_resources = [];
+                reachability_traces = [];
               }
           in
           let orchestrator =
@@ -442,6 +444,7 @@ let () =
                 open_questions = [];
                 functional_changes = [];
                 context_resources = [];
+                reachability_traces = [];
               }
           in
           let main_branch = Branch.of_string "main" in
@@ -496,6 +499,7 @@ let () =
                 open_questions = [];
                 functional_changes = [];
                 context_resources = [];
+                reachability_traces = [];
               }
           in
           let main_branch = Branch.of_string "main" in

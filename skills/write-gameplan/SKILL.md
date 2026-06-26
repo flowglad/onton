@@ -94,6 +94,7 @@ All of these fields are **required** and must be present in every gameplan:
 | `functionalChanges` | `array` | `[{ id, description, ownedBy }]` — exhaustive, every entry assigned to exactly one patch. See [Functional Change Ownership](#functional-change-ownership). |
 | `contextResources` | `array` | `[{ id, kind, paths, why, consumedBy }]` — authoritative context specific patches must read before editing. See [Context Resources](#context-resources). |
 | `acceptanceCriteria` | `string[]` | Each is a "done" condition |
+| `reachabilityTraces` | `array` | `[{ observable, tracesTo, ownedBy, path, testPath, runtimeReachabilityNote }]` — one live entry→leaf trace per observable. Empty for pure INFRA/refactor. See [Rule 4](#rule-4--ground-efficacy-not-just-existence). |
 | `openQuestions` | `string[]` | Decisions for the team (empty array if none) |
 | `explicitOpinions` | `array` | `[{ opinion, rationale }]` |
 | `patches` | `array` | See Patch Object in schema |
@@ -135,6 +136,47 @@ The dividing line is precisely **inspectability from the gameplanning state**: g
 ### Rule 3 — Give multi-patch surfaces one shared anchor
 
 When more than one patch touches the same file or symbol — patch 1 introduces a type that patches 3 and 5 consume, two patches edit the same registry, a stub patch and its implementation patch share a test file — **name that file/symbol with one concrete, identical reference everywhere it appears.** Choose the exact path and exported identifier once, then reuse it verbatim across every patch's `files`, `changes`, `requiredChanges`, and `contextResources`. Prefer routing the shared surface through a `contextResources` entry whose `consumedBy` lists every patch that depends on it, so they all read the same authoritative description. The failure this prevents: two patch agents, working concurrently in isolated worktrees with no view of each other, each inventing a slightly different name for the same thing — and the pieces failing to fit together at merge.
+
+### Rule 4 — Ground efficacy, not just existence
+
+A reference can resolve (Rule 1) and still be wrong: a symbol that exists but is not on the path that produces the behavior, or a path that exists but is unreachable at runtime. For every reference that produces an **observable** (a rendered element, a reachable route, an API response, a flag taking visible effect):
+
+- Trace outside-in from the entry point that emits the observable (route handler, rendering component, RPC) inward along real call/import/reference edges (see [Grounding Tools](#grounding-tools)) to the leaf that does the work. Name that leaf, not the first name a text search surfaces. If the symbol you intended to edit is not on the traced path, retarget it.
+- Re-derive `currentStateAnalysis` from HEAD by walking these paths, not from memory or a prior description. A stale model — catalog "lives under `settings/integrations/*`" after a refactor moved it to `connectors/*` — is what causes mistargeting.
+- Record the trace as a `reachabilityTraces` entry: ordered `path` from entry to leaf (each node a `{ file, symbol, status }`, `status` = `existing` or `created`), the `ownedBy` patch, optional `testPath` for the test seam, and `runtimeReachabilityNote` for framework-routed surfaces. The owning patch must edit at least one node on the `path` — the leaf for a new-feature exposure, the entry/caller for a wire-in. The validator checks created-node ordering and that the owning patch's edit lands on the path (see [Verification](#verification)).
+
+Two failure modes, both of which pass Rule 1:
+
+- **Wrong lever** — editing a symbol off the live path (flipping a `DISPLAYABLE_CONNECTORS`-style filter that narrows already-active rows, when the catalog is built by a different `getFirstClassIntegrationLinks()`-style source).
+- **Dead surface** — adding a page/route/handler under a tree that is globally redirected or superseded, so the change is never reached.
+
+### Grounding Tools
+
+Existence (Rule 1) is answered by text/structural search. Efficacy (Rule 4) needs symbol resolution — walk real call/import/reference edges, not text matches.
+
+Trace each observable from its entry point to the leaf with the `LSP` tool:
+
+- `prepareCallHierarchy` → `outgoingCalls` to walk from a function to what it calls; `incomingCalls` to confirm the entry point reaches a leaf.
+- `goToDefinition` / `goToImplementation` to resolve which concrete implementation a layer or interface dispatches to.
+- `findReferences` to confirm a symbol is consumed on the path you expect.
+
+**Tier 1 — always available, language-agnostic:**
+
+- `LSP` tool — the operations above. Resolves symbols rather than matching text; present whenever a language server is configured for the file type.
+- [ast-grep](https://ast-grep.github.io/) (`sg`) — structural search for Rule 1 symbol grounding (exact shape, enum members, call sites) across most languages. Prefer over plain grep and over Semgrep (security-scoped, slower as a CLI).
+- ripgrep (`rg`) — text presence checks.
+
+**Tier 2 — per-ecosystem (`npx` for JS/TS, no install):**
+
+- [dependency-cruiser](https://github.com/sverweij/dependency-cruiser) (JS/TS) — `reachable` rule answers "is this module reachable from the entry point"; flags orphans.
+- [madge](https://github.com/pahen/madge) (JS/TS) — import graph, `orphans()`, circular deps.
+- Call-graph generators where LSP call-hierarchy is unavailable: `golang.org/x/tools/cmd/callgraph` (Go), `cargo-call-stack` / rust-analyzer (Rust), `code2flow` / `pyan` (Python), `cflow` (C).
+
+Assume Tier-2 tools are not installed; `LSP` and `rg` always are.
+
+**Framework reachability:** static graphs see imports and calls, not redirects, rewrites, middleware, or filesystem routing. A route reached by convention will not show as an orphan even when a redirect makes it a runtime dead end. For routable/framework-dispatched surfaces: grep the redirect/rewrite/middleware config that could shadow the path, then boot the app and drive the surface (project verification skill).
+
+**On presence:** the gameplanning agent runs inside a checkout of the target repo and cannot assume Tier-2 tools are installed. The `LSP` tool and `rg` are always available; reach for `npx <tool>` for JS/TS Tier-2 tools; otherwise fall back to ast-grep/ripgrep plus LSP traversal, which together cover the grounding needs in any language.
 
 ## Context Resources
 
@@ -260,6 +302,8 @@ Downstream consumers (notably onton's patch prompt renderer) read `functionalCha
 - **Exclusive / disjoint** — no two patches that can run concurrently (no dependency edge between them) may write the same file or symbol. Overlapping frames are the merge collision the isolated-worktree execution model cannot reconcile. If two patches must touch one surface, either serialize them with a `dependencyGraph` edge or route the shared surface through one owning patch (cf. [Rule 3 — shared anchor](#rule-3--give-multi-patch-surfaces-one-shared-anchor)).
 
 **Each patch must be non-vacuous.** A patch whose postcondition already holds in the grounded pre-state is a no-op — satisfied *vacuously*, the way "every request is followed by a grant" holds in a system that makes no requests. Mechanical test: remove the patch and check whether its postcondition still holds against the grounded code; if it does, the patch is empty. If the field already exists, the route is already registered, or the type already has the variant, drop the patch or rescope it to the work actually missing.
+
+**Each patch must produce its observable (the dual of non-vacuity).** The inverse of a no-op: a patch whose edit is real but lands off the live path, so its observable never changes. Test: trace the observable per [Rule 4](#rule-4--ground-efficacy-not-just-existence) and confirm the edited symbol is on the path. The edit applies, references resolve, the behavior still does not appear. If the edited leaf is off the path, retarget the patch.
 
 **Decompose by what changes together, not by execution flow.** Parnas's module criterion applies to patches: partitioning by flow ("first do A, then B, then C") tends to produce patches with overlapping frames and vague ownership, because one surface gets touched at several flow steps. Partitioning by *what changes together* — a type with its consumers, a registry with its entries — yields disjoint frames and clean single ownership, which is what makes concurrent worktree execution safe.
 
@@ -432,7 +476,7 @@ Soft dependencies — install both so nothing is skipped:
 - `jsonschema` (pip) — enables JSON Schema shape validation. Without it, only semantic checks run.
 - `pant` 0.22+ — enables Pantagruel spec parsing. Install: `brew tap subsetpark/pantagruel https://github.com/subsetpark/pantagruel && brew install pantagruel`.
 
-The validator covers everything mechanisable: schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, dependency-graph DAG correctness and classification consistency, testMap consistency, and repo-relative path safety. See `scripts/validate.py` for the exact set.
+The validator covers everything mechanisable: schema shape, spec parsing, context-routing reciprocity, functional-change ID and ownership integrity, dependency-graph DAG correctness and classification consistency, testMap consistency, reachability-trace integrity (created-node vs creating-patch ordering, and the owning patch editing a node on the path), and repo-relative path safety. See `scripts/validate.py` for the exact set.
 
 The rest is human judgement. Walk these before setting the relevant `mergabilityChecklist` booleans to `true`:
 
@@ -447,6 +491,8 @@ The rest is human judgement. Walk these before setting the relevant `mergability
 5. **Atomicity** (`gameplanIsAtomicAndAutonomous`) — re-read [Atomicity Constraint](#atomicity-constraint-read-this-first) and walk the patch list. Confirm no patch is conditional on another's outcome, no `changes` step expects a human between patches (flag flip, manual script, dashboard check, decision branch), and no patch implies an observation/soak window. If any slipped in, re-decompose as a multi-milestone workstream via [[write-workstream]].
 
 6. **Reference grounding** — for every file path and symbol the gameplan names (`requiredChanges`, `files`, `signature`s, `contextResources[].paths`, `testMap[].file`, and symbol references inside `changes`/`spec` prose), confirm it resolves against the real workspace per [Ground Every Reference in Real Code](#ground-every-reference-in-real-code): existing paths open, created paths follow a real sibling convention, symbols match the actual exports/enums/test-file names, and dependency call shapes match on-disk declarations. Confirm any fact you *couldn't* ground (external-system behavior) lives in `openQuestions`/`operationalConsiderations` rather than asserted in a spec. Confirm every surface touched by more than one patch is named with one identical reference across those patches.
+
+6b. **Efficacy / reachability grounding** — every observable the gameplan promises (an acceptance criterion or functional change asserting a rendered element, reachable route, API response, or flag effect) has a `reachabilityTraces` entry, per [Rule 4](#rule-4--ground-efficacy-not-just-existence). The validator checks structure (created-node ordering, owning patch edits a node on the path); confirm by hand the parts it cannot: (a) each `path` edge is a real call/import/reference edge walked against HEAD, not a plausible-looking pairing; (b) for routable/framework surfaces, runtime reachability was confirmed — no redirect/rewrite/middleware shadows the path (static graphs do not see framework routing). A patch whose edit is off the path it claims is a wrong-lever or dead-surface defect; retarget it.
 
 7. **Patch boundaries** — for each patch, confirm its `files` frame is **complete** (delivers the functional change with no edits spilling into unlisted files) and **exclusive** (no patch that can run concurrently writes the same file/symbol), and that the patch is **non-vacuous** (its postcondition is not already true of the grounded current surface). See [Patch Boundaries (Frames and No-Ops)](#patch-boundaries-frames-and-no-ops).
 

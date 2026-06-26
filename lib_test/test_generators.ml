@@ -267,6 +267,7 @@ let gen_gameplan =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           })
       gen_patch_list_unique)
 
@@ -757,6 +758,7 @@ let make_test_gameplan patches =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 let pid_of_idx patches i =

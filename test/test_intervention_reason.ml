@@ -119,6 +119,7 @@ let make_gameplan patches =
       patches;
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
       current_state_analysis = "";
       explicit_opinions = "";
       acceptance_criteria = [];

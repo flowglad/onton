@@ -426,6 +426,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
           open_questions = [];
           functional_changes = [];
           context_resources = [];
+          reachability_traces = [];
         }
       in
       let main_branch = resolve_branch ~repo_root main_branch in

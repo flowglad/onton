@@ -44,6 +44,7 @@ let make_gameplan patch =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 let make_orch patch agent =

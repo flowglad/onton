@@ -44,6 +44,7 @@ let make_gameplan patch =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 let messages_equal a b = List.equal Orchestrator.equal_patch_agent_message a b

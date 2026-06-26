@@ -300,6 +300,34 @@ module Functional_change = struct
       which user-visible behaviors it must deliver. *)
 end
 
+module Trace_node = struct
+  type t = {
+    file : string;
+    symbol : string option; [@yojson.default None]
+    status : string;
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** One node on a reachability trace. [status] is ["existing"] (present on
+      disk at HEAD) or ["created"] (introduced by a patch in this gameplan). *)
+end
+
+module Reachability_trace = struct
+  type t = {
+    observable : string;
+    traces_to : string option; [@yojson.default None]
+    owned_by : Patch_id.t;
+    path : Trace_node.t list; [@yojson.default []]
+    test_path : Trace_node.t list option; [@yojson.default None]
+    runtime_reachability_note : string option; [@yojson.default None]
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** The live entry->leaf path that produces one observable. [path] is ordered
+      from the entry point that emits the observable to the leaf that does the
+      work; the [owned_by] patch must edit at least one node on it. Surfaced to
+      that patch's prompt so the agent edits a symbol on the live path rather
+      than a plausibly-named one off it. *)
+end
+
 module Gameplan = struct
   type t = {
     project_name : string;
@@ -311,6 +339,10 @@ module Gameplan = struct
     patches : Patch.t list;
     functional_changes : Functional_change.t list; [@yojson.default []]
     context_resources : Context_resource.t list; [@yojson.default []]
+    reachability_traces : Reachability_trace.t list; [@yojson.default []]
+        (** One entry per observable the gameplan promises, tracing the live
+            path from entry point to leaf. Defaults to [[]] for legacy gameplans
+            and pure INFRA/refactor gameplans with no runtime observable. *)
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]
