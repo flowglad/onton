@@ -254,6 +254,102 @@ let test_contexts_page_graphql_errors_propagate () =
       Stdlib.Printf.eprintf "  FAIL: contexts page swallowed graphql errors\n";
       Stdlib.exit 1
 
+(* -- merge_group Actions fallback parsers -- *)
+
+let test_merge_group_run_id_finds_failed_queue_run () =
+  let body =
+    {|{
+      "workflow_runs": [
+        {
+          "id": 28256333724,
+          "event": "merge_group",
+          "head_branch": "gh-readonly-queue/main/pr-5275-aaaaaaaa",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "id": 28256333725,
+          "event": "merge_group",
+          "head_branch": "gh-readonly-queue/main/pr-5276-64c999dbf3c6f6a0c1dd005410489e9b6292e01c",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "id": 28256333726,
+          "event": "pull_request",
+          "head_branch": "gh-readonly-queue/main/pr-5276-bbbbbbbb",
+          "status": "completed",
+          "conclusion": "failure"
+        }
+      ]
+    }|}
+  in
+  match
+    Onton.Github.parse_merge_group_run_id
+      ~main_branch:(Onton_core.Types.Branch.of_string "main")
+      ~pr_number:(Onton_core.Types.Pr_number.of_int 5276)
+      body
+  with
+  | Ok (Some 28256333725) ->
+      Stdlib.print_endline "  merge_group runs → matching failed run id: OK"
+  | Ok _ ->
+      Stdlib.Printf.eprintf "  FAIL: merge_group run id did not match\n";
+      Stdlib.exit 1
+  | Error e ->
+      Stdlib.Printf.eprintf "  FAIL: merge_group runs errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
+
+let test_actions_jobs_response_returns_failing_jobs_with_ids () =
+  let body =
+    {|{
+      "jobs": [
+        {
+          "id": 83720238027,
+          "name": "Lint",
+          "conclusion": "success",
+          "html_url": "https://github.com/flowglad/provisioning-agent/actions/runs/28256333725/job/83720238027",
+          "started_at": "2026-06-26T01:00:00Z"
+        },
+        {
+          "id": 83720238028,
+          "name": "Test Migrations (dev)",
+          "conclusion": "failure",
+          "html_url": "https://github.com/flowglad/provisioning-agent/actions/runs/28256333725/job/83720238028",
+          "started_at": "2026-06-26T01:01:00Z"
+        },
+        {
+          "id": 83720238029,
+          "name": "Deploy preview",
+          "conclusion": "cancelled",
+          "html_url": "https://github.com/flowglad/provisioning-agent/actions/runs/28256333725/job/83720238029",
+          "started_at": "2026-06-26T01:02:00Z"
+        }
+      ]
+    }|}
+  in
+  match Onton.Github.parse_actions_jobs_response body with
+  | Ok [ check ] ->
+      assert (String.equal check.Ci_check.name "Test Migrations (dev)");
+      assert (String.equal check.Ci_check.conclusion "failure");
+      assert (
+        match check.Ci_check.id with Some 83720238028 -> true | _ -> false);
+      assert (
+        match check.Ci_check.details_url with
+        | Some
+            "https://github.com/flowglad/provisioning-agent/actions/runs/28256333725/job/83720238028"
+          ->
+            true
+        | _ -> false);
+      Stdlib.print_endline "  Actions jobs → failing job id/url: OK"
+  | Ok _ ->
+      Stdlib.Printf.eprintf "  FAIL: Actions jobs returned wrong checks\n";
+      Stdlib.exit 1
+  | Error e ->
+      Stdlib.Printf.eprintf "  FAIL: Actions jobs errored: %s\n"
+        (Onton.Github.show_error e);
+      Stdlib.exit 1
+
 let () =
   test_mixed_returns_only_failures ();
   test_truncated_rollup_is_ok_empty ();
@@ -267,4 +363,6 @@ let () =
   test_contexts_page_parses_checks_and_cursor ();
   test_contexts_page_missing_object_is_terminal ();
   test_contexts_page_graphql_errors_propagate ();
+  test_merge_group_run_id_finds_failed_queue_run ();
+  test_actions_jobs_response_returns_failing_jobs_with_ids ();
   Stdlib.print_endline "test_github_merge_queue_removal: OK"
