@@ -172,7 +172,7 @@ Trace each observable from its entry point to the leaf with the `LSP` tool:
 - [madge](https://github.com/pahen/madge) (JS/TS) — import graph, `orphans()`, circular deps.
 - Call-graph generators where LSP call-hierarchy is unavailable: `golang.org/x/tools/cmd/callgraph` (Go), `cargo-call-stack` / rust-analyzer (Rust), `code2flow` / `pyan` (Python), `cflow` (C).
 
-Assume Tier-2 tools are not installed; `LSP` and `rg` always are.
+Reach for the Tier-2 tool matching the repo's ecosystem first (try it — for JS/TS `npx` runs it without a project install); if it is unavailable, fall back to Tier-1 (`LSP` + ast-grep/`rg`), which is always present and covers the grounding needs in any language.
 
 **Framework reachability:** static graphs see imports and calls, not redirects, rewrites, middleware, or filesystem routing. A route reached by convention will not show as an orphan even when a redirect makes it a runtime dead end. For routable/framework-dispatched surfaces: grep the redirect/rewrite/middleware config that could shadow the path, then boot the app and drive the surface (project verification skill).
 
