@@ -129,6 +129,19 @@ let scenario_local_missing_remote env =
   sh ~dir:managed_dir "git commit -q -m 'remote work'";
   sh ~dir:managed_dir "git push -q -u origin feat";
   let remote_feat_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
+  (* The stale-local refusal is based on refs/remotes/origin/<branch>. Some
+     git/CI combinations leave that tracking ref at the previous push's SHA
+     even after pushing a newer commit from the same clone, which would make
+     the planner permit the push and defer to git's less-specific rejection.
+     Refresh it explicitly so this fixture exercises the planner path. *)
+  sh ~dir:managed_dir "git fetch -q origin feat:refs/remotes/origin/feat";
+  let tracked_feat =
+    git_capture ~dir:managed_dir [ "rev-parse"; "refs/remotes/origin/feat" ]
+  in
+  if not (String.equal tracked_feat remote_feat_sha) then
+    failwith
+      (Printf.sprintf "precondition: origin/feat=%s expected remote feat %s"
+         tracked_feat remote_feat_sha);
   (* Reset local feat to an older commit that is still ahead of base. This
      makes local a strict ancestor of origin/feat while keeping
      commits_ahead_of_base > 0, so the ancestry refusal is not pre-empted by
