@@ -979,6 +979,7 @@ let%test "reconcile_patch escalates repeated start discovery failures" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           }
       ~patch
   in
@@ -1005,6 +1006,7 @@ let%test "reconcile_patch enqueues pr_body after PR creation" =
         open_questions = [];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let t, _ = reconcile_patch t ~project_name:"proj" ~gameplan:gp ~patch in
@@ -1036,6 +1038,7 @@ let%test "reconcile_patch requests ready-for-review after pr_body on main" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           }
       ~patch
   in
@@ -1068,6 +1071,7 @@ let%test "reconcile_patch keeps PR draft while CI is not green" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           }
       ~patch
   in
@@ -1102,6 +1106,7 @@ let%test "reconcile_patch never re-drafts a PR once it is ready for review" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           }
       ~patch
   in
@@ -1136,6 +1141,7 @@ let%test "reconcile_patch keeps PR draft while merge conflict is active" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           }
       ~patch
   in
@@ -1203,6 +1209,7 @@ let%test
         open_questions = [];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let _, effects =
@@ -1305,6 +1312,7 @@ let%test "reconcile_patch emits no effects for merged agent" =
             open_questions = [];
             functional_changes = [];
             context_resources = [];
+            reachability_traces = [];
           }
       ~patch
   in
@@ -1328,6 +1336,7 @@ let empty_gameplan =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 let make_adhoc_orchestrator ~base_branch =

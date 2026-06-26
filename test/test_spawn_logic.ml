@@ -33,6 +33,7 @@ let make_gameplan patches =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 (* ========== Helper: prepare orchestrator with PRs and queued ops ========== *)

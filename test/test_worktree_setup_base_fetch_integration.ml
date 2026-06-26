@@ -145,6 +145,7 @@ let empty_gameplan =
     open_questions = [];
     functional_changes = [];
     context_resources = [];
+    reachability_traces = [];
   }
 
 (** Instantiate the real [Worktree_setup.Make] over a real git-backed [W] for

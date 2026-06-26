@@ -288,6 +288,45 @@ module Functional_change : sig
       defer them to a sibling patch. *)
 end
 
+module Trace_node : sig
+  type t = {
+    file : string;  (** Repo-relative path of this node's file. *)
+    symbol : string option; [@yojson.default None]
+        (** The function, component, or export at this node, if applicable. *)
+    status : string;
+        (** ["existing"] (present on disk at HEAD) or ["created"] (introduced by
+            a patch in this gameplan; not expected on disk). *)
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+end
+
+module Reachability_trace : sig
+  type t = {
+    observable : string;
+        (** The observable behavior this trace grounds, phrased as the
+            acceptance criterion does. *)
+    traces_to : string option; [@yojson.default None]
+        (** [functionalChange] id this observable corresponds to, or [None]. If
+            set, its owner must equal [owned_by]. *)
+    owned_by : Patch_id.t;
+        (** The patch that delivers the observable. It must edit at least one
+            node on [path]. *)
+    path : Trace_node.t list; [@yojson.default []]
+        (** Ordered entry-point -> leaf. First node is the entry point that
+            emits the observable; last node is the leaf that does the work. *)
+    test_path : Trace_node.t list option; [@yojson.default None]
+        (** Optional parallel trace through the test seam (production adapters
+            swapped for in-memory/test ones). *)
+    runtime_reachability_note : string option; [@yojson.default None]
+        (** For routable/framework-dispatched surfaces: how runtime reachability
+            was confirmed (no redirect/rewrite/middleware shadows the path). *)
+  }
+  [@@deriving show, eq, sexp_of, compare, yojson]
+  (** The live entry->leaf path that produces one observable. Surfaced to the
+      [owned_by] patch's prompt so the agent edits a symbol on the live path,
+      not a plausibly-named one off it. *)
+end
+
 module Gameplan : sig
   type t = {
     project_name : string;
@@ -316,6 +355,11 @@ module Gameplan : sig
         (** Authoritative existing code, contracts, docs, tests, or external
             references that patch agents must consult before editing. Defaults
             to [[]] for legacy gameplans. *)
+    reachability_traces : Reachability_trace.t list; [@yojson.default []]
+        (** One entry per observable the gameplan promises, tracing the live
+            path from entry point to leaf. Surfaced per-patch to the owning
+            patch's prompt. Defaults to [[]] for legacy gameplans and pure
+            INFRA/refactor gameplans with no runtime observable. *)
     current_state_analysis : string; [@yojson.default ""]
     explicit_opinions : string; [@yojson.default ""]
     acceptance_criteria : string list; [@yojson.default []]

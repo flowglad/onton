@@ -3,8 +3,9 @@
 
 Runs every check enumerated in SKILL.md's Verification section that can be
 mechanised: JSON Schema shape, Pantagruel spec parsing, context-routing
-reciprocity, functional-change ownership, dependency-graph integrity, and
-testMap consistency.
+reciprocity, functional-change ownership, dependency-graph integrity,
+testMap consistency, and reachability-trace integrity (created-node /
+creating-patch ordering and leaf-in-owning-patch-frame).
 
 Usage:
     python3 scripts/validate.py path/to/gameplan.json
@@ -172,6 +173,97 @@ def validate_dependency_graph(inst: dict, patches_by_id: dict[str, dict], errors
             dfs(n, [n])
 
 
+def _transitive_deps(inst: dict):
+    """Return reach(p) -> set of patch ids p transitively depends on."""
+    dg = inst.get("dependencyGraph", []) or []
+    direct = {_pid(d["patch"]): [_pid(x) for x in d.get("dependsOn", [])] for d in dg}
+    memo: dict[str, set[str]] = {}
+
+    def reach(p: str) -> set[str]:
+        if p in memo:
+            return memo[p]
+        seen: set[str] = set()
+        stack = list(direct.get(p, []))
+        while stack:
+            q = stack.pop()
+            if q in seen:
+                continue
+            seen.add(q)
+            stack.extend(direct.get(q, []))
+        memo[p] = seen
+        return seen
+
+    return reach
+
+
+def validate_reachability_traces(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
+    traces = inst.get("reachabilityTraces", []) or []
+    fcs_by_id = {fc["id"]: fc for fc in inst.get("functionalChanges", []) or []}
+
+    created_by: dict[str, list[str]] = {}
+    files_by_patch: dict[str, set[str]] = {}
+    for p in inst.get("patches", []) or []:
+        pid = _pid(p["number"])
+        frame = files_by_patch.setdefault(pid, set())
+        for f in p.get("files", []) or []:
+            path = f.get("path", "")
+            frame.add(path)
+            if f.get("action") == "create":
+                created_by.setdefault(path, []).append(pid)
+
+    reach = _transitive_deps(inst)
+
+    def check_node(node: dict, where: str, owner: str) -> None:
+        path = node.get("file", "")
+        status = node.get("status")
+        if status == "created":
+            creators = created_by.get(path, [])
+            if not creators:
+                errors.append(f"{where}: node marks {path!r} 'created', but no patch creates it (action:create)")
+            else:
+                for q in creators:
+                    if q != owner and q not in reach(owner):
+                        errors.append(
+                            f"{where}: trace owned by patch {owner} traverses {path!r} created by patch {q}, "
+                            f"but {owner} does not (transitively) depend on {q}"
+                        )
+
+    for i, tr in enumerate(traces):
+        where = f"reachabilityTraces[{i}] ({tr.get('observable')!r})"
+        owner = _pid(tr["ownedBy"])
+        if owner not in patches_by_id:
+            errors.append(f"{where}: ownedBy references unknown patch {owner}")
+
+        traces_to = tr.get("tracesTo")
+        if traces_to:
+            fc = fcs_by_id.get(traces_to)
+            if fc is None:
+                errors.append(f"{where}: tracesTo references unknown functionalChange {traces_to!r}")
+            elif _pid(fc["ownedBy"]) != owner:
+                errors.append(
+                    f"{where}: tracesTo {traces_to!r} is ownedBy patch {fc['ownedBy']}, "
+                    f"but the trace is ownedBy patch {owner} — they must match"
+                )
+
+        path = tr.get("path", []) or []
+        for j, node in enumerate(path):
+            check_node(node, f"{where}.path[{j}]", owner)
+        for j, node in enumerate(tr.get("testPath") or []):
+            check_node(node, f"{where}.testPath[{j}]", owner)
+
+        # Efficacy: the owning patch must edit at least one node on the path —
+        # its change lands on the live path, not on a symbol off it. (The edited
+        # node is the leaf for a new-feature exposure, or the entry for a wire-in.)
+        if path and owner in patches_by_id:
+            frame = files_by_patch.get(owner, set())
+            if not any(node.get("file", "") in frame for node in path):
+                errors.append(
+                    f"{where}: owning patch {owner} edits no node on this path "
+                    f"(files {sorted(frame)}) — its edit is not on the traced path "
+                    f"(wrong-lever / dead-surface defect)"
+                )
+
+
 def validate_test_map(inst: dict, patches_by_id: dict[str, dict], errors: list[str]) -> None:
     test_map = inst.get("testMap", []) or []
     test_names: dict[str, dict] = {}
@@ -258,6 +350,10 @@ def validate_path_safety(inst: dict, errors: list[str]) -> None:
             if path.startswith(("http://", "https://")):
                 continue
             check(path, f"contextResources[id={r.get('id')!r}].paths")
+    for i, tr in enumerate(inst.get("reachabilityTraces", []) or []):
+        for seam in ("path", "testPath"):
+            for node in tr.get(seam) or []:
+                check(node.get("file", ""), f"reachabilityTraces[{i}].{seam}[file={node.get('file')!r}]")
 
 
 def main(argv: list[str]) -> int:
@@ -281,6 +377,7 @@ def main(argv: list[str]) -> int:
     validate_functional_changes(inst, patches_by_id, errors)
     validate_dependency_graph(inst, patches_by_id, errors)
     validate_test_map(inst, patches_by_id, errors)
+    validate_reachability_traces(inst, patches_by_id, errors)
     validate_path_safety(inst, errors)
     validate_specs(inst, errors)
 

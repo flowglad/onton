@@ -116,6 +116,7 @@ let scenario_local_missing_remote env =
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin.git" in
   let managed_dir = Stdlib.Filename.concat root "managed" in
+  let remote_writer_dir = Stdlib.Filename.concat root "remote-writer" in
   setup_origin ~origin_dir;
   setup_seed_clone ~origin_dir ~managed_dir;
   sh ~dir:managed_dir "git checkout -q -b feat";
@@ -124,28 +125,47 @@ let scenario_local_missing_remote env =
   sh ~dir:managed_dir "git commit -q -m 'shared work'";
   let shared_feat_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
   sh ~dir:managed_dir "git push -q -u origin feat";
-  sh ~dir:managed_dir "echo remote > remote.txt";
-  sh ~dir:managed_dir "git add remote.txt";
-  sh ~dir:managed_dir "git commit -q -m 'remote work'";
-  sh ~dir:managed_dir "git push -q -u origin feat";
-  let remote_feat_sha = git_capture ~dir:managed_dir [ "rev-parse"; "HEAD" ] in
-  (* Reset local feat to an older commit that is still ahead of base. This
-     makes local a strict ancestor of origin/feat while keeping
-     commits_ahead_of_base > 0, so the ancestry refusal is not pre-empted by
-     No_commits_ahead_of_base. *)
-  (* Rewind the checked-out branch in place so HEAD stays on [feat]. The
-     previous main -> branch -f -> feat hop was enough for CI to occasionally
-     observe the branch-switched guard instead of the stale-local refusal. *)
-  sh ~dir:managed_dir
-    (Printf.sprintf "git reset -q --hard %s"
-       (Stdlib.Filename.quote shared_feat_sha));
-  (* Reassert [feat] as the checked-out branch after the rewind. In CI we've
-     seen HEAD remain at the right commit while [rev-parse --abbrev-ref HEAD]
-     reports a different branch, which routes this fixture into the
-     branch-switched refusal instead of the intended stale-local refusal. *)
+
+  (* Advance the remote from a separate clone so the managed worktree is truly
+     stale instead of relying on same-clone push/reflog/reset interactions. *)
+  sh
+    (Printf.sprintf "git clone -q %s %s"
+       (Stdlib.Filename.quote origin_dir)
+       (Stdlib.Filename.quote remote_writer_dir));
+  sh ~dir:remote_writer_dir "git config user.email 'test@example.com'";
+  sh ~dir:remote_writer_dir "git config user.name 'Test'";
+  sh ~dir:remote_writer_dir "git checkout -q -b feat origin/feat";
+  sh ~dir:remote_writer_dir "echo remote > remote.txt";
+  sh ~dir:remote_writer_dir "git add remote.txt";
+  sh ~dir:remote_writer_dir "git commit -q -m 'remote work'";
+  sh ~dir:remote_writer_dir "git push -q origin feat";
+  let remote_feat_sha =
+    git_capture ~dir:remote_writer_dir [ "rev-parse"; "HEAD" ]
+  in
+
+  (* The stale-local refusal is based on refs/remotes/origin/<branch>. Some
+     git/CI combinations leave that tracking ref at the previous push's SHA
+     after the remote moves independently, which would make
+     the planner permit the push and defer to git's less-specific rejection.
+     Refresh it explicitly so this fixture exercises the planner path. *)
+  sh ~dir:managed_dir "git fetch -q origin feat:refs/remotes/origin/feat";
+  let tracked_feat =
+    git_capture ~dir:managed_dir [ "rev-parse"; "refs/remotes/origin/feat" ]
+  in
+  if not (String.equal tracked_feat remote_feat_sha) then
+    failwith
+      (Printf.sprintf "precondition: origin/feat=%s expected remote feat %s"
+         tracked_feat remote_feat_sha);
+  (* Reassert [feat] as the checked-out branch. The local branch remains at
+     [shared_feat_sha], a strict ancestor of [origin/feat] while still ahead of
+     base, so the ancestry refusal is not pre-empted by No_commits_ahead_of_base. *)
   sh ~dir:managed_dir "git checkout -q -B feat";
   (* Sanity: local feat != remote feat. *)
   let local_feat = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
+  if not (String.equal local_feat shared_feat_sha) then
+    failwith
+      (Printf.sprintf "precondition: local feat=%s expected shared feat %s"
+         local_feat shared_feat_sha);
   if String.equal local_feat remote_feat_sha then
     failwith "precondition: local feat was supposed to be stale";
   let outcome =

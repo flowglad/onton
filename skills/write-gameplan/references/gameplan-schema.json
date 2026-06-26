@@ -18,6 +18,7 @@
     "functionalChanges",
     "contextResources",
     "acceptanceCriteria",
+    "reachabilityTraces",
     "openQuestions",
     "explicitOpinions",
     "patches",
@@ -87,6 +88,11 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "Each item is a 'done' condition."
+    },
+    "reachabilityTraces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/reachabilityTrace" },
+      "description": "For every observable the gameplan promises (a rendered element, reachable route, API response, or flag effect), the live path from the entry point that emits it to the leaf the owning patch edits — established by tracing real call/import/reference edges against HEAD, not from memory. Defeats the wrong-lever / dead-surface failure where a patch edits a symbol that exists but is not on the path producing the behavior. Empty only when the gameplan introduces no runtime observable (e.g. pure INFRA/refactor). See SKILL.md 'Rule 4 — Ground efficacy, not just existence'."
     },
     "openQuestions": {
       "type": "array",
@@ -374,6 +380,60 @@
       },
       "additionalProperties": false
     },
+    "reachabilityTrace": {
+      "type": "object",
+      "required": ["observable", "ownedBy", "path"],
+      "properties": {
+        "observable": {
+          "type": "string",
+          "description": "The observable behavior this trace grounds, phrased as the acceptance criterion does (e.g. 'Yooz appears in the integrations catalog')."
+        },
+        "tracesTo": {
+          "oneOf": [{ "type": "string", "pattern": "^FC-[0-9]+$" }, { "type": "null" }],
+          "description": "functionalChange id this observable corresponds to, or null. If set, its ownedBy must equal this trace's ownedBy."
+        },
+        "ownedBy": {
+          "$ref": "#/$defs/patchId",
+          "description": "The patch that delivers the observable. It must edit at least one node on `path` — the leaf for a new-feature exposure, or the entry/caller for a wire-in. A patch that edits no node on the path it claims to produce is a wrong-lever / dead-surface defect."
+        },
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/traceNode" },
+          "description": "Ordered entry-point -> leaf. The first node is the entry point that emits the observable (route handler, rendering component, RPC); the last node is the leaf that does the work. Each hop is a real call/import/reference edge, walked against HEAD. The owning patch must edit at least one node here."
+        },
+        "testPath": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/traceNode" },
+          "description": "Optional parallel trace through the test seam — where production adapters are swapped for in-memory/test ones — per the production-vs-test seams discipline. Null when not applicable."
+        },
+        "runtimeReachabilityNote": {
+          "type": ["string", "null"],
+          "description": "For routable or framework-dispatched surfaces: how runtime reachability was confirmed — that no redirect, rewrite, middleware, or routing convention shadows the path. Null when the surface is not framework-routed. Static call/import graphs do not see framework routing; this records the runtime check."
+        }
+      },
+      "additionalProperties": false
+    },
+    "traceNode": {
+      "type": "object",
+      "required": ["file", "status"],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Repo-relative path of this node's file."
+        },
+        "symbol": {
+          "type": ["string", "null"],
+          "description": "The function, component, or export at this node, if applicable."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["existing", "created"],
+          "description": "'existing' = present on disk at HEAD (resolve per Rule 1). 'created' = introduced by a patch in THIS gameplan; not expected on disk — it must be declared action:create by some patch, and the trace's owning patch must transitively depend on that creator."
+        }
+      },
+      "additionalProperties": false
+    },
     "precedent": {
       "type": "object",
       "required": ["kind", "name", "whyApplicable"],
@@ -495,6 +555,7 @@
         "behaviorPatchesJustified",
         "functionalChangesOwnedByExactlyOnePatch",
         "operationalConsiderationsSubstantive",
+        "observableReachabilityTraced",
         "gameplanIsAtomicAndAutonomous"
       ],
       "properties": {
@@ -514,6 +575,10 @@
         "operationalConsiderationsSubstantive": {
           "type": "boolean",
           "description": "Each operationalConsiderations sub-field (externalSystemAccess, crossRuntimeContracts, failureBehavior, concurrencyAndIdempotency, rollbackStrategy) engages concretely with this gameplan's specifics rather than issuing generic platitudes. Vague boilerplate like 'not applicable' without a gameplan-specific justification, or phrases like 'monitor for errors' / 'roll back if needed' without naming actual code paths, do not qualify."
+        },
+        "observableReachabilityTraced": {
+          "type": "boolean",
+          "description": "Every observable promised by acceptanceCriteria / functionalChanges has a reachabilityTraces entry whose path runs from the emitting entry point to the leaf that does the work, the trace was derived from HEAD (not memory), and for routable/framework surfaces runtime reachability was confirmed (no redirect/middleware shadows the path). The owning patch edits at least one node on the path — no patch edits a symbol off the path it claims to affect (no wrong-lever or dead-surface defect). Set false (and fix) if any observable lacks a trace or any owning patch's edit falls outside its trace path."
         },
         "gameplanIsAtomicAndAutonomous": {
           "type": "boolean",

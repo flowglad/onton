@@ -115,6 +115,20 @@
     "dune build produces no warnings"
   ],
 
+  "reachabilityTraces": [
+    {
+      "observable": "main.ml's runner_fiber produces patch-lifecycle decisions by calling Patch_decision rather than inlining them",
+      "tracesTo": "FC-5",
+      "ownedBy": 4,
+      "path": [
+        { "file": "bin/main.ml", "symbol": "runner_fiber", "status": "existing" },
+        { "file": "lib/patch_decision.ml", "symbol": "disposition", "status": "created" }
+      ],
+      "testPath": null,
+      "runtimeReachabilityNote": null
+    }
+  ],
+
   "openQuestions": [],
 
   "explicitOpinions": [
@@ -301,6 +315,7 @@
     "behaviorPatchesJustified": true,
     "functionalChangesOwnedByExactlyOnePatch": true,
     "operationalConsiderationsSubstantive": true,
+    "observableReachabilityTraced": true,
     "gameplanIsAtomicAndAutonomous": true
   },
 

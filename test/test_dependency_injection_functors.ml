@@ -68,6 +68,7 @@ module Fake_env : Worktree_setup.ENV = struct
           open_questions = [];
           functional_changes = [];
           context_resources = [];
+          reachability_traces = [];
         }
       ~main_branch:(Branch.of_string "main") ()
 
@@ -172,6 +173,7 @@ let () =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
   in
   let runtime =

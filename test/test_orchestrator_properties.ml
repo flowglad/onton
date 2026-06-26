@@ -43,6 +43,7 @@ let make_gameplan patches =
       open_questions = [];
       functional_changes = [];
       context_resources = [];
+      reachability_traces = [];
     }
 
 let tick orch ~patches =

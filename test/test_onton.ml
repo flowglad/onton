@@ -42,6 +42,7 @@ let () =
         open_questions = [];
         functional_changes = [];
         context_resources = [];
+        reachability_traces = [];
       }
   in
   let _orch, _effects, actions =
