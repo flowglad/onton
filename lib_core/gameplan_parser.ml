@@ -67,6 +67,10 @@ let validate_functional_changes ~patches ~functional_changes =
 
 let validate_reachability_traces ~patches ~functional_changes
     ~reachability_traces =
+  (* NOTE: validates referential integrity only — ownedBy existence and
+     tracesTo owner consistency. The efficacy check (owning patch must edit at
+     least one node on the path) lives exclusively in the Python validator;
+     this function is NOT a complete correctness gate. *)
   let patch_ids =
     List.map patches ~f:(fun p -> p.Types.Patch.id)
     |> Set.of_list (module Types.Patch_id)

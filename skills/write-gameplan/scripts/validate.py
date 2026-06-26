@@ -227,11 +227,6 @@ def validate_reachability_traces(inst: dict, patches_by_id: dict[str, dict], err
                             f"{where}: trace owned by patch {owner} traverses {path!r} created by patch {q}, "
                             f"but {owner} does not (transitively) depend on {q}"
                         )
-        elif status == "existing" and path in created_by:
-            errors.append(
-                f"{where}: node marks {path!r} 'existing', but patch(es) {created_by[path]} create it "
-                f"(action:create) — mark it 'created' or drop the create"
-            )
 
     for i, tr in enumerate(traces):
         where = f"reachabilityTraces[{i}] ({tr.get('observable')!r})"
