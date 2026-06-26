@@ -73,6 +73,7 @@ module Tui_env = struct
     val transcripts : (Patch_id.t, string) Stdlib.Hashtbl.t
     val tui_state : Tui_state.t
     val backend_name : string
+    val version : string
     val resolve_routing : complexity:int option -> Backend_routing.decision
     val find_pr_number : patch_id:Patch_id.t -> Pr_number.t option
 
@@ -164,8 +165,9 @@ struct
       let frame =
         Tui.render_frame ~width ~height ~selected:!list_selected ~scroll_offset
           ~view_mode:!view_mode ~activity ~project_name:Env.project_name
-          ~backend_name:Env.backend_name ~show_help:!show_help
-          ~show_checks:!show_checks ~checks_scroll:!checks_scroll
+          ~backend_name:Env.backend_name ~version:Env.version
+          ~show_help:!show_help ~show_checks:!show_checks
+          ~checks_scroll:!checks_scroll
           ~show_manage:
             (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
           ~now ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line

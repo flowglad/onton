@@ -1088,7 +1088,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
       in
       [ Term.hrule width; help ]
 
-let render_help_overlay ~width ~height =
+let render_help_overlay ~width ~height ~version =
   let pair_rows keys =
     let col_w =
       List.fold keys ~init:0 ~f:(fun m k -> Int.max m (String.length k))
@@ -1148,7 +1148,7 @@ let render_help_overlay ~width ~height =
   let title =
     Term.styled
       [ Term.Sgr.bold; Term.Sgr.fg_cyan ]
-      (Printf.sprintf " Keyboard Shortcuts  %s" dismiss)
+      (Printf.sprintf " Keyboard Shortcuts  onton %s  %s" version dismiss)
   in
   let body =
     List.concat_map sections ~f:(fun (header, keys) ->
@@ -1331,9 +1331,9 @@ let views_of_orchestrator ~(orchestrator : Orchestrator.t)
       Int.compare idx_a idx_b)
 
 let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
-    ~(activity : activity_entry list) ~project_name ~backend_name ~show_help
-    ~show_checks ~checks_scroll ~show_manage ~now ?(transcript = "") ?status_msg
-    ?prompt_line (views : patch_view list) =
+    ~(activity : activity_entry list) ~project_name ~backend_name ~version
+    ~show_help ~show_checks ~checks_scroll ~show_manage ~now ?(transcript = "")
+    ?status_msg ?prompt_line (views : patch_view list) =
   let no_patches =
     {
       lines = [];
@@ -1361,7 +1361,7 @@ let render_frame ~width ~height ~selected ~scroll_offset ~view_mode
     | Timeline_view -> None
   in
   if show_help then
-    let overlay = render_help_overlay ~width ~height in
+    let overlay = render_help_overlay ~width ~height ~version in
     { no_patches with lines = overlay }
   else if show_checks then
     match overlay_target_pv () with

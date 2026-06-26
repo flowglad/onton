@@ -50,8 +50,9 @@ let plain_lines frame =
 let render ?(width = 80) ?(height = 24) ?(view_mode = Tui.List_view)
     ?(activity = []) ?(project_name = "demo") ?(backend_name = "claude") views =
   Tui.render_frame ~width ~height ~selected:0 ~scroll_offset:0 ~view_mode
-    ~activity ~project_name ~backend_name ~show_help:false ~show_checks:false
-    ~checks_scroll:0 ~show_manage:false ~now:0.0 views
+    ~activity ~project_name ~backend_name ~version:"test-version"
+    ~show_help:false ~show_checks:false ~checks_scroll:0 ~show_manage:false
+    ~now:0.0 views
 
 let one_view = [ make_view ~id:"1" ~title:"first patch" ]
 
@@ -85,6 +86,15 @@ let find_index lines ~f =
   List.findi lines ~f:(fun _ line -> f line) |> Option.map ~f:fst
 
 (* --- tests ----------------------------------------------------------------- *)
+
+let test_help_overlay_includes_version () =
+  let frame =
+    Tui.render_frame ~width:80 ~height:24 ~selected:0 ~scroll_offset:0
+      ~view_mode:Tui.List_view ~activity:[] ~project_name:"demo"
+      ~backend_name:"claude" ~version:"1.2.3-test" ~show_help:true
+      ~show_checks:false ~checks_scroll:0 ~show_manage:false ~now:0.0 one_view
+  in
+  assert (line_contains (plain_lines frame) "onton 1.2.3-test")
 
 let test_header_has_project_and_backend () =
   let frame = render one_view in
@@ -298,6 +308,7 @@ let test_patch_5_merge_queue_badge () =
   assert (line_contains lines "mq-awaiting-checks #3")
 
 let () =
+  test_help_overlay_includes_version ();
   test_patch_5_merge_queue_badge ();
   test_header_has_project_and_backend ();
   test_header_truncates_when_too_narrow ();

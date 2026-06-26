@@ -174,7 +174,8 @@ val views_of_orchestrator :
   unit ->
   patch_view list
 
-val render_help_overlay : width:int -> height:int -> string list
+val render_help_overlay :
+  width:int -> height:int -> version:string -> string list
 
 val render_manage_overlay :
   width:int ->
@@ -203,6 +204,7 @@ val render_frame :
   activity:activity_entry list ->
   project_name:string ->
   backend_name:string ->
+  version:string ->
   show_help:bool ->
   show_checks:bool ->
   checks_scroll:int ->
