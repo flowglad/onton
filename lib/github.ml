@@ -891,6 +891,85 @@ let parse_merge_queue_removal_pagination body : string option =
                           in
                           if truncated then c.oid else None))))
 
+type actions_workflow_run = {
+  database_id : int option; [@key "id"] [@yojson.default None]
+  event : string option; [@yojson.default None]
+  head_branch : string option; [@key "head_branch"] [@yojson.default None]
+  status : string option; [@yojson.default None]
+  conclusion : string option; [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type actions_runs_response = {
+  workflow_runs : actions_workflow_run list;
+      [@key "workflow_runs"] [@yojson.default []]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+let merge_group_branch_prefix ~main_branch ~pr_number =
+  Printf.sprintf "gh-readonly-queue/%s/pr-%d-"
+    (Types.Branch.to_string main_branch)
+    (Types.Pr_number.to_int pr_number)
+
+let parse_merge_group_run_id ~main_branch ~pr_number body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> (
+      match Json.try_of_yojson actions_runs_response_of_yojson json with
+      | Error msg -> Error (Json_parse_error msg)
+      | Ok resp ->
+          let branch_prefix =
+            merge_group_branch_prefix ~main_branch ~pr_number
+          in
+          Ok
+            (List.find_map resp.workflow_runs ~f:(fun run ->
+                 let matches =
+                   Option.equal String.equal run.event (Some "merge_group")
+                   && Option.equal String.equal run.status (Some "completed")
+                   && Option.equal String.equal run.conclusion (Some "failure")
+                   && Option.exists run.head_branch ~f:(fun branch ->
+                       String.is_prefix branch ~prefix:branch_prefix)
+                 in
+                 if matches then run.database_id else None)))
+
+type actions_job = {
+  database_id : int option; [@key "id"] [@yojson.default None]
+  name : string option; [@yojson.default None]
+  conclusion : string option; [@yojson.default None]
+  html_url : string option; [@key "html_url"] [@yojson.default None]
+  started_at : string option; [@key "started_at"] [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+type actions_jobs_response = { jobs : actions_job list [@yojson.default []] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
+let ci_check_of_actions_job (job : actions_job) =
+  Option.map job.name ~f:(fun name ->
+      let conclusion =
+        Option.value_map job.conclusion ~default:"pending" ~f:String.lowercase
+      in
+      {
+        Types.Ci_check.name;
+        conclusion;
+        details_url = job.html_url;
+        description = None;
+        started_at = job.started_at;
+        id = job.database_id;
+      })
+
+let parse_actions_jobs_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> (
+      match Json.try_of_yojson actions_jobs_response_of_yojson json with
+      | Error msg -> Error (Json_parse_error msg)
+      | Ok resp ->
+          resp.jobs
+          |> List.filter_map ~f:ci_check_of_actions_job
+          |> List.filter ~f:Types.Ci_check.is_failure
+          |> Result.return)
+
 let https_config () =
   match Ca_certs.authenticator () with
   | Error (`Msg msg) -> Error ("TLS CA setup failed: " ^ msg)
@@ -1155,6 +1234,39 @@ let build_merge_queue_removal_request_body t (pr : Types.Pr_number.t) =
     [ ("query", `String merge_queue_removal_query); ("variables", variables) ]
   |> Yojson.Safe.to_string
 
+let merge_group_actions_checks ~net ~clock ?timeout t pr =
+  let runs_path = Printf.sprintf "/repos/%s/%s/actions/runs" t.owner t.repo in
+  let runs_query = [ ("event", [ "merge_group" ]); ("per_page", [ "20" ]) ] in
+  match
+    request ~net ~clock ?timeout t ~meth:`GET ~path:runs_path ~query:runs_query
+      ()
+  with
+  | Error _ as e -> e
+  | Ok runs_body -> (
+      match
+        parse_merge_group_run_id ~main_branch:t.main_branch ~pr_number:pr
+          runs_body
+      with
+      | Error _ as e -> e
+      | Ok None -> Ok []
+      | Ok (Some run_id) -> (
+          let jobs_path =
+            Printf.sprintf "/repos/%s/%s/actions/runs/%d/jobs" t.owner t.repo
+              run_id
+          in
+          let jobs_query = [ ("per_page", [ "100" ]) ] in
+          match
+            request ~net ~clock ?timeout t ~meth:`GET ~path:jobs_path
+              ~query:jobs_query ()
+          with
+          | Error _ as e -> e
+          | Ok jobs_body -> parse_actions_jobs_response jobs_body))
+
+let merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr result =
+  match Result.ok result with
+  | Some [] -> merge_group_actions_checks ~net ~clock ?timeout t pr
+  | _ -> result
+
 let merge_queue_removal_checks ~net ~clock ?timeout t pr =
   let body = build_merge_queue_removal_request_body t pr in
   match
@@ -1165,15 +1277,22 @@ let merge_queue_removal_checks ~net ~clock ?timeout t pr =
       match parse_merge_queue_removal_pagination resp_str with
       (* Complete first page (or no event): the pure parser already has the full
          failure list. *)
-      | None -> parse_merge_queue_removal_response resp_str
+      | None ->
+          parse_merge_queue_removal_response resp_str
+          |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
       (* >100 contexts on the merge-group commit: paginate by OID and filter to
          failures over the complete set. On any pagination failure, fall back to
          the pure parser (which returns [Ok []] for the truncated case), keeping
          the synthetic placeholder rather than a partial list. *)
       | Some oid -> (
           match fetch_all_contexts ~net ~clock ?timeout t ~oid with
-          | Ok all -> Ok (List.filter all ~f:Types.Ci_check.is_failure)
-          | Error _ -> parse_merge_queue_removal_response resp_str))
+          | Ok all ->
+              Ok (List.filter all ~f:Types.Ci_check.is_failure)
+              |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
+          | Error _ ->
+              parse_merge_queue_removal_response resp_str
+              |> merge_group_actions_fallback_if_empty ~net ~clock ?timeout t pr
+          ))
 
 (** Parse the REST response from [GET /repos/:owner/:repo/pulls]. Returns a list
     of [(pr_number, base_branch, merged)] for non-CLOSED PRs, newest first. Pure

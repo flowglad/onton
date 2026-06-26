@@ -1093,6 +1093,11 @@ let render_turn_layer_ci ~(project_name : string) ?pr_number
   | _ ->
       let formatted =
         List.map checks ~f:(fun (c : Ci_check.t) ->
+            let id =
+              match c.Ci_check.id with
+              | Some id -> Printf.sprintf " [check_id=%d]" id
+              | None -> ""
+            in
             let url =
               match c.Ci_check.details_url with
               | Some u -> Printf.sprintf " (%s)" u
@@ -1103,8 +1108,8 @@ let render_turn_layer_ci ~(project_name : string) ?pr_number
               | Some d -> Printf.sprintf "\n  %s" d
               | None -> ""
             in
-            Printf.sprintf "- **%s**: %s%s%s" c.Ci_check.name
-              c.Ci_check.conclusion url desc)
+            Printf.sprintf "- **%s**: %s%s%s%s" c.Ci_check.name
+              c.Ci_check.conclusion id url desc)
         |> String.concat ~sep:"\n"
       in
       let pr_ctx =
@@ -2071,6 +2076,24 @@ let%test "follow-up prompts without patch+gameplan emit only the turn layer" =
   in
   (* No layered prefix: the prompt does not start with the project heading. *)
   not (String.is_prefix ci_prompt ~prefix:"# [onton]")
+
+let%test "ci failure prompt renders check ids when present" =
+  let ci_prompt =
+    render_ci_failure_prompt ~project_name:"onton"
+      [
+        Ci_check.
+          {
+            name = "build";
+            conclusion = "FAILURE";
+            details_url = Some "https://example.test/check";
+            description = None;
+            started_at = None;
+            id = Some 12345;
+          };
+      ]
+  in
+  String.is_substring ci_prompt ~substring:"[check_id=12345]"
+  && String.is_substring ci_prompt ~substring:"https://example.test/check"
 
 let%test "human and pr_body prompts do not include the gameplan layer" =
   let human_prompt =

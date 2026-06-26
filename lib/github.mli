@@ -102,6 +102,21 @@ val parse_merge_queue_removal_pagination : string -> string option
     the caller should paginate by OID. [None] otherwise. Pure helper exposed for
     regression tests. *)
 
+val parse_merge_group_run_id :
+  main_branch:Types.Branch.t ->
+  pr_number:Types.Pr_number.t ->
+  string ->
+  (int option, error) Result.t
+(** Parse a REST [GET /actions/runs] response and return the newest failed
+    [merge_group] workflow run id for this PR's merge-queue branch, when one is
+    present. Pure helper exposed for regression tests. *)
+
+val parse_actions_jobs_response :
+  string -> (Types.Ci_check.t list, error) Result.t
+(** Parse a REST [GET /actions/runs/:id/jobs] response into failing job checks.
+    Job database ids become [Ci_check.id], and [html_url] becomes [details_url].
+    Pure helper exposed for regression tests. *)
+
 val is_method_not_allowed : error -> bool
 (** True only for the REST 405 response GitHub returns when a merge method is
     disabled for the repository. *)

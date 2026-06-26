@@ -28,9 +28,11 @@ module type S = sig
     pr_number:Types.Pr_number.t -> (Types.Ci_check.t list, error) Result.t
   (** Failing checks from the most recent merge-queue removal event's
       [beforeCommit] — the merge-group commit GitHub actually ran checks on.
-      [Ok []] when there is no removal event or it carries no failing checks.
-      Lets the runner replace the synthetic merge-queue placeholder with the
-      real failing checks (names, [details_url], dedup ids). *)
+      Implementations may fall back to the matching [merge_group] Actions run
+      when the removal event omits the failing rollup. [Ok []] when no source
+      carries failing checks. Lets the runner replace the synthetic merge-queue
+      placeholder with the real failing checks (names, [details_url], dedup
+      ids). *)
 
   val list_prs :
     branch:Types.Branch.t ->
