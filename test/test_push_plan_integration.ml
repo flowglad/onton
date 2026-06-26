@@ -156,10 +156,24 @@ let scenario_local_missing_remote env =
     failwith
       (Printf.sprintf "precondition: origin/feat=%s expected remote feat %s"
          tracked_feat remote_feat_sha);
-  (* Reassert [feat] as the checked-out branch. The local branch remains at
-     [shared_feat_sha], a strict ancestor of [origin/feat] while still ahead of
-     base, so the ancestry refusal is not pre-empted by No_commits_ahead_of_base. *)
-  sh ~dir:managed_dir "git checkout -q -B feat";
+  (* Pin HEAD to [feat] deterministically. We never left [feat] in this
+     scenario, so the working tree and index already match it; the only thing
+     that must be true for the planner is that HEAD is a symbolic ref to
+     [refs/heads/feat]. Earlier revisions used [git checkout -q -B feat] here,
+     but a full checkout touches the index/worktree and is sensitive to ambient
+     config — on CI it intermittently left the planner observing the
+     branch-switched guard instead of the intended stale-local refusal. Writing
+     the symref directly avoids the checkout heuristics entirely. *)
+  sh ~dir:managed_dir "git symbolic-ref HEAD refs/heads/feat";
+  (* Verify the exact value the planner reads ([rev-parse --abbrev-ref HEAD]):
+     if HEAD is not on [feat] the planner would (correctly) refuse with
+     branch-switched, so surface that as a clear precondition rather than a
+     misleading stale-local assertion failure. *)
+  let head_branch =
+    git_capture ~dir:managed_dir [ "rev-parse"; "--abbrev-ref"; "HEAD" ]
+  in
+  if not (String.equal head_branch "feat") then
+    failwith (Printf.sprintf "precondition: HEAD=%s expected feat" head_branch);
   (* Sanity: local feat != remote feat. *)
   let local_feat = git_capture ~dir:managed_dir [ "rev-parse"; "feat" ] in
   if not (String.equal local_feat shared_feat_sha) then
