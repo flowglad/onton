@@ -291,6 +291,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
 | `--poll-interval` | `30.0` | GitHub polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
+| `--auto-merge` | off | Enable automerge for every patch when starting a fresh `--gameplan` project; ignored on resume so per-patch TUI toggles persist |
 | `--headless` | off | Run without TUI (plain log output to stdout) |
 
 Project config and state are persisted to `~/.local/share/onton/<project>/`.
