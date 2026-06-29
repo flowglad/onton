@@ -122,6 +122,7 @@ let prop_needs_help_beats_approved =
     (fun (ctx, current_op) ->
       (* needs_intervention beats every flag except merged. *)
       let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
+      let ctx = State.Patch_ctx.set_enqueued ctx ~patch_id ~value:false in
       let ctx =
         State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value:true
       in
