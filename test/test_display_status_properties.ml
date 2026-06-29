@@ -151,10 +151,11 @@ let prop_approved_busy_is_running =
     ~name:"approved + busy ⇒ Approved_running regardless of current_op"
     ~count:500 gen_op (fun current_op ->
       let ctx =
-        ( ( ( State.Patch_ctx.empty |> fun c ->
-              State.Patch_ctx.set_merged c ~patch_id ~value:false )
-          |> fun c ->
-            State.Patch_ctx.set_needs_intervention c ~patch_id ~value:false )
+        ( ( ( ( State.Patch_ctx.empty |> fun c ->
+                State.Patch_ctx.set_merged c ~patch_id ~value:false )
+            |> fun c ->
+              State.Patch_ctx.set_needs_intervention c ~patch_id ~value:false )
+          |> fun c -> State.Patch_ctx.set_enqueued c ~patch_id ~value:false )
         |> fun c -> State.Patch_ctx.set_approved c ~patch_id ~value:true )
         |> fun c -> State.Patch_ctx.set_busy c ~patch_id ~value:true
       in
