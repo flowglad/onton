@@ -561,6 +561,7 @@ let all_display_statuses : Onton.Tui.display_status list =
   let id = function
     | Merged -> Merged
     | Needs_help -> Needs_help
+    | In_merge_queue -> In_merge_queue
     | Approved_idle -> Approved_idle
     | Approved_running -> Approved_running
     | Fixing_ci -> Fixing_ci
@@ -583,6 +584,7 @@ let all_display_statuses : Onton.Tui.display_status list =
     [
       Merged;
       Needs_help;
+      In_merge_queue;
       Approved_idle;
       Approved_running;
       Fixing_ci;

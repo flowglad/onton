@@ -39,6 +39,8 @@ module Patch_ctx : sig
   val set_merged : t -> patch_id:Patch_id.t -> value:bool -> t
   val is_approved : t -> patch_id:Patch_id.t -> bool
   val set_approved : t -> patch_id:Patch_id.t -> value:bool -> t
+  val is_enqueued : t -> patch_id:Patch_id.t -> bool
+  val set_enqueued : t -> patch_id:Patch_id.t -> value:bool -> t
   val ci_failure_count : t -> patch_id:Patch_id.t -> int
   val set_ci_failure_count : t -> patch_id:Patch_id.t -> count:int -> t
   val increment_ci_failure_count : t -> patch_id:Patch_id.t -> t

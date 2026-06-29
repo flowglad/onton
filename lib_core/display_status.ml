@@ -15,6 +15,7 @@ open Types
 type t =
   | Merged
   | Needs_help
+  | In_merge_queue
   | Approved_idle
   | Approved_running
   | Fixing_ci
@@ -62,6 +63,7 @@ let derive (ctx : State.Patch_ctx.t) ~patch_id
     ~(current_op : Operation_kind.t option) ~(main_branch : Branch.t) =
   if State.Patch_ctx.is_merged ctx ~patch_id then Merged
   else if State.Patch_ctx.needs_intervention ctx ~patch_id then Needs_help
+  else if State.Patch_ctx.is_enqueued ctx ~patch_id then In_merge_queue
   else if State.Patch_ctx.is_approved ctx ~patch_id then
     if State.Patch_ctx.is_busy ctx ~patch_id then Approved_running
     else Approved_idle
@@ -106,6 +108,41 @@ let%test "needs_help over approved" =
          ~value:true
   in
   equal Needs_help
+    (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
+       ~main_branch:(Branch.of_string "main"))
+
+let%test "in_merge_queue over approved" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_approved ~patch_id:(Patch_id.of_string "1")
+         ~value:true
+    |> State.Patch_ctx.set_enqueued ~patch_id:(Patch_id.of_string "1")
+         ~value:true
+  in
+  equal In_merge_queue
+    (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
+       ~main_branch:(Branch.of_string "main"))
+
+let%test "needs_help over in_merge_queue" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_needs_intervention ~patch_id:(Patch_id.of_string "1")
+         ~value:true
+    |> State.Patch_ctx.set_enqueued ~patch_id:(Patch_id.of_string "1")
+         ~value:true
+  in
+  equal Needs_help
+    (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
+       ~main_branch:(Branch.of_string "main"))
+
+let%test "merged over in_merge_queue" =
+  let ctx =
+    State.Patch_ctx.empty
+    |> State.Patch_ctx.set_merged ~patch_id:(Patch_id.of_string "1") ~value:true
+    |> State.Patch_ctx.set_enqueued ~patch_id:(Patch_id.of_string "1")
+         ~value:true
+  in
+  equal Merged
     (derive ctx ~patch_id:(Patch_id.of_string "1") ~current_op:None
        ~main_branch:(Branch.of_string "main"))
 
@@ -277,5 +314,7 @@ let%test "legacy Awaiting_review decodes to Awaiting_feedback" =
   && equal Awaiting_feedback (t_of_yojson (`String "Awaiting_review"))
 
 let%test "current statuses round-trip through yojson" =
-  List.for_all [ Awaiting_feedback; Ci_queued; Merged; Pending; Needs_help ]
-    ~f:(fun s -> equal s (t_of_yojson (yojson_of_t s)))
+  List.for_all
+    [
+      Awaiting_feedback; Ci_queued; Merged; Pending; Needs_help; In_merge_queue;
+    ] ~f:(fun s -> equal s (t_of_yojson (yojson_of_t s)))

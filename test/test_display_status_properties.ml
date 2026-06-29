@@ -42,6 +42,7 @@ type flag =
   | Set_merged of bool
   | Set_needs_intervention of bool
   | Set_approved of bool
+  | Set_enqueued of bool
   | Set_busy of bool
   | Set_has_pr of bool
   | Set_queued_ci of bool
@@ -56,6 +57,7 @@ let gen_flag =
       map (fun b -> Set_merged b) gen_bool;
       map (fun b -> Set_needs_intervention b) gen_bool;
       map (fun b -> Set_approved b) gen_bool;
+      map (fun b -> Set_enqueued b) gen_bool;
       map (fun b -> Set_busy b) gen_bool;
       map (fun b -> Set_has_pr b) gen_bool;
       map (fun b -> Set_queued_ci b) gen_bool;
@@ -69,6 +71,7 @@ let apply_flag ctx = function
   | Set_needs_intervention value ->
       State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value
   | Set_approved value -> State.Patch_ctx.set_approved ctx ~patch_id ~value
+  | Set_enqueued value -> State.Patch_ctx.set_enqueued ctx ~patch_id ~value
   | Set_busy value -> State.Patch_ctx.set_busy ctx ~patch_id ~value
   | Set_has_pr value -> State.Patch_ctx.set_has_pr ctx ~patch_id ~value
   | Set_queued_ci value ->
@@ -119,10 +122,29 @@ let prop_needs_help_beats_approved =
     (fun (ctx, current_op) ->
       (* needs_intervention beats every flag except merged. *)
       let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
+      let ctx = State.Patch_ctx.set_enqueued ctx ~patch_id ~value:false in
       let ctx =
         State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value:true
       in
       Display_status.equal Needs_help
+        (Display_status.derive ctx ~patch_id ~current_op ~main_branch))
+
+let prop_enqueued_beats_approved =
+  QCheck2.Test.make
+    ~name:
+      "enqueued + not merged + not needs_intervention ⇒ In_merge_queue even \
+       when approved + busy + ..."
+    ~count:500
+    QCheck2.Gen.(pair gen_ctx gen_op)
+    (fun (ctx, current_op) ->
+      (* In_merge_queue sits below merged/needs_intervention and above
+         approved/busy/queued — pin the two that dominate it to false. *)
+      let ctx = State.Patch_ctx.set_merged ctx ~patch_id ~value:false in
+      let ctx =
+        State.Patch_ctx.set_needs_intervention ctx ~patch_id ~value:false
+      in
+      let ctx = State.Patch_ctx.set_enqueued ctx ~patch_id ~value:true in
+      Display_status.equal In_merge_queue
         (Display_status.derive ctx ~patch_id ~current_op ~main_branch))
 
 let prop_approved_busy_is_running =
@@ -130,10 +152,11 @@ let prop_approved_busy_is_running =
     ~name:"approved + busy ⇒ Approved_running regardless of current_op"
     ~count:500 gen_op (fun current_op ->
       let ctx =
-        ( ( ( State.Patch_ctx.empty |> fun c ->
-              State.Patch_ctx.set_merged c ~patch_id ~value:false )
-          |> fun c ->
-            State.Patch_ctx.set_needs_intervention c ~patch_id ~value:false )
+        ( ( ( ( State.Patch_ctx.empty |> fun c ->
+                State.Patch_ctx.set_merged c ~patch_id ~value:false )
+            |> fun c ->
+              State.Patch_ctx.set_needs_intervention c ~patch_id ~value:false )
+          |> fun c -> State.Patch_ctx.set_enqueued c ~patch_id ~value:false )
         |> fun c -> State.Patch_ctx.set_approved c ~patch_id ~value:true )
         |> fun c -> State.Patch_ctx.set_busy c ~patch_id ~value:true
       in
@@ -182,6 +205,7 @@ let gen_status : Display_status.t QCheck2.Gen.t =
       [
         Merged;
         Needs_help;
+        In_merge_queue;
         Approved_idle;
         Approved_running;
         Fixing_ci;
@@ -221,6 +245,7 @@ let () =
       prop_total;
       prop_merged_dominates;
       prop_needs_help_beats_approved;
+      prop_enqueued_beats_approved;
       prop_approved_busy_is_running;
       prop_pending_when_no_pr;
       prop_blocked_by_dep_requires_off_main;

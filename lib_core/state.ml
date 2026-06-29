@@ -31,6 +31,7 @@ module Patch_ctx = struct
     needs_intervention : bool Map.M(Patch_id).t;
     merged : bool Map.M(Patch_id).t;
     approved : bool Map.M(Patch_id).t;
+    enqueued : bool Map.M(Patch_id).t;
     ci_failure_count : int Map.M(Patch_id).t;
     base_branch : Branch.t Map.M(Patch_id).t;
   }
@@ -45,6 +46,7 @@ module Patch_ctx = struct
       needs_intervention = Map.empty (module Patch_id);
       merged = Map.empty (module Patch_id);
       approved = Map.empty (module Patch_id);
+      enqueued = Map.empty (module Patch_id);
       ci_failure_count = Map.empty (module Patch_id);
       base_branch = Map.empty (module Patch_id);
     }
@@ -95,6 +97,12 @@ module Patch_ctx = struct
   let set_approved t ~patch_id ~value =
     { t with approved = Map.set t.approved ~key:patch_id ~data:value }
 
+  let is_enqueued t ~patch_id =
+    Map.find t.enqueued patch_id |> Option.value ~default:false
+
+  let set_enqueued t ~patch_id ~value =
+    { t with enqueued = Map.set t.enqueued ~key:patch_id ~data:value }
+
   let ci_failure_count t ~patch_id =
     Map.find t.ci_failure_count patch_id |> Option.value ~default:0
 
@@ -122,6 +130,7 @@ module Patch_ctx = struct
         Map.keys t.needs_intervention;
         Map.keys t.merged;
         Map.keys t.approved;
+        Map.keys t.enqueued;
         Map.keys t.ci_failure_count;
         Map.keys t.base_branch;
       ]
