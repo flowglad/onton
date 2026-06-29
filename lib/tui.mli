@@ -12,6 +12,7 @@ open Types
 type display_status = Display_status.t =
   | Merged
   | Needs_help
+  | In_merge_queue
   | Approved_idle
   | Approved_running
   | Fixing_ci

@@ -13,6 +13,7 @@ open Types
 type display_status = Display_status.t =
   | Merged
   | Needs_help
+  | In_merge_queue
   | Approved_idle
   | Approved_running
   | Fixing_ci
@@ -38,6 +39,7 @@ type status_display = { label : string; color : string }
 let label = function
   | Merged -> "merged"
   | Needs_help -> "needs-help"
+  | In_merge_queue -> "in-merge-queue"
   | Approved_idle -> "approved"
   | Approved_running -> "approved-running"
   | Fixing_ci -> "fixing-ci"
@@ -59,6 +61,7 @@ let label = function
 let color = function
   | Merged -> Term.Sgr.fg_green
   | Needs_help -> Term.Sgr.fg_red
+  | In_merge_queue -> Term.Sgr.fg_cyan
   | Approved_idle -> Term.Sgr.fg_green
   | Approved_running -> Term.Sgr.fg_cyan
   | Fixing_ci -> Term.Sgr.fg_yellow
@@ -153,6 +156,7 @@ let%test "scroll_indicators no scroll needed" =
 let status_style = function
   | Merged -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
   | Needs_help -> [ Term.Sgr.fg_red; Term.Sgr.bold ]
+  | In_merge_queue -> [ Term.Sgr.fg_cyan; Term.Sgr.bold ]
   | Approved_idle -> [ Term.Sgr.fg_green ]
   | Approved_running -> [ Term.Sgr.fg_green; Term.Sgr.bold ]
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
@@ -168,6 +172,7 @@ let status_style = function
 let status_indicator = function
   | Merged -> "✓"
   | Needs_help -> "!"
+  | In_merge_queue -> "⇥"
   | Approved_idle -> "✓"
   | Approved_running -> "▶"
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
@@ -417,6 +422,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
     |> State.Patch_ctx.set_has_pr ~patch_id ~value:(Patch_agent.has_pr agent)
     |> State.Patch_ctx.set_approved ~patch_id
          ~value:(Patch_agent.is_approved agent ~main_branch)
+    |> State.Patch_ctx.set_enqueued ~patch_id
+         ~value:(Option.is_some agent.merge_queue_entry)
     |> State.Patch_ctx.set_ci_failure_count ~patch_id
          ~count:agent.ci_failure_count
     |> fun ctx ->
@@ -449,6 +456,8 @@ let patch_view_of_agent (agent : Patch_agent.t)
                      ~value:(Patch_agent.has_pr dep_agent)
                 |> State.Patch_ctx.set_approved ~patch_id:dep_id
                      ~value:(Patch_agent.is_approved dep_agent ~main_branch)
+                |> State.Patch_ctx.set_enqueued ~patch_id:dep_id
+                     ~value:(Option.is_some dep_agent.merge_queue_entry)
                 |> State.Patch_ctx.set_ci_failure_count ~patch_id:dep_id
                      ~count:dep_agent.ci_failure_count
                 |> fun ctx ->
@@ -510,28 +519,35 @@ let render_status_badge ?(queued = false) status =
   render_badge ~style:(status_style status) ~indicator:(status_indicator status)
     ~label:lbl
 
-let merge_queue_badge_state = function
-  | Pr_state.Mq_queued -> (Awaiting_feedback, "mq-queued")
-  | Pr_state.Mq_awaiting_checks -> (Awaiting_feedback, "mq-awaiting-checks")
-  | Pr_state.Mq_mergeable -> (Approved_idle, "mq-mergeable")
-  | Pr_state.Mq_unmergeable -> (Needs_help, "mq-unmergeable")
-  | Pr_state.Mq_locked -> (Ci_queued, "mq-locked")
+(* The primary status column owns "in merge queue" ([In_merge_queue]); the badge
+   only conveys the GitHub sub-state + queue position as detail, rendered in the
+   In_merge_queue style. It no longer borrows other statuses' colors. *)
+let merge_queue_badge_label = function
+  | Pr_state.Mq_queued -> "mq-queued"
+  | Pr_state.Mq_awaiting_checks -> "mq-awaiting-checks"
+  | Pr_state.Mq_mergeable -> "mq-mergeable"
+  | Pr_state.Mq_unmergeable -> "mq-unmergeable"
+  | Pr_state.Mq_locked -> "mq-locked"
 
 let render_merge_queue_badge = function
   | None -> ""
   | Some (entry : Pr_state.merge_queue_entry) ->
-      let status, state_label = merge_queue_badge_state entry.state in
-      render_badge ~style:(status_style status)
-        ~indicator:(status_indicator status)
-        ~label:(Printf.sprintf "%s #%d" state_label entry.position)
+      render_badge
+        ~style:(status_style In_merge_queue)
+        ~indicator:(status_indicator In_merge_queue)
+        ~label:
+          (Printf.sprintf "%s #%d"
+             (merge_queue_badge_label entry.state)
+             entry.position)
 
 let is_running_status = function
   | Fixing_ci | Addressing_review | Addressing_findings | Resolving_conflict
   | Responding_to_human | Writing_pr_body | Rebasing | Starting | Updating
   | Approved_running ->
       true
-  | Merged | Needs_help | Approved_idle | Ci_queued | Review_queued
-  | Findings_queued | Awaiting_feedback | Blocked_by_dep | Pending ->
+  | Merged | Needs_help | In_merge_queue | Approved_idle | Ci_queued
+  | Review_queued | Findings_queued | Awaiting_feedback | Blocked_by_dep
+  | Pending ->
       false
 
 (** {1 Frame rendering} *)
