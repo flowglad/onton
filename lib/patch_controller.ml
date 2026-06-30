@@ -89,7 +89,7 @@ let enqueue_pr_body_if_needed t patch_id (agent : Patch_agent.t) =
     if already_queued then t
     else Orchestrator.enqueue t patch_id Operation_kind.Pr_body
 
-let apply_poll_result t patch_id
+let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
     ({ poll_result; base_branch; branch_in_root; worktree_path } :
       poll_observation) =
   let logs = ref [] in
@@ -98,14 +98,11 @@ let apply_poll_result t patch_id
     let agent = Orchestrator.agent t patch_id in
     let application =
       Merge_queue_decision.apply ~previous_entry:agent.merge_queue_entry
-        poll_result
+        ~ejection_confirmed:merge_queue_ejection_confirmed poll_result
     in
     if application.merge_queue_ejected then
       log "Merge queue removed PR after checks failed — treating as CI failure";
-    if application.merge_queue_unmergeable then
-      log "Merge queue marked PR unmergeable — treating as CI failure";
-    ( application.poll_result,
-      application.merge_queue_ejected || application.merge_queue_unmergeable )
+    (application.poll_result, application.merge_queue_ejected)
   in
   (* If the agent was [Missing] and we have a successful poll observation,
      lift it back to [Present] before applying any world-state updates. The
@@ -1506,7 +1503,7 @@ let%test "apply_poll_result turns merge queue ejection into CI feedback" =
       }
   in
   let t, logs, _ =
-    apply_poll_result t pid
+    apply_poll_result ~merge_queue_ejection_confirmed:true t pid
       {
         poll_result;
         base_branch = Some main;
@@ -1523,11 +1520,13 @@ let%test "apply_poll_result turns merge queue ejection into CI feedback" =
   && List.exists logs ~f:(fun { message; _ } ->
       String.is_substring message ~substring:"Merge queue removed PR")
 
-let%test
-    "apply_poll_result turns unmergeable merge queue entry into CI feedback" =
+(* An [Mq_unmergeable] entry that is still in the queue is, in a stacked merge
+   queue, almost always a conflict with the sibling ahead of it — not a check
+   failure. It must not synthesize a CI failure; the PR stays untouched and the
+   conflict surfaces later through [merge_state = Conflicting]. *)
+let%test "apply_poll_result leaves an unmergeable in-queue entry untouched" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
   let t = make_approved_agent t in
-  let t = Orchestrator.set_automerge_deadline t pid 1.0 in
   let poll_result =
     Poller.
       {
@@ -1548,8 +1547,10 @@ let%test
         merge_commit_sha = None;
       }
   in
-  let t, logs, _ =
-    apply_poll_result t pid
+  (* Irrelevant verdict on purpose: an in-queue entry is not an ejection, so
+     even a [true] confirmation must not produce synthesis. *)
+  let t, _, _ =
+    apply_poll_result ~merge_queue_ejection_confirmed:true t pid
       {
         poll_result;
         base_branch = Some main;
@@ -1558,15 +1559,56 @@ let%test
       }
   in
   let agent = Orchestrator.agent t pid in
-  List.mem agent.queue Operation_kind.Ci ~equal:Operation_kind.equal
-  && (not agent.checks_passing) && (not agent.merge_ready)
-  && Option.exists agent.merge_queue_entry ~f:(fun entry ->
-      Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable)
-  && agent.automerge_failure_count = 1
-  && Option.is_none agent.automerge_deadline
-  && List.exists agent.ci_checks ~f:Ci_check.is_merge_queue_failure
-  && List.exists logs ~f:(fun { message; _ } ->
-      String.is_substring message ~substring:"marked PR unmergeable")
+  (not (List.mem agent.queue Operation_kind.Ci ~equal:Operation_kind.equal))
+  && agent.checks_passing && agent.merge_ready
+  && agent.automerge_failure_count = 0
+  && not (List.exists agent.ci_checks ~f:Ci_check.is_merge_queue_failure)
+
+(* The user-facing regression: a PR ejected from the queue while still green and
+   mergeable, but ejected because of a conflict with the sibling ahead of it.
+   The poller's removal-event fetch found no failing merge-group checks, so
+   [merge_queue_ejection_confirmed = false]. We must NOT report a CI failure. *)
+let%test "apply_poll_result leaves an unconfirmed (conflict) ejection alone" =
+  let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
+  let t = make_approved_agent t in
+  let t = Orchestrator.set_merge_queue_required t pid true in
+  let t =
+    Orchestrator.set_merge_queue_entry t pid
+      (Some Pr_state.{ id = "MQE_1"; state = Mq_awaiting_checks; position = 1 })
+  in
+  let poll_result =
+    Poller.
+      {
+        queue = [];
+        merged = false;
+        closed = false;
+        is_draft = false;
+        merge_state = Pr_state.Mergeable;
+        merge_ready = true;
+        head_oid = None;
+        review_decision = Some "APPROVED";
+        unresolved_comment_count = 0;
+        merge_queue_required = true;
+        merge_queue_entry = None;
+        checks_passing = true;
+        ci_checks = [];
+        merge_commit_sha = None;
+      }
+  in
+  let t, _, _ =
+    apply_poll_result ~merge_queue_ejection_confirmed:false t pid
+      {
+        poll_result;
+        base_branch = Some main;
+        branch_in_root = false;
+        worktree_path = None;
+      }
+  in
+  let agent = Orchestrator.agent t pid in
+  (not (List.mem agent.queue Operation_kind.Ci ~equal:Operation_kind.equal))
+  && agent.checks_passing && agent.merge_ready
+  && agent.automerge_failure_count = 0
+  && not (List.exists agent.ci_checks ~f:Ci_check.is_merge_queue_failure)
 
 let%test "reconcile_automerge clears deadline on merged agent" =
   let _patch, t = make_orchestrator ~patch_id:pid ~main_branch:main in
