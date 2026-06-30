@@ -444,6 +444,53 @@ struct
                         if not (String.equal path default) then Some path
                         else None
                 in
+                (* Merge-queue ejection disambiguation. When a PR leaves the
+                   queue while still green and mergeable, that is either a
+                   hidden merge-group check failure (real, must surface) or a
+                   conflict with the sibling ahead of it (must NOT surface as a
+                   CI failure — it resolves through normal [Merge_conflict]
+                   handling once [merge_state] flips). Poll signals alone can't
+                   tell them apart; the removal event's [beforeCommit] can. We
+                   fetch it only on the rare ejection transition, and fail open
+                   (treat a fetch error as a real failure) so a transient error
+                   never silently drops a genuine merge-group failure — the
+                   runner re-fetches the real check names at delivery. *)
+                let merge_queue_ejection_confirmed =
+                  let previous_entry =
+                    Runtime.read runtime (fun snap ->
+                        match
+                          Orchestrator.find_agent snap.Runtime.orchestrator
+                            patch_id
+                        with
+                        | Some a -> a.Patch_agent.merge_queue_entry
+                        | None -> None)
+                  in
+                  let is_ejection =
+                    Merge_queue_decision.should_treat_ejection_as_ci_failure
+                      ~previous_entry poll_result
+                  in
+                  if is_ejection then (
+                    match Forge.merge_queue_removal_checks ~pr_number with
+                    | Ok (_ :: _) ->
+                        Runtime_logging.log_event runtime ~patch_id
+                          "Merge queue ejection: removal event shows failing \
+                           merge-group checks — treating as CI failure";
+                        true
+                    | Ok [] ->
+                        Runtime_logging.log_event runtime ~patch_id
+                          "Merge queue ejection with no failing merge-group \
+                           checks — treating as a conflict, not CI; awaiting \
+                           conflict signal";
+                        false
+                    | Error e ->
+                        Runtime_logging.log_event runtime ~patch_id
+                          (Printf.sprintf
+                             "Merge queue ejection: failed to fetch removal \
+                              checks (%s) — treating as CI failure to be safe"
+                             (Forge.show_error e));
+                        true)
+                  else false
+                in
                 let observation =
                   Patch_controller.
                     {
@@ -453,7 +500,12 @@ struct
                       worktree_path = worktree_candidate;
                     }
                 in
-                Some (patch_id, observation, failed_ci, ci_checks_truncated))
+                Some
+                  ( patch_id,
+                    observation,
+                    merge_queue_ejection_confirmed,
+                    failed_ci,
+                    ci_checks_truncated ))
       in
       (* Phase 2: Single atomic update — apply all poll results + reconcile.
        This prevents the runner from seeing an intermediate state where
@@ -465,13 +517,18 @@ struct
               List.fold observations ~init:(orch, [], [])
                 ~f:(fun
                     (orch, poll_events, sides)
-                    (patch_id, obs, failed_ci, ci_truncated)
+                    ( patch_id,
+                      obs,
+                      merge_queue_ejection_confirmed,
+                      failed_ci,
+                      ci_truncated )
                   ->
                   match Orchestrator.find_agent orch patch_id with
                   | None -> (orch, poll_events, sides)
                   | Some agent_before ->
                       let orch, log_entries, newly_blocked =
-                        Patch_controller.apply_poll_result orch patch_id obs
+                        Patch_controller.apply_poll_result
+                          ~merge_queue_ejection_confirmed orch patch_id obs
                       in
                       let agent_after = Orchestrator.agent orch patch_id in
                       let log_messages =

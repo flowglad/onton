@@ -41,6 +41,7 @@ val reconcile_patch :
     effects. The same snapshot always produces the same result. *)
 
 val apply_poll_result :
+  ?merge_queue_ejection_confirmed:bool ->
   Orchestrator.t ->
   Patch_id.t ->
   poll_observation ->
@@ -48,7 +49,13 @@ val apply_poll_result :
 (** Apply a GitHub poll observation to durable state. Returns the updated
     orchestrator, log entries, and whether the patch became newly branch-
     blocked in this step. This is the controller-owned pure poll ingestion step.
-*)
+
+    [merge_queue_ejection_confirmed] is the poller's verdict on a merge-queue
+    ejection (default [false]): [true] when the removal event confirmed a real
+    merge-group check failure — or the confirming fetch errored, erring toward
+    surfacing it — and [false] for a conflict-driven ejection, which is left to
+    surface through normal [Merge_conflict] handling. Consulted only when the PR
+    actually left the queue while green and mergeable; ignored otherwise. *)
 
 val apply_replacement_pr :
   Orchestrator.t ->
