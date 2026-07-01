@@ -1,6 +1,8 @@
 (* @archlint.module interface
    @archlint.domain tui-state *)
 
+open Base
+
 type t = {
   list_selected : int ref;
   detail_scroll : int ref;
@@ -20,7 +22,7 @@ type t = {
   detail_scrolls : (Types.Patch_id.t, int * bool) Stdlib.Hashtbl.t;
   dep_select_cursor : int ref;
       (** Highlighted row in the add-patch dependency-selection overlay. *)
-  dep_select_chosen : Types.Patch_id.t list ref;
+  dep_select_chosen : Set.M(Types.Patch_id).t ref;
       (** Currently toggled-on dependencies in that overlay. *)
 }
 

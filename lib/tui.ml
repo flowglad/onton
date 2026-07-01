@@ -1226,7 +1226,7 @@ let render_manage_overlay ~width ~height ~automerge_enabled ~needs_intervention
     toggled-on ids. Rows are windowed to fit [height] around the cursor so long
     gameplans stay navigable. *)
 let render_deps_overlay ~width ~height ~(views : patch_view list) ~cursor
-    ~(chosen : Patch_id.t list) =
+    ~(chosen : Set.M(Patch_id).t) =
   let dismiss =
     Term.styled [ Term.Sgr.dim ]
       "(↑/↓ move · space toggle · enter confirm · esc cancel)"
@@ -1236,7 +1236,7 @@ let render_deps_overlay ~width ~height ~(views : patch_view list) ~cursor
       [ Term.Sgr.bold; Term.Sgr.fg_yellow ]
       (Printf.sprintf " Select Dependencies  %s" dismiss)
   in
-  let is_chosen pid = List.mem chosen pid ~equal:Patch_id.equal in
+  let is_chosen pid = Set.mem chosen pid in
   let body =
     if List.is_empty views then
       [ Term.styled [ Term.Sgr.dim ] "    (no existing patches to depend on)" ]

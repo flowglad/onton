@@ -214,7 +214,7 @@ val render_frame :
   ?transcript:string ->
   ?status_msg:status_msg ->
   ?prompt_line:prompt_info ->
-  ?dep_select:int * Patch_id.t list ->
+  ?dep_select:int * Set.M(Patch_id).t ->
   patch_view list ->
   frame
 

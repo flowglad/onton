@@ -1,6 +1,8 @@
 (* @archlint.module state
    @archlint.domain session-meta *)
 
+open Base
+
 type t = {
   list_selected : int ref;
   detail_scroll : int ref;
@@ -20,7 +22,7 @@ type t = {
   detail_scrolls : (Types.Patch_id.t, int * bool) Stdlib.Hashtbl.t;
   dep_select_cursor : int ref;
       (** Highlighted row in the add-patch dependency-selection overlay. *)
-  dep_select_chosen : Types.Patch_id.t list ref;
+  dep_select_chosen : Set.M(Types.Patch_id).t ref;
       (** Currently toggled-on dependencies in that overlay. *)
 }
 
@@ -43,5 +45,5 @@ let create () =
     patches_visible_count = ref 0;
     detail_scrolls = Stdlib.Hashtbl.create 16;
     dep_select_cursor = ref 0;
-    dep_select_chosen = ref [];
+    dep_select_chosen = ref (Set.empty (module Types.Patch_id));
   }

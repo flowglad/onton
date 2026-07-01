@@ -311,6 +311,8 @@ struct
                    selected patch: begin the two-step description → deps prompt. *)
                 Tui_input.Edit_buffer.clear buf;
                 pending_patch_desc := None;
+                dep_select_cursor := 0;
+                dep_select_chosen := Set.empty (module Patch_id);
                 input_mode := Tui_input.Prompt_patch_desc
             | Term.Key.Char 'm' -> (
                 input_mode := Tui_input.Normal;
@@ -419,6 +421,8 @@ struct
             (match key with
             | Term.Key.Escape ->
                 pending_patch_desc := None;
+                dep_select_cursor := 0;
+                dep_select_chosen := Set.empty (module Patch_id);
                 input_mode := Tui_input.Normal
             | Term.Key.Up | Term.Key.Char 'k' ->
                 if n > 0 then
@@ -430,32 +434,27 @@ struct
                 match List.nth candidates !dep_select_cursor with
                 | None -> ()
                 | Some pid ->
-                    if List.mem !dep_select_chosen pid ~equal:Patch_id.equal
-                    then
-                      dep_select_chosen :=
-                        List.filter !dep_select_chosen ~f:(fun p ->
-                            not (Patch_id.equal p pid))
-                    else dep_select_chosen := pid :: !dep_select_chosen)
+                    dep_select_chosen :=
+                      if Set.mem !dep_select_chosen pid then
+                        Set.remove !dep_select_chosen pid
+                      else Set.add !dep_select_chosen pid)
             | Term.Key.Enter -> (
                 let description = !pending_patch_desc in
-                pending_patch_desc := None;
-                input_mode := Tui_input.Normal;
                 match description with
                 | None ->
+                    input_mode := Tui_input.Normal;
                     log_event Env.runtime
                       "Add patch failed — no pending description"
                 | Some description -> (
                     (* Present deps in display order, not toggle order. *)
                     let dependencies =
                       List.filter candidates ~f:(fun p ->
-                          List.mem !dep_select_chosen p ~equal:Patch_id.equal)
+                          Set.mem !dep_select_chosen p)
                     in
                     let title =
                       if String.length description <= 72 then description
                       else String.prefix description 71 ^ "…"
                     in
-                    dep_select_chosen := [];
-                    dep_select_cursor := 0;
                     match
                       Runtime.add_patch Env.runtime ~title ~description
                         ~dependencies
@@ -464,6 +463,10 @@ struct
                         log_event Env.runtime
                           (Printf.sprintf "Cannot add patch — %s" msg)
                     | Ok patch ->
+                        pending_patch_desc := None;
+                        input_mode := Tui_input.Normal;
+                        dep_select_chosen := Set.empty (module Patch_id);
+                        dep_select_cursor := 0;
                         let deps_str =
                           match patch.Patch.dependencies with
                           | [] -> "no dependencies"
@@ -493,6 +496,8 @@ struct
                 Tui_input.Edit_buffer.clear buf;
                 saved_draft := "";
                 pending_patch_desc := None;
+                dep_select_cursor := 0;
+                dep_select_chosen := Set.empty (module Patch_id);
                 Tui_input.History.reset_browse history;
                 input_mode := Tui_input.Normal;
                 loop ()
@@ -503,7 +508,10 @@ struct
                 let mode = !input_mode in
                 Tui_input.Edit_buffer.clear buf;
                 saved_draft := "";
-                input_mode := Tui_input.Normal;
+                if
+                  not
+                    (Tui_input.equal_input_mode mode Tui_input.Prompt_patch_desc)
+                then input_mode := Tui_input.Normal;
                 let line = String.strip line in
                 (match mode with
                 | Tui_input.Prompt_message -> (
@@ -739,16 +747,16 @@ struct
                                    msg)))
                 | Tui_input.Prompt_patch_desc ->
                     (* Step 1: capture the description, then open the
-                       dependency-selection overlay. [input_mode] was forced to
-                       [Normal] above, so override it back here. *)
+                       dependency-selection overlay. *)
                     if String.is_empty line then (
                       pending_patch_desc := None;
+                      input_mode := Tui_input.Normal;
                       log_event Env.runtime
                         "Add patch cancelled — empty description")
                     else (
                       pending_patch_desc := Some line;
                       dep_select_cursor := 0;
-                      dep_select_chosen := [];
+                      dep_select_chosen := Set.empty (module Patch_id);
                       input_mode := Tui_input.Select_patch_deps)
                 | Tui_input.Normal | Tui_input.Manage_patch
                 | Tui_input.Select_patch_deps ->

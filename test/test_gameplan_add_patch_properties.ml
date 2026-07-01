@@ -20,6 +20,17 @@ let gen_gameplan_and_valid_deps =
       list_size (int_range 0 (List.length ids)) (oneof_list ids) >>= fun deps ->
       return (g, deps)
 
+let prop_totality =
+  QCheck2.Test.make ~name:"add_patch: never raises" ~count:500
+    QCheck2.Gen.(triple gen_gameplan string string)
+    (fun (g, title, description) ->
+      try
+        ignore
+          (Gameplan.add_patch g ~title ~description ~dependencies:[]
+            : (Gameplan.t * Patch.t, string) Result.t);
+        true
+      with _ -> false)
+
 let prop_valid_deps_appends_one_fresh_patch =
   QCheck2.Test.make ~name:"add_patch: valid deps append exactly one fresh patch"
     ~count:500 gen_gameplan_and_valid_deps (fun (g, deps) ->
@@ -89,6 +100,7 @@ let prop_deps_deduped_preserving_order =
 let () =
   let suite =
     [
+      prop_totality;
       prop_valid_deps_appends_one_fresh_patch;
       prop_unknown_dep_rejected;
       prop_deps_deduped_preserving_order;
