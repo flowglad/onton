@@ -2092,17 +2092,23 @@ struct
                                                                    .Ci_check
                                                                     .name msg);
                                                             None)
-                                                  with exn ->
-                                                    log_event runtime ~patch_id
-                                                      (Printf.sprintf
-                                                         "CI detail processing \
-                                                          failed for %s (%s) — \
-                                                          delivering metadata \
-                                                          only"
-                                                         check.Ci_check.name
-                                                         (Stdlib.Printexc
-                                                          .to_string exn));
-                                                    None
+                                                  with
+                                                  | Eio.Cancel.Cancelled _ as
+                                                    exn ->
+                                                      raise exn
+                                                  | exn ->
+                                                      log_event runtime
+                                                        ~patch_id
+                                                        (Printf.sprintf
+                                                           "CI detail \
+                                                            processing failed \
+                                                            for %s (%s) — \
+                                                            delivering \
+                                                            metadata only"
+                                                           check.Ci_check.name
+                                                           (Stdlib.Printexc
+                                                            .to_string exn));
+                                                      None
                                                 in
                                                 let detailed_checks =
                                                   Base.List.map checks_to_fetch
