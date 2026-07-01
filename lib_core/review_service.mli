@@ -147,16 +147,11 @@ val parse_error_message : string -> string option
 
 (** {2 Wontfix artifact} *)
 
-type wontfix_entry = { id : string; reason : string }
-[@@deriving show, eq, sexp_of, compare]
-
-val parse_wontfix_artifact :
-  string -> (wontfix_entry list, string) Stdlib.Result.t
-(** Decode the agent-authored [findings_wontfix.json] artifact: a JSON array of
-    [{id, reason}] objects. Returns [Ok []] on the empty string, an empty array,
-    or a missing file — callers normalize those cases the same way: no findings
-    declared wontfix.
-
-    Total over arbitrary input — invalid JSON or schema returns [Error _] rather
-    than raising. Entries with missing/empty [id] or [reason] are skipped (not
-    an error) so a single malformed row doesn't poison the whole list. *)
+val wontfix_filename_of_id : string -> string
+(** Filesystem-safe filename for a finding's wontfix file: the composite finding
+    id with every character outside [[A-Za-z0-9.-]] replaced by ['_'], plus a
+    [".md"] suffix. Composite ids ({!Findings_registry.make_key}) contain ['/']
+    and ['#'], so they cannot name a file verbatim; the supervisor prints this
+    filename on the finding's prompt block and inverts the same mapping over the
+    delivered findings post-session — the agent only ever copies a filename.
+    Total; never raises. *)

@@ -44,6 +44,25 @@ module type S = sig
   val update_pr_body :
     pr_number:Types.Pr_number.t -> body:string -> (unit, error) Result.t
 
+  val reply_to_review_comment :
+    pr_number:Types.Pr_number.t ->
+    comment_id:Types.Comment_id.t ->
+    body:string ->
+    (unit, error) Result.t
+  (** Post [body] as a reply on the review-comment thread opened by
+      [comment_id]. The id must be a real forge-issued id — synthetic ids (see
+      {!Types.Comment_id.next_synthetic}) cannot be replied to. *)
+
+  val resolve_review_thread : thread_id:string -> (unit, error) Result.t
+  (** Mark the review thread [thread_id] resolved. [thread_id] is the forge's
+      thread node id as carried on {!Types.Comment.t}. *)
+
+  val viewer_login : unit -> string option
+  (** Login of the account the forge credentials belong to. Fetched lazily and
+      cached for the process lifetime; [None] when the fetch has failed so far —
+      callers fail open (treat every thread as needing a reply). Used to
+      recognize onton's own posted replies on review threads. *)
+
   val create_pull_request :
     title:string ->
     head:Types.Branch.t ->

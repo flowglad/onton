@@ -185,20 +185,28 @@ Strong points:
 - The `[outdated]`/`[at=…]` SHA-anchoring is the gold-standard pattern
   for resilience against later commits — keeps the worker from
   re-doing fixes that already landed.
-- Per-comment IDs and thread IDs let the worker reply via structured
-  GraphQL, not free-form prose.
-- The reply-and-resolve workflow is mechanically specified.
+- Reply/resolve is supervisor-owned, following the pr-body artifact
+  model: the worker writes one response file per comment
+  (`comment_responses/<comment_id>.md`, response text only) and is
+  never asked to reply or resolve itself (gh stays available for its
+  own investigation). After the post-session push succeeds, the
+  supervisor posts each response as a thread reply and resolves that
+  thread (`Comment_responder.respond_after_session`), so a "fixed in
+  <sha>" reply can never precede the fix reaching the remote, and a
+  worker can no longer resolve a thread without responding.
+- Comments without a response file stay unresolved and re-deliver on
+  the next poll — convergence is gated by the orchestrator, not by
+  trusting the worker to have run CLI commands.
 
 Gaps:
 - The prompt does not constrain the worker against re-implementing
   previously-resolved threads or reverting earlier fixes. A short
   "Do not modify code outside the scope of these comments" line would
   help.
-- No mechanism to surface a comment the worker actively disagrees
-  with. Currently the prompt says "implement OR explain why current
-  approach is correct" — but the explanation goes into the GitHub
-  thread, where the orchestrator can't act on it. Consider also
-  writing a structured disagreement record to an artifact file.
+- Disagreement ("the current approach is correct") lands in the
+  response file and thus on the GitHub thread, but the orchestrator
+  does not act on its content — a structured disagreement field could
+  let it distinguish "fixed" from "wontfix" replies.
 
 ### `render_ci_failure_prompt` and `render_ci_failure_unknown_prompt`
 

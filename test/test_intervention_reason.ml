@@ -161,13 +161,13 @@ let assert_raw_fields ~merged ~has_pr ~is_pr_missing ~session_given_up
     ~human_in_queue ~ci_failure_count ~start_attempts_without_pr
     ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
     ~push_failure_count ~rebase_failure_count ~pr_body_artifact_miss_count
-    ~expected =
+    ~review_unresolved_cycle_count ~expected =
   let reason =
     Patch_agent.intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
       ~session_given_up ~human_in_queue ~ci_failure_count
       ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
       ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-      ~pr_body_artifact_miss_count
+      ~pr_body_artifact_miss_count ~review_unresolved_cycle_count
   in
   assert (Option.equal String.equal reason expected);
   assert (
@@ -176,7 +176,7 @@ let assert_raw_fields ~merged ~has_pr ~is_pr_missing ~session_given_up
          ~session_given_up ~human_in_queue ~ci_failure_count
          ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
          ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-         ~pr_body_artifact_miss_count)
+         ~pr_body_artifact_miss_count ~review_unresolved_cycle_count)
       (Option.is_some expected))
 
 let () =
@@ -184,12 +184,35 @@ let () =
     ~session_given_up:false ~human_in_queue:false ~ci_failure_count:0
     ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
     ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:2
-    ~pr_body_artifact_miss_count:0 ~expected:(Some "rebase_failure_count>=2");
+    ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:0
+    ~expected:(Some "rebase_failure_count>=2");
   assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
     ~session_given_up:false ~human_in_queue:true ~ci_failure_count:3
     ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
     ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
-    ~pr_body_artifact_miss_count:0 ~expected:None;
+    ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:0
+    ~expected:None;
+  (* The review-loop cap fires like every other counter... *)
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:false ~ci_failure_count:0
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
+    ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:2
+    ~expected:(Some "review_unresolved_cycle_count>=2");
+  (* ...respects the Human exemption... *)
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:true ~ci_failure_count:0
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
+    ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:2
+    ~expected:None;
+  (* ...and stays quiet one increment below the cap. *)
+  assert_raw_fields ~merged:false ~has_pr:true ~is_pr_missing:false
+    ~session_given_up:false ~human_in_queue:false ~ci_failure_count:0
+    ~start_attempts_without_pr:0 ~conflict_noop_count:0 ~no_commits_push_count:0
+    ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
+    ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:1
+    ~expected:None;
   print_endline "PASS: raw intervention field decisions stay in lockstep"
 
 (* Exercise the whole Patch_agent decision surface. Some transitions have
@@ -290,6 +313,7 @@ let () =
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
              ~rebase_failure_count:0 ~pr_body_artifact_miss_count:0
+             ~review_unresolved_cycle_count:0
          in
          let needs_from_fields =
            Patch_agent.needs_intervention_of_fields ~merged:false ~has_pr:false
@@ -298,6 +322,7 @@ let () =
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
              ~rebase_failure_count:0 ~pr_body_artifact_miss_count:0
+             ~review_unresolved_cycle_count:0
          in
          let rebase_reason =
            Patch_agent.intervention_reason_of_fields ~merged:false ~has_pr:true
@@ -306,6 +331,7 @@ let () =
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
              ~rebase_failure_count:2 ~pr_body_artifact_miss_count:0
+             ~review_unresolved_cycle_count:0
          in
          let rebase_needs_intervention =
            Patch_agent.needs_intervention_of_fields ~merged:false ~has_pr:true
@@ -314,6 +340,7 @@ let () =
              ~conflict_noop_count:0 ~no_commits_push_count:0
              ~context_exhaustion_count:0 ~push_failure_count:0
              ~rebase_failure_count:2 ~pr_body_artifact_miss_count:0
+             ~review_unresolved_cycle_count:0
          in
          Bool.equal needs_from_fields (Option.is_some reason_from_fields)
          && Bool.equal rebase_needs_intervention (Option.is_some rebase_reason)));

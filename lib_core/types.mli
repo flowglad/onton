@@ -98,6 +98,13 @@ module Comment : sig
     commit_sha : string option; [@yojson.default None]
     original_commit_sha : string option; [@yojson.default None]
     outdated : bool; [@yojson.default false]
+    last_reply_author : string option; [@yojson.default None]
+        (** Login of the last reply's author; [None] for opener-only threads.
+            When it equals the viewer login, the thread's last word is onton's
+            own posted reply — position disambiguates authorship even when a
+            human co-reviews from the same account, because co-reviewers open
+            threads and never correspond mid-thread. A re-delivered thread in
+            that state only needs its resolve retried, not a duplicate reply. *)
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
 

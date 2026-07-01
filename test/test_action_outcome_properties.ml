@@ -87,6 +87,7 @@ let () =
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_skip_empty;
       Orchestrator.Respond_pr_body_miss;
+      Orchestrator.Respond_review_unresolved;
     ]
   in
   let respond_kinds =
@@ -423,6 +424,7 @@ let () =
       Orchestrator.Respond_retry_push;
       Orchestrator.Respond_stale;
       Orchestrator.Respond_pr_body_miss;
+      Orchestrator.Respond_review_unresolved;
     ]
   in
   let prop =
@@ -512,6 +514,88 @@ let () =
   in
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-11 passed"
+
+(* ========== AO-12: Respond_review_unresolved retry semantics ========== *)
+
+(* Respond_review_unresolved must: (a) clear busy so the next poll's
+   Review_comments re-enqueue can deliver, (b) increment
+   review_unresolved_cycle_count by exactly 1 each call. Encodes the same
+   retry-once-then-intervene contract as AO-10 for the review loop — the
+   loop's only terminator, since the agent cannot resolve threads itself. *)
+let () =
+  let prop =
+    QCheck2.Test.make ~name:"AO-12: Respond_review_unresolved retry semantics"
+      (QCheck2.Gen.return ()) (fun () ->
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Review_comments
+          in
+          let before =
+            (Orchestrator.agent orch pid)
+              .Patch_agent.review_unresolved_cycle_count
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid
+              Operation_kind.Review_comments
+              Orchestrator.Respond_review_unresolved
+          in
+          let a = Orchestrator.agent orch pid in
+          (not a.Patch_agent.busy)
+          && a.Patch_agent.review_unresolved_cycle_count = before + 1
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-12 passed"
+
+(* ========== AO-13: Respond_ok + Review_comments resets the cycle count
+   ========== *)
+
+(* The cap [review_unresolved_cycle_count >= 2] must count consecutive
+   non-converged cycles, not lifetime ones. A converged cycle (every delivered
+   comment replied to and resolved) resets the counter, so an old
+   non-convergence cannot combine with a later single one to trigger
+   intervention. Respond_ok for other kinds must NOT reset it. *)
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:"AO-13: Respond_ok + Review_comments resets cycle count"
+      (QCheck2.Gen.return ()) (fun () ->
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Review_comments
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid
+              Operation_kind.Review_comments
+              Orchestrator.Respond_review_unresolved
+          in
+          assert (
+            (Orchestrator.agent orch pid)
+              .Patch_agent.review_unresolved_cycle_count = 1);
+          (* Respond_ok on an unrelated kind leaves the counter alone. *)
+          let orch = make_busy orch patches gameplan pid Operation_kind.Human in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Human
+              Orchestrator.Respond_ok
+          in
+          assert (
+            (Orchestrator.agent orch pid)
+              .Patch_agent.review_unresolved_cycle_count = 1);
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Review_comments
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid
+              Operation_kind.Review_comments Orchestrator.Respond_ok
+          in
+          (Orchestrator.agent orch pid)
+            .Patch_agent.review_unresolved_cycle_count = 0
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-13 passed"
 
 (* AO-surface: thread a bootstrapped orchestrator through every state
    transition / accessor on the orchestrator decision surface and assert it

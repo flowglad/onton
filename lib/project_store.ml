@@ -64,14 +64,26 @@ let gameplan_artifact_path project_name =
 let pr_body_artifact_path ~project_name ~patch_id =
   Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "pr-body.md"
 
-(** Absolute path the agent writes [findings_wontfix.json] to during a Findings
-    session. Lives alongside [pr-body.md] under [artifacts/<patch_id>/]. The
-    supervisor reads it after the session to decide which findings to POST as
-    ["wontfix"]; everything not listed is POSTed as ["addressed"]. *)
-let findings_wontfix_artifact_path ~project_name ~patch_id =
+(** Absolute directory the agent writes per-finding wontfix files to during a
+    Findings session ([<slugged_finding_id>.md], reason text only; see
+    [Review_service.wontfix_filename_of_id]). Lives alongside [pr-body.md] under
+    [artifacts/<patch_id>/]. The supervisor reads it after the session to decide
+    which findings to POST as ["wontfix"]; findings without a file are POSTed as
+    ["addressed"]. *)
+let findings_wontfix_dir ~project_name ~patch_id =
   Stdlib.Filename.concat
     (artifact_dir ~project_name ~patch_id)
-    "findings_wontfix.json"
+    "findings_wontfix"
+
+(** Absolute directory the agent writes per-comment response files to during a
+    Review_comments session ([<comment_id>.md], response text only). Lives
+    alongside [pr-body.md] under [artifacts/<patch_id>/]. After a successful
+    post-session push the supervisor reads the files and, for every delivered
+    comment with a response, replies to the thread and resolves it. *)
+let comment_responses_dir ~project_name ~patch_id =
+  Stdlib.Filename.concat
+    (artifact_dir ~project_name ~patch_id)
+    "comment_responses"
 
 let ensure_dir path =
   let rec mkdir_p dir =
@@ -80,6 +92,15 @@ let ensure_dir path =
       Stdlib.Sys.mkdir dir 0o755)
   in
   mkdir_p path
+
+let reset_artifact_dir path =
+  ensure_dir path;
+  match Stdlib.Sys.readdir path with
+  | exception Sys_error _ -> ()
+  | names ->
+      Array.iter names ~f:(fun name ->
+          try Unix.unlink (Stdlib.Filename.concat path name)
+          with Unix.Unix_error (Unix.ENOENT, _, _) -> ())
 
 type stored_config = {
   project_name : string;

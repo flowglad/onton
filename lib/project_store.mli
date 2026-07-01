@@ -33,6 +33,12 @@ val config_path : string -> string
 val ensure_dir : string -> unit
 (** Create a directory and parents if needed. *)
 
+val reset_artifact_dir : string -> unit
+(** Create the directory if needed and delete every file directly inside it.
+    Used at session setup on per-item artifact directories
+    ({!comment_responses_dir}, {!findings_wontfix_dir}) so stale files from a
+    prior session can never be replayed as fresh agent output. *)
+
 type stored_config = {
   project_name : string;
   github_owner : string;
@@ -108,13 +114,25 @@ val pr_body_artifact_path :
     project's data directory at [artifacts/<patch_id>/pr-body.md] — outside the
     worktree so it can never be accidentally committed. *)
 
-val findings_wontfix_artifact_path :
+val findings_wontfix_dir :
   project_name:string -> patch_id:Types.Patch_id.t -> string
-(** Absolute path of the [findings_wontfix.json] artifact for a Findings
-    session. The agent writes a JSON list of [{id, reason}] for any finding it
-    has decided not to fix; the supervisor consumes it post-session and POSTs
-    the corresponding resolve verbs to the review backend. Findings not listed
-    here default to [addressed]. *)
+(** Absolute path of the [findings_wontfix/] artifact directory for a Findings
+    session. For any finding it has decided not to fix, the agent writes the
+    reason to the per-finding file named on the finding's prompt block
+    ([Onton_core.Review_service.wontfix_filename_of_id]); the supervisor
+    consumes the directory post-session and POSTs the corresponding resolve
+    verbs to the review backend. Findings without a file default to [addressed];
+    a present-but-blank or unreadable file fails closed — that finding's resolve
+    is skipped rather than guessed. *)
+
+val comment_responses_dir :
+  project_name:string -> patch_id:Types.Patch_id.t -> string
+(** Absolute path of the [comment_responses/] artifact directory for a
+    Review_comments session. The agent writes one [<comment_id>.md] file per
+    comment, containing just the response text; after a successful post-session
+    push the supervisor replies to and resolves every delivered comment with a
+    response file. Comments without one stay unresolved and re-deliver on the
+    next poll. *)
 
 val project_exists : string -> bool
 (** Whether a project data directory with config exists. *)
