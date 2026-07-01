@@ -31,6 +31,9 @@ let gen_comment =
   let* id = gen_comment_id in
   let* thread_id = option (map (fun n -> Printf.sprintf "T%d" n) nat_small) in
   let* outdated = bool in
+  let* last_reply_author =
+    option (oneof_list [ "onton-bot"; "alice"; "reviewer"; "" ])
+  in
   return
     Types.Comment.
       {
@@ -42,7 +45,7 @@ let gen_comment =
         commit_sha = None;
         original_commit_sha = None;
         outdated;
-        last_reply_author = None;
+        last_reply_author;
       }
 
 let gen_entry =
@@ -56,6 +59,22 @@ let gen_delivered =
   QCheck2.Gen.list_size (QCheck2.Gen.int_range 0 20) gen_comment
 
 let gen_entries = QCheck2.Gen.list_size (QCheck2.Gen.int_range 0 20) gen_entry
+
+(* CR-RETRY-1: resolve-retry classification is a total equality check against
+   the authenticated viewer, and unknown viewers fail open to false. *)
+let prop_is_resolve_retry =
+  QCheck2.Test.make ~count:500
+    ~name:"CR-RETRY-1: is_resolve_retry matches viewer-authored last reply"
+    QCheck2.Gen.(
+      pair (option (oneof_list [ "onton-bot"; "alice"; "" ])) gen_comment)
+    (fun (viewer_login, comment) ->
+      try
+        Bool.equal
+          (Comment_responses.is_resolve_retry ~viewer_login comment)
+          (Option.equal String.equal comment.Types.Comment.last_reply_author
+             viewer_login
+          && Option.is_some viewer_login)
+      with _ -> false)
 
 (* CR-TOT-1: entry_of_file is total over arbitrary filename/content pairs. *)
 let prop_entry_of_file_total =
@@ -235,6 +254,7 @@ let () =
     [
       prop_entry_of_file_total;
       prop_entry_of_file_sound;
+      prop_is_resolve_retry;
       prop_plan_total;
       prop_plan_partitions_delivered;
       prop_plan_actions_iff_entry;

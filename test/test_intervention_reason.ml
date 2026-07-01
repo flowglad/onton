@@ -259,6 +259,8 @@ let () =
              (fun a -> Patch_agent.reset_push_failure_count a);
              (fun a -> Patch_agent.increment_rebase_failure_count a);
              (fun a -> Patch_agent.reset_rebase_failure_count a);
+             (fun a -> Patch_agent.increment_review_unresolved_cycle_count a);
+             (fun a -> Patch_agent.reset_review_unresolved_cycle_count a);
              (fun a -> Patch_agent.reset_ci_failure_count a);
              (fun a -> Patch_agent.reset_context_exhaustion_count a);
              (fun a -> Patch_agent.reset_pr_body_artifact_miss_count a);
