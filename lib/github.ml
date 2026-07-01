@@ -1081,7 +1081,7 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
           let status = Http.Response.status resp |> Http.Status.to_int in
           let resp_str =
             Eio.Buf_read.(
-              of_flow ~max_size:max_job_log_response_size resp_body |> take_all)
+              of_flow ~max_size:max_response_size resp_body |> take_all)
           in
           if status >= 200 && status < 300 then Ok resp_str
           else
@@ -1098,43 +1098,26 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
   | Ok inner -> inner
   | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
 
-let fetch_signed_job_log ~net ~clock ~url =
-  let path = url in
-  let do_request () : (string option, error) Result.t =
-    try
-      Mirage_crypto_rng_unix.use_default ();
-      Result.bind
-        (Result.map_error (https_config ()) ~f:(fun msg ->
-             Transport_error { meth = "GET"; path; msg }))
-        ~f:(fun tls_config ->
-          let client =
-            Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
-          in
-          let uri = Uri.of_string url in
-          let headers =
-            Http.Header.of_list
-              [
-                ("Accept", "text/plain, application/octet-stream, */*");
-                ("User-Agent", "onton/0.1.0");
-              ]
-          in
-          Eio.Switch.run @@ fun sw ->
-          let resp, resp_body = Cohttp_eio.Client.get client ~sw ~headers uri in
-          let status = Http.Response.status resp |> Http.Status.to_int in
-          let resp_str =
-            Eio.Buf_read.(
-              of_flow ~max_size:max_job_log_response_size resp_body |> take_all)
-          in
-          if status >= 200 && status < 300 then Ok (Some resp_str) else Ok None)
-    with
-    | Eio.Cancel.Cancelled _ as exn -> raise exn
-    | _ -> Ok None
-  in
-  match
-    Eio.Time.with_timeout clock job_log_timeout (fun () -> Ok (do_request ()))
+let fetch_signed_job_log ~client ~sw ~url =
+  try
+    let uri = Uri.of_string url in
+    let headers =
+      Http.Header.of_list
+        [
+          ("Accept", "text/plain, application/octet-stream, */*");
+          ("User-Agent", "onton/0.1.0");
+        ]
+    in
+    let resp, resp_body = Cohttp_eio.Client.get client ~sw ~headers uri in
+    let status = Http.Response.status resp |> Http.Status.to_int in
+    let resp_str =
+      Eio.Buf_read.(
+        of_flow ~max_size:max_job_log_response_size resp_body |> take_all)
+    in
+    if status >= 200 && status < 300 then Ok (Some resp_str) else Ok None
   with
-  | Ok inner -> inner
-  | Error `Timeout -> Ok None
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | _ -> Ok None
 
 let fetch_job_log ~net ~clock t ~id =
   let path =
@@ -1163,10 +1146,6 @@ let fetch_job_log ~net ~clock t ~id =
           Eio.Switch.run @@ fun sw ->
           let resp, resp_body = Cohttp_eio.Client.get client ~sw ~headers uri in
           let status = Http.Response.status resp |> Http.Status.to_int in
-          let resp_str =
-            Eio.Buf_read.(
-              of_flow ~max_size:max_response_size resp_body |> take_all)
-          in
           match status with
           | 302 -> (
               match Http.Header.get (Http.Response.headers resp) "location" with
@@ -1178,10 +1157,20 @@ let fetch_job_log ~net ~clock t ~id =
                          path;
                          msg = "log redirect missing Location";
                        })
-              | Some url -> fetch_signed_job_log ~net ~clock ~url)
+              | Some url -> fetch_signed_job_log ~client ~sw ~url)
           | 404 -> Ok None
-          | status when status >= 200 && status < 300 -> Ok (Some resp_str)
+          | status when status >= 200 && status < 300 ->
+              let resp_str =
+                Eio.Buf_read.(
+                  of_flow ~max_size:max_job_log_response_size resp_body
+                  |> take_all)
+              in
+              Ok (Some resp_str)
           | status ->
+              let resp_str =
+                Eio.Buf_read.(
+                  of_flow ~max_size:max_response_size resp_body |> take_all)
+              in
               Error (Http_error { meth = "GET"; path; status; body = resp_str }))
     with
     | Eio.Cancel.Cancelled _ as exn -> raise exn
@@ -1203,9 +1192,10 @@ let fetch_check_annotations ~net ~clock t ~id =
   match request ~net ~clock t ~meth:`GET ~path ~query () with
   | Ok body -> parse_check_annotations_response body
   | Error (Http_error { status = 404; _ }) -> Ok []
+  | Error (Transport_error _) -> Ok []
   | Error
-      (( Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
-       | Transport_error _ ) as err) ->
+      ((Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _) as err)
+    ->
       Error err
 
 let check_failure_details ~net ~clock t ~(check : Types.Ci_check.t) =
