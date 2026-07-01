@@ -79,7 +79,17 @@ let ci_artifact_dir ~project_name ~patch_id =
 let ci_check_key (c : Types.Ci_check.t) =
   match c.id with
   | Some id -> "run-" ^ Int.to_string id
-  | None -> "status-" ^ slugify c.name
+  | None ->
+      let slug = slugify c.name in
+      let slug =
+        if String.is_empty slug then
+          "name-"
+          ^ String.prefix
+              (Stdlib.Digest.to_hex (Stdlib.Digest.string c.name))
+              12
+        else slug
+      in
+      "status-" ^ slug
 
 let ci_check_artifact_dir ~project_name ~patch_id ~check =
   Stdlib.Filename.concat
@@ -235,14 +245,9 @@ let publish_gameplan_artifact ~project_name =
         Stdlib.output_string oc content;
         Stdlib.flush oc))
 
-let write_text_file ~path ~content =
-  let oc = Stdlib.open_out_bin path in
-  Stdlib.Fun.protect
-    ~finally:(fun () -> Stdlib.close_out oc)
-    (fun () ->
-      Stdlib.output_string oc content;
-      Stdlib.flush oc)
-
+(* Cannot use Persistence.write_file_atomically here: Persistence depends on
+   Project_store.ensure_dir, so calling it from Project_store creates a module
+   cycle. Keep the same temp-file + rename behavior locally. *)
 let write_file_atomically ~path ~content =
   let dir = Stdlib.Filename.dirname path in
   let base = Stdlib.Filename.basename path in
@@ -259,6 +264,14 @@ let write_file_atomically ~path ~content =
   with exn ->
     (try Stdlib.Sys.remove tmp_path with _ -> ());
     Error (Stdlib.Printexc.to_string exn)
+
+let remove_if_exists path =
+  try
+    Unix.unlink path;
+    Ok ()
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> Ok ()
+  | exn -> Error (Stdlib.Printexc.to_string exn)
 
 let ci_check_json ~(check : Types.Ci_check.t) ~head_oid =
   `Assoc
@@ -291,14 +304,14 @@ let publish_ci_check_artifact ~project_name ~patch_id ~check ?head_oid
     with
     | Error msg -> Error msg
     | Ok () -> (
-        try
-          write_text_file ~path:summary_path ~content:summary_md;
-          (match log with
-          | None ->
-              if Stdlib.Sys.file_exists log_path then Stdlib.Sys.remove log_path
-          | Some content -> write_text_file ~path:log_path ~content);
-          Ok dir
-        with exn -> Error (Stdlib.Printexc.to_string exn))
+        match write_file_atomically ~path:summary_path ~content:summary_md with
+        | Error msg -> Error msg
+        | Ok () -> (
+            match log with
+            | None -> Result.map (remove_if_exists log_path) ~f:(fun () -> dir)
+            | Some content ->
+                Result.map (write_file_atomically ~path:log_path ~content)
+                  ~f:(fun () -> dir)))
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
 let project_exists project_name =
@@ -358,10 +371,15 @@ let%test "ci_check_key uses run id for CheckRuns and slug for id-less checks" =
   let status_check =
     ci_check_for_test ~name:"all_jobs_succeed / Required!" ()
   in
+  let empty_slug_check = ci_check_for_test ~name:"???" () in
   String.equal (ci_check_key run_check) "run-123"
   && String.equal
        (ci_check_key status_check)
        "status-all-jobs-succeed--required"
+  && String.equal
+       (ci_check_key empty_slug_check)
+       ("status-name-"
+       ^ String.prefix (Stdlib.Digest.to_hex (Stdlib.Digest.string "???")) 12)
 
 let%test "publish_ci_check_artifact writes metadata and summary without log" =
   with_temp_data_dir (fun () ->
