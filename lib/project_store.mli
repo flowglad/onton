@@ -116,6 +116,38 @@ val findings_wontfix_artifact_path :
     the corresponding resolve verbs to the review backend. Findings not listed
     here default to [addressed]. *)
 
+val ci_artifact_dir : project_name:string -> patch_id:Types.Patch_id.t -> string
+(** Absolute directory for per-check CI diagnostics under
+    [artifacts/<patch_id>/ci]. Pure path helper for prompt rendering; does not
+    touch the filesystem. *)
+
+val ci_check_key : Types.Ci_check.t -> string
+(** Stable artifact key for a CI check. CheckRuns use [run-<databaseId>];
+    id-less StatusContexts and synthesized checks use [status-<slugified name>].
+*)
+
+val ci_check_artifact_dir :
+  project_name:string ->
+  patch_id:Types.Patch_id.t ->
+  check:Types.Ci_check.t ->
+  string
+(** Absolute directory for one check's CI diagnostic artifacts under
+    {!ci_artifact_dir}. Pure path helper for prompt rendering; does not touch
+    the filesystem. *)
+
+val publish_ci_check_artifact :
+  project_name:string ->
+  patch_id:Types.Patch_id.t ->
+  check:Types.Ci_check.t ->
+  ?head_oid:string ->
+  summary_md:string ->
+  ?log:string ->
+  unit ->
+  (string, string) result
+(** Publish one check's CI diagnostic artifacts. Writes [check.json] and
+    [summary.md], plus [log.txt] exactly when [log] is supplied. Returns the
+    check artifact directory, or the first write error. *)
+
 val project_exists : string -> bool
 (** Whether a project data directory with config exists. *)
 
