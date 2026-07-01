@@ -1119,6 +1119,18 @@ let fetch_signed_job_log ~client ~sw ~url =
   | Eio.Cancel.Cancelled _ as exn -> raise exn
   | _ -> Ok None
 
+let drain_response_body flow =
+  let buf = Bytes.create 4096 in
+  let rec loop () =
+    ignore (Eio.Flow.single_read flow (Cstruct.of_bytes buf));
+    loop ()
+  in
+  try loop () with
+  | Eio.Cancel.Cancelled _ as exn -> raise exn
+  | End_of_file -> ()
+  | Eio.Exn.Io _ | Invalid_argument _ -> ()
+  | _ -> ()
+
 let fetch_job_log ~net ~clock t ~id =
   let path =
     Printf.sprintf "/repos/%s/%s/actions/jobs/%d/logs" t.owner t.repo id
@@ -1148,6 +1160,7 @@ let fetch_job_log ~net ~clock t ~id =
           let status = Http.Response.status resp |> Http.Status.to_int in
           match status with
           | 302 -> (
+              drain_response_body resp_body;
               match Http.Header.get (Http.Response.headers resp) "location" with
               | None ->
                   Error
