@@ -1365,7 +1365,6 @@ struct
                               Some "no current failures")
                       else None
                     in
-                    let ci_merge_queue_removal_checks = ref [] in
                     With_busy_guard.run ~patch_id (fun () ->
                         let result =
                           match ci_skip_reason with
@@ -1379,6 +1378,7 @@ struct
                               `Skip_empty
                           | None ->
                               with_session_slot (fun () ->
+                                  let ci_merge_queue_removal_checks = ref [] in
                                   Runtime.update_orchestrator runtime
                                     (fun orch ->
                                       Orchestrator.mark_running orch patch_id);
