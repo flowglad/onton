@@ -105,7 +105,7 @@ let normalize_newlines s =
   loop 0
 
 let strip_log log =
-  normalize_newlines log |> String.split_lines
+  normalize_newlines log |> String.split ~on:'\n'
   |> List.map ~f:(fun line ->
       line |> strip_ansi |> drop_timestamp_prefix |> strip_ansi)
   |> String.concat ~sep:"\n"
@@ -170,14 +170,10 @@ let append_capped pieces =
   let truncation_note = "\n\n[diagnostic summary truncated]\n" in
   let note_len = String.length truncation_note in
   let concat_rev acc = String.concat (List.rev acc) ~sep:"" in
-  let with_truncation_note output =
-    let len = String.length output in
-    if len + note_len <= summary_total_cap_bytes then output ^ truncation_note
-    else if summary_total_cap_bytes <= note_len then
-      String.prefix truncation_note summary_total_cap_bytes
-    else
-      String.prefix output (summary_total_cap_bytes - note_len)
-      ^ truncation_note
+  let append_note_if_room output =
+    let remaining = summary_total_cap_bytes - String.length output in
+    if remaining <= 0 then output
+    else output ^ String.prefix truncation_note (Int.min note_len remaining)
   in
   let rec loop acc used = function
     | [] -> concat_rev acc
@@ -187,13 +183,15 @@ let append_capped pieces =
           loop (piece :: acc) (used + len) rest
         else if used + len = summary_total_cap_bytes then
           let output = concat_rev (piece :: acc) in
-          if List.is_empty rest then output else with_truncation_note output
+          if List.is_empty rest then output else append_note_if_room output
         else
           let remaining = summary_total_cap_bytes - used in
-          if remaining <= 0 then with_truncation_note (concat_rev acc)
+          if remaining <= 0 then concat_rev acc
+          else if remaining <= note_len then
+            concat_rev acc ^ String.prefix truncation_note remaining
           else
-            let partial = String.prefix piece remaining in
-            with_truncation_note (concat_rev (partial :: acc))
+            let partial = String.prefix piece (remaining - note_len) in
+            concat_rev (partial :: acc) ^ truncation_note
   in
   loop [] 0 pieces
 

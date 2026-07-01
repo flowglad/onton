@@ -173,6 +173,26 @@ let test_truncation_is_noted () =
   assert_contains "truncation summary" e.summary_md
     "diagnostic summary truncated"
 
+let test_exact_cap_preserves_content () =
+  let prefix = "## Failure annotations\n\n- p:1: " in
+  let suffix = "\n" in
+  let message_len =
+    Ci_log_digest.summary_total_cap_bytes - String.length prefix
+    - String.length suffix
+  in
+  let message = String.make message_len 'z' in
+  let annotation =
+    Ci_log_digest.{ path = Some "p"; line = Some 1; level = "failure"; message }
+  in
+  let e =
+    Ci_log_digest.digest
+      { annotations = [ annotation ]; log = Some "::error ::later section" }
+  in
+  assert (String.length e.summary_md <= Ci_log_digest.summary_total_cap_bytes);
+  assert_not_contains "exact-cap summary" e.summary_md
+    "diagnostic summary truncated";
+  assert (String.is_suffix e.summary_md ~suffix:(String.make 32 'z' ^ "\n"))
+
 let () =
   test_strip_log_removes_timestamps_and_ansi ();
   test_strip_log_normalizes_crlf ();
@@ -181,6 +201,7 @@ let () =
   test_mid_job_fixture ();
   test_no_marker_fixture ();
   test_truncation_is_noted ();
+  test_exact_cap_preserves_content ();
   let tests =
     [
       prop_digest_total_and_capped;
