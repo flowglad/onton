@@ -32,6 +32,10 @@ type input_mode =
   | Prompt_message
   | Prompt_broadcast
   | Manage_patch
+  | Prompt_patch_desc  (** Step 1 of add-patch: enter the patch description. *)
+  | Select_patch_deps
+      (** Step 2 of add-patch: multi-select dependencies from a patch list
+          overlay (space toggles, enter commits). Not a text prompt. *)
 [@@deriving show, eq]
 
 let prompt_prefix = function
@@ -41,6 +45,8 @@ let prompt_prefix = function
   | Prompt_message -> "> "
   | Prompt_broadcast -> "broadcast> "
   | Manage_patch -> ""
+  | Prompt_patch_desc -> "patch description: "
+  | Select_patch_deps -> ""
 
 let of_key (key : Term_key.t) : command =
   match key with

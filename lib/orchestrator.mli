@@ -215,6 +215,14 @@ val add_agent :
     field is populated by the poller on the next tick. Corresponds to the spec's
     Add action. *)
 
+val add_planned_patch : t -> Patch.t -> deps:Patch_id.t list -> t
+(** Register a runtime-added gameplan patch. No-op if the patch id already
+    exists. Unlike {!add_agent} this births a PR-less agent (via
+    [Patch_agent.create], the startup constructor), so the poller promotes it to
+    [Ready_start] once [deps] are satisfied and its base is fresh. The caller
+    must insert [patch] into the gameplan in the same snapshot update — a
+    [Start] action requires the patch to be present in [gameplan.patches]. *)
+
 (** {2 Persistence support} *)
 
 (** [detail] carries the same formatted reason that [session_driver] writes to

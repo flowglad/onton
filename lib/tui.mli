@@ -214,6 +214,7 @@ val render_frame :
   ?transcript:string ->
   ?status_msg:status_msg ->
   ?prompt_line:prompt_info ->
+  ?dep_select:int * Patch_id.t list ->
   patch_view list ->
   frame
 

@@ -108,6 +108,8 @@ struct
       patches_start_row;
       patches_scroll_offset;
       patches_visible_count;
+      dep_select_cursor;
+      dep_select_chosen;
       _;
     } =
       Env.tui_state
@@ -171,6 +173,12 @@ struct
           ~show_manage:
             (Tui_input.equal_input_mode !input_mode Tui_input.Manage_patch)
           ~now ~transcript ?status_msg:!status_msg ?prompt_line:!prompt_line
+          ?dep_select:
+            (if
+               Tui_input.equal_input_mode !input_mode
+                 Tui_input.Select_patch_deps
+             then Some (!dep_select_cursor, !dep_select_chosen)
+             else None)
           views
       in
       detail_scroll := Tui.detail_scroll_offset frame;
@@ -205,6 +213,8 @@ struct
       patches_start_row;
       patches_scroll_offset;
       patches_visible_count;
+      dep_select_cursor;
+      dep_select_chosen;
     } =
       Env.tui_state
     in
@@ -219,9 +229,12 @@ struct
     in
     let sync_input () =
       match !input_mode with
-      | Tui_input.Normal | Tui_input.Manage_patch -> prompt_line := None
+      | Tui_input.Normal | Tui_input.Manage_patch | Tui_input.Select_patch_deps
+        ->
+          prompt_line := None
       | Tui_input.Prompt_pr | Tui_input.Prompt_worktree
-      | Tui_input.Prompt_message | Tui_input.Prompt_broadcast ->
+      | Tui_input.Prompt_message | Tui_input.Prompt_broadcast
+      | Tui_input.Prompt_patch_desc ->
           let prefix = Tui_input.prompt_prefix !input_mode in
           let contents = Tui_input.Edit_buffer.contents buf in
           let cursor_col =
@@ -236,6 +249,9 @@ struct
     in
     let history = Tui_input.History.create () in
     let saved_draft = ref "" in
+    (* Carries the description typed in [Prompt_patch_desc] into the
+       [Prompt_patch_deps] step of the add-patch flow. *)
+    let pending_patch_desc = ref None in
     let eof_count = ref 0 in
     let last_click_time = ref 0.0 in
     let last_click_row = ref (-1) in
@@ -290,6 +306,12 @@ struct
           then (
             (match key with
             | Term.Key.Escape -> input_mode := Tui_input.Normal
+            | Term.Key.Char 'p' ->
+                (* Add a new gameplan patch. Global action, not tied to the
+                   selected patch: begin the two-step description → deps prompt. *)
+                Tui_input.Edit_buffer.clear buf;
+                pending_patch_desc := None;
+                input_mode := Tui_input.Prompt_patch_desc
             | Term.Key.Char 'm' -> (
                 input_mode := Tui_input.Normal;
                 let target_patch_id =
@@ -386,6 +408,81 @@ struct
             | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
                 ());
             loop ())
+          else if
+            Tui_input.equal_input_mode !input_mode Tui_input.Select_patch_deps
+          then (
+            (* Add-patch step 2: multi-select dependencies. Candidates are the
+               existing patches in display order (same ordering as [views], so
+               the cursor index lines up with the rendered overlay). *)
+            let candidates = !sorted_patch_ids in
+            let n = List.length candidates in
+            (match key with
+            | Term.Key.Escape ->
+                pending_patch_desc := None;
+                input_mode := Tui_input.Normal
+            | Term.Key.Up | Term.Key.Char 'k' ->
+                if n > 0 then
+                  dep_select_cursor := Int.max 0 (!dep_select_cursor - 1)
+            | Term.Key.Down | Term.Key.Char 'j' ->
+                if n > 0 then
+                  dep_select_cursor := Int.min (n - 1) (!dep_select_cursor + 1)
+            | Term.Key.Char ' ' -> (
+                match List.nth candidates !dep_select_cursor with
+                | None -> ()
+                | Some pid ->
+                    if List.mem !dep_select_chosen pid ~equal:Patch_id.equal
+                    then
+                      dep_select_chosen :=
+                        List.filter !dep_select_chosen ~f:(fun p ->
+                            not (Patch_id.equal p pid))
+                    else dep_select_chosen := pid :: !dep_select_chosen)
+            | Term.Key.Enter -> (
+                let description = !pending_patch_desc in
+                pending_patch_desc := None;
+                input_mode := Tui_input.Normal;
+                match description with
+                | None ->
+                    log_event Env.runtime
+                      "Add patch failed — no pending description"
+                | Some description -> (
+                    (* Present deps in display order, not toggle order. *)
+                    let dependencies =
+                      List.filter candidates ~f:(fun p ->
+                          List.mem !dep_select_chosen p ~equal:Patch_id.equal)
+                    in
+                    let title =
+                      if String.length description <= 72 then description
+                      else String.prefix description 71 ^ "…"
+                    in
+                    dep_select_chosen := [];
+                    dep_select_cursor := 0;
+                    match
+                      Runtime.add_patch Env.runtime ~title ~description
+                        ~dependencies
+                    with
+                    | Error msg ->
+                        log_event Env.runtime
+                          (Printf.sprintf "Cannot add patch — %s" msg)
+                    | Ok patch ->
+                        let deps_str =
+                          match patch.Patch.dependencies with
+                          | [] -> "no dependencies"
+                          | ds ->
+                              "depends on "
+                              ^ (List.map ds ~f:Patch_id.to_string
+                                |> String.concat ~sep:", ")
+                        in
+                        log_event Env.runtime ~patch_id:patch.Patch.id
+                          (Printf.sprintf "Added patch %s (%s) — %s"
+                             (Patch_id.to_string patch.Patch.id)
+                             deps_str title)))
+            | Term.Key.Char _ | Term.Key.Tab | Term.Key.Paste _
+            | Term.Key.Backspace | Term.Key.Left | Term.Key.Right
+            | Term.Key.Home | Term.Key.End | Term.Key.Page_up
+            | Term.Key.Page_down | Term.Key.Delete | Term.Key.F _
+            | Term.Key.Ctrl _ | Term.Key.Mouse _ | Term.Key.Unknown _ ->
+                ());
+            loop ())
           else if not (Tui_input.equal_input_mode !input_mode Tui_input.Normal)
           then
             match key with
@@ -395,6 +492,7 @@ struct
             | Term.Key.Escape ->
                 Tui_input.Edit_buffer.clear buf;
                 saved_draft := "";
+                pending_patch_desc := None;
                 Tui_input.History.reset_browse history;
                 input_mode := Tui_input.Normal;
                 loop ()
@@ -639,7 +737,22 @@ struct
                               log_event Env.runtime ~patch_id
                                 (Printf.sprintf "Failed to add worktree — %s"
                                    msg)))
-                | Tui_input.Normal | Tui_input.Manage_patch -> ());
+                | Tui_input.Prompt_patch_desc ->
+                    (* Step 1: capture the description, then open the
+                       dependency-selection overlay. [input_mode] was forced to
+                       [Normal] above, so override it back here. *)
+                    if String.is_empty line then (
+                      pending_patch_desc := None;
+                      log_event Env.runtime
+                        "Add patch cancelled — empty description")
+                    else (
+                      pending_patch_desc := Some line;
+                      dep_select_cursor := 0;
+                      dep_select_chosen := [];
+                      input_mode := Tui_input.Select_patch_deps)
+                | Tui_input.Normal | Tui_input.Manage_patch
+                | Tui_input.Select_patch_deps ->
+                    ());
                 loop ()
             | Term.Key.Backspace ->
                 Tui_input.Edit_buffer.delete_before buf;

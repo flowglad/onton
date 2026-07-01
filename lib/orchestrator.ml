@@ -706,6 +706,18 @@ let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
     let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
     { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
 
+let add_planned_patch t (patch : Patch.t) ~deps =
+  if Map.mem t.agents patch.Patch.id then t
+  else
+    (* Unlike [add_agent], this births a PR-less planned patch (via
+       [Patch_agent.create], the same constructor startup uses) so the poller
+       promotes it to [Ready_start] once its deps are satisfied. The caller is
+       responsible for inserting [patch] into the gameplan in the same snapshot
+       update so prompt composition can find it. *)
+    let agent = Patch_agent.create ~branch:patch.Patch.branch patch.Patch.id in
+    let graph = Graph.add_patch_with_deps t.graph patch.Patch.id ~deps in
+    { t with graph; agents = Map.set t.agents ~key:patch.Patch.id ~data:agent }
+
 type rebase_effect = Push_branch [@@deriving show, eq, sexp_of]
 
 let apply_rebase_result t patch_id rebase_result new_base =

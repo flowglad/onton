@@ -349,4 +349,89 @@ module Gameplan = struct
     open_questions : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
+
+  (* Canonical project-name → branch-prefix slug. Shared with
+     [Gameplan_parser] (which aliases this) so the branch a runtime-added patch
+     gets is byte-identical to the ones the parser derives at load time. *)
+  let slugify name =
+    String.lowercase name
+    |> String.map ~f:(fun c ->
+        if Char.is_alphanum c || Char.equal c '-' || Char.equal c '_' then c
+        else '-')
+    |> String.split ~on:'-'
+    |> List.filter ~f:(fun s -> not (String.is_empty s))
+    |> String.concat ~sep:"-"
+
+  (* Branch name for a patch id, matching the parser's
+     [{slug}/patch-{id}] convention (gameplan_parser.ml). *)
+  let branch_of_id (t : t) (id : Patch_id.t) : Branch.t =
+    Branch.of_string (slugify t.project_name ^ "/patch-" ^ Patch_id.to_string id)
+
+  (* Smallest [addN] id (N ≥ 1) not already used by a patch. Alphanumeric so it
+     satisfies the parser's id invariant, and never a bare integer so it cannot
+     collide with an ad-hoc PR id (which is [string_of_int pr_number]). *)
+  let next_user_patch_id (t : t) : Patch_id.t =
+    let used =
+      List.map t.patches ~f:(fun p -> Patch_id.to_string p.Patch.id)
+      |> Set.of_list (module String)
+    in
+    let rec pick n =
+      let candidate = "add" ^ Int.to_string n in
+      if Set.mem used candidate then pick (n + 1)
+      else Patch_id.of_string candidate
+    in
+    pick 1
+
+  (* Add a runtime patch carrying only user-supplied intent (title,
+     description, dependencies). Functional-changes / context / reachability
+     stay empty, so the patch agent is prompted with the gameplan context plus
+     this description and nothing else. Returns the updated gameplan and the
+     created patch, or a descriptive error when a dependency id is unknown.
+
+     New patches can only point at pre-existing patches, so the dependency graph
+     stays acyclic by construction. *)
+  let add_patch (t : t) ~(title : string) ~(description : string)
+      ~(dependencies : Patch_id.t list) : (t * Patch.t, string) Result.t =
+    let existing =
+      List.map t.patches ~f:(fun p -> p.Patch.id)
+      |> Set.of_list (module Patch_id)
+    in
+    let unknown =
+      List.filter dependencies ~f:(fun d -> not (Set.mem existing d))
+    in
+    match unknown with
+    | _ :: _ ->
+        Error
+          (Printf.sprintf "Unknown dependency id(s): %s"
+             (List.map unknown ~f:Patch_id.to_string |> String.concat ~sep:", "))
+    | [] ->
+        (* Dedup while preserving first-seen order. *)
+        let dependencies =
+          List.fold dependencies
+            ~init:([], Set.empty (module Patch_id))
+            ~f:(fun (acc, seen) d ->
+              if Set.mem seen d then (acc, seen) else (d :: acc, Set.add seen d))
+          |> fst |> List.rev
+        in
+        let id = next_user_patch_id t in
+        let patch =
+          {
+            Patch.id;
+            title;
+            description;
+            branch = branch_of_id t id;
+            dependencies;
+            spec = "";
+            acceptance_criteria = [];
+            files = [];
+            classification = "";
+            changes = [];
+            test_stubs_introduced = [];
+            test_stubs_implemented = [];
+            complexity = None;
+            precedents = [];
+            required_context = [];
+          }
+        in
+        Ok ({ t with patches = t.patches @ [ patch ] }, patch)
 end

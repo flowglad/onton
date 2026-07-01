@@ -83,6 +83,8 @@ let () =
            Tui_input.Prompt_message;
            Tui_input.Prompt_broadcast;
            Tui_input.Manage_patch;
+           Tui_input.Prompt_patch_desc;
+           Tui_input.Select_patch_deps;
          ])
       (fun mode ->
         ignore (Tui_input.prompt_prefix mode : string);

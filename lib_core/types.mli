@@ -366,4 +366,26 @@ module Gameplan : sig
     open_questions : string list; [@yojson.default []]
   }
   [@@deriving show, eq, sexp_of, compare, yojson]
+
+  val slugify : string -> string
+  (** Canonical project-name → branch-prefix slug. Shared with [Gameplan_parser]
+      so runtime-added and parsed patches derive identical branch names. *)
+
+  val branch_of_id : t -> Patch_id.t -> Branch.t
+  (** Branch for a patch id, matching the parser's [{slug}/patch-{id}]
+      convention. *)
+
+  val add_patch :
+    t ->
+    title:string ->
+    description:string ->
+    dependencies:Patch_id.t list ->
+    (t * Patch.t, string) Result.t
+  (** Append a runtime patch carrying only user intent (title, description,
+      dependencies). The id is auto-generated in an [addN] namespace that cannot
+      collide with numeric ad-hoc PR ids; the branch follows {!branch_of_id};
+      functional-changes/context/reachability are left empty. Returns the
+      updated gameplan and the created patch, or [Error msg] when a dependency
+      id does not name an existing patch. Dependencies are deduped preserving
+      order. Cannot introduce a cycle (the new patch is a graph sink). *)
 end

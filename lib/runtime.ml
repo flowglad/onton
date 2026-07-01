@@ -70,6 +70,25 @@ let update_orchestrator_returning t f =
   | Some v -> v
   | None -> assert false
 
+let add_patch t ~title ~description ~dependencies =
+  (* Mutate gameplan and orchestrator together under one lock so a [Start]
+     action never observes a patch that is in the gameplan but not the agent
+     map (or vice versa). On validation failure the snapshot is left untouched. *)
+  let result = ref (Error "add_patch: callback did not run") in
+  update t (fun s ->
+      match Gameplan.add_patch s.gameplan ~title ~description ~dependencies with
+      | Error _ as e ->
+          result := e;
+          s
+      | Ok (gameplan, patch) ->
+          let orchestrator =
+            Orchestrator.add_planned_patch s.orchestrator patch
+              ~deps:patch.Patch.dependencies
+          in
+          result := Ok patch;
+          { s with gameplan; orchestrator });
+  !result
+
 let update_activity_log t f =
   update t (fun s -> { s with activity_log = f s.activity_log })
 
