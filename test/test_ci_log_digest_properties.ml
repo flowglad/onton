@@ -115,6 +115,12 @@ let test_strip_log_removes_timestamps_and_ansi () =
   assert (String.equal stripped "red\nplain");
   assert (String.equal (Ci_log_digest.strip_log stripped) stripped)
 
+let test_strip_log_removes_bare_second_timestamps () =
+  let input = "2026-07-01T19:33:24Z bare\n2026-07-01T19:33:25.1Z fractional" in
+  let stripped = Ci_log_digest.strip_log input in
+  assert (String.equal stripped "bare\nfractional");
+  assert (String.equal (Ci_log_digest.strip_log stripped) stripped)
+
 let test_strip_log_normalizes_crlf () =
   let input =
     "2026-07-01T19:33:24.1348805Z first\r\nsecond\rthird\r\r\nfourth"
@@ -195,6 +201,7 @@ let test_exact_cap_preserves_content () =
 
 let () =
   test_strip_log_removes_timestamps_and_ansi ();
+  test_strip_log_removes_bare_second_timestamps ();
   test_strip_log_normalizes_crlf ();
   test_lowerability_fixture ();
   test_bun_fixture ();

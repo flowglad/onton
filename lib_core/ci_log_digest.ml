@@ -21,28 +21,44 @@ let is_digit = function '0' .. '9' -> true | _ -> false
 
 let is_timestamp_prefix s =
   let len = String.length s in
-  if len < 22 then false
+  if len < 20 then false
   else
     let char_at i = String.get s i in
-    is_digit (char_at 0)
-    && is_digit (char_at 1)
-    && is_digit (char_at 2)
-    && is_digit (char_at 3)
-    && Char.equal (char_at 4) '-'
-    && is_digit (char_at 5)
-    && is_digit (char_at 6)
-    && Char.equal (char_at 7) '-'
-    && is_digit (char_at 8)
-    && is_digit (char_at 9)
-    && Char.equal (char_at 10) 'T'
-    && is_digit (char_at 11)
-    && is_digit (char_at 12)
-    && Char.equal (char_at 13) ':'
-    && is_digit (char_at 14)
-    && is_digit (char_at 15)
-    && Char.equal (char_at 16) ':'
-    && is_digit (char_at 17)
-    && is_digit (char_at 18)
+    let rec fraction i seen_digit =
+      if i >= len then false
+      else
+        let c = char_at i in
+        if Char.equal c 'Z' then seen_digit
+        else if is_digit c then fraction (i + 1) true
+        else false
+    in
+    let date_time_prefix =
+      is_digit (char_at 0)
+      && is_digit (char_at 1)
+      && is_digit (char_at 2)
+      && is_digit (char_at 3)
+      && Char.equal (char_at 4) '-'
+      && is_digit (char_at 5)
+      && is_digit (char_at 6)
+      && Char.equal (char_at 7) '-'
+      && is_digit (char_at 8)
+      && is_digit (char_at 9)
+      && Char.equal (char_at 10) 'T'
+      && is_digit (char_at 11)
+      && is_digit (char_at 12)
+      && Char.equal (char_at 13) ':'
+      && is_digit (char_at 14)
+      && is_digit (char_at 15)
+      && Char.equal (char_at 16) ':'
+      && is_digit (char_at 17)
+      && is_digit (char_at 18)
+    in
+    date_time_prefix
+    &&
+    match char_at 19 with
+    | 'Z' -> true
+    | '.' -> fraction 20 false
+    | _ -> false
 
 let drop_timestamp_prefix line =
   if not (is_timestamp_prefix line) then line
