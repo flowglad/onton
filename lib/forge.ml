@@ -34,6 +34,13 @@ module type S = sig
       placeholder with the real failing checks (names, [details_url], dedup
       ids). *)
 
+  val check_failure_details :
+    check:Types.Ci_check.t -> (Ci_log_digest.source, error) Result.t
+  (** Best-effort diagnostics for a failing CI check. Implementations should
+      return [Ok] with any partial annotation/log data they can fetch, degrade
+      to an empty source for checks without a stable run id, and return [Error]
+      only when every attempted details endpoint failed hard. *)
+
   val list_prs :
     branch:Types.Branch.t ->
     ?base:Types.Branch.t ->

@@ -944,6 +944,15 @@ type actions_job = {
 type actions_jobs_response = { jobs : actions_job list [@yojson.default []] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
+type check_annotation = {
+  path : string option; [@yojson.default None]
+  start_line : int option; [@key "start_line"] [@yojson.default None]
+  annotation_level : string option;
+      [@key "annotation_level"] [@yojson.default None]
+  message : string option; [@yojson.default None]
+}
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
 let ci_check_of_actions_job (job : actions_job) =
   Option.map job.name ~f:(fun name ->
       let conclusion =
@@ -970,6 +979,26 @@ let parse_actions_jobs_response body =
           |> List.filter ~f:Types.Ci_check.is_failure
           |> Result.return)
 
+let digest_annotation_of_check_annotation (a : check_annotation) :
+    Ci_log_digest.annotation =
+  {
+    path = a.path;
+    line = a.start_line;
+    level = Option.value a.annotation_level ~default:"";
+    message = Option.value a.message ~default:"";
+  }
+
+let parse_check_annotations_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> (
+      match
+        Json.try_of_yojson (list_of_yojson check_annotation_of_yojson) json
+      with
+      | Error msg -> Error (Json_parse_error msg)
+      | Ok annotations ->
+          Ok (List.map annotations ~f:digest_annotation_of_check_annotation))
+
 let https_config () =
   match Ca_certs.authenticator () with
   | Error (`Msg msg) -> Error ("TLS CA setup failed: " ^ msg)
@@ -986,6 +1015,8 @@ let https_fun tls_config uri flow =
   (Tls_eio.client_of_flow tls_config ?host flow :> _ Eio.Flow.two_way)
 
 let max_response_size = 1_000_000
+let max_job_log_response_size = 10_000_000
+let job_log_timeout = 60.0
 
 (** Default per-request timeout, in seconds. Matches review_service_client.
     Without a timeout, a TCP connect stuck in SYN_SENT can block the calling
@@ -1050,7 +1081,7 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
           let status = Http.Response.status resp |> Http.Status.to_int in
           let resp_str =
             Eio.Buf_read.(
-              of_flow ~max_size:max_response_size resp_body |> take_all)
+              of_flow ~max_size:max_job_log_response_size resp_body |> take_all)
           in
           if status >= 200 && status < 300 then Ok resp_str
           else
@@ -1066,6 +1097,128 @@ let request ~net ~clock ?(timeout = default_timeout) t ~meth ~path ?(query = [])
   match Eio.Time.with_timeout clock timeout (fun () -> Ok (do_request ())) with
   | Ok inner -> inner
   | Error `Timeout -> Error (Timeout { meth = meth_s; path; seconds = timeout })
+
+let fetch_signed_job_log ~net ~clock ~url =
+  let path = url in
+  let do_request () : (string option, error) Result.t =
+    try
+      Mirage_crypto_rng_unix.use_default ();
+      Result.bind
+        (Result.map_error (https_config ()) ~f:(fun msg ->
+             Transport_error { meth = "GET"; path; msg }))
+        ~f:(fun tls_config ->
+          let client =
+            Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
+          in
+          let uri = Uri.of_string url in
+          let headers =
+            Http.Header.of_list
+              [
+                ("Accept", "text/plain, application/octet-stream, */*");
+                ("User-Agent", "onton/0.1.0");
+              ]
+          in
+          Eio.Switch.run @@ fun sw ->
+          let resp, resp_body = Cohttp_eio.Client.get client ~sw ~headers uri in
+          let status = Http.Response.status resp |> Http.Status.to_int in
+          let resp_str =
+            Eio.Buf_read.(
+              of_flow ~max_size:max_job_log_response_size resp_body |> take_all)
+          in
+          if status >= 200 && status < 300 then Ok (Some resp_str) else Ok None)
+    with
+    | Eio.Cancel.Cancelled _ as exn -> raise exn
+    | _ -> Ok None
+  in
+  match
+    Eio.Time.with_timeout clock job_log_timeout (fun () -> Ok (do_request ()))
+  with
+  | Ok inner -> inner
+  | Error `Timeout -> Ok None
+
+let fetch_job_log ~net ~clock t ~id =
+  let path =
+    Printf.sprintf "/repos/%s/%s/actions/jobs/%d/logs" t.owner t.repo id
+  in
+  let do_request () : (string option, error) Result.t =
+    try
+      Mirage_crypto_rng_unix.use_default ();
+      Result.bind
+        (Result.map_error (https_config ()) ~f:(fun msg ->
+             Transport_error { meth = "GET"; path; msg }))
+        ~f:(fun tls_config ->
+          let client =
+            Cohttp_eio.Client.make ~https:(Some (https_fun tls_config)) net
+          in
+          let uri = Uri.of_string ("https://api.github.com" ^ path) in
+          let headers =
+            Http.Header.of_list
+              [
+                ("Authorization", "Bearer " ^ t.token);
+                ("Accept", "application/vnd.github+json");
+                ("User-Agent", "onton/0.1.0");
+                ("X-GitHub-Api-Version", "2022-11-28");
+              ]
+          in
+          Eio.Switch.run @@ fun sw ->
+          let resp, resp_body = Cohttp_eio.Client.get client ~sw ~headers uri in
+          let status = Http.Response.status resp |> Http.Status.to_int in
+          let resp_str =
+            Eio.Buf_read.(
+              of_flow ~max_size:max_response_size resp_body |> take_all)
+          in
+          match status with
+          | 302 -> (
+              match Http.Header.get (Http.Response.headers resp) "location" with
+              | None ->
+                  Error
+                    (Transport_error
+                       {
+                         meth = "GET";
+                         path;
+                         msg = "log redirect missing Location";
+                       })
+              | Some url -> fetch_signed_job_log ~net ~clock ~url)
+          | 404 -> Ok None
+          | status when status >= 200 && status < 300 -> Ok (Some resp_str)
+          | status ->
+              Error (Http_error { meth = "GET"; path; status; body = resp_str }))
+    with
+    | Eio.Cancel.Cancelled _ as exn -> raise exn
+    | exn ->
+        Error (Transport_error { meth = "GET"; path; msg = Exn.to_string exn })
+  in
+  match
+    Eio.Time.with_timeout clock job_log_timeout (fun () -> Ok (do_request ()))
+  with
+  | Ok inner -> inner
+  | Error `Timeout ->
+      Error (Timeout { meth = "GET"; path; seconds = job_log_timeout })
+
+let fetch_check_annotations ~net ~clock t ~id =
+  let path =
+    Printf.sprintf "/repos/%s/%s/check-runs/%d/annotations" t.owner t.repo id
+  in
+  let query = [ ("per_page", [ "100" ]) ] in
+  match request ~net ~clock t ~meth:`GET ~path ~query () with
+  | Ok body -> parse_check_annotations_response body
+  | Error (Http_error { status = 404; _ }) -> Ok []
+  | Error
+      (( Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
+       | Transport_error _ ) as err) ->
+      Error err
+
+let check_failure_details ~net ~clock t ~(check : Types.Ci_check.t) =
+  match check.id with
+  | None -> Ok { Ci_log_digest.annotations = []; log = None }
+  | Some id -> (
+      let annotations_result = fetch_check_annotations ~net ~clock t ~id in
+      let log_result = fetch_job_log ~net ~clock t ~id in
+      match (annotations_result, log_result) with
+      | Ok annotations, Ok log -> Ok { Ci_log_digest.annotations; log }
+      | Ok annotations, Error _ -> Ok { Ci_log_digest.annotations; log = None }
+      | Error _, Ok log -> Ok { Ci_log_digest.annotations = []; log }
+      | Error _, Error log_error -> Error log_error)
 
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
@@ -1948,6 +2101,9 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
 
     let merge_queue_removal_checks ~pr_number =
       merge_queue_removal_checks ~net ~clock client pr_number
+
+    let check_failure_details ~check =
+      check_failure_details ~net ~clock client ~check
 
     let list_prs ~branch ?base ~state () =
       match base with

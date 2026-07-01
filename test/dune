@@ -21,6 +21,11 @@
  (libraries onton onton_core base))
 
 (test
+ (name test_github_check_details)
+ (modules test_github_check_details)
+ (libraries onton onton_core base yojson))
+
+(test
  (name test_json)
  (modules test_json)
  (libraries onton_core base yojson ppx_yojson_conv_lib))
