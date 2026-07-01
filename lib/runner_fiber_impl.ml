@@ -1378,6 +1378,7 @@ struct
                               `Skip_empty
                           | None ->
                               with_session_slot (fun () ->
+                                  let ci_merge_queue_removal_checks = ref [] in
                                   Runtime.update_orchestrator runtime
                                     (fun orch ->
                                       Orchestrator.mark_running orch patch_id);
@@ -1416,6 +1417,8 @@ struct
                                                   ~pr_number:pr_num
                                               with
                                               | Ok (_ :: _ as real) ->
+                                                  ci_merge_queue_removal_checks :=
+                                                    real;
                                                   log_event runtime ~patch_id
                                                     (Printf.sprintf
                                                        "Fetched %d failing \
@@ -1985,14 +1988,147 @@ struct
                                                   ~base_branch:
                                                     base_branch_for_layer ()
                                               else
-                                                Prompt.render_ci_failure_prompt
+                                                let fetch_cap = 10 in
+                                                let checks_to_fetch, extra =
+                                                  Base.List.split_n
+                                                    failed_checks fetch_cap
+                                                in
+                                                if
+                                                  not (Base.List.is_empty extra)
+                                                then
+                                                  log_event runtime ~patch_id
+                                                    (Printf.sprintf
+                                                       "Skipping CI detail \
+                                                        fetch for %d check(s) \
+                                                        over cap — delivering \
+                                                        metadata only"
+                                                       (Base.List.length extra));
+                                                let current_head_oid =
+                                                  Base.Option.bind
+                                                    fresh_pr_state ~f:(fun ps ->
+                                                      ps.Pr_state.head_oid)
+                                                in
+                                                let is_merge_queue_removal_check
+                                                    check =
+                                                  Base.List.mem
+                                                    !ci_merge_queue_removal_checks
+                                                    check ~equal:Ci_check.equal
+                                                in
+                                                let head_oid_for_check check =
+                                                  match check.Ci_check.id with
+                                                  | Some _
+                                                    when not
+                                                           (is_merge_queue_removal_check
+                                                              check) ->
+                                                      current_head_oid
+                                                  | Some _ | None -> None
+                                                in
+                                                let detail_for_check check =
+                                                  try
+                                                    match
+                                                      Forge
+                                                      .check_failure_details
+                                                        ~check
+                                                    with
+                                                    | Error e ->
+                                                        log_event runtime
+                                                          ~patch_id
+                                                          (Printf.sprintf
+                                                             "CI detail fetch \
+                                                              failed for %s \
+                                                              (%s) — \
+                                                              delivering \
+                                                              metadata only"
+                                                             check.Ci_check.name
+                                                             (Forge.show_error e));
+                                                        None
+                                                    | Ok source -> (
+                                                        let enrichment =
+                                                          Ci_log_digest.digest
+                                                            source
+                                                        in
+                                                        let log =
+                                                          Base.Option.map
+                                                            source
+                                                              .Ci_log_digest.log
+                                                            ~f:
+                                                              Ci_log_digest
+                                                              .strip_log
+                                                        in
+                                                        match
+                                                          Project_store
+                                                          .publish_ci_check_artifact
+                                                            ~project_name
+                                                            ~patch_id ~check
+                                                            ?head_oid:
+                                                              (head_oid_for_check
+                                                                 check)
+                                                            ~summary_md:
+                                                              enrichment
+                                                                .Ci_log_digest
+                                                                 .summary_md
+                                                            ?log ()
+                                                        with
+                                                        | Ok artifact_dir ->
+                                                            Some
+                                                              Prompt.
+                                                                {
+                                                                  artifact_dir;
+                                                                  enrichment;
+                                                                }
+                                                        | Error msg ->
+                                                            log_event runtime
+                                                              ~patch_id
+                                                              (Printf.sprintf
+                                                                 "CI detail \
+                                                                  artifact \
+                                                                  publish \
+                                                                  failed for \
+                                                                  %s (%s) — \
+                                                                  delivering \
+                                                                  metadata \
+                                                                  only"
+                                                                 check
+                                                                   .Ci_check
+                                                                    .name msg);
+                                                            None)
+                                                  with
+                                                  | Eio.Cancel.Cancelled _ as
+                                                    exn ->
+                                                      raise exn
+                                                  | exn ->
+                                                      log_event runtime
+                                                        ~patch_id
+                                                        (Printf.sprintf
+                                                           "CI detail \
+                                                            processing failed \
+                                                            for %s (%s) — \
+                                                            delivering \
+                                                            metadata only"
+                                                           check.Ci_check.name
+                                                           (Stdlib.Printexc
+                                                            .to_string exn));
+                                                      None
+                                                in
+                                                let detailed_checks =
+                                                  Base.List.map checks_to_fetch
+                                                    ~f:(fun check ->
+                                                      ( check,
+                                                        detail_for_check check
+                                                      ))
+                                                  @ Base.List.map extra
+                                                      ~f:(fun check ->
+                                                        (check, None))
+                                                in
+                                                Prompt
+                                                .render_ci_failure_prompt_detailed
                                                   ~project_name ?agents_md
                                                   ?pr_number
                                                   ?patch:patch_for_layer
                                                   ~gameplan
                                                   ~base_branch:
                                                     base_branch_for_layer
-                                                  failed_checks
+                                                  detailed_checks
                                           | Patch_decision.Review_payload
                                               { comments } ->
                                               let current_head_sha =
