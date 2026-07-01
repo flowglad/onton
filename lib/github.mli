@@ -117,6 +117,12 @@ val parse_actions_jobs_response :
     Job database ids become [Ci_check.id], and [html_url] becomes [details_url].
     Pure helper exposed for regression tests. *)
 
+val parse_check_annotations_response :
+  string -> (Ci_log_digest.annotation list, error) Result.t
+(** Parse a REST [GET /check-runs/:id/annotations] response into digest
+    annotations. Extra fields and explicit [null] path/line values are
+    tolerated. Pure helper exposed for regression tests. *)
+
 val is_merge_queue_required_error : error -> bool
 (** True only for the REST 405 response GitHub returns when the branch requires
     native merge queue use. *)
