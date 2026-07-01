@@ -1274,10 +1274,7 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
         items
         |> List.count ~f:(fun (_, detail) -> Option.is_some detail)
         |> Int.to_string );
-      ( "collapsed_count",
-        collapsed
-        |> List.count ~f:(fun (_, detail) -> Option.is_some detail)
-        |> Int.to_string );
+      ("collapsed_count", collapsed |> List.length |> Int.to_string);
       ( "pr_number",
         match pr_number with
         | Some n -> Int.to_string (Pr_number.to_int n)
