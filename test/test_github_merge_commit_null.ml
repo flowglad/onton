@@ -154,7 +154,6 @@ let pending_patch_3_merge_queue_405_detection () =
       }
   in
   assert (Onton.Github.is_merge_queue_required_error merge_queue_err);
-  assert (not (Onton.Github.is_method_not_allowed merge_queue_err));
   assert (not (Onton.Github.is_merge_queue_required_error base_modified_err))
 
 let () =

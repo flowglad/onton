@@ -1602,11 +1602,6 @@ let method_allowed (m : repo_merge_methods) = function
   | `Merge -> m.merge
   | `Rebase -> m.rebase
 
-let disable_method (m : repo_merge_methods) = function
-  | `Squash -> { m with squash = false }
-  | `Merge -> { m with merge = false }
-  | `Rebase -> { m with rebase = false }
-
 (* Preference order, most → least preferred. Squash first preserves onton's
    historical default on repos that allow it; the choice is method-agnostic
    downstream — rebase anchoring keys off the actual [mergeCommit.oid] and the
@@ -1648,12 +1643,14 @@ let get_repo_merge_methods ~net ~clock ?timeout t :
           Error (Json_parse_error "could not parse repo merge-method settings"))
   | Error _ as e -> e
 
-(* A non-2xx response meaning "this merge method is disabled on the repo"
-   (GitHub 405 "… merges are not allowed on this repository"), as distinct from
-   a transient/auth/conflict failure that must not trigger method fallback. *)
-let is_method_not_allowed = function
-  | Http_error { status = 405; body; _ } ->
-      response_error_message_contains body ~substring:"not allowed"
+(* A [405 Method Not Allowed] from the merge endpoint: GitHub refused this
+   particular merge attempt — either the method is disabled for the repo or a
+   branch rule blocked it. Classified purely by HTTP status; the body wording
+   (which GitHub varies, and which is sometimes not even JSON) is never
+   inspected. Distinct from a 409 (conflict), 422 (validation), or transport
+   error, which are genuine failures that must not trigger method fallback. *)
+let is_merge_endpoint_rejection = function
+  | Http_error { status = 405; _ } -> true
   | Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
   | Transport_error _ ->
       false
@@ -1770,8 +1767,12 @@ let%test "allowed_methods_in_preference: none allowed -> empty" =
     (allowed_methods_in_preference
        { squash = false; merge = false; rebase = false })
 
-let%test "is_method_not_allowed: 405 'not allowed' -> true" =
-  is_method_not_allowed
+(* Status-based, wording-independent: a 405 is a rejection regardless of body,
+   including a non-JSON body (the failure mode behind the squash-retry-forever
+   incident, where the message text was present but unparseable as JSON so the
+   old substring check missed it). *)
+let%test "is_merge_endpoint_rejection: 405 with standard JSON body -> true" =
+  is_merge_endpoint_rejection
     (Http_error
        {
          meth = "PUT";
@@ -1781,22 +1782,26 @@ let%test "is_method_not_allowed: 405 'not allowed' -> true" =
            {|{"message":"Squash merges are not allowed on this repository"}|};
        })
 
-let%test "is_method_not_allowed: 405 without the phrase -> false" =
-  not
-    (is_method_not_allowed
-       (Http_error
-          {
-            meth = "PUT";
-            path = "/merge";
-            status = 405;
-            body = {|{"message":"Pull Request is not mergeable"}|};
-          }))
+let%test "is_merge_endpoint_rejection: 405 with non-JSON body -> true" =
+  is_merge_endpoint_rejection
+    (Http_error
+       {
+         meth = "PUT";
+         path = "/merge";
+         status = 405;
+         body = "Squash merges are not allowed on this repository.";
+       })
 
-let%test "is_method_not_allowed: 409 conflict -> false" =
+let%test "is_merge_endpoint_rejection: 409 conflict -> false" =
   not
-    (is_method_not_allowed
+    (is_merge_endpoint_rejection
        (Http_error
           { meth = "PUT"; path = "/merge"; status = 409; body = "conflict" }))
+
+let%test "is_merge_endpoint_rejection: transport error -> false" =
+  not
+    (is_merge_endpoint_rejection
+       (Transport_error { meth = "PUT"; path = "/merge"; msg = "reset" }))
 
 let%expect_test "show_error includes endpoint + permission hint on 403" =
   let err =
@@ -1845,49 +1850,73 @@ let%expect_test "show_error transport error includes endpoint" =
 let make ~net ~clock ~token ~owner ~repo ~main_branch :
     (module Forge.S with type error = error) =
   let client = create ~token ~owner ~repo ~main_branch in
-  (* Cache the repo's allowed merge methods across calls; populated lazily on
-     the first merge and narrowed if a 405 later reveals a method is disabled. *)
+  (* The repo's allowed merge methods (allow_squash_merge etc.), cached across
+     calls. This config is authoritative for method choice: we read it and pick
+     the preferred *enabled* method rather than guessing and recovering from a
+     405. Refreshed on a 405 because a repo's allowed set can change while onton
+     is running (the stale-cache trap behind the squash-retry-forever incident:
+     onton cached "squash allowed" at startup and kept issuing squash after the
+     repo disabled it). [None] means the config was unreadable this attempt. *)
   let merge_methods_cache = ref None in
-  let resolve_allowed_methods () =
-    match !merge_methods_cache with
-    | Some m -> Some m
-    | None -> (
-        match get_repo_merge_methods ~net ~clock client with
-        | Ok m ->
-            merge_methods_cache := Some m;
-            Some m
-        | Error _ -> None)
+  let fetch_merge_methods () =
+    match get_repo_merge_methods ~net ~clock client with
+    | Ok m ->
+        merge_methods_cache := Some m;
+        Some m
+    | Error _ -> None
+  in
+  (* Methods to attempt, most-preferred first, derived from the repo config.
+     [refresh] forces a fresh read (used after a 405). When the config is
+     unreadable, or readable but reports nothing enabled, fall back to the full
+     preference order and let the per-method 405 handling sort it out — a config
+     hiccup must never block an otherwise-mergeable PR. *)
+  let candidate_methods ~refresh () =
+    let detected =
+      if refresh then fetch_merge_methods ()
+      else
+        match !merge_methods_cache with
+        | Some _ as cached -> cached
+        | None -> fetch_merge_methods ()
+    in
+    match detected with
+    | Some m -> (
+        match allowed_methods_in_preference m with
+        | [] -> merge_method_preference
+        | enabled -> enabled)
+    | None -> merge_method_preference
   in
   let merge_pr_choosing ~pr_number =
-    (* Candidate methods, preferred first: the detected allowed set when we
-       could read it, otherwise the full preference list (a failed detect must
-       not block merges — the 405 fallback below still protects us). *)
-    let order =
-      match resolve_allowed_methods () with
-      | Some m -> allowed_methods_in_preference m
-      | None -> merge_method_preference
+    let equal_method a b =
+      match (a, b) with
+      | `Squash, `Squash | `Merge, `Merge | `Rebase, `Rebase -> true
+      | (`Squash | `Merge | `Rebase), _ -> false
     in
-    let order =
-      if List.is_empty order then merge_method_preference else order
-    in
-    let rec attempt = function
+    (* Try each permitted method in preference order. A 405 means GitHub refused
+       that method — decided by HTTP status, never by matching words in the body
+       (bodies vary and are sometimes not even JSON). On the first 405 we re-read
+       the repo config once, in case its allowed set changed mid-run, then keep
+       trying any still-permitted, not-yet-tried method. Non-405 errors are real
+       failures and propagate immediately; if every permitted method is refused
+       we surface the last 405 so the caller can escalate (e.g. enqueue). *)
+    let rec attempt ~refreshed ~tried ~last = function
       | [] ->
-          assert false
-          (* unreachable: order is always non-empty per the guard above *)
+          if refreshed then Error (Option.value_exn last)
+          else
+            let fresh =
+              List.filter (candidate_methods ~refresh:true ()) ~f:(fun m ->
+                  not (List.mem tried m ~equal:equal_method))
+            in
+            if List.is_empty fresh then Error (Option.value_exn last)
+            else attempt ~refreshed:true ~tried ~last fresh
       | m :: rest -> (
           match merge_pr ~net ~clock client ~pr_number ~merge_method:m with
-          | Error e when is_method_not_allowed e ->
-              (* Stale allow-set: narrow the cache so future merges skip this
-                 method, then try the next candidate. Disabling happens even
-                 when [m] is the last candidate, so a repeat 405 isn't retried
-                 on the next call. *)
-              merge_methods_cache :=
-                Option.map !merge_methods_cache ~f:(fun mm ->
-                    disable_method mm m);
-              if List.is_empty rest then Error e else attempt rest
-          | (Ok _ | Error _) as other -> other)
+          | Ok _ as ok -> ok
+          | Error e when is_merge_endpoint_rejection e ->
+              attempt ~refreshed ~tried:(m :: tried) ~last:(Some e) rest
+          | Error _ as other -> other)
     in
-    attempt order
+    attempt ~refreshed:false ~tried:[] ~last:None
+      (candidate_methods ~refresh:false ())
   in
   let module M = struct
     type nonrec error = error
