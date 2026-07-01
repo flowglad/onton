@@ -73,6 +73,19 @@ let findings_wontfix_artifact_path ~project_name ~patch_id =
     (artifact_dir ~project_name ~patch_id)
     "findings_wontfix.json"
 
+let ci_artifact_dir ~project_name ~patch_id =
+  Stdlib.Filename.concat (artifact_dir ~project_name ~patch_id) "ci"
+
+let ci_check_key (c : Types.Ci_check.t) =
+  match c.id with
+  | Some id -> "run-" ^ Int.to_string id
+  | None -> "status-" ^ slugify c.name
+
+let ci_check_artifact_dir ~project_name ~patch_id ~check =
+  Stdlib.Filename.concat
+    (ci_artifact_dir ~project_name ~patch_id)
+    (ci_check_key check)
+
 let ensure_dir path =
   let rec mkdir_p dir =
     if not (Stdlib.Sys.file_exists dir) then (
@@ -222,6 +235,72 @@ let publish_gameplan_artifact ~project_name =
         Stdlib.output_string oc content;
         Stdlib.flush oc))
 
+let write_text_file ~path ~content =
+  let oc = Stdlib.open_out_bin path in
+  Stdlib.Fun.protect
+    ~finally:(fun () -> Stdlib.close_out oc)
+    (fun () ->
+      Stdlib.output_string oc content;
+      Stdlib.flush oc)
+
+let write_file_atomically ~path ~content =
+  let dir = Stdlib.Filename.dirname path in
+  let base = Stdlib.Filename.basename path in
+  let tmp_path = Stdlib.Filename.temp_file ~temp_dir:dir (base ^ ".") ".tmp" in
+  try
+    let oc = Stdlib.open_out_bin tmp_path in
+    Stdlib.Fun.protect
+      ~finally:(fun () -> Stdlib.close_out oc)
+      (fun () ->
+        Stdlib.output_string oc content;
+        Stdlib.flush oc);
+    Stdlib.Sys.rename tmp_path path;
+    Ok ()
+  with exn ->
+    (try Stdlib.Sys.remove tmp_path with _ -> ());
+    Error (Stdlib.Printexc.to_string exn)
+
+let ci_check_json ~(check : Types.Ci_check.t) ~head_oid =
+  `Assoc
+    [
+      ("name", `String check.name);
+      ("conclusion", `String check.conclusion);
+      ( "details_url",
+        Option.value_map check.details_url ~default:`Null ~f:(fun s ->
+            `String s) );
+      ( "started_at",
+        Option.value_map check.started_at ~default:`Null ~f:(fun s -> `String s)
+      );
+      ( "check_run_id",
+        Option.value_map check.id ~default:`Null ~f:(fun id -> `Int id) );
+      ( "head_oid",
+        Option.value_map head_oid ~default:`Null ~f:(fun s -> `String s) );
+    ]
+
+let publish_ci_check_artifact ~project_name ~patch_id ~check ?head_oid
+    ~summary_md ?log () =
+  try
+    let dir = ci_check_artifact_dir ~project_name ~patch_id ~check in
+    ensure_dir dir;
+    let check_json_path = Stdlib.Filename.concat dir "check.json" in
+    let summary_path = Stdlib.Filename.concat dir "summary.md" in
+    let log_path = Stdlib.Filename.concat dir "log.txt" in
+    match
+      write_file_atomically ~path:check_json_path
+        ~content:(Yojson.Safe.pretty_to_string (ci_check_json ~check ~head_oid))
+    with
+    | Error msg -> Error msg
+    | Ok () -> (
+        try
+          write_text_file ~path:summary_path ~content:summary_md;
+          (match log with
+          | None ->
+              if Stdlib.Sys.file_exists log_path then Stdlib.Sys.remove log_path
+          | Some content -> write_text_file ~path:log_path ~content);
+          Ok dir
+        with exn -> Error (Stdlib.Printexc.to_string exn))
+  with exn -> Error (Stdlib.Printexc.to_string exn)
+
 let project_exists project_name =
   Stdlib.Sys.file_exists (config_path project_name)
 
@@ -262,6 +341,128 @@ let read_file_for_test path =
   Stdlib.Fun.protect
     ~finally:(fun () -> Stdlib.close_in_noerr ic)
     (fun () -> Stdlib.In_channel.input_all ic)
+
+let ci_check_for_test ?id ?details_url ?description ?started_at
+    ?(name = "Build and Test") ?(conclusion = "failure") () : Types.Ci_check.t =
+  { name; conclusion; details_url; description; started_at; id }
+
+let dir_entries_for_test path =
+  Stdlib.Sys.readdir path |> Array.to_list |> List.sort ~compare:String.compare
+
+let json_field_for_test name = function
+  | `Assoc fields -> List.Assoc.find fields name ~equal:String.equal
+  | _ -> None
+
+let%test "ci_check_key uses run id for CheckRuns and slug for id-less checks" =
+  let run_check = ci_check_for_test ~id:123 ~name:"CI / Test Suite" () in
+  let status_check =
+    ci_check_for_test ~name:"all_jobs_succeed / Required!" ()
+  in
+  String.equal (ci_check_key run_check) "run-123"
+  && String.equal
+       (ci_check_key status_check)
+       "status-all-jobs-succeed--required"
+
+let%test "publish_ci_check_artifact writes metadata and summary without log" =
+  with_temp_data_dir (fun () ->
+      let project_name = "CI Artifact Project" in
+      let patch_id = Types.Patch_id.of_string "patch-2" in
+      let check =
+        ci_check_for_test ~id:42 ~name:"Unit Tests" ~conclusion:"failure"
+          ~details_url:"https://github.example/checks/42"
+          ~started_at:"2026-07-01T12:00:00Z" ()
+      in
+      match
+        publish_ci_check_artifact ~project_name ~patch_id ~check
+          ~head_oid:"abc123" ~summary_md:"summary\n" ()
+      with
+      | Error _ -> false
+      | Ok dir ->
+          List.equal String.equal (dir_entries_for_test dir)
+            [ "check.json"; "summary.md" ]
+          && String.equal
+               (read_file_for_test (Stdlib.Filename.concat dir "summary.md"))
+               "summary\n"
+          &&
+          let json =
+            Yojson.Safe.from_string
+              (read_file_for_test (Stdlib.Filename.concat dir "check.json"))
+          in
+          [%equal: Yojson.Safe.t option]
+            (json_field_for_test "name" json)
+            (Some (`String "Unit Tests"))
+          && [%equal: Yojson.Safe.t option]
+               (json_field_for_test "conclusion" json)
+               (Some (`String "failure"))
+          && [%equal: Yojson.Safe.t option]
+               (json_field_for_test "details_url" json)
+               (Some (`String "https://github.example/checks/42"))
+          && [%equal: Yojson.Safe.t option]
+               (json_field_for_test "started_at" json)
+               (Some (`String "2026-07-01T12:00:00Z"))
+          && [%equal: Yojson.Safe.t option]
+               (json_field_for_test "check_run_id" json)
+               (Some (`Int 42))
+          && [%equal: Yojson.Safe.t option]
+               (json_field_for_test "head_oid" json)
+               (Some (`String "abc123")))
+
+let%test "publish_ci_check_artifact writes log only when supplied" =
+  with_temp_data_dir (fun () ->
+      let project_name = "CI Artifact Project With Log" in
+      let patch_id = Types.Patch_id.of_string "patch-2" in
+      let check = ci_check_for_test ~name:"lint/status" () in
+      match
+        publish_ci_check_artifact ~project_name ~patch_id ~check
+          ~summary_md:"summary\n" ~log:"full log\n" ()
+      with
+      | Error _ -> false
+      | Ok dir ->
+          String.equal
+            (ci_check_artifact_dir ~project_name ~patch_id ~check)
+            dir
+          && List.equal String.equal (dir_entries_for_test dir)
+               [ "check.json"; "log.txt"; "summary.md" ]
+          && String.equal
+               (read_file_for_test (Stdlib.Filename.concat dir "log.txt"))
+               "full log\n"
+          &&
+          let json =
+            Yojson.Safe.from_string
+              (read_file_for_test (Stdlib.Filename.concat dir "check.json"))
+          in
+          [%equal: Yojson.Safe.t option]
+            (json_field_for_test "check_run_id" json)
+            (Some `Null)
+          && [%equal: Yojson.Safe.t option]
+               (json_field_for_test "head_oid" json)
+               (Some `Null))
+
+let%test "publish_ci_check_artifact overwrites the same key cleanly" =
+  with_temp_data_dir (fun () ->
+      let project_name = "CI Artifact Republish" in
+      let patch_id = Types.Patch_id.of_string "patch-2" in
+      let check = ci_check_for_test ~id:7 ~name:"same run" () in
+      match
+        publish_ci_check_artifact ~project_name ~patch_id ~check
+          ~summary_md:"old\n" ~log:"stale log\n" ()
+      with
+      | Error _ -> false
+      | Ok dir -> (
+          match
+            publish_ci_check_artifact ~project_name ~patch_id ~check
+              ~summary_md:"new\n" ()
+          with
+          | Error _ -> false
+          | Ok dir' ->
+              String.equal dir dir'
+              && List.equal String.equal
+                   (dir_entries_for_test dir')
+                   [ "check.json"; "summary.md" ]
+              && String.equal
+                   (read_file_for_test
+                      (Stdlib.Filename.concat dir' "summary.md"))
+                   "new\n"))
 
 let%test "publish_gameplan_artifact copies the stored gameplan for agents" =
   with_temp_data_dir (fun () ->
