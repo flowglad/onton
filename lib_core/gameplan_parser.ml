@@ -8,14 +8,9 @@ type t = {
   dependency_graph : Types.Patch_id.t list Map.M(Types.Patch_id).t;
 }
 
-let slugify name =
-  String.lowercase name
-  |> String.map ~f:(fun c ->
-      if Char.is_alphanum c || Char.equal c '-' || Char.equal c '_' then c
-      else '-')
-  |> String.split ~on:'-'
-  |> List.filter ~f:(fun s -> not (String.is_empty s))
-  |> String.concat ~sep:"-"
+(* Single source of truth lives in [Types.Gameplan] so runtime-added patches
+   derive identical branch names; aliased here for the parser and its tests. *)
+let slugify = Types.Gameplan.slugify
 
 let is_valid_patch_id s =
   (not (String.is_empty s))

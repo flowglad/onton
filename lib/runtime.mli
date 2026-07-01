@@ -44,6 +44,19 @@ val update_orchestrator_returning :
     new orchestrator state. Useful when you need an atomic check-and-modify that
     also reports what happened. *)
 
+val add_patch :
+  t ->
+  title:string ->
+  description:string ->
+  dependencies:Patch_id.t list ->
+  (Patch.t, string) result
+(** Atomically add a runtime patch to the gameplan and register its agent.
+    Applies {!Gameplan.add_patch} and, on success,
+    {!Orchestrator.add_planned_patch} within a single lock so the two never
+    diverge. Returns the created patch, or [Error msg] (leaving the snapshot
+    untouched) when a dependency id is unknown. The poller picks the patch up on
+    its next tick. *)
+
 val update_activity_log : t -> (Activity_log.t -> Activity_log.t) -> unit
 (** Convenience: update only the activity log. *)
 

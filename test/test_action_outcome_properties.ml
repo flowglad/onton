@@ -521,9 +521,44 @@ let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"orchestrator surface preserves well-formedness"
        ~count:50 QCheck2.Gen.bool (fun flag ->
-         let orch, _patches, _gameplan, pid = bootstrap_one () in
+         let orch, _patches, gameplan, pid = bootstrap_one () in
          let mid = Message_id.of_string "ao-surface-msg" in
          let orch = Orchestrator.set_main_branch orch main in
+         (* Compile-time check of the public [Gameplan.add_patch] contract:
+            [Ok] carries an immutable [(Gameplan.t * Patch.t)] tuple. *)
+         let gameplan_with_added, added_patch =
+           match
+             Gameplan.add_patch gameplan ~title:"runtime patch"
+               ~description:"created from TUI"
+               ~dependencies:(if flag then [ pid ] else [])
+           with
+           | Ok (added : Gameplan.t * Patch.t) -> added
+           | Error msg -> QCheck2.Test.fail_reportf "%s" msg
+         in
+         if
+           not
+             (List.exists gameplan_with_added.Gameplan.patches ~f:(fun p ->
+                  Patch_id.equal p.Patch.id added_patch.Patch.id))
+         then QCheck2.Test.fail_reportf "added patch missing from gameplan";
+         (* [Gameplan.t] and [Patch.t] are immutable records. [add_planned_patch]
+            registers the PR-less agent and graph edges; the patch record itself
+            remains owned by [Gameplan.t] and cannot be mutated in place. Keep
+            the generated id/deps as the expected immutable contract and assert
+            the orchestrator graph reflects them exactly. *)
+         let added_patch_id = added_patch.Patch.id in
+         let expected_deps = added_patch.Patch.dependencies in
+         let orch =
+           Orchestrator.add_planned_patch orch added_patch ~deps:expected_deps
+         in
+         let added_agent = Orchestrator.agent orch added_patch_id in
+         if Patch_agent.has_pr added_agent then
+           QCheck2.Test.fail_reportf "planned patch unexpectedly has a PR";
+         if
+           not
+             (List.equal Patch_id.equal
+                (Graph.deps (Orchestrator.graph orch) added_patch_id)
+                expected_deps)
+         then QCheck2.Test.fail_reportf "planned patch deps were not recorded";
          let orch = Orchestrator.set_automerge_enabled orch pid flag in
          let orch = Orchestrator.set_automerge_inflight orch pid flag in
          let orch = Orchestrator.set_automerge_deadline orch pid 1.0 in
