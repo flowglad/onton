@@ -1233,7 +1233,7 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
   let formatted_checks =
     match visible with
     | [] -> "No CI failures."
-    | _ ->
+    | _ -> (
         let rendered =
           List.map visible ~f:(fun (check, detail) ->
               render_ci_check_line check
@@ -1257,7 +1257,11 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
                   names;
               ]
         in
-        String.concat (rendered @ collapsed_line) ~sep:"\n"
+        String.concat rendered ~sep:"\n"
+        ^
+        match collapsed_line with
+        | [] -> ""
+        | _ -> "\n\n" ^ String.concat collapsed_line ~sep:"\n")
   in
   let pr_ctx =
     match pr_number with
@@ -2333,10 +2337,7 @@ let%test
          "Also failing (low diagnostic signal): all-jobs-succeed — details \
           recorded under their artifact directories."
   && String.is_substring with_high
-       ~substring:"check.json)\nAlso failing (low diagnostic signal)"
-  && (not
-        (String.is_substring with_high
-           ~substring:"check.json)\n\nAlso failing (low diagnostic signal)"))
+       ~substring:"check.json)\n\nAlso failing (low diagnostic signal)"
   && not
        (String.is_substring with_high
           ~substring:"artifacts/4/ci/run-low/summary.md")
