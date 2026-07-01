@@ -1,0 +1,17 @@
+Run biome check
+lint/src/server.ts:9:3 lint/suspicious/noExplicitAny
+  Unexpected any. Specify a different type.
+  7 | export function handler(req: Request) {
+  8 |   const payload = req.json()
+> 9 |   return payload as any
+    |                  ^^^
+Checked 84 files in 80ms. No fixes applied.
+Found 1 error.
+##[error]Process completed with exit code 1.
+Run upload coverage
+coverage uploaded successfully
+Run cleanup
+cache saved
+POST_FAILURE_PASSING_STEP_SENTINEL
+Run notify
+notification sent

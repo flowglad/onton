@@ -1,0 +1,7 @@
+Preparing deploy
+Uploading bundle
+Waiting for health check
+Deploy failed while waiting for health check
+Service returned status 503 from /ready
+Last response body: warming up
+##[error]Process completed with exit code 1.

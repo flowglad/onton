@@ -98,6 +98,15 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_ci_log_digest_properties)
+ (modules test_ci_log_digest_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner base)
+ (deps
+  (glob_files fixtures/ci_logs/*.log))
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_merge_queue_decision_properties)
  (modules test_merge_queue_decision_properties)
  (libraries onton_core qcheck-core qcheck-core.runner)
