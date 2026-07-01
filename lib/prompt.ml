@@ -1107,31 +1107,37 @@ let render_findings_prompt ~(project_name : string) ?agents_md ?pr_number
   ^ render_turn_layer_findings ~project_name ?pr_number ?current_head_sha
       ~artifact_dir findings
 
+type ci_check_detail = {
+  artifact_dir : string;
+  enrichment : Ci_log_digest.enrichment;
+}
+
+let render_ci_check_line (c : Ci_check.t) =
+  let id =
+    match c.Ci_check.id with
+    | Some id -> Printf.sprintf " [check_id=%d]" id
+    | None -> ""
+  in
+  let url =
+    match c.Ci_check.details_url with
+    | Some u -> Printf.sprintf " (%s)" u
+    | None -> ""
+  in
+  let desc =
+    match c.Ci_check.description with
+    | Some d -> Printf.sprintf "\n  %s" d
+    | None -> ""
+  in
+  Printf.sprintf "- **%s**: %s%s%s%s" c.Ci_check.name c.Ci_check.conclusion id
+    url desc
+
 let render_turn_layer_ci ~(project_name : string) ?pr_number
     (checks : Ci_check.t list) : string =
   match checks with
   | [] -> "No CI failures."
   | _ ->
       let formatted =
-        List.map checks ~f:(fun (c : Ci_check.t) ->
-            let id =
-              match c.Ci_check.id with
-              | Some id -> Printf.sprintf " [check_id=%d]" id
-              | None -> ""
-            in
-            let url =
-              match c.Ci_check.details_url with
-              | Some u -> Printf.sprintf " (%s)" u
-              | None -> ""
-            in
-            let desc =
-              match c.Ci_check.description with
-              | Some d -> Printf.sprintf "\n  %s" d
-              | None -> ""
-            in
-            Printf.sprintf "- **%s**: %s%s%s%s" c.Ci_check.name
-              c.Ci_check.conclusion id url desc)
-        |> String.concat ~sep:"\n"
+        List.map checks ~f:render_ci_check_line |> String.concat ~sep:"\n"
       in
       let pr_ctx =
         match pr_number with
@@ -1159,11 +1165,139 @@ let render_turn_layer_ci ~(project_name : string) ?pr_number
              them for you — do not run `git push`."
             pr_ctx formatted)
 
+let ci_detailed_footer =
+  "Diagnostics for each check are recorded at the paths above — read \
+   summary.md first, grep log.txt for more. Do NOT re-fetch check results or \
+   logs with gh."
+
+let render_ci_detail_lines (detail : ci_check_detail) =
+  let teaser =
+    match detail.enrichment.Ci_log_digest.teaser with
+    | Some teaser when not (String.is_empty (String.strip teaser)) ->
+        Printf.sprintf "\n  error: %s" teaser
+    | Some _ | None -> ""
+  in
+  Printf.sprintf
+    "%s\n  details: %s/summary.md (full log: log.txt, metadata: check.json)"
+    teaser detail.artifact_dir
+
+let order_ci_detail_items items =
+  let indexed = List.mapi items ~f:(fun index item -> (index, item)) in
+  let with_details, without_details =
+    List.partition_map indexed ~f:(fun (index, ((_, detail) as item)) ->
+        match detail with
+        | Some detail -> First (index, item, detail)
+        | None -> Second (index, item))
+  in
+  let sorted_with_details =
+    List.sort with_details
+      ~compare:(fun (idx_a, _, detail_a) (idx_b, _, detail_b) ->
+        match
+          Int.descending detail_a.enrichment.Ci_log_digest.signal
+            detail_b.enrichment.Ci_log_digest.signal
+        with
+        | 0 -> Int.compare idx_a idx_b
+        | cmp -> cmp)
+  in
+  List.map sorted_with_details ~f:(fun (_, item, _) -> item)
+  @ List.map without_details ~f:(fun (_, item) -> item)
+
+let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
+    (items : (Ci_check.t * ci_check_detail option) list) : string =
+  let has_above_threshold =
+    List.exists items ~f:(function
+      | _, Some detail ->
+          detail.enrichment.Ci_log_digest.signal
+          >= Ci_log_digest.collapse_signal_threshold
+      | _, None -> false)
+  in
+  let should_collapse = function
+    | _, Some detail ->
+        has_above_threshold
+        && detail.enrichment.Ci_log_digest.signal
+           < Ci_log_digest.collapse_signal_threshold
+    | _, None -> false
+  in
+  let ordered = order_ci_detail_items items in
+  let visible, collapsed =
+    List.partition_tf ordered ~f:(Fn.non should_collapse)
+  in
+  let formatted_checks =
+    match visible with
+    | [] -> "No CI failures."
+    | _ ->
+        let rendered =
+          List.map visible ~f:(fun (check, detail) ->
+              render_ci_check_line check
+              ^
+              match detail with
+              | Some detail -> render_ci_detail_lines detail
+              | None -> "")
+        in
+        let collapsed_line =
+          match collapsed with
+          | [] -> []
+          | _ ->
+              let names =
+                List.map collapsed ~f:(fun (check, _) -> check.Ci_check.name)
+                |> String.concat ~sep:", "
+              in
+              [
+                Printf.sprintf
+                  "Also failing (low diagnostic signal): %s — details recorded \
+                   under their artifact directories."
+                  names;
+              ]
+        in
+        String.concat (rendered @ collapsed_line) ~sep:"\n"
+  in
+  let pr_ctx =
+    match pr_number with
+    | Some n -> Printf.sprintf "\n\nPR: #%d\n" (Pr_number.to_int n)
+    | None -> ""
+  in
+  let vars =
+    [
+      ("project_name", project_name);
+      ("checks", formatted_checks);
+      ("footer", ci_detailed_footer);
+      ("count", Int.to_string (List.length items));
+      ( "detail_count",
+        items
+        |> List.count ~f:(fun (_, detail) -> Option.is_some detail)
+        |> Int.to_string );
+      ( "collapsed_count",
+        collapsed
+        |> List.count ~f:(fun (_, detail) -> Option.is_some detail)
+        |> Int.to_string );
+      ( "pr_number",
+        match pr_number with
+        | Some n -> Int.to_string (Pr_number.to_int n)
+        | None -> "" );
+    ]
+  in
+  render_with_override ~project_name ~name:"turn_ci" ~vars ~default:(fun () ->
+      Printf.sprintf
+        "# CI Failures%s\n\n\
+         The following CI checks failed:\n\n\
+         %s\n\n\
+         %s\n\n\
+         After making your changes, commit them. The supervisor will push them \
+         for you — do not run `git push`."
+        pr_ctx formatted_checks ci_detailed_footer)
+
 let render_ci_failure_prompt ~(project_name : string) ?agents_md ?pr_number
     ?patch ?gameplan ?base_branch (checks : Ci_check.t list) : string =
   layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_ci ~project_name ?pr_number checks
+
+let render_ci_failure_prompt_detailed ~(project_name : string) ?agents_md
+    ?pr_number ?patch ?gameplan ?base_branch
+    (items : (Ci_check.t * ci_check_detail option) list) : string =
+  layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
+    ?agents_md ()
+  ^ render_turn_layer_ci_detailed ~project_name ?pr_number items
 
 let render_turn_layer_ci_unknown ~(project_name : string) ?pr_number () =
   let pr_ctx =
@@ -2117,6 +2251,106 @@ let%test "ci failure prompt renders check ids when present" =
   in
   String.is_substring ci_prompt ~substring:"[check_id=12345]"
   && String.is_substring ci_prompt ~substring:"https://example.test/check"
+
+let test_ci_check ?id ?details_url ?description name conclusion =
+  Ci_check.{ name; conclusion; details_url; description; started_at = None; id }
+
+let test_ci_detail ?teaser ~artifact_dir ~signal () =
+  {
+    artifact_dir;
+    enrichment = Ci_log_digest.{ summary_md = ""; teaser; signal };
+  }
+
+let prompt_index prompt needle = String.substr_index prompt ~pattern:needle
+
+let%test
+    "render_turn_layer_ci_detailed cites artifact dirs and teasers, orders by \
+     signal, and instructs no gh re-fetch" =
+  let high = test_ci_check "typecheck" "FAILURE" in
+  let low = test_ci_check "lint" "FAILURE" in
+  let prompt =
+    render_turn_layer_ci_detailed ~project_name:"onton"
+      [
+        ( low,
+          Some
+            (test_ci_detail ~artifact_dir:"artifacts/4/ci/run-10" ~signal:300
+               ~teaser:"lint failed" ()) );
+        ( high,
+          Some
+            (test_ci_detail ~artifact_dir:"artifacts/4/ci/run-11" ~signal:500
+               ~teaser:"type error" ()) );
+      ]
+  in
+  let high_pos = prompt_index prompt "- **typecheck**" in
+  let low_pos = prompt_index prompt "- **lint**" in
+  Option.value_map high_pos ~default:false ~f:(fun high_i ->
+      Option.value_map low_pos ~default:false ~f:(fun low_i -> high_i < low_i))
+  && String.is_substring prompt ~substring:"error: type error"
+  && String.is_substring prompt
+       ~substring:
+         "artifacts/4/ci/run-11/summary.md (full log: log.txt, metadata: \
+          check.json)"
+  && String.is_substring prompt
+       ~substring:"Do NOT re-fetch check results or logs with gh."
+
+let%test
+    "render_turn_layer_ci_detailed collapses low-signal checks only when a \
+     high-signal check exists" =
+  let high = test_ci_check "unit" "FAILURE" in
+  let low = test_ci_check "all-jobs-succeed" "FAILURE" in
+  let without_high =
+    render_turn_layer_ci_detailed ~project_name:"onton"
+      [
+        ( low,
+          Some
+            (test_ci_detail ~artifact_dir:"artifacts/4/ci/run-low" ~signal:1 ())
+        );
+      ]
+  in
+  let with_high =
+    render_turn_layer_ci_detailed ~project_name:"onton"
+      [
+        ( low,
+          Some
+            (test_ci_detail ~artifact_dir:"artifacts/4/ci/run-low" ~signal:1 ())
+        );
+        ( high,
+          Some
+            (test_ci_detail ~artifact_dir:"artifacts/4/ci/run-high"
+               ~signal:Ci_log_digest.collapse_signal_threshold ()) );
+      ]
+  in
+  String.is_substring without_high ~substring:"- **all-jobs-succeed**"
+  && String.is_substring without_high
+       ~substring:"artifacts/4/ci/run-low/summary.md"
+  && String.is_substring with_high
+       ~substring:
+         "Also failing (low diagnostic signal): all-jobs-succeed — details \
+          recorded under their artifact directories."
+  && not
+       (String.is_substring with_high
+          ~substring:"artifacts/4/ci/run-low/summary.md")
+
+let ci_check_lines rendered =
+  rendered |> String.split_lines
+  |> List.filter ~f:(String.is_prefix ~prefix:"- **")
+
+let%test
+    "render_turn_layer_ci_detailed with all-None details preserves the \
+     metadata-only line format" =
+  let checks =
+    [
+      test_ci_check ~id:123 ~details_url:"https://example.test/check"
+        ~description:"compiler failed" "build" "FAILURE";
+      test_ci_check "lint" "FAILURE";
+    ]
+  in
+  let legacy = render_turn_layer_ci ~project_name:"onton" checks in
+  let detailed =
+    render_turn_layer_ci_detailed ~project_name:"onton"
+      (List.map checks ~f:(fun check -> (check, None)))
+  in
+  List.equal String.equal (ci_check_lines legacy) (ci_check_lines detailed)
 
 let%test "human and pr_body prompts do not include the gameplan layer" =
   let human_prompt =
