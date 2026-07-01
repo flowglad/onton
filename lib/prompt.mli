@@ -93,6 +93,17 @@ val render_turn_layer_review :
 val render_turn_layer_ci :
   project_name:string -> ?pr_number:Pr_number.t -> Ci_check.t list -> string
 
+type ci_check_detail = {
+  artifact_dir : string;
+  enrichment : Ci_log_digest.enrichment;
+}
+
+val render_turn_layer_ci_detailed :
+  project_name:string ->
+  ?pr_number:Pr_number.t ->
+  (Ci_check.t * ci_check_detail option) list ->
+  string
+
 val render_turn_layer_ci_unknown :
   project_name:string -> ?pr_number:Pr_number.t -> unit -> string
 
@@ -189,6 +200,16 @@ val render_ci_failure_prompt :
   ?gameplan:Gameplan.t ->
   ?base_branch:string ->
   Ci_check.t list ->
+  string
+
+val render_ci_failure_prompt_detailed :
+  project_name:string ->
+  ?agents_md:string ->
+  ?pr_number:Pr_number.t ->
+  ?patch:Patch.t ->
+  ?gameplan:Gameplan.t ->
+  ?base_branch:string ->
+  (Ci_check.t * ci_check_detail option) list ->
   string
 
 val render_ci_failure_unknown_prompt :
