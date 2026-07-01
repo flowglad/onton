@@ -117,10 +117,6 @@ val parse_actions_jobs_response :
     Job database ids become [Ci_check.id], and [html_url] becomes [details_url].
     Pure helper exposed for regression tests. *)
 
-val is_method_not_allowed : error -> bool
-(** True only for the REST 405 response GitHub returns when a merge method is
-    disabled for the repository. *)
-
 val is_merge_queue_required_error : error -> bool
 (** True only for the REST 405 response GitHub returns when the branch requires
     native merge queue use. *)
