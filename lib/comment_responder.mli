@@ -28,9 +28,9 @@ val respond_after_session :
 (** Decode every file in [artifact_dir] ([<comment_id>.md], response text only;
     see {!Project_store.comment_responses_dir}), join against [delivered], and
     for each match call [reply] then [resolve] (skipped when the comment has no
-    thread id). Unrecognized filenames, blank files, response files for
-    undelivered ids, synthetic (negative) comment ids, and a missing directory
-    are all logged and skipped.
+    thread id). Unrecognized filenames, synthetic/non-positive ids, blank files,
+    response files for undelivered ids, and a missing directory are all logged
+    and skipped.
 
     A delivered comment whose thread already ends with onton's own reply
     ({!Onton_core.Comment_responses.is_resolve_retry} against [viewer_login])

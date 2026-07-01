@@ -46,10 +46,10 @@ val is_resolve_retry : viewer_login:string option -> Types.Comment.t -> bool
     reply rather than closed to silence. *)
 
 val entry_of_file : filename:string -> contents:string -> entry option
-(** Decode one response file. The basename's stem (extension stripped) must be
-    an integer — that is the comment id; [contents] is stripped and must be
-    nonblank. Returns [None] for unrecognized filenames or blank files. Never
-    raises. *)
+(** Decode one response file. The basename's stem (extension stripped) must be a
+    positive, forge-addressable integer — that is the comment id; [contents] is
+    stripped and must be nonblank. Returns [None] for unrecognized filenames,
+    synthetic/non-positive ids, or blank files. Never raises. *)
 
 val plan : delivered:Types.Comment.t list -> entries:entry list -> outcome
 (** Join decoded entries against the comments delivered to the session. When

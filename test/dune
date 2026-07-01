@@ -4,6 +4,11 @@
  (libraries onton onton_core))
 
 (test
+ (name test_project_store)
+ (modules test_project_store)
+ (libraries onton unix))
+
+(test
  (name test_automerge_deadline_properties)
  (modules test_automerge_deadline_properties)
  (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner)

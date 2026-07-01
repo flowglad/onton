@@ -1923,6 +1923,21 @@ struct
                                           (Stdlib.Filename.concat wt_path
                                              "AGENTS.md")
                                       in
+                                      let review_artifact_dir =
+                                        match payload with
+                                        | Patch_decision.Review_payload _ ->
+                                            Some
+                                              (Project_store
+                                               .comment_responses_dir
+                                                 ~project_name ~patch_id)
+                                        | Patch_decision.Ci_payload _
+                                        | Patch_decision.Findings_payload _
+                                        | Patch_decision.Human_payload _
+                                        | Patch_decision.Pr_body_payload
+                                        | Patch_decision.Merge_conflict_payload
+                                          ->
+                                            None
+                                      in
                                       log_event runtime ~patch_id
                                         (match payload with
                                         | Patch_decision.Review_payload
@@ -1986,9 +2001,10 @@ struct
                                                     ps.Pr_state.head_oid)
                                               in
                                               let artifact_dir =
-                                                Project_store
-                                                .comment_responses_dir
-                                                  ~project_name ~patch_id
+                                                match review_artifact_dir with
+                                                | Some artifact_dir ->
+                                                    artifact_dir
+                                                | None -> assert false
                                               in
                                               (* Clear stale response files
                                              from a prior Review session. The
@@ -2341,9 +2357,12 @@ struct
                                                     ~viewer_login:
                                                       (Forge.viewer_login ())
                                                     ~artifact_dir:
-                                                      (Project_store
-                                                       .comment_responses_dir
-                                                         ~project_name ~patch_id)
+                                                      (match
+                                                         review_artifact_dir
+                                                       with
+                                                      | Some artifact_dir ->
+                                                          artifact_dir
+                                                      | None -> assert false)
                                                     ~delivered:comments ()
                                                 with
                                                 | `Converged -> result

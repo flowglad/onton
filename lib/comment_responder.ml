@@ -96,6 +96,10 @@ let respond_after_session ~reply ~resolve ~log ~viewer_login ~artifact_dir
               (List.map
                  (fun id -> Int.to_string (Types.Comment_id.to_int id))
                  ids))));
+  (* Plain unanswered comments deliberately count as non-converged from the
+     first Review session. A missing response file means the delivered thread
+     remains unresolved and should re-deliver; repeated cycles with any such
+     gaps are capped by the caller's review-unresolved counter. *)
   List.iter
     (fun id ->
       let raw_id = Types.Comment_id.to_int id in

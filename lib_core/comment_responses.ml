@@ -17,20 +17,19 @@ type action = {
 type outcome = { actions : action list; unanswered : Comment_id.t list }
 [@@deriving show, eq, sexp_of, compare]
 
-(* The filename stem is the comment id: "12345.md" -> 12345. A single
-   extension is stripped; "12345" bare works too. Anything whose stem is not
-   all digits (with optional leading '-') is rejected — the caller logs those
-   filenames as unrecognized. *)
+(* The filename stem is the forge-addressable comment id: "12345.md" ->
+   12345. A single extension is stripped; "12345" bare works too. Anything
+   non-positive or whose stem is not all digits is rejected — the caller logs
+   those filenames as unrecognized. *)
 let comment_id_of_filename filename =
   let base = Stdlib.Filename.basename filename in
   let stem = Stdlib.Filename.remove_extension base in
   let is_digits s =
     (not (String.is_empty s)) && String.for_all s ~f:Char.is_digit
   in
-  let unsigned =
-    match String.chop_prefix stem ~prefix:"-" with Some s -> s | None -> stem
-  in
-  if is_digits unsigned then Stdlib.int_of_string_opt stem else None
+  match Stdlib.int_of_string_opt stem with
+  | Some comment_id when comment_id > 0 && is_digits stem -> Some comment_id
+  | _ -> None
 
 let entry_of_file ~filename ~contents : entry option =
   match comment_id_of_filename filename with
@@ -152,10 +151,9 @@ let%test "entry_of_file: absolute path uses basename" =
   | Some { comment_id = 42; response = "done" } -> true
   | _ -> false
 
-let%test "entry_of_file: negative (synthetic) ids parse" =
-  match entry_of_file ~filename:"-3.md" ~contents:"r" with
-  | Some { comment_id = -3; _ } -> true
-  | _ -> false
+let%test "entry_of_file: synthetic/non-positive ids rejected" =
+  Option.is_none (entry_of_file ~filename:"-3.md" ~contents:"r")
+  && Option.is_none (entry_of_file ~filename:"0.md" ~contents:"r")
 
 let%test "entry_of_file: non-numeric stem rejected" =
   Option.is_none (entry_of_file ~filename:"notes.md" ~contents:"r")
