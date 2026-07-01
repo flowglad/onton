@@ -76,19 +76,24 @@ let prop_literal_error_lines_preserved =
   QCheck2.Test.make
     ~name:"literal ::error lines are preserved in the summary when under cap"
     gen_error_lines_log (fun (log, errors) ->
-      let e = Ci_log_digest.digest { annotations = []; log = Some log } in
-      e.signal > 0
-      && List.for_all errors ~f:(fun line -> contains e.summary_md line)
-      &&
-      match e.teaser with
-      | Some teaser -> contains teaser "::error" || not (String.is_empty teaser)
-      | None -> false)
+      try
+        let e = Ci_log_digest.digest { annotations = []; log = Some log } in
+        e.signal > 0
+        && List.for_all errors ~f:(fun line -> contains e.summary_md line)
+        &&
+        match e.teaser with
+        | Some teaser ->
+            contains teaser "::error" || not (String.is_empty teaser)
+        | None -> false
+      with _ -> false)
 
 let prop_marker_free_has_no_signal_or_teaser =
   QCheck2.Test.make ~name:"marker-free logs produce zero signal and no teaser"
     gen_marker_free_log (fun log ->
-      let e = Ci_log_digest.digest { annotations = []; log = Some log } in
-      Int.equal e.signal 0 && Option.is_none e.teaser)
+      try
+        let e = Ci_log_digest.digest { annotations = []; log = Some log } in
+        Int.equal e.signal 0 && Option.is_none e.teaser
+      with _ -> false)
 
 let prop_strip_log_idempotent =
   QCheck2.Test.make ~count:500 ~name:"strip_log is idempotent"
@@ -108,6 +113,14 @@ let test_strip_log_removes_timestamps_and_ansi () =
   let input = "2026-07-01T19:33:24.1348805Z \027[31mred\027[0m\nplain" in
   let stripped = Ci_log_digest.strip_log input in
   assert (String.equal stripped "red\nplain");
+  assert (String.equal (Ci_log_digest.strip_log stripped) stripped)
+
+let test_strip_log_normalizes_crlf () =
+  let input =
+    "2026-07-01T19:33:24.1348805Z first\r\nsecond\rthird\r\r\nfourth"
+  in
+  let stripped = Ci_log_digest.strip_log input in
+  assert (String.equal stripped "first\nsecond\nthird\n\nfourth");
   assert (String.equal (Ci_log_digest.strip_log stripped) stripped)
 
 let test_lowerability_fixture () =
@@ -146,12 +159,28 @@ let test_no_marker_fixture () =
   assert_contains "no-marker summary" e.summary_md
     "Deploy failed while waiting for health check"
 
+let test_truncation_is_noted () =
+  let message = String.make (Ci_log_digest.summary_total_cap_bytes * 2) 'a' in
+  let annotation =
+    Ci_log_digest.
+      { path = Some "src/large.ts"; line = Some 1; level = "failure"; message }
+  in
+  let e =
+    Ci_log_digest.digest
+      { annotations = [ annotation ]; log = Some "::error ::later section" }
+  in
+  assert (String.length e.summary_md <= Ci_log_digest.summary_total_cap_bytes);
+  assert_contains "truncation summary" e.summary_md
+    "diagnostic summary truncated"
+
 let () =
   test_strip_log_removes_timestamps_and_ansi ();
+  test_strip_log_normalizes_crlf ();
   test_lowerability_fixture ();
   test_bun_fixture ();
   test_mid_job_fixture ();
   test_no_marker_fixture ();
+  test_truncation_is_noted ();
   let tests =
     [
       prop_digest_total_and_capped;

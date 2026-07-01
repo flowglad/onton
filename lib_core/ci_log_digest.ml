@@ -86,8 +86,26 @@ let strip_ansi line =
   in
   loop 0
 
+let normalize_newlines s =
+  let len = String.length s in
+  let buf = Buffer.create len in
+  let rec loop i =
+    if i >= len then Buffer.contents buf
+    else
+      match String.get s i with
+      | '\r' ->
+          Buffer.add_char buf '\n';
+          if i + 1 < len && Char.equal (String.get s (i + 1)) '\n' then
+            loop (i + 2)
+          else loop (i + 1)
+      | c ->
+          Buffer.add_char buf c;
+          loop (i + 1)
+  in
+  loop 0
+
 let strip_log log =
-  String.split log ~on:'\n'
+  normalize_newlines log |> String.split_lines
   |> List.map ~f:(fun line ->
       line |> strip_ansi |> drop_timestamp_prefix |> strip_ansi)
   |> String.concat ~sep:"\n"
@@ -151,23 +169,31 @@ let section title lines =
 let append_capped pieces =
   let truncation_note = "\n\n[diagnostic summary truncated]\n" in
   let note_len = String.length truncation_note in
+  let concat_rev acc = String.concat (List.rev acc) ~sep:"" in
+  let with_truncation_note output =
+    let len = String.length output in
+    if len + note_len <= summary_total_cap_bytes then output ^ truncation_note
+    else if summary_total_cap_bytes <= note_len then
+      String.prefix truncation_note summary_total_cap_bytes
+    else
+      String.prefix output (summary_total_cap_bytes - note_len)
+      ^ truncation_note
+  in
   let rec loop acc used = function
-    | [] -> String.concat (List.rev acc) ~sep:""
+    | [] -> concat_rev acc
     | piece :: rest ->
         let len = String.length piece in
-        if used + len <= summary_total_cap_bytes then
+        if used + len < summary_total_cap_bytes then
           loop (piece :: acc) (used + len) rest
+        else if used + len = summary_total_cap_bytes then
+          let output = concat_rev (piece :: acc) in
+          if List.is_empty rest then output else with_truncation_note output
         else
           let remaining = summary_total_cap_bytes - used in
-          if remaining <= 0 then String.concat (List.rev acc) ~sep:""
-          else if remaining <= note_len then
-            let clipped = String.prefix truncation_note remaining in
-            String.concat (List.rev (clipped :: acc)) ~sep:""
+          if remaining <= 0 then with_truncation_note (concat_rev acc)
           else
-            let prefix_len = remaining - note_len in
-            let clipped = String.prefix piece prefix_len ^ truncation_note in
-            ignore rest;
-            String.concat (List.rev (clipped :: acc)) ~sep:""
+            let partial = String.prefix piece remaining in
+            with_truncation_note (concat_rev (partial :: acc))
   in
   loop [] 0 pieces
 
