@@ -100,13 +100,13 @@ let reset_artifact_dir path =
   | names ->
       Array.iter names ~f:(fun name ->
           let entry_path = Stdlib.Filename.concat path name in
-          try
-            if not (Stdlib.Sys.is_directory entry_path) then
-              Unix.unlink entry_path
-          with
-          | Sys_error _ -> ()
-          | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
-          | Unix.Unix_error (Unix.EISDIR, _, _) -> ())
+          let is_dir =
+            try Stdlib.Sys.is_directory entry_path with Sys_error _ -> true
+          in
+          if not is_dir then
+            try Unix.unlink entry_path with
+            | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+            | Unix.Unix_error (Unix.EISDIR, _, _) -> ())
 
 type stored_config = {
   project_name : string;
