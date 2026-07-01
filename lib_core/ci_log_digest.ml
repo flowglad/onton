@@ -84,7 +84,7 @@ let strip_ansi line =
   loop 0
 
 let strip_log log =
-  String.split_lines log
+  String.split log ~on:'\n'
   |> List.map ~f:(fun line ->
       line |> strip_ansi |> drop_timestamp_prefix |> strip_ansi)
   |> String.concat ~sep:"\n"

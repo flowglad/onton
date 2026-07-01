@@ -15,6 +15,20 @@ let read_fixture name =
 
 let contains haystack needle = String.is_substring haystack ~substring:needle
 
+let printable_counterexample s =
+  let render chars =
+    chars
+    |> List.map ~f:(fun c ->
+        let code = Char.to_int c in
+        if code >= 32 && code <= 126 then String.of_char c
+        else Printf.sprintf "\\x%02x" code)
+    |> String.concat ~sep:""
+  in
+  let chars = String.to_list s in
+  Printf.sprintf "len=%d head=%S tail=%S" (String.length s)
+    (chars |> Fn.flip List.take 160 |> render)
+    (chars |> List.rev |> Fn.flip List.take 160 |> List.rev |> render)
+
 let gen_arbitrary_bytes =
   QCheck2.Gen.(
     string_size
@@ -78,7 +92,7 @@ let prop_marker_free_has_no_signal_or_teaser =
 
 let prop_strip_log_idempotent =
   QCheck2.Test.make ~count:500 ~name:"strip_log is idempotent"
-    gen_arbitrary_bytes (fun log ->
+    ~print:printable_counterexample gen_arbitrary_bytes (fun log ->
       let stripped = Ci_log_digest.strip_log log in
       String.equal (Ci_log_digest.strip_log stripped) stripped)
 
