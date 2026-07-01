@@ -1,0 +1,81 @@
+@pkg test:unit: src/routes.test.ts:
+@pkg test:unit: 16 | const user = await createUser()
+@pkg test:unit: 17 | expect(user.email).toBe("a@example.com")
+@pkg test:unit: 18 | expect(user.id).toBeString()
+@pkg test:unit:                  ^
+@pkg test:unit: TypeError: expected user.id to be a string
+@pkg test:unit: ::error file=packages/api/src/routes.test.ts,line=18,col=7,title=TypeError::expected user.id to be a string
+@pkg test:unit: (fail) routes > creates user
+@pkg test:unit: 1 pass
+@pkg test:unit: 1 fail
+passing output after failure 01
+passing output after failure 02
+passing output after failure 03
+passing output after failure 04
+passing output after failure 05
+passing output after failure 06
+passing output after failure 07
+passing output after failure 08
+passing output after failure 09
+passing output after failure 10
+passing output after failure 11
+passing output after failure 12
+passing output after failure 13
+passing output after failure 14
+passing output after failure 15
+passing output after failure 16
+passing output after failure 17
+passing output after failure 18
+passing output after failure 19
+passing output after failure 20
+passing output after failure 21
+passing output after failure 22
+passing output after failure 23
+passing output after failure 24
+passing output after failure 25
+passing output after failure 26
+passing output after failure 27
+passing output after failure 28
+passing output after failure 29
+passing output after failure 30
+passing output after failure 31
+passing output after failure 32
+passing output after failure 33
+passing output after failure 34
+passing output after failure 35
+passing output after failure 36
+passing output after failure 37
+passing output after failure 38
+passing output after failure 39
+passing output after failure 40
+passing output after failure 41
+passing output after failure 42
+passing output after failure 43
+passing output after failure 44
+passing output after failure 45
+passing output after failure 46
+passing output after failure 47
+passing output after failure 48
+passing output after failure 49
+passing output after failure 50
+passing output after failure 51
+passing output after failure 52
+passing output after failure 53
+passing output after failure 54
+passing output after failure 55
+passing output after failure 56
+passing output after failure 57
+passing output after failure 58
+passing output after failure 59
+passing output after failure 60
+passing output after failure 61
+passing output after failure 62
+passing output after failure 63
+passing output after failure 64
+passing output after failure 65
+passing output after failure 66
+passing output after failure 67
+passing output after failure 68
+passing output after failure 69
+passing output after failure 70
+##[error]Process completed with exit code 1.

@@ -1,0 +1,9 @@
+2026-07-01T19:33:20.1348805Z ##[group]Run pnpm ts-lowerability
+2026-07-01T19:33:21.1348805Z Checking packages/api
+2026-07-01T19:33:22.1348805Z lowerability: validating exported types
+2026-07-01T19:33:23.1348805Z src/lowerability.ts:42:13 - error TS2322: Type 'number' is not assignable to type 'string'.
+2026-07-01T19:33:24.1348805Z   const lowerable: string = computedCount
+2026-07-01T19:33:25.1348805Z             \027[31m~~~~~~~~~\027[0m
+2026-07-01T19:33:26.1348805Z === FAIL src/lowerability.ts:42:13 type lowerability
+2026-07-01T19:33:27.1348805Z ##[endgroup]
+2026-07-01T19:33:28.1348805Z ##[error]Process completed with exit code 1.
