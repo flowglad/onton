@@ -524,6 +524,8 @@ let () =
          let orch, _patches, gameplan, pid = bootstrap_one () in
          let mid = Message_id.of_string "ao-surface-msg" in
          let orch = Orchestrator.set_main_branch orch main in
+         (* Compile-time check of the public [Gameplan.add_patch] contract:
+            [Ok] carries an immutable [(Gameplan.t * Patch.t)] tuple. *)
          let gameplan_with_added, added_patch =
            match
              Gameplan.add_patch gameplan ~title:"runtime patch"
@@ -538,10 +540,11 @@ let () =
              (List.exists gameplan_with_added.Gameplan.patches ~f:(fun p ->
                   Patch_id.equal p.Patch.id added_patch.Patch.id))
          then QCheck2.Test.fail_reportf "added patch missing from gameplan";
-         (* [add_planned_patch] registers the PR-less agent and graph edges; the
-            patch record itself remains owned by [Gameplan.t]. Keep the
-            generated id/deps as the expected immutable contract and assert the
-            orchestrator graph reflects them exactly. *)
+         (* [Gameplan.t] and [Patch.t] are immutable records. [add_planned_patch]
+            registers the PR-less agent and graph edges; the patch record itself
+            remains owned by [Gameplan.t] and cannot be mutated in place. Keep
+            the generated id/deps as the expected immutable contract and assert
+            the orchestrator graph reflects them exactly. *)
          let added_patch_id = added_patch.Patch.id in
          let expected_deps = added_patch.Patch.dependencies in
          let orch =
