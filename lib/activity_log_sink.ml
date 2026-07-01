@@ -78,6 +78,10 @@ let needs_intervention fields =
       (Option.value
          (int_member fields "pr_body_artifact_miss_count")
          ~default:0)
+    ~review_unresolved_cycle_count:
+      (Option.value
+         (int_member fields "review_unresolved_cycle_count")
+         ~default:0)
 
 let display_status_of_agent_json ~main_branch json =
   let fields = assoc_fields json in

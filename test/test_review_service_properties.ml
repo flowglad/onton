@@ -8,9 +8,9 @@ open Onton_core
 
     AGENTS.md mandates that pure modules be total — every parser must return a
     [Result] over arbitrary input rather than raising. The properties below fuzz
-    the four wire-shaped entry points ([parse_findings_response_string],
-    [parse_resolve_response_string], [parse_error_message],
-    [parse_wontfix_artifact]) plus the small enum coders. *)
+    the wire-shaped entry points ([parse_findings_response_string],
+    [parse_resolve_response_string], [parse_error_message]) plus
+    [wontfix_filename_of_id] and the small enum coders. *)
 
 (* ─────────────────────────────────────────────────────────────────────────
    Generators
@@ -152,9 +152,27 @@ let prop_error_total =
   totality ~name:"parse_error_message total" (fun s ->
       Review_service.parse_error_message s)
 
-let prop_wontfix_total =
-  totality ~name:"parse_wontfix_artifact total" (fun s ->
-      Review_service.parse_wontfix_artifact s)
+let prop_wontfix_filename_total_and_safe =
+  QCheck2.Test.make
+    ~name:"wontfix_filename_of_id total, path-safe, .md-suffixed" ~count:500
+    QCheck2.Gen.string (fun id ->
+      let filename = Review_service.wontfix_filename_of_id id in
+      (not (String.contains filename '/'))
+      && (not (String.contains filename '\\'))
+      && String.is_suffix filename ~suffix:".md"
+      && String.for_all filename ~f:(fun c ->
+          Char.is_alphanum c || Char.equal c '.' || Char.equal c '-'
+          || Char.equal c '_'))
+
+(* Injective up to the slug: ids that differ only in slugged-away characters
+   may collide (handled by the resolver), but the mapping must be a pure
+   function — equal ids always produce equal filenames. *)
+let prop_wontfix_filename_deterministic =
+  QCheck2.Test.make ~name:"wontfix_filename_of_id deterministic" ~count:200
+    QCheck2.Gen.string (fun id ->
+      String.equal
+        (Review_service.wontfix_filename_of_id id)
+        (Review_service.wontfix_filename_of_id id))
 
 (* All findings the parser keeps must round-trip the severity/outcome enums. *)
 let prop_findings_kept_have_known_enums =
@@ -357,22 +375,16 @@ let prop_parse_resolve_response_string_inline =
       let _ = Review_service.parse_resolve_response_string s in
       true)
 
-let prop_parse_wontfix_artifact_inline =
-  QCheck2.Test.make ~name:"parse_wontfix_artifact inline totality" ~count:200
-    QCheck2.Gen.string (fun s ->
-      let _ = Review_service.parse_wontfix_artifact s in
-      true)
-
 let () =
   let suite =
     [
       prop_findings_total;
       prop_resolve_total;
       prop_error_total;
-      prop_wontfix_total;
+      prop_wontfix_filename_total_and_safe;
+      prop_wontfix_filename_deterministic;
       prop_parse_error_message_inline;
       prop_parse_resolve_response_string_inline;
-      prop_parse_wontfix_artifact_inline;
       prop_findings_kept_have_known_enums;
       prop_severity_round_trip;
       prop_outcome_kind_round_trip;

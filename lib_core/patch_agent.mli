@@ -72,6 +72,17 @@ type t = private {
           [needs_intervention] at [>= 2]. Zero in fresh snapshots and older
           snapshots that didn't persist the field. Reset by
           [reset_intervention_state] and by [Respond_ok] for [Pr_body]. *)
+  review_unresolved_cycle_count : int;
+      (** Consecutive Review_comments sessions that completed cleanly
+          ([Respond_ok]-shaped) but did not reply-and-resolve every delivered
+          comment: missing response file, failed reply/resolve forge call, or an
+          unaddressable comment (synthetic id, no thread id). The loop's only
+          terminator — the agent cannot resolve threads itself, so a comment it
+          never responds to would otherwise re-enqueue a session every poll
+          forever. Contributes to [needs_intervention] at [>= 2]. Zero in fresh
+          and older snapshots. Reset by a fully-converged review cycle
+          ([Respond_ok] for [Review_comments]) and by
+          [reset_intervention_state]. *)
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
@@ -200,6 +211,7 @@ val intervention_reason_of_fields :
   push_failure_count:int ->
   rebase_failure_count:int ->
   pr_body_artifact_miss_count:int ->
+  review_unresolved_cycle_count:int ->
   string option
 (** Raw-field form of {!intervention_reason}. This is the canonical pure
     decision for callers that reconstruct agent status from persisted telemetry
@@ -216,7 +228,8 @@ val needs_intervention : t -> bool
       [(not has_pr) && start_attempts_without_pr >= 2],
       [conflict_noop_count >= 2], [no_commits_push_count >= 2],
       [context_exhaustion_count >= 2], [push_failure_count >= 3],
-      [rebase_failure_count >= 2], [pr_body_artifact_miss_count >= 2]. *)
+      [rebase_failure_count >= 2], [pr_body_artifact_miss_count >= 2],
+      [review_unresolved_cycle_count >= 2]. *)
 
 val needs_intervention_of_fields :
   merged:bool ->
@@ -232,6 +245,7 @@ val needs_intervention_of_fields :
   push_failure_count:int ->
   rebase_failure_count:int ->
   pr_body_artifact_miss_count:int ->
+  review_unresolved_cycle_count:int ->
   bool
 (** [Option.is_some (intervention_reason_of_fields ...)]. *)
 
@@ -436,6 +450,16 @@ val increment_pr_body_artifact_miss_count : t -> t
 val reset_pr_body_artifact_miss_count : t -> t
 (** Reset [pr_body_artifact_miss_count] to 0. *)
 
+val increment_review_unresolved_cycle_count : t -> t
+(** Record a Review_comments session that completed cleanly but left at least
+    one delivered comment without a posted reply-and-resolve. Called from
+    [Orchestrator.apply_respond_outcome] on [Respond_review_unresolved]. After 2
+    such consecutive cycles, [needs_intervention] triggers — the retry-once-
+    then-intervene contract shared with [pr_body_artifact_miss_count]. *)
+
+val reset_review_unresolved_cycle_count : t -> t
+(** Reset [review_unresolved_cycle_count] to 0. *)
+
 val set_checks_passing : t -> bool -> t
 (** Set the checks_passing flag from GitHub CI status. *)
 
@@ -639,6 +663,7 @@ val restore :
   is_draft:bool ->
   pr_body_delivered:bool ->
   pr_body_artifact_miss_count:int ->
+  ?review_unresolved_cycle_count:int ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->

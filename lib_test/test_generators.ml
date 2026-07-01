@@ -69,6 +69,7 @@ let gen_comment =
           commit_sha = None;
           original_commit_sha = None;
           outdated;
+          last_reply_author = None;
         })
 
 let gen_patch =

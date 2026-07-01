@@ -76,8 +76,19 @@ val render_turn_layer_review :
   project_name:string ->
   ?pr_number:Pr_number.t ->
   ?current_head_sha:string ->
+  ?viewer_login:string ->
+  artifact_dir:string ->
   Comment.t list ->
   string
+(** [artifact_dir] is the absolute [comment_responses/] directory the agent is
+    told to write per-comment response files to
+    ({!Project_store.comment_responses_dir}, one [<comment_id>.md] per comment).
+    The agent is not asked to reply or resolve itself; the supervisor replies to
+    and resolves every comment with a written response after it pushes the
+    session's commits. [viewer_login] (the forge token's account) marks comments
+    whose thread already ends with onton's own reply as
+    [response already posted] — those need no fresh response file, only a
+    resolve retry. *)
 
 val render_turn_layer_ci :
   project_name:string -> ?pr_number:Pr_number.t -> Ci_check.t list -> string
@@ -143,9 +154,11 @@ val render_review_prompt :
   ?agents_md:string ->
   ?pr_number:Pr_number.t ->
   ?current_head_sha:string ->
+  ?viewer_login:string ->
   ?patch:Patch.t ->
   ?gameplan:Gameplan.t ->
   ?base_branch:string ->
+  artifact_dir:string ->
   Comment.t list ->
   string
 
@@ -157,15 +170,16 @@ val render_findings_prompt :
   ?patch:Patch.t ->
   ?gameplan:Gameplan.t ->
   ?base_branch:string ->
-  artifact_path:string ->
+  artifact_dir:string ->
   Review_service.finding list ->
   string
 (** Findings session prompt. Renders each finding with its severity, anchor
-    (path:start_line-end_line), posting SHA, and body. Instructs the agent to
+    (path:start_line-end_line), posting SHA, per-finding [wontfix_file] name
+    ({!Review_service.wontfix_filename_of_id}), and body. Instructs the agent to
     address findings via code edits and, for any finding it cannot or should not
-    fix, write a JSON list of [{id, reason}] objects to [artifact_path]
-    ([findings_wontfix.json]). Findings not listed in the artifact are POSTed as
-    [addressed] to the originating review backend after the session. *)
+    fix, write the reason to [artifact_dir/<wontfix_file>]
+    ({!Project_store.findings_wontfix_dir}). Findings without a file are POSTed
+    as [addressed] to the originating review backend after the session. *)
 
 val render_ci_failure_prompt :
   project_name:string ->

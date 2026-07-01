@@ -189,14 +189,20 @@ let graphql_query =
           id
           isResolved
           isOutdated
-          # [comments(first: 1)] only returns the thread opener. If a caller
-          # ever needs per-reply SHAs, raise this limit and add pagination.
-          comments(first: 1) {
+          # The whole thread, oldest-first: the opener carries the comment's
+          # identity (databaseId, path, line, SHAs); later nodes are replies
+          # whose bodies get concatenated into the delivered comment so a
+          # re-delivered thread shows its conversation (reviewer follow-ups,
+          # onton's own earlier reply). Threads longer than 50 lose their
+          # newest replies — pathological, and identity must come from the
+          # opener so [last:] is not an option.
+          comments(first: 50) {
             nodes {
               databaseId
               body
               path
               line
+              author { login }
               commit { oid }
               originalCommit { oid }
             }
@@ -301,11 +307,15 @@ type commit_node = {
 type commits = { nodes : commit_node list [@yojson.default []] }
 [@@deriving of_yojson] [@@yojson.allow_extra_fields]
 
+type comment_author = { login : string option [@yojson.default None] }
+[@@deriving of_yojson] [@@yojson.allow_extra_fields]
+
 type comment_node = {
   database_id : int option; [@key "databaseId"] [@yojson.default None]
   body : string; [@yojson.default ""]
   path : string option; [@yojson.default None]
   line : int option; [@yojson.default None]
+  author : comment_author option; [@yojson.default None]
   commit : oid_obj option; [@yojson.default None]
   original_commit : oid_obj option;
       [@key "originalCommit"] [@yojson.default None]
@@ -562,7 +572,45 @@ let comment_of_node ~thread_id ~outdated (n : comment_node) : Types.Comment.t =
     commit_sha = Option.bind n.commit ~f:(fun o -> o.oid);
     original_commit_sha = Option.bind n.original_commit ~f:(fun o -> o.oid);
     outdated;
+    last_reply_author = None;
   }
+
+(* One [Comment.t] per thread. Identity (databaseId, path, line, SHAs) comes
+   from the opener — the REST reply endpoint requires the top-level comment
+   id, and the anchor fields describe the thread, not any one reply. Reply
+   bodies are concatenated with author attribution so a re-delivered thread
+   shows its conversation: reviewer follow-ups and onton's own earlier reply,
+   which is what tells the agent (and the supervisor's logs) that a previous
+   response already posted. [last_reply_author] carries the final reply's
+   login so the responder can detect resolve-retry threads (last word is the
+   viewer's own posted reply). *)
+let comment_of_thread ~thread_id ~outdated (nodes : comment_node list) :
+    Types.Comment.t option =
+  match nodes with
+  | [] -> None
+  | opener :: replies ->
+      let c = comment_of_node ~thread_id ~outdated opener in
+      let body =
+        match replies with
+        | [] -> c.Types.Comment.body
+        | _ ->
+            let rendered =
+              List.map replies ~f:(fun (r : comment_node) ->
+                  let who =
+                    match Option.bind r.author ~f:(fun a -> a.login) with
+                    | Some login -> "@" ^ login
+                    | None -> "(unknown)"
+                  in
+                  Printf.sprintf "%s replied:\n%s" who r.body)
+              |> String.concat ~sep:"\n\n"
+            in
+            c.Types.Comment.body ^ "\n\n" ^ rendered
+      in
+      let last_reply_author =
+        Option.bind (List.last replies) ~f:(fun (r : comment_node) ->
+            Option.bind r.author ~f:(fun a -> a.login))
+      in
+      Some { c with Types.Comment.body; last_reply_author }
 
 let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
     Pr_state.t =
@@ -610,16 +658,15 @@ let pr_state_of_pull_request ~owner ~merge_queue_required (pr : pull_request) :
       ~github_merge_state_status:pr.merge_state_status
   in
   let comments =
-    List.concat_map pr.review_threads.nodes ~f:(fun thread ->
-        if thread.is_resolved then []
+    List.filter_map pr.review_threads.nodes ~f:(fun thread ->
+        if thread.is_resolved then None
         else
           (* [isOutdated] is the authoritative signal from GitHub: the thread's
              anchored lines were changed by a later commit. Do not infer it from
              [commit] vs [originalCommit] — GitHub advances [commit] to whatever
              commit still contains the line, flagging false positives. *)
-          List.map thread.comments.nodes
-            ~f:
-              (comment_of_node ~thread_id:thread.id ~outdated:thread.is_outdated))
+          comment_of_thread ~thread_id:thread.id ~outdated:thread.is_outdated
+            thread.comments.nodes)
   in
   let unresolved_comment_count =
     List.count pr.review_threads.nodes ~f:(fun thread -> not thread.is_resolved)
@@ -737,6 +784,41 @@ let parse_dequeue_response body =
   match Yojson.Safe.from_string body with
   | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
   | json -> parse_dequeue_response_json json
+
+let parse_resolve_thread_response_json json =
+  match graphql_errors json with
+  | Some msgs -> Error (Graphql_error msgs)
+  | None -> (
+      match
+        Json.field "data" json
+        |> Option.bind ~f:(Json.field "resolveReviewThread")
+      with
+      | Some _ -> Ok ()
+      | None ->
+          Error
+            (Json_parse_error "resolveReviewThread response missing payload"))
+
+let parse_resolve_thread_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> parse_resolve_thread_response_json json
+
+let parse_viewer_login_response_json json =
+  match graphql_errors json with
+  | Some msgs -> Error (Graphql_error msgs)
+  | None -> (
+      match
+        Json.field "data" json
+        |> Option.bind ~f:(Json.field "viewer")
+        |> Option.bind ~f:(Json.string_field "login")
+      with
+      | Some login -> Ok login
+      | None -> Error (Json_parse_error "viewer response missing login"))
+
+let parse_viewer_login_response body =
+  match Yojson.Safe.from_string body with
+  | exception Yojson.Json_error msg -> Error (Json_parse_error msg)
+  | json -> parse_viewer_login_response_json json
 
 type enqueue_pr_info_pull_request = {
   enqueue_info_id : string option; [@key "id"] [@yojson.default None]
@@ -1359,6 +1441,18 @@ let update_pr_body ~net ~clock ?timeout t ~pr_number ~body =
   | Ok _ -> Ok ()
   | Error _ as e -> e
 
+let reply_to_review_comment ~net ~clock ?timeout t ~pr_number ~comment_id ~body
+    =
+  let path =
+    Printf.sprintf "/repos/%s/%s/pulls/%d/comments/%d/replies" t.owner t.repo
+      (Types.Pr_number.to_int pr_number)
+      (Types.Comment_id.to_int comment_id)
+  in
+  let req_body = `Assoc [ ("body", `String body) ] |> Yojson.Safe.to_string in
+  match request ~net ~clock ?timeout t ~meth:`POST ~path ~body:req_body () with
+  | Ok _ -> Ok ()
+  | Error _ as e -> e
+
 (** Create a draft pull request via REST API. Returns the new PR number. *)
 let create_pull_request ~net ~clock ?timeout t ~title ~head ~base ~body ~draft =
   let path = Printf.sprintf "/repos/%s/%s/pulls" t.owner t.repo in
@@ -1575,6 +1669,42 @@ let enqueue_pr ~net ~clock ?timeout t ~pr_number =
               Result.map (parse_enqueue_response resp) ~f:(fun entry ->
                   Enqueued entry)))
 
+let viewer_login_query = {|query { viewer { login } }|}
+
+let fetch_viewer_login ~net ~clock ?timeout t =
+  let req_body =
+    `Assoc [ ("query", `String viewer_login_query) ] |> Yojson.Safe.to_string
+  in
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body:req_body
+      ()
+  with
+  | Ok resp -> parse_viewer_login_response resp
+  | Error _ as e -> e
+
+let resolve_review_thread_mutation =
+  {|mutation($id: ID!) {
+  resolveReviewThread(input: { threadId: $id }) {
+    thread { isResolved }
+  }
+}|}
+
+let resolve_review_thread ~net ~clock ?timeout t ~thread_id =
+  let req_body =
+    `Assoc
+      [
+        ("query", `String resolve_review_thread_mutation);
+        ("variables", `Assoc [ ("id", `String thread_id) ]);
+      ]
+    |> Yojson.Safe.to_string
+  in
+  match
+    request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body:req_body
+      ()
+  with
+  | Ok resp -> parse_resolve_thread_response resp
+  | Error _ as e -> e
+
 let dequeue_pr ~net ~clock ?timeout t ~entry_id =
   let req_body =
     `Assoc
@@ -1670,6 +1800,97 @@ let is_merge_queue_required_error = function
 
 (* ── Inline tests ── *)
 
+let thread_fixture_json comments =
+  Printf.sprintf
+    {|{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "id": "PR_node_1",
+            "state": "OPEN",
+            "mergeable": "MERGEABLE",
+            "isDraft": false,
+            "mergeStateStatus": "CLEAN",
+            "commits": { "nodes": [] },
+            "reviewThreads": { "nodes": [
+              {
+                "id": "PRRT_t1",
+                "isResolved": false,
+                "isOutdated": false,
+                "comments": { "nodes": %s }
+              }
+            ] },
+            "headRefName": "feature-branch",
+            "headRefOid": "abc123",
+            "mergeQueueEntry": null,
+            "mergeCommit": null,
+            "baseRefName": "main",
+            "headRepositoryOwner": { "login": "octo" }
+          }
+        }
+      }
+    }|}
+    comments
+
+let%test
+    "review thread with replies collapses to one comment, opener identity, \
+     concatenated bodies" =
+  let body =
+    thread_fixture_json
+      {|[
+        {"databaseId": 11, "body": "Please rename this.", "path": "lib/a.ml",
+         "line": 5, "author": {"login": "alice"},
+         "commit": {"oid": "aaa"}, "originalCommit": {"oid": "aaa"}},
+        {"databaseId": 12, "body": "Done in abc123.",
+         "author": {"login": "onton-bot"}},
+        {"databaseId": 13, "body": "Not quite — also fix the docs.",
+         "author": {"login": "alice"}}
+      ]|}
+  in
+  match parse_response_json ~owner:"octo" (Yojson.Safe.from_string body) with
+  | Error _ -> false
+  | Ok pr -> (
+      match pr.Pr_state.comments with
+      | [ c ] ->
+          Types.Comment_id.to_int c.Types.Comment.id = 11
+          && Option.equal String.equal c.Types.Comment.thread_id
+               (Some "PRRT_t1")
+          && Option.equal String.equal c.Types.Comment.path (Some "lib/a.ml")
+          && String.equal c.Types.Comment.body
+               "Please rename this.\n\n\
+                @onton-bot replied:\n\
+                Done in abc123.\n\n\
+                @alice replied:\n\
+                Not quite — also fix the docs."
+          && Option.equal String.equal c.Types.Comment.last_reply_author
+               (Some "alice")
+      | _ -> false)
+
+let%test "review thread with only an opener keeps its body verbatim" =
+  let body =
+    thread_fixture_json
+      {|[{"databaseId": 21, "body": "Single comment.",
+          "author": {"login": "alice"}}]|}
+  in
+  match parse_response_json ~owner:"octo" (Yojson.Safe.from_string body) with
+  | Error _ -> false
+  | Ok pr -> (
+      match pr.Pr_state.comments with
+      | [ c ] ->
+          String.equal c.Types.Comment.body "Single comment."
+          && Option.is_none c.Types.Comment.last_reply_author
+      | _ -> false)
+
+let%test "review thread with no comment nodes yields no comment" =
+  let body = thread_fixture_json "[]" in
+  match parse_response_json ~owner:"octo" (Yojson.Safe.from_string body) with
+  | Error _ -> false
+  | Ok pr ->
+      List.is_empty pr.Pr_state.comments
+      (* The thread still counts as unresolved even without parseable
+         comments — the count comes from the thread node, not the join. *)
+      && pr.Pr_state.unresolved_comment_count = 1
+
 let%test "parse_rest_pr_list open PR" =
   let body =
     {|[{"number":42,"state":"open","merged_at":null,"base":{"ref":"main"},"node_id":"PR_1"}]|}
@@ -1708,6 +1929,38 @@ let%test "parse_rest_pr_list mixed" =
 
 let%test "parse_rest_pr_list invalid json" =
   match parse_rest_pr_list "not json" with Error _ -> true | Ok _ -> false
+
+let%test "parse_resolve_thread_response: ok payload" =
+  match
+    parse_resolve_thread_response
+      {|{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}|}
+  with
+  | Ok () -> true
+  | Error _ -> false
+
+let%test "parse_resolve_thread_response: graphql errors -> Error" =
+  match
+    parse_resolve_thread_response
+      {|{"data":null,"errors":[{"message":"Could not resolve to a node"}]}|}
+  with
+  | Error (Graphql_error msgs) ->
+      List.exists msgs ~f:(fun msg ->
+          String.is_substring msg ~substring:"Could not resolve")
+  | Error (Http_error _ | Json_parse_error _ | Timeout _ | Transport_error _)
+  | Ok () ->
+      false
+
+let%test "parse_resolve_thread_response: missing payload -> Error" =
+  match parse_resolve_thread_response {|{"data":{}}|} with
+  | Error (Json_parse_error _) -> true
+  | Error (Http_error _ | Graphql_error _ | Timeout _ | Transport_error _)
+  | Ok () ->
+      false
+
+let%test "parse_resolve_thread_response: invalid json -> Error" =
+  match parse_resolve_thread_response "not json" with
+  | Error _ -> true
+  | Ok _ -> false
 
 let%test "interpret_merge_response merged=true -> Merge_succeeded" =
   match
@@ -1864,6 +2117,20 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
      onton cached "squash allowed" at startup and kept issuing squash after the
      repo disabled it). [None] means the config was unreadable this attempt. *)
   let merge_methods_cache = ref None in
+  (* Viewer login (the token's user), fetched lazily and cached forever — a
+     token's identity cannot change mid-run. [None] means every fetch so far
+     failed; callers fail open (treat every thread as needing a reply). *)
+  let viewer_login_cache = ref None in
+  let viewer_login_cached () =
+    match !viewer_login_cache with
+    | Some login -> Some login
+    | None -> (
+        match fetch_viewer_login ~net ~clock client with
+        | Ok login ->
+            viewer_login_cache := Some login;
+            Some login
+        | Error _ -> None)
+  in
   let fetch_merge_methods () =
     match get_repo_merge_methods ~net ~clock client with
     | Ok m ->
@@ -1957,6 +2224,14 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
 
     let update_pr_body ~pr_number ~body =
       update_pr_body ~net ~clock client ~pr_number ~body
+
+    let reply_to_review_comment ~pr_number ~comment_id ~body =
+      reply_to_review_comment ~net ~clock client ~pr_number ~comment_id ~body
+
+    let resolve_review_thread ~thread_id =
+      resolve_review_thread ~net ~clock client ~thread_id
+
+    let viewer_login () = viewer_login_cached ()
 
     let create_pull_request ~title ~head ~base ~body ~draft =
       create_pull_request ~net ~clock client ~title ~head ~base ~body ~draft

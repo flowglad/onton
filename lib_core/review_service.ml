@@ -268,40 +268,18 @@ let parse_error_message body =
       | _ -> None)
   | _ -> None
 
-type wontfix_entry = { id : string; reason : string }
-[@@deriving show, eq, sexp_of, compare]
-
-let parse_wontfix_artifact body : (wontfix_entry list, string) Result.t =
-  let nonblank_string_opt = function
-    | `String s ->
-        let s = String.strip s in
-        if String.is_empty s then None else Some s
-    | `Null -> None
-    | _ -> None
+(* Composite finding ids ([Findings_registry.make_key]) contain '/' and '#'
+   and so cannot name a file verbatim. The supervisor slugs the id into a
+   filesystem-safe filename, prints it on the finding's prompt block, and
+   inverts the same mapping over the delivered findings post-session — the
+   agent copies a filename, it never encodes anything itself. *)
+let wontfix_filename_of_id id =
+  let slug =
+    String.map id ~f:(fun c ->
+        if Char.is_alphanum c || Char.equal c '.' || Char.equal c '-' then c
+        else '_')
   in
-  let trimmed = String.strip body in
-  if String.is_empty trimmed then Ok []
-  else
-    match Yojson.Safe.from_string trimmed with
-    | exception Yojson.Json_error msg ->
-        Error (Printf.sprintf "wontfix artifact: %s" msg)
-    | `List entries ->
-        let field_nonblank field entry =
-          match Json.field field entry with
-          | Some v -> nonblank_string_opt v
-          | None -> None
-        in
-        let parsed =
-          List.filter_map entries ~f:(fun entry ->
-              match entry with
-              | `Assoc _ ->
-                  let id = field_nonblank "id" entry in
-                  let reason = field_nonblank "reason" entry in
-                  Option.map2 id reason ~f:(fun id reason -> { id; reason })
-              | _ -> None)
-        in
-        Ok parsed
-    | _ -> Error "wontfix artifact must be a JSON array"
+  slug ^ ".md"
 
 (* {2 Inline tests} *)
 
@@ -457,50 +435,15 @@ let%test "parse_outcome: partial lastReply -> None (skipped)" =
   | Ok o -> Option.is_none o.last_reply
   | Error _ -> false
 
-let%test "parse_wontfix_artifact: empty string -> Ok []" =
-  match parse_wontfix_artifact "" with
-  | Ok [] -> true
-  | Ok _ -> false
-  | Error _ -> false
+let%test "wontfix_filename_of_id: composite key slugs to safe filename" =
+  String.equal
+    (wontfix_filename_of_id "coderabbit/acme/widgets#42/f-12")
+    "coderabbit_acme_widgets_42_f-12.md"
 
-let%test "parse_wontfix_artifact: whitespace-only -> Ok []" =
-  match parse_wontfix_artifact "   \n\t  " with
-  | Ok [] -> true
-  | Ok _ -> false
-  | Error _ -> false
+let%test "wontfix_filename_of_id: dots and dashes preserved" =
+  String.equal (wontfix_filename_of_id "svc/a.b#1/x-1.v2") "svc_a.b_1_x-1.v2.md"
 
-let%test "parse_wontfix_artifact: empty array -> Ok []" =
-  match parse_wontfix_artifact "[]" with
-  | Ok [] -> true
-  | Ok _ -> false
-  | Error _ -> false
-
-let%test "parse_wontfix_artifact: well-formed entries" =
-  let raw =
-    {|[{"id":" a ","reason":" out of scope "},{"id":"b","reason":"false positive"}]|}
-  in
-  match parse_wontfix_artifact raw with
-  | Ok [ a; b ] ->
-      String.equal a.id "a"
-      && String.equal a.reason "out of scope"
-      && String.equal b.id "b"
-      && String.equal b.reason "false positive"
-  | Ok _ -> false
-  | Error _ -> false
-
-let%test "parse_wontfix_artifact: malformed entries skipped, valid ones kept" =
-  let raw =
-    {|[{"id":"a","reason":"r"},{"id":"only-id"},{"reason":"only-r"},{"id":"  ","reason":"r"},{"id":"b","reason":"  "}]|}
-  in
-  match parse_wontfix_artifact raw with
-  | Ok [ e ] -> String.equal e.id "a" && String.equal e.reason "r"
-  | Ok _ -> false
-  | Error _ -> false
-
-let%test "parse_wontfix_artifact: invalid JSON -> Error" =
-  match parse_wontfix_artifact "not json" with Error _ -> true | Ok _ -> false
-
-let%test "parse_wontfix_artifact: object instead of array -> Error" =
-  match parse_wontfix_artifact {|{"id":"a","reason":"r"}|} with
-  | Error _ -> true
-  | Ok _ -> false
+let%test "wontfix_filename_of_id: never contains a path separator" =
+  List.for_all [ "a/b/c"; "/"; ""; "a b\tc"; "..//.."; "\\evil" ] ~f:(fun id ->
+      (not (String.contains (wontfix_filename_of_id id) '/'))
+      && String.is_suffix (wontfix_filename_of_id id) ~suffix:".md")

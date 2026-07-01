@@ -44,6 +44,15 @@ module type S = sig
   val update_pr_body :
     pr_number:Types.Pr_number.t -> body:string -> (unit, error) Result.t
 
+  val reply_to_review_comment :
+    pr_number:Types.Pr_number.t ->
+    comment_id:Types.Comment_id.t ->
+    body:string ->
+    (unit, error) Result.t
+
+  val resolve_review_thread : thread_id:string -> (unit, error) Result.t
+  val viewer_login : unit -> string option
+
   val create_pull_request :
     title:string ->
     head:Types.Branch.t ->

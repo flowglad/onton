@@ -206,6 +206,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
       ("is_draft", `Bool a.is_draft);
       ("pr_body_delivered", `Bool a.pr_body_delivered);
       ("pr_body_artifact_miss_count", `Int a.pr_body_artifact_miss_count);
+      ("review_unresolved_cycle_count", `Int a.review_unresolved_cycle_count);
       ("start_attempts_without_pr", `Int a.start_attempts_without_pr);
       ("conflict_noop_count", `Int a.conflict_noop_count);
       ("no_commits_push_count", `Int a.no_commits_push_count);
@@ -392,6 +393,10 @@ let patch_agent_of_yojson ~gameplan json =
        ~pr_body_artifact_miss_count:
          (Option.value
             (int_member_opt "pr_body_artifact_miss_count" json)
+            ~default:0)
+       ~review_unresolved_cycle_count:
+         (Option.value
+            (int_member_opt "review_unresolved_cycle_count" json)
             ~default:0)
        ~start_attempts_without_pr:(int_member "start_attempts_without_pr" json)
        ~conflict_noop_count:

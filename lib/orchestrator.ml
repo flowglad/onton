@@ -1130,6 +1130,15 @@ type respond_outcome =
             increments [pr_body_artifact_miss_count] and lets the reconciler
             re-enqueue. At cap (>=2) the agent surfaces via
             [needs_intervention]. *)
+  | Respond_review_unresolved
+      (** Review_comments session finished cleanly (push shipped) but the
+          post-push responder could not reply-and-resolve every delivered
+          comment: missing response file, failed reply/resolve forge call, or an
+          unaddressable comment (synthetic id, no thread id). Increments
+          [review_unresolved_cycle_count] and lets the poller re-deliver the
+          still-unresolved threads. At cap (>=2) the agent surfaces via
+          [needs_intervention] — the loop's only terminator now that thread
+          resolution is supervisor-owned. *)
 [@@deriving show, eq, sexp_of]
 
 let apply_respond_outcome t patch_id kind outcome =
@@ -1142,6 +1151,10 @@ let apply_respond_outcome t patch_id kind outcome =
       let t = complete t patch_id in
       update_agent t patch_id
         ~f:Patch_agent.increment_pr_body_artifact_miss_count
+  | Respond_review_unresolved ->
+      let t = complete t patch_id in
+      update_agent t patch_id
+        ~f:Patch_agent.increment_review_unresolved_cycle_count
   | Respond_ok ->
       let t = complete t patch_id in
       (* Only count CI fix attempts that actually delivered a payload with
@@ -1156,6 +1169,12 @@ let apply_respond_outcome t patch_id kind outcome =
         if Operation_kind.equal kind Operation_kind.Merge_conflict then
           let t = clear_has_conflict t patch_id in
           reset_conflict_noop_count t patch_id
+        else t
+      in
+      let t =
+        if Operation_kind.equal kind Operation_kind.Review_comments then
+          update_agent t patch_id
+            ~f:Patch_agent.reset_review_unresolved_cycle_count
         else t
       in
       if Operation_kind.equal kind Operation_kind.Pr_body then

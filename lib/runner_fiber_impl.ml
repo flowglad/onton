@@ -1613,6 +1613,7 @@ struct
                                              | `Ok
                                              | `Pr_body_miss
                                              | `Retry_push
+                                             | `Review_unresolved
                                              | `Skip_empty
                                              | `Stale ])
                                       in
@@ -1922,6 +1923,21 @@ struct
                                           (Stdlib.Filename.concat wt_path
                                              "AGENTS.md")
                                       in
+                                      let review_artifact_dir =
+                                        match payload with
+                                        | Patch_decision.Review_payload _ ->
+                                            Some
+                                              (Project_store
+                                               .comment_responses_dir
+                                                 ~project_name ~patch_id)
+                                        | Patch_decision.Ci_payload _
+                                        | Patch_decision.Findings_payload _
+                                        | Patch_decision.Human_payload _
+                                        | Patch_decision.Pr_body_payload
+                                        | Patch_decision.Merge_conflict_payload
+                                          ->
+                                            None
+                                      in
                                       log_event runtime ~patch_id
                                         (match payload with
                                         | Patch_decision.Review_payload
@@ -1984,12 +2000,30 @@ struct
                                                   ~f:(fun ps ->
                                                     ps.Pr_state.head_oid)
                                               in
+                                              let artifact_dir =
+                                                match review_artifact_dir with
+                                                | Some artifact_dir ->
+                                                    artifact_dir
+                                                | None -> assert false
+                                              in
+                                              (* Clear stale response files
+                                             from a prior Review session. The
+                                             directory is stable per-patch;
+                                             without this, a leftover file
+                                             whose reply already posted (but
+                                             whose resolve failed) would be
+                                             replayed as a duplicate reply. *)
+                                              Project_store.reset_artifact_dir
+                                                artifact_dir;
                                               Prompt.render_review_prompt
                                                 ~project_name ?agents_md
                                                 ?pr_number ?current_head_sha
+                                                ?viewer_login:
+                                                  (Forge.viewer_login ())
                                                 ?patch:patch_for_layer ~gameplan
                                                 ~base_branch:
-                                                  base_branch_for_layer comments
+                                                  base_branch_for_layer
+                                                ~artifact_dir comments
                                           | Patch_decision.Findings_payload
                                               { findings } ->
                                               let current_head_sha =
@@ -1997,27 +2031,20 @@ struct
                                                   ~f:(fun ps ->
                                                     ps.Pr_state.head_oid)
                                               in
-                                              let artifact_path =
+                                              let artifact_dir =
                                                 Project_store
-                                                .findings_wontfix_artifact_path
+                                                .findings_wontfix_dir
                                                   ~project_name ~patch_id
                                               in
-                                              Project_store.ensure_dir
-                                                (Stdlib.Filename.dirname
-                                                   artifact_path);
-                                              (try Unix.unlink artifact_path
-                                               with
-                                               | Unix.Unix_error
-                                                   (Unix.ENOENT, _, _)
-                                               ->
-                                                 ());
+                                              Project_store.reset_artifact_dir
+                                                artifact_dir;
                                               Prompt.render_findings_prompt
                                                 ~project_name ?agents_md
                                                 ?pr_number ?current_head_sha
                                                 ?patch:patch_for_layer ~gameplan
                                                 ~base_branch:
                                                   base_branch_for_layer
-                                                ~artifact_path findings
+                                                ~artifact_dir findings
                                           | Patch_decision.Human_payload
                                               { messages } ->
                                               Prompt.render_human_message_prompt
@@ -2163,7 +2190,8 @@ struct
                                             :> [ `Failed
                                                | `Ok
                                                | `Pr_body_miss
-                                               | `Retry_push ])
+                                               | `Retry_push
+                                               | `Review_unresolved ])
                                         in
                                         (match result with
                                         | `Ok
@@ -2236,9 +2264,9 @@ struct
                                           | Patch_decision.Findings_payload
                                               { findings } ->
                                               if session_ok then (
-                                                let artifact_path =
+                                                let artifact_dir =
                                                   Project_store
-                                                  .findings_wontfix_artifact_path
+                                                  .findings_wontfix_dir
                                                     ~project_name ~patch_id
                                                 in
                                                 Findings_resolver
@@ -2248,7 +2276,7 @@ struct
                                                     log_event runtime ~patch_id
                                                       msg)
                                                   ~findings_registry
-                                                  ~artifact_path
+                                                  ~artifact_dir
                                                   ~delivered:findings
                                                   ~actor:
                                                     (Printf.sprintf "onton:%s"
@@ -2281,9 +2309,75 @@ struct
                                                       findings_registry
                                                       ~key:f.Review_service.id);
                                                 result
+                                          | Patch_decision.Review_payload
+                                              { comments } ->
+                                              (* Supervisor-owned comment
+                                             response/resolution. [`Ok] from
+                                             the session driver implies the
+                                             post-session push shipped (push
+                                             failure surfaces as
+                                             [`Retry_push]), so replies
+                                             claiming a fix never precede the
+                                             fix reaching the remote. On a
+                                             failed session the response
+                                             files are left in place but not
+                                             posted — the poller re-detects
+                                             the unresolved threads and the
+                                             next Review session re-delivers
+                                             (its setup clears the stale
+                                             files). *)
+                                              if session_ok then
+                                                match
+                                                  Comment_responder
+                                                  .respond_after_session
+                                                    ~reply:(fun
+                                                        ~comment_id ~body ->
+                                                      match pr_number with
+                                                      | None ->
+                                                          Error
+                                                            "no PR number \
+                                                             recorded for this \
+                                                             patch"
+                                                      | Some pr ->
+                                                          Base.Result.map_error
+                                                            (Forge
+                                                             .reply_to_review_comment
+                                                               ~pr_number:pr
+                                                               ~comment_id ~body)
+                                                            ~f:Forge.show_error)
+                                                    ~resolve:(fun ~thread_id ->
+                                                      Base.Result.map_error
+                                                        (Forge
+                                                         .resolve_review_thread
+                                                           ~thread_id)
+                                                        ~f:Forge.show_error)
+                                                    ~log:(fun msg ->
+                                                      log_event runtime
+                                                        ~patch_id msg)
+                                                    ~viewer_login:
+                                                      (Forge.viewer_login ())
+                                                    ~artifact_dir:
+                                                      (match
+                                                         review_artifact_dir
+                                                       with
+                                                      | Some artifact_dir ->
+                                                          artifact_dir
+                                                      | None -> assert false)
+                                                    ~delivered:comments ()
+                                                with
+                                                | `Converged -> result
+                                                | `Unresolved _ ->
+                                                    `Review_unresolved
+                                              else (
+                                                log_event runtime ~patch_id
+                                                  "comment-responses: session \
+                                                   did not complete cleanly — \
+                                                   skipping reply/resolve; \
+                                                   unresolved comments will \
+                                                   re-deliver";
+                                                result)
                                           | Patch_decision.Human_payload _
                                           | Patch_decision.Ci_payload _
-                                          | Patch_decision.Review_payload _
                                           | Patch_decision.Pr_body_payload
                                           | Patch_decision
                                             .Merge_conflict_payload ->
@@ -2395,6 +2489,7 @@ struct
                                           :> [ `Failed
                                              | `Ok
                                              | `Pr_body_miss
+                                             | `Review_unresolved
                                              | `Retry_push
                                              | `Skip_empty
                                              | `Stale ])
@@ -2407,6 +2502,8 @@ struct
                           | `Failed -> Orchestrator.Respond_failed
                           | `Retry_push -> Orchestrator.Respond_retry_push
                           | `Pr_body_miss -> Orchestrator.Respond_pr_body_miss
+                          | `Review_unresolved ->
+                              Orchestrator.Respond_review_unresolved
                           | `Ok -> Orchestrator.Respond_ok
                         in
                         Runtime.update_orchestrator runtime (fun orch ->
@@ -2455,6 +2552,32 @@ struct
                                   (Printf.sprintf
                                      "Patch %s: pr-body artifact repeatedly \
                                       missing — human review needed"
+                                     (Patch_id.to_string patch_id))
+                                ()
+                        | Orchestrator.Respond_review_unresolved ->
+                            (* Per-comment causes are already logged by
+                             Comment_responder; this line records the counter
+                             march so an operator can see how close the loop
+                             is to the cap. *)
+                            let agent =
+                              Runtime.read runtime (fun snap ->
+                                  Orchestrator.agent snap.Runtime.orchestrator
+                                    patch_id)
+                            in
+                            log_event runtime ~patch_id
+                              (Printf.sprintf
+                                 "comment-responses: non-converged review \
+                                  cycle recorded (cycle count: %d)%s"
+                                 agent.Patch_agent.review_unresolved_cycle_count
+                                 (if Patch_agent.needs_intervention agent then
+                                    "; escalating to human review"
+                                  else "; unresolved comments will re-deliver"));
+                            if Patch_agent.needs_intervention agent then
+                              set_status ~level:Tui.Error
+                                ~text:
+                                  (Printf.sprintf
+                                     "Patch %s: review comments repeatedly \
+                                      left unresolved — human review needed"
                                      (Patch_id.to_string patch_id))
                                 ()
                         | Orchestrator.Respond_ok ->

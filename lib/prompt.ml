@@ -858,7 +858,8 @@ Keep it concise — a few bullet points usually suffices. If you have nothing ma
 let short_sha s = if String.length s <= 7 then s else String.sub s ~pos:0 ~len:7
 
 let render_turn_layer_review ~(project_name : string) ?pr_number
-    ?current_head_sha (comments : Comment.t list) : string =
+    ?current_head_sha ?viewer_login ~(artifact_dir : string)
+    (comments : Comment.t list) : string =
   match comments with
   | [] -> "No review comments to address."
   | _ ->
@@ -902,8 +903,13 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
               | None -> ""
             in
             let outdated = if is_outdated c then " [outdated]" else "" in
-            Printf.sprintf "- **Comment**%s%s%s%s%s: %s" location db_id
-              thread_ref anchor outdated c.Comment.body)
+            let retry =
+              if Comment_responses.is_resolve_retry ~viewer_login c then
+                " [response already posted]"
+              else ""
+            in
+            Printf.sprintf "- **Comment**%s%s%s%s%s%s: %s" location db_id
+              thread_ref anchor outdated retry c.Comment.body)
         |> String.concat ~sep:"\n\n"
       in
       (* Both [pr_ctx] and [sha_anchor] are splatted into the
@@ -944,8 +950,8 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
               "\n\n\
                Review anchored at %s. Current branch HEAD is `%s`.\n\
                If a comment is marked `[outdated]` or refers to code that no \
-               longer exists at HEAD, reply acknowledging it's addressed in a \
-               later commit and skip — do not re-do the change."
+               longer exists at HEAD, write a response acknowledging it's \
+               addressed in a later commit and skip — do not re-do the change."
               anchored (short_sha head)
         | _ -> ""
       in
@@ -968,7 +974,19 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
           ("reviewed_at_sha", reviewed_at_sha_var);
           ("current_head_sha", current_head_sha_var);
           ("sha_anchor", sha_anchor);
+          ("artifact_dir", artifact_dir);
         ]
+      in
+      let retry_note =
+        if
+          List.exists comments ~f:(fun c ->
+              Comment_responses.is_resolve_retry ~viewer_login c)
+        then
+          " Exception: comments marked [response already posted] already carry \
+           your reply as the thread's last message; the supervisor will retry \
+           resolving them — write a response file for one of those only if you \
+           have something new to add."
+        else ""
       in
       render_with_override ~project_name ~name:"turn_review" ~vars
         ~default:(fun () ->
@@ -977,31 +995,31 @@ let render_turn_layer_review ~(project_name : string) ?pr_number
              The following review comments need to be addressed on your PR:\n\n\
              %s\n\n\
              For each comment:\n\
-             1. Implement the requested change, OR explain why the current \
-             approach is correct.\n\
-             2. Reply to the comment thread:\n\
-            \   `gh api \
-             repos/{owner}/{repo}/pulls/%s/comments/{comment_id}/replies -f \
-             body=\"your response\"`\n\
-            \   (`{owner}/{repo}` is resolved automatically by `gh` when run \
-             inside the repo)\n\
-             3. Resolve the thread using the thread_id:\n\
-            \   `gh api graphql -f query='mutation { \
-             resolveReviewThread(input: {threadId: \"{thread_id}\"}) { thread \
-             { isResolved } } }'`\n\n\
+             1. Implement the requested change, OR decide the current approach \
+             is correct.\n\
+             2. Write your response to `%s/<comment_id>.md` (the \
+             [comment_id=...] shown above), containing just the response text.\n\
+            \   Use the Write tool with that absolute path — the directory is \
+             outside the worktree on purpose; do not commit it.\n\n\
+             Write a response file for EVERY comment listed above.%s After \
+             this session the supervisor pushes your commits, then posts each \
+             response as a reply on its comment thread and resolves that \
+             thread. A comment without a response file stays unresolved and \
+             will be re-delivered to you.\n\n\
              After addressing all comments, commit your changes. The \
              supervisor will push them for you — do not run `git push`."
-            pr_ctx sha_anchor formatted pr_num_str)
+            pr_ctx sha_anchor formatted artifact_dir retry_note)
 
 let render_review_prompt ~(project_name : string) ?agents_md ?pr_number
-    ?current_head_sha ?patch ?gameplan ?base_branch (comments : Comment.t list)
-    : string =
+    ?current_head_sha ?viewer_login ?patch ?gameplan ?base_branch
+    ~(artifact_dir : string) (comments : Comment.t list) : string =
   layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
-  ^ render_turn_layer_review ~project_name ?pr_number ?current_head_sha comments
+  ^ render_turn_layer_review ~project_name ?pr_number ?current_head_sha
+      ?viewer_login ~artifact_dir comments
 
 let render_turn_layer_findings ~(project_name : string) ?pr_number
-    ?current_head_sha ~artifact_path (findings : Review_service.finding list) :
+    ?current_head_sha ~artifact_dir (findings : Review_service.finding list) :
     string =
   let pr_num_str =
     match pr_number with
@@ -1032,9 +1050,15 @@ let render_turn_layer_findings ~(project_name : string) ?pr_number
               else Printf.sprintf "%s:%d-%d" f.path f.start_line f.end_line
             in
             Printf.sprintf
-              "## [%s] finding %s\nanchor: %s\nposting_sha: %s\n\n%s"
+              "## [%s] finding %s\n\
+               anchor: %s\n\
+               posting_sha: %s\n\
+               wontfix_file: %s\n\n\
+               %s"
               (Review_service.severity_to_string f.severity)
-              f.id lines f.posting_sha f.body)
+              f.id lines f.posting_sha
+              (Review_service.wontfix_filename_of_id f.id)
+              f.body)
         |> String.concat ~sep:"\n\n---\n\n"
   in
   let vars =
@@ -1049,7 +1073,7 @@ let render_turn_layer_findings ~(project_name : string) ?pr_number
       ("pr_ref", pr_num_str);
       ("current_head_sha", Option.value current_head_sha ~default:"");
       ("sha_anchor", sha_anchor);
-      ("artifact_path", artifact_path);
+      ("artifact_dir", artifact_dir);
     ]
   in
   render_with_override ~project_name ~name:"turn_findings" ~vars
@@ -1058,33 +1082,30 @@ let render_turn_layer_findings ~(project_name : string) ?pr_number
         "You are reviewing pull request %s. The findings below come from a \
          review service, not from GitHub review threads — there is no thread \
          to reply to. To resolve a finding, you must EITHER (a) make code \
-         changes that address it, OR (b) explicitly mark it as wontfix in an \
-         artifact file.%s\n\n\
+         changes that address it, OR (b) explicitly mark it as wontfix.%s\n\n\
          %s\n\n\
          ## Resolving findings\n\
          - For each finding you fix in code, do nothing extra: it will be \
          reported back as `addressed` after this session.\n\
          - For each finding you decide NOT to fix (out of scope, false \
-         positive, intentional, etc.), write an entry to the artifact file at \
-         `%s`. The supervisor reads it after this session and reports those \
-         findings as `wontfix`.\n\
-         - Artifact format: a JSON array of objects with required string field \
-         `id` (the composite finding id shown above) and required string field \
-         `reason`.\n\
-         - If you create or update the artifact, use the Write tool with the \
-         absolute path above (it is outside the worktree on purpose — do not \
-         commit it).\n\n\
+         positive, intentional, etc.), write the reason (plain text) to \
+         `%s/<wontfix_file>`, using that finding's `wontfix_file` name shown \
+         above. The supervisor reads the directory after this session and \
+         reports those findings as `wontfix`.\n\
+         - Use the Write tool with the absolute path (the directory is outside \
+         the worktree on purpose — do not commit it). One file per finding, \
+         reason text only.\n\n\
          After addressing the in-scope findings, commit your changes. The \
          supervisor will push them for you — do not run `git push`."
-        pr_num_str sha_anchor formatted artifact_path)
+        pr_num_str sha_anchor formatted artifact_dir)
 
 let render_findings_prompt ~(project_name : string) ?agents_md ?pr_number
-    ?current_head_sha ?patch ?gameplan ?base_branch ~artifact_path
+    ?current_head_sha ?patch ?gameplan ?base_branch ~artifact_dir
     (findings : Review_service.finding list) : string =
   layered_prefix ~project_name ?pr_number ?patch ?gameplan ?base_branch
     ?agents_md ()
   ^ render_turn_layer_findings ~project_name ?pr_number ?current_head_sha
-      ~artifact_path findings
+      ~artifact_dir findings
 
 let render_turn_layer_ci ~(project_name : string) ?pr_number
     (checks : Ci_check.t list) : string =
@@ -1857,6 +1878,7 @@ let%test
   let review_prompt =
     render_review_prompt ~project_name:"onton" ~agents_md ~pr_number
       ~patch:patch_a ~gameplan ~base_branch:"main"
+      ~artifact_dir:"/data/artifacts/patch-a/comment_responses"
       [
         Comment.
           {
@@ -1868,6 +1890,7 @@ let%test
             commit_sha = None;
             original_commit_sha = None;
             outdated = false;
+            last_reply_author = None;
           };
       ]
   in
@@ -2153,6 +2176,7 @@ let%test "review prompt formats comments" =
           commit_sha = None;
           original_commit_sha = None;
           outdated = false;
+          last_reply_author = None;
         };
       Comment.
         {
@@ -2164,18 +2188,28 @@ let%test "review prompt formats comments" =
           commit_sha = None;
           original_commit_sha = None;
           outdated = false;
+          last_reply_author = None;
         };
     ]
   in
-  let result = render_review_prompt ~project_name:"test" comments in
+  let result =
+    render_review_prompt ~project_name:"test"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
+  in
   String.is_substring result ~substring:"# Review Comments"
   && String.is_substring result ~substring:"on `lib/foo.ml` (line 42)"
   && String.is_substring result ~substring:"[comment_id=1]"
   && String.is_substring result ~substring:"[thread_id=PRRT_thread1]"
   && String.is_substring result ~substring:"Fix this function."
   && String.is_substring result ~substring:"General feedback."
-  && String.is_substring result ~substring:"resolveReviewThread"
-  && String.is_substring result ~substring:"gh api repos/"
+  && String.is_substring result
+       ~substring:"/data/artifacts/p1/comment_responses/<comment_id>.md"
+  (* The response procedure must not point the agent at the forge CLI —
+     reply/resolve is supervisor-owned, keyed off the response files. (The
+     agent remains free to use gh for its own investigation; the prompt just
+     never asks it to reply or resolve.) *)
+  && (not (String.is_substring result ~substring:"resolveReviewThread"))
+  && (not (String.is_substring result ~substring:"gh api"))
   (* Back-compat: no SHAs → no preamble, no [at=…], no [outdated]. *)
   && (not (String.is_substring result ~substring:"Review anchored at"))
   && (not (String.is_substring result ~substring:"[at="))
@@ -2198,12 +2232,14 @@ let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
           commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           outdated = false;
+          last_reply_author = None;
         };
     ]
   in
   let result =
     render_review_prompt ~project_name:"test"
-      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
+      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
   in
   Stdlib.print_endline result;
   [%expect
@@ -2211,19 +2247,18 @@ let%expect_test "review prompt includes SHA preamble and per-bullet anchor" =
     # Review Comments
 
     Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
-    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
+    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, write a response acknowledging it's addressed in a later commit and skip — do not re-do the change.
 
     The following review comments need to be addressed on your PR:
 
     - **Comment** on `lib/foo.ml` (line 10) [comment_id=1] [thread_id=PRRT_thread1] [at=47525fd]: Still relevant.
 
     For each comment:
-    1. Implement the requested change, OR explain why the current approach is correct.
-    2. Reply to the comment thread:
-       `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="your response"`
-       (`{owner}/{repo}` is resolved automatically by `gh` when run inside the repo)
-    3. Resolve the thread using the thread_id:
-       `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'`
+    1. Implement the requested change, OR decide the current approach is correct.
+    2. Write your response to `/data/artifacts/p1/comment_responses/<comment_id>.md` (the [comment_id=...] shown above), containing just the response text.
+       Use the Write tool with that absolute path — the directory is outside the worktree on purpose; do not commit it.
+
+    Write a response file for EVERY comment listed above. After this session the supervisor pushes your commits, then posts each response as a reply on its comment thread and resolves that thread. A comment without a response file stays unresolved and will be re-delivered to you.
 
     After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
     |}]
@@ -2244,12 +2279,14 @@ let%expect_test "review prompt marks outdated comments" =
           commit_sha = Some "da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           outdated = true;
+          last_reply_author = None;
         };
     ]
   in
   let result =
     render_review_prompt ~project_name:"test"
-      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
+      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
   in
   Stdlib.print_endline result;
   [%expect
@@ -2257,19 +2294,18 @@ let%expect_test "review prompt marks outdated comments" =
     # Review Comments
 
     Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
-    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
+    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, write a response acknowledging it's addressed in a later commit and skip — do not re-do the change.
 
     The following review comments need to be addressed on your PR:
 
     - **Comment** on `lib/foo.ml` [comment_id=1] [thread_id=PRRT_outdated] [at=47525fd] [outdated]: This line moved.
 
     For each comment:
-    1. Implement the requested change, OR explain why the current approach is correct.
-    2. Reply to the comment thread:
-       `gh api repos/{owner}/{repo}/pulls/{pr_number}/comments/{comment_id}/replies -f body="your response"`
-       (`{owner}/{repo}` is resolved automatically by `gh` when run inside the repo)
-    3. Resolve the thread using the thread_id:
-       `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'`
+    1. Implement the requested change, OR decide the current approach is correct.
+    2. Write your response to `/data/artifacts/p1/comment_responses/<comment_id>.md` (the [comment_id=...] shown above), containing just the response text.
+       Use the Write tool with that absolute path — the directory is outside the worktree on purpose; do not commit it.
+
+    Write a response file for EVERY comment listed above. After this session the supervisor pushes your commits, then posts each response as a reply on its comment thread and resolves that thread. A comment without a response file stays unresolved and will be re-delivered to you.
 
     After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
     |}]
@@ -2289,12 +2325,14 @@ let%expect_test
           commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           outdated = false;
+          last_reply_author = None;
         };
     ]
   in
   let result =
     render_review_prompt ~project_name:"test" ~pr_number:(Pr_number.of_int 42)
-      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" comments
+      ~current_head_sha:"da442c5bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
   in
   Stdlib.print_endline result;
   (* Exactly one blank line between "# Review Comments" / "PR: #42" /
@@ -2306,22 +2344,68 @@ let%expect_test
     PR: #42
 
     Review anchored at commit `47525fd`. Current branch HEAD is `da442c5`.
-    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, reply acknowledging it's addressed in a later commit and skip — do not re-do the change.
+    If a comment is marked `[outdated]` or refers to code that no longer exists at HEAD, write a response acknowledging it's addressed in a later commit and skip — do not re-do the change.
 
     The following review comments need to be addressed on your PR:
 
     - **Comment** on `lib/foo.ml` (line 10) [comment_id=1] [thread_id=PRRT_thread1] [at=47525fd]: Still relevant.
 
     For each comment:
-    1. Implement the requested change, OR explain why the current approach is correct.
-    2. Reply to the comment thread:
-       `gh api repos/{owner}/{repo}/pulls/42/comments/{comment_id}/replies -f body="your response"`
-       (`{owner}/{repo}` is resolved automatically by `gh` when run inside the repo)
-    3. Resolve the thread using the thread_id:
-       `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "{thread_id}"}) { thread { isResolved } } }'`
+    1. Implement the requested change, OR decide the current approach is correct.
+    2. Write your response to `/data/artifacts/p1/comment_responses/<comment_id>.md` (the [comment_id=...] shown above), containing just the response text.
+       Use the Write tool with that absolute path — the directory is outside the worktree on purpose; do not commit it.
+
+    Write a response file for EVERY comment listed above. After this session the supervisor pushes your commits, then posts each response as a reply on its comment thread and resolves that thread. A comment without a response file stays unresolved and will be re-delivered to you.
 
     After addressing all comments, commit your changes. The supervisor will push them for you — do not run `git push`.
     |}]
+
+let%test "review prompt marks resolve-retry comments only with viewer known" =
+  let make_comment ~id ~last_reply_author : Comment.t =
+    Comment.
+      {
+        id = Comment_id.of_int id;
+        thread_id = Some (Printf.sprintf "PRRT_%d" id);
+        body = "Body.";
+        path = None;
+        line = None;
+        commit_sha = None;
+        original_commit_sha = None;
+        outdated = false;
+        last_reply_author;
+      }
+  in
+  let comments =
+    [
+      make_comment ~id:1 ~last_reply_author:(Some "onton-bot");
+      make_comment ~id:2 ~last_reply_author:(Some "alice");
+      make_comment ~id:3 ~last_reply_author:None;
+    ]
+  in
+  let with_viewer =
+    render_review_prompt ~project_name:"test" ~viewer_login:"onton-bot"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
+  in
+  let without_viewer =
+    render_review_prompt ~project_name:"test"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
+  in
+  let tagged_line prompt id =
+    match
+      List.find (String.split_lines prompt) ~f:(fun l ->
+          String.is_substring l ~substring:(Printf.sprintf "[comment_id=%d]" id))
+    with
+    | Some line ->
+        String.is_substring line ~substring:"[response already posted]"
+    | None -> false
+  in
+  tagged_line with_viewer 1
+  && (not (tagged_line with_viewer 2))
+  && (not (tagged_line with_viewer 3))
+  && String.is_substring with_viewer
+       ~substring:"Exception: comments marked [response already posted]"
+  (* Unknown viewer fails open: no tags, no exception sentence. *)
+  && not (String.is_substring without_viewer ~substring:"already posted")
 
 let%test "review prompt does not mark file-level comments as outdated" =
   let comments : Comment.t list =
@@ -2338,12 +2422,14 @@ let%test "review prompt does not mark file-level comments as outdated" =
           commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           original_commit_sha = Some "47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
           outdated = false;
+          last_reply_author = None;
         };
     ]
   in
   let result =
     render_review_prompt ~project_name:"test"
-      ~current_head_sha:"47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" comments
+      ~current_head_sha:"47525fdaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ~artifact_dir:"/data/artifacts/p1/comment_responses" comments
   in
   (* The preamble references "[outdated]" literally, so we can't just grep the
      whole result. Assert directly on the bullet line that contains the comment

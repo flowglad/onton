@@ -63,6 +63,15 @@ type t = {
           blocked mid-write (see [Orchestrator.Respond_pr_body_miss]). At >=2
           contributes to [needs_intervention]. Reset by
           [reset_intervention_state]. *)
+  review_unresolved_cycle_count : int;
+      (** Consecutive Review_comments sessions that completed cleanly but did
+          not reply-and-resolve every delivered comment (missing response file,
+          failed reply/resolve call, or an unaddressable comment — see
+          [Orchestrator.Respond_review_unresolved]). Without this cap the loop
+          has no terminator: the agent cannot resolve threads itself, so a
+          comment it never responds to re-enqueues a session every poll,
+          forever. At [>= 2] contributes to [needs_intervention]. Reset by a
+          fully-converged review cycle and by [reset_intervention_state]. *)
   start_attempts_without_pr : int;
   conflict_noop_count : int;
   no_commits_push_count : int;
@@ -146,7 +155,7 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
     ~session_given_up ~human_in_queue ~ci_failure_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-    ~pr_body_artifact_miss_count =
+    ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
   if merged then None
   else if session_given_up then Some "session_fallback=given_up"
   else if is_pr_missing then Some "pr_missing"
@@ -173,6 +182,8 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
   else if rebase_failure_count >= 2 then Some "rebase_failure_count>=2"
   else if pr_body_artifact_miss_count >= 2 then
     Some "pr_body_artifact_miss_count>=2"
+  else if review_unresolved_cycle_count >= 2 then
+    Some "review_unresolved_cycle_count>=2"
   else None
 
 let intervention_reason t =
@@ -189,6 +200,7 @@ let intervention_reason t =
     ~push_failure_count:t.push_failure_count
     ~rebase_failure_count:t.rebase_failure_count
     ~pr_body_artifact_miss_count:t.pr_body_artifact_miss_count
+    ~review_unresolved_cycle_count:t.review_unresolved_cycle_count
 
 let needs_intervention t = Option.is_some (intervention_reason t)
 
@@ -196,13 +208,13 @@ let needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
     ~session_given_up ~human_in_queue ~ci_failure_count
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-    ~pr_body_artifact_miss_count =
+    ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
   Option.is_some
     (intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
        ~session_given_up ~human_in_queue ~ci_failure_count
        ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
        ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-       ~pr_body_artifact_miss_count)
+       ~pr_body_artifact_miss_count ~review_unresolved_cycle_count)
 
 let create ~branch patch_id =
   {
@@ -238,6 +250,7 @@ let create ~branch patch_id =
     is_draft = false;
     pr_body_delivered = false;
     pr_body_artifact_miss_count = 0;
+    review_unresolved_cycle_count = 0;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
@@ -298,6 +311,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     is_draft = false;
     pr_body_delivered = true;
     pr_body_artifact_miss_count = 0;
+    review_unresolved_cycle_count = 0;
     start_attempts_without_pr = 0;
     conflict_noop_count = 0;
     no_commits_push_count = 0;
@@ -405,6 +419,12 @@ let increment_pr_body_artifact_miss_count t =
 
 let reset_pr_body_artifact_miss_count t =
   { t with pr_body_artifact_miss_count = 0 }
+
+let increment_review_unresolved_cycle_count t =
+  { t with review_unresolved_cycle_count = t.review_unresolved_cycle_count + 1 }
+
+let reset_review_unresolved_cycle_count t =
+  { t with review_unresolved_cycle_count = 0 }
 
 let set_base_branch t branch =
   let notified =
@@ -570,6 +590,7 @@ let reset_intervention_state t =
     push_failure_count = 0;
     rebase_failure_count = 0;
     pr_body_artifact_miss_count = 0;
+    review_unresolved_cycle_count = 0;
   }
 
 let reset_busy t = if not t.busy then t else { t with busy = false }
@@ -581,14 +602,15 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
     ~merge_queue_entry ~merge_commit_sha ~base_contains_merged_siblings
     ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
-    ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
-    ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
-    ~branch_rebased_onto ~branch_rebased_onto_sha ~anchor_history
-    ~checks_passing ~current_op ~current_op_state ~current_message_id
-    ~generation ~worktree_path ~branch_blocked ~llm_session_id
-    ~automerge_enabled ~automerge_deadline ~automerge_inflight
-    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
-    ~automerge_failure_count ~delivered_ci_run_ids () =
+    ?(review_unresolved_cycle_count = 0) ~start_attempts_without_pr
+    ~conflict_noop_count ~no_commits_push_count ~context_exhaustion_count
+    ~push_failure_count ~rebase_failure_count ~branch_rebased_onto
+    ~branch_rebased_onto_sha ~anchor_history ~checks_passing ~current_op
+    ~current_op_state ~current_message_id ~generation ~worktree_path
+    ~branch_blocked ~llm_session_id ~automerge_enabled ~automerge_deadline
+    ~automerge_inflight ?(review_requested_for_oid = None)
+    ?(review_request_inflight = false) ~automerge_failure_count
+    ~delivered_ci_run_ids () =
   {
     patch_id;
     branch;
@@ -619,6 +641,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     is_draft;
     pr_body_delivered;
     pr_body_artifact_miss_count;
+    review_unresolved_cycle_count;
     start_attempts_without_pr;
     conflict_noop_count;
     no_commits_push_count;

@@ -34,6 +34,7 @@ let update_comments_round_trips_pending =
           commit_sha = None;
           original_commit_sha = None;
           outdated = false;
+          last_reply_author = None;
         }
       in
       let state =
