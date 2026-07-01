@@ -1,3 +1,6 @@
+(* @archlint.module test
+   @archlint.domain project-store *)
+
 open Onton
 
 let write_file path contents =
