@@ -521,9 +521,31 @@ let () =
   QCheck2.Test.check_exn
     (QCheck2.Test.make ~name:"orchestrator surface preserves well-formedness"
        ~count:50 QCheck2.Gen.bool (fun flag ->
-         let orch, _patches, _gameplan, pid = bootstrap_one () in
+         let orch, _patches, gameplan, pid = bootstrap_one () in
          let mid = Message_id.of_string "ao-surface-msg" in
          let orch = Orchestrator.set_main_branch orch main in
+         let _gameplan_with_added, added_patch =
+           match
+             Gameplan.add_patch gameplan ~title:"runtime patch"
+               ~description:"created from TUI"
+               ~dependencies:(if flag then [ pid ] else [])
+           with
+           | Ok added -> added
+           | Error msg -> QCheck2.Test.fail_reportf "%s" msg
+         in
+         let orch =
+           Orchestrator.add_planned_patch orch added_patch
+             ~deps:added_patch.Patch.dependencies
+         in
+         let added_agent = Orchestrator.agent orch added_patch.Patch.id in
+         if Patch_agent.has_pr added_agent then
+           QCheck2.Test.fail_reportf "planned patch unexpectedly has a PR";
+         if
+           not
+             (List.equal Patch_id.equal
+                (Graph.deps (Orchestrator.graph orch) added_patch.Patch.id)
+                added_patch.Patch.dependencies)
+         then QCheck2.Test.fail_reportf "planned patch deps were not recorded";
          let orch = Orchestrator.set_automerge_enabled orch pid flag in
          let orch = Orchestrator.set_automerge_inflight orch pid flag in
          let orch = Orchestrator.set_automerge_deadline orch pid 1.0 in
