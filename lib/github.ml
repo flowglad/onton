@@ -1655,6 +1655,12 @@ let is_merge_endpoint_rejection = function
   | Transport_error _ ->
       false
 
+(* A 405 from the merge endpoint specifically indicating that the branch
+   requires GitHub's native merge queue. Unlike [is_merge_endpoint_rejection],
+   this still inspects the body to distinguish the merge-queue case from other
+   405 reasons (method-disabled, base-branch-modified). Converting this to a
+   structural check requires a pr_state re-fetch on 405 and is left for a
+   follow-up. *)
 let is_merge_queue_required_error = function
   | Http_error { status = 405; body; _ } ->
       response_error_message_contains body ~substring:"merge queue"
@@ -1899,15 +1905,20 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
        failures and propagate immediately; if every permitted method is refused
        we surface the last 405 so the caller can escalate (e.g. enqueue). *)
     let rec attempt ~refreshed ~tried ~last = function
-      | [] ->
-          if refreshed then Error (Option.value_exn last)
-          else
-            let fresh =
-              List.filter (candidate_methods ~refresh:true ()) ~f:(fun m ->
-                  not (List.mem tried m ~equal:equal_method))
-            in
-            if List.is_empty fresh then Error (Option.value_exn last)
-            else attempt ~refreshed:true ~tried ~last fresh
+      | [] -> (
+          match last with
+          | Some e when refreshed -> Error e
+          | Some e ->
+              let fresh =
+                List.filter (candidate_methods ~refresh:true ()) ~f:(fun m ->
+                    not (List.mem tried m ~equal:equal_method))
+              in
+              if List.is_empty fresh then Error e
+              else attempt ~refreshed:true ~tried ~last fresh
+          | None ->
+              (* [candidate_methods] always returns a non-empty list; reaching
+                 here without having tried any method is a programming error. *)
+              assert false)
       | m :: rest -> (
           match merge_pr ~net ~clock client ~pr_number ~merge_method:m with
           | Ok _ as ok -> ok
