@@ -1171,15 +1171,23 @@ let ci_detailed_footer =
    logs with gh."
 
 let render_ci_detail_lines (detail : ci_check_detail) =
-  let teaser =
+  let lines =
     match detail.enrichment.Ci_log_digest.teaser with
     | Some teaser when not (String.is_empty (String.strip teaser)) ->
-        Printf.sprintf "\n  error: %s" teaser
-    | Some _ | None -> ""
+        [
+          Printf.sprintf "  error: %s" teaser;
+          Printf.sprintf
+            "  details: %s/summary.md (full log: log.txt, metadata: check.json)"
+            detail.artifact_dir;
+        ]
+    | Some _ | None ->
+        [
+          Printf.sprintf
+            "  details: %s/summary.md (full log: log.txt, metadata: check.json)"
+            detail.artifact_dir;
+        ]
   in
-  Printf.sprintf
-    "%s\n  details: %s/summary.md (full log: log.txt, metadata: check.json)"
-    teaser detail.artifact_dir
+  "\n" ^ String.concat lines ~sep:"\n"
 
 let order_ci_detail_items items =
   let indexed = List.mapi items ~f:(fun index item -> (index, item)) in
@@ -1244,7 +1252,8 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
               in
               [
                 Printf.sprintf
-                  "Also failing (low diagnostic signal): %s — details recorded \
+                  "\n\
+                   Also failing (low diagnostic signal): %s — details recorded \
                    under their artifact directories."
                   names;
               ]
@@ -1266,10 +1275,7 @@ let render_turn_layer_ci_detailed ~(project_name : string) ?pr_number
         items
         |> List.count ~f:(fun (_, detail) -> Option.is_some detail)
         |> Int.to_string );
-      ( "collapsed_count",
-        collapsed
-        |> List.count ~f:(fun (_, detail) -> Option.is_some detail)
-        |> Int.to_string );
+      ("collapsed_count", collapsed |> List.length |> Int.to_string);
       ( "pr_number",
         match pr_number with
         | Some n -> Int.to_string (Pr_number.to_int n)
@@ -2327,6 +2333,8 @@ let%test
        ~substring:
          "Also failing (low diagnostic signal): all-jobs-succeed — details \
           recorded under their artifact directories."
+  && String.is_substring with_high
+       ~substring:"check.json)\n\nAlso failing (low diagnostic signal)"
   && not
        (String.is_substring with_high
           ~substring:"artifacts/4/ci/run-low/summary.md")
