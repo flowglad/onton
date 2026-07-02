@@ -362,9 +362,9 @@ let human_intervention_reason (agent : Patch_agent.t) =
              investigate why it vanished"
         | code when String.is_prefix code ~prefix:"ci_failure_count>=" ->
             Printf.sprintf
-              "CI failed %d times in a row \xe2\x80\x94 fix the failing checks \
-               below"
+              "CI failed %d/%d times in a row - fix the failing checks below"
               agent.Patch_agent.ci_failure_count
+              agent.Patch_agent.max_ci_failures
         | "start_attempts_without_pr>=2" ->
             Printf.sprintf
               "Could not open a PR after %d attempts \xe2\x80\x94 open it \

@@ -180,8 +180,10 @@ val create_adhoc :
   pr_number:Types.Pr_number.t ->
   max_ci_failures:int ->
   t
-(** Initial state for an ad-hoc patch: has PR, not busy, empty queue.
-    Corresponds to the spec's Add action:
+(** Initial state for an ad-hoc patch: has PR, not busy, empty queue. Ad-hoc
+    agents are created in a live orchestrator context
+    ({!Orchestrator.add_agent}), where the resolved project cap is already known
+    and must be stamped explicitly. Corresponds to the spec's Add action:
     {v PatchCtx ~> Add | p: Patch. --- has-pr' p. ~busy' p. ~in-gameplan' p. v}
 *)
 

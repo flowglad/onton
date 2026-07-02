@@ -48,6 +48,20 @@ let () =
       (* ...and never the innocuous push event that triggered the bug. *)
       assert (not (contains msg "pushed")));
 
+  (* Non-default CI caps are shown as count/cap so operators can see why the
+     configured threshold triggered intervention. *)
+  let custom_cap_stuck =
+    Patch_agent.create ~branch:(Branch.of_string "b") ~max_ci_failures:5
+      (Patch_id.of_string "patch-custom-cap")
+    |> apply 5 Patch_agent.increment_ci_failure_count
+  in
+  assert (Patch_agent.needs_intervention custom_cap_stuck);
+  (match Tui.human_intervention_reason custom_cap_stuck with
+  | None -> assert false
+  | Some msg ->
+      assert (contains msg "ci");
+      assert (contains msg "5/5"));
+
   (* The human reason is present exactly when intervention is needed: the two
      stay in lockstep with the authoritative predicate, so the banner can't
      show a reason for a healthy patch (or hide one for a stuck patch). *)
