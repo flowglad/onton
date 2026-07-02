@@ -52,6 +52,8 @@ let () =
   let patches = mk_patches 1 in
   let orch = Orchestrator.create ~patches ~main_branch:main in
   let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.set_max_ci_failures orch ~max_ci_failures:5 in
+  assert ((Orchestrator.agent orch pid).Patch_agent.max_ci_failures = 5);
   let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   let orch =

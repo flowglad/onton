@@ -215,6 +215,17 @@ let () =
     ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
     ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:1
     ~expected:None;
+  let reason_with_custom_cap =
+    Patch_agent.intervention_reason_of_fields ~merged:false ~has_pr:true
+      ~is_pr_missing:false ~session_given_up:false ~human_in_queue:false
+      ~ci_failure_count:5 ~max_ci_failures:5 ~start_attempts_without_pr:0
+      ~conflict_noop_count:0 ~no_commits_push_count:0
+      ~context_exhaustion_count:0 ~push_failure_count:0 ~rebase_failure_count:0
+      ~pr_body_artifact_miss_count:0 ~review_unresolved_cycle_count:0
+  in
+  assert (
+    Option.equal String.equal reason_with_custom_cap
+      (Some "ci_failure_count>=5"));
   print_endline "PASS: raw intervention field decisions stay in lockstep"
 
 (* Exercise the whole Patch_agent decision surface. Some transitions have
@@ -263,6 +274,7 @@ let () =
              (fun a -> Patch_agent.reset_rebase_failure_count a);
              (fun a -> Patch_agent.increment_review_unresolved_cycle_count a);
              (fun a -> Patch_agent.reset_review_unresolved_cycle_count a);
+             (fun a -> Patch_agent.set_max_ci_failures a ~max_ci_failures:5);
              (fun a -> Patch_agent.reset_ci_failure_count a);
              (fun a -> Patch_agent.reset_context_exhaustion_count a);
              (fun a -> Patch_agent.reset_pr_body_artifact_miss_count a);
