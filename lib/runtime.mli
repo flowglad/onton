@@ -19,9 +19,16 @@ type snapshot = {
 type t
 
 val create :
-  gameplan:Gameplan.t -> main_branch:Branch.t -> ?snapshot:snapshot -> unit -> t
+  gameplan:Gameplan.t ->
+  main_branch:Branch.t ->
+  ?max_ci_failures:int ->
+  ?snapshot:snapshot ->
+  unit ->
+  t
 (** Build initial runtime state from a gameplan, optionally restoring a previous
-    [snapshot]. *)
+    [snapshot]. [max_ci_failures] is the resolved per-project CI-failure cap; it
+    is stamped onto the orchestrator (and every agent) in both the fresh and the
+    restore path, so config always wins over persisted values. *)
 
 (** {2 Atomic read access} *)
 

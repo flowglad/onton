@@ -62,6 +62,14 @@ let needs_intervention fields =
       (List.mem queue Operation_kind.Human ~equal:Operation_kind.equal)
     ~ci_failure_count:
       (Option.value (int_member fields "ci_failure_count") ~default:0)
+    ~max_ci_failures:
+      (* Pre-field events default to the built-in cap. On resume,
+         Runtime.create re-stamps live agents from config, but historical log
+         reconstruction here cannot recover the cap that was active when the
+         event was emitted. *)
+      (Option.value
+         (int_member fields "max_ci_failures")
+         ~default:Patch_agent.default_max_ci_failures)
     ~start_attempts_without_pr:
       (Option.value (int_member fields "start_attempts_without_pr") ~default:0)
     ~conflict_noop_count:

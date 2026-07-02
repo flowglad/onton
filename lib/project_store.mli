@@ -49,6 +49,11 @@ type stored_config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  max_ci_failures : int;
+      (** Per-project cap on consecutive CI-failure responses (see
+          {!Patch_agent.max_ci_failures}). Defaults to
+          [Patch_agent.default_max_ci_failures] on legacy configs predating the
+          field. *)
   url_scheme : string option;
       (** Persisted transport for the managed [origin]. [None] on legacy configs
           predating P0-D; gets auto-resolved on the next
@@ -67,6 +72,7 @@ val save_config :
   poll_interval:float ->
   repo_root:string ->
   max_concurrency:int ->
+  max_ci_failures:int ->
   ?url_scheme:string option ->
   unit ->
   unit

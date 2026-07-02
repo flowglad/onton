@@ -22,6 +22,7 @@ let make_view ~id ~title =
     current_op = None;
     current_op_state = Onton_core.Patch_agent.Queued;
     ci_failures = 0;
+    ci_failure_cap = Onton_core.Patch_agent.default_max_ci_failures;
     dep_ids = [];
     has_pr = false;
     has_conflict = false;

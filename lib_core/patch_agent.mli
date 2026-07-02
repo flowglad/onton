@@ -32,6 +32,14 @@ type t = private {
   base_branch : Types.Branch.t option;
   notified_base_branch : Types.Branch.t option;
   ci_failure_count : int;
+  max_ci_failures : int;
+      (** Per-project cap on consecutive CI-failure responses: at
+          [ci_failure_count >= max_ci_failures] the agent stops enqueueing [Ci]
+          feedback ({!Patch_decision.Cap_reached}) and contributes to
+          [needs_intervention]. Configuration, not state — stamped at
+          construction (and re-stamped on snapshot restore via
+          {!Orchestrator.set_max_ci_failures}) from the [--max-ci-failures] flag
+          / stored project config; defaults to {!default_max_ci_failures}. *)
   session_fallback : session_fallback;
   human_messages : string list;
   inflight_human_messages : string list;
@@ -156,16 +164,26 @@ type t = private {
 }
 [@@deriving show, eq, sexp_of, compare]
 
-val create : branch:Types.Branch.t -> Types.Patch_id.t -> t
-(** Initial state for a patch: no PR, not busy, empty queue. *)
+val default_max_ci_failures : int
+(** Built-in default for [max_ci_failures] (3). Single source of truth: the CLI
+    default, the stored-config fallback for legacy [config.json] files, and the
+    constructor defaults all reference this constant. *)
+
+val create :
+  branch:Types.Branch.t -> ?max_ci_failures:int -> Types.Patch_id.t -> t
+(** Initial state for a patch: no PR, not busy, empty queue. [max_ci_failures]
+    defaults to {!default_max_ci_failures}. *)
 
 val create_adhoc :
   patch_id:Types.Patch_id.t ->
   branch:Types.Branch.t ->
   pr_number:Types.Pr_number.t ->
+  max_ci_failures:int ->
   t
-(** Initial state for an ad-hoc patch: has PR, not busy, empty queue.
-    Corresponds to the spec's Add action:
+(** Initial state for an ad-hoc patch: has PR, not busy, empty queue. Ad-hoc
+    agents are created in a live orchestrator context
+    ({!Orchestrator.add_agent}), where the resolved project cap is already known
+    and must be stamped explicitly. Corresponds to the spec's Add action:
     {v PatchCtx ~> Add | p: Patch. --- has-pr' p. ~busy' p. ~in-gameplan' p. v}
 *)
 
@@ -192,10 +210,12 @@ val pr_number : t -> Types.Pr_number.t option
 val intervention_reason : t -> string option
 (** [Some reason] when the agent needs intervention; [None] otherwise. Returns
     the first triggering condition's short label, in the same priority order as
-    the predicate. The label strings — ["pr_missing"], ["ci_failure_count>=3"],
+    the predicate. The label strings — ["pr_missing"],
     ["conflict_noop_count>=2"], etc. — are stable and intended to land verbatim
     in the event log so operators can grep "why is this patch stuck?" by reason.
-*)
+    The CI label embeds the configured cap (["ci_failure_count>=3"] under the
+    default) — match it by the ["ci_failure_count>="] prefix, not the full
+    string. *)
 
 val intervention_reason_of_fields :
   merged:bool ->
@@ -204,6 +224,7 @@ val intervention_reason_of_fields :
   session_given_up:bool ->
   human_in_queue:bool ->
   ci_failure_count:int ->
+  max_ci_failures:int ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->
@@ -224,7 +245,7 @@ val needs_intervention : t -> bool
     - [is_pr_missing t] (PR vanished from the remote — bypasses the Human
       exemption; queued Human entries are deferred until [Missing → Present]
       recovery rather than dispatched while [Missing])
-    - [Human] not in queue AND any of: [ci_failure_count >= 3],
+    - [Human] not in queue AND any of: [ci_failure_count >= max_ci_failures],
       [(not has_pr) && start_attempts_without_pr >= 2],
       [conflict_noop_count >= 2], [no_commits_push_count >= 2],
       [context_exhaustion_count >= 2], [push_failure_count >= 3],
@@ -238,6 +259,7 @@ val needs_intervention_of_fields :
   session_given_up:bool ->
   human_in_queue:bool ->
   ci_failure_count:int ->
+  max_ci_failures:int ->
   start_attempts_without_pr:int ->
   conflict_noop_count:int ->
   no_commits_push_count:int ->
@@ -493,6 +515,11 @@ val reset_ci_failure_count : t -> t
 (** Reset [ci_failure_count] to 0. Called by the poller when CI checks pass
     after failures. [needs_intervention] is re-derived automatically. *)
 
+val set_max_ci_failures : t -> max_ci_failures:int -> t
+(** Stamp the per-project CI-failure cap onto the agent. Config, not a state
+    transition: does {e not} bump [generation], so restamping restored agents at
+    startup does not invalidate in-flight outbox messages. *)
+
 val reset_intervention_state : t -> t
 (** Reset [session_fallback] to [Fresh_available], [ci_failure_count] to 0,
     [start_attempts_without_pr] to 0, [conflict_noop_count] to 0,
@@ -647,6 +674,7 @@ val restore :
   base_branch:Types.Branch.t option ->
   notified_base_branch:Types.Branch.t option ->
   ci_failure_count:int ->
+  ?max_ci_failures:int ->
   session_fallback:session_fallback ->
   human_messages:string list ->
   inflight_human_messages:string list ->

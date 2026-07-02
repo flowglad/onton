@@ -306,6 +306,9 @@ type patch_view = {
           to render a "(queued)" suffix on busy statuses so a saturated Claude
           semaphore can be told apart from an actively running session. *)
   ci_failures : int;
+  ci_failure_cap : int;
+      (** The agent's [max_ci_failures] — carried so the render code can style
+          at-cap counts without hardcoding the default. *)
   dep_ids : (Patch_id.t * display_status) list;
   has_pr : bool;
   has_conflict : bool;
@@ -357,11 +360,11 @@ let human_intervention_reason (agent : Patch_agent.t) =
         | "pr_missing" ->
             "PR is missing from the remote \xe2\x80\x94 recreate it or \
              investigate why it vanished"
-        | "ci_failure_count>=3" ->
+        | code when String.is_prefix code ~prefix:"ci_failure_count>=" ->
             Printf.sprintf
-              "CI failed %d times in a row \xe2\x80\x94 fix the failing checks \
-               below"
+              "CI failed %d/%d times in a row - fix the failing checks below"
               agent.Patch_agent.ci_failure_count
+              agent.Patch_agent.max_ci_failures
         | "start_attempts_without_pr>=2" ->
             Printf.sprintf
               "Could not open a PR after %d attempts \xe2\x80\x94 open it \
@@ -486,6 +489,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
     current_op;
     current_op_state = agent.Patch_agent.current_op_state;
     ci_failures = agent.ci_failure_count;
+    ci_failure_cap = agent.max_ci_failures;
     dep_ids;
     has_pr = Patch_agent.has_pr agent;
     has_conflict = agent.has_conflict;
@@ -649,7 +653,7 @@ let render_patch_row ~width ~selected ~now (pv : patch_view) =
     | None -> "  --  "
   in
   let ci_info =
-    if pv.ci_failures >= 3 then
+    if pv.ci_failures >= pv.ci_failure_cap then
       Term.styled [ Term.Sgr.fg_red ] (Printf.sprintf " CI×%d" pv.ci_failures)
     else if pv.ci_failures > 0 then
       Term.styled [ Term.Sgr.fg_yellow ]
@@ -892,7 +896,7 @@ let detail_info_rows (pv : patch_view) ~width ~now =
         match pv.intervention_reason with
         | Some r -> sanitize_text r
         | None ->
-            if pv.ci_failures >= 3 then
+            if pv.ci_failures >= pv.ci_failure_cap then
               Printf.sprintf "CI failed %d times in a row" pv.ci_failures
             else "Session failed unexpectedly"
       in

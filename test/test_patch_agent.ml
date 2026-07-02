@@ -1317,7 +1317,10 @@ let () =
         Gen.(
           triple gen_pid gen_branch (map Pr_number.of_int (int_range 1 9999)))
         (fun (pid, br, pr) ->
-          let a = create_adhoc ~patch_id:pid ~branch:br ~pr_number:pr in
+          let a =
+            create_adhoc ~patch_id:pid ~branch:br ~pr_number:pr
+              ~max_ci_failures:default_max_ci_failures
+          in
           Branch.equal a.branch br);
       Test.make ~name:"patch agent public surface is linked" Gen.unit (fun () ->
           ignore add_human_messages;

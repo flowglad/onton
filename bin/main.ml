@@ -35,6 +35,7 @@ type repo_coords = {
 type run_knobs = {
   poll_interval : float;
   max_concurrency : int;
+  max_ci_failures : int;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -301,6 +302,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   let {
     poll_interval;
     max_concurrency;
+    max_ci_failures;
     headless;
     patch_agent_provider;
     patch_agent_effort;
@@ -318,7 +320,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
   Project_store.save_config ~project_name ~github_owner ~github_repo ~backend
     ~model
     ~main_branch:(Branch.to_string main_branch)
-    ~poll_interval ~repo_root ~max_concurrency
+    ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
     ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
     ();
   (* Refresh the agent-readable gameplan copy under artifacts/ so patch
@@ -337,6 +339,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       poll_interval;
       repo_root;
       max_concurrency;
+      max_ci_failures;
       headless;
       patch_agent_provider;
       patch_agent_effort;
@@ -353,7 +356,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       values. *)
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
-    ~headless ~(clone_scheme : string option) =
+    ~(max_ci_failures : int option) ~headless ~(clone_scheme : string option) =
   let clone_scheme_override =
     match clone_scheme with
     | None -> None
@@ -385,6 +388,11 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
     {
       poll_interval;
       max_concurrency;
+      (* Fresh/gameplan default; the resume path re-resolves against the
+         stored per-project value below. *)
+      max_ci_failures =
+        Option.value max_ci_failures
+          ~default:Patch_agent.default_max_ci_failures;
       headless;
       patch_agent_provider;
       patch_agent_effort;
@@ -649,12 +657,19 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                   in
                   (* Resume reuses the stored [poll_interval] and
                      [max_concurrency] rather than today's CLI defaults so a
-                     project's settled values survive without explicit flags. *)
+                     project's settled values survive without explicit flags.
+                     [max_ci_failures] can distinguish "flag passed" from
+                     "flag omitted" (it is optional at the CLI layer), so an
+                     explicit flag overrides the stored value; otherwise the
+                     stored value wins. *)
                   let run_knobs =
                     {
                       run_knobs with
                       poll_interval = stored.Project_store.poll_interval;
                       max_concurrency = stored.Project_store.max_concurrency;
+                      max_ci_failures =
+                        Option.value max_ci_failures
+                          ~default:stored.Project_store.max_ci_failures;
                     }
                   in
                   let backend_inputs =
@@ -709,7 +724,15 @@ type constructed_capabilities = {
 type built_fiber_env = (module FIBER_ENV)
 
 let setup_runtime env ~config ~gameplan ~existing_snapshot ~auto_merge =
-  let { Resolved_config.headless; project_name; main_branch; _ } = config in
+  let {
+    Resolved_config.headless;
+    project_name;
+    main_branch;
+    max_ci_failures;
+    _;
+  } =
+    config
+  in
   if headless then
     Sys.set_signal Sys.sigint
       (Sys.Signal_handle
@@ -721,10 +744,10 @@ let setup_runtime env ~config ~gameplan ~existing_snapshot ~auto_merge =
     match existing_snapshot with
     | Some snap ->
         Printf.eprintf "Resuming project %S from saved state.\n%!" project_name;
-        Runtime.create ~gameplan ~main_branch ~snapshot:snap ()
+        Runtime.create ~gameplan ~main_branch ~max_ci_failures ~snapshot:snap ()
     | None ->
         Printf.eprintf "Starting new project %S.\n%!" project_name;
-        Runtime.create ~gameplan ~main_branch ()
+        Runtime.create ~gameplan ~main_branch ~max_ci_failures ()
   in
   (* [--auto-merge] only seeds the initial state of a fresh project. On resume,
      each patch's persisted [automerge_enabled] wins so per-patch user toggles
@@ -1237,11 +1260,12 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops =
+    ~max_concurrency ~max_ci_failures ~headless ~no_lock ~auto_merge
+    ~clone_scheme ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
-      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~headless
-      ~clone_scheme
+      ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
+      ~headless ~clone_scheme
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1443,6 +1467,20 @@ let max_concurrency_arg =
         ~doc:"Maximum number of concurrent backend sessions (default: 5)."
         ~env:(Cmd.Env.info "ONTON_MAX_CONCURRENCY"))
 
+let max_ci_failures_arg =
+  let open Cmdliner in
+  Arg.(
+    value
+    & opt (some int) None
+    & info [ "max-ci-failures" ] ~docv:"N"
+        ~doc:
+          "Consecutive CI-failure responses per patch before onton stops \
+           enqueueing CI feedback and flags the patch for intervention \
+           (default: 3). Persisted to the project config on first run; on \
+           resume the stored value applies unless this flag is passed, in \
+           which case the flag wins and is persisted."
+        ~env:(Cmd.Env.info "ONTON_MAX_CI_FAILURES"))
+
 let headless_arg =
   let open Cmdliner in
   Arg.(
@@ -1504,8 +1542,8 @@ let auto_merge_arg =
 let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
-      poll_interval repo_root max_concurrency headless upload_debug no_lock
-      prune no_refresh auto_merge clone_scheme =
+      poll_interval repo_root max_concurrency max_ci_failures headless
+      upload_debug no_lock prune no_refresh auto_merge clone_scheme =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1541,14 +1579,16 @@ let main_cmd ~pr_ops =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~headless ~no_lock ~auto_merge ~clone_scheme ~pr_ops)
+        ~max_concurrency ~max_ci_failures ~headless ~no_lock ~auto_merge
+        ~clone_scheme ~pr_ops)
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ headless_arg $ upload_debug_arg $ no_lock_arg
-      $ prune_arg $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
+      $ max_concurrency_arg $ max_ci_failures_arg $ headless_arg
+      $ upload_debug_arg $ no_lock_arg $ prune_arg $ no_refresh_arg
+      $ auto_merge_arg $ clone_scheme_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

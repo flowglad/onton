@@ -12,7 +12,8 @@ type snapshot = {
 
 type t = { mutex : Eio.Mutex.t; mutable snap : snapshot }
 
-let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
+let create ~gameplan ~(main_branch : Branch.t)
+    ?(max_ci_failures = Patch_agent.default_max_ci_failures) ?snapshot () =
   let snap =
     match snapshot with
     | Some s ->
@@ -30,6 +31,16 @@ let create ~gameplan ~(main_branch : Branch.t) ?snapshot () =
           gameplan;
           transcripts = Base.Hashtbl.create (module Patch_id);
         }
+  in
+  (* Config wins over whatever the snapshot (or the constructor default)
+     carried: the cap is a per-project setting resolved from the CLI flag and
+     stored config, re-applied on every startup. *)
+  let snap =
+    {
+      snap with
+      orchestrator =
+        Orchestrator.set_max_ci_failures snap.orchestrator ~max_ci_failures;
+    }
   in
   { mutex = Eio.Mutex.create (); snap }
 

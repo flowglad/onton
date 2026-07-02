@@ -45,7 +45,8 @@ type ci_decision =
   | Ci_already_delivered
       (** Every currently failing check with a stable run id was already
           delivered to the agent. *)
-  | Cap_reached  (** CI failure count >= 3 — do not enqueue, flag. *)
+  | Cap_reached
+      (** CI failure count >= [max_ci_failures] — do not enqueue, flag. *)
 [@@deriving show, eq, sexp_of, compare]
 
 type human_decision =
@@ -123,7 +124,7 @@ let filter_undelivered_ci_failures (agent : Patch_agent.t) : Ci_check.t list =
             not (List.mem agent.delivered_ci_run_ids id ~equal:Int.equal))
 
 let on_ci_failure (a : Patch_agent.t) : ci_decision =
-  if a.ci_failure_count >= 3 then Cap_reached
+  if a.ci_failure_count >= a.max_ci_failures then Cap_reached
   else if
     a.busy
     && Option.equal Operation_kind.equal a.current_op (Some Operation_kind.Ci)

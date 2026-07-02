@@ -6,7 +6,7 @@
 open Onton
 open Onton_core
 
-let valid_config ~max_concurrency : Resolved_config.config =
+let valid_config ~max_concurrency ~max_ci_failures : Resolved_config.config =
   {
     Resolved_config.project = Some "project";
     Resolved_config.backend = "claude";
@@ -18,6 +18,7 @@ let valid_config ~max_concurrency : Resolved_config.config =
     Resolved_config.poll_interval = 1.0;
     Resolved_config.repo_root = ".";
     Resolved_config.max_concurrency;
+    Resolved_config.max_ci_failures;
     Resolved_config.headless = true;
     Resolved_config.patch_agent_provider = None;
     Resolved_config.patch_agent_effort = None;
@@ -30,8 +31,26 @@ let max_concurrency_must_be_positive =
     ~count:200
     QCheck2.Gen.(int_range (-20) 0)
     (fun max_concurrency ->
-      match Resolved_config.of_config (valid_config ~max_concurrency) with
+      match
+        Resolved_config.of_config
+          (valid_config ~max_concurrency
+             ~max_ci_failures:Patch_agent.default_max_ci_failures)
+      with
       | Ok _ -> false
       | Error errors -> List.length errors >= 1)
 
-let () = QCheck2.Test.check_exn max_concurrency_must_be_positive
+let max_ci_failures_must_be_positive =
+  QCheck2.Test.make ~name:"resolved config rejects non-positive CI cap"
+    ~count:200
+    QCheck2.Gen.(int_range (-20) 0)
+    (fun max_ci_failures ->
+      match
+        Resolved_config.of_config
+          (valid_config ~max_concurrency:1 ~max_ci_failures)
+      with
+      | Ok _ -> false
+      | Error errors -> List.length errors >= 1)
+
+let () =
+  QCheck2.Test.check_exn max_concurrency_must_be_positive;
+  QCheck2.Test.check_exn max_ci_failures_must_be_positive

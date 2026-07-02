@@ -141,6 +141,10 @@ type stored_config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  max_ci_failures : int; [@yojson.default Patch_agent.default_max_ci_failures]
+      (* Per-project CI-failure cap (see [Patch_agent.max_ci_failures]).
+         Defaulted on legacy configs predating the field; persisted so a value
+         set once via --max-ci-failures survives flag-less resumes. *)
   url_scheme : string option; [@yojson.default None]
       (* Persisted transport scheme for the managed clone's [origin]. [None]
          on legacy configs predating P0-D; on the next [ensure_managed_repo]
@@ -150,7 +154,7 @@ type stored_config = {
 [@@deriving yojson]
 
 let save_config ~project_name ~github_owner ~github_repo ~backend ~model
-    ~main_branch ~poll_interval ~repo_root ~max_concurrency
+    ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
     ?(url_scheme : string option = None) () =
   let dir = project_dir project_name in
   ensure_dir dir;
@@ -165,6 +169,7 @@ let save_config ~project_name ~github_owner ~github_repo ~backend ~model
       poll_interval;
       repo_root;
       max_concurrency;
+      max_ci_failures;
       url_scheme;
     }
   in
@@ -581,7 +586,8 @@ let%test "save_config persists no github_token and round-trips" =
       let project_name = "no-token" in
       save_config ~project_name ~github_owner:"o" ~github_repo:"r"
         ~backend:"claude" ~model:"sonnet" ~main_branch:"main" ~poll_interval:5.0
-        ~repo_root:"/tmp/r" ~max_concurrency:4 ();
+        ~repo_root:"/tmp/r" ~max_concurrency:4
+        ~max_ci_failures:Patch_agent.default_max_ci_failures ();
       let raw = read_file_for_test (config_path project_name) in
       (not (String.is_substring raw ~substring:"github_token"))
       &&
@@ -589,4 +595,5 @@ let%test "save_config persists no github_token and round-trips" =
       | Ok cfg ->
           String.equal cfg.project_name project_name
           && String.equal cfg.github_owner "o"
+          && Int.equal cfg.max_ci_failures Patch_agent.default_max_ci_failures
       | Error _ -> false)

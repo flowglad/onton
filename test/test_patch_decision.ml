@@ -119,6 +119,21 @@ let () =
           let a = with_pr pid br in
           let a = increment_ci_failure_count (increment_ci_failure_count a) in
           equal_ci_decision (on_ci_failure a) Enqueue_ci);
+      Test.make ~name:"on_ci_failure: respects configured cap"
+        Gen.(triple gen_pid gen_branch (int_range 1 10))
+        (fun (pid, br, cap) ->
+          let a =
+            create ~branch:br ~max_ci_failures:cap pid |> fun a ->
+            start a ~base_branch:br |> fun a ->
+            set_pr_number a (Pr_number.of_int 1) |> complete
+          in
+          let rec apply_n n f x =
+            if n <= 0 then x else apply_n (n - 1) f (f x)
+          in
+          let below = apply_n (cap - 1) increment_ci_failure_count a in
+          let at_cap = increment_ci_failure_count below in
+          equal_ci_decision (on_ci_failure below) Enqueue_ci
+          && equal_ci_decision (on_ci_failure at_cap) Cap_reached);
       (* ---- on_ci_failure: Ci already queued -> Already_queued ---- *)
       Test.make ~name:"on_ci_failure: Ci in queue -> Already_queued"
         Gen.(pair gen_pid gen_branch)

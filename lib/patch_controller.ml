@@ -187,7 +187,10 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
                 log "CI failure already delivered — skipping";
                 acc
             | Patch_decision.Cap_reached ->
-                log "CI failure cap reached (>=3) — skipping CI enqueue";
+                log
+                  (Printf.sprintf
+                     "CI failure cap reached (>=%d) — skipping CI enqueue"
+                     agent_before.Patch_agent.max_ci_failures);
                 acc)
         | Operation_kind.Review_comments | Operation_kind.Findings ->
             if is_new then

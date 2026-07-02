@@ -52,6 +52,8 @@ let () =
   let patches = mk_patches 1 in
   let orch = Orchestrator.create ~patches ~main_branch:main in
   let pid = pid_of_idx patches 0 in
+  let orch = Orchestrator.set_max_ci_failures orch ~max_ci_failures:5 in
+  assert ((Orchestrator.agent orch pid).Patch_agent.max_ci_failures = 5);
   let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
   assert (Orchestrator.agent orch pid).Patch_agent.busy;
   let orch =
@@ -608,6 +610,9 @@ let () =
          let orch, _patches, gameplan, pid = bootstrap_one () in
          let mid = Message_id.of_string "ao-surface-msg" in
          let orch = Orchestrator.set_main_branch orch main in
+         let orch = Orchestrator.set_max_ci_failures orch ~max_ci_failures:5 in
+         if (Orchestrator.agent orch pid).Patch_agent.max_ci_failures <> 5 then
+           QCheck2.Test.fail_reportf "max_ci_failures was not stamped";
          (* Compile-time check of the public [Gameplan.add_patch] contract:
             [Ok] carries an immutable [(Gameplan.t * Patch.t)] tuple. *)
          let gameplan_with_added, added_patch =
