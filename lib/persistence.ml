@@ -188,6 +188,7 @@ let patch_agent_to_yojson (a : Patch_agent.t) =
         | None -> `Null
         | Some b -> Branch.yojson_of_t b );
       ("ci_failure_count", `Int a.ci_failure_count);
+      ("max_ci_failures", `Int a.max_ci_failures);
       ( "session_fallback",
         Patch_agent.yojson_of_session_fallback a.session_fallback );
       ( "human_messages",
@@ -357,6 +358,13 @@ let patch_agent_of_yojson ~gameplan json =
                |> Option.map ~f:Branch.of_string
              else None)
        ~ci_failure_count:(int_member "ci_failure_count" json)
+       ~max_ci_failures:
+         (* Legacy snapshots predate the field; the built-in default matches
+            their behavior. [Runtime.create] restamps from config right after
+            restore either way. *)
+         (Option.value
+            (int_member_opt "max_ci_failures" json)
+            ~default:Patch_agent.default_max_ci_failures)
        ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
        ~merge_ready:(bool_member "merge_ready" json)
        ~head_oid:(string_member_opt "head_oid" json)

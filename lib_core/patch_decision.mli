@@ -34,11 +34,14 @@ type ci_decision =
   | Ci_already_delivered
       (** Every currently failing check with a stable run id was already
           delivered to the agent. *)
-  | Cap_reached  (** CI failure count >= 3 — do not enqueue, flag. *)
+  | Cap_reached
+      (** CI failure count >= [max_ci_failures] — do not enqueue, flag. *)
 [@@deriving show, eq, sexp_of, compare]
 
 val on_ci_failure : Patch_agent.t -> ci_decision
-(** Decide whether to enqueue a CI failure response or cap. *)
+(** Decide whether to enqueue a CI failure response or cap. The cap is the
+    agent's [max_ci_failures] field (per-project config, default
+    {!Patch_agent.default_max_ci_failures}). *)
 
 type human_decision =
   | Enqueue_human  (** Queue human feedback for processing. *)

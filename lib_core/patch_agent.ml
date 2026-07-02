@@ -25,6 +25,7 @@ type t = {
   base_branch : Branch.t option;
   notified_base_branch : Branch.t option;
   ci_failure_count : int;
+  max_ci_failures : int;
   session_fallback : session_fallback;
   human_messages : string list;
   inflight_human_messages : string list;
@@ -143,6 +144,7 @@ let has_pr t = Patch_pr_status.has_pr t.pr_status
 let is_pr_present t = Patch_pr_status.is_pr_present t.pr_status
 let is_pr_missing t = Patch_pr_status.is_missing t.pr_status
 let pr_number t = Patch_pr_status.pr_number t.pr_status
+let default_max_ci_failures = 3
 
 (* Single source of truth for the needs-intervention reason. Returns the
    first triggering condition's short label, or [None] when the predicate
@@ -152,7 +154,7 @@ let pr_number t = Patch_pr_status.pr_number t.pr_status
    event log so operators can grep for "why is this patch stuck?" by
    reason. *)
 let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~human_in_queue ~ci_failure_count
+    ~session_given_up ~human_in_queue ~ci_failure_count ~max_ci_failures
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
     ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
@@ -172,7 +174,8 @@ let intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
        short-circuit on it to keep the predicate self-consistent even for
        callers that don't pre-filter by [merged]. *)
   else if human_in_queue then None
-  else if ci_failure_count >= 3 then Some "ci_failure_count>=3"
+  else if ci_failure_count >= max_ci_failures then
+    Some (Printf.sprintf "ci_failure_count>=%d" max_ci_failures)
   else if (not has_pr) && start_attempts_without_pr >= 2 then
     Some "start_attempts_without_pr>=2"
   else if conflict_noop_count >= 2 then Some "conflict_noop_count>=2"
@@ -192,7 +195,7 @@ let intervention_reason t =
     ~session_given_up:(equal_session_fallback t.session_fallback Given_up)
     ~human_in_queue:
       (List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal)
-    ~ci_failure_count:t.ci_failure_count
+    ~ci_failure_count:t.ci_failure_count ~max_ci_failures:t.max_ci_failures
     ~start_attempts_without_pr:t.start_attempts_without_pr
     ~conflict_noop_count:t.conflict_noop_count
     ~no_commits_push_count:t.no_commits_push_count
@@ -205,18 +208,18 @@ let intervention_reason t =
 let needs_intervention t = Option.is_some (intervention_reason t)
 
 let needs_intervention_of_fields ~merged ~has_pr ~is_pr_missing
-    ~session_given_up ~human_in_queue ~ci_failure_count
+    ~session_given_up ~human_in_queue ~ci_failure_count ~max_ci_failures
     ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
     ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
     ~pr_body_artifact_miss_count ~review_unresolved_cycle_count =
   Option.is_some
     (intervention_reason_of_fields ~merged ~has_pr ~is_pr_missing
-       ~session_given_up ~human_in_queue ~ci_failure_count
+       ~session_given_up ~human_in_queue ~ci_failure_count ~max_ci_failures
        ~start_attempts_without_pr ~conflict_noop_count ~no_commits_push_count
        ~context_exhaustion_count ~push_failure_count ~rebase_failure_count
        ~pr_body_artifact_miss_count ~review_unresolved_cycle_count)
 
-let create ~branch patch_id =
+let create ~branch ?(max_ci_failures = default_max_ci_failures) patch_id =
   {
     patch_id;
     branch;
@@ -231,6 +234,7 @@ let create ~branch patch_id =
     base_branch = None;
     notified_base_branch = None;
     ci_failure_count = 0;
+    max_ci_failures;
     session_fallback = Fresh_available;
     human_messages = [];
     inflight_human_messages = [];
@@ -277,7 +281,7 @@ let create ~branch patch_id =
     delivered_ci_run_ids = [];
   }
 
-let create_adhoc ~patch_id ~branch ~pr_number =
+let create_adhoc ~patch_id ~branch ~pr_number ~max_ci_failures =
   {
     patch_id;
     branch;
@@ -292,6 +296,7 @@ let create_adhoc ~patch_id ~branch ~pr_number =
     base_branch = None;
     notified_base_branch = None;
     ci_failure_count = 0;
+    max_ci_failures;
     session_fallback = Fresh_available;
     human_messages = [];
     inflight_human_messages = [];
@@ -511,6 +516,11 @@ let increment_ci_failure_count t =
   { t with ci_failure_count = t.ci_failure_count + 1 }
 
 let reset_ci_failure_count t = { t with ci_failure_count = 0 }
+
+(* Config stamp, not a state transition: deliberately does not bump
+   [generation], so restoring a snapshot under a different --max-ci-failures
+   does not invalidate in-flight outbox messages. *)
+let set_max_ci_failures t ~max_ci_failures = { t with max_ci_failures }
 let set_ci_checks t checks = { t with ci_checks = checks }
 
 let record_delivered_ci_run_ids t ids =
@@ -597,8 +607,9 @@ let reset_busy t = if not t.busy then t else { t with busy = false }
 
 let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     ~satisfies ~changed ~has_conflict ~base_branch ~notified_base_branch
-    ~ci_failure_count ~session_fallback ~human_messages ~inflight_human_messages
-    ~ci_checks ~merge_ready ?(head_oid = None) ?(review_decision = None)
+    ~ci_failure_count ?(max_ci_failures = default_max_ci_failures)
+    ~session_fallback ~human_messages ~inflight_human_messages ~ci_checks
+    ~merge_ready ?(head_oid = None) ?(review_decision = None)
     ?(unresolved_comment_count = 0) ~mergeability_unknown ~merge_queue_required
     ~merge_queue_entry ~merge_commit_sha ~base_contains_merged_siblings
     ~is_draft ~pr_body_delivered ~pr_body_artifact_miss_count
@@ -625,6 +636,7 @@ let restore ~patch_id ~branch ~pr_status ~has_session ~busy ~merged ~queue
     base_branch;
     notified_base_branch;
     ci_failure_count;
+    max_ci_failures;
     session_fallback;
     human_messages;
     inflight_human_messages;

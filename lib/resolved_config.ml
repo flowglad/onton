@@ -14,6 +14,7 @@ type config = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  max_ci_failures : int;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -32,6 +33,7 @@ type t = {
   poll_interval : float;
   repo_root : string;
   max_concurrency : int;
+  max_ci_failures : int;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -46,7 +48,7 @@ let known_patch_agent_providers = [ "anthropic"; "openai" ]
 let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
 let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
-    ~github_repo ~main_branch ~poll_interval ~max_concurrency
+    ~github_repo ~main_branch ~poll_interval ~max_concurrency ~max_ci_failures
     ~patch_agent_provider ~patch_agent_effort =
   let errors =
     Base.List.filter_map
@@ -70,6 +72,9 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
         ( max_concurrency < 1,
           Printf.sprintf "--max-concurrency must be >= 1 (got %d)"
             max_concurrency );
+        ( max_ci_failures < 1,
+          Printf.sprintf "--max-ci-failures must be >= 1 (got %d)"
+            max_ci_failures );
         ( (match patch_agent_provider with
           | Some provider ->
               not
@@ -101,6 +106,7 @@ let of_config (config : config) =
       ~github_repo:config.github_repo ~main_branch:config.main_branch
       ~poll_interval:config.poll_interval
       ~max_concurrency:config.max_concurrency
+      ~max_ci_failures:config.max_ci_failures
       ~patch_agent_provider:config.patch_agent_provider
       ~patch_agent_effort:config.patch_agent_effort
   with
@@ -118,6 +124,7 @@ let of_config (config : config) =
           poll_interval = config.poll_interval;
           repo_root = config.repo_root;
           max_concurrency = config.max_concurrency;
+          max_ci_failures = config.max_ci_failures;
           headless = config.headless;
           patch_agent_provider = config.patch_agent_provider;
           patch_agent_effort = config.patch_agent_effort;

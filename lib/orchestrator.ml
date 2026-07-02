@@ -36,6 +36,11 @@ type t = {
   agents : Patch_agent.t Map.M(Patch_id).t;
   outbox : patch_agent_message Map.M(Message_id).t;
   main_branch : Branch.t;
+  max_ci_failures : int;
+      (* Per-project CI-failure cap stamped onto every agent (including ones
+         added later via [add_agent]/[add_planned_patch]). Set once at startup
+         through [set_max_ci_failures]; defaults to
+         [Patch_agent.default_max_ci_failures]. *)
 }
 
 let create ~patches ~main_branch =
@@ -54,7 +59,13 @@ let create ~patches ~main_branch =
               (Printf.sprintf "Orchestrator.create: duplicate patch id %s"
                  (Patch_id.to_string p.Patch.id)))
   in
-  { graph; agents; outbox = Map.empty (module Message_id); main_branch }
+  {
+    graph;
+    agents;
+    outbox = Map.empty (module Message_id);
+    main_branch;
+    max_ci_failures = Patch_agent.default_max_ci_failures;
+  }
 
 let agent t patch_id =
   match Map.find t.agents patch_id with
@@ -680,10 +691,34 @@ let graph t = t.graph
 
 let restore ~graph ~agents ~outbox ~main_branch () =
   let outbox = Map.filter outbox ~f:(fun msg -> Map.mem agents msg.patch_id) in
-  { graph; agents; outbox; main_branch }
+  (* The snapshot's per-agent [max_ci_failures] values are trusted here for
+     round-trip identity; [Runtime.create] restamps the whole orchestrator
+     with the resolved config value right after restore, so the running cap
+     always comes from config, not from stale persisted state. *)
+  {
+    graph;
+    agents;
+    outbox;
+    main_branch;
+    max_ci_failures = Patch_agent.default_max_ci_failures;
+  }
 
 let main_branch t = t.main_branch
 let set_main_branch t branch = { t with main_branch = branch }
+
+(* Stamps every agent (not just the [t] field) so the pure per-agent decisions
+   ([Patch_decision.on_ci_failure], [Patch_agent.needs_intervention]) see the
+   configured cap. [Patch_agent.set_max_ci_failures] does not bump
+   [generation], so restamping restored agents leaves in-flight outbox
+   messages valid. *)
+let set_max_ci_failures t ~max_ci_failures =
+  {
+    t with
+    max_ci_failures;
+    agents =
+      Map.map t.agents ~f:(Patch_agent.set_max_ci_failures ~max_ci_failures);
+  }
+
 let agents_map t = t.agents
 
 let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
@@ -702,7 +737,10 @@ let add_agent t ~patch_id ~branch ~base_branch ~pr_number =
     (* Do not seed agent.base_branch: persistence infers branch_rebased_onto
        from base_branch when the former is absent, which would fabricate a
        stale-rebase state on round-trip. The poller populates it next tick. *)
-    let agent = Patch_agent.create_adhoc ~patch_id ~branch ~pr_number in
+    let agent =
+      Patch_agent.create_adhoc ~patch_id ~branch ~pr_number
+        ~max_ci_failures:t.max_ci_failures
+    in
     let graph = Graph.add_patch_with_deps t.graph patch_id ~deps in
     { t with graph; agents = Map.set t.agents ~key:patch_id ~data:agent }
 
@@ -714,7 +752,10 @@ let add_planned_patch t (patch : Patch.t) ~deps =
        promotes it to [Ready_start] once its deps are satisfied. The caller is
        responsible for inserting [patch] into the gameplan in the same snapshot
        update so prompt composition can find it. *)
-    let agent = Patch_agent.create ~branch:patch.Patch.branch patch.Patch.id in
+    let agent =
+      Patch_agent.create ~branch:patch.Patch.branch
+        ~max_ci_failures:t.max_ci_failures patch.Patch.id
+    in
     let graph = Graph.add_patch_with_deps t.graph patch.Patch.id ~deps in
     { t with graph; agents = Map.set t.agents ~key:patch.Patch.id ~data:agent }
 

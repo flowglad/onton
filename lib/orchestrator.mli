@@ -193,6 +193,16 @@ val all_agents : t -> Patch_agent.t list
 val graph : t -> Graph.t
 val main_branch : t -> Branch.t
 val set_main_branch : t -> Branch.t -> t
+
+val set_max_ci_failures : t -> max_ci_failures:int -> t
+(** Stamp the per-project CI-failure cap onto the orchestrator and every current
+    agent, and remember it for agents added later
+    ([add_agent]/[add_planned_patch]). Called once at startup by
+    [Runtime.create] with the resolved config value — both for fresh
+    orchestrators and for snapshot restores, so a changed [--max-ci-failures]
+    takes effect on resume. Does not bump agent [generation]s (config stamp, not
+    a state transition). *)
+
 val agents_map : t -> Patch_agent.t Map.M(Patch_id).t
 
 val add_agent :

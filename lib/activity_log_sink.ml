@@ -62,6 +62,10 @@ let needs_intervention fields =
       (List.mem queue Operation_kind.Human ~equal:Operation_kind.equal)
     ~ci_failure_count:
       (Option.value (int_member fields "ci_failure_count") ~default:0)
+    ~max_ci_failures:
+      (Option.value
+         (int_member fields "max_ci_failures")
+         ~default:Patch_agent.default_max_ci_failures)
     ~start_attempts_without_pr:
       (Option.value (int_member fields "start_attempts_without_pr") ~default:0)
     ~conflict_noop_count:
