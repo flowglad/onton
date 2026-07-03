@@ -917,6 +917,16 @@ let assert_rebase_conflict label = function
   | Worktree.Error msg ->
       failwith (Printf.sprintf "%s: expected Conflict, got Error: %s" label msg)
 
+let assert_rebase_error label = function
+  | Worktree.Error msg when not (String.is_empty msg) -> ()
+  | Worktree.Error _ ->
+      failwith (Printf.sprintf "%s: expected non-empty Error" label)
+  | Worktree.Ok -> failwith (Printf.sprintf "%s: expected Error, got Ok" label)
+  | Worktree.Noop ->
+      failwith (Printf.sprintf "%s: expected Error, got Noop" label)
+  | Worktree.Conflict _ ->
+      failwith (Printf.sprintf "%s: expected Error, got Conflict" label)
+
 (** Simulate squash-merge of [branch] into main: checkout main, create a single
     new commit with the same tree diff, then delete [branch]. *)
 let squash_merge ~process_mgr ~dir ~branch =
@@ -1057,6 +1067,34 @@ let () =
        ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
    in
    assert_rebase_noop "test4: already up-to-date" result;
+   Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
+
+  (* ── Test 4b: dirty worktree prevents rebase → Error, not Conflict ─ *)
+  (let dir = init_repo () in
+   commit_file ~process_mgr ~dir ~filename:"a.txt" ~content:"a" ~msg:"A"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "-b"; "feat" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"f.txt" ~content:"f" ~msg:"F"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "main" ] |> ignore;
+   commit_file ~process_mgr ~dir ~filename:"m.txt" ~content:"m" ~msg:"M"
+   |> ignore;
+   git ~process_mgr ~dir [ "checkout"; "feat" ] |> ignore;
+   let dirty_path = Stdlib.Filename.concat dir "dirty.txt" in
+   let oc = Stdlib.open_out dirty_path in
+   Stdlib.output_string oc "dirty";
+   Stdlib.close_out oc;
+   git ~process_mgr ~dir [ "add"; "dirty.txt" ] |> ignore;
+   let result =
+     Worktree.rebase_onto ~process_mgr ~path:dir
+       ~target:(Types.Branch.of_string "main")
+       ~upstream:"main" ~project_name:"" ~ancestor_ids:[] ()
+   in
+   assert_rebase_error "test4b: dirty worktree" result;
+   let rebase_merge = Stdlib.Filename.concat dir ".git/rebase-merge" in
+   let rebase_apply = Stdlib.Filename.concat dir ".git/rebase-apply" in
+   if Stdlib.Sys.file_exists rebase_merge || Stdlib.Sys.file_exists rebase_apply
+   then failwith "test4b: rebase should not be in progress";
    Stdlib.Sys.command (Printf.sprintf "rm -rf %s" dir) |> ignore);
 
   (* ── Test 5: conflict during rebase → Conflict, working dir clean ─ *)

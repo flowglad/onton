@@ -678,6 +678,35 @@ let is_ancestor ~process_mgr ~path ~ancestor ~descendant =
   in
   code = 0
 
+let git_dir_opt ~process_mgr ~path =
+  let code, stdout, _ =
+    run_git_exit_code ~process_mgr
+      [ "git"; "-C"; path; "rev-parse"; "--git-dir" ]
+  in
+  if code <> 0 then None
+  else
+    let git_dir = String.strip stdout in
+    let git_dir =
+      if Stdlib.Filename.is_relative git_dir then
+        Stdlib.Filename.concat path git_dir
+      else git_dir
+    in
+    Some git_dir
+
+let rebase_in_progress_raw ~process_mgr ~path =
+  match git_dir_opt ~process_mgr ~path with
+  | None -> false
+  | Some git_dir ->
+      Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-merge")
+      || Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-apply")
+
+let classify_rebase_exit_1 ~process_mgr ~path ~stderr conflict =
+  if rebase_in_progress_raw ~process_mgr ~path then Conflict conflict
+  else
+    Error
+      (Printf.sprintf "rebase exited 1 without leaving a rebase in progress: %s"
+         (String.strip stderr))
+
 let rebase_onto ~upstream ~process_mgr ~path ~target ~project_name ~ancestor_ids
     () =
   let target = Types.Branch.to_string target in
@@ -734,7 +763,7 @@ let rebase_onto ~upstream ~process_mgr ~path ~target ~project_name ~ancestor_ids
              available because [classify_unique_commits] failed; the prompt
              renders a Plain-strategy recovery section recommending plain
              [git rebase <target>] instead of [--onto]. *)
-          Conflict
+          classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
             {
               target;
               old_base = (if String.equal upstream target then "" else upstream);
@@ -756,7 +785,7 @@ let rebase_onto ~upstream ~process_mgr ~path ~target ~project_name ~ancestor_ids
           (* Leave rebase in progress for agent to resolve, with the recovery
              info threaded through so the prompt can render the exact --onto
              command the supervisor used. *)
-          Conflict
+          classify_rebase_exit_1 ~process_mgr ~path ~stderr:rebase_stderr
             { target; old_base; unique_commits; strategy = Onto; orig_head }
 
 type push_result = Worktree_parser.push_result =
@@ -951,20 +980,7 @@ let force_push_with_lease ~process_mgr ~path ~branch ~base =
       classify_push_result ~code ~stdout ~stderr
 
 let rebase_in_progress ~process_mgr ~path =
-  let code, stdout, _ =
-    run_git_exit_code ~process_mgr
-      [ "git"; "-C"; path; "rev-parse"; "--git-dir" ]
-  in
-  if code <> 0 then false
-  else
-    let git_dir = String.strip stdout in
-    let git_dir =
-      if Stdlib.Filename.is_relative git_dir then
-        Stdlib.Filename.concat path git_dir
-      else git_dir
-    in
-    Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-merge")
-    || Stdlib.Sys.file_exists (Stdlib.Filename.concat git_dir "rebase-apply")
+  rebase_in_progress_raw ~process_mgr ~path
 
 let read_file_opt path =
   try
