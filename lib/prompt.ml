@@ -1167,8 +1167,7 @@ let render_turn_layer_ci ~(project_name : string) ?pr_number
 
 let ci_detailed_footer =
   "Diagnostics for each check are recorded at the paths above — read \
-   summary.md first, grep log.txt for more. Do NOT re-fetch check results or \
-   logs with gh."
+   summary.md first, grep log.txt for more."
 
 let render_ci_detail_lines (detail : ci_check_detail) =
   let lines =
@@ -2300,7 +2299,9 @@ let%test
          "artifacts/4/ci/run-11/summary.md (full log: log.txt, metadata: \
           check.json)"
   && String.is_substring prompt
-       ~substring:"Do NOT re-fetch check results or logs with gh."
+       ~substring:
+         "Diagnostics for each check are recorded at the paths above — read \
+          summary.md first, grep log.txt for more."
 
 let%test
     "render_turn_layer_ci_detailed collapses low-signal checks only when a \
