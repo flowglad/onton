@@ -189,6 +189,9 @@ struct
         in
         let apply_failure () =
           inflight_cleared := true;
+          (* [apply_automerge_failure] delegates to the shared automerge-state
+             transition, which clears [automerge_inflight] before incrementing
+             the failure count or applying the retry/cap deadline rules. *)
           Runtime.update_orchestrator runtime (fun orch ->
               Patch_controller.apply_automerge_failure orch
                 ~now:(Unix.gettimeofday ()) patch_id)
