@@ -81,6 +81,11 @@ val parse_dequeue_response : string -> (unit, error) Result.t
 (** Parse a [dequeuePullRequest] GraphQL response body. Pure helper exposed for
     regression tests. *)
 
+val build_dequeue_request_body : node_id:string -> string
+(** Build a [dequeuePullRequest] GraphQL request body. [node_id] must be the
+    PullRequest node id, not the MergeQueueEntry node id. Exposed for regression
+    tests. *)
+
 val parse_merge_queue_removal_response :
   string -> (Types.Ci_check.t list, error) Result.t
 (** Parse a merge-queue removal-event GraphQL response body into the failing

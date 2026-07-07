@@ -124,14 +124,31 @@ let pending_patch_3_enqueue_and_dequeue_parsing () =
       Printf.eprintf "  FAIL: future enqueue state parse errored: %s\n"
         (Onton.Github.show_error e);
       Stdlib.exit 1);
-  match
-    Onton.Github.parse_dequeue_response
-      {|{"data":{"dequeuePullRequest":{"clientMutationId":null}}}|}
-  with
+  (match
+     Onton.Github.parse_dequeue_response
+       {|{"data":{"dequeuePullRequest":{"clientMutationId":null}}}|}
+   with
   | Ok () -> ()
   | Error e ->
       Printf.eprintf "  FAIL: dequeue response parse errored: %s\n"
         (Onton.Github.show_error e);
+      Stdlib.exit 1);
+  let body =
+    Onton.Github.build_dequeue_request_body ~node_id:"PR_kwDORICuSc7u-Z8e"
+    |> Yojson.Safe.from_string
+  in
+  let id =
+    match body with
+    | `Assoc fields -> (
+        match Stdlib.List.assoc_opt "variables" fields with
+        | Some (`Assoc vars) -> Stdlib.List.assoc_opt "id" vars
+        | _ -> None)
+    | _ -> None
+  in
+  match id with
+  | Some (`String "PR_kwDORICuSc7u-Z8e") -> ()
+  | _ ->
+      Printf.eprintf "  FAIL: dequeue request did not carry PR node id\n";
       Stdlib.exit 1
 
 let pending_patch_3_merge_queue_405_detection () =
