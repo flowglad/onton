@@ -751,15 +751,31 @@ type review_request_decision = {
 let merge_queue_entry_unmergeable (entry : Pr_state.merge_queue_entry) =
   Pr_state.equal_merge_queue_entry_state entry.state Pr_state.Mq_unmergeable
 
+let merge_queue_alarm (agent : Patch_agent.t) =
+  agent.Patch_agent.has_conflict
+  || List.exists agent.Patch_agent.ci_checks ~f:Ci_check.is_failure
+  || Option.exists agent.Patch_agent.merge_queue_entry
+       ~f:merge_queue_entry_unmergeable
+
+let should_dequeue_merge_queue agent ~main_branch ~entry_id =
+  match agent.Patch_agent.merge_queue_entry with
+  | Some entry when String.equal entry.Pr_state.id entry_id ->
+      merge_queue_alarm agent
+      || not (Patch_agent.is_approved agent ~main_branch)
+  | Some _ | None -> false
+
 let automerge_action (agent : Patch_agent.t) ~main_branch =
   let approved = Patch_agent.is_approved agent ~main_branch in
   match (agent.Patch_agent.merge_queue_required, agent.merge_queue_entry) with
-  | true, Some entry when merge_queue_entry_unmergeable entry -> None
-  | true, Some entry when not approved -> Some (Dequeue entry.id)
+  | true, Some entry
+    when should_dequeue_merge_queue agent ~main_branch ~entry_id:entry.id ->
+      Some (Dequeue entry.id)
   | true, Some _ -> None
   | true, None when approved -> Some Enqueue
   | true, None -> None
-  | false, Some entry when not approved -> Some (Dequeue entry.id)
+  | false, Some entry
+    when should_dequeue_merge_queue agent ~main_branch ~entry_id:entry.id ->
+      Some (Dequeue entry.id)
   | false, Some _ -> None
   | false, None -> Some Direct_merge
 
@@ -821,68 +837,69 @@ let reconcile_automerge t ~now =
            so both guards must stay in sync. *)
         (t, decisions)
       else
-        let unmergeable_entry =
-          Option.exists agent.Patch_agent.merge_queue_entry
-            ~f:merge_queue_entry_unmergeable
+        let dequeue_action =
+          Option.bind agent.Patch_agent.merge_queue_entry ~f:(fun entry ->
+              if
+                should_dequeue_merge_queue agent ~main_branch
+                  ~entry_id:entry.Pr_state.id
+              then Some (Dequeue entry.id)
+              else None)
         in
-        let approved = Patch_agent.is_approved agent ~main_branch in
-        let cleanup_candidate =
-          Option.is_some agent.Patch_agent.merge_queue_entry && not approved
+        let emit_automerge_decision t action =
+          match Patch_agent.pr_number agent with
+          | Some pr_number when Patch_agent.is_pr_present agent ->
+              let t = Orchestrator.set_automerge_inflight t patch_id true in
+              ( t,
+                {
+                  merge_patch_id = patch_id;
+                  merge_pr_number = pr_number;
+                  action;
+                }
+                :: decisions )
+          | Some _ | None ->
+              (* Defensive clear so a future predicate change can't leave a
+                 patch with a permanently-elapsed deadline that fires every
+                 tick. *)
+              (Orchestrator.clear_automerge_deadline t patch_id, decisions)
         in
-        let candidate =
-          if unmergeable_entry then false
-          else if cleanup_candidate then
-            agent.Patch_agent.automerge_enabled
-            && agent.Patch_agent.automerge_failure_count
-               < automerge_max_failures
-          else is_automerge_candidate agent ~main_branch
-        in
-        match (candidate, agent.Patch_agent.automerge_deadline) with
-        | false, Some _ when automerge_transient_hold agent ~main_branch ->
-            (* merge_ready dropped only because GitHub is recomputing
+        match dequeue_action with
+        | Some action when agent.Patch_agent.automerge_enabled -> (
+            (* Dequeue queue-alarmed PRs immediately on first observation. If a
+               previous dequeue call failed, [runner_fiber_impl] pushed the
+               deadline forward; honor it as retry backoff. *)
+            match agent.Patch_agent.automerge_deadline with
+            | Some deadline when Float.(now < deadline) -> (t, decisions)
+            | None | Some _ -> emit_automerge_decision t action)
+        | Some _ | None -> (
+            let candidate = is_automerge_candidate agent ~main_branch in
+            match (candidate, agent.Patch_agent.automerge_deadline) with
+            | false, Some _ when automerge_transient_hold agent ~main_branch ->
+                (* merge_ready dropped only because GitHub is recomputing
                mergeability (mergeStateStatus = UNKNOWN) after the base
                advanced — typically a sibling patch merging. Hold the existing
                deadline so the idle window keeps counting real elapsed time
                instead of restarting on every sibling merge. We do not fire
                here (firing requires merge_ready / CLEAN); the next CLEAN poll
                re-qualifies the candidate and the preserved deadline elapses. *)
-            (t, decisions)
-        | false, Some _ ->
-            (* Feedback arrived, lost approval, CI flipped, or failure cap
+                (t, decisions)
+            | false, Some _ ->
+                (* Feedback arrived, lost approval, CI flipped, or failure cap
                hit: drop the deadline so the next reconcile re-arms a fresh
                idle window once the patch becomes a candidate again. *)
-            (Orchestrator.clear_automerge_deadline t patch_id, decisions)
-        | false, None -> (t, decisions)
-        | true, None ->
-            let deadline = now +. automerge_idle_timeout in
-            (Orchestrator.set_automerge_deadline t patch_id deadline, decisions)
-        | true, Some deadline ->
-            if Float.( >= ) now deadline then
-              match Patch_agent.pr_number agent with
-              | Some pr_number when Patch_agent.is_pr_present agent -> (
+                (Orchestrator.clear_automerge_deadline t patch_id, decisions)
+            | false, None -> (t, decisions)
+            | true, None ->
+                let deadline = now +. automerge_idle_timeout in
+                ( Orchestrator.set_automerge_deadline t patch_id deadline,
+                  decisions )
+            | true, Some deadline ->
+                if Float.( >= ) now deadline then
                   match automerge_action agent ~main_branch with
                   | None ->
                       ( Orchestrator.clear_automerge_deadline t patch_id,
                         decisions )
-                  | Some action ->
-                      let t =
-                        Orchestrator.set_automerge_inflight t patch_id true
-                      in
-                      ( t,
-                        {
-                          merge_patch_id = patch_id;
-                          merge_pr_number = pr_number;
-                          action;
-                        }
-                        :: decisions ))
-              | Some _ | None ->
-                  (* Unreachable today because [is_automerge_candidate]
-                     requires [is_approved] which requires [has_pr]. Defensive
-                     clear so a future predicate change can't leave a patch
-                     with a permanently-elapsed deadline that fires every
-                     tick. *)
-                  (Orchestrator.clear_automerge_deadline t patch_id, decisions)
-            else (t, decisions))
+                  | Some action -> emit_automerge_decision t action
+                else (t, decisions)))
   |> fun (t, decisions) -> (t, List.rev decisions)
 
 let reconcile_review_requests t =

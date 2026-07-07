@@ -180,6 +180,13 @@ val automerge_transient_hold : Patch_agent.t -> main_branch:Branch.t -> bool
     checks, queued feedback, or a hit failure cap all fall through to the normal
     clear. *)
 
+val should_dequeue_merge_queue :
+  Patch_agent.t -> main_branch:Branch.t -> entry_id:string -> bool
+(** [true] when an already-enqueued PR should be removed from GitHub's merge
+    queue. This includes explicit queue alarms ([UNMERGEABLE] entries, conflict
+    state, or visible failing checks) and lost approval. The runner uses the
+    same predicate as [reconcile_automerge] for its pre-flight recheck. *)
+
 val reconcile_automerge :
   Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
 (** Reconcile the automerge deadline for every agent and return decisions to
