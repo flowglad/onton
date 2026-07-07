@@ -438,8 +438,8 @@ let () =
   let main = Types.Branch.of_string "main" in
   let mk_view ?(has_pr = true) ?(merged = false) ?(busy = false)
       ?(needs_intervention = false) ?(branch_blocked = false) ?(queue = [])
-      ?(base_contains_merged_siblings = true) ?(sibling_rebase_target = None) id
-      =
+      ?(in_merge_queue = false) ?(base_contains_merged_siblings = true)
+      ?(sibling_rebase_target = None) id =
     Reconciler.
       {
         id;
@@ -448,6 +448,7 @@ let () =
         busy;
         needs_intervention;
         branch_blocked;
+        in_merge_queue;
         queue;
         base_branch = main;
         branch_rebased_onto = Some main;
@@ -1131,12 +1132,13 @@ let () =
   let prop_psf8_transient_reason_does_not_escalate =
     Test.make
       ~name:
-        "PSF-8: Session_push_failed with Lease_violation / None / Unknown does \
-         NOT immediately escalate to Given_up"
+        "PSF-8: Session_push_failed with Lease_violation / Merge_queue_locked \
+         / None / Unknown does NOT immediately escalate to Given_up"
       (Gen.oneof
          [
            Gen.return None;
            Gen.return (Some Push_reject_classify.Lease_violation);
+           Gen.return (Some Push_reject_classify.Merge_queue_locked);
            Gen.return (Some (Push_reject_classify.Unknown ""));
          ])
       (fun reason ->

@@ -409,6 +409,7 @@ val apply_rebase_with_anchor :
 type rebase_push_resolution =
   | Rebase_push_ok
   | Rebase_push_failed
+  | Rebase_push_queue_locked
   | Rebase_push_error
 [@@deriving show, eq, sexp_of]
 
@@ -421,6 +422,12 @@ val apply_rebase_push_result :
     - [Rebase_push_ok]: push succeeded or was up-to-date; no further action.
     - [Rebase_push_failed]: push was rejected (lease failure); resets conflict
       state and enqueues [Merge_conflict] so the next poll cycle retries.
+    - [Rebase_push_queue_locked]: push was rejected because the PR is queued in
+      a merge queue ([Push_reject_classify.Merge_queue_locked]). Inert: no
+      conflict state, no enqueue. The local rebase already landed so
+      [branch_rebased_onto] is current; a merge from the queue needs nothing
+      further, and an ejection-as-Conflicting surfaces through the poll path,
+      whose conflict-resolution no-op + now-unlocked push syncs the remote.
     - [Rebase_push_error]: infrastructure error; enqueues [Rebase] to retry
       without entering the conflict path. *)
 

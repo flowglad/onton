@@ -270,13 +270,9 @@ struct
                           && List.is_empty agent.Patch_agent.queue
                           && agent.Patch_agent.automerge_failure_count
                              < Patch_controller.automerge_max_failures
-                      | Patch_controller.Dequeue entry_id -> (
-                          (not (Patch_agent.is_approved agent ~main_branch))
-                          &&
-                          match agent.Patch_agent.merge_queue_entry with
-                          | Some entry ->
-                              String.equal entry.Pr_state.id entry_id
-                          | None -> false)))
+                      | Patch_controller.Dequeue entry_id ->
+                          Patch_controller.should_dequeue_merge_queue agent
+                            ~main_branch ~entry_id))
             in
             if not still_candidate then (
               log_event runtime ~patch_id
@@ -302,7 +298,8 @@ struct
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeued PR #%d from GitHub merge \
-                              queue after approval was lost"
+                              queue after approval was lost or GitHub reported \
+                              a queue alarm"
                              (Pr_number.to_int pr_number))
                     | Error err ->
                         push_deadline_and_clear_inflight ();
@@ -1256,6 +1253,10 @@ struct
                             log_event runtime ~patch_id
                               "Enqueued merge-conflict after rebase push \
                                rejection"
+                        | Orchestrator.Rebase_push_queue_locked ->
+                            log_event runtime ~patch_id
+                              "Rebase push rejected: PR is queued in the merge \
+                               queue; dropping (queue will merge or eject)"
                         | Orchestrator.Rebase_push_error ->
                             log_event runtime ~patch_id
                               "Enqueued rebase retry after push error");

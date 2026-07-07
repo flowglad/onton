@@ -2184,6 +2184,7 @@ let () =
                   busy = ag.Patch_agent.busy;
                   needs_intervention = Patch_agent.needs_intervention ag;
                   branch_blocked = ag.Patch_agent.branch_blocked;
+                  in_merge_queue = Patch_agent.in_merge_queue ag;
                   queue = ag.Patch_agent.queue;
                   base_branch =
                     Option.value ag.Patch_agent.base_branch ~default:main;
@@ -2833,6 +2834,7 @@ let reconcile_views_of orch =
           busy = ag.Patch_agent.busy;
           needs_intervention = Patch_agent.needs_intervention ag;
           branch_blocked = ag.Patch_agent.branch_blocked;
+          in_merge_queue = Patch_agent.in_merge_queue ag;
           queue = ag.Patch_agent.queue;
           base_branch = Option.value ag.Patch_agent.base_branch ~default:main;
           branch_rebased_onto = ag.Patch_agent.branch_rebased_onto;

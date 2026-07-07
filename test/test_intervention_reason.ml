@@ -20,6 +20,7 @@ let agent () =
   Patch_agent.create ~branch:(Branch.of_string "b")
     (Patch_id.of_string "patch-1")
 
+let merge_queue_entry id = Pr_state.{ id; state = Mq_queued; position = 0 }
 let rec apply n f x = if n <= 0 then x else apply (n - 1) f (f x)
 
 let contains s sub =
@@ -34,7 +35,12 @@ let () =
   (* A healthy agent needs no intervention and has no banner reason. *)
   let a = agent () in
   assert (not (Patch_agent.needs_intervention a));
+  assert (not (Patch_agent.in_merge_queue a));
   assert (Option.is_none (Tui.human_intervention_reason a));
+  let queued =
+    Patch_agent.set_merge_queue_entry a (Some (merge_queue_entry "mq-1"))
+  in
+  assert (Patch_agent.in_merge_queue queued);
 
   (* Three CI failures is the documented threshold for intervention. *)
   let stuck = apply 3 Patch_agent.increment_ci_failure_count a in
@@ -328,6 +334,7 @@ let () =
              (agent ()) transitions
          in
          let _history = Patch_agent.anchor_history a in
+         let _in_merge_queue = Patch_agent.in_merge_queue a in
          let _priority = Patch_agent.highest_priority a in
          let _approved =
            Patch_agent.is_approved_modulo_merge_ready a ~main_branch:main

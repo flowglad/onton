@@ -627,6 +627,7 @@ struct
                       busy = a.Patch_agent.busy;
                       needs_intervention = Patch_agent.needs_intervention a;
                       branch_blocked = a.Patch_agent.branch_blocked;
+                      in_merge_queue = Patch_agent.in_merge_queue a;
                       queue = a.Patch_agent.queue;
                       base_branch =
                         Option.value a.Patch_agent.base_branch ~default:main;

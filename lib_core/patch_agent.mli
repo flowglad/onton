@@ -397,6 +397,16 @@ val set_merge_queue_required : t -> bool -> t
 val set_merge_queue_entry : t -> Pr_state.merge_queue_entry option -> t
 (** Set the current merge-queue entry, if any. *)
 
+val in_merge_queue : t -> bool
+(** [true] when the PR currently sits in a merge queue
+    ([merge_queue_entry <> None], refreshed every poll via
+    [Automerge_state.observe_merge_queue]). While true, the head branch is
+    push-locked by GitHub ([Push_reject_classify.Merge_queue_locked]) and the
+    queue itself validates against the latest base — so rebase/conflict demand
+    for the patch is redundant and its pushes are guaranteed to be rejected.
+    Enqueue-side gates ([Reconciler] detectors, [Orchestrator.mark_merged] and
+    the stranded-dependent cascade) consult this predicate. *)
+
 val set_merge_commit_sha : t -> string option -> t
 (** Record the squash/merge commit SHA (GitHub [mergeCommit.oid]) when the PR is
     observed merged. *)

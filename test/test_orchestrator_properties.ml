@@ -13,6 +13,28 @@ open Onton_core.Types
     arbitrary command sequences. *)
 
 let main = Branch.of_string "main"
+let merge_queue_entry = Pr_state.{ id = "mq"; state = Mq_queued; position = 1 }
+
+let patch ?(dependencies = []) id =
+  let id = Patch_id.of_string id in
+  Patch.
+    {
+      id;
+      title = Patch_id.to_string id;
+      description = "";
+      branch = Branch.of_string (Patch_id.to_string id);
+      dependencies;
+      spec = "";
+      acceptance_criteria = [];
+      files = [];
+      classification = "";
+      changes = [];
+      test_stubs_introduced = [];
+      test_stubs_implemented = [];
+      complexity = None;
+      precedents = [];
+      required_context = [];
+    }
 
 (* Stub conflict_info: the orchestrator's Conflict arm doesn't inspect the
    payload, so a Plain-strategy zero-info value is a sound stand-in. *)
@@ -717,6 +739,71 @@ let () =
         with _ -> false)
   in
 
+  let prop_mark_merged_skips_merge_queue_dependents =
+    Test.make
+      ~name:
+        "MQ-CASCADE-1: mark_merged does not enqueue Rebase for dependent in \
+         merge queue"
+      Gen.(return ())
+      (fun () ->
+        try
+          let parent = patch "parent" in
+          let child = patch "child" ~dependencies:[ parent.Patch.id ] in
+          let patches = [ parent; child ] in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch =
+            Orchestrator.set_pr_number orch child.Patch.id (Pr_number.of_int 2)
+          in
+          let orch =
+            Orchestrator.set_merge_queue_entry orch child.Patch.id
+              (Some merge_queue_entry)
+          in
+          let orch = Orchestrator.mark_merged orch parent.Patch.id in
+          let child_agent = Orchestrator.agent orch child.Patch.id in
+          not
+            (List.mem child_agent.Patch_agent.queue Operation_kind.Rebase
+               ~equal:Operation_kind.equal)
+        with _ -> false)
+  in
+
+  let prop_rebase_cascade_skips_merge_queue_dependents =
+    Test.make
+      ~name:
+        "MQ-CASCADE-2: completed rebase does not strand-enqueue queued \
+         dependent"
+      Gen.(return ())
+      (fun () ->
+        try
+          let parent = patch "parent" in
+          let child = patch "child" ~dependencies:[ parent.Patch.id ] in
+          let patches = [ parent; child ] in
+          let orch = Orchestrator.create ~patches ~main_branch:main in
+          let orch =
+            Orchestrator.set_pr_number orch parent.Patch.id (Pr_number.of_int 1)
+          in
+          let orch =
+            Orchestrator.fire orch
+              (Orchestrator.Start (child.Patch.id, parent.Patch.branch))
+          in
+          let orch =
+            Orchestrator.set_pr_number orch child.Patch.id (Pr_number.of_int 2)
+          in
+          let orch = Orchestrator.complete orch child.Patch.id in
+          let orch =
+            Orchestrator.set_merge_queue_entry orch child.Patch.id
+              (Some merge_queue_entry)
+          in
+          let orch, _effects =
+            Orchestrator.apply_rebase_result orch parent.Patch.id Worktree.Ok
+              main
+          in
+          let child_agent = Orchestrator.agent orch child.Patch.id in
+          not
+            (List.mem child_agent.Patch_agent.queue Operation_kind.Rebase
+               ~equal:Operation_kind.equal)
+        with _ -> false)
+  in
+
   (* ========== apply_rebase_push_result properties ========== *)
 
   (* Push_ok -> Rebase_push_ok, no conflict *)
@@ -798,6 +885,45 @@ let () =
               && a.Patch_agent.has_conflict
               && List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
                    ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
+  (* ARP-QL-1: a merge-queue-locked rejection is inert — the PR is queued, so
+     there is no conflict and nothing to retry. Guards the incident spiral
+     where the queue lock was read as a conflict. *)
+  let prop_rebase_push_queue_locked =
+    Test.make
+      ~name:
+        "ARP-QL-1: apply_rebase_push_result: Push_rejected Merge_queue_locked \
+         -> Rebase_push_queue_locked, no conflict, nothing enqueued"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, _effects =
+                Orchestrator.apply_rebase_result orch pid Worktree.Ok new_base
+              in
+              let orch, resolution =
+                Orchestrator.apply_rebase_push_result orch pid
+                  (Some
+                     (Worktree.Push_rejected
+                        Push_reject_classify.Merge_queue_locked))
+              in
+              let a = Orchestrator.agent orch pid in
+              Orchestrator.equal_rebase_push_resolution resolution
+                Orchestrator.Rebase_push_queue_locked
+              && (not a.Patch_agent.has_conflict)
+              && (not
+                    (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                       ~equal:Operation_kind.equal))
+              && (not
+                    (List.mem a.Patch_agent.queue Operation_kind.Rebase
+                       ~equal:Operation_kind.equal))
+              && not (Patch_agent.needs_intervention a)
         with _ -> false)
   in
 
@@ -1098,6 +1224,48 @@ let () =
               && a.Patch_agent.has_conflict
               && List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
                    ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
+  (* ACP-QL-1: a Noop conflict-resolution whose push hits the merge-queue lock
+     is done, not stuck: the noop was evidence of a queued clean PR. The stray
+     noop-counter increment from the Noop arm must be undone, or repeated
+     queue-locked pushes walk conflict_noop_count to the >=2 intervention
+     threshold (the incident's exact spiral). *)
+  let prop_conflict_push_queue_locked =
+    Test.make
+      ~name:
+        "ACP-QL-1: apply_conflict_push_result: Resolved(Noop) + Push_rejected \
+         Merge_queue_locked -> Conflict_done, noop counter reset"
+      (Gen.pair gen_patch_list_unique gen_branch) (fun (patches, new_base) ->
+        try
+          match patches with
+          | [] -> true
+          | first :: _ ->
+              let pid = first.Patch.id in
+              let orch = Orchestrator.create ~patches ~main_branch:main in
+              let orch, _effects, _actions = tick orch ~patches in
+              let orch, decision, _effects =
+                Orchestrator.apply_conflict_rebase_result orch pid Worktree.Noop
+                  new_base
+              in
+              (Orchestrator.agent orch pid).Patch_agent.conflict_noop_count = 1
+              &&
+              let orch, resolution =
+                Orchestrator.apply_conflict_push_result orch pid decision
+                  (Some
+                     (Worktree.Push_rejected
+                        Push_reject_classify.Merge_queue_locked))
+              in
+              let a = Orchestrator.agent orch pid in
+              Orchestrator.equal_conflict_resolution resolution
+                Orchestrator.Conflict_done
+              && a.Patch_agent.conflict_noop_count = 0
+              && (not a.Patch_agent.has_conflict)
+              && (not
+                    (List.mem a.Patch_agent.queue Operation_kind.Merge_conflict
+                       ~equal:Operation_kind.equal))
+              && not (Patch_agent.needs_intervention a)
         with _ -> false)
   in
 
@@ -1687,9 +1855,12 @@ let () =
       prop_rebase_success_resets_rebase_failure_budget;
       prop_rebase_success_preserves_session_fallback;
       prop_rebase_conflict_resets_rebase_failure_budget;
+      prop_mark_merged_skips_merge_queue_dependents;
+      prop_rebase_cascade_skips_merge_queue_dependents;
       prop_rebase_push_ok;
       prop_rebase_push_up_to_date;
       prop_rebase_push_rejected;
+      prop_rebase_push_queue_locked;
       prop_rebase_push_error;
       prop_rebase_push_none;
       prop_conflict_rebase_ok;
@@ -1701,6 +1872,7 @@ let () =
       prop_conflict_rebase_sets_base;
       prop_conflict_push_resolved_ok;
       prop_conflict_push_resolved_rejected;
+      prop_conflict_push_queue_locked;
       prop_conflict_push_deliver_ok;
       prop_conflict_push_deliver_up_to_date;
       prop_conflict_push_deliver_no_push;

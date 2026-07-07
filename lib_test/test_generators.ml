@@ -494,6 +494,7 @@ let gen_patch_view =
             busy;
             needs_intervention;
             branch_blocked;
+            in_merge_queue = false;
             queue;
             base_branch;
             (* Conservative default for existing randomized tests: no drift
@@ -780,6 +781,7 @@ let apply_reconcile_actions orch ~main ~branch_of =
             busy = a.Onton_core.Patch_agent.busy;
             needs_intervention = Onton_core.Patch_agent.needs_intervention a;
             branch_blocked = a.Onton_core.Patch_agent.branch_blocked;
+            in_merge_queue = Onton_core.Patch_agent.in_merge_queue a;
             queue = a.Onton_core.Patch_agent.queue;
             base_branch =
               Option.value a.Onton_core.Patch_agent.base_branch ~default:main;

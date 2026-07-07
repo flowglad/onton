@@ -56,18 +56,18 @@ let make_orch patch agent =
 
 let make_agent ?(merge_ready = false) ?(mergeability_unknown = false)
     ?(merge_queue_required = false) ?(merge_queue_entry = None)
-    ?(checks_passing = false) ?(head_oid = None) ?(review_decision = None)
-    ?(unresolved_comment_count = 0) ?(review_requested_for_oid = None)
-    ?(review_request_inflight = false) ?(automerge_enabled = false)
-    ?automerge_deadline ?(automerge_failure_count = 0) ~patch_id ~branch
-    ~pr_status ~merged ~queue ~base_branch ~is_draft ~pr_body_delivered
-    ~start_attempts_without_pr () =
+    ?(checks_passing = false) ?(ci_checks = []) ?(has_conflict = false)
+    ?(head_oid = None) ?(review_decision = None) ?(unresolved_comment_count = 0)
+    ?(review_requested_for_oid = None) ?(review_request_inflight = false)
+    ?(automerge_enabled = false) ?automerge_deadline
+    ?(automerge_failure_count = 0) ~patch_id ~branch ~pr_status ~merged ~queue
+    ~base_branch ~is_draft ~pr_body_delivered ~start_attempts_without_pr () =
   Patch_agent.restore ~patch_id ~branch ~pr_status ~has_session:false
-    ~busy:false ~merged ~queue ~satisfies:false ~changed:false
-    ~has_conflict:false ~base_branch ~notified_base_branch:base_branch
-    ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
-    ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[] ~merge_ready
-    ~head_oid ~review_decision ~unresolved_comment_count ~mergeability_unknown
+    ~busy:false ~merged ~queue ~satisfies:false ~changed:false ~has_conflict
+    ~base_branch ~notified_base_branch:base_branch ~ci_failure_count:0
+    ~session_fallback:Patch_agent.Fresh_available ~human_messages:[]
+    ~inflight_human_messages:[] ~ci_checks ~merge_ready ~head_oid
+    ~review_decision ~unresolved_comment_count ~mergeability_unknown
     ~merge_queue_required ~merge_queue_entry ~is_draft ~pr_body_delivered
     ~pr_body_artifact_miss_count:0 ~start_attempts_without_pr
     ~conflict_noop_count:0 ~no_commits_push_count:0 ~context_exhaustion_count:0
@@ -1590,35 +1590,117 @@ let () =
         | _ -> false)
   in
 
-  let pending_patch_4_unmergeable_clears_automerge_deadline =
+  let pending_patch_4_unmergeable_dequeues =
     Test.make
       ~name:
-        "patch_controller: Patch 4 UNMERGEABLE entry clears automerge deadline"
+        "patch_controller: Patch 4 UNMERGEABLE entry dequeues from merge queue"
       QCheck2.Gen.unit (fun () ->
         let pid = Patch_id.of_string "mq-unmergeable" in
         let branch = Branch.of_string "feat/mq-unmergeable" in
         let patch = make_patch pid branch in
+        let pr_number = Pr_number.of_int 404 in
+        let entry =
+          merge_queue_entry "MQE_unmergeable" ~state:Pr_state.Mq_unmergeable
+        in
         let agent =
           make_agent ~patch_id:pid ~branch
-            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 404))
-            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_status:(Patch_pr_status.Present pr_number) ~merged:false
+            ~queue:[] ~base_branch:(Some main) ~is_draft:false
             ~pr_body_delivered:true ~start_attempts_without_pr:0
             ~merge_ready:true ~checks_passing:true ~merge_queue_required:true
-            ~merge_queue_entry:
-              (Some
-                 (merge_queue_entry "MQE_unmergeable"
-                    ~state:Pr_state.Mq_unmergeable))
-            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+            ~merge_queue_entry:(Some entry) ~automerge_enabled:true
+            ~automerge_deadline:0.0 ()
         in
         let orch = make_orch patch agent in
         let orch, decisions =
           Patch_controller.reconcile_automerge orch ~now:1.0
         in
-        let agent = Orchestrator.agent orch pid in
-        List.is_empty decisions
-        && agent.Patch_agent.automerge_failure_count = 0
-        && (not agent.Patch_agent.automerge_inflight)
-        && Option.is_none agent.Patch_agent.automerge_deadline)
+        match decisions with
+        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+            Patch_id.equal merge_patch_id pid
+            && Pr_number.equal merge_pr_number pr_number
+            && Patch_controller.equal_merge_action action
+                 (Patch_controller.Dequeue entry.Pr_state.id)
+            && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
+        | _ -> false)
+  in
+
+  let pending_patch_4_visible_ci_failure_dequeues =
+    Test.make
+      ~name:
+        "patch_controller: queued PR with visible failing check dequeues from \
+         merge queue" QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-ci-failure" in
+        let branch = Branch.of_string "feat/mq-ci-failure" in
+        let patch = make_patch pid branch in
+        let pr_number = Pr_number.of_int 407 in
+        let entry = merge_queue_entry "MQE_ci_failure" in
+        let failing_check =
+          Ci_check.
+            {
+              name = "ci";
+              conclusion = "failure";
+              details_url = None;
+              description = None;
+              started_at = None;
+              id = Some 407;
+            }
+        in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present pr_number) ~merged:false
+            ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~checks_passing:false
+            ~ci_checks:[ failing_check ] ~merge_queue_required:true
+            ~merge_queue_entry:(Some entry) ~automerge_enabled:true ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        match decisions with
+        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+            Patch_id.equal merge_patch_id pid
+            && Pr_number.equal merge_pr_number pr_number
+            && Patch_controller.equal_merge_action action
+                 (Patch_controller.Dequeue entry.Pr_state.id)
+            && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
+        | _ -> false)
+  in
+
+  let pending_patch_4_conflict_alarm_dequeues =
+    Test.make
+      ~name:
+        "patch_controller: queued PR with conflict alarm dequeues from merge \
+         queue"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-conflict" in
+        let branch = Branch.of_string "feat/mq-conflict" in
+        let patch = make_patch pid branch in
+        let pr_number = Pr_number.of_int 408 in
+        let entry = merge_queue_entry "MQE_conflict" in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present pr_number) ~merged:false
+            ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:true ~checks_passing:true ~has_conflict:true
+            ~merge_queue_required:true ~merge_queue_entry:(Some entry)
+            ~automerge_enabled:true ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        match decisions with
+        | [ { Patch_controller.merge_patch_id; merge_pr_number; action } ] ->
+            Patch_id.equal merge_patch_id pid
+            && Pr_number.equal merge_pr_number pr_number
+            && Patch_controller.equal_merge_action action
+                 (Patch_controller.Dequeue entry.Pr_state.id)
+            && (Orchestrator.agent orch pid).Patch_agent.automerge_inflight
+        | _ -> false)
   in
 
   (* A direct-merge patch that is approval-ready in every respect but reads
@@ -1800,7 +1882,9 @@ let () =
       pending_patch_4_merge_queue_entered_clears_timer;
       pending_patch_4_unapproved_not_enqueued;
       pending_patch_4_automerge_dequeue_on_lost_approval;
-      pending_patch_4_unmergeable_clears_automerge_deadline;
+      pending_patch_4_unmergeable_dequeues;
+      pending_patch_4_visible_ci_failure_dequeues;
+      pending_patch_4_conflict_alarm_dequeues;
       prop_missing_adhoc_does_not_crash_reconcile;
       prop_apply_poll_lifts_missing_to_present;
       prop_child_of_missing_parent_not_startable;

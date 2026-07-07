@@ -4,6 +4,9 @@
 open Base
 open Onton_core.Types
 
+let merge_queue_entry =
+  Onton_core.Pr_state.{ id = "mq"; state = Mq_queued; position = 1 }
+
 let () =
   let open QCheck2 in
   let open Onton_test_support.Test_generators in
@@ -36,6 +39,47 @@ let () =
             (Onton_core.Pr_state.equal_merge_state
                result.Onton_core.Poller.merge_state
                Onton_core.Pr_state.Conflicting));
+      Test.make
+        ~name:
+          "POLL-MQ-1: Conflicting enqueues Merge_conflict iff not in merge \
+           queue"
+        ~count:500 gen_pr_state (fun pr ->
+          let conflicting =
+            {
+              pr with
+              Onton_core.Pr_state.status = Onton_core.Pr_state.Open;
+              merge_state = Onton_core.Pr_state.Conflicting;
+              merge_queue_entry = None;
+            }
+          in
+          let queued =
+            {
+              conflicting with
+              Onton_core.Pr_state.merge_queue_entry = Some merge_queue_entry;
+            }
+          in
+          let unqueued_result =
+            Onton_core.Poller.poll ~was_merged:false conflicting
+          in
+          let queued_result = Onton_core.Poller.poll ~was_merged:false queued in
+          List.mem unqueued_result.Onton_core.Poller.queue
+            Operation_kind.Merge_conflict ~equal:Operation_kind.equal
+          && not
+               (List.mem queued_result.Onton_core.Poller.queue
+                  Operation_kind.Merge_conflict ~equal:Operation_kind.equal));
+      Test.make
+        ~name:"POLL-MQ-2: Conflicting still mirrors has_conflict while queued"
+        ~count:500 gen_pr_state (fun pr ->
+          let queued =
+            {
+              pr with
+              Onton_core.Pr_state.status = Onton_core.Pr_state.Open;
+              merge_state = Onton_core.Pr_state.Conflicting;
+              Onton_core.Pr_state.merge_queue_entry = Some merge_queue_entry;
+            }
+          in
+          let result = Onton_core.Poller.poll ~was_merged:false queued in
+          Onton_core.Poller.has_conflict result);
       Test.make ~name:"Poller.mergeability_unknown iff merge_state = Unknown"
         ~count:500 gen_pr_state (fun pr ->
           let result = Onton_core.Poller.poll ~was_merged:false pr in

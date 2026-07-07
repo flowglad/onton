@@ -8,6 +8,7 @@ type rejection =
   | Branch_protection
   | Push_pattern_block
   | Lease_violation
+  | Merge_queue_locked
   | Hook_failure of string
   | Unknown of string
   | Local_state_unsafe of { reason : string }
@@ -72,6 +73,13 @@ let classify ~stderr ~stdout:_ =
     || contains_ci stderr "without `workflow` scope"
   then Workflow_scope_missing
   else if
+    (* Must precede [Branch_protection]: the merge-queue lock message carries
+       both of that recognizer's fingerprints (GH006 + the hook-declined
+       trailer) alongside its own queue-specific lines. *)
+    contains_ci stderr "has been added to a merge queue"
+    || contains_ci stderr "queued for merging cannot be updated"
+  then Merge_queue_locked
+  else if
     contains_ci stderr "GH006: Protected branch update failed"
     || contains_ci stderr "protected branch hook declined"
     || contains_ci stderr "Cannot force-push to a protected branch"
@@ -100,13 +108,14 @@ let short_label = function
   | Branch_protection -> "branch_protection"
   | Push_pattern_block -> "push_pattern_block"
   | Lease_violation -> "lease_violation"
+  | Merge_queue_locked -> "merge_queue_locked"
   | Hook_failure _ -> "hook_failure"
   | Unknown _ -> "unknown_rejection"
   | Local_state_unsafe _ -> "local_state_unsafe"
 
 let detail_excerpt = function
   | Workflow_scope_missing | Branch_protection | Push_pattern_block
-  | Lease_violation ->
+  | Lease_violation | Merge_queue_locked ->
       None
   | Hook_failure s | Unknown s ->
       if String.is_empty (String.strip s) then None else Some s
@@ -118,4 +127,4 @@ let is_permanent = function
   | Workflow_scope_missing | Branch_protection | Push_pattern_block
   | Hook_failure _ | Local_state_unsafe _ ->
       true
-  | Lease_violation | Unknown _ -> false
+  | Lease_violation | Merge_queue_locked | Unknown _ -> false
