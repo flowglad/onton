@@ -96,6 +96,7 @@ let scenario_branch_switched env =
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Merge_queue_locked
       | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _ )
   | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
   | Worktree.Push_worktree_missing | Worktree.Push_error _ ->
@@ -202,6 +203,7 @@ let scenario_local_missing_remote env =
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Merge_queue_locked
       | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _ )
   | Worktree.Push_ok | Worktree.Push_up_to_date | Worktree.Push_no_commits
   | Worktree.Push_worktree_missing | Worktree.Push_error _ ->
@@ -262,6 +264,7 @@ let scenario_happy_path env =
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Merge_queue_locked
       | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _
       | Push_reject_classify.Local_state_unsafe _ )
   | Worktree.Push_worktree_missing | Worktree.Push_error _ ->
@@ -332,6 +335,7 @@ let to_rejection_partition =
           | Push_reject_classify.Branch_protection
           | Push_reject_classify.Push_pattern_block
           | Push_reject_classify.Lease_violation
+          | Push_reject_classify.Merge_queue_locked
           | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _
             ) ->
           false)

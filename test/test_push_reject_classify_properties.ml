@@ -70,6 +70,20 @@ let generic_hook_stderr =
    To https://github.com/o/r.git\n\
    ! [remote rejected]   foo -> foo (pre-receive hook declined)"
 
+(* The merge-queue head-branch lock. Deliberately contains BOTH
+   [Branch_protection] fingerprints (the GH006 header and the hook-declined
+   trailer) around the queue-specific lines, exactly as GitHub emits it — the
+   recognizer-order property PRC-17 depends on that. *)
+let merge_queue_locked_stderr =
+  "remote: error: GH006: Protected branch update failed for refs/heads/foo.\n\
+   remote: error: A pull request for this branch has been added to a merge \
+   queue. Branches that\n\
+   remote: are queued for merging cannot be updated. To modify this branch, \
+   dequeue the\n\
+   remote: associated pull request.\n\
+   To https://github.com/o/r.git\n\
+   ! [remote rejected]   foo -> foo (protected branch hook declined)"
+
 (* ---------- Properties ---------- *)
 
 let prop_totality =
@@ -121,7 +135,8 @@ let prop_generic_hook =
       | Push_reject_classify.Workflow_scope_missing
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
-      | Push_reject_classify.Lease_violation | Push_reject_classify.Unknown _
+      | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Merge_queue_locked | Push_reject_classify.Unknown _
       | Push_reject_classify.Local_state_unsafe _ ->
           false)
 
@@ -134,6 +149,7 @@ let prop_empty_stderr =
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Merge_queue_locked
       | Push_reject_classify.Hook_failure _
       | Push_reject_classify.Local_state_unsafe _ ->
           false)
@@ -167,7 +183,10 @@ let prop_detail_excerpt_none_for_named =
               Push_reject_classify.Push_pattern_block)
       && Option.is_none
            (Push_reject_classify.detail_excerpt
-              Push_reject_classify.Lease_violation))
+              Push_reject_classify.Lease_violation)
+      && Option.is_none
+           (Push_reject_classify.detail_excerpt
+              Push_reject_classify.Merge_queue_locked))
 
 let prop_permanence_matches_variant =
   Test.make ~count:300
@@ -182,8 +201,9 @@ let prop_permanence_matches_variant =
         | Push_reject_classify.Hook_failure _
         | Push_reject_classify.Local_state_unsafe _ ->
             true
-        | Push_reject_classify.Lease_violation | Push_reject_classify.Unknown _
-          ->
+        | Push_reject_classify.Lease_violation
+        | Push_reject_classify.Merge_queue_locked
+        | Push_reject_classify.Unknown _ ->
             false
       in
       Bool.equal (Push_reject_classify.is_permanent r) expected)
@@ -239,11 +259,35 @@ let prop_unknown_truncation =
       | Push_reject_classify.Branch_protection
       | Push_reject_classify.Push_pattern_block
       | Push_reject_classify.Lease_violation
+      | Push_reject_classify.Merge_queue_locked
       | Push_reject_classify.Local_state_unsafe _ ->
           (* sanitization stripped all letters, so the named-fingerprint arms
              and the planner-only Local_state_unsafe arm are unreachable here
              — but the type system can't know that. *)
           true)
+
+let prop_merge_queue_locked =
+  Test.make ~name:"PRC-16: merge-queue lock fingerprint -> Merge_queue_locked"
+    (Gen.return ()) (fun () ->
+      Push_reject_classify.equal_rejection
+        (Push_reject_classify.classify ~stderr:merge_queue_locked_stderr
+           ~stdout:"")
+        Push_reject_classify.Merge_queue_locked)
+
+let prop_merge_queue_beats_branch_protection =
+  Test.make
+    ~name:
+      "PRC-17: merge-queue lock beats Branch_protection despite carrying both \
+       GH006 fingerprints, and the plain GH006 blob still classifies \
+       Branch_protection" (Gen.return ()) (fun () ->
+      Push_reject_classify.equal_rejection
+        (Push_reject_classify.classify ~stderr:merge_queue_locked_stderr
+           ~stdout:"")
+        Push_reject_classify.Merge_queue_locked
+      && Push_reject_classify.equal_rejection
+           (Push_reject_classify.classify ~stderr:branch_protection_stderr
+              ~stdout:"")
+           Push_reject_classify.Branch_protection)
 
 let () =
   List.iter
@@ -264,5 +308,7 @@ let () =
       prop_recognizer_priority;
       prop_local_state_unsafe;
       prop_unknown_truncation;
+      prop_merge_queue_locked;
+      prop_merge_queue_beats_branch_protection;
     ];
   Stdlib.print_endline "Push_reject_classify: all properties passed"

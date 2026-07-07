@@ -457,6 +457,7 @@ let set_unresolved_comment_count t unresolved_comment_count =
 let set_mergeability_unknown t v = { t with mergeability_unknown = v }
 let set_merge_queue_required t v = { t with merge_queue_required = v }
 let set_merge_queue_entry t merge_queue_entry = { t with merge_queue_entry }
+let in_merge_queue t = Option.is_some t.merge_queue_entry
 let set_merge_commit_sha t sha = { t with merge_commit_sha = sha }
 
 let set_base_contains_merged_siblings t v =

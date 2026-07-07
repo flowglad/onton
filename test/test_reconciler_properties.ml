@@ -93,6 +93,7 @@ let gen_rebase_scenario =
                   busy = false;
                   needs_intervention = false;
                   branch_blocked = false;
+                  in_merge_queue = false;
                   queue = [];
                   base_branch = main;
                   branch_rebased_onto = Some main;
@@ -157,6 +158,7 @@ let prop_detect_rebases_skips_already_queued =
                 busy = false;
                 needs_intervention = false;
                 branch_blocked = false;
+                in_merge_queue = false;
                 queue = [ Types.Operation_kind.Rebase ];
                 base_branch = main;
                 branch_rebased_onto = Some main;
@@ -170,6 +172,59 @@ let prop_detect_rebases_skips_already_queued =
         let actions = Reconciler.detect_rebases graph views ~newly_merged in
         List.is_empty actions
       with _ -> false)
+
+let prop_detect_rebases_skips_merge_queue_target =
+  QCheck2.Test.make
+    ~name:"REC-MQ-1a: detect_rebases skips dependents in merge queue" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let p1 = Types.Patch_id.of_string "p1" in
+      let p2 = Types.Patch_id.of_string "p2" in
+      let main = Types.Branch.of_string "main" in
+      let patch id dependencies : Types.Patch.t =
+        {
+          id;
+          title = Types.Patch_id.to_string id;
+          description = "";
+          branch = Types.Branch.of_string (Types.Patch_id.to_string id);
+          dependencies;
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+          complexity = None;
+          precedents = [];
+          required_context = [];
+        }
+      in
+      let graph = Graph.of_patches [ patch p1 []; patch p2 [ p1 ] ] in
+      let views =
+        let view id ~merged ~in_merge_queue =
+          Reconciler.
+            {
+              id;
+              has_pr = true;
+              merged;
+              busy = false;
+              needs_intervention = false;
+              branch_blocked = false;
+              in_merge_queue;
+              queue = [];
+              base_branch = main;
+              branch_rebased_onto = Some main;
+              base_contains_merged_siblings = true;
+              sibling_rebase_target = None;
+            }
+        in
+        [
+          view p1 ~merged:true ~in_merge_queue:false;
+          view p2 ~merged:false ~in_merge_queue:true;
+        ]
+      in
+      List.is_empty (Reconciler.detect_rebases graph views ~newly_merged:[ p1 ]))
 
 (* ========== plan_operations properties ========== *)
 
@@ -196,6 +251,7 @@ let gen_plan_scenario =
                   busy;
                   needs_intervention = intervention;
                   branch_blocked = false;
+                  in_merge_queue = false;
                   queue;
                   base_branch = main;
                   branch_rebased_onto = Some main;
@@ -365,6 +421,7 @@ let gen_reconcile_scenario =
                   busy = false;
                   needs_intervention = false;
                   branch_blocked = false;
+                  in_merge_queue = false;
                   queue = [];
                   base_branch = main;
                   branch_rebased_onto = Some main;
@@ -430,7 +487,8 @@ let other_br = Types.Branch.of_string "other"
 
 let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
     ?(base_branch = main_br) ?(branch_rebased_onto = Some main_br)
-    ?(base_contains_merged_siblings = true) ?(sibling_rebase_target = None) () =
+    ?(in_merge_queue = false) ?(base_contains_merged_siblings = true)
+    ?(sibling_rebase_target = None) () =
   Reconciler.
     {
       id;
@@ -439,6 +497,7 @@ let mk_view ~id ?(has_pr = true) ?(merged = false) ?(queue = [])
       busy = false;
       needs_intervention = false;
       branch_blocked = false;
+      in_merge_queue;
       queue;
       base_branch;
       branch_rebased_onto;
@@ -517,6 +576,17 @@ let prop_drift_silent_when_rebase_queued =
       in
       List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
 
+let prop_drift_silent_when_in_merge_queue =
+  QCheck2.Test.make
+    ~name:"REC-MQ-1b: drift detector skips patches in merge queue" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let v =
+        mk_view ~id:(pid "p1") ~in_merge_queue:true ~base_branch:main_br
+          ~branch_rebased_onto:(Some dep_br) ()
+      in
+      List.is_empty (Reconciler.detect_notified_base_drift [ v ]))
+
 let prop_drift_always_produces_enqueue_rebase =
   QCheck2.Test.make ~name:"drift: every emitted action is Enqueue_rebase"
     ~count:200
@@ -536,6 +606,56 @@ let prop_drift_always_produces_enqueue_rebase =
       |> List.for_all ~f:(function
         | Reconciler.Enqueue_rebase _ -> true
         | Reconciler.Mark_merged _ | Reconciler.Start_operation _ -> false))
+
+let prop_stale_base_suppressed_while_in_merge_queue =
+  QCheck2.Test.make
+    ~name:"REC-MQ-1d: stale-base detector skips patches in merge queue" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let p = pid "p1" in
+      let patch : Types.Patch.t =
+        {
+          id = p;
+          title = "t";
+          description = "";
+          branch = Types.Branch.of_string "p1";
+          dependencies = [];
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+          complexity = None;
+          precedents = [];
+          required_context = [];
+        }
+      in
+      let graph = Graph.of_patches [ patch ] in
+      let has_merged _ = false in
+      let branch_of _ = main_br in
+      let view ~in_merge_queue =
+        mk_view ~id:p ~in_merge_queue ~base_branch:dep_br
+          ~branch_rebased_onto:(Some dep_br) ()
+      in
+      let unqueued =
+        Reconciler.detect_stale_bases graph
+          [ view ~in_merge_queue:false ]
+          ~has_merged ~branch_of ~main:main_br
+      in
+      let queued =
+        Reconciler.detect_stale_bases graph
+          [ view ~in_merge_queue:true ]
+          ~has_merged ~branch_of ~main:main_br
+      in
+      (match unqueued with
+        | [ Reconciler.Enqueue_rebase pid ] -> Types.Patch_id.equal pid p
+        | [] | _ :: _ :: _
+        | [ Reconciler.Mark_merged _ ]
+        | [ Reconciler.Start_operation _ ] ->
+            false)
+      && List.is_empty queued)
 
 (* End-to-end: reconcile emits Enqueue_rebase on a drifted view when no
    other detector would have caught it (base_branch already matches
@@ -802,6 +922,28 @@ let prop_fanin_silent_when_base_has_no_pr =
         (Reconciler.detect_sibling_stale_bases graph views
            ~has_merged:(merged_in merged)))
 
+let prop_fanin_silent_when_base_in_merge_queue =
+  QCheck2.Test.make
+    ~name:"REC-MQ-1c: sibling detector skips target in merge queue" ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let graph = fanin_graph () in
+      let merged = [ pid "d1"; pid "d3" ] in
+      let views =
+        [
+          mk_view ~id:(pid "p")
+            ~base_branch:(branch_of (pid "d2"))
+            ~branch_rebased_onto:(Some (branch_of (pid "d2")))
+            ~base_contains_merged_siblings:false
+            ~sibling_rebase_target:(Some (pid "d2"))
+            ();
+          mk_view ~id:(pid "d2") ~in_merge_queue:true ();
+        ]
+      in
+      List.is_empty
+        (Reconciler.detect_sibling_stale_bases graph views
+           ~has_merged:(merged_in merged)))
+
 (* The fan-in patch P most in need of this detector is an *unstarted* one: its
    pending Start(P, base=B) is deferred by Start_eligibility
    ([Base_missing_merged_sibling]) until B absorbs the merged sibling, and an
@@ -950,6 +1092,7 @@ let () =
       prop_detect_rebases_never_targets_merged;
       prop_detect_rebases_targets_are_dependents;
       prop_detect_rebases_skips_already_queued;
+      prop_detect_rebases_skips_merge_queue_target;
       prop_plan_skips_busy;
       prop_plan_skips_intervention;
       prop_plan_skips_no_pr;
@@ -967,7 +1110,9 @@ let () =
       prop_drift_silent_on_merged;
       prop_drift_silent_on_no_pr;
       prop_drift_silent_when_rebase_queued;
+      prop_drift_silent_when_in_merge_queue;
       prop_drift_always_produces_enqueue_rebase;
+      prop_stale_base_suppressed_while_in_merge_queue;
       prop_reconcile_e2e_catches_drift;
       prop_reconcile_dedup_rebase;
       prop_fanin_perm_open_d2;
@@ -977,6 +1122,7 @@ let () =
       prop_fanin_no_rebase_when_contained;
       prop_fanin_idempotent_when_queued;
       prop_fanin_silent_when_base_has_no_pr;
+      prop_fanin_silent_when_base_in_merge_queue;
       prop_fanin_unstarted_p_enqueues_base_rebase;
       prop_fanin_only_enqueue_rebase;
       prop_fanin_silent_off_edge;

@@ -12,14 +12,23 @@ open Types
     ---
     all c: Comment, p: Patch |
         world-has-comment c p and ~resolved c -> queue' p review-comments.
-    all p: Patch | world-has-conflict p -> queue' p merge-conflict.
+    all p: Patch |
+        world-has-conflict p and ~world-enqueued p -> queue' p merge-conflict.
     all p: Patch | world-has-conflict p -> has-conflict' p.
     all p: Patch | world-ci-failed p -> queue' p ci.
     all p: Patch | world-merged p -> merged' p.
     all p: Patch | merged p -> merged' p.
     all p: Patch | mergeable' p = world-mergeable p.
     all p: Patch | checks-passing' p = world-checks-passing p.
-    v} *)
+    v}
+
+    The [~world-enqueued] conjunct on the merge-conflict rule is the merge-queue
+    gate: while a PR sits in a merge queue its head branch is push-locked (GH006
+    [Merge_queue_locked]), so a [Merge_conflict] op could only no-op locally and
+    bounce off the lock, walking [conflict_noop_count] toward spurious
+    intervention. The [has-conflict'] {e flag} rule stays ungated — it purely
+    mirrors GitHub state, and a genuine conflict makes GitHub eject the PR from
+    the queue, after which the next poll enqueues the op normally. *)
 
 type t = {
   queue : Operation_kind.t list;  (** Operations to enqueue for this patch. *)

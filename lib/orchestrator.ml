@@ -195,6 +195,7 @@ let mark_merged t patch_id =
               if
                 dep_agent.Patch_agent.merged
                 || (not (Patch_agent.has_pr dep_agent))
+                || Patch_agent.in_merge_queue dep_agent
                 || List.mem dep_agent.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
               then t
@@ -241,6 +242,7 @@ let enqueue_rebase_for_stranded_dependents t patch_id =
               if
                 d.Patch_agent.merged
                 || (not (Patch_agent.has_pr d))
+                || Patch_agent.in_merge_queue d
                 || List.mem d.Patch_agent.queue Operation_kind.Rebase
                      ~equal:Operation_kind.equal
                 || not
@@ -825,6 +827,7 @@ let apply_rebase_with_anchor t patch_id rebase_result new_base anchor_events =
 type rebase_push_resolution =
   | Rebase_push_ok
   | Rebase_push_failed
+  | Rebase_push_queue_locked
   | Rebase_push_error
 [@@deriving show, eq, sexp_of]
 
@@ -833,7 +836,24 @@ let apply_rebase_push_result t patch_id
   match push_outcome with
   | None -> (t, Rebase_push_ok) (* no push effect emitted; already handled *)
   | Some Worktree.Push_ok | Some Worktree.Push_up_to_date -> (t, Rebase_push_ok)
-  | Some (Worktree.Push_rejected _) ->
+  | Some (Worktree.Push_rejected Push_reject_classify.Merge_queue_locked) ->
+      (* GitHub locked the head branch because the PR is queued in a merge
+         queue — there is no conflict and nothing to retry. Drop the push: the
+         local rebase already succeeded, so [branch_rebased_onto] is current;
+         if the PR merges from the queue nothing re-fires, and if it is
+         ejected as Conflicting the poll path enqueues [Merge_conflict], whose
+         local no-op + now-unlocked push syncs the remote. Reading this as a
+         conflict is exactly the conflict_noop_count>=2 spiral this arm
+         prevents. *)
+      (t, Rebase_push_queue_locked)
+  | Some
+      (Worktree.Push_rejected
+         ( Push_reject_classify.Workflow_scope_missing
+         | Push_reject_classify.Branch_protection
+         | Push_reject_classify.Push_pattern_block
+         | Push_reject_classify.Lease_violation
+         | Push_reject_classify.Hook_failure _ | Push_reject_classify.Unknown _
+         | Push_reject_classify.Local_state_unsafe _ )) ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Rebase_push_failed)
@@ -930,10 +950,28 @@ let apply_conflict_push_result t patch_id decision
   | Conflict_resolved, Some Worktree.Push_ok -> (t, Conflict_done)
   | Conflict_resolved, Some Worktree.Push_up_to_date -> (t, Conflict_done)
   | ( Conflict_resolved,
+      Some (Worktree.Push_rejected Push_reject_classify.Merge_queue_locked) ) ->
+      (* The PR is queued in a merge queue, so there is no conflict to keep
+         chasing — treat the resolution as done rather than re-enqueueing.
+         Also undo the noop-counter increment from the [Noop] rebase arm: the
+         noop was evidence of a queued clean PR, not of a stuck conflict, and
+         with [has_conflict] already cleared no poll-path reset would undo the
+         stray increment. *)
+      let t = reset_conflict_noop_count t patch_id in
+      (t, Conflict_done)
+  | ( Conflict_resolved,
       ( None
       | Some
-          ( Worktree.Push_rejected _ | Worktree.Push_no_commits
-          | Worktree.Push_error _ | Worktree.Push_worktree_missing ) ) ) ->
+          ( Worktree.Push_rejected
+              ( Push_reject_classify.Workflow_scope_missing
+              | Push_reject_classify.Branch_protection
+              | Push_reject_classify.Push_pattern_block
+              | Push_reject_classify.Lease_violation
+              | Push_reject_classify.Hook_failure _
+              | Push_reject_classify.Unknown _
+              | Push_reject_classify.Local_state_unsafe _ )
+          | Worktree.Push_no_commits | Worktree.Push_error _
+          | Worktree.Push_worktree_missing ) ) ) ->
       let t = set_has_conflict t patch_id in
       let t = enqueue t patch_id Operation_kind.Merge_conflict in
       (t, Conflict_retry_push)

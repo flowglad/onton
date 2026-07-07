@@ -1256,6 +1256,10 @@ struct
                             log_event runtime ~patch_id
                               "Enqueued merge-conflict after rebase push \
                                rejection"
+                        | Orchestrator.Rebase_push_queue_locked ->
+                            log_event runtime ~patch_id
+                              "Rebase push rejected: PR is queued in the merge \
+                               queue; dropping (queue will merge or eject)"
                         | Orchestrator.Rebase_push_error ->
                             log_event runtime ~patch_id
                               "Enqueued rebase retry after push error");

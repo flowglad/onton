@@ -19,6 +19,12 @@ type patch_view = {
   busy : bool;
   needs_intervention : bool;
   branch_blocked : bool;
+  in_merge_queue : bool;
+      (** Whether the PR currently has a merge-queue entry. While true, GitHub
+          push-locks the head branch and the queue validates freshness against
+          the latest base, so rebase demand for this patch is suppressed at
+          enqueue time. The detectors are level-triggered, so demand
+          re-materializes on the first reconcile tick after ejection/dequeue. *)
   queue : Types.Operation_kind.t list;
   base_branch : Types.Branch.t;
   branch_rebased_onto : Types.Branch.t option;
@@ -84,7 +90,9 @@ val detect_rebases :
   action list
 (** [detect_rebases graph views ~newly_merged] returns [Enqueue_rebase] for
     dependents of [newly_merged] patches that have a PR, are not merged, and do
-    not already have a rebase queued. *)
+    not already have a rebase queued. Suppresses targets that are in the merge
+    queue: they are already being validated by GitHub and their head branch is
+    push-locked until merge or ejection. *)
 
 val detect_notified_base_drift : patch_view list -> action list
 (** [detect_notified_base_drift views] returns [Enqueue_rebase] for agents whose
@@ -97,7 +105,21 @@ val detect_notified_base_drift : patch_view list -> action list
     passes.
 
     Same precondition guards as other rebase detectors: has_pr, !merged,
-    !Rebase-in-queue. *)
+    !in_merge_queue, !Rebase-in-queue. *)
+
+val detect_stale_bases :
+  Graph.t ->
+  patch_view list ->
+  has_merged:(Types.Patch_id.t -> bool) ->
+  branch_of:(Types.Patch_id.t -> Types.Branch.t) ->
+  main:Types.Branch.t ->
+  action list
+(** [detect_stale_bases graph views ~has_merged ~branch_of ~main] returns
+    [Enqueue_rebase] for PR-backed, unmerged, non-queued patches whose current
+    [base_branch] differs from the structural base computed by
+    [Graph.initial_base]. Same rebase-demand gate as the other detectors:
+    suppresses patches in the merge queue because GitHub already validates them
+    against current base and their heads are push-locked. *)
 
 val detect_sibling_stale_bases :
   Graph.t ->
@@ -115,10 +137,11 @@ val detect_sibling_stale_bases :
     [Start (P, base = B)] ([Base_missing_merged_sibling]) relies on exactly this
     demand to ever become runnable. The target is enqueued (not [P]); [P]'s own
     start/rebase is gated separately by [Start_eligibility]. Skips when the
-    target has no PR yet or already has a [Rebase] queued, so queued/unstarted
-    dependencies are never rebase-enqueued by this detector. This is the demand
-    that the other three detectors miss, because the chain layers are *siblings*
-    of [P]'s merged deps, not dependents of them. *)
+    target has no PR yet, is in the merge queue, or already has a [Rebase]
+    queued, so queued/unstarted dependencies are never rebase-enqueued by this
+    detector. This is the demand that the other three detectors miss, because
+    the chain layers are *siblings* of [P]'s merged deps, not dependents of
+    them. *)
 
 val plan_operations :
   patch_view list ->

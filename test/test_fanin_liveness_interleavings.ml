@@ -357,6 +357,7 @@ let view_of_agent ~sibling_rebase_target (a : Patch_agent.t) :
     busy = a.Patch_agent.busy;
     needs_intervention = Patch_agent.needs_intervention a;
     branch_blocked = a.Patch_agent.branch_blocked;
+    in_merge_queue = Patch_agent.in_merge_queue a;
     queue = a.Patch_agent.queue;
     base_branch = Option.value a.Patch_agent.base_branch ~default:main;
     branch_rebased_onto = a.Patch_agent.branch_rebased_onto;
