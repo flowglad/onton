@@ -26,6 +26,9 @@ let gen_merge_queue_entry =
     (string_size ~gen:(char_range 'a' 'z') (int_range 1 16))
     (oneof_list states) (int_range 0 99)
 
+let merge_queue_entry ?(state = Pr_state.Mq_queued) id =
+  Pr_state.{ id; state; position = 0 }
+
 (** Bootstrap a single-patch orchestrator with an idle agent that has a PR. *)
 let bootstrap_one () =
   let patches = mk_patches 1 in
@@ -782,6 +785,13 @@ let () =
              Patch_controller.apply_merge_queue_entered orch pid observed_entry
            in
            let after_controller = Orchestrator.agent orch pid in
+           let stuck_entry =
+             merge_queue_entry ~state:Pr_state.Mq_unmergeable "stuck-entry"
+           in
+           let stuck_agent =
+             Patch_agent.set_merge_queue_entry after_controller
+               (Some stuck_entry)
+           in
            Option.equal Pr_state.equal_merge_queue_entry
              after_controller.Patch_agent.merge_queue_entry
              (Some observed_entry)
@@ -789,6 +799,11 @@ let () =
            && Option.is_none after_controller.Patch_agent.automerge_deadline
            && (not after_controller.Patch_agent.automerge_inflight)
            && after_controller.Patch_agent.automerge_failure_count = 0
+           && Patch_controller.should_dequeue_merge_queue stuck_agent
+                ~main_branch:main ~entry_id:stuck_entry.Pr_state.id
+           && not
+                (Patch_controller.should_dequeue_merge_queue stuck_agent
+                   ~main_branch:main ~entry_id:"different-entry")
          with
          | QCheck2.Test.Test_fail _ as exn -> raise exn
          | _ -> false));

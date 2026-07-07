@@ -657,6 +657,58 @@ let prop_stale_base_suppressed_while_in_merge_queue =
             false)
       && List.is_empty queued)
 
+let prop_detect_stale_bases_enqueues_wrong_base =
+  QCheck2.Test.make
+    ~name:"detect_stale_bases: enqueues rebase when recorded base is stale"
+    ~count:1
+    QCheck2.Gen.(return ())
+    (fun () ->
+      let p1 = pid "p1" in
+      let p2 = pid "p2" in
+      let dep_branch = Types.Branch.of_string "dep" in
+      let patch id branch dependencies : Types.Patch.t =
+        {
+          id;
+          title = Types.Patch_id.to_string id;
+          description = "";
+          branch;
+          dependencies;
+          spec = "";
+          acceptance_criteria = [];
+          files = [];
+          classification = "";
+          changes = [];
+          test_stubs_introduced = [];
+          test_stubs_implemented = [];
+          complexity = None;
+          precedents = [];
+          required_context = [];
+        }
+      in
+      let graph =
+        Graph.of_patches
+          [
+            patch p1 dep_branch [];
+            patch p2 (Types.Branch.of_string "feature") [ p1 ];
+          ]
+      in
+      let view =
+        mk_view ~id:p2 ~base_branch:dep_branch
+          ~branch_rebased_onto:(Some dep_branch) ()
+      in
+      let actions =
+        Reconciler.detect_stale_bases graph [ view ]
+          ~has_merged:(fun p -> Types.Patch_id.equal p p1)
+          ~branch_of:(fun _ -> dep_branch)
+          ~main:main_br
+      in
+      match actions with
+      | [ Reconciler.Enqueue_rebase p ] -> Types.Patch_id.equal p p2
+      | [] | _ :: _ :: _
+      | [ Reconciler.Mark_merged _ ]
+      | [ Reconciler.Start_operation _ ] ->
+          false)
+
 (* End-to-end: reconcile emits Enqueue_rebase on a drifted view when no
    other detector would have caught it (base_branch already matches
    initial_base, merged list is empty, no newly_merged). This is the exact
@@ -1113,6 +1165,7 @@ let () =
       prop_drift_silent_when_in_merge_queue;
       prop_drift_always_produces_enqueue_rebase;
       prop_stale_base_suppressed_while_in_merge_queue;
+      prop_detect_stale_bases_enqueues_wrong_base;
       prop_reconcile_e2e_catches_drift;
       prop_reconcile_dedup_rebase;
       prop_fanin_perm_open_d2;
