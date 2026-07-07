@@ -95,6 +95,6 @@ module type S = sig
   val enqueue_pr :
     pr_number:Types.Pr_number.t -> (enqueue_result, error) Result.t
 
-  val dequeue_pr : entry_id:string -> (unit, error) Result.t
+  val dequeue_pr : pr_number:Types.Pr_number.t -> (unit, error) Result.t
   val check_repo_access : unit -> (unit, error) Result.t
 end

@@ -189,6 +189,9 @@ struct
         in
         let apply_failure () =
           inflight_cleared := true;
+          (* [apply_automerge_failure] delegates to the shared automerge-state
+             transition, which clears [automerge_inflight] before incrementing
+             the failure count or applying the retry/cap deadline rules. *)
           Runtime.update_orchestrator runtime (fun orch ->
               Patch_controller.apply_automerge_failure orch
                 ~now:(Unix.gettimeofday ()) patch_id)
@@ -291,8 +294,8 @@ struct
                 match action with
                 | Patch_controller.Enqueue ->
                     handle_enqueue_result (Forge.enqueue_pr ~pr_number)
-                | Patch_controller.Dequeue entry_id -> (
-                    match Forge.dequeue_pr ~entry_id with
+                | Patch_controller.Dequeue _ -> (
+                    match Forge.dequeue_pr ~pr_number with
                     | Ok () ->
                         push_deadline_and_clear_inflight ();
                         log_event runtime ~patch_id
@@ -302,7 +305,7 @@ struct
                               a queue alarm"
                              (Pr_number.to_int pr_number))
                     | Error err ->
-                        push_deadline_and_clear_inflight ();
+                        apply_failure ();
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeue failed for PR #%d — %s"

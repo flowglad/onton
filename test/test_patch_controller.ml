@@ -1590,6 +1590,60 @@ let () =
         | _ -> false)
   in
 
+  let pending_patch_4_transient_unknown_does_not_dequeue =
+    Test.make
+      ~name:
+        "patch_controller: queued PR with transient UNKNOWN mergeability is \
+         not dequeued" QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-unknown-hold" in
+        let branch = Branch.of_string "feat/mq-unknown-hold" in
+        let patch = make_patch pid branch in
+        let entry =
+          merge_queue_entry "MQE_unknown" ~state:Pr_state.Mq_awaiting_checks
+        in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 406))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:false ~mergeability_unknown:true ~checks_passing:true
+            ~merge_queue_required:true ~merge_queue_entry:(Some entry)
+            ~automerge_enabled:true ~automerge_deadline:0.0 ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        List.is_empty decisions
+        && not (Orchestrator.agent orch pid).Patch_agent.automerge_inflight)
+  in
+
+  let pending_patch_4_dequeue_respects_failure_cap =
+    Test.make ~name:"patch_controller: merge queue dequeue respects failure cap"
+      QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-dequeue-cap" in
+        let branch = Branch.of_string "feat/mq-dequeue-cap" in
+        let patch = make_patch pid branch in
+        let entry =
+          merge_queue_entry "MQE_dequeue_cap" ~state:Pr_state.Mq_unmergeable
+        in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 409))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:true ~checks_passing:true ~merge_queue_required:true
+            ~merge_queue_entry:(Some entry) ~automerge_enabled:true
+            ~automerge_failure_count:Patch_controller.automerge_max_failures ()
+        in
+        let orch = make_orch patch agent in
+        let orch, decisions =
+          Patch_controller.reconcile_automerge orch ~now:1.0
+        in
+        List.is_empty decisions
+        && not (Orchestrator.agent orch pid).Patch_agent.automerge_inflight)
+  in
+
   let pending_patch_4_unmergeable_dequeues =
     Test.make
       ~name:
@@ -1882,6 +1936,8 @@ let () =
       pending_patch_4_merge_queue_entered_clears_timer;
       pending_patch_4_unapproved_not_enqueued;
       pending_patch_4_automerge_dequeue_on_lost_approval;
+      pending_patch_4_transient_unknown_does_not_dequeue;
+      pending_patch_4_dequeue_respects_failure_cap;
       pending_patch_4_unmergeable_dequeues;
       pending_patch_4_visible_ci_failure_dequeues;
       pending_patch_4_conflict_alarm_dequeues;

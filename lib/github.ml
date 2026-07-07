@@ -1798,6 +1798,14 @@ let dequeue_pull_request_mutation =
   }
 }|}
 
+let build_dequeue_request_body ~node_id =
+  `Assoc
+    [
+      ("query", `String dequeue_pull_request_mutation);
+      ("variables", `Assoc [ ("id", `String node_id) ]);
+    ]
+  |> Yojson.Safe.to_string
+
 let enqueue_pr ~net ~clock ?timeout t ~pr_number =
   Result.bind (enqueue_pr_info ~net ~clock ?timeout t pr_number) ~f:(fun info ->
       match info.merge_queue_entry with
@@ -1861,21 +1869,18 @@ let resolve_review_thread ~net ~clock ?timeout t ~thread_id =
   | Ok resp -> parse_resolve_thread_response resp
   | Error _ as e -> e
 
-let dequeue_pr ~net ~clock ?timeout t ~entry_id =
-  let req_body =
-    `Assoc
-      [
-        ("query", `String dequeue_pull_request_mutation);
-        ("variables", `Assoc [ ("id", `String entry_id) ]);
-      ]
-    |> Yojson.Safe.to_string
-  in
+let dequeue_pr_by_node_id ~net ~clock ?timeout t ~node_id =
+  let req_body = build_dequeue_request_body ~node_id in
   match
     request ~net ~clock ?timeout t ~meth:`POST ~path:"/graphql" ~body:req_body
       ()
   with
   | Ok resp -> parse_dequeue_response resp
   | Error _ as e -> e
+
+let dequeue_pr ~net ~clock ?timeout t ~pr_number =
+  Result.bind (enqueue_pr_info ~net ~clock ?timeout t pr_number) ~f:(fun info ->
+      dequeue_pr_by_node_id ~net ~clock ?timeout t ~node_id:info.node_id)
 
 (* Which merge methods the repository permits. GitHub rejects a [PUT
    /pulls/:n/merge] whose [merge_method] is disabled with HTTP 405 ("Squash
@@ -2406,7 +2411,7 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
 
     let merge_pr ~pr_number = merge_pr_choosing ~pr_number
     let enqueue_pr ~pr_number = enqueue_pr ~net ~clock client ~pr_number
-    let dequeue_pr ~entry_id = dequeue_pr ~net ~clock client ~entry_id
+    let dequeue_pr ~pr_number = dequeue_pr ~net ~clock client ~pr_number
     let check_repo_access () = check_repo_access_internal ~net ~clock client
   end in
   (module M)

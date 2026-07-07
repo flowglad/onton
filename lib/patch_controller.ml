@@ -757,11 +757,18 @@ let merge_queue_alarm (agent : Patch_agent.t) =
   || Option.exists agent.Patch_agent.merge_queue_entry
        ~f:merge_queue_entry_unmergeable
 
+let merge_queue_transient_unknown_hold (agent : Patch_agent.t) ~main_branch =
+  agent.Patch_agent.mergeability_unknown
+  && Patch_agent.is_approved_modulo_merge_ready agent ~main_branch
+  && agent.Patch_agent.checks_passing
+  && List.is_empty agent.Patch_agent.queue
+
 let should_dequeue_merge_queue agent ~main_branch ~entry_id =
   match agent.Patch_agent.merge_queue_entry with
   | Some entry when String.equal entry.Pr_state.id entry_id ->
       merge_queue_alarm agent
-      || not (Patch_agent.is_approved agent ~main_branch)
+      || (not (Patch_agent.is_approved agent ~main_branch))
+         && not (merge_queue_transient_unknown_hold agent ~main_branch)
   | Some _ | None -> false
 
 let automerge_action (agent : Patch_agent.t) ~main_branch =
@@ -863,10 +870,14 @@ let reconcile_automerge t ~now =
               (Orchestrator.clear_automerge_deadline t patch_id, decisions)
         in
         match dequeue_action with
-        | Some action when agent.Patch_agent.automerge_enabled -> (
+        | Some action
+          when agent.Patch_agent.automerge_enabled
+               && agent.Patch_agent.automerge_failure_count
+                  < automerge_max_failures -> (
             (* Dequeue queue-alarmed PRs immediately on first observation. If a
-               previous dequeue call failed, [runner_fiber_impl] pushed the
-               deadline forward; honor it as retry backoff. *)
+               previous dequeue call failed, [runner_fiber_impl] increments the
+               automerge failure count; honor the same cap used for merge and
+               enqueue failures. *)
             match agent.Patch_agent.automerge_deadline with
             | Some deadline when Float.(now < deadline) -> (t, decisions)
             | None | Some _ -> emit_automerge_decision t action)
