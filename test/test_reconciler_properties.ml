@@ -660,12 +660,12 @@ let prop_stale_base_suppressed_while_in_merge_queue =
 let prop_detect_stale_bases_enqueues_wrong_base =
   QCheck2.Test.make
     ~name:"detect_stale_bases: enqueues rebase when recorded base is stale"
-    ~count:1
-    QCheck2.Gen.(return ())
-    (fun () ->
+    ~count:1 QCheck2.Gen.bool (fun use_alt_dep_branch ->
       let p1 = pid "p1" in
       let p2 = pid "p2" in
-      let dep_branch = Types.Branch.of_string "dep" in
+      let dep_branch =
+        Types.Branch.of_string (if use_alt_dep_branch then "dep-alt" else "dep")
+      in
       let patch id branch dependencies : Types.Patch.t =
         {
           id;
