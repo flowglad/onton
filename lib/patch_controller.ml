@@ -236,9 +236,7 @@ let apply_poll_result ?(merge_queue_ejection_confirmed = false) t patch_id
     Orchestrator.set_checks_passing t patch_id poll_result.checks_passing
   in
   let t =
-    if merge_queue_failure then
-      let t = Orchestrator.increment_automerge_failure_count t patch_id in
-      Orchestrator.clear_automerge_deadline t patch_id
+    if merge_queue_failure then Orchestrator.clear_automerge_deadline t patch_id
     else t
   in
   let t =
@@ -941,6 +939,12 @@ let apply_automerge_success t patch_id =
 let apply_merge_queue_entered t patch_id entry =
   Orchestrator.entered_merge_queue t patch_id entry
 
+let apply_merge_queue_dequeued t ~now patch_id =
+  let t = Orchestrator.set_merge_queue_entry t patch_id None in
+  let t = Orchestrator.set_automerge_inflight t patch_id false in
+  let t = Orchestrator.reset_automerge_failure_count t patch_id in
+  Orchestrator.set_automerge_deadline t patch_id (now +. automerge_idle_timeout)
+
 (** Apply the durable state change that follows a failed merge call. Clears the
     inflight flag and increments the failure counter. Pushes the deadline out by
     [automerge_idle_timeout] so the retry is at least one idle window away — the
@@ -1545,7 +1549,7 @@ let%test "apply_poll_result turns merge queue ejection into CI feedback" =
   let agent = Orchestrator.agent t pid in
   List.mem agent.queue Operation_kind.Ci ~equal:Operation_kind.equal
   && (not agent.checks_passing) && (not agent.merge_ready)
-  && agent.automerge_failure_count = 1
+  && agent.automerge_failure_count = 0
   && Option.is_none agent.automerge_deadline
   && List.exists agent.ci_checks ~f:Ci_check.is_merge_queue_failure
   && List.exists logs ~f:(fun { message; _ } ->

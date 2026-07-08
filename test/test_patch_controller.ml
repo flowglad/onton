@@ -1531,6 +1531,41 @@ let () =
         && agent.automerge_failure_count = 0)
   in
 
+  let pending_patch_4_merge_queue_dequeued_restarts_timer =
+    Test.make
+      ~name:
+        "patch_controller: successful merge queue dequeue resets backoff and \
+         restarts timer" QCheck2.Gen.unit (fun () ->
+        let pid = Patch_id.of_string "mq-dequeue-success" in
+        let branch = Branch.of_string "feat/mq-dequeue-success" in
+        let patch = make_patch pid branch in
+        let entry = merge_queue_entry "MQE_dequeue_success" in
+        let agent =
+          make_agent ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 410))
+            ~merged:false ~queue:[] ~base_branch:(Some main) ~is_draft:false
+            ~pr_body_delivered:true ~start_attempts_without_pr:0
+            ~merge_ready:true ~checks_passing:true ~merge_queue_required:true
+            ~merge_queue_entry:(Some entry) ~automerge_enabled:true
+            ~automerge_deadline:0.0
+            ~automerge_failure_count:Patch_controller.automerge_max_failures ()
+        in
+        let now = 1000.0 in
+        let orch = make_orch patch agent in
+        let orch = Orchestrator.set_automerge_inflight orch pid true in
+        let orch = Patch_controller.apply_merge_queue_dequeued orch ~now pid in
+        let agent = Orchestrator.agent orch pid in
+        Option.is_none agent.merge_queue_entry
+        && agent.merge_queue_required
+        && (not agent.automerge_inflight)
+        && agent.automerge_failure_count = 0
+        &&
+        match agent.automerge_deadline with
+        | Some deadline ->
+            Float.( = ) deadline (now +. Patch_controller.automerge_idle_timeout)
+        | None -> false)
+  in
+
   let pending_patch_4_unapproved_not_enqueued =
     Test.make
       ~name:
@@ -1934,6 +1969,7 @@ let () =
       pending_patch_4_automerge_enqueue_action;
       pending_patch_4_automerge_enqueued_idle;
       pending_patch_4_merge_queue_entered_clears_timer;
+      pending_patch_4_merge_queue_dequeued_restarts_timer;
       pending_patch_4_unapproved_not_enqueued;
       pending_patch_4_automerge_dequeue_on_lost_approval;
       pending_patch_4_transient_unknown_does_not_dequeue;

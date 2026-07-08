@@ -297,7 +297,10 @@ struct
                 | Patch_controller.Dequeue _ -> (
                     match Forge.dequeue_pr ~pr_number with
                     | Ok () ->
-                        push_deadline_and_clear_inflight ();
+                        inflight_cleared := true;
+                        Runtime.update_orchestrator runtime (fun orch ->
+                            Patch_controller.apply_merge_queue_dequeued orch
+                              ~now:(Unix.gettimeofday ()) patch_id);
                         log_event runtime ~patch_id
                           (Printf.sprintf
                              "Automerge dequeued PR #%d from GitHub merge \
