@@ -785,12 +785,22 @@ let () =
              Patch_controller.apply_merge_queue_entered orch pid observed_entry
            in
            let after_controller = Orchestrator.agent orch pid in
+           let dequeue_now = 100.0 in
+           let orch =
+             Orchestrator.set_automerge_inflight orch pid true |> fun orch ->
+             Orchestrator.set_automerge_deadline orch pid 40.0 |> fun orch ->
+             Orchestrator.increment_automerge_failure_count orch pid
+           in
+           let orch =
+             Patch_controller.apply_merge_queue_dequeued orch ~now:dequeue_now
+               pid
+           in
+           let after_dequeued = Orchestrator.agent orch pid in
            let stuck_entry =
              merge_queue_entry ~state:Pr_state.Mq_unmergeable "stuck-entry"
            in
            let stuck_agent =
-             Patch_agent.set_merge_queue_entry after_controller
-               (Some stuck_entry)
+             Patch_agent.set_merge_queue_entry after_dequeued (Some stuck_entry)
            in
            Option.equal Pr_state.equal_merge_queue_entry
              after_controller.Patch_agent.merge_queue_entry
@@ -799,6 +809,15 @@ let () =
            && Option.is_none after_controller.Patch_agent.automerge_deadline
            && (not after_controller.Patch_agent.automerge_inflight)
            && after_controller.Patch_agent.automerge_failure_count = 0
+           && Option.is_none after_dequeued.Patch_agent.merge_queue_entry
+           && after_dequeued.Patch_agent.merge_queue_required
+           && (not after_dequeued.Patch_agent.automerge_inflight)
+           && after_dequeued.Patch_agent.automerge_failure_count = 0
+           && (match after_dequeued.Patch_agent.automerge_deadline with
+             | Some deadline ->
+                 Float.( = ) deadline
+                   (dequeue_now +. Patch_controller.automerge_idle_timeout)
+             | None -> false)
            && Patch_controller.should_dequeue_merge_queue stuck_agent
                 ~main_branch:main ~entry_id:stuck_entry.Pr_state.id
            && not

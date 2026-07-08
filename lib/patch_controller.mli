@@ -230,6 +230,13 @@ val apply_merge_queue_entered :
     useful transition comes from polling GitHub's queue state, not from another
     automerge fire. *)
 
+val apply_merge_queue_dequeued :
+  Orchestrator.t -> now:float -> Patch_id.t -> Orchestrator.t
+(** Record that an automerge dequeue request succeeded. The PR is no longer
+    known to be in GitHub's merge queue, the successful GitHub call clears the
+    consecutive automerge API-failure counter, and the deadline is restarted so
+    a still-ready PR can be enqueued again after the idle window. *)
+
 val apply_automerge_failure :
   Orchestrator.t -> now:float -> Patch_id.t -> Orchestrator.t
 (** Record a failed merge call: clear the inflight flag and increment the
