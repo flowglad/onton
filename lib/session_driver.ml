@@ -836,15 +836,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 let final_user_result =
                   match final_session_result with
                   | Orchestrator.Session_ok -> user_result
-                  | Orchestrator.Session_push_failed _
-                  | Orchestrator.Session_no_commits ->
-                      (* LLM session ran fine but commits didn't ship (push failed
-                   or the agent made no commits) — signal retry so the
-                   Respond path uses Respond_retry_push (clean complete) and
-                   the reconciler re-enqueues the operation naturally. After
-                   2 consecutive no-commit sessions, needs_intervention fires
-                   and the scheduler stops re-enqueueing. *)
+                  | Orchestrator.Session_push_failed _ ->
+                      (* LLM session ran fine but commits didn't ship because
+                         push failed — signal retry so the Respond path uses
+                         Respond_retry_push (clean complete) and the reconciler
+                         re-enqueues the operation naturally. *)
                       `Retry_push
+                  | Orchestrator.Session_no_commits -> `No_commits
                   | Orchestrator.Session_process_error _
                   | Orchestrator.Session_no_resume
                   | Orchestrator.Session_failed _ | Orchestrator.Session_give_up

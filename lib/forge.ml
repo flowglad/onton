@@ -41,6 +41,9 @@ module type S = sig
       to an empty source for checks without a stable run id, and return [Error]
       only when every attempted details endpoint failed hard. *)
 
+  val rerun_failed_jobs_for_check :
+    check:Types.Ci_check.t -> (unit, error) Result.t
+
   val list_prs :
     branch:Types.Branch.t ->
     ?base:Types.Branch.t ->

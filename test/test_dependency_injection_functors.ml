@@ -138,7 +138,7 @@ let _check_narrowed_run :
     on_pr_detected:(Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push ] * (string * string) list =
+    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list =
   SD.run
 
 (* Compile-time assertion: run_long_lived accepts only per-session inputs. *)
@@ -151,7 +151,7 @@ let _check_narrowed_run_long_lived :
     on_pr_detected:(Pr_number.t -> unit) ->
     session:SD.long_lived_session ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push ] * (string * string) list =
+    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list =
   SD.run_long_lived
 
 let () =
@@ -236,7 +236,7 @@ let () =
       on_pr_detected:(Pr_number.t -> unit) ->
       backend:Llm_backend.t ->
       complexity:int option ->
-      [ `Ok | `Failed | `Retry_push ] * (string * string) list =
+      [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list =
     SD.run
   in
   ignore check_narrowed_run;

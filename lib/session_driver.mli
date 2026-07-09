@@ -33,7 +33,7 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push ] * (string * string) list
+    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list
   (** Returns the supervisor disposition and the list of [(tool_name, status)]
       pairs for any tool calls that did not reach a [completed] state (used by
       the Pr_body classifier to disambiguate "agent chose not to write" from
@@ -69,7 +69,7 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     session:long_lived_session ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push ] * (string * string) list
+    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list
   (** Long-lived backend counterpart to {!run}. It shares the same supervisor
       bookkeeping and delivers the rendered turn over [backend.prompt] instead
       of spawning a fresh backend process. *)

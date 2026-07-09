@@ -1246,6 +1246,9 @@ let apply_respond_outcome t patch_id kind outcome =
         else t
       in
       let t =
+        update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
+      in
+      let t =
         if Operation_kind.equal kind Operation_kind.Merge_conflict then
           let t = clear_has_conflict t patch_id in
           reset_conflict_noop_count t patch_id

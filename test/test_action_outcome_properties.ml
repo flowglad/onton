@@ -352,10 +352,15 @@ let () =
   (* Respond_ok bumps *)
   let orch, pid, before = with_ci_busy () in
   let orch =
+    Orchestrator.apply_session_result orch pid Orchestrator.Session_no_commits
+  in
+  assert ((Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 1);
+  let orch =
     Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
       Orchestrator.Respond_ok
   in
   assert (ci_count orch pid = before + 1);
+  assert ((Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 0);
   (* Respond_skip_empty does NOT bump *)
   let orch, pid, before = with_ci_busy () in
   let orch =

@@ -332,8 +332,8 @@ type respond_outcome =
 val apply_respond_outcome :
   t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
-    kind-specific transitions (Merge_conflict -> clear_has_conflict +
-    reset_conflict_noop_count; Review_comments ->
+    reset_no_commits_push_count + kind-specific transitions (Merge_conflict ->
+    clear_has_conflict + reset_conflict_noop_count; Review_comments ->
     reset_review_unresolved_cycle_count so the cap counts only consecutive
     non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive

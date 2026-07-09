@@ -1061,6 +1061,21 @@ let parse_actions_jobs_response body =
           |> List.filter ~f:Types.Ci_check.is_failure
           |> Result.return)
 
+let parse_actions_run_id_from_url url =
+  let marker = "/actions/runs/" in
+  match String.substr_index url ~pattern:marker with
+  | None -> None
+  | Some pos ->
+      let start = pos + String.length marker in
+      let rest = String.drop_prefix url start in
+      let len =
+        match String.findi rest ~f:(fun _ ch -> not (Char.is_digit ch)) with
+        | None -> String.length rest
+        | Some (idx, _) -> idx
+      in
+      let id = String.prefix rest len in
+      if String.is_empty id then None else Int.of_string_opt id
+
 let digest_annotation_of_check_annotation (a : check_annotation) :
     Ci_log_digest.annotation =
   {
@@ -1304,6 +1319,24 @@ let check_failure_details ~net ~clock t ~(check : Types.Ci_check.t) =
       | Ok annotations, Error _ -> Ok { Ci_log_digest.annotations; log = None }
       | Error _, Ok log -> Ok { Ci_log_digest.annotations = []; log }
       | Error _, Error log_error -> Error log_error)
+
+let rerun_failed_jobs_for_check ~net ~clock ?timeout t
+    ~(check : Types.Ci_check.t) =
+  match Option.bind check.details_url ~f:parse_actions_run_id_from_url with
+  | None ->
+      Error
+        (Json_parse_error
+           (Printf.sprintf
+              "check %S has no GitHub Actions workflow run URL; refusing full \
+               rerun"
+              check.name))
+  | Some run_id ->
+      let path =
+        Printf.sprintf "/repos/%s/%s/actions/runs/%d/rerun-failed-jobs" t.owner
+          t.repo run_id
+      in
+      Result.map (request ~net ~clock ?timeout t ~meth:`POST ~path ())
+        ~f:(fun _ -> ())
 
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
@@ -2379,6 +2412,9 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
 
     let check_failure_details ~check =
       check_failure_details ~net ~clock client ~check
+
+    let rerun_failed_jobs_for_check ~check =
+      rerun_failed_jobs_for_check ~net ~clock client ~check
 
     let list_prs ~branch ?base ~state () =
       match base with

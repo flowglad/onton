@@ -945,13 +945,14 @@ struct
                                         (r
                                           :> [ `Failed
                                              | `Ok
+                                             | `No_commits
                                              | `Retry_push
                                              | `Stale ])))
                             in
                             let start_outcome =
                               match result with
                               | `Stale -> Orchestrator.Start_stale
-                              | `Failed | `Retry_push ->
+                              | `Failed | `Retry_push | `No_commits ->
                                   Orchestrator.Start_failed
                               | `Ok -> Orchestrator.Start_ok
                             in
@@ -1621,6 +1622,7 @@ struct
                                         (result
                                           :> [ `Failed
                                              | `Ok
+                                             | `No_commits
                                              | `Pr_body_miss
                                              | `Retry_push
                                              | `Review_unresolved
@@ -2332,6 +2334,7 @@ struct
                                           (result
                                             :> [ `Failed
                                                | `Ok
+                                               | `No_commits
                                                | `Pr_body_miss
                                                | `Retry_push
                                                | `Review_unresolved ])
@@ -2362,6 +2365,11 @@ struct
                                         let session_ok =
                                           match result with
                                           | `Ok -> true
+                                          | _ -> false
+                                        in
+                                        let session_no_commits =
+                                          match result with
+                                          | `No_commits -> true
                                           | _ -> false
                                         in
                                         let result =
@@ -2459,17 +2467,19 @@ struct
                                              the session driver implies the
                                              post-session push shipped (push
                                              failure surfaces as
-                                             [`Retry_push]), so replies
-                                             claiming a fix never precede the
-                                             fix reaching the remote. On a
-                                             failed session the response
-                                             files are left in place but not
-                                             posted — the poller re-detects
-                                             the unresolved threads and the
-                                             next Review session re-delivers
-                                             (its setup clears the stale
-                                             files). *)
-                                              if session_ok then
+                                             [`Retry_push]). [`No_commits] is
+                                             also eligible because a
+                                             comment-only answer has no code
+                                             fix to push. On a failed session
+                                             the response files are left in
+                                             place but not posted — the poller
+                                             re-detects the unresolved threads
+                                             and the next Review session
+                                             re-delivers (its setup clears the
+                                             stale files). *)
+                                              if
+                                                session_ok || session_no_commits
+                                              then
                                                 match
                                                   Comment_responder
                                                   .respond_after_session
@@ -2508,7 +2518,10 @@ struct
                                                       | None -> assert false)
                                                     ~delivered:comments ()
                                                 with
-                                                | `Converged -> result
+                                                | `Converged ->
+                                                    if session_no_commits then
+                                                      `Ok
+                                                    else result
                                                 | `Unresolved _ ->
                                                     `Review_unresolved
                                               else (
@@ -2519,8 +2532,51 @@ struct
                                                    unresolved comments will \
                                                    re-deliver";
                                                 result)
+                                          | Patch_decision.Ci_payload
+                                              { failed_checks } ->
+                                              if session_no_commits then
+                                                let rerun_results =
+                                                  Base.List.map failed_checks
+                                                    ~f:(fun check ->
+                                                      match
+                                                        Forge
+                                                        .rerun_failed_jobs_for_check
+                                                          ~check
+                                                      with
+                                                      | Ok () ->
+                                                          log_event runtime
+                                                            ~patch_id
+                                                            (Printf.sprintf
+                                                               "ci-rerun: \
+                                                                requested \
+                                                                failed-job \
+                                                                rerun for %s"
+                                                               check
+                                                                 .Ci_check.name);
+                                                          true
+                                                      | Error err ->
+                                                          log_event runtime
+                                                            ~patch_id
+                                                            (Printf.sprintf
+                                                               "ci-rerun: \
+                                                                failed to \
+                                                                request \
+                                                                failed-job \
+                                                                rerun for %s — \
+                                                                %s"
+                                                               check
+                                                                 .Ci_check.name
+                                                               (Forge.show_error
+                                                                  err));
+                                                          false)
+                                                in
+                                                if
+                                                  Base.List.exists rerun_results
+                                                    ~f:(fun x -> x)
+                                                then `Ok
+                                                else `Retry_push
+                                              else result
                                           | Patch_decision.Human_payload _
-                                          | Patch_decision.Ci_payload _
                                           | Patch_decision.Pr_body_payload
                                           | Patch_decision
                                             .Merge_conflict_payload ->
@@ -2631,6 +2687,7 @@ struct
                                         (result
                                           :> [ `Failed
                                              | `Ok
+                                             | `No_commits
                                              | `Pr_body_miss
                                              | `Review_unresolved
                                              | `Retry_push
@@ -2643,6 +2700,7 @@ struct
                           | `Stale -> Orchestrator.Respond_stale
                           | `Skip_empty -> Orchestrator.Respond_skip_empty
                           | `Failed -> Orchestrator.Respond_failed
+                          | `No_commits -> Orchestrator.Respond_retry_push
                           | `Retry_push -> Orchestrator.Respond_retry_push
                           | `Pr_body_miss -> Orchestrator.Respond_pr_body_miss
                           | `Review_unresolved ->
