@@ -1732,6 +1732,85 @@ let () =
   QCheck2.Test.check_exn prop_pi9b;
   Stdlib.print_endline "PI-9b passed"
 
+(** PI-9c: A completed CI attempt does not permanently suppress the same still
+    failing stable CheckRun.
+
+    Regression for rls-principal-parameterization patch 1: the first CI response
+    delivered the failing CheckRun ids and completed, bumping
+    [ci_failure_count]. The next polls still saw the same failing ids, but dedup
+    treated them as "already delivered" forever, leaving the agent idle with
+    [queue=[]] and failing checks. Once a CI attempt has completed, the same
+    failing run is actionable again until the configured failure cap is reached.
+*)
+let () =
+  let prop_pi9c =
+    QCheck2.Test.make
+      ~name:"PI-9c: same failed CI run after completed attempt is re-enqueued"
+      ~count:200
+      QCheck2.Gen.(int_range 1 1_000_000)
+      (fun run_id ->
+        let patches = mk_patches 1 in
+        match patches with
+        | [] -> true
+        | first :: _ ->
+            let pid = first.Patch.id in
+            let orch = bootstrap patches in
+            let orch =
+              Orchestrator.record_delivered_ci_run_ids orch pid [ run_id ]
+            in
+            let orch = Orchestrator.increment_ci_failure_count orch pid in
+            let before = Orchestrator.agent orch pid in
+            let check =
+              Ci_check.
+                {
+                  name = "App Unit Tests";
+                  conclusion = "failure";
+                  details_url = None;
+                  description = None;
+                  started_at = None;
+                  id = Some run_id;
+                }
+            in
+            let poll_result =
+              {
+                Poller.queue = [ Operation_kind.Ci ];
+                merged = false;
+                closed = false;
+                is_draft = false;
+                merge_state = Pr_state.Mergeable;
+                merge_ready = false;
+                head_oid = None;
+                review_decision = None;
+                unresolved_comment_count = 0;
+                merge_queue_required = false;
+                merge_queue_entry = None;
+                checks_passing = false;
+                ci_checks = [ check ];
+                merge_commit_sha = None;
+              }
+            in
+            let orch, _logs, _blocked =
+              Patch_controller.apply_poll_result orch pid
+                Patch_controller.
+                  {
+                    poll_result;
+                    base_branch = None;
+                    branch_in_root = false;
+                    worktree_path = None;
+                  }
+            in
+            let agent = Orchestrator.agent orch pid in
+            (not before.Patch_agent.busy)
+            && List.is_empty before.Patch_agent.queue
+            && Int.(before.Patch_agent.ci_failure_count > 0)
+            && List.mem before.Patch_agent.delivered_ci_run_ids run_id
+                 ~equal:Int.equal
+            && List.mem agent.Patch_agent.queue Operation_kind.Ci
+                 ~equal:Operation_kind.equal)
+  in
+  QCheck2.Test.check_exn prop_pi9c;
+  Stdlib.print_endline "PI-9c passed"
+
 (** PI-10: Random interleavings with ad-hoc patches preserve invariants.
     Exercises Add_adhoc/Remove_adhoc commands alongside the standard vocabulary,
     including the case where ad-hoc patches are removed while busy. *)

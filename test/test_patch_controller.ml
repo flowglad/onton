@@ -730,11 +730,85 @@ let () =
           ~equal:Operation_kind.equal)
   in
 
-  let prop_delivered_ci_run_does_not_reenqueue =
+  let prop_delivered_ci_run_does_not_reenqueue_before_attempt =
     Test.make
       ~name:
-        "patch_controller: delivered failing CI run is not re-enqueued from \
-         poll"
+        "patch_controller: delivered failing CI run is not re-enqueued before \
+         an attempt"
+      ~count:200
+      Gen.(triple gen_patch_id gen_branch (int_range 1 1_000_000))
+      (fun (pid, branch, run_id) ->
+        let patch = make_patch pid branch in
+        let check =
+          Ci_check.
+            {
+              name = "ts2pant";
+              conclusion = "failure";
+              details_url = None;
+              description = None;
+              started_at = None;
+              id = Some run_id;
+            }
+        in
+        let agent =
+          Patch_agent.restore ~patch_id:pid ~branch
+            ~pr_status:(Patch_pr_status.Present (Pr_number.of_int 42))
+            ~has_session:true ~busy:false ~merged:false ~queue:[]
+            ~satisfies:false ~changed:true ~has_conflict:false
+            ~base_branch:(Some main) ~notified_base_branch:(Some main)
+            ~ci_failure_count:0 ~session_fallback:Patch_agent.Fresh_available
+            ~human_messages:[] ~inflight_human_messages:[] ~ci_checks:[]
+            ~merge_ready:false ~mergeability_unknown:false
+            ~merge_queue_required:false ~merge_queue_entry:None ~is_draft:false
+            ~pr_body_delivered:true ~pr_body_artifact_miss_count:0
+            ~start_attempts_without_pr:0 ~conflict_noop_count:0
+            ~no_commits_push_count:0 ~context_exhaustion_count:0
+            ~push_failure_count:0 ~rebase_failure_count:0
+            ~branch_rebased_onto:None ~branch_rebased_onto_sha:None
+            ~merge_commit_sha:None ~base_contains_merged_siblings:true
+            ~anchor_history:Onton_core.Anchor_history.empty
+            ~checks_passing:false ~current_op:None
+            ~current_op_state:Patch_agent.Queued ~current_message_id:None
+            ~generation:0 ~worktree_path:None ~branch_blocked:false
+            ~llm_session_id:None ~automerge_enabled:false
+            ~automerge_deadline:None ~automerge_inflight:false
+            ~automerge_failure_count:0 ~delivered_ci_run_ids:[ run_id ] ()
+        in
+        let orch = make_orch patch agent in
+        let poll =
+          Poller.
+            {
+              queue = [ Operation_kind.Ci ];
+              merged = false;
+              closed = false;
+              is_draft = false;
+              merge_state = Pr_state.Mergeable;
+              merge_ready = false;
+              head_oid = None;
+              review_decision = None;
+              unresolved_comment_count = 0;
+              merge_queue_required = false;
+              merge_queue_entry = None;
+              checks_passing = false;
+              ci_checks = [ check ];
+              merge_commit_sha = None;
+            }
+        in
+        let orch, _logs, _newly_blocked =
+          Patch_controller.apply_poll_result orch pid
+            (make_poll_observation poll)
+        in
+        let agent = Orchestrator.agent orch pid in
+        not
+          (List.mem agent.Patch_agent.queue Operation_kind.Ci
+             ~equal:Operation_kind.equal))
+  in
+
+  let prop_delivered_ci_run_reenqueues_after_attempt =
+    Test.make
+      ~name:
+        "patch_controller: completed attempt with same failing CI run \
+         re-enqueues"
       ~count:200
       Gen.(triple gen_patch_id gen_branch (int_range 1 1_000_000))
       (fun (pid, branch, run_id) ->
@@ -799,9 +873,8 @@ let () =
             (make_poll_observation poll)
         in
         let agent = Orchestrator.agent orch pid in
-        not
-          (List.mem agent.Patch_agent.queue Operation_kind.Ci
-             ~equal:Operation_kind.equal))
+        List.mem agent.Patch_agent.queue Operation_kind.Ci
+          ~equal:Operation_kind.equal)
   in
 
   let prop_new_ci_run_after_skip_empty_is_delivered =
@@ -1994,7 +2067,8 @@ let () =
       prop_poll_to_controller_promotes_ready_after_pr_body;
       prop_poll_ci_failure_never_erases_pr_body_followup;
       prop_idle_ci_failure_count_allows_reenqueue;
-      prop_delivered_ci_run_does_not_reenqueue;
+      prop_delivered_ci_run_does_not_reenqueue_before_attempt;
+      prop_delivered_ci_run_reenqueues_after_attempt;
       prop_new_ci_run_after_skip_empty_is_delivered;
       prop_poll_result_persists_world_flags;
       prop_poll_observation_updates_branch_metadata;

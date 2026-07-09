@@ -161,8 +161,8 @@ let () =
           equal_ci_decision (on_ci_failure a) Enqueue_ci);
       Test.make
         ~name:
-          "on_ci_failure: all known failing run ids delivered -> already \
-           delivered"
+          "on_ci_failure: all known failing run ids delivered before attempt \
+           -> already delivered"
         Gen.(triple gen_pid gen_branch (int_range 1 1_000_000))
         (fun (pid, br, run_id) ->
           let check =
@@ -182,6 +182,29 @@ let () =
             record_delivered_ci_run_ids a [ run_id ]
           in
           equal_ci_decision (on_ci_failure a) Ci_already_delivered);
+      Test.make
+        ~name:
+          "on_ci_failure: completed attempt with same failing run id retries"
+        Gen.(triple gen_pid gen_branch (int_range 1 1_000_000))
+        (fun (pid, br, run_id) ->
+          let check =
+            Ci_check.
+              {
+                name = "test";
+                conclusion = "failure";
+                details_url = None;
+                description = None;
+                started_at = None;
+                id = Some run_id;
+              }
+          in
+          let a =
+            with_pr pid br |> fun a ->
+            set_ci_checks a [ check ] |> fun a ->
+            record_delivered_ci_run_ids a [ run_id ] |> fun a ->
+            increment_ci_failure_count a
+          in
+          equal_ci_decision (on_ci_failure a) Enqueue_ci);
       Test.make
         ~name:
           "on_ci_failure: id-less failing check remains deliverable after \
