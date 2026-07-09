@@ -2700,7 +2700,7 @@ struct
                           | `Stale -> Orchestrator.Respond_stale
                           | `Skip_empty -> Orchestrator.Respond_skip_empty
                           | `Failed -> Orchestrator.Respond_failed
-                          | `No_commits -> Orchestrator.Respond_retry_push
+                          | `No_commits -> Orchestrator.Respond_no_commits
                           | `Retry_push -> Orchestrator.Respond_retry_push
                           | `Pr_body_miss -> Orchestrator.Respond_pr_body_miss
                           | `Review_unresolved ->
@@ -2794,6 +2794,7 @@ struct
                                 ~expires_at:(Unix.gettimeofday () +. 10.0)
                                 ()
                         | Orchestrator.Respond_stale
+                        | Orchestrator.Respond_no_commits
                         | Orchestrator.Respond_retry_push
                         | Orchestrator.Respond_skip_empty ->
                             ())))

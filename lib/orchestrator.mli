@@ -274,6 +274,7 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [Session_push_failed]). [busy] remains [true]. The caller MUST follow up in
     the same atomic snapshot write with either
     [apply_start_outcome _ Start_failed] (Start path) or
+    [apply_respond_outcome _ _ Respond_no_commits] /
     [apply_respond_outcome _ _ Respond_retry_push] (Respond path) to clear
     [busy]. This two-phase design is deliberate: the LLM session itself
     succeeded (messages were delivered; commits were made locally), so any
@@ -323,6 +324,7 @@ type respond_outcome =
   | Respond_ok
   | Respond_failed
   | Respond_retry_push
+  | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
   | Respond_pr_body_miss
@@ -338,13 +340,14 @@ val apply_respond_outcome :
     non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive
     misses). [Respond_failed] -> complete_failed (restores inflight human
-    messages). [Respond_skip_empty] -> complete. [Respond_retry_push] ->
-    complete. [Respond_stale] -> identity. [Respond_pr_body_miss] -> complete +
-    increment_pr_body_artifact_miss_count (does NOT set_pr_body_delivered — the
-    reconciler re-enqueues Pr_body naturally). [Respond_review_unresolved] ->
-    complete + increment_review_unresolved_cycle_count — the still-unresolved
-    threads re-deliver via the next poll until the cap (>=2) surfaces the agent
-    through [needs_intervention]. *)
+    messages). [Respond_skip_empty], [Respond_retry_push], and
+    [Respond_no_commits] -> complete. [Respond_stale] -> identity.
+    [Respond_pr_body_miss] -> complete + increment_pr_body_artifact_miss_count
+    (does NOT set_pr_body_delivered — the reconciler re-enqueues Pr_body
+    naturally). [Respond_review_unresolved] -> complete +
+    increment_review_unresolved_cycle_count — the still-unresolved threads
+    re-deliver via the next poll until the cap (>=2) surfaces the agent through
+    [needs_intervention]. *)
 
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]

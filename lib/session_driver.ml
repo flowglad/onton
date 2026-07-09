@@ -752,9 +752,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   W.force_push_with_lease ~path:worktree_path ~branch ~base
                 in
                 let branch_changed =
-                  not
-                    (Option.equal String.equal pre_session_branch_sha
-                       push_local_sha)
+                  match (pre_session_branch_sha, push_local_sha) with
+                  | Some before, Some after -> not (String.equal before after)
+                  | None, _ | _, None -> true
                 in
                 (match push_outcome with
                 | Worktree.Push_ok ->

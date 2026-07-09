@@ -138,7 +138,9 @@ let on_ci_failure (a : Patch_agent.t) : ci_decision =
     in
     match (has_known_failure, has_undelivered_failure) with
     | true, false ->
-        if a.ci_failure_count > 0 then Enqueue_ci else Ci_already_delivered
+        if a.ci_failure_count > 0 && a.ci_failure_count < a.max_ci_failures then
+          Enqueue_ci
+        else Ci_already_delivered
     | false, _ ->
         (* The poll queue can report a CI failure before GitHub has returned
            the failed check rows. With no stable run id available to dedup

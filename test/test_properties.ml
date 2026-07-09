@@ -1367,7 +1367,7 @@ let () =
         in
         let a = Orchestrator.agent orch pid in
         (* Session_no_commits defers completion to apply_respond_outcome
-           via Respond_retry_push, so agent stays busy after
+           via Respond_no_commits, so agent stays busy after
            apply_session_result alone. *)
         a.Patch_agent.busy)
   in

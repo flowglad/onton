@@ -1196,6 +1196,7 @@ type respond_outcome =
   | Respond_ok
   | Respond_failed
   | Respond_retry_push
+  | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
   | Respond_pr_body_miss
@@ -1226,6 +1227,7 @@ let apply_respond_outcome t patch_id kind outcome =
   | Respond_stale -> t
   | Respond_failed -> complete_failed t patch_id
   | Respond_retry_push -> complete t patch_id
+  | Respond_no_commits -> complete t patch_id
   | Respond_skip_empty -> complete t patch_id
   | Respond_pr_body_miss ->
       let t = complete t patch_id in
