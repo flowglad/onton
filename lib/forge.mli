@@ -41,6 +41,12 @@ module type S = sig
       to an empty source for checks without a stable run id, and return [Error]
       only when every attempted details endpoint failed hard. *)
 
+  val rerun_failed_jobs_for_check :
+    check:Types.Ci_check.t -> (unit, error) Result.t
+  (** Re-run only the failed jobs for the workflow run that produced [check].
+      Implementations should reject checks that do not carry a workflow-run
+      identity rather than falling back to a full workflow rerun. *)
+
   val list_prs :
     branch:Types.Branch.t ->
     ?base:Types.Branch.t ->

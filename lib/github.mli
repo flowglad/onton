@@ -122,6 +122,11 @@ val parse_actions_jobs_response :
     Job database ids become [Ci_check.id], and [html_url] becomes [details_url].
     Pure helper exposed for regression tests. *)
 
+val parse_actions_run_id_from_url : string -> int option
+(** Parse the workflow run id from a GitHub Actions URL containing
+    [/actions/runs/<id>]. Returns [None] for non-Actions URLs or malformed ids.
+    Pure helper exposed for regression tests. *)
+
 val parse_check_annotations_response :
   string -> (Ci_log_digest.annotation list, error) Result.t
 (** Parse a REST [GET /check-runs/:id/annotations] response into digest

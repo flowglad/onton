@@ -90,6 +90,7 @@ let () =
       Orchestrator.Respond_ok;
       Orchestrator.Respond_failed;
       Orchestrator.Respond_retry_push;
+      Orchestrator.Respond_no_commits;
       Orchestrator.Respond_skip_empty;
       Orchestrator.Respond_pr_body_miss;
       Orchestrator.Respond_review_unresolved;
@@ -335,7 +336,7 @@ let () =
 (* ========== AO-7: Ci respond counter is bumped only on Respond_ok ========== *)
 
 (* Respond_ok bumps ci_failure_count; Skip_empty / Failed / Retry_push /
-   Stale do NOT. This locks in the invariant that a CI fix attempt only
+   No_commits / Stale do NOT. This locks in the invariant that a CI fix attempt only
    counts against the cap when a real payload was delivered. Regression for
    the production incident where cancelled-only rollups drove the cap to 3
    and forced needs_intervention without any actionable failures. *)
@@ -352,10 +353,15 @@ let () =
   (* Respond_ok bumps *)
   let orch, pid, before = with_ci_busy () in
   let orch =
+    Orchestrator.apply_session_result orch pid Orchestrator.Session_no_commits
+  in
+  assert ((Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 1);
+  let orch =
     Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
       Orchestrator.Respond_ok
   in
   assert (ci_count orch pid = before + 1);
+  assert ((Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 0);
   (* Respond_skip_empty does NOT bump *)
   let orch, pid, before = with_ci_busy () in
   let orch =
@@ -375,6 +381,13 @@ let () =
   let orch =
     Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
       Orchestrator.Respond_retry_push
+  in
+  assert (ci_count orch pid = before);
+  (* Respond_no_commits does NOT bump *)
+  let orch, pid, before = with_ci_busy () in
+  let orch =
+    Orchestrator.apply_respond_outcome orch pid Operation_kind.Ci
+      Orchestrator.Respond_no_commits
   in
   assert (ci_count orch pid = before);
   (* Respond_stale does NOT bump *)
@@ -427,6 +440,7 @@ let () =
       Orchestrator.Respond_failed;
       Orchestrator.Respond_skip_empty;
       Orchestrator.Respond_retry_push;
+      Orchestrator.Respond_no_commits;
       Orchestrator.Respond_stale;
       Orchestrator.Respond_pr_body_miss;
       Orchestrator.Respond_review_unresolved;

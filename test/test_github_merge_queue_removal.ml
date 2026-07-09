@@ -350,6 +350,23 @@ let test_actions_jobs_response_returns_failing_jobs_with_ids () =
         (Onton.Github.show_error e);
       Stdlib.exit 1
 
+let test_actions_run_id_from_url () =
+  let cases =
+    [
+      ( "https://github.com/o/r/actions/runs/28256333725/job/83720238028",
+        Some 28256333725 );
+      ("https://github.com/o/r/actions/runs/123456789", Some 123456789);
+      ("https://github.com/o/r/runs/123456789", None);
+      ("https://example.com/actions/runs/not-a-number/job/1", None);
+    ]
+  in
+  List.iter cases ~f:(fun (url, expected) ->
+      let actual = Onton.Github.parse_actions_run_id_from_url url in
+      if not (Option.equal Int.equal actual expected) then (
+        Stdlib.Printf.eprintf "  FAIL: run id parse for %s\n" url;
+        Stdlib.exit 1));
+  Stdlib.print_endline "  Actions URL → workflow run id: OK"
+
 let () =
   test_mixed_returns_only_failures ();
   test_truncated_rollup_is_ok_empty ();
@@ -365,4 +382,5 @@ let () =
   test_contexts_page_graphql_errors_propagate ();
   test_merge_group_run_id_finds_failed_queue_run ();
   test_actions_jobs_response_returns_failing_jobs_with_ids ();
+  test_actions_run_id_from_url ();
   Stdlib.print_endline "test_github_merge_queue_removal: OK"

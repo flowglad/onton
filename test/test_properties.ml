@@ -1156,17 +1156,37 @@ let () =
     Test.make ~name:"CP-1: Session_ok + Push_ok = Session_ok" (Gen.return ())
       (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session:Session_ok
-             ~push:Worktree.Push_ok)
+          (Orchestrator.combine_session_and_push ~branch_changed:true
+             ~session:Session_ok ~push:Worktree.Push_ok)
           Session_ok)
   in
   let prop_cp2_ok_uptodate =
     Test.make ~name:"CP-2: Session_ok + Push_up_to_date = Session_ok"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session:Session_ok
-             ~push:Worktree.Push_up_to_date)
+          (Orchestrator.combine_session_and_push ~branch_changed:true
+             ~session:Session_ok ~push:Worktree.Push_up_to_date)
           Session_ok)
+  in
+  let prop_cp2b_ok_uptodate_unchanged_branch =
+    Test.make
+      ~name:
+        "CP-2b: Session_ok + Push_up_to_date + unchanged branch = \
+         Session_no_commits" (Gen.return ()) (fun () ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~branch_changed:false
+             ~session:Session_ok ~push:Worktree.Push_up_to_date)
+          Session_no_commits)
+  in
+  let prop_cp2c_ok_pushok_unchanged_branch =
+    Test.make
+      ~name:
+        "CP-2c: Session_ok + Push_ok + unchanged branch = Session_no_commits"
+      (Gen.return ()) (fun () ->
+        Orchestrator.equal_session_result
+          (Orchestrator.combine_session_and_push ~branch_changed:false
+             ~session:Session_ok ~push:Worktree.Push_ok)
+          Session_no_commits)
   in
   let prop_cp3_ok_rejected =
     Test.make
@@ -1174,7 +1194,8 @@ let () =
         "CP-3: Session_ok + Push_rejected = Session_push_failed (Some reason)"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session:Session_ok
+          (Orchestrator.combine_session_and_push ~branch_changed:true
+             ~session:Session_ok
              ~push:(Worktree.Push_rejected Push_reject_classify.Lease_violation))
           (Session_push_failed (Some Push_reject_classify.Lease_violation)))
   in
@@ -1182,8 +1203,8 @@ let () =
     Test.make ~name:"CP-4: Session_ok + Push_error = Session_push_failed None"
       Gen.string_small (fun msg ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session:Session_ok
-             ~push:(Worktree.Push_error msg))
+          (Orchestrator.combine_session_and_push ~branch_changed:true
+             ~session:Session_ok ~push:(Worktree.Push_error msg))
           (Session_push_failed None))
   in
   let gen_non_ok_session : Orchestrator.session_result Gen.t =
@@ -1223,15 +1244,16 @@ let () =
          (Push_worktree_missing excluded — handled by CP-7)" ~count:300
       (Gen.pair gen_non_ok_session gen_push) (fun (session, push) ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session ~push)
+          (Orchestrator.combine_session_and_push ~branch_changed:false ~session
+             ~push)
           session)
   in
   let prop_cp6_ok_no_commits =
     Test.make ~name:"CP-6: Session_ok + Push_no_commits = Session_no_commits"
       (Gen.return ()) (fun () ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session:Session_ok
-             ~push:Worktree.Push_no_commits)
+          (Orchestrator.combine_session_and_push ~branch_changed:true
+             ~session:Session_ok ~push:Worktree.Push_no_commits)
           Session_no_commits)
   in
   (* Push_worktree_missing means the worktree directory was deleted between
@@ -1247,7 +1269,7 @@ let () =
         "CP-7: any session + Push_worktree_missing = Session_worktree_missing"
       gen_any_session (fun session ->
         Orchestrator.equal_session_result
-          (Orchestrator.combine_session_and_push ~session
+          (Orchestrator.combine_session_and_push ~branch_changed:false ~session
              ~push:Worktree.Push_worktree_missing)
           Session_worktree_missing)
   in
@@ -1345,7 +1367,7 @@ let () =
         in
         let a = Orchestrator.agent orch pid in
         (* Session_no_commits defers completion to apply_respond_outcome
-           via Respond_retry_push, so agent stays busy after
+           via Respond_no_commits, so agent stays busy after
            apply_session_result alone. *)
         a.Patch_agent.busy)
   in
@@ -1582,6 +1604,8 @@ let () =
       prop_psf8_transient_reason_does_not_escalate;
       prop_cp1_ok_pushok;
       prop_cp2_ok_uptodate;
+      prop_cp2b_ok_uptodate_unchanged_branch;
+      prop_cp2c_ok_pushok_unchanged_branch;
       prop_cp3_ok_rejected;
       prop_cp4_ok_error;
       prop_cp5_failure_dominates;

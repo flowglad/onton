@@ -274,6 +274,7 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [Session_push_failed]). [busy] remains [true]. The caller MUST follow up in
     the same atomic snapshot write with either
     [apply_start_outcome _ Start_failed] (Start path) or
+    [apply_respond_outcome _ _ Respond_no_commits] /
     [apply_respond_outcome _ _ Respond_retry_push] (Respond path) to clear
     [busy]. This two-phase design is deliberate: the LLM session itself
     succeeded (messages were delivered; commits were made locally), so any
@@ -286,14 +287,20 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [push_failure_count >= 3] or [Given_up]. *)
 
 val combine_session_and_push :
-  session:session_result -> push:Worktree.push_result -> session_result
+  branch_changed:bool ->
+  session:session_result ->
+  push:Worktree.push_result ->
+  session_result
 (** Pure: fold the LLM session outcome and the supervisor's post-session push
     outcome into a single [session_result] for [apply_session_result].
     - A pre-existing LLM failure ([Session_process_error], [Session_failed],
       [Session_no_resume], [Session_give_up], [Session_worktree_missing],
       [Session_push_failed _]) is preserved unchanged — the push outcome doesn't
       change anything.
-    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
+    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok] when
+      [branch_changed] is true. When [branch_changed] is false, it becomes
+      [Session_no_commits]: the agent turn finished but did not create a new
+      commit, even if the branch already had older commits ahead of base.
     - [Session_ok] with [Push_rejected reason] becomes
       [Session_push_failed (Some reason)] — the LLM ran fine but the remote
       refused commits; the classified reason rides along so the orchestrator can
@@ -301,9 +308,9 @@ val combine_session_and_push :
       branch-protection, push-pattern, hook).
     - [Session_ok] with [Push_error _] becomes [Session_push_failed None] — a
       transport/local git error, always treated as transient.
-    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the LLM
-      ran cleanly but left no commits on the branch, so the push was skipped (a
-      base-equal branch can't become a PR). *)
+    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the
+      branch has no commits ahead of base, so the push was skipped (a base-equal
+      branch can't become a PR). *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
@@ -317,6 +324,7 @@ type respond_outcome =
   | Respond_ok
   | Respond_failed
   | Respond_retry_push
+  | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
   | Respond_pr_body_miss
@@ -326,19 +334,20 @@ type respond_outcome =
 val apply_respond_outcome :
   t -> Patch_id.t -> Operation_kind.t -> respond_outcome -> t
 (** Apply the outcome of a Respond action fiber. [Respond_ok] -> complete +
-    kind-specific transitions (Merge_conflict -> clear_has_conflict +
-    reset_conflict_noop_count; Review_comments ->
+    reset_no_commits_push_count + kind-specific transitions (Merge_conflict ->
+    clear_has_conflict + reset_conflict_noop_count; Review_comments ->
     reset_review_unresolved_cycle_count so the cap counts only consecutive
     non-converged cycles; Pr_body -> set_pr_body_delivered +
     reset_pr_body_artifact_miss_count so the cap counts only consecutive
     misses). [Respond_failed] -> complete_failed (restores inflight human
-    messages). [Respond_skip_empty] -> complete. [Respond_retry_push] ->
-    complete. [Respond_stale] -> identity. [Respond_pr_body_miss] -> complete +
-    increment_pr_body_artifact_miss_count (does NOT set_pr_body_delivered — the
-    reconciler re-enqueues Pr_body naturally). [Respond_review_unresolved] ->
-    complete + increment_review_unresolved_cycle_count — the still-unresolved
-    threads re-deliver via the next poll until the cap (>=2) surfaces the agent
-    through [needs_intervention]. *)
+    messages). [Respond_skip_empty], [Respond_retry_push], and
+    [Respond_no_commits] -> complete. [Respond_stale] -> identity.
+    [Respond_pr_body_miss] -> complete + increment_pr_body_artifact_miss_count
+    (does NOT set_pr_body_delivered — the reconciler re-enqueues Pr_body
+    naturally). [Respond_review_unresolved] -> complete +
+    increment_review_unresolved_cycle_count — the still-unresolved threads
+    re-deliver via the next poll until the cap (>=2) surfaces the agent through
+    [needs_intervention]. *)
 
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]

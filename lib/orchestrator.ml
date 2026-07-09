@@ -1152,7 +1152,7 @@ let apply_session_result t patch_id result =
       let t = update_agent t patch_id ~f:Patch_agent.on_context_exhausted in
       complete_failed t patch_id
 
-let combine_session_and_push ~(session : session_result)
+let combine_session_and_push ~branch_changed ~(session : session_result)
     ~(push : Worktree.push_result) : session_result =
   (* Push_worktree_missing dominates every prior session outcome: even if the
      LLM session reported [Session_ok], the worktree (and thus the local
@@ -1167,7 +1167,8 @@ let combine_session_and_push ~(session : session_result)
       match session with
       | Session_ok -> (
           match push with
-          | Worktree.Push_ok | Worktree.Push_up_to_date -> Session_ok
+          | Worktree.Push_ok | Worktree.Push_up_to_date ->
+              if branch_changed then Session_ok else Session_no_commits
           | Worktree.Push_no_commits -> Session_no_commits
           | Worktree.Push_rejected reason -> Session_push_failed (Some reason)
           | Worktree.Push_error _ -> Session_push_failed None
@@ -1195,6 +1196,7 @@ type respond_outcome =
   | Respond_ok
   | Respond_failed
   | Respond_retry_push
+  | Respond_no_commits
   | Respond_stale
   | Respond_skip_empty
   | Respond_pr_body_miss
@@ -1225,6 +1227,7 @@ let apply_respond_outcome t patch_id kind outcome =
   | Respond_stale -> t
   | Respond_failed -> complete_failed t patch_id
   | Respond_retry_push -> complete t patch_id
+  | Respond_no_commits -> complete t patch_id
   | Respond_skip_empty -> complete t patch_id
   | Respond_pr_body_miss ->
       let t = complete t patch_id in
@@ -1243,6 +1246,9 @@ let apply_respond_outcome t patch_id kind outcome =
         if Operation_kind.equal kind Operation_kind.Ci then
           increment_ci_failure_count t patch_id
         else t
+      in
+      let t =
+        update_agent t patch_id ~f:Patch_agent.reset_no_commits_push_count
       in
       let t =
         if Operation_kind.equal kind Operation_kind.Merge_conflict then
