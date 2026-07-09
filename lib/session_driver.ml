@@ -179,6 +179,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         | Worktree_setup.Refused -> (`Failed, [])
         | Worktree_setup.Path worktree_path ->
             let cwd = Eio.Path.(fs / worktree_path) in
+            let pre_session_branch_sha =
+              let branch_str =
+                Types.Branch.to_string agent.Patch_agent.branch
+              in
+              W.read_branch_sha ~path:worktree_path
+                ~ref_name:("refs/heads/" ^ branch_str)
+            in
             (* Read once at session start so the per-event callback below can
              persist the session id to the crash-recovery sidecar without
              repeated env lookups.  When unset, the sidecar write is a no-op:
@@ -744,6 +751,11 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 let push_outcome =
                   W.force_push_with_lease ~path:worktree_path ~branch ~base
                 in
+                let branch_changed =
+                  not
+                    (Option.equal String.equal pre_session_branch_sha
+                       push_local_sha)
+                in
                 (match push_outcome with
                 | Worktree.Push_ok ->
                     log_event runtime ~patch_id "runner: pushed after session"
@@ -773,6 +785,13 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 | Worktree.Push_error msg ->
                     log_event runtime ~patch_id
                       (Printf.sprintf "runner: push error after session: %s" msg));
+                if
+                  (not branch_changed)
+                  && Orchestrator.equal_session_result session_result
+                       Orchestrator.Session_ok
+                then
+                  log_event runtime ~patch_id
+                    "runner: session made no new commit";
                 (* Combine LLM session outcome with push outcome into a single
              session_result via the pure decision in
              [Orchestrator.combine_session_and_push]. user_result mirrors:
@@ -799,7 +818,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 in
                 let final_session_result =
                   let combined =
-                    Orchestrator.combine_session_and_push
+                    Orchestrator.combine_session_and_push ~branch_changed
                       ~session:session_result ~push:push_outcome
                   in
                   match combined with

@@ -61,8 +61,8 @@ let () =
      gone with the directory, so the combined outcome must route through
      the pre-session-failure path. *)
   let combined =
-    Orchestrator.combine_session_and_push ~session:Orchestrator.Session_ok
-      ~push:Worktree.Push_worktree_missing
+    Orchestrator.combine_session_and_push ~branch_changed:true
+      ~session:Orchestrator.Session_ok ~push:Worktree.Push_worktree_missing
   in
   if
     not

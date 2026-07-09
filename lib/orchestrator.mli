@@ -286,14 +286,20 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [push_failure_count >= 3] or [Given_up]. *)
 
 val combine_session_and_push :
-  session:session_result -> push:Worktree.push_result -> session_result
+  branch_changed:bool ->
+  session:session_result ->
+  push:Worktree.push_result ->
+  session_result
 (** Pure: fold the LLM session outcome and the supervisor's post-session push
     outcome into a single [session_result] for [apply_session_result].
     - A pre-existing LLM failure ([Session_process_error], [Session_failed],
       [Session_no_resume], [Session_give_up], [Session_worktree_missing],
       [Session_push_failed _]) is preserved unchanged — the push outcome doesn't
       change anything.
-    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok].
+    - [Session_ok] with [Push_ok] or [Push_up_to_date] stays [Session_ok] when
+      [branch_changed] is true. When [branch_changed] is false, it becomes
+      [Session_no_commits]: the agent turn finished but did not create a new
+      commit, even if the branch already had older commits ahead of base.
     - [Session_ok] with [Push_rejected reason] becomes
       [Session_push_failed (Some reason)] — the LLM ran fine but the remote
       refused commits; the classified reason rides along so the orchestrator can
@@ -301,9 +307,9 @@ val combine_session_and_push :
       branch-protection, push-pattern, hook).
     - [Session_ok] with [Push_error _] becomes [Session_push_failed None] — a
       transport/local git error, always treated as transient.
-    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the LLM
-      ran cleanly but left no commits on the branch, so the push was skipped (a
-      base-equal branch can't become a PR). *)
+    - [Session_ok] with [Push_no_commits] becomes [Session_no_commits] — the
+      branch has no commits ahead of base, so the push was skipped (a base-equal
+      branch can't become a PR). *)
 
 type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
