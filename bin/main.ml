@@ -1409,13 +1409,13 @@ let model_arg =
     & info [ "model" ] ~docv:"MODEL"
         ~doc:
           "Model name to pass to the selected backend (e.g. [sonnet], [opus], \
-           [sonnet-4-6] for claude; [gpt-5.5] for codex). The literal value \
-           [auto] picks a model per patch from the gameplan's [complexity] \
-           field (1/2/3 → cheap/standard/strongest tier of the selected \
-           backend). The per-backend ladder can be overridden by writing \
-           [~/.config/onton/<owner>/<repo>/config.json] with a [routing] map; \
-           the same file's [default.{backend,model}] block sets per-repo \
-           defaults below CLI flags and stored values — see \
+           [sonnet-4-6] for claude; [gpt-5.6-sol] for codex). The literal \
+           value [auto] picks a model per patch from the gameplan's \
+           [complexity] field (1/2/3 → cheap/standard/strongest tier of the \
+           selected backend). The per-backend ladder can be overridden by \
+           writing [~/.config/onton/<owner>/<repo>/config.json] with a \
+           [routing] map; the same file's [default.{backend,model}] block sets \
+           per-repo defaults below CLI flags and stored values — see \
            lib_core/repo_config.mli for the schema. When omitted, onton does \
            not pass --model to the underlying CLI, so the backend's own \
            default applies.")
