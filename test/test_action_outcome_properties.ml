@@ -616,6 +616,74 @@ let () =
   QCheck2.Test.check_exn prop;
   Stdlib.print_endline "AO-13 passed"
 
+(* ========== AO-14: no-commit Pr_body cycle with delivered artifact never
+   marches toward needs_intervention ========== *)
+
+(* Encodes the runner contract restored after the v0.51.0 regression
+   (938efeb7): a healthy Pr_body session authors the notes artifact outside
+   the worktree and makes NO commits, so the session driver reports
+   Session_no_commits (bumping no_commits_push_count) while the runner's
+   artifact verdict maps the respond outcome to Respond_ok — which must reset
+   the counter, flip pr_body_delivered, and leave the agent idle without
+   intervention. The regression skipped the artifact apply for no-commit
+   sessions, so the counter incremented without the Respond_ok reset and every
+   patch escalated at >= 2 right after its first commit. The miss leg checks
+   the other verdict: Respond_pr_body_miss after a no-commit session leaves
+   both counters at 1 — retry-once territory, no intervention yet. *)
+let () =
+  let prop =
+    QCheck2.Test.make
+      ~name:
+        "AO-14: Session_no_commits + Respond_ok Pr_body cycle resets the noop \
+         counter" (QCheck2.Gen.return ()) (fun () ->
+        try
+          let orch, patches, gameplan, pid = bootstrap_one () in
+          (* Miss leg: no-commit session, artifact NOT delivered. *)
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Pr_body
+          in
+          let orch =
+            Orchestrator.apply_session_result orch pid
+              Orchestrator.Session_no_commits
+          in
+          assert (Orchestrator.agent orch pid).Patch_agent.busy;
+          assert (
+            (Orchestrator.agent orch pid).Patch_agent.no_commits_push_count = 1);
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+              Orchestrator.Respond_pr_body_miss
+          in
+          let a_miss = Orchestrator.agent orch pid in
+          assert (not a_miss.Patch_agent.busy);
+          assert (a_miss.Patch_agent.no_commits_push_count = 1);
+          assert (a_miss.Patch_agent.pr_body_artifact_miss_count = 1);
+          assert (not (Patch_agent.needs_intervention a_miss));
+          (* Delivery leg: second no-commit session, artifact delivered. The
+             counter reaches 2 transiently between apply_session_result and
+             apply_respond_outcome, but Respond_ok resets it before the agent
+             goes idle — the cycle must end clean. *)
+          let orch =
+            make_busy orch patches gameplan pid Operation_kind.Pr_body
+          in
+          let orch =
+            Orchestrator.apply_session_result orch pid
+              Orchestrator.Session_no_commits
+          in
+          let orch =
+            Orchestrator.apply_respond_outcome orch pid Operation_kind.Pr_body
+              Orchestrator.Respond_ok
+          in
+          let a = Orchestrator.agent orch pid in
+          (not a.Patch_agent.busy)
+          && a.Patch_agent.no_commits_push_count = 0
+          && a.Patch_agent.pr_body_delivered
+          && a.Patch_agent.pr_body_artifact_miss_count = 0
+          && not (Patch_agent.needs_intervention a)
+        with _ -> false)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "AO-14 passed"
+
 (* AO-surface: thread a bootstrapped orchestrator through every state
    transition / accessor on the orchestrator decision surface and assert it
    stays queryable. Uses the generated [flag] so this counts as a property over

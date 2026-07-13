@@ -803,7 +803,19 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              requires no code changes. Absence of new commits is therefore
              not a failure — override Session_no_commits to Session_ok so
              the no_commits_push_count counter does not march toward
-             needs_intervention and the operation completes cleanly. *)
+             needs_intervention and the operation completes cleanly.
+
+             Pr_body, Review_comments, and Ci stay false DELIBERATELY even
+             though their sessions can legitimately end without commits
+             (Pr_body always does — it authors an artifact outside the
+             worktree). Their no-commit turns are rescued downstream by
+             each kind's own success verdict — artifact delivery
+             (Patch_decision.pr_body_respond_plan +
+             classify_pr_body_respond), comment convergence, CI rerun —
+             which maps the outcome to Respond_ok and resets the counter.
+             Keeping them out of this override preserves the
+             Session_no_commits telemetry and keeps the noop gate armed
+             for the truly-idle case where the verdict does not rescue. *)
                 let no_commits_is_ok =
                   match kind with
                   | Some Types.Operation_kind.Human -> true

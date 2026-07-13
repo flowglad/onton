@@ -2352,16 +2352,25 @@ struct
                                         | _ -> ());
                                         (* Artifact-driven phase (Pr_body): read
                                    the agent's artifact and PATCH the PR body.
-                                   When the artifact is missing AND we saw a
-                                   Write tool call that did not complete, the
-                                   agent was likely blocked mid-call (e.g. by
-                                   OpenCode's --dir sandbox) — signal retry
-                                   via Respond_pr_body_miss so the reconciler
-                                   re-enqueues Pr_body once before escalating
-                                   to needs_intervention. When the artifact is
-                                   missing but we saw no Write failure, the
-                                   agent legitimately chose not to add notes:
-                                   fall through to Respond_ok as before. *)
+                                   Success for this phase is artifact delivery,
+                                   never commit presence — a healthy Pr_body
+                                   session authors the notes file outside the
+                                   worktree and makes no commits, so it arrives
+                                   here as [`No_commits]. Both [`Ok] and
+                                   [`No_commits] sessions run the apply
+                                   (pr_body_respond_plan), and the classify
+                                   verdict owns the arm's result: [`Ok]
+                                   upgrades a no-commit session so Respond_ok
+                                   flips pr_body_delivered and resets the
+                                   no-commit noop counter that
+                                   apply_session_result bumped;
+                                   [`Pr_body_miss] (blocked Write or failed
+                                   PATCH) lets the reconciler re-enqueue
+                                   Pr_body before escalating to
+                                   needs_intervention. A missing/empty
+                                   artifact with no Write failure is the
+                                   agent's deliberate choice not to add notes
+                                   and classifies [`Ok]. *)
                                         let session_ok =
                                           match result with
                                           | `Ok -> true
@@ -2374,44 +2383,62 @@ struct
                                         in
                                         let result =
                                           match payload with
-                                          | Patch_decision.Pr_body_payload
-                                            when session_ok -> (
+                                          | Patch_decision.Pr_body_payload -> (
                                               match
-                                                ( pr_number,
-                                                  Base.List.find
-                                                    gameplan.Gameplan.patches
-                                                    ~f:(fun (p : Patch.t) ->
-                                                      Patch_id.equal p.Patch.id
-                                                        patch_id) )
+                                                Patch_decision
+                                                .pr_body_respond_plan
+                                                  ~session_ok
+                                                  ~session_no_commits
                                               with
-                                              | Some pr, Some patch -> (
-                                                  let artifact_outcome =
-                                                    apply_pr_body_artifact
-                                                      ~runtime ~project_name
-                                                      ~patch_id ~pr_number:pr
-                                                      ~patch ~gameplan
-                                                  in
-                                                  match
-                                                    Patch_decision
-                                                    .classify_pr_body_respond
-                                                      ~artifact_outcome
-                                                      ~tool_failures
-                                                  with
-                                                  | `Pr_body_miss ->
-                                                      `Pr_body_miss
-                                                  | `Ok -> result)
-                                              | None, _ ->
-                                                  log_event runtime ~patch_id
-                                                    "pr-body: no PR number yet \
-                                                     — skipping artifact apply";
+                                              | Patch_decision
+                                                .Pr_body_pass_through ->
                                                   result
-                                              | _, None ->
-                                                  log_event runtime ~patch_id
-                                                    "pr-body: skipping \
-                                                     artifact apply — patch \
-                                                     has no gameplan entry \
-                                                     (likely ad-hoc)";
-                                                  result)
+                                              | Patch_decision.Pr_body_apply
+                                                -> (
+                                                  match
+                                                    ( pr_number,
+                                                      Base.List.find
+                                                        gameplan
+                                                          .Gameplan.patches
+                                                        ~f:(fun (p : Patch.t) ->
+                                                          Patch_id.equal
+                                                            p.Patch.id patch_id)
+                                                    )
+                                                  with
+                                                  | Some pr, Some patch ->
+                                                      let artifact_outcome =
+                                                        apply_pr_body_artifact
+                                                          ~runtime ~project_name
+                                                          ~patch_id
+                                                          ~pr_number:pr ~patch
+                                                          ~gameplan
+                                                      in
+                                                      (Patch_decision
+                                                       .classify_pr_body_respond
+                                                         ~artifact_outcome
+                                                         ~tool_failures
+                                                        :> [ `Failed
+                                                           | `Ok
+                                                           | `No_commits
+                                                           | `Pr_body_miss
+                                                           | `Retry_push
+                                                           | `Review_unresolved
+                                                           ])
+                                                  | None, _ ->
+                                                      log_event runtime
+                                                        ~patch_id
+                                                        "pr-body: no PR number \
+                                                         yet — skipping \
+                                                         artifact apply";
+                                                      result
+                                                  | _, None ->
+                                                      log_event runtime
+                                                        ~patch_id
+                                                        "pr-body: skipping \
+                                                         artifact apply — \
+                                                         patch has no gameplan \
+                                                         entry (likely ad-hoc)";
+                                                      result))
                                           | Patch_decision.Findings_payload
                                               { findings } ->
                                               if session_ok then (
@@ -2577,7 +2604,6 @@ struct
                                                 else `Retry_push
                                               else result
                                           | Patch_decision.Human_payload _
-                                          | Patch_decision.Pr_body_payload
                                           | Patch_decision
                                             .Merge_conflict_payload ->
                                               result
