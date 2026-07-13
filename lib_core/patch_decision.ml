@@ -256,6 +256,31 @@ let classify_pr_body_respond
   | (`Missing | `Empty), true -> `Pr_body_miss
   | (`Ok | `Missing | `Empty), _ -> `Ok
 
+type pr_body_respond_plan = Pr_body_apply | Pr_body_pass_through
+[@@deriving show, eq, sexp_of, compare]
+
+(** Whether the Pr_body respond arm should run the artifact apply and let
+    [classify_pr_body_respond]'s verdict own the respond result.
+
+    Success for the Pr_body phase is artifact delivery, never commit presence: a
+    healthy Pr_body session authors the notes file outside the worktree and
+    makes no commits, so it arrives at the respond arm as a no-commit session
+    (branch SHA unchanged, push up-to-date). Both healthy arrivals —
+    [session_ok] and [session_no_commits] — must attempt the apply; a delivered
+    artifact then upgrades the arm's result to [`Ok] so [Respond_ok] flips
+    [pr_body_delivered] and resets the no-commit noop counter that
+    [apply_session_result] bumped when it saw [Session_no_commits].
+
+    Regression guard: gating the apply on [session_ok] alone starves
+    [pr_body_delivered] — the reconciler re-enqueues Pr_body, every cycle is
+    another no-commit turn, and [no_commits_push_count >= 2] deterministically
+    escalates every patch to needs_intervention right after its first commit
+    (v0.51.0, introduced by the no-commit-turn detector in 938efeb7). *)
+let pr_body_respond_plan ~(session_ok : bool) ~(session_no_commits : bool) :
+    pr_body_respond_plan =
+  if session_ok || session_no_commits then Pr_body_apply
+  else Pr_body_pass_through
+
 (** {2 Opportunistic pr-body artifact sync from any session} *)
 
 (* Treat empty and whitespace-only contents as "no artifact present" so a

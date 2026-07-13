@@ -886,7 +886,32 @@ let () =
           with _ -> false)
     in
     QCheck2.Test.check_exn prop;
-    Stdlib.print_endline "PB-9 passed"
+    Stdlib.print_endline "PB-9 passed";
+
+    (* PB-10: pr_body_respond_plan — the artifact apply engages for exactly
+       the healthy session arrivals: session_ok or session_no_commits. A
+       healthy Pr_body session authors the notes artifact outside the
+       worktree and makes NO commits, so no-commits is its normal arrival
+       state. Regression guard for v0.51.0 (938efeb7): gating the apply on
+       session_ok alone starved pr_body_delivered, the reconciler re-enqueued
+       Pr_body forever, and no_commits_push_count >= 2 deterministically
+       escalated every patch to needs_intervention after its first commit.
+       Exhaustive over the bool² input space. *)
+    let prop =
+      QCheck2.Test.make
+        ~name:"PB-10: apply iff session is ok or made no commits"
+        QCheck2.Gen.(pair bool bool)
+        (fun (session_ok, session_no_commits) ->
+          let expected =
+            if session_ok || session_no_commits then Pr_body_apply
+            else Pr_body_pass_through
+          in
+          equal_pr_body_respond_plan
+            (pr_body_respond_plan ~session_ok ~session_no_commits)
+            expected)
+    in
+    QCheck2.Test.check_exn prop;
+    Stdlib.print_endline "PB-10 passed"
   in
 
   (* ========== Opportunistic artifact-sync property tests ==========

@@ -136,9 +136,31 @@ val classify_pr_body_respond :
 
     Any other combination returns [`Ok].
 
-    Only invoked after a successful session — session-level failures
-    (stale/failed/retry_push) short-circuit upstream in the handler and never
-    reach this function. *)
+    Invoked after a successful or no-commit session ([pr_body_respond_plan]
+    decides eligibility) — session-level failures (stale/failed/retry_push)
+    short-circuit upstream in the handler and never reach this function. The
+    verdict owns the respond result: [`Ok] maps to [Respond_ok] even when the
+    session made no commits, since a healthy Pr_body session authors the
+    artifact outside the worktree and commits nothing. *)
+
+type pr_body_respond_plan =
+  | Pr_body_apply
+      (** Run [apply_pr_body_artifact] and adopt [classify_pr_body_respond]'s
+          verdict as the respond result. *)
+  | Pr_body_pass_through
+      (** Session-level failure — leave the respond result untouched and skip
+          the artifact apply. *)
+[@@deriving show, eq, sexp_of, compare]
+
+val pr_body_respond_plan :
+  session_ok:bool -> session_no_commits:bool -> pr_body_respond_plan
+(** Pure eligibility rule for the Pr_body respond arm: apply on both healthy
+    arrivals, [session_ok] and [session_no_commits]. A healthy Pr_body session
+    makes no commits by design, so [session_no_commits] is its normal arrival
+    state; a delivered artifact upgrades that session to [Respond_ok], which
+    flips [pr_body_delivered] and resets [no_commits_push_count]. Gating the
+    apply on [session_ok] alone deterministically escalated every patch to
+    needs_intervention after two Pr_body cycles (v0.51.0 regression). *)
 
 (** {2 Opportunistic pr-body artifact sync from any session}
 
