@@ -897,23 +897,20 @@ let () =
        Pr_body forever, and no_commits_push_count >= 2 deterministically
        escalated every patch to needs_intervention after its first commit.
        Exhaustive over the bool² input space. *)
-    List.iter
-      [
-        (true, false, Pr_body_apply);
-        (false, true, Pr_body_apply);
-        (true, true, Pr_body_apply);
-        (false, false, Pr_body_pass_through);
-      ]
-      ~f:(fun (session_ok, session_no_commits, expected) ->
-        let got = pr_body_respond_plan ~session_ok ~session_no_commits in
-        if not (equal_pr_body_respond_plan got expected) then
-          failwith
-            (Printf.sprintf
-               "PB-10: pr_body_respond_plan ~session_ok:%b \
-                ~session_no_commits:%b = %s, expected %s"
-               session_ok session_no_commits
-               (show_pr_body_respond_plan got)
-               (show_pr_body_respond_plan expected)));
+    let prop =
+      QCheck2.Test.make
+        ~name:"PB-10: apply iff session is ok or made no commits"
+        QCheck2.Gen.(pair bool bool)
+        (fun (session_ok, session_no_commits) ->
+          let expected =
+            if session_ok || session_no_commits then Pr_body_apply
+            else Pr_body_pass_through
+          in
+          equal_pr_body_respond_plan
+            (pr_body_respond_plan ~session_ok ~session_no_commits)
+            expected)
+    in
+    QCheck2.Test.check_exn prop;
     Stdlib.print_endline "PB-10 passed"
   in
 
