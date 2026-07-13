@@ -79,7 +79,7 @@ val load :
         },
         "routing": {
           "1": { "backend": "claude", "model": "haiku" },
-          "2": { "backend": "codex",  "model": "gpt-5.4" },
+          "2": { "backend": "codex",  "model": "gpt-5.6-terra" },
           "3": { "backend": "claude", "model": "opus" }
         }
       }

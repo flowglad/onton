@@ -500,7 +500,7 @@ Two flags control which agent runs the patches:
 ```sh
 onton --backend claude --model sonnet-4-6
 onton --backend claude --model opus
-onton --backend codex --model gpt-5-codex
+onton --backend codex --model gpt-5.6-sol
 onton --backend gemini --model gemini-2.5-pro
 onton --backend opencode --model anthropic/claude-sonnet-4-5
 ```
@@ -524,7 +524,7 @@ write a per-repo config at
   },
   "routing": {
     "1": { "backend": "claude", "model": "haiku"   },
-    "3": { "backend": "codex",  "model": "gpt-5.5" }
+    "3": { "backend": "codex",  "model": "gpt-5.6-sol" }
   }
 }
 ```
@@ -544,18 +544,22 @@ optional; pin just `backend`, just `model`, or both. Run
 `onton-check-repo-config <owner> <repo>` to verify how a `config.json`
 parses.
 
+For Codex, the built-in ladder maps complexity 1/2/3 to `gpt-5.6-luna`,
+`gpt-5.6-terra`, and `gpt-5.6-sol`. Missing or out-of-range complexity
+conservatively selects Sol.
+
 ### Supported models
 
 Onton passes `--model` through to the backend CLI verbatim, so any model the
 underlying CLI accepts will work. Use unpinned aliases (e.g. `sonnet`,
 `opus`) when you want "current best in tier"; pin a specific version when you
-need reproducibility. The names below are accurate as of February 2026 —
+need reproducibility. The names below are accurate as of July 2026 —
 **check each provider's docs for the current list**:
 
 | Backend | Common model names | Source of truth |
 |---------|-------------------|-----------------|
 | `claude` | `opus`, `sonnet`, `haiku` (unpinned aliases); `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5` (pinned) | [Anthropic models](https://docs.anthropic.com/en/docs/about-claude/models) |
-| `codex` | `gpt-5-codex`, `gpt-5`, `gpt-5-mini` | [OpenAI models](https://platform.openai.com/docs/models), [Codex CLI README](https://github.com/openai/codex) |
+| `codex` | `gpt-5.6-luna`, `gpt-5.6-terra`, `gpt-5.6-sol` (`gpt-5.6` aliases Sol) | [OpenAI models](https://developers.openai.com/api/docs/models), [Codex CLI README](https://github.com/openai/codex) |
 | `gemini` | `gemini-2.5-pro`, `gemini-2.5-flash` | [Gemini API models](https://ai.google.dev/gemini-api/docs/models) |
 | `opencode` | Provider-prefixed, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5` | [OpenCode docs](https://opencode.ai/docs) |
 | `pi` | Run `pi --help` for the current list | Pi CLI |

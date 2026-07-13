@@ -65,6 +65,24 @@ type model_pricing = {
 [@@deriving show, eq, sexp_of, compare]
 
 let model_pricing = function
+  | Some "gpt-5.6-luna" ->
+      Some
+        {
+          input_nano_usd_per_1k = 1_000_000L;
+          output_nano_usd_per_1k = 6_000_000L;
+        }
+  | Some "gpt-5.6-terra" ->
+      Some
+        {
+          input_nano_usd_per_1k = 2_500_000L;
+          output_nano_usd_per_1k = 15_000_000L;
+        }
+  | Some ("gpt-5.6-sol" | "gpt-5.6") ->
+      Some
+        {
+          input_nano_usd_per_1k = 5_000_000L;
+          output_nano_usd_per_1k = 30_000_000L;
+        }
   | Some "gpt-5.4-mini" ->
       Some
         {
@@ -84,6 +102,17 @@ let model_pricing = function
           output_nano_usd_per_1k = 30_000_000L;
         }
   | _ -> None
+
+let%test "GPT-5.6 pricing table covers Luna, Terra, Sol, and the Sol alias" =
+  let expect model input output =
+    Option.equal equal_model_pricing
+      (model_pricing (Some model))
+      (Some { input_nano_usd_per_1k = input; output_nano_usd_per_1k = output })
+  in
+  expect "gpt-5.6-luna" 1_000_000L 6_000_000L
+  && expect "gpt-5.6-terra" 2_500_000L 15_000_000L
+  && expect "gpt-5.6-sol" 5_000_000L 30_000_000L
+  && expect "gpt-5.6" 5_000_000L 30_000_000L
 
 let cost_nano_usd_for_tokens tokens nano_usd_per_1k =
   let tokens = Int.max 0 tokens in
