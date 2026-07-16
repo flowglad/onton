@@ -1972,6 +1972,78 @@ let () =
   QCheck2.Test.check_exn prop_pi13;
   Stdlib.print_endline "PI-13 passed"
 
+(** PI-13b: a post-session push deadline is a liveness boundary for an active
+    Review_comments operation. Polls may freely interleave while the push is
+    pending and repeatedly observe the same unresolved threads. Once the
+    deadline is represented as [Push_error], the exact production transition
+    (combine session+push → apply_session_result → apply_respond_outcome) must
+    release [busy] in that same step. Repeating the failure reaches the visible
+    intervention terminal state within the push-failure cap; it cannot remain in
+    Addressing_review forever.
+
+    This is the state-machine regression for PR 6374, where Codex exited but an
+    unbounded supervisor-owned push left current_op=Review_comments running for
+    approximately 99 minutes. *)
+let () =
+  let gen_wait_polls =
+    QCheck2.Gen.list_size
+      (QCheck2.Gen.int_range 0 40)
+      (QCheck2.Gen.oneof_list [ Poll_normal; Poll_review_comments ])
+  in
+  let prop =
+    QCheck2.Test.make
+      ~name:"PI-13b: review push timeouts release busy and converge within cap"
+      ~count:300 gen_wait_polls (fun wait_polls ->
+        let orch, pid, patches = mk_bootstrapped () in
+        let rec attempt remaining orch =
+          if
+            remaining = 0
+            || Patch_agent.needs_intervention (Orchestrator.agent orch pid)
+          then orch
+          else
+            let orch =
+              apply_command orch patches
+                (Apply_poll { patch_idx = 0; poll_kind = Poll_review_comments })
+            in
+            let a = Orchestrator.agent orch pid in
+            if a.Patch_agent.busy then orch
+            else
+              let orch =
+                Orchestrator.fire orch
+                  (Orchestrator.Respond (pid, Operation_kind.Review_comments))
+              in
+              let orch =
+                List.fold wait_polls ~init:orch ~f:(fun o poll_kind ->
+                    apply_command o patches
+                      (Apply_poll { patch_idx = 0; poll_kind }))
+              in
+              let timed_out_result =
+                Orchestrator.combine_session_and_push ~branch_changed:true
+                  ~session:Orchestrator.Session_ok
+                  ~push:(Worktree.Push_error "git push timed out")
+              in
+              let orch =
+                Orchestrator.apply_session_result orch pid timed_out_result
+              in
+              let orch =
+                Orchestrator.apply_respond_outcome orch pid
+                  Operation_kind.Review_comments Orchestrator.Respond_retry_push
+              in
+              let after = Orchestrator.agent orch pid in
+              if after.Patch_agent.busy || Option.is_some after.current_op then
+                orch
+              else attempt (remaining - 1) orch
+        in
+        let orch = attempt 3 orch in
+        let final = Orchestrator.agent orch pid in
+        (not final.Patch_agent.busy)
+        && Option.is_none final.current_op
+        && Patch_agent.needs_intervention final
+        && final.push_failure_count >= 3)
+  in
+  QCheck2.Test.check_exn prop;
+  Stdlib.print_endline "PI-13b passed"
+
 (** PI-14: Two consecutive Session_no_commits promote to needs_intervention —
     without a pending Human in the queue, the counter crossing 2 is enough to
     stop the scheduler from re-enqueueing Start. Regression for the class of bug

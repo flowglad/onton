@@ -401,12 +401,18 @@ val classify_push_result :
     the branch has no commits ahead of base). *)
 
 val force_push_with_lease :
+  ?timeout_seconds:float ->
+  clock:float Eio.Time.clock_ty Eio.Time.clock ->
   process_mgr:_ Eio.Process.mgr ->
   path:string ->
   branch:Types.Branch.t ->
   base:Types.Branch.t ->
+  unit ->
   push_result
-(** Force-push with lease the given branch from the worktree at [path]. Thin
+(** Force-push with lease the given branch from the worktree at [path], bounded
+    by [timeout_seconds] (120 seconds by default). A deadline expiry cancels the
+    git process and returns [Push_error], allowing the runner to complete the
+    current operation and retry instead of remaining busy indefinitely. Thin
     effectful orchestrator: runs [git rev-list --count base..HEAD], applies
     [push_gate_from_count] to decide whether to push, and classifies the push
     output via [classify_push_result]. See [push_gate_from_count] and
@@ -489,7 +495,11 @@ end
 
 type client = (module S)
 
-val make : process_mgr:_ Eio.Process.mgr -> repo_root:string -> client
+val make :
+  clock:float Eio.Time.clock_ty Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
+  repo_root:string ->
+  client
 
 val find_for_branch :
   process_mgr:_ Eio.Process.mgr ->

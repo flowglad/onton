@@ -64,6 +64,7 @@ let setup_seed_clone ~origin_dir ~managed_dir =
 
 let scenario_branch_switched env =
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin.git" in
   let managed_dir = Stdlib.Filename.concat root "managed" in
@@ -77,9 +78,10 @@ let scenario_branch_switched env =
   sh ~dir:managed_dir "git commit -q -m 'feat work'";
   sh ~dir:managed_dir "git checkout -q -b recovery";
   let outcome =
-    Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
       ~base:(Types.Branch.of_string "main")
+      ()
   in
   (match outcome with
   | Worktree.Push_rejected (Push_reject_classify.Local_state_unsafe { reason })
@@ -114,6 +116,7 @@ let scenario_branch_switched env =
 
 let scenario_local_missing_remote env =
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin.git" in
   let managed_dir = Stdlib.Filename.concat root "managed" in
@@ -184,9 +187,10 @@ let scenario_local_missing_remote env =
   if String.equal local_feat remote_feat_sha then
     failwith "precondition: local feat was supposed to be stale";
   let outcome =
-    Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
       ~base:(Types.Branch.of_string "main")
+      ()
   in
   (match outcome with
   | Worktree.Push_rejected (Push_reject_classify.Local_state_unsafe { reason })
@@ -225,6 +229,7 @@ let scenario_local_missing_remote env =
 
 let scenario_happy_path env =
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
   with_temp_dir @@ fun root ->
   let origin_dir = Stdlib.Filename.concat root "origin.git" in
   let managed_dir = Stdlib.Filename.concat root "managed" in
@@ -251,10 +256,29 @@ let scenario_happy_path env =
     failwith
       (Printf.sprintf "precondition: refs/heads/feat=%s expected %s"
          feat_ref_sha local_sha);
-  let outcome =
-    Worktree.force_push_with_lease ~process_mgr ~path:managed_dir
+  (* A deadline must turn a non-returning push into data that the runner can
+     feed through [combine_session_and_push]. A zero-second deadline exercises
+     the timeout branch deterministically without depending on network timing. *)
+  let timed_out =
+    Worktree.force_push_with_lease ~timeout_seconds:0.0 ~clock ~process_mgr
+      ~path:managed_dir
       ~branch:(Types.Branch.of_string "feat")
       ~base:(Types.Branch.of_string "main")
+      ()
+  in
+  (match timed_out with
+  | Worktree.Push_error msg when String.is_substring msg ~substring:"timed out"
+    ->
+      Stdlib.print_endline "  push_timeout: OK (classified as Push_error)"
+  | other ->
+      failwith
+        (Printf.sprintf "push_timeout: expected Push_error, got %s"
+           (Worktree.show_push_result other)));
+  let outcome =
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path:managed_dir
+      ~branch:(Types.Branch.of_string "feat")
+      ~base:(Types.Branch.of_string "main")
+      ()
   in
   (match outcome with
   | Worktree.Push_ok -> Stdlib.print_endline "  happy_path: OK"

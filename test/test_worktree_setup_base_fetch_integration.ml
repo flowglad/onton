@@ -153,7 +153,9 @@ let empty_gameplan =
     [base_ref]. Returns the worktree path. *)
 let run_ensure env ~managed_dir ~project_name ~pid ~branch ~base_ref =
   let process_mgr = Eio.Stdenv.process_mgr env in
-  let module W = (val Worktree.make ~process_mgr ~repo_root:managed_dir) in
+  let clock = Eio.Stdenv.clock env in
+  let module W = (val Worktree.make ~clock ~process_mgr ~repo_root:managed_dir)
+  in
   let patch = mk_patch ~pid ~branch in
   let gameplan = { empty_gameplan with Types.Gameplan.patches = [ patch ] } in
   let module Env : Worktree_setup.ENV = struct

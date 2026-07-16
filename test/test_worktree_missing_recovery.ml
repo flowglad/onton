@@ -33,6 +33,7 @@ let nonexistent_path () =
 let () =
   Eio_main.run @@ fun env ->
   let process_mgr = Eio.Stdenv.process_mgr env in
+  let clock = Eio.Stdenv.clock env in
 
   (* (1) Precheck path: missing directory -> Push_worktree_missing without
      spawning git. We use a path that has never existed, so any subsequent
@@ -41,9 +42,10 @@ let () =
   assert_true "precondition: path does not exist"
     (not (Stdlib.Sys.file_exists path));
   let push_outcome =
-    Worktree.force_push_with_lease ~process_mgr ~path
+    Worktree.force_push_with_lease ~clock ~process_mgr ~path
       ~branch:(Types.Branch.of_string "feat")
       ~base:(Types.Branch.of_string "main")
+      ()
   in
   if
     not (Worktree.equal_push_result push_outcome Worktree.Push_worktree_missing)

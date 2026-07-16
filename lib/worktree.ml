@@ -913,7 +913,7 @@ let gather_push_plan_inputs ~process_mgr ~path ~branch_str ~base_str =
     ancestry,
     commits_ahead_of_base )
 
-let force_push_with_lease ~process_mgr ~path ~branch ~base =
+let force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base =
   let branch_str = Types.Branch.to_string branch in
   let base_str = Types.Branch.to_string base in
   let ( worktree_path_exists,
@@ -978,6 +978,19 @@ let force_push_with_lease ~process_mgr ~path ~branch ~base =
       in
       let code, stdout, stderr = run_git_exit_code ~process_mgr args in
       classify_push_result ~code ~stdout ~stderr
+
+let default_push_timeout_seconds = 120.0
+
+let force_push_with_lease ?(timeout_seconds = default_push_timeout_seconds)
+    ~clock ~process_mgr ~path ~branch ~base () =
+  match
+    Eio.Time.with_timeout clock timeout_seconds (fun () ->
+        Ok (force_push_with_lease_unbounded ~process_mgr ~path ~branch ~base))
+  with
+  | Ok result -> result
+  | Error `Timeout ->
+      Push_error
+        (Printf.sprintf "git push timed out after %.0fs" timeout_seconds)
 
 let rebase_in_progress ~process_mgr ~path =
   rebase_in_progress_raw ~process_mgr ~path
@@ -1162,7 +1175,7 @@ end
 
 type client = (module S)
 
-let make ~process_mgr ~repo_root =
+let make ~clock ~process_mgr ~repo_root =
   (module struct
     let resolve_main_root () = resolve_main_root ~process_mgr ~repo_root
 
@@ -1209,7 +1222,7 @@ let make ~process_mgr ~repo_root =
         ~ancestor_ids
 
     let force_push_with_lease ~path ~branch ~base =
-      force_push_with_lease ~process_mgr ~path ~branch ~base
+      force_push_with_lease ~clock ~process_mgr ~path ~branch ~base ()
 
     let rebase_in_progress ~path = rebase_in_progress ~process_mgr ~path
   end : S)

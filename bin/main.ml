@@ -789,7 +789,7 @@ let construct_capabilities ~net (setup : runtime_setup) =
   in
   let module Forge = (val forge) in
   let worktree_client =
-    Worktree.make ~process_mgr:setup.process_mgr ~repo_root
+    Worktree.make ~clock:setup.clock ~process_mgr:setup.process_mgr ~repo_root
   in
   let module WorktreeClient = (val worktree_client) in
   (match Forge.check_repo_access () with
