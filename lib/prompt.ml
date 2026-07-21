@@ -117,11 +117,25 @@ let format_precedents (ps : Precedent.t list) : string =
     in
     "\n\
      ## Established Precedents\n\n\
-     This patch should adopt the following proven techniques rather than \
-     rolling its own. Read the references when you need detail on the API \
-     shape or invariants they impose. Each entry names a library, algorithm, \
-     pattern, paper, RFC, doc, or blog post; the trailing sentence explains \
-     how it applies to this specific patch.\n\n" ^ body ^ "\n"
+     This patch must be grounded in the established precedents below. Treat \
+     reviewing them as required research, not optional background reading. Web \
+     research is part of this task when a source is external.\n\n\
+     **Before making code changes:**\n\n\
+     1. Retrieve and read every listed reference. Follow the canonical URL \
+     when one is provided. When an entry names a paper, RFC, standard, \
+     library, pattern, documentation set, or other external source without a \
+     URL, use web search or the available research tools to locate an \
+     authoritative primary source.\n\
+     2. Identify the concrete API shape, algorithm steps, invariants, and \
+     tradeoffs that apply to this patch. Do not rely only on the title or the \
+     summary below.\n\
+     3. Apply those findings to the implementation. If a source cannot be \
+     retrieved, is ambiguous, or conflicts with the codebase or gameplan, do \
+     not silently substitute recollection: record the limitation and your \
+     resolution in the implementation notes.\n\n\
+     Only begin implementation after completing this review. Each entry's \
+     trailing sentence explains how the source applies to this specific \
+     patch.\n\n" ^ body ^ "\n"
 
 let format_context_resources (resources : Context_resource.t list) : string =
   if List.is_empty resources then ""
@@ -2075,6 +2089,14 @@ let%test
       ~base_branch:"main" ()
   in
   String.is_substring rendered ~substring:"## Established Precedents"
+  && String.is_substring rendered
+       ~substring:"Treat reviewing them as required research"
+  && String.is_substring rendered
+       ~substring:"Retrieve and read every listed reference"
+  && String.is_substring rendered
+       ~substring:"use web search or the available research tools"
+  && String.is_substring rendered
+       ~substring:"Only begin implementation after completing this review"
   && String.is_substring rendered ~substring:"**[library] Bindlib**"
   && String.is_substring rendered
        ~substring:"https://github.com/rlepigre/ocaml-bindlib"
