@@ -327,7 +327,8 @@ let run_prune ~net ~clock ~github_token ~refresh () =
             | Ok (Not_terminal, refresh_summary) ->
                 kept :=
                   ( project_name,
-                    kept_reason ~base:"has unmerged patches" ~refresh_summary )
+                    kept_reason ~base:"has non-terminal patches"
+                      ~refresh_summary )
                   :: !kept
             | Ok (No_patches, _) ->
                 kept := (project_name, "gameplan has no patches") :: !kept

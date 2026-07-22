@@ -148,21 +148,23 @@ let () =
   let prop_closed_prs_are_terminal =
     Test.make ~name:"prune closed PRs are terminal alongside merged PRs"
       ~count:1000 gen_patches_and_flags (fun (patches, merged_flags) ->
-        let agents =
-          List.map2_exn patches merged_flags ~f:(fun p merged ->
-              agent_for_patch ~merged p)
-        in
-        let closed_patch_ids =
-          List.filter_map (List.zip_exn patches merged_flags)
-            ~f:(fun (p, merged) -> if merged then None else Some p.Patch.id)
-        in
-        let expected =
-          if List.is_empty patches then Prune_decision.No_patches
-          else Prune_decision.All_terminal
-        in
-        Prune_decision.equal_project_status
-          (classify ~closed_patch_ids patches agents)
-          expected)
+        try
+          let agents =
+            List.map2_exn patches merged_flags ~f:(fun p merged ->
+                agent_for_patch ~merged p)
+          in
+          let closed_patch_ids =
+            List.filter_map (List.zip_exn patches merged_flags)
+              ~f:(fun (p, merged) -> if merged then None else Some p.Patch.id)
+          in
+          let expected =
+            if List.is_empty patches then Prune_decision.No_patches
+            else Prune_decision.All_terminal
+          in
+          Prune_decision.equal_project_status
+            (classify ~closed_patch_ids patches agents)
+            expected
+        with _ -> false)
   in
   let prop_closed_without_agent_is_not_terminal =
     Test.make
