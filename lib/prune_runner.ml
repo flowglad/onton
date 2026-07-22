@@ -5,8 +5,8 @@ open Base
 open Types
 
 type prune_status =
-  | All_merged
-  | Not_merged
+  | All_terminal
+  | Not_terminal
   | No_patches
   | No_snapshot
   | Load_error of string
@@ -14,6 +14,7 @@ type prune_status =
 type refresh_summary = {
   attempted : int;
   newly_merged : int;
+  closed : int;
   errors : int;
   skipped_reason : string option;
       (** When the project was eligible for refresh but it was skipped (e.g.
@@ -45,14 +46,12 @@ let rec remove_path path =
       try Stdlib.Sys.remove path with Sys_error _ -> ())
 
 (** Build the list of (patch_id, pr_number) pairs that can be reconciled with
-    the forge: agent stored as not-merged AND has a PR number on file. *)
+    the forge: agent stored as not-merged AND has a PR number on file. Both
+    present and missing PRs are included: a missing PR may be a closed PR, which
+    is terminal for pruning. *)
 let refresh_candidates (agents : Patch_agent.t Map.M(Patch_id).t) =
   Map.fold agents ~init:[] ~f:(fun ~key:patch_id ~data:agent acc ->
       if agent.Patch_agent.merged then acc
-        (* Skip Missing: the PR is gone from the forge, so refreshing it would
-           404. Wait for an explicit Rediscover_pr to bring it back to Present
-           or for the operator to remove it. *)
-      else if not (Patch_agent.is_pr_present agent) then acc
       else
         match Patch_agent.pr_number agent with
         | None -> acc
@@ -60,8 +59,8 @@ let refresh_candidates (agents : Patch_agent.t Map.M(Patch_id).t) =
 
 (** Refresh [agents] by querying the forge for every non-terminal patch with a
     recorded PR number. Returns the (possibly updated) agents map and a
-    [refresh_summary]. Forge errors are tolerated — the corresponding agent is
-    left untouched, classification proceeds with its stored [merged] flag. *)
+    [refresh_summary], plus patch IDs whose PRs are closed. Forge errors are
+    tolerated — the corresponding agent is left untouched and non-terminal. *)
 let refresh_agents_from_forge
     ~(make_forge :
        owner:string ->
@@ -73,7 +72,14 @@ let refresh_agents_from_forge
   let candidates = refresh_candidates agents in
   if List.is_empty candidates then
     ( agents,
-      { attempted = 0; newly_merged = 0; errors = 0; skipped_reason = None } )
+      [],
+      {
+        attempted = 0;
+        newly_merged = 0;
+        closed = 0;
+        errors = 0;
+        skipped_reason = None;
+      } )
   else
     match
       make_forge ~owner:cfg.github_owner ~repo:cfg.github_repo
@@ -81,9 +87,11 @@ let refresh_agents_from_forge
     with
     | None ->
         ( agents,
+          [],
           {
             attempted = 0;
             newly_merged = 0;
+            closed = 0;
             errors = 0;
             skipped_reason =
               Some
@@ -106,12 +114,14 @@ let refresh_agents_from_forge
             candidates
         in
         let attempted = List.length results in
-        let agents, newly_merged, errors =
-          List.fold results ~init:(agents, 0, 0)
+        let agents, closed_patch_ids, newly_merged, errors =
+          List.fold results ~init:(agents, [], 0, 0)
             ~f:(fun
-                (agents, merged_count, errs) (patch_id, _pr_number, result) ->
+                (agents, closed_ids, merged_count, errs)
+                (patch_id, _pr_number, result)
+              ->
               match result with
-              | Error _ -> (agents, merged_count, errs + 1)
+              | Error _ -> (agents, closed_ids, merged_count, errs + 1)
               | Ok pr_state ->
                   if Pr_state.merged pr_state then
                     let agents =
@@ -126,10 +136,20 @@ let refresh_agents_from_forge
                                  (Patch_agent.mark_merged agent)
                                  pr_state.Pr_state.merge_commit_sha))
                     in
-                    (agents, merged_count + 1, errs)
-                  else (agents, merged_count, errs))
+                    (agents, closed_ids, merged_count + 1, errs)
+                  else if Pr_state.closed pr_state then
+                    (agents, patch_id :: closed_ids, merged_count, errs)
+                  else (agents, closed_ids, merged_count, errs))
         in
-        (agents, { attempted; newly_merged; errors; skipped_reason = None })
+        ( agents,
+          closed_patch_ids,
+          {
+            attempted;
+            newly_merged;
+            closed = List.length closed_patch_ids;
+            errors;
+            skipped_reason = None;
+          } )
 
 let format_refresh_summary (s : refresh_summary) =
   let pr_word n = if n = 1 then "PR" else "PRs" in
@@ -145,6 +165,8 @@ let format_refresh_summary (s : refresh_summary) =
           ]
           @ (if s.newly_merged > 0 then
                [ Stdlib.Printf.sprintf "%d newly merged" s.newly_merged ]
+             else [])
+          @ (if s.closed > 0 then [ Stdlib.Printf.sprintf "%d closed" s.closed ]
              else [])
           @
           if s.errors > 0 then
@@ -165,29 +187,33 @@ let classify_project ~make_forge ~refresh ~slug =
     | Ok snap ->
         let agents = Orchestrator.agents_map snap.Runtime.orchestrator in
         let patches = snap.Runtime.gameplan.Gameplan.patches in
-        let agents, refresh_summary =
-          if not refresh then (agents, None)
+        let agents, closed_patch_ids, refresh_summary =
+          if not refresh then (agents, [], None)
           else
             match Project_store.load_config ~project_name:slug with
             | Error _ ->
                 ( agents,
+                  [],
                   Some
                     {
                       attempted = 0;
                       newly_merged = 0;
+                      closed = 0;
                       errors = 0;
                       skipped_reason = Some "stored config unreadable";
                     } )
             | Ok cfg ->
-                let agents, summary =
+                let agents, closed_patch_ids, summary =
                   refresh_agents_from_forge ~make_forge ~cfg ~agents
                 in
-                (agents, Some summary)
+                (agents, closed_patch_ids, Some summary)
         in
         let status =
-          match Prune_decision.classify_snapshot ~patches ~agents with
-          | Prune_decision.All_merged -> All_merged
-          | Prune_decision.Not_merged -> Not_merged
+          match
+            Prune_decision.classify_snapshot ~patches ~agents ~closed_patch_ids
+          with
+          | Prune_decision.All_terminal -> All_terminal
+          | Prune_decision.Not_terminal -> Not_terminal
           | Prune_decision.No_patches -> No_patches
         in
         (status, refresh_summary)
@@ -275,8 +301,9 @@ let run_prune ~net ~clock ~github_token ~refresh () =
                          classify_project ~make_forge ~refresh ~slug
                        in
                        (match status with
-                       | All_merged -> remove_path project_dir
-                       | Not_merged | No_patches | No_snapshot | Load_error _ ->
+                       | All_terminal -> remove_path project_dir
+                       | Not_terminal | No_patches | No_snapshot | Load_error _
+                         ->
                            ());
                        (status, refresh_summary)))
               with
@@ -287,7 +314,7 @@ let run_prune ~net ~clock ~github_token ~refresh () =
                 errors :=
                   (project_name, Stdlib.Printf.sprintf "prune failed: %s" msg)
                   :: !errors
-            | Ok (All_merged, refresh_summary) -> (
+            | Ok (All_terminal, refresh_summary) -> (
                 try
                   let refresh_note =
                     Option.bind refresh_summary ~f:format_refresh_summary
@@ -297,10 +324,11 @@ let run_prune ~net ~clock ~github_token ~refresh () =
                     :: !removed
                 with exn ->
                   errors := (project_name, Exn.to_string exn) :: !errors)
-            | Ok (Not_merged, refresh_summary) ->
+            | Ok (Not_terminal, refresh_summary) ->
                 kept :=
                   ( project_name,
-                    kept_reason ~base:"has unmerged patches" ~refresh_summary )
+                    kept_reason ~base:"has non-terminal patches"
+                      ~refresh_summary )
                   :: !kept
             | Ok (No_patches, _) ->
                 kept := (project_name, "gameplan has no patches") :: !kept

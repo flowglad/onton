@@ -50,8 +50,9 @@ let gen_patches_flags_and_extra =
     int_range 0 10 >>= fun extra_count ->
     return (patches, flags, List.init extra_count ~f:(fun i -> patch (100 + i))))
 
-let classify patches agents =
+let classify ?(closed_patch_ids = []) patches agents =
   Prune_decision.classify_snapshot ~patches ~agents:(agents_map agents)
+    ~closed_patch_ids
 
 let () =
   let open QCheck2 in
@@ -77,23 +78,24 @@ let () =
   in
   let prop_all_merged_iff_all_present_merged =
     Test.make
-      ~name:"prune non-empty is All_merged iff every patch agent is merged"
+      ~name:"prune non-empty is All_terminal iff every patch agent is merged"
       ~count:1000 gen_patches_and_flags (fun (patches, flags) ->
         let agents =
           List.map2_exn patches flags ~f:(fun p merged ->
               agent_for_patch ~merged p)
         in
         let status = classify patches agents in
-        let expected_all_merged =
+        let expected_all_terminal =
           (not (List.is_empty patches)) && List.for_all flags ~f:(fun x -> x)
         in
         Bool.equal
-          (Prune_decision.equal_project_status status Prune_decision.All_merged)
-          expected_all_merged)
+          (Prune_decision.equal_project_status status
+             Prune_decision.All_terminal)
+          expected_all_terminal)
   in
   let prop_missing_agent_not_merged =
     Test.make
-      ~name:"prune missing gameplan agent is Not_merged for non-empty patches"
+      ~name:"prune missing gameplan agent is Not_terminal for non-empty patches"
       ~count:500
       Gen.(map (fun n -> List.init n ~f:patch) (int_range 1 20))
       (fun patches ->
@@ -103,7 +105,7 @@ let () =
           | _ :: rest -> List.map rest ~f:(agent_for_patch ~merged:true)
         in
         Prune_decision.equal_project_status (classify patches agents)
-          Prune_decision.Not_merged)
+          Prune_decision.Not_terminal)
   in
   let prop_irrelevant_agents_do_not_change =
     Test.make ~name:"prune ignores agents outside the gameplan" ~count:1000
@@ -136,12 +138,42 @@ let () =
         let p = patch 1 in
         let patches = [ p; { p with title = "duplicate id" } ] in
         let expected =
-          if merged then Prune_decision.All_merged
-          else Prune_decision.Not_merged
+          if merged then Prune_decision.All_terminal
+          else Prune_decision.Not_terminal
         in
         Prune_decision.equal_project_status
           (classify patches [ agent_for_patch ~merged p ])
           expected)
+  in
+  let prop_closed_prs_are_terminal =
+    Test.make ~name:"prune closed PRs are terminal alongside merged PRs"
+      ~count:1000 gen_patches_and_flags (fun (patches, merged_flags) ->
+        try
+          let agents =
+            List.map2_exn patches merged_flags ~f:(fun p merged ->
+                agent_for_patch ~merged p)
+          in
+          let closed_patch_ids =
+            List.filter_map (List.zip_exn patches merged_flags)
+              ~f:(fun (p, merged) -> if merged then None else Some p.Patch.id)
+          in
+          let expected =
+            if List.is_empty patches then Prune_decision.No_patches
+            else Prune_decision.All_terminal
+          in
+          Prune_decision.equal_project_status
+            (classify ~closed_patch_ids patches agents)
+            expected
+        with _ -> false)
+  in
+  let prop_closed_without_agent_is_not_terminal =
+    Test.make
+      ~name:"prune closed PR id without a corresponding agent is not terminal"
+      ~count:200 Gen.unit (fun () ->
+        let p = patch 1 in
+        Prune_decision.equal_project_status
+          (classify ~closed_patch_ids:[ p.Patch.id ] [ p ] [])
+          Prune_decision.Not_terminal)
   in
   let suite =
     [
@@ -152,6 +184,8 @@ let () =
       prop_irrelevant_agents_do_not_change;
       prop_patch_order_invariant;
       prop_duplicate_patch_ids_follow_same_agent;
+      prop_closed_prs_are_terminal;
+      prop_closed_without_agent_is_not_terminal;
     ]
   in
   let errcode = QCheck_base_runner.run_tests ~verbose:true suite in

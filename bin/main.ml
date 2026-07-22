@@ -1512,11 +1512,12 @@ let prune_arg =
     value & flag
     & info [ "prune" ]
         ~doc:
-          "Remove every stored project whose gameplan patches are all merged. \
-           Skips projects whose lock is held by a live onton process. By \
-           default, each project's non-terminal patches are reconciled with \
-           the forge first (one PR-state query per patch) so out-of-band \
-           merges are detected; pass --no-refresh to skip the network step.")
+          "Remove every stored project whose gameplan patches are all terminal \
+           (merged or closed). Skips projects whose lock is held by a live \
+           onton process. By default, each stored PR for a non-merged agent is \
+           reconciled with the forge first (one PR-state query per eligible \
+           PR) so out-of-band merges and closures are detected; pass \
+           --no-refresh to skip the network step.")
 
 let no_refresh_arg =
   let open Cmdliner in

@@ -8,7 +8,8 @@ val run_prune :
   refresh:bool ->
   unit ->
   int
-(** Remove stored projects whose gameplan patches are all merged.
+(** Remove stored projects whose gameplan patches are all terminal (merged or
+    closed).
 
     When [refresh] is [true], every project with at least one non-terminal patch
     (i.e. an agent with [merged = false] and a recorded PR number) is reconciled
