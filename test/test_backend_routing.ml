@@ -88,6 +88,45 @@ let pp_decision (d : Backend_routing.decision) =
     | Some s -> Printf.sprintf "Some %S" s
     | None -> "None")
 
+let effort_support_matches_provider_contract =
+  let gen_query =
+    QCheck2.Gen.(
+      oneof
+        [
+          pair string string;
+          pair
+            (oneof_list [ "codex"; "claude"; "gemini" ])
+            (oneof_list
+               [
+                 "minimal";
+                 "low";
+                 "medium";
+                 "high";
+                 "xhigh";
+                 "max";
+                 "default";
+                 "HIGH";
+                 "";
+               ]);
+        ])
+  in
+  QCheck2.Test.make
+    ~name:"effort_is_supported: matches the exact provider contracts"
+    ~count:1000 gen_query (fun (backend, effort) ->
+      let expected =
+        match backend with
+        | "codex" ->
+            List.mem
+              [ "minimal"; "low"; "medium"; "high"; "xhigh" ]
+              effort ~equal:String.equal
+        | "claude" ->
+            List.mem
+              [ "low"; "medium"; "high"; "xhigh"; "max" ]
+              effort ~equal:String.equal
+        | _ -> false
+      in
+      Bool.equal (Backend_routing.effort_is_supported ~backend effort) expected)
+
 let () =
   let open QCheck2 in
   let prop_explicit_model_passes_through =
@@ -307,6 +346,7 @@ let () =
   let prop_public_surface_is_linked =
     Test.make ~name:"backend routing public surface is linked" Gen.unit
       (fun () ->
+        ignore Backend_routing.effort_is_supported;
         ignore Backend_routing.resolve_auto;
         ignore Backend_routing.resolve_pair;
         true)
@@ -327,6 +367,7 @@ let () =
       prop_resolve_pair_total_non_empty_backend;
       prop_resolve_auto_inlines_auto;
       prop_resolve_auto_leaves_explicit;
+      effort_support_matches_provider_contract;
       prop_public_surface_is_linked;
     ]
   in
