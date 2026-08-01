@@ -898,7 +898,7 @@ let () =
            && (match after_dequeued.Patch_agent.automerge_deadline with
              | Some deadline ->
                  Float.( = ) deadline
-                   (dequeue_now +. Patch_controller.automerge_idle_timeout)
+                   (dequeue_now +. Patch_controller.default_automerge_timeout)
              | None -> false)
            && Patch_controller.should_dequeue_merge_queue stuck_agent
                 ~main_branch:main ~entry_id:stuck_entry.Pr_state.id

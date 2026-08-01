@@ -54,6 +54,9 @@ type stored_config = {
           {!Patch_agent.max_ci_failures}). Defaults to
           [Patch_agent.default_max_ci_failures] on legacy configs predating the
           field. *)
+  automerge_timeout : float;
+      (** Per-project automerge idle window in seconds. Defaults to
+          {!Patch_controller.default_automerge_timeout} for legacy configs. *)
   url_scheme : string option;
       (** Persisted transport for the managed [origin]. [None] on legacy configs
           predating P0-D; gets auto-resolved on the next
@@ -73,6 +76,7 @@ val save_config :
   repo_root:string ->
   max_concurrency:int ->
   max_ci_failures:int ->
+  automerge_timeout:float ->
   ?url_scheme:string option ->
   unit ->
   unit

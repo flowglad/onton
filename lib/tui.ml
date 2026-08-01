@@ -1191,7 +1191,7 @@ let render_manage_overlay ~width ~height ~automerge_enabled ~needs_intervention
       (Printf.sprintf " Manage Patch  %s" dismiss)
   in
   let automerge_label =
-    Printf.sprintf "    a   %s automerge (5-minute idle timer after approval)"
+    Printf.sprintf "    a   %s automerge (idle timer after approval)"
       (if automerge_enabled then "Disable" else "Enable")
   in
   let automerge_item =

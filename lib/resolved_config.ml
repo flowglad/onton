@@ -15,6 +15,7 @@ type config = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -34,6 +35,7 @@ type t = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -49,7 +51,7 @@ let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
 let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
     ~github_repo ~main_branch ~poll_interval ~max_concurrency ~max_ci_failures
-    ~patch_agent_provider ~patch_agent_effort =
+    ~automerge_timeout ~patch_agent_provider ~patch_agent_effort =
   let errors =
     Base.List.filter_map
       [
@@ -75,6 +77,10 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
         ( max_ci_failures < 1,
           Printf.sprintf "--max-ci-failures must be >= 1 (got %d)"
             max_ci_failures );
+        ( (not (Float.is_finite automerge_timeout))
+          || Float.compare automerge_timeout 0. <= 0,
+          Printf.sprintf "--automerge-timeout must be finite and > 0 (got %g)"
+            automerge_timeout );
         ( (match patch_agent_provider with
           | Some provider ->
               not
@@ -107,6 +113,7 @@ let of_config (config : config) =
       ~poll_interval:config.poll_interval
       ~max_concurrency:config.max_concurrency
       ~max_ci_failures:config.max_ci_failures
+      ~automerge_timeout:config.automerge_timeout
       ~patch_agent_provider:config.patch_agent_provider
       ~patch_agent_effort:config.patch_agent_effort
   with
@@ -125,6 +132,7 @@ let of_config (config : config) =
           repo_root = config.repo_root;
           max_concurrency = config.max_concurrency;
           max_ci_failures = config.max_ci_failures;
+          automerge_timeout = config.automerge_timeout;
           headless = config.headless;
           patch_agent_provider = config.patch_agent_provider;
           patch_agent_effort = config.patch_agent_effort;

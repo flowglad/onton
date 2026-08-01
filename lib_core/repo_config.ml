@@ -8,6 +8,7 @@ type route = { backend : string; model : string option }
 type t = {
   default_backend : string option;
   default_model : string option;
+  automerge_timeout : float option;
   review_team : string option;
   complexity_routes : (int * route) list;
   review_backends : Review_backend.t list;
@@ -17,6 +18,7 @@ let empty =
   {
     default_backend = None;
     default_model = None;
+    automerge_timeout = None;
     review_team = None;
     complexity_routes = [];
     review_backends = [];
@@ -103,6 +105,17 @@ let parse_routing ~known_backends (json : Yojson.Safe.t) :
 
 let default_known_review_kinds = [ "review-service" ]
 
+let parse_automerge_timeout (json : Yojson.Safe.t) =
+  match Json.field "automerge_timeout" json with
+  | None -> Ok None
+  | Some (`Int seconds) when seconds > 0 -> Ok (Some (Float.of_int seconds))
+  | Some (`Float seconds) when Float.is_finite seconds && Float.(seconds > 0.)
+    ->
+      Ok (Some seconds)
+  | Some (`Int _ | `Float _) ->
+      Error "automerge_timeout must be a finite number greater than zero"
+  | Some _ -> Error "automerge_timeout must be a number of seconds"
+
 let parse_default ~known_backends (json : Yojson.Safe.t) :
     (string option * string option, string) Result.t =
   match json with
@@ -161,22 +174,25 @@ let parse_string ~known_backends
             | Some (`String s) -> Ok (Some (String.strip s))
             | Some _ -> Error "review_team must be a string"
           in
-          Result.bind (parse_default ~known_backends default_json)
-            ~f:(fun (default_backend, default_model) ->
-              Result.bind review_team_result ~f:(fun review_team ->
-                  Result.bind (parse_routing ~known_backends routing)
-                    ~f:(fun routes ->
-                      Result.map
-                        (Review_backend.parse_array
-                           ~known_kinds:known_review_kinds review_backends_json)
-                        ~f:(fun review_backends ->
-                          {
-                            default_backend;
-                            default_model;
-                            review_team;
-                            complexity_routes = routes;
-                            review_backends;
-                          }))))
+          Result.bind (parse_automerge_timeout json)
+            ~f:(fun automerge_timeout ->
+              Result.bind (parse_default ~known_backends default_json)
+                ~f:(fun (default_backend, default_model) ->
+                  Result.bind review_team_result ~f:(fun review_team ->
+                      Result.bind (parse_routing ~known_backends routing)
+                        ~f:(fun routes ->
+                          Result.map
+                            (Review_backend.parse_array
+                               ~known_kinds:known_review_kinds
+                               review_backends_json) ~f:(fun review_backends ->
+                              {
+                                default_backend;
+                                default_model;
+                                automerge_timeout;
+                                review_team;
+                                complexity_routes = routes;
+                                review_backends;
+                              })))))
       | _ -> Error "config.json: top-level value must be an object")
 
 let load ~config_dir ~known_backends ?known_review_kinds () =
@@ -206,6 +222,27 @@ let%test "parse_string: missing routing -> empty" =
   match parse_string ~known_backends:[ "claude" ] "{}" with
   | Ok t -> List.is_empty t.complexity_routes
   | Error _ -> false
+
+let%test "parse_string: automerge_timeout parses" =
+  match
+    parse_string ~known_backends:[ "claude" ] {|{"automerge_timeout":12.5}|}
+  with
+  | Ok t -> Option.equal Float.equal t.automerge_timeout (Some 12.5)
+  | Error _ -> false
+
+let%test "parse_string: non-positive automerge_timeout rejected" =
+  match
+    parse_string ~known_backends:[ "claude" ] {|{"automerge_timeout":0}|}
+  with
+  | Error msg -> String.is_substring msg ~substring:"greater than zero"
+  | Ok _ -> false
+
+let%test "parse_string: non-number automerge_timeout rejected" =
+  match
+    parse_string ~known_backends:[ "claude" ] {|{"automerge_timeout":"fast"}|}
+  with
+  | Error msg -> String.is_substring msg ~substring:"number of seconds"
+  | Ok _ -> false
 
 let%test "parse_string: unknown top-level keys are ignored (forward compat)" =
   let raw = {|{"futureKey":{"foo":"bar"}}|} in

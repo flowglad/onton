@@ -36,6 +36,7 @@ type run_knobs = {
   poll_interval : float;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float option;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -173,6 +174,7 @@ struct
         let repo = Env.config.github_repo
         let main_branch = Env.config.main_branch
         let max_concurrency = Env.config.max_concurrency
+        let automerge_timeout = Env.config.automerge_timeout
         let review_team = Env.config.repo_config.review_team
         let patch_agent_provider = Env.config.patch_agent_provider
         let patch_agent_effort = Env.config.patch_agent_effort
@@ -303,6 +305,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     poll_interval;
     max_concurrency;
     max_ci_failures;
+    automerge_timeout;
     headless;
     patch_agent_provider;
     patch_agent_effort;
@@ -313,6 +316,12 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     backend_inputs
   in
   let repo_config = load_repo_config_or_exit ~github_owner ~github_repo in
+  let automerge_timeout =
+    Option.value automerge_timeout
+      ~default:
+        (Option.value repo_config.Repo_config.automerge_timeout
+           ~default:Patch_controller.default_automerge_timeout)
+  in
   let backend, model =
     resolve_backend_model ~cli_backend ~cli_model ~stored_backend ~stored_model
       ~repo_config
@@ -321,6 +330,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
     ~model
     ~main_branch:(Branch.to_string main_branch)
     ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
+    ~automerge_timeout
     ~url_scheme:(Option.map Managed_repo.string_of_url_scheme url_scheme)
     ();
   (* Refresh the agent-readable gameplan copy under artifacts/ so patch
@@ -340,6 +350,7 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       repo_root;
       max_concurrency;
       max_ci_failures;
+      automerge_timeout;
       headless;
       patch_agent_provider;
       patch_agent_effort;
@@ -356,7 +367,8 @@ let finalize_run ~project_name ~repo_coords ~run_knobs ~backend_inputs
       values. *)
 let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
     ~main_branch ~poll_interval ~(repo_root : string option) ~max_concurrency
-    ~(max_ci_failures : int option) ~headless ~(clone_scheme : string option) =
+    ~(max_ci_failures : int option) ~(automerge_timeout : float option)
+    ~headless ~(clone_scheme : string option) =
   let clone_scheme_override =
     match clone_scheme with
     | None -> None
@@ -393,6 +405,7 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       max_ci_failures =
         Option.value max_ci_failures
           ~default:Patch_agent.default_max_ci_failures;
+      automerge_timeout;
       headless;
       patch_agent_provider;
       patch_agent_effort;
@@ -670,6 +683,10 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                       max_ci_failures =
                         Option.value max_ci_failures
                           ~default:stored.Project_store.max_ci_failures;
+                      automerge_timeout =
+                        Some
+                          (Option.value automerge_timeout
+                             ~default:stored.Project_store.automerge_timeout);
                     }
                   in
                   let backend_inputs =
@@ -1260,12 +1277,12 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
 
 let run ~project ~gameplan_path ~github_token ~backend ~model
     ~(main_branch : Branch.t option) ~poll_interval ~(repo_root : string option)
-    ~max_concurrency ~max_ci_failures ~headless ~no_lock ~auto_merge
-    ~clone_scheme ~pr_ops =
+    ~max_concurrency ~max_ci_failures ~automerge_timeout ~headless ~no_lock
+    ~auto_merge ~clone_scheme ~pr_ops =
   match
     resolve_config ~project ~gameplan_path ~github_token ~backend ~model
       ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-      ~headless ~clone_scheme
+      ~automerge_timeout ~headless ~clone_scheme
   with
   | Error errs ->
       Base.List.iter errs ~f:(fun e -> Printf.eprintf "Error: %s\n" e);
@@ -1481,6 +1498,28 @@ let max_ci_failures_arg =
            which case the flag wins and is persisted."
         ~env:(Cmd.Env.info "ONTON_MAX_CI_FAILURES"))
 
+let positive_float_arg =
+  let parse raw =
+    match Stdlib.float_of_string_opt raw with
+    | Some value when Float.is_finite value && Float.compare value 0. > 0 ->
+        Ok value
+    | Some _ | None -> Error (`Msg "expected a finite number greater than zero")
+  in
+  Cmdliner.Arg.conv (parse, Format.pp_print_float)
+
+let automerge_timeout_arg =
+  let open Cmdliner in
+  Arg.(
+    value
+    & opt (some positive_float_arg) None
+    & info [ "automerge-timeout" ] ~docv:"SECONDS"
+        ~doc:
+          "Idle time after a PR becomes eligible before automerge fires. Must \
+           be greater than zero (default: stored project value, then the \
+           repository config's automerge_timeout, then 300 seconds). The \
+           resolved value is persisted for flag-less resumes."
+        ~env:(Cmd.Env.info "ONTON_AUTOMERGE_TIMEOUT"))
+
 let headless_arg =
   let open Cmdliner in
   Arg.(
@@ -1543,8 +1582,8 @@ let auto_merge_arg =
 let main_cmd ~pr_ops =
   let open Cmdliner in
   let run_cmd project gameplan_path github_token backend model main_branch
-      poll_interval repo_root max_concurrency max_ci_failures headless
-      upload_debug no_lock prune no_refresh auto_merge clone_scheme =
+      poll_interval repo_root max_concurrency max_ci_failures automerge_timeout
+      headless upload_debug no_lock prune no_refresh auto_merge clone_scheme =
     if prune then
       Stdlib.exit
         ( Eio_main.run @@ fun env ->
@@ -1580,16 +1619,16 @@ let main_cmd ~pr_ops =
       run ~project ~gameplan_path ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
-        ~max_concurrency ~max_ci_failures ~headless ~no_lock ~auto_merge
-        ~clone_scheme ~pr_ops)
+        ~max_concurrency ~max_ci_failures ~automerge_timeout ~headless ~no_lock
+        ~auto_merge ~clone_scheme ~pr_ops)
   in
   let term =
     Term.(
       const run_cmd $ project_arg $ gameplan_path_arg $ github_token_arg
       $ backend_arg $ model_arg $ main_branch_arg $ poll_interval_arg $ repo_arg
-      $ max_concurrency_arg $ max_ci_failures_arg $ headless_arg
-      $ upload_debug_arg $ no_lock_arg $ prune_arg $ no_refresh_arg
-      $ auto_merge_arg $ clone_scheme_arg)
+      $ max_concurrency_arg $ max_ci_failures_arg $ automerge_timeout_arg
+      $ headless_arg $ upload_debug_arg $ no_lock_arg $ prune_arg
+      $ no_refresh_arg $ auto_merge_arg $ clone_scheme_arg)
   in
   let info =
     Cmd.info "onton" ~version:Version.s

@@ -19,6 +19,8 @@ let valid_config ~max_concurrency ~max_ci_failures : Resolved_config.config =
     Resolved_config.repo_root = ".";
     Resolved_config.max_concurrency;
     Resolved_config.max_ci_failures;
+    Resolved_config.automerge_timeout =
+      Patch_controller.default_automerge_timeout;
     Resolved_config.headless = true;
     Resolved_config.patch_agent_provider = None;
     Resolved_config.patch_agent_effort = None;
@@ -51,6 +53,39 @@ let max_ci_failures_must_be_positive =
       | Ok _ -> false
       | Error errors -> List.length errors >= 1)
 
+let automerge_timeout_must_be_positive =
+  QCheck2.Test.make
+    ~name:"resolved config rejects non-positive automerge timeout" ~count:200
+    QCheck2.Gen.(float_range (-100.) 0.)
+    (fun automerge_timeout ->
+      let config =
+        {
+          (valid_config ~max_concurrency:1
+             ~max_ci_failures:Patch_agent.default_max_ci_failures)
+          with
+          Resolved_config.automerge_timeout;
+        }
+      in
+      match Resolved_config.of_config config with
+      | Ok _ -> false
+      | Error errors -> List.length errors >= 1)
+
+let non_finite_automerge_timeout_is_rejected () =
+  List.for_all
+    (fun automerge_timeout ->
+      let config =
+        {
+          (valid_config ~max_concurrency:1
+             ~max_ci_failures:Patch_agent.default_max_ci_failures)
+          with
+          Resolved_config.automerge_timeout;
+        }
+      in
+      Result.is_error (Resolved_config.of_config config))
+    [ Float.nan; Float.infinity; Float.neg_infinity ]
+
 let () =
   QCheck2.Test.check_exn max_concurrency_must_be_positive;
-  QCheck2.Test.check_exn max_ci_failures_must_be_positive
+  QCheck2.Test.check_exn max_ci_failures_must_be_positive;
+  QCheck2.Test.check_exn automerge_timeout_must_be_positive;
+  assert (non_finite_automerge_timeout_is_rejected ())

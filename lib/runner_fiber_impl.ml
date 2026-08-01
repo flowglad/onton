@@ -19,6 +19,7 @@ module Runner_env = struct
     val repo : string
     val main_branch : Branch.t
     val max_concurrency : int
+    val automerge_timeout : float
     val review_team : string option
     val patch_agent_provider : string option
     val patch_agent_effort : string option
@@ -126,15 +127,16 @@ struct
   (** Reconcile per-patch automerge deadlines. For each deadline that has
       elapsed, merge the PR on GitHub and mark the patch merged on success. On
       failure the failure counter is incremented and the deadline pushed out by
-      a fresh idle window, so the retry is at least 5 minutes out regardless of
-      how often the runner tick fires. Retries continue until the consecutive
-      failure cap is reached, at which point reconciliation stops issuing merge
-      calls until the user toggles automerge off/on. *)
+      a fresh configured idle window regardless of how often the runner tick
+      fires. Retries continue until the consecutive failure cap is reached, at
+      which point reconciliation stops issuing merge calls until the user
+      toggles automerge off/on. *)
   let reconcile_and_execute_automerge ~runtime =
     let now = Unix.gettimeofday () in
     let decisions =
       Runtime.update_orchestrator_returning runtime (fun orch ->
-          Patch_controller.reconcile_automerge orch ~now)
+          Patch_controller.reconcile_automerge
+            ~automerge_timeout:Env.automerge_timeout orch ~now)
     in
     (* Dispatch concurrently with a bounded fiber pool. A slow merge call can
      take up to GitHub's request timeout (~30s), so serial iteration would
@@ -146,7 +148,7 @@ struct
      intentional: bounded concurrency avoids a thundering herd against GitHub
      rate limits and keeps exactly one automerge fiber alive on the switch
      (the runner loop is already decoupled — it does not wait on this). The
-     1s cadence is not load-bearing either: deadlines fire on 5-minute idle
+     1s cadence is not load-bearing either: deadlines fire on configured idle
      windows, and [automerge_inflight] already prevents double-claiming. *)
     Eio.Fiber.List.iter ~max_fibers:4
       (fun Patch_controller.
@@ -185,7 +187,7 @@ struct
                   Orchestrator.set_automerge_inflight orch patch_id false
                 in
                 Orchestrator.set_automerge_deadline orch patch_id
-                  (now_ts +. Patch_controller.automerge_idle_timeout)))
+                  (now_ts +. Env.automerge_timeout)))
         in
         let apply_failure () =
           inflight_cleared := true;
@@ -194,6 +196,7 @@ struct
              the failure count or applying the retry/cap deadline rules. *)
           Runtime.update_orchestrator runtime (fun orch ->
               Patch_controller.apply_automerge_failure orch
+                ~automerge_timeout:Env.automerge_timeout
                 ~now:(Unix.gettimeofday ()) patch_id)
         in
         let record_enqueued_and_clear_inflight entry =
@@ -300,6 +303,7 @@ struct
                         inflight_cleared := true;
                         Runtime.update_orchestrator runtime (fun orch ->
                             Patch_controller.apply_merge_queue_dequeued orch
+                              ~automerge_timeout:Env.automerge_timeout
                               ~now:(Unix.gettimeofday ()) patch_id);
                         log_event runtime ~patch_id
                           (Printf.sprintf

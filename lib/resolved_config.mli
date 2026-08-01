@@ -15,6 +15,7 @@ type config = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float;
       (** Per-project cap on consecutive CI-failure responses per patch (see
           {!Onton_core.Patch_agent.max_ci_failures}). Resolved from
           [--max-ci-failures] / stored project config / built-in default. *)
@@ -41,6 +42,7 @@ type t = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
