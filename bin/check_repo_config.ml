@@ -22,6 +22,7 @@ let () =
           let show_opt = function Some s -> s | None -> "(unset)" in
           Printf.printf "default.backend   : %s\n" (show_opt c.default_backend);
           Printf.printf "default.model     : %s\n" (show_opt c.default_model);
+          Printf.printf "default.effort    : %s\n" (show_opt c.default_effort);
           Printf.printf "complexity_routes : %d entries\n"
             (List.length c.complexity_routes);
           Printf.printf "review_backends   : %d entries\n"

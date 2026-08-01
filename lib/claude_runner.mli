@@ -19,6 +19,7 @@ open Base
 
 val run :
   model:string option ->
+  effort:string option ->
   process_mgr:_ Eio.Process.mgr ->
   cwd:Eio.Fs.dir_ty Eio.Path.t ->
   patch_id:Types.Patch_id.t ->
@@ -47,6 +48,7 @@ val auto_model : complexity:int option -> string option
 
 val run_streaming :
   model:string option ->
+  effort:string option ->
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
   timeout:float ->
@@ -80,6 +82,7 @@ val strip_ansi : string -> string
 val build_args :
   getenv_opt:(string -> string option) ->
   model:string option ->
+  effort:string option ->
   complexity:int option ->
   prompt:string ->
   resume_session:string option ->
@@ -89,6 +92,7 @@ val build_args :
 val build_stream_args :
   getenv_opt:(string -> string option) ->
   model:string option ->
+  effort:string option ->
   complexity:int option ->
   prompt:string ->
   minted_session_id:string option ->

@@ -3,6 +3,7 @@
 
 val create :
   model:string option ->
+  effort:string option ->
   process_mgr:_ Eio.Process.mgr ->
   clock:_ Eio.Time.clock ->
   timeout:float ->
@@ -10,9 +11,10 @@ val create :
   Llm_backend.t
 (** Create an LLM backend that uses the Codex CLI. [model], when provided, is
     passed to [codex exec] via the [-m] flag; [None] (or empty) lets the Codex
-    CLI pick its own default. [timeout] is the maximum session duration in
-    seconds before the process is killed. See {!Claude_backend.create} for
-    [setsid_exec] semantics. *)
+    CLI pick its own default. [effort], when provided, is passed as Codex's
+    [model_reasoning_effort] config override. [timeout] is the maximum session
+    duration in seconds before the process is killed. See
+    {!Claude_backend.create} for [setsid_exec] semantics. *)
 
 val parse_event : string -> Types.Stream_event.t list
 (** Parse a single NDJSON line from Codex's JSON output. Exposed for testing. *)

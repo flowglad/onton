@@ -209,8 +209,8 @@ let claude_build_args_carry_prompt =
     (fun (prompt, resume_session) ->
       let args =
         Claude_event_parser.build_args ~getenv_opt:Claude_event_parser.no_env
-          ~warn:Claude_event_parser.ignore_warn ~model:None ~complexity:None
-          ~prompt ~resume_session
+          ~warn:Claude_event_parser.ignore_warn ~model:None ~effort:None
+          ~complexity:None ~prompt ~resume_session
       in
       List.mem args prompt ~equal:String.equal
       &&
@@ -225,8 +225,8 @@ let claude_build_stream_args_carry_prompt =
       let args =
         Claude_event_parser.build_stream_args
           ~getenv_opt:Claude_event_parser.no_env
-          ~warn:Claude_event_parser.ignore_warn ~model:None ~complexity:None
-          ~prompt ~minted_session_id:None ~resume_session:None
+          ~warn:Claude_event_parser.ignore_warn ~model:None ~effort:None
+          ~complexity:None ~prompt ~minted_session_id:None ~resume_session:None
       in
       List.mem args prompt ~equal:String.equal)
 

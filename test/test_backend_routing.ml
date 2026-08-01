@@ -66,7 +66,7 @@ let gen_route : Repo_config.route QCheck2.Gen.t =
   let open QCheck2.Gen in
   let* backend = gen_backend_name in
   let* model = gen_route_model in
-  return { Repo_config.backend; model }
+  return { Repo_config.backend; model; effort = Inherit }
 
 (* Generate a repo config with a random subset of complexity tiers populated.
    The empty config (no routes) is one possible value. *)
@@ -82,8 +82,11 @@ let gen_repo_config : Repo_config.t QCheck2.Gen.t =
   return { Repo_config.empty with complexity_routes }
 
 let pp_decision (d : Backend_routing.decision) =
-  Printf.sprintf "{ backend = %s; model = %s }" d.backend
+  Printf.sprintf "{ backend = %s; model = %s; effort = %s }" d.backend
     (match d.model with Some s -> Printf.sprintf "Some %S" s | None -> "None")
+    (match d.effort with
+    | Some s -> Printf.sprintf "Some %S" s
+    | None -> "None")
 
 let () =
   let open QCheck2 in
@@ -271,7 +274,9 @@ let () =
       ~name:"resolve_auto: Some \"auto\" model is replaced by auto_model result"
       ~count:500 (Gen.tup3 gen_backend_name gen_route_model gen_complexity)
       (fun (backend, auto_result, complexity) ->
-        let decision = { Backend_routing.backend; model = Some "auto" } in
+        let decision =
+          { Backend_routing.backend; model = Some "auto"; effort = None }
+        in
         let resolved =
           Backend_routing.resolve_auto decision
             ~auto_model:(fun ~complexity:_ -> auto_result)
@@ -287,7 +292,9 @@ let () =
          (Gen.oneof_list [ "opus"; "sonnet"; "gpt-5.5" ])
          gen_complexity)
       (fun (backend, explicit, complexity) ->
-        let decision = { Backend_routing.backend; model = Some explicit } in
+        let decision =
+          { Backend_routing.backend; model = Some explicit; effort = None }
+        in
         let resolved =
           Backend_routing.resolve_auto decision
             ~auto_model:(fun ~complexity:_ -> Some "SHOULD-NOT-APPEAR")

@@ -15,14 +15,14 @@ let parse_stream_event = Claude_event_parser.parse_stream_event
 let parse_stream_events = Claude_event_parser.parse_stream_events
 let warn_to_stderr msg = Stdio.eprintf "%s\n" msg
 
-let build_args ~getenv_opt ~model ~complexity ~prompt ~resume_session =
-  Claude_event_parser.build_args ~getenv_opt ~warn:warn_to_stderr ~model
+let build_args ~getenv_opt ~model ~effort ~complexity ~prompt ~resume_session =
+  Claude_event_parser.build_args ~getenv_opt ~warn:warn_to_stderr ~model ~effort
     ~complexity ~prompt ~resume_session
 
-let build_stream_args ~getenv_opt ~model ~complexity ~prompt ~minted_session_id
-    ~resume_session =
+let build_stream_args ~getenv_opt ~model ~effort ~complexity ~prompt
+    ~minted_session_id ~resume_session =
   Claude_event_parser.build_stream_args ~getenv_opt ~warn:warn_to_stderr ~model
-    ~complexity ~prompt ~minted_session_id ~resume_session
+    ~effort ~complexity ~prompt ~minted_session_id ~resume_session
 
 let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
   ignore (patch_id : Types.Patch_id.t);
@@ -42,11 +42,12 @@ let prepare_minted_session_id_with_env ~getenv_opt ~patch_id ~resume_session =
 let prepare_minted_session_id =
   prepare_minted_session_id_with_env ~getenv_opt:Stdlib.Sys.getenv_opt
 
-let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
+let run ~model ~effort ~process_mgr ~cwd ~patch_id ~prompt ~resume_session
+    ~complexity =
   ignore (patch_id : Types.Patch_id.t);
   let args =
-    build_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~complexity ~prompt
-      ~resume_session
+    build_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~effort ~complexity
+      ~prompt ~resume_session
   in
   let stdout_content, stderr_content, exit_code =
     Eio.Switch.run @@ fun sw ->
@@ -101,8 +102,9 @@ let run ~model ~process_mgr ~cwd ~patch_id ~prompt ~resume_session ~complexity =
     timed_out = false;
   }
 
-let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
-    ~cwd ~patch_id ~prompt ~resume_session ~session_uuid ~complexity ~on_event =
+let run_streaming ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec
+    ~project_name ~cwd ~patch_id ~prompt ~resume_session ~session_uuid
+    ~complexity ~on_event =
   let model = Llm_backend.resolve_auto_model ~model ~complexity ~auto_model in
   let env =
     Spawn_env.merge_env ~base_env:(Unix.environment ())
@@ -120,8 +122,8 @@ let run_streaming ~model ~process_mgr ~clock ~timeout ~setsid_exec ~project_name
       }
   | Ok minted_session_id ->
       let args =
-        build_stream_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~complexity
-          ~prompt ~minted_session_id ~resume_session
+        build_stream_args ~getenv_opt:Stdlib.Sys.getenv_opt ~model ~effort
+          ~complexity ~prompt ~minted_session_id ~resume_session
       in
       let process_line line =
         let trimmed = strip_ansi (String.strip line) in

@@ -3,11 +3,18 @@
 
 open Base
 
-type route = { backend : string; model : string option }
+type effort_override = Inherit | Provider_default | Level of string
+
+type route = {
+  backend : string;
+  model : string option;
+  effort : effort_override;
+}
 
 type t = {
   default_backend : string option;
   default_model : string option;
+  default_effort : string option;
   automerge_timeout : float option;
   review_team : string option;
   complexity_routes : (int * route) list;
@@ -18,6 +25,7 @@ let empty =
   {
     default_backend = None;
     default_model = None;
+    default_effort = None;
     automerge_timeout = None;
     review_team = None;
     complexity_routes = [];
@@ -25,6 +33,17 @@ let empty =
   }
 
 let config_path ~config_dir = Stdlib.Filename.concat config_dir "config.json"
+let known_efforts = [ "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
+
+let parse_effort_string ~path value =
+  let value = String.lowercase (String.strip value) in
+  if String.is_empty value then Error (path ^ " must not be empty")
+  else if String.equal value "default" then Ok None
+  else if List.mem known_efforts value ~equal:String.equal then Ok (Some value)
+  else
+    Error
+      (Printf.sprintf "%s must be one of: default, %s" path
+         (String.concat ~sep:", " known_efforts))
 
 let parse_route ~known_backends ~complexity (json : Yojson.Safe.t) :
     (route, string) Result.t =
@@ -49,26 +68,44 @@ let parse_route ~known_backends ~complexity (json : Yojson.Safe.t) :
               (Printf.sprintf "routing.%d.model must be a string when present"
                  complexity)
       in
+      let effort_result =
+        match Json.field "effort" json with
+        | None -> Ok Inherit
+        | Some (`String s) ->
+            Result.map
+              (parse_effort_string
+                 ~path:(Printf.sprintf "routing.%d.effort" complexity)
+                 s)
+              ~f:(function
+                | None -> Provider_default | Some effort -> Level effort)
+        | Some _ ->
+            Error
+              (Printf.sprintf "routing.%d.effort must be a string when present"
+                 complexity)
+      in
       Result.bind backend_result ~f:(fun backend ->
           Result.bind model_result ~f:(fun model ->
-              match backend with
-              | None ->
-                  Error
-                    (Printf.sprintf
-                       "routing.%d: missing required string field \"backend\""
-                       complexity)
-              | Some name
-                when not (List.mem known_backends name ~equal:String.equal) ->
-                  Error
-                    (Printf.sprintf
-                       "routing.%d.backend = %S is not a known backend \
-                        (expected one of: %s)"
-                       complexity name
-                       (String.concat ~sep:", " known_backends))
-              | Some name -> Ok { backend = name; model }))
+              Result.bind effort_result ~f:(fun effort ->
+                  match backend with
+                  | None ->
+                      Error
+                        (Printf.sprintf
+                           "routing.%d: missing required string field \
+                            \"backend\""
+                           complexity)
+                  | Some name
+                    when not (List.mem known_backends name ~equal:String.equal)
+                    ->
+                      Error
+                        (Printf.sprintf
+                           "routing.%d.backend = %S is not a known backend \
+                            (expected one of: %s)"
+                           complexity name
+                           (String.concat ~sep:", " known_backends))
+                  | Some name -> Ok { backend = name; model; effort })))
   | _ ->
       Error
-        (Printf.sprintf "routing.%d must be an object {backend, model}"
+        (Printf.sprintf "routing.%d must be an object {backend, model, effort}"
            complexity)
 
 let parse_routing ~known_backends (json : Yojson.Safe.t) :
@@ -100,8 +137,8 @@ let parse_routing ~known_backends (json : Yojson.Safe.t) :
       |> Result.map ~f:List.rev
   | _ ->
       Error
-        ("routing must be an object mapping complexity -> {backend, model};"
-       ^ " got " ^ Yojson.Safe.to_string json)
+        ("routing must be an object mapping complexity -> {backend, model, \
+          effort};" ^ " got " ^ Yojson.Safe.to_string json)
 
 let default_known_review_kinds = [ "review-service" ]
 
@@ -117,9 +154,9 @@ let parse_automerge_timeout (json : Yojson.Safe.t) =
   | Some _ -> Error "automerge_timeout must be a number of seconds"
 
 let parse_default ~known_backends (json : Yojson.Safe.t) :
-    (string option * string option, string) Result.t =
+    (string option * string option * string option, string) Result.t =
   match json with
-  | `Null -> Ok (None, None)
+  | `Null -> Ok (None, None, None)
   | `Assoc _ ->
       let backend_result =
         match Json.field "backend" json with
@@ -145,9 +182,16 @@ let parse_default ~known_backends (json : Yojson.Safe.t) :
         | Some (`String s) -> Ok (Some (String.strip s))
         | Some _ -> Error "default.model must be a string when present"
       in
+      let effort_result =
+        match Json.field "effort" json with
+        | None -> Ok None
+        | Some (`String s) -> parse_effort_string ~path:"default.effort" s
+        | Some _ -> Error "default.effort must be a string when present"
+      in
       Result.bind backend_result ~f:(fun b ->
-          Result.map model_result ~f:(fun m -> (b, m)))
-  | _ -> Error "default must be an object {backend, model}"
+          Result.bind model_result ~f:(fun m ->
+              Result.map effort_result ~f:(fun e -> (b, m, e))))
+  | _ -> Error "default must be an object {backend, model, effort}"
 
 let parse_string ~known_backends
     ?(known_review_kinds = default_known_review_kinds) (raw : string) :
@@ -177,7 +221,7 @@ let parse_string ~known_backends
           Result.bind (parse_automerge_timeout json)
             ~f:(fun automerge_timeout ->
               Result.bind (parse_default ~known_backends default_json)
-                ~f:(fun (default_backend, default_model) ->
+                ~f:(fun (default_backend, default_model, default_effort) ->
                   Result.bind review_team_result ~f:(fun review_team ->
                       Result.bind (parse_routing ~known_backends routing)
                         ~f:(fun routes ->
@@ -188,6 +232,7 @@ let parse_string ~known_backends
                               {
                                 default_backend;
                                 default_model;
+                                default_effort;
                                 automerge_timeout;
                                 review_team;
                                 complexity_routes = routes;
@@ -261,11 +306,11 @@ let%test "parse_string: full routing parses" =
       let r2 = route_for_complexity t ~complexity:(Some 2) in
       Option.is_none r2
       && (match r1 with
-        | Some { backend = "claude"; model = Some "haiku" } -> true
+        | Some { backend = "claude"; model = Some "haiku"; _ } -> true
         | _ -> false)
       &&
       match r3 with
-      | Some { backend = "codex"; model = Some "gpt-5.5" } -> true
+      | Some { backend = "codex"; model = Some "gpt-5.5"; _ } -> true
       | _ -> false)
   | Error _ -> false
 
@@ -274,9 +319,38 @@ let%test "parse_string: model omitted -> None" =
   match parse_string ~known_backends:[ "claude" ] raw with
   | Ok t -> (
       match route_for_complexity t ~complexity:(Some 2) with
-      | Some { backend = "claude"; model = None } -> true
+      | Some { backend = "claude"; model = None; _ } -> true
       | _ -> false)
   | Error _ -> false
+
+let%test "parse_string: effort supports inherit, default, and explicit level" =
+  let raw =
+    {|{"default":{"effort":" HIGH "},"routing":{"1":{"backend":"codex"},"2":{"backend":"codex","effort":"default"},"3":{"backend":"codex","effort":"xhigh"}}}|}
+  in
+  match parse_string ~known_backends:[ "codex" ] raw with
+  | Error _ -> false
+  | Ok t -> (
+      let effort_at complexity =
+        route_for_complexity t ~complexity:(Some complexity)
+        |> Option.map ~f:(fun route -> route.effort)
+      in
+      Option.equal String.equal t.default_effort (Some "high")
+      && (match effort_at 1 with
+        | Some Inherit -> true
+        | Some Provider_default | Some (Level _) | None -> false)
+      && (match effort_at 2 with
+        | Some Provider_default -> true
+        | Some Inherit | Some (Level _) | None -> false)
+      &&
+      match effort_at 3 with
+      | Some (Level "xhigh") -> true
+      | Some (Level _) | Some Inherit | Some Provider_default | None -> false)
+
+let%test "parse_string: invalid effort rejected" =
+  let raw = {|{"routing":{"1":{"backend":"codex","effort":"extreme"}}}|} in
+  match parse_string ~known_backends:[ "codex" ] raw with
+  | Error msg -> String.is_substring msg ~substring:"routing.1.effort"
+  | Ok _ -> false
 
 let%test "parse_string: unknown backend rejected" =
   let raw = {|{"routing":{"1":{"backend":"made-up"}}}|} in
@@ -332,7 +406,7 @@ let%test "parse_string: model whitespace is trimmed" =
   match parse_string ~known_backends:[ "claude" ] raw with
   | Ok t -> (
       match route_for_complexity t ~complexity:(Some 1) with
-      | Some { backend = "claude"; model = Some "haiku" } -> true
+      | Some { backend = "claude"; model = Some "haiku"; _ } -> true
       | _ -> false)
   | Error _ -> false
 
@@ -472,7 +546,7 @@ let%test "parse_string: default coexists with routing" =
       && Option.equal String.equal t.default_model (Some "auto")
       &&
       match t.complexity_routes with
-      | [ (1, { backend = "claude"; model = Some "haiku" }) ] -> true
+      | [ (1, { backend = "claude"; model = Some "haiku"; _ }) ] -> true
       | _ -> false)
   | Error _ -> false
 

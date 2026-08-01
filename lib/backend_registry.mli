@@ -1,15 +1,14 @@
 (* @archlint.module interface
    @archlint.domain backend-registry *)
 
-(** Lazy cache of backend instances keyed by [(backend_name, model)].
+(** Lazy cache of backend instances keyed by [(backend_name, model, effort)].
 
-    A run can route different patches to different backends (see
-    [Repo_config.modelRouting]), so we may need several distinct [Llm_backend.t]
-    values during a single session — one per unique [(backend, model)] tuple
-    referenced by either the CLI flags or the routing map. Constructing them
-    eagerly would be wasteful when the routing only uses one or two; the
-    registry builds each on first lookup and caches it for the rest of the run.
-*)
+    A run can route different patches to different backends, so we may need
+    several distinct [Llm_backend.t] values during a single session — one per
+    unique [(backend, model, effort)] tuple referenced by either the CLI flags
+    or the routing map. Constructing them eagerly would be wasteful when the
+    routing only uses one or two; the registry builds each on first lookup and
+    caches it for the rest of the run. *)
 
 type t
 
@@ -27,10 +26,11 @@ val create :
     backends. The Eio capabilities and per-session [timeout] are baked into the
     closure so callers don't re-thread them on every [get]. *)
 
-val get : t -> backend:string -> model:string option -> kind
-(** Return the cached backend for [(backend, model)], constructing it on first
-    request. Raises [Invalid_argument] for unrecognised backend names — callers
-    are expected to validate against the known list before asking. *)
+val get :
+  t -> backend:string -> model:string option -> effort:string option -> kind
+(** Return the cached backend for [(backend, model, effort)], constructing it on
+    first request. Raises [Invalid_argument] for unrecognised backend names —
+    callers are expected to validate against the known list before asking. *)
 
 val auto_model : backend:string -> complexity:int option -> string option
 (** Look up the named backend's hardcoded complexity → model ladder — the model
