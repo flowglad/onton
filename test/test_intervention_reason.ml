@@ -162,7 +162,7 @@ let () =
   let views =
     Tui.views_of_orchestrator ~orchestrator ~gameplan ~activity:[]
       ~resolve_routing:(fun ~complexity:_ ->
-        { Backend_routing.backend = "claude"; model = None })
+        { Backend_routing.backend = "claude"; model = None; effort = None })
       ()
   in
   match views with

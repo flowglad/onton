@@ -145,6 +145,18 @@ let claude_model_args_round_trips =
           List.equal String.equal args [ "--model"; m ]
       | _ -> List.is_empty args)
 
+(* [effort_args] emits ["--effort"; e] for a non-empty effort and []
+   otherwise. *)
+let claude_effort_args_round_trips =
+  QCheck2.Test.make ~name:"claude effort_args wraps non-empty effort" ~count:200
+    QCheck2.Gen.(option string_small)
+    (fun effort ->
+      let args = Claude_event_parser.effort_args effort in
+      match effort with
+      | Some e when not (String.is_empty e) ->
+          List.equal String.equal args [ "--effort"; e ]
+      | _ -> List.is_empty args)
+
 (* Build an env oracle from the generated [api_key]: it answers
    [ANTHROPIC_API_KEY] with the generated value (and [None] for everything
    else). [bare_args] emits [--bare] iff that value is non-blank. The constant
@@ -209,8 +221,8 @@ let claude_build_args_carry_prompt =
     (fun (prompt, resume_session) ->
       let args =
         Claude_event_parser.build_args ~getenv_opt:Claude_event_parser.no_env
-          ~warn:Claude_event_parser.ignore_warn ~model:None ~complexity:None
-          ~prompt ~resume_session
+          ~warn:Claude_event_parser.ignore_warn ~model:None ~effort:None
+          ~complexity:None ~prompt ~resume_session
       in
       List.mem args prompt ~equal:String.equal
       &&
@@ -225,8 +237,8 @@ let claude_build_stream_args_carry_prompt =
       let args =
         Claude_event_parser.build_stream_args
           ~getenv_opt:Claude_event_parser.no_env
-          ~warn:Claude_event_parser.ignore_warn ~model:None ~complexity:None
-          ~prompt ~minted_session_id:None ~resume_session:None
+          ~warn:Claude_event_parser.ignore_warn ~model:None ~effort:None
+          ~complexity:None ~prompt ~minted_session_id:None ~resume_session:None
       in
       List.mem args prompt ~equal:String.equal)
 
@@ -269,6 +281,7 @@ let claude_public_surface_is_linked =
       ignore Claude_event_parser.budget_cap_args;
       ignore Claude_event_parser.build_args;
       ignore Claude_event_parser.build_stream_args;
+      ignore Claude_event_parser.effort_args;
       ignore Claude_event_parser.find_json_start;
       ignore Claude_event_parser.ignore_warn;
       ignore Claude_event_parser.max_turns_for;
@@ -313,6 +326,7 @@ let () =
       claude_auto_model_is_total;
       claude_max_turns_for_is_positive;
       claude_model_args_round_trips;
+      claude_effort_args_round_trips;
       claude_bare_args_tracks_api_key;
       claude_budget_cap_args_tracks_env;
       claude_build_args_carry_prompt;

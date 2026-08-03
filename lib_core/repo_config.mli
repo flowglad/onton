@@ -8,18 +8,20 @@
     Carries repository-level defaults and three sections:
     - [automerge_timeout] — the default idle window in seconds before an
       eligible PR is automatically merged.
-    - [default] — a per-repo default [(backend, model)] pair that mirrors the
-      [--backend] / [--model] CLI flags. Either field may be omitted. Slots into
-      the resolution chain below [Project_store] (stored values from previous
-      runs) but above the hard-coded built-in default.
+    - [default] — per-repo defaults for backend, model, and reasoning effort.
+      Each field may be omitted. Backend and model slot into the resolution
+      chain below [Project_store] (stored values from previous runs) but above
+      the hard-coded built-in default.
     - [routing] — a per-patch override that binds each complexity tier (1/2/3)
-      to a [(backend, model)] tuple. Fires when the effective model (CLI or
-      [default.model]) is the literal ["auto"] (case-insensitive). Otherwise the
-      effective pair drives the whole run.
+      to a [(backend, model, effort)] tuple. Fires when the effective model (CLI
+      or [default.model]) is the literal ["auto"] (case-insensitive). Otherwise
+      the effective pair drives the whole run.
     - [reviewBackends] — additional review sources to poll alongside the forge.
 
     Unknown top-level keys are ignored so the file can grow with new sections
     (e.g. timeouts, hook overrides) without breaking older binaries. *)
+
+type effort_override = Inherit | Provider_default | Level of string
 
 type route = {
   backend : string;
@@ -27,6 +29,9 @@ type route = {
   model : string option;
       (** Model passed to that backend. [None] leaves [--model] off and lets the
           backend's own default apply. *)
+  effort : effort_override;
+      (** Route-level reasoning effort. Missing values inherit the top-level
+          default; [Provider_default] explicitly omits the provider flag. *)
 }
 
 type t = {
@@ -39,6 +44,9 @@ type t = {
       (** Top-level [default.model] from the config file. [Some "auto"] (case-
           insensitive) activates [routing] in the same way as [--model auto].
           [Some other] pins a specific model. [None] means "not configured". *)
+  default_effort : string option;
+      (** Top-level [default.effort]. [None] lets the selected provider use its
+          own reasoning-effort default. *)
   automerge_timeout : float option;
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater
           than zero. Resolution uses a CLI override, then a persisted project
@@ -68,6 +76,11 @@ val parse_string :
 (** Parse and validate repository configuration without performing I/O. Never
     raises for malformed input; schema failures are returned as [Error]. *)
 
+val effort_is_supported : backend:string -> string -> bool
+(** Whether the named backend supports a concrete reasoning-effort level. This
+    is also the source of truth for the effort values accepted by the
+    configuration parser. *)
+
 val load :
   config_dir:string ->
   known_backends:string list ->
@@ -90,19 +103,22 @@ val load :
       {
         "default": {
           "backend": "codex",
-          "model":   "auto"
+          "model":   "auto",
+          "effort":  "medium"
         },
         "automerge_timeout": 300,
         "routing": {
-          "1": { "backend": "claude", "model": "haiku" },
-          "2": { "backend": "codex",  "model": "gpt-5.6-terra" },
-          "3": { "backend": "claude", "model": "opus" }
+          "1": { "backend": "claude", "model": "haiku", "effort": "default" },
+          "2": { "backend": "codex",  "model": "gpt-5.6-terra", "effort": "high" },
+          "3": { "backend": "claude", "model": "opus", "effort": "xhigh" }
         }
       }
     ]}
     Inside [routing.<n>], [backend] is required and [model] is optional. Inside
-    [default], both [backend] and [model] are optional. Top-level extra keys are
-    ignored so the file can grow without breaking older binaries. *)
+    [default], [backend], [model], and [effort] are optional. A missing route
+    effort inherits [default.effort]; ["default"] explicitly omits the provider
+    flag. Top-level extra keys are ignored so the file can grow without breaking
+    older binaries. *)
 
 val route_for_complexity : t -> complexity:int option -> route option
 (** Look up the override for a given patch complexity. [None] when the patch has

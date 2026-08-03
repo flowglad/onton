@@ -81,11 +81,29 @@ let validate ?getenv_opt ?is_executable ~default_backend ~effective_model
   let backends =
     selected_backends ~default_backend ~effective_model ~repo_config
   in
-  let errors =
+  let executable_errors =
     List.filter_map backends ~f:(fun backend ->
         match check_backend ?getenv_opt ?is_executable backend with
         | Ok () -> None
         | Error msg -> Some msg)
+  in
+  let effort_errors =
+    Backend_routing.unsupported_efforts ~repo_config ~default_backend
+      ~effective_model
+    |> List.map
+         ~f:(fun
+             ({ unsupported_backend; unsupported_level; unsupported_complexity } :
+               Backend_routing.unsupported_effort)
+           ->
+           Printf.sprintf
+             "backend %S does not support reasoning effort %S for complexity %s"
+             unsupported_backend unsupported_level
+             (Option.value_map unsupported_complexity ~default:"default"
+                ~f:Int.to_string))
+  in
+  let errors =
+    executable_errors @ effort_errors
+    |> List.dedup_and_sort ~compare:String.compare
   in
   match errors with [] -> Ok () | _ :: _ -> Error errors
 
@@ -93,7 +111,8 @@ let%test "selected_backends ignores routes unless effective model is auto" =
   let repo_config =
     {
       Repo_config.empty with
-      complexity_routes = [ (1, { backend = "codex"; model = None }) ];
+      complexity_routes =
+        [ (1, { backend = "codex"; model = None; effort = Inherit }) ];
     }
   in
   List.equal String.equal
@@ -107,8 +126,8 @@ let%test "selected_backends includes routes for auto effective model" =
       Repo_config.empty with
       complexity_routes =
         [
-          (1, { backend = "codex"; model = None });
-          (2, { backend = "claude"; model = Some "sonnet" });
+          (1, { backend = "codex"; model = None; effort = Inherit });
+          (2, { backend = "claude"; model = Some "sonnet"; effort = Inherit });
         ];
     }
   in
@@ -129,3 +148,33 @@ let%test "validate reports missing backend executable" =
       String.is_substring msg ~substring:"codex"
       && String.is_substring msg ~substring:"not found or is not executable"
   | Ok () | Error _ -> false
+
+let%test "validate rejects provider-incompatible reasoning effort" =
+  let repo_config = { Repo_config.empty with default_effort = Some "max" } in
+  match
+    validate
+      ~getenv_opt:(fun _ -> Some "/bin")
+      ~is_executable:(fun _ -> true)
+      ~default_backend:"codex" ~effective_model:None ~repo_config ()
+  with
+  | Error [ msg ] ->
+      String.is_substring msg ~substring:"codex"
+      && String.is_substring msg ~substring:"max"
+  | Ok () | Error _ -> false
+
+let%test "validate accepts supported route reasoning efforts" =
+  let repo_config =
+    {
+      Repo_config.empty with
+      complexity_routes =
+        [
+          (1, { backend = "codex"; model = None; effort = Level "minimal" });
+          (2, { backend = "claude"; model = None; effort = Level "max" });
+        ];
+    }
+  in
+  Result.is_ok
+    (validate
+       ~getenv_opt:(fun _ -> Some "/bin")
+       ~is_executable:(fun _ -> true)
+       ~default_backend:"codex" ~effective_model:(Some "auto") ~repo_config ())

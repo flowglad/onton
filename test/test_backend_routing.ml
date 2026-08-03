@@ -39,6 +39,10 @@ let gen_non_auto_cli_model : string option QCheck2.Gen.t =
 let gen_auto_variant : string QCheck2.Gen.t =
   QCheck2.Gen.oneof_list [ "auto"; "AUTO"; "Auto"; "aUTo"; "auTO" ]
 
+let gen_effective_model : string option QCheck2.Gen.t =
+  QCheck2.Gen.oneof
+    [ gen_non_auto_cli_model; QCheck2.Gen.map Option.some gen_auto_variant ]
+
 let gen_complexity : int option QCheck2.Gen.t =
   let open QCheck2.Gen in
   oneof
@@ -62,11 +66,24 @@ let gen_route_model : string option QCheck2.Gen.t =
            ]);
     ]
 
+let gen_effort : string QCheck2.Gen.t =
+  QCheck2.Gen.oneof_list
+    [ "minimal"; "low"; "medium"; "high"; "xhigh"; "max"; "extreme" ]
+
+let gen_effort_override : Repo_config.effort_override QCheck2.Gen.t =
+  QCheck2.Gen.oneof
+    [
+      QCheck2.Gen.return Repo_config.Inherit;
+      QCheck2.Gen.return Repo_config.Provider_default;
+      QCheck2.Gen.map (fun effort -> Repo_config.Level effort) gen_effort;
+    ]
+
 let gen_route : Repo_config.route QCheck2.Gen.t =
   let open QCheck2.Gen in
   let* backend = gen_backend_name in
   let* model = gen_route_model in
-  return { Repo_config.backend; model }
+  let* effort = gen_effort_override in
+  return { Repo_config.backend; model; effort }
 
 (* Generate a repo config with a random subset of complexity tiers populated.
    The empty config (no routes) is one possible value. *)
@@ -78,12 +95,92 @@ let gen_repo_config : Repo_config.t QCheck2.Gen.t =
     return (List.dedup_and_sort sub ~compare:Int.compare)
   in
   let* routes = list_size (return (List.length keys)) gen_route in
+  let* default_effort =
+    oneof [ return None; map (fun effort -> Some effort) gen_effort ]
+  in
   let complexity_routes = List.zip_exn keys routes in
-  return { Repo_config.empty with complexity_routes }
+  return { Repo_config.empty with default_effort; complexity_routes }
 
 let pp_decision (d : Backend_routing.decision) =
-  Printf.sprintf "{ backend = %s; model = %s }" d.backend
+  Printf.sprintf "{ backend = %s; model = %s; effort = %s }" d.backend
     (match d.model with Some s -> Printf.sprintf "Some %S" s | None -> "None")
+    (match d.effort with
+    | Some s -> Printf.sprintf "Some %S" s
+    | None -> "None")
+
+let equal_unsupported_effort (a : Backend_routing.unsupported_effort)
+    (b : Backend_routing.unsupported_effort) =
+  String.equal a.unsupported_backend b.unsupported_backend
+  && String.equal a.unsupported_level b.unsupported_level
+  && Option.equal Int.equal a.unsupported_complexity b.unsupported_complexity
+
+let expected_unsupported_efforts ~(repo_config : Repo_config.t) ~default_backend
+    ~effective_model =
+  let complexities =
+    if Backend_routing.is_auto_model effective_model then
+      None
+      :: List.map repo_config.complexity_routes ~f:(fun (complexity, _) ->
+          Some complexity)
+      |> List.dedup_and_sort ~compare:(Option.compare Int.compare)
+    else [ None ]
+  in
+  List.filter_map complexities ~f:(fun complexity ->
+      let decision =
+        Backend_routing.decide ~repo_config ~default_backend ~effective_model
+          ~complexity
+      in
+      match decision.effort with
+      | None -> None
+      | Some level
+        when Backend_routing.effort_is_supported ~backend:decision.backend level
+        ->
+          None
+      | Some level ->
+          Some
+            {
+              Backend_routing.unsupported_backend = decision.backend;
+              unsupported_level = level;
+              unsupported_complexity = complexity;
+            })
+
+let effort_support_matches_provider_contract =
+  let gen_query =
+    QCheck2.Gen.(
+      oneof
+        [
+          pair string string;
+          pair
+            (oneof_list [ "codex"; "claude"; "gemini" ])
+            (oneof_list
+               [
+                 "minimal";
+                 "low";
+                 "medium";
+                 "high";
+                 "xhigh";
+                 "max";
+                 "default";
+                 "HIGH";
+                 "";
+               ]);
+        ])
+  in
+  QCheck2.Test.make
+    ~name:"effort_is_supported: matches the exact provider contracts"
+    ~count:1000 gen_query (fun (backend, effort) ->
+      let expected =
+        match backend with
+        | "codex" ->
+            List.mem
+              [ "minimal"; "low"; "medium"; "high"; "xhigh" ]
+              effort ~equal:String.equal
+        | "claude" ->
+            List.mem
+              [ "low"; "medium"; "high"; "xhigh"; "max" ]
+              effort ~equal:String.equal
+        | _ -> false
+      in
+      Bool.equal (Backend_routing.effort_is_supported ~backend effort) expected)
 
 let () =
   let open QCheck2 in
@@ -271,7 +368,9 @@ let () =
       ~name:"resolve_auto: Some \"auto\" model is replaced by auto_model result"
       ~count:500 (Gen.tup3 gen_backend_name gen_route_model gen_complexity)
       (fun (backend, auto_result, complexity) ->
-        let decision = { Backend_routing.backend; model = Some "auto" } in
+        let decision =
+          { Backend_routing.backend; model = Some "auto"; effort = None }
+        in
         let resolved =
           Backend_routing.resolve_auto decision
             ~auto_model:(fun ~complexity:_ -> auto_result)
@@ -287,7 +386,9 @@ let () =
          (Gen.oneof_list [ "opus"; "sonnet"; "gpt-5.5" ])
          gen_complexity)
       (fun (backend, explicit, complexity) ->
-        let decision = { Backend_routing.backend; model = Some explicit } in
+        let decision =
+          { Backend_routing.backend; model = Some explicit; effort = None }
+        in
         let resolved =
           Backend_routing.resolve_auto decision
             ~auto_model:(fun ~complexity:_ -> Some "SHOULD-NOT-APPEAR")
@@ -297,9 +398,32 @@ let () =
         && Option.equal String.equal resolved.model (Some explicit))
   in
 
+  let prop_unsupported_efforts_are_complete_sound_and_total =
+    Test.make
+      ~name:
+        "unsupported_efforts: complete, sound, and total over effective \
+         decisions"
+      ~count:1000
+      (Gen.tup3 gen_repo_config gen_backend_name gen_effective_model)
+      (fun (repo_config, default_backend, effective_model) ->
+        try
+          let expected =
+            expected_unsupported_efforts ~repo_config ~default_backend
+              ~effective_model
+          in
+          let actual =
+            Backend_routing.unsupported_efforts ~repo_config ~default_backend
+              ~effective_model
+          in
+          List.equal equal_unsupported_effort actual expected
+        with _ -> false)
+  in
+
   let prop_public_surface_is_linked =
     Test.make ~name:"backend routing public surface is linked" Gen.unit
       (fun () ->
+        ignore Backend_routing.effort_is_supported;
+        ignore Backend_routing.unsupported_efforts;
         ignore Backend_routing.resolve_auto;
         ignore Backend_routing.resolve_pair;
         true)
@@ -320,6 +444,8 @@ let () =
       prop_resolve_pair_total_non_empty_backend;
       prop_resolve_auto_inlines_auto;
       prop_resolve_auto_leaves_explicit;
+      prop_unsupported_efforts_are_complete_sound_and_total;
+      effort_support_matches_provider_contract;
       prop_public_surface_is_linked;
     ]
   in

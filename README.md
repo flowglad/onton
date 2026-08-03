@@ -521,11 +521,12 @@ write a per-repo config at
 {
   "default": {
     "backend": "codex",
-    "model":   "auto"
+    "model":   "auto",
+    "effort":  "medium"
   },
   "routing": {
-    "1": { "backend": "claude", "model": "haiku"   },
-    "3": { "backend": "codex",  "model": "gpt-5.6-sol" }
+    "1": { "backend": "claude", "model": "haiku", "effort": "default" },
+    "3": { "backend": "codex",  "model": "gpt-5.6-sol", "effort": "xhigh" }
   }
 }
 ```
@@ -539,11 +540,18 @@ Resolution order, evaluated per field independently:
 
 `model: "auto"` from any source — the CLI flag or `default.model` —
 activates the `routing` map: each patch's complexity (1/2/3) picks its
-own `(backend, model)`, falling back to the effective backend's hardcoded
-ladder for tiers with no entry. Both subfields of `default` are
-optional; pin just `backend`, just `model`, or both. Run
+own `(backend, model, effort)`, falling back to the effective backend's
+hardcoded model ladder for tiers with no entry. All three fields of `default`
+are optional; pin any combination. Run
 `onton-check-repo-config <owner> <repo>` to verify how a `config.json`
 parses.
+
+`effort` is optional in both `default` and each route. A route with no effort
+inherits `default.effort`; the literal `"default"` explicitly lets the selected
+model use its provider default. Codex supports `minimal`, `low`, `medium`,
+`high`, and `xhigh`; Claude supports `low`, `medium`, `high`, `xhigh`, and
+`max`. Onton rejects effort overrides for other backends and values unsupported
+by the selected provider.
 
 For Codex, the built-in ladder maps complexity 1/2/3 to `gpt-5.6-luna`,
 `gpt-5.6-terra`, and `gpt-5.6-sol`. Missing or out-of-range complexity

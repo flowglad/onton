@@ -865,11 +865,11 @@ let construct_capabilities ~net (setup : runtime_setup) =
       ~timeout:session_timeout ~setsid_exec
   in
   let pick_backend ~complexity =
-    let ({ Backend_routing.backend; model } as decision) =
+    let ({ Backend_routing.backend; model; effort } as decision) =
       Backend_routing.decide ~repo_config ~default_backend:backend
         ~effective_model:effective_model_opt ~complexity
     in
-    (Backend_registry.get registry ~backend ~model, decision)
+    (Backend_registry.get registry ~backend ~model ~effort, decision)
   in
   let backend_name = function
     | Backend_registry.Ephemeral backend -> backend.Llm_backend.name

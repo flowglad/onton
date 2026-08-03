@@ -401,7 +401,7 @@ let patch_view_of_agent (agent : Patch_agent.t)
   let patch_id = agent.patch_id in
   let patch_opt = Map.find patches_by_id patch_id in
   let complexity = Option.bind patch_opt ~f:(fun p -> p.Patch.complexity) in
-  let { Backend_routing.backend = backend_name; model } =
+  let { Backend_routing.backend = backend_name; model; effort = _ } =
     resolve_routing ~complexity
   in
   let title =

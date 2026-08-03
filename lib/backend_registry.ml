@@ -4,8 +4,9 @@
 open Base
 
 type t = {
-  factory : backend:string -> model:string option -> kind;
-  cache : (string * string option, kind) Hashtbl.t;
+  factory :
+    backend:string -> model:string option -> effort:string option -> kind;
+  cache : (string * string option * string option, kind) Hashtbl.t;
 }
 
 and kind = Ephemeral of Llm_backend.t | Long_lived of Llm_backend_long_lived.t
@@ -24,17 +25,19 @@ let display_name_of_claude_model = function
   | None -> "Claude"
 
 let make_factory ~(process_mgr : Eio_unix.Process.mgr_ty Eio.Resource.t) ~clock
-    ~timeout ~setsid_exec : backend:string -> model:string option -> kind =
- fun ~backend ~model ->
+    ~timeout ~setsid_exec :
+    backend:string -> model:string option -> effort:string option -> kind =
+ fun ~backend ~model ~effort ->
   match backend with
   | "claude" ->
       Ephemeral
         (Claude_backend.create
            ~name:(display_name_of_claude_model model)
-           ~model ~process_mgr ~clock ~timeout ~setsid_exec)
+           ~model ~effort ~process_mgr ~clock ~timeout ~setsid_exec)
   | "codex" ->
       Ephemeral
-        (Codex_backend.create ~model ~process_mgr ~clock ~timeout ~setsid_exec)
+        (Codex_backend.create ~model ~effort ~process_mgr ~clock ~timeout
+           ~setsid_exec)
   | "opencode" ->
       Ephemeral
         (Opencode_backend.create ~model ~process_mgr ~clock ~timeout
@@ -81,12 +84,12 @@ let resolve_model ~backend ~model ~complexity =
   | "patch-agent", None -> auto_model ~backend ~complexity
   | _ -> model
 
-let get t ~backend ~model =
-  let key = (backend, model) in
+let get t ~backend ~model ~effort =
+  let key = (backend, model, effort) in
   match Hashtbl.find t.cache key with
   | Some b -> b
   | None ->
-      let b = t.factory ~backend ~model in
+      let b = t.factory ~backend ~model ~effort in
       (* [set] (not [add_exn]): the runner forks one daemon fiber per patch
          action, so two fibers may both miss [find] and race to insert the
          same key. Constructing a duplicate backend is harmless — they hold
