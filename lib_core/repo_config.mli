@@ -5,7 +5,9 @@
     [~/.config/onton/<owner>/<repo>/config.json] (the same directory layout the
     [User_config] hook lives in — see [User_config.config_dir]).
 
-    Carries three sections:
+    Carries repository-level defaults and three sections:
+    - [automerge_timeout] — the default idle window in seconds before an
+      eligible PR is automatically merged.
     - [default] — a per-repo default [(backend, model)] pair that mirrors the
       [--backend] / [--model] CLI flags. Either field may be omitted. Slots into
       the resolution chain below [Project_store] (stored values from previous
@@ -37,6 +39,11 @@ type t = {
       (** Top-level [default.model] from the config file. [Some "auto"] (case-
           insensitive) activates [routing] in the same way as [--model auto].
           [Some other] pins a specific model. [None] means "not configured". *)
+  automerge_timeout : float option;
+      (** Top-level [automerge_timeout] in seconds. Must be finite and greater
+          than zero. Resolution uses a CLI override, then a persisted project
+          value, then this repository value; [None] falls through to the
+          built-in 300-second default. *)
   review_team : string option;
       (** Top-level [review_team] slug from the config file. [None] keeps the
           review-request feature disabled for this repo. *)
@@ -52,6 +59,14 @@ type t = {
 
 val empty : t
 (** Returned when [config.json] is absent — the no-op config. *)
+
+val parse_string :
+  known_backends:string list ->
+  ?known_review_kinds:string list ->
+  string ->
+  (t, string) Stdlib.Result.t
+(** Parse and validate repository configuration without performing I/O. Never
+    raises for malformed input; schema failures are returned as [Error]. *)
 
 val load :
   config_dir:string ->
@@ -77,6 +92,7 @@ val load :
           "backend": "codex",
           "model":   "auto"
         },
+        "automerge_timeout": 300,
         "routing": {
           "1": { "backend": "claude", "model": "haiku" },
           "2": { "backend": "codex",  "model": "gpt-5.6-terra" },

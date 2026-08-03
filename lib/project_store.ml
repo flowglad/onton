@@ -145,6 +145,10 @@ type stored_config = {
       (* Per-project CI-failure cap (see [Patch_agent.max_ci_failures]).
          Defaulted on legacy configs predating the field; persisted so a value
          set once via --max-ci-failures survives flag-less resumes. *)
+  automerge_timeout : float option; [@yojson.default None]
+      (* Per-project automerge idle window. [None] preserves field absence in
+         legacy configs so flag-less resumes can consult the repository
+         default; newly resolved values are persisted as [Some]. *)
   url_scheme : string option; [@yojson.default None]
       (* Persisted transport scheme for the managed clone's [origin]. [None]
          on legacy configs predating P0-D; on the next [ensure_managed_repo]
@@ -155,7 +159,7 @@ type stored_config = {
 
 let save_config ~project_name ~github_owner ~github_repo ~backend ~model
     ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-    ?(url_scheme : string option = None) () =
+    ~automerge_timeout ?(url_scheme : string option = None) () =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
@@ -170,6 +174,7 @@ let save_config ~project_name ~github_owner ~github_repo ~backend ~model
       repo_root;
       max_concurrency;
       max_ci_failures;
+      automerge_timeout = Some automerge_timeout;
       url_scheme;
     }
   in
@@ -575,7 +580,9 @@ let%test "load_config tolerates a legacy persisted github_token" =
       Stdlib.close_out oc;
       match load_config ~project_name with
       | Ok cfg ->
-          String.equal cfg.github_owner "o" && String.equal cfg.github_repo "r"
+          String.equal cfg.github_owner "o"
+          && String.equal cfg.github_repo "r"
+          && Option.is_none cfg.automerge_timeout
       | Error _ -> false)
 
 (* The token is no longer persisted: [save_config] must not write a
@@ -587,7 +594,8 @@ let%test "save_config persists no github_token and round-trips" =
       save_config ~project_name ~github_owner:"o" ~github_repo:"r"
         ~backend:"claude" ~model:"sonnet" ~main_branch:"main" ~poll_interval:5.0
         ~repo_root:"/tmp/r" ~max_concurrency:4
-        ~max_ci_failures:Patch_agent.default_max_ci_failures ();
+        ~max_ci_failures:Patch_agent.default_max_ci_failures
+        ~automerge_timeout:Patch_controller.default_automerge_timeout ();
       let raw = read_file_for_test (config_path project_name) in
       (not (String.is_substring raw ~substring:"github_token"))
       &&
@@ -596,4 +604,6 @@ let%test "save_config persists no github_token and round-trips" =
           String.equal cfg.project_name project_name
           && String.equal cfg.github_owner "o"
           && Int.equal cfg.max_ci_failures Patch_agent.default_max_ci_failures
+          && Option.equal Float.equal cfg.automerge_timeout
+               (Some Patch_controller.default_automerge_timeout)
       | Error _ -> false)

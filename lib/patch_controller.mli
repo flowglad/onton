@@ -123,8 +123,11 @@ val apply_github_effect_success :
   Orchestrator.t -> github_effect -> Orchestrator.t
 (** Apply the durable state changes that follow a successful GitHub effect. *)
 
+val default_automerge_timeout : float
+(** Built-in automerge idle window in seconds (300). *)
+
 val automerge_idle_timeout : float
-(** Seconds of idle time after approval before automerge fires. *)
+(** Compatibility alias for {!default_automerge_timeout}. *)
 
 val automerge_max_failures : int
 (** Hard cap on consecutive automerge call failures per patch. Once a patch hits
@@ -188,13 +191,16 @@ val should_dequeue_merge_queue :
     same predicate as [reconcile_automerge] for its pre-flight recheck. *)
 
 val reconcile_automerge :
-  Orchestrator.t -> now:float -> Orchestrator.t * automerge_decision list
+  ?automerge_timeout:float ->
+  Orchestrator.t ->
+  now:float ->
+  Orchestrator.t * automerge_decision list
 (** Reconcile the automerge deadline for every agent and return decisions to
     merge. For each agent:
     - merged → clear any stale deadline/inflight flag (no decision).
     - [automerge_inflight] → no-op; the executor owns the deadline and inflight
       transitions via [apply_automerge_success] / [apply_automerge_failure].
-    - candidate + no deadline → set deadline at [now +. automerge_idle_timeout].
+    - candidate + no deadline → set deadline at [now +. automerge_timeout].
     - not candidate + deadline, but [automerge_transient_hold] → preserve the
       deadline unchanged and emit no decision (GitHub is recomputing
       mergeability after the base advanced; the idle window keeps counting).
@@ -231,18 +237,26 @@ val apply_merge_queue_entered :
     automerge fire. *)
 
 val apply_merge_queue_dequeued :
-  Orchestrator.t -> now:float -> Patch_id.t -> Orchestrator.t
+  ?automerge_timeout:float ->
+  Orchestrator.t ->
+  now:float ->
+  Patch_id.t ->
+  Orchestrator.t
 (** Record that an automerge dequeue request succeeded. The PR is no longer
     known to be in GitHub's merge queue, the successful GitHub call clears the
     consecutive automerge API-failure counter, and the deadline is restarted so
     a still-ready PR can be enqueued again after the idle window. *)
 
 val apply_automerge_failure :
-  Orchestrator.t -> now:float -> Patch_id.t -> Orchestrator.t
+  ?automerge_timeout:float ->
+  Orchestrator.t ->
+  now:float ->
+  Patch_id.t ->
+  Orchestrator.t
 (** Record a failed merge call: clear the inflight flag and increment the
     consecutive failure counter. Push the deadline out to
-    [now +. automerge_idle_timeout] so the retry is at least one idle window
-    away (without this bound, a persistent GitHub failure could burst many merge
+    [now +. automerge_timeout] so the retry is at least one idle window away
+    (without this bound, a persistent GitHub failure could burst many merge
     calls per poll cycle since the runner re-reconciles every tick). The
     deadline is NOT re-armed when either (a) the failure cap has now been
     reached (reconciliation will no longer issue merge calls for this patch), or

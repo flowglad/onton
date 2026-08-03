@@ -34,7 +34,7 @@ open Onton_core.Types
 
 let main = Branch.of_string "main"
 let other_branch = Branch.of_string "release"
-let timeout = Patch_controller.automerge_idle_timeout
+let timeout = Patch_controller.default_automerge_timeout
 let max_failures = Patch_controller.automerge_max_failures
 
 (* -- Helpers -- *)

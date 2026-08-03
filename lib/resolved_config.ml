@@ -15,6 +15,7 @@ type config = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -34,6 +35,7 @@ type t = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
+  automerge_timeout : float;
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
@@ -49,7 +51,7 @@ let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
 let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
     ~github_repo ~main_branch ~poll_interval ~max_concurrency ~max_ci_failures
-    ~patch_agent_provider ~patch_agent_effort =
+    ~automerge_timeout ~patch_agent_provider ~patch_agent_effort =
   let errors =
     Base.List.filter_map
       [
@@ -96,6 +98,13 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
   in
+  let errors =
+    match
+      Resolved_config_validation.automerge_timeout_error automerge_timeout
+    with
+    | None -> errors
+    | Some error -> errors @ [ error ]
+  in
   match errors with [] -> Ok () | errs -> Error errs
 
 let of_config (config : config) =
@@ -107,6 +116,7 @@ let of_config (config : config) =
       ~poll_interval:config.poll_interval
       ~max_concurrency:config.max_concurrency
       ~max_ci_failures:config.max_ci_failures
+      ~automerge_timeout:config.automerge_timeout
       ~patch_agent_provider:config.patch_agent_provider
       ~patch_agent_effort:config.patch_agent_effort
   with
@@ -125,6 +135,7 @@ let of_config (config : config) =
           repo_root = config.repo_root;
           max_concurrency = config.max_concurrency;
           max_ci_failures = config.max_ci_failures;
+          automerge_timeout = config.automerge_timeout;
           headless = config.headless;
           patch_agent_provider = config.patch_agent_provider;
           patch_agent_effort = config.patch_agent_effort;

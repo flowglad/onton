@@ -1626,7 +1626,11 @@ let () =
         let now = 1000.0 in
         let orch = make_orch patch agent in
         let orch = Orchestrator.set_automerge_inflight orch pid true in
-        let orch = Patch_controller.apply_merge_queue_dequeued orch ~now pid in
+        let automerge_timeout = 17.5 in
+        let orch =
+          Patch_controller.apply_merge_queue_dequeued ~automerge_timeout orch
+            ~now pid
+        in
         let agent = Orchestrator.agent orch pid in
         Option.is_none agent.merge_queue_entry
         && agent.merge_queue_required
@@ -1634,8 +1638,7 @@ let () =
         && agent.automerge_failure_count = 0
         &&
         match agent.automerge_deadline with
-        | Some deadline ->
-            Float.( = ) deadline (now +. Patch_controller.automerge_idle_timeout)
+        | Some deadline -> Float.equal deadline (now +. automerge_timeout)
         | None -> false)
   in
 
