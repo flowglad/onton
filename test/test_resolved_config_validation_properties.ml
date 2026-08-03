@@ -35,21 +35,26 @@ let boundary_values_match_contract =
       && Option.is_none
            (Resolved_config_validation.automerge_timeout_error near_zero))
 
-let repeated_validation_is_order_independent =
+let repeated_validation_matches_contract =
   QCheck2.Test.make
-    ~name:"repeated automerge timeout validation is order independent"
+    ~name:"repeated automerge timeout validation preserves the contract"
     ~count:300
-    QCheck2.Gen.(list_size (int_range 0 40) float)
+    QCheck2.Gen.(list_size (int_range 1 40) float)
     (fun timeouts ->
       let validate = Resolved_config_validation.automerge_timeout_error in
-      let forward = List.map validate timeouts in
-      let reverse_then_restore =
-        List.rev (List.map validate (List.rev timeouts))
-      in
-      List.equal (Option.equal String.equal) forward reverse_then_restore)
+      List.for_all
+        (fun timeout ->
+          let first = validate timeout in
+          let second = validate timeout in
+          let should_error =
+            (not (Float.is_finite timeout)) || Float.compare timeout 0. <= 0
+          in
+          Option.equal String.equal first second
+          && Bool.equal should_error (Option.is_some first))
+        timeouts)
 
 let () =
   QCheck2.Test.check_exn validation_is_total;
   QCheck2.Test.check_exn validation_matches_contract;
   QCheck2.Test.check_exn boundary_values_match_contract;
-  QCheck2.Test.check_exn repeated_validation_is_order_independent
+  QCheck2.Test.check_exn repeated_validation_matches_contract

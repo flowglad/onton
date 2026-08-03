@@ -20,8 +20,9 @@ type config = {
           [--max-ci-failures] / stored project config / built-in default. *)
   automerge_timeout : float;
       (** Automerge idle window in seconds. Must be finite and greater than
-          zero. Resolved from [--automerge-timeout], persisted project config,
-          repository config, or the built-in default, in that order. *)
+          zero. Resolved from [--automerge-timeout] / [ONTON_AUTOMERGE_TIMEOUT],
+          persisted project config, repository config, or the built-in default,
+          in that order. *)
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;
