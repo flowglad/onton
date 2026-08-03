@@ -42,8 +42,8 @@ val decide :
     + Otherwise ([effective_model] is ["auto"] but no route applies — typically
       because [complexity = None], or the route map has no entry for this
       complexity): result is
-      [{ backend = default_backend; model = effective_model; effort = ... }].
-      The downstream backend will see [Some "auto"] and apply its own hardcoded
+      [{ backend = default_backend; model = Some "auto"; effort = ... }]. The
+      downstream backend will see [Some "auto"] and apply its own hardcoded
       ladder via [Llm_backend.resolve_auto_model].
 
     The function never raises and is total over all inputs. *)
@@ -78,6 +78,23 @@ val effort_is_supported : backend:string -> string -> bool
 (** Whether [backend] supports the concrete reasoning-effort value. Only the
     native Claude and Codex backends accept effort overrides; unsupported
     backends and unknown levels return [false]. *)
+
+type unsupported_effort = {
+  unsupported_backend : string;
+  unsupported_level : string;
+  unsupported_complexity : int option;
+}
+(** An effort override that is not supported by the selected backend at a
+    particular complexity. [None] denotes the default/fallback decision. *)
+
+val unsupported_efforts :
+  repo_config:Repo_config.t ->
+  default_backend:string ->
+  effective_model:string option ->
+  unsupported_effort list
+(** Enumerate unsupported effective effort overrides. When routing is active,
+    checks the default/fallback decision and every configured route key; when
+    routing is inactive, checks only the effective default decision. *)
 
 val resolve_auto :
   decision ->

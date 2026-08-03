@@ -76,6 +76,11 @@ val parse_string :
 (** Parse and validate repository configuration without performing I/O. Never
     raises for malformed input; schema failures are returned as [Error]. *)
 
+val effort_is_supported : backend:string -> string -> bool
+(** Whether the named backend supports a concrete reasoning-effort level. This
+    is also the source of truth for the effort values accepted by the
+    configuration parser. *)
+
 val load :
   config_dir:string ->
   known_backends:string list ->

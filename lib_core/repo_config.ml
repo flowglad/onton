@@ -33,7 +33,24 @@ let empty =
   }
 
 let config_path ~config_dir = Stdlib.Filename.concat config_dir "config.json"
-let known_efforts = [ "minimal"; "low"; "medium"; "high"; "xhigh"; "max" ]
+
+let effort_support =
+  [
+    ("codex", [ "minimal"; "low"; "medium"; "high"; "xhigh" ]);
+    ("claude", [ "low"; "medium"; "high"; "xhigh"; "max" ]);
+  ]
+
+let supported_efforts ~backend =
+  Option.value
+    (List.Assoc.find effort_support backend ~equal:String.equal)
+    ~default:[]
+
+let effort_is_supported ~backend effort =
+  List.mem (supported_efforts ~backend) effort ~equal:String.equal
+
+let known_efforts =
+  List.concat_map effort_support ~f:snd
+  |> List.stable_dedup ~compare:String.compare
 
 let parse_effort_string ~path value =
   let value = String.lowercase (String.strip value) in
@@ -71,6 +88,7 @@ let parse_route ~known_backends ~complexity (json : Yojson.Safe.t) :
       let effort_result =
         match Json.field "effort" json with
         | None -> Ok Inherit
+        | Some (`String s) when String.is_empty (String.strip s) -> Ok Inherit
         | Some (`String s) ->
             Result.map
               (parse_effort_string
@@ -185,6 +203,7 @@ let parse_default ~known_backends (json : Yojson.Safe.t) :
       let effort_result =
         match Json.field "effort" json with
         | None -> Ok None
+        | Some (`String s) when String.is_empty (String.strip s) -> Ok None
         | Some (`String s) -> parse_effort_string ~path:"default.effort" s
         | Some _ -> Error "default.effort must be a string when present"
       in
@@ -351,6 +370,19 @@ let%test "parse_string: invalid effort rejected" =
   match parse_string ~known_backends:[ "codex" ] raw with
   | Error msg -> String.is_substring msg ~substring:"routing.1.effort"
   | Ok _ -> false
+
+let%test "parse_string: blank effort is treated as unset" =
+  let raw =
+    {|{"default":{"effort":"  \t"},"routing":{"1":{"backend":"codex","effort":" \n "}}}|}
+  in
+  match parse_string ~known_backends:[ "codex" ] raw with
+  | Error _ -> false
+  | Ok t -> (
+      Option.is_none t.default_effort
+      &&
+      match route_for_complexity t ~complexity:(Some 1) with
+      | Some { effort = Inherit; _ } -> true
+      | Some { effort = Provider_default | Level _; _ } | None -> false)
 
 let%test "parse_string: unknown backend rejected" =
   let raw = {|{"routing":{"1":{"backend":"made-up"}}}|} in

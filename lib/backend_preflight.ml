@@ -87,29 +87,19 @@ let validate ?getenv_opt ?is_executable ~default_backend ~effective_model
         | Ok () -> None
         | Error msg -> Some msg)
   in
-  let complexities =
-    if Backend_routing.is_auto_model effective_model then
-      [ None; Some 1; Some 2; Some 3 ]
-    else [ None ]
-  in
   let effort_errors =
-    List.filter_map complexities ~f:(fun complexity ->
-        let { Backend_routing.backend; effort; _ } =
-          Backend_routing.decide ~repo_config ~default_backend ~effective_model
-            ~complexity
-        in
-        match effort with
-        | None -> None
-        | Some level when Backend_routing.effort_is_supported ~backend level ->
-            None
-        | Some level ->
-            Some
-              (Printf.sprintf
-                 "backend %S does not support reasoning effort %S for \
-                  complexity %s"
-                 backend level
-                 (Option.value_map complexity ~default:"default"
-                    ~f:Int.to_string)))
+    Backend_routing.unsupported_efforts ~repo_config ~default_backend
+      ~effective_model
+    |> List.map
+         ~f:(fun
+             ({ unsupported_backend; unsupported_level; unsupported_complexity } :
+               Backend_routing.unsupported_effort)
+           ->
+           Printf.sprintf
+             "backend %S does not support reasoning effort %S for complexity %s"
+             unsupported_backend unsupported_level
+             (Option.value_map unsupported_complexity ~default:"default"
+                ~f:Int.to_string))
   in
   let errors =
     executable_errors @ effort_errors
