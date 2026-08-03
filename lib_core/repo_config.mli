@@ -41,7 +41,9 @@ type t = {
           [Some other] pins a specific model. [None] means "not configured". *)
   automerge_timeout : float option;
       (** Top-level [automerge_timeout] in seconds. Must be finite and greater
-          than zero. [None] falls through to the built-in 300-second default. *)
+          than zero. Resolution uses a CLI override, then a persisted project
+          value, then this repository value; [None] falls through to the
+          built-in 300-second default. *)
   review_team : string option;
       (** Top-level [review_team] slug from the config file. [None] keeps the
           review-request feature disabled for this repo. *)

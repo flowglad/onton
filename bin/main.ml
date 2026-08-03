@@ -674,7 +674,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                      [max_ci_failures] can distinguish "flag passed" from
                      "flag omitted" (it is optional at the CLI layer), so an
                      explicit flag overrides the stored value; otherwise the
-                     stored value wins. *)
+                     stored value wins. [automerge_timeout] keeps legacy field
+                     absence intact so [finalize_run] can apply the repository
+                     default before the built-in fallback. *)
                   let run_knobs =
                     {
                       run_knobs with
@@ -684,9 +686,9 @@ let resolve_config ~project ~gameplan_path ~github_token ~backend ~model
                         Option.value max_ci_failures
                           ~default:stored.Project_store.max_ci_failures;
                       automerge_timeout =
-                        Some
-                          (Option.value automerge_timeout
-                             ~default:stored.Project_store.automerge_timeout);
+                        (match automerge_timeout with
+                        | Some _ as timeout -> timeout
+                        | None -> stored.Project_store.automerge_timeout);
                     }
                   in
                   let backend_inputs =
@@ -1340,10 +1342,12 @@ let cli_option_takes_value (s : string) : bool =
   | None -> (
       (* Keep this in sync with Cmdliner [opt] arguments below:
          --gameplan, --token, --backend, --model, --repo, --main-branch,
-         --poll-interval, and --max-concurrency. *)
+         --poll-interval, --max-concurrency, --max-ci-failures, and
+         --automerge-timeout. *)
       match s with
       | "--gameplan" | "--token" | "--backend" | "--model" | "--repo"
-      | "--main-branch" | "--poll-interval" | "--max-concurrency" ->
+      | "--main-branch" | "--poll-interval" | "--max-concurrency"
+      | "--max-ci-failures" | "--automerge-timeout" ->
           true
       | _ -> false)
 

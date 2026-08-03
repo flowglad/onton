@@ -84,8 +84,76 @@ let non_finite_automerge_timeout_is_rejected () =
       Result.is_error (Resolved_config.of_config config))
     [ Float.nan; Float.infinity; Float.neg_infinity ]
 
+let positive_automerge_timeout_is_preserved =
+  QCheck2.Test.make
+    ~name:"resolved config preserves valid automerge timeout values" ~count:500
+    QCheck2.Gen.(float_range 0.001 10000.)
+    (fun automerge_timeout ->
+      let config =
+        {
+          (valid_config ~max_concurrency:1
+             ~max_ci_failures:Patch_agent.default_max_ci_failures)
+          with
+          Resolved_config.automerge_timeout;
+        }
+      in
+      match Resolved_config.of_config config with
+      | Ok resolved ->
+          Float.equal resolved.Resolved_config.automerge_timeout
+            automerge_timeout
+      | Error _ -> false)
+
+let automerge_timeout_resolution_is_total =
+  QCheck2.Test.make ~name:"resolved config timeout validation is total"
+    ~count:1000 QCheck2.Gen.float (fun automerge_timeout ->
+      try
+        let config =
+          {
+            (valid_config ~max_concurrency:1
+               ~max_ci_failures:Patch_agent.default_max_ci_failures)
+            with
+            Resolved_config.automerge_timeout;
+          }
+        in
+        ignore (Resolved_config.of_config config);
+        true
+      with _ -> false)
+
+let repeated_resolution_order_independent =
+  QCheck2.Test.make
+    ~name:"repeated resolved config decisions are order independent" ~count:300
+    QCheck2.Gen.(list_size (int_range 0 40) (float_range 0.001 10000.))
+    (fun timeouts ->
+      let resolve automerge_timeout =
+        let config =
+          {
+            (valid_config ~max_concurrency:1
+               ~max_ci_failures:Patch_agent.default_max_ci_failures)
+            with
+            Resolved_config.automerge_timeout;
+          }
+        in
+        match Resolved_config.of_config config with
+        | Ok resolved -> Ok resolved.Resolved_config.automerge_timeout
+        | Error errors -> Error errors
+      in
+      let equal_result left right =
+        match (left, right) with
+        | Ok left, Ok right -> Float.equal left right
+        | Error left, Error right -> List.equal String.equal left right
+        | Ok _, Error _ | Error _, Ok _ -> false
+      in
+      let forward = List.map resolve timeouts in
+      let reverse_then_restore =
+        List.rev (List.map resolve (List.rev timeouts))
+      in
+      List.equal equal_result forward reverse_then_restore)
+
 let () =
   QCheck2.Test.check_exn max_concurrency_must_be_positive;
   QCheck2.Test.check_exn max_ci_failures_must_be_positive;
   QCheck2.Test.check_exn automerge_timeout_must_be_positive;
-  assert (non_finite_automerge_timeout_is_rejected ())
+  assert (non_finite_automerge_timeout_is_rejected ());
+  QCheck2.Test.check_exn positive_automerge_timeout_is_preserved;
+  QCheck2.Test.check_exn automerge_timeout_resolution_is_total;
+  QCheck2.Test.check_exn repeated_resolution_order_independent

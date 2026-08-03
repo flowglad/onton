@@ -145,10 +145,10 @@ type stored_config = {
       (* Per-project CI-failure cap (see [Patch_agent.max_ci_failures]).
          Defaulted on legacy configs predating the field; persisted so a value
          set once via --max-ci-failures survives flag-less resumes. *)
-  automerge_timeout : float;
-      [@yojson.default Patch_controller.default_automerge_timeout]
-      (* Per-project automerge idle window. Defaulted on legacy configs and
-         persisted so CLI/config choices survive flag-less resumes. *)
+  automerge_timeout : float option; [@yojson.default None]
+      (* Per-project automerge idle window. [None] preserves field absence in
+         legacy configs so flag-less resumes can consult the repository
+         default; newly resolved values are persisted as [Some]. *)
   url_scheme : string option; [@yojson.default None]
       (* Persisted transport scheme for the managed clone's [origin]. [None]
          on legacy configs predating P0-D; on the next [ensure_managed_repo]
@@ -174,7 +174,7 @@ let save_config ~project_name ~github_owner ~github_repo ~backend ~model
       repo_root;
       max_concurrency;
       max_ci_failures;
-      automerge_timeout;
+      automerge_timeout = Some automerge_timeout;
       url_scheme;
     }
   in
@@ -580,7 +580,9 @@ let%test "load_config tolerates a legacy persisted github_token" =
       Stdlib.close_out oc;
       match load_config ~project_name with
       | Ok cfg ->
-          String.equal cfg.github_owner "o" && String.equal cfg.github_repo "r"
+          String.equal cfg.github_owner "o"
+          && String.equal cfg.github_repo "r"
+          && Option.is_none cfg.automerge_timeout
       | Error _ -> false)
 
 (* The token is no longer persisted: [save_config] must not write a
@@ -602,6 +604,6 @@ let%test "save_config persists no github_token and round-trips" =
           String.equal cfg.project_name project_name
           && String.equal cfg.github_owner "o"
           && Int.equal cfg.max_ci_failures Patch_agent.default_max_ci_failures
-          && Float.equal cfg.automerge_timeout
-               Patch_controller.default_automerge_timeout
+          && Option.equal Float.equal cfg.automerge_timeout
+               (Some Patch_controller.default_automerge_timeout)
       | Error _ -> false)

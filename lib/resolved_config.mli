@@ -15,10 +15,13 @@ type config = {
   repo_root : string;
   max_concurrency : int;
   max_ci_failures : int;
-  automerge_timeout : float;
       (** Per-project cap on consecutive CI-failure responses per patch (see
           {!Onton_core.Patch_agent.max_ci_failures}). Resolved from
           [--max-ci-failures] / stored project config / built-in default. *)
+  automerge_timeout : float;
+      (** Automerge idle window in seconds. Must be finite and greater than
+          zero. Resolved from [--automerge-timeout], persisted project config,
+          repository config, or the built-in default, in that order. *)
   headless : bool;
   patch_agent_provider : string option;
   patch_agent_effort : string option;

@@ -77,10 +77,6 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
         ( max_ci_failures < 1,
           Printf.sprintf "--max-ci-failures must be >= 1 (got %d)"
             max_ci_failures );
-        ( (not (Float.is_finite automerge_timeout))
-          || Float.compare automerge_timeout 0. <= 0,
-          Printf.sprintf "--automerge-timeout must be finite and > 0 (got %g)"
-            automerge_timeout );
         ( (match patch_agent_provider with
           | Some provider ->
               not
@@ -101,6 +97,13 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
             (String.concat ", " known_patch_agent_efforts) );
       ]
       ~f:(fun (cond, msg) -> if cond then Some msg else None)
+  in
+  let errors =
+    match
+      Resolved_config_validation.automerge_timeout_error automerge_timeout
+    with
+    | None -> errors
+    | Some error -> errors @ [ error ]
   in
   match errors with [] -> Ok () | errs -> Error errs
 
