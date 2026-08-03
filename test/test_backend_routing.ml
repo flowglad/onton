@@ -108,6 +108,41 @@ let pp_decision (d : Backend_routing.decision) =
     | Some s -> Printf.sprintf "Some %S" s
     | None -> "None")
 
+let equal_unsupported_effort (a : Backend_routing.unsupported_effort)
+    (b : Backend_routing.unsupported_effort) =
+  String.equal a.unsupported_backend b.unsupported_backend
+  && String.equal a.unsupported_level b.unsupported_level
+  && Option.equal Int.equal a.unsupported_complexity b.unsupported_complexity
+
+let expected_unsupported_efforts ~(repo_config : Repo_config.t) ~default_backend
+    ~effective_model =
+  let complexities =
+    if Backend_routing.is_auto_model effective_model then
+      None
+      :: List.map repo_config.complexity_routes ~f:(fun (complexity, _) ->
+          Some complexity)
+      |> List.dedup_and_sort ~compare:(Option.compare Int.compare)
+    else [ None ]
+  in
+  List.filter_map complexities ~f:(fun complexity ->
+      let decision =
+        Backend_routing.decide ~repo_config ~default_backend ~effective_model
+          ~complexity
+      in
+      match decision.effort with
+      | None -> None
+      | Some level
+        when Backend_routing.effort_is_supported ~backend:decision.backend level
+        ->
+          None
+      | Some level ->
+          Some
+            {
+              Backend_routing.unsupported_backend = decision.backend;
+              unsupported_level = level;
+              unsupported_complexity = complexity;
+            })
+
 let effort_support_matches_provider_contract =
   let gen_query =
     QCheck2.Gen.(
@@ -363,36 +398,24 @@ let () =
         && Option.equal String.equal resolved.model (Some explicit))
   in
 
-  let prop_unsupported_efforts_are_sound_and_total =
+  let prop_unsupported_efforts_are_complete_sound_and_total =
     Test.make
       ~name:
-        "unsupported_efforts: total and every issue matches the effective \
-         decision"
+        "unsupported_efforts: complete, sound, and total over effective \
+         decisions"
       ~count:1000
       (Gen.tup3 gen_repo_config gen_backend_name gen_effective_model)
       (fun (repo_config, default_backend, effective_model) ->
         try
-          Backend_routing.unsupported_efforts ~repo_config ~default_backend
-            ~effective_model
-          |> List.for_all
-               ~f:(fun
-                   ({
-                      unsupported_backend;
-                      unsupported_level;
-                      unsupported_complexity;
-                    } :
-                     Backend_routing.unsupported_effort)
-                 ->
-                 let decision =
-                   Backend_routing.decide ~repo_config ~default_backend
-                     ~effective_model ~complexity:unsupported_complexity
-                 in
-                 String.equal decision.backend unsupported_backend
-                 && Option.equal String.equal decision.effort
-                      (Some unsupported_level)
-                 && not
-                      (Backend_routing.effort_is_supported
-                         ~backend:unsupported_backend unsupported_level))
+          let expected =
+            expected_unsupported_efforts ~repo_config ~default_backend
+              ~effective_model
+          in
+          let actual =
+            Backend_routing.unsupported_efforts ~repo_config ~default_backend
+              ~effective_model
+          in
+          List.equal equal_unsupported_effort actual expected
         with _ -> false)
   in
 
@@ -421,7 +444,7 @@ let () =
       prop_resolve_pair_total_non_empty_backend;
       prop_resolve_auto_inlines_auto;
       prop_resolve_auto_leaves_explicit;
-      prop_unsupported_efforts_are_sound_and_total;
+      prop_unsupported_efforts_are_complete_sound_and_total;
       effort_support_matches_provider_contract;
       prop_public_surface_is_linked;
     ]
