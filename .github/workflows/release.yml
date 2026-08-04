@@ -60,13 +60,19 @@ jobs:
         run: opam install . --deps-only --with-test -y
 
       - name: Build
-        run: opam exec -- dune build bin/main.exe
+        run: opam exec -- dune build bin/main.exe bin/setsid_exec/main.exe
 
       - name: Package binary
         run: |
           mkdir -p _dist/bin
           cp _build/default/bin/main.exe _dist/bin/onton
-          tar czf onton-${{ matrix.arch }}-apple-darwin.tar.gz -C _dist/bin onton
+          cp _build/default/bin/setsid_exec/main.exe _dist/bin/onton-setsid-exec
+          test -x _dist/bin/onton
+          test -x _dist/bin/onton-setsid-exec
+          tar czf onton-${{ matrix.arch }}-apple-darwin.tar.gz \
+            -C _dist/bin onton onton-setsid-exec
+          test "$(tar tzf onton-${{ matrix.arch }}-apple-darwin.tar.gz | sort | tr '\n' ' ')" = \
+            "onton onton-setsid-exec "
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

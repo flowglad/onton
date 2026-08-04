@@ -20,7 +20,7 @@ class Onton < Formula
   depends_on "gmp"
 
   def install
-    bin.install "onton"
+    bin.install "onton", "onton-setsid-exec"
     # Rewrite CI's hardcoded libgmp path to this machine's Homebrew prefix
     old_path = Utils.popen_read("otool", "-L", bin/"onton")
       .lines.find { |l| l.include?("libgmp") }&.strip&.split&.first
@@ -32,5 +32,6 @@ class Onton < Formula
 
   test do
     assert_match "onton", shell_output("#{bin}/onton --version 2>&1", 0)
+    assert_predicate bin/"onton-setsid-exec", :executable?
   end
 end
