@@ -272,6 +272,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Keep this cache separate from build-and-test: the jobs run concurrently
+      # and must never rsync into the same mutable switch disk.
+      - name: Mount Archlint opam switch cache
+        uses: useblacksmith/stickydisk@13af8883542ca949a717e70fef89d15edbb29d88 # v1
+        with:
+          path: ~/.opam-archlint-switch-disk
+          key: ${{ github.repository }}-opam-archlint-${{ runner.os }}-${{ env.OCAML_COMPILER }}
+
       # v1.4.0 can select OCaml 5.5, but its qualified-reference policy does not
       # yet recognize Onton's Dune-wrapped modules and reports false shell/core
       # violations. Run the pinned v1.3.2 evaluator directly so it and Onton
@@ -281,21 +289,49 @@ jobs:
           ocaml-compiler: ${{ env.OCAML_COMPILER }}
           dune-cache: true
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           python-version: '3.14'
 
-      - name: Install Archlint and project dependencies
+      - name: Use opam.ocaml.org archive cache
+        run: opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
+
+      - name: Restore cached Archlint switch
+        run: |
+          if [ -f "$HOME/.opam-archlint-switch-disk/.ci-switch-ok" ]; then
+            echo "Restoring cached Archlint switch from sticky disk"
+            rsync -a --delete "$HOME/.opam-archlint-switch-disk/_opam/" _opam/
+          else
+            echo "No completed Archlint switch cache — starting cold"
+          fi
+
+      - name: Fetch pinned Archlint evaluator
         run: |
           archlint_dir="$RUNNER_TEMP/archlint"
           git clone --branch v1.3.2 --depth 1 \
             https://github.com/flowglad/archlint.git "$archlint_dir"
           test "$(git -C "$archlint_dir" rev-parse HEAD)" = "$ARCHLINT_SHA"
-          opam option 'archive-mirrors=["https://opam.ocaml.org/cache"]'
-          opam install . --deps-only --with-test --yes
-          opam install "$archlint_dir/ocaml" --deps-only --yes
-          uv sync --project "$archlint_dir"
           echo "ARCHLINT_DIR=$archlint_dir" >> "$GITHUB_ENV"
+
+      - name: Install Archlint and project dependencies
+        run: |
+          install_dependencies() {
+            opam install . --deps-only --with-test -y &&
+              opam install "$ARCHLINT_DIR/ocaml" --deps-only -y
+          }
+
+          if ! install_dependencies; then
+            echo "::warning::opam install failed — rebuilding the Archlint switch from scratch"
+            opam switch remove "$PWD" -y || true
+            rm -rf _opam
+            opam switch create . "$OCAML_COMPILER" --no-install -y
+            install_dependencies
+          fi
+
+          rm -f "$HOME/.opam-archlint-switch-disk/.ci-switch-ok"
+          rsync -a --delete _opam/ "$HOME/.opam-archlint-switch-disk/_opam/"
+          touch "$HOME/.opam-archlint-switch-disk/.ci-switch-ok"
+          uv sync --project "$ARCHLINT_DIR"
 
       - name: Run Archlint
         run: |
