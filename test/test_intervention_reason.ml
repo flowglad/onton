@@ -326,6 +326,7 @@ let () =
              (fun a -> Patch_agent.set_merge_queue_required a flag);
              (fun a -> Patch_agent.set_mergeability_unknown a flag);
              (fun a -> Patch_agent.set_worktree_path a "/tmp/wt");
+             (fun a -> Patch_agent.clear_worktree_path a);
            ]
          in
          let a =
@@ -336,6 +337,7 @@ let () =
          let _history = Patch_agent.anchor_history a in
          let _in_merge_queue = Patch_agent.in_merge_queue a in
          let _priority = Patch_agent.highest_priority a in
+         let _worktree_state = Patch_agent.worktree_state a in
          let _approved =
            Patch_agent.is_approved_modulo_merge_ready a ~main_branch:main
          in
