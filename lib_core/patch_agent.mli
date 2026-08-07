@@ -280,7 +280,9 @@ val start : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Start] — begin work on a patch. Preconditions (checked):
     [~has_pr], [~busy]. Caller must verify [in_gameplan] and [deps_satisfied]
     externally. Postconditions: [has_session], [busy], [satisfies],
-    [base_branch = Some base_branch]. *)
+    [base_branch = Some base_branch]. An unmaterialized start records
+    [branch_rebased_onto = Some base_branch]; a materialized retry preserves the
+    existing physical rebase anchor. *)
 
 val rebase : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:

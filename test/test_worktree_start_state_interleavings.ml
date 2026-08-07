@@ -324,6 +324,41 @@ let prop_materialization_is_the_gate_cutover =
               loop orch ops
       with _ -> false)
 
+(** WSI-5: after a parent merges, the structural base for a materialized child
+    retry changes to main, but firing that retry must not claim the existing
+    checkout was physically rebased. *)
+let prop_materialized_retry_preserves_rebase_anchor =
+  QCheck2.Test.make
+    ~name:"WSI-5: materialized retry preserves the physical rebase anchor"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      try
+        let patches, parent, child, orch = bootstrap () in
+        let orch = Orchestrator.set_pr_body_delivered orch parent true in
+        let orch = Orchestrator.set_checks_passing orch parent true in
+        match child_start_action orch ~patches ~child with
+        | Some (Orchestrator.Start (_, original_base) as action) -> (
+            let orch = Orchestrator.fire orch action in
+            let orch = Orchestrator.set_worktree_path orch child "/tmp/child" in
+            let orch =
+              Orchestrator.apply_session_result orch child
+                (Orchestrator.Session_failed
+                   { is_fresh = true; detail = Some "retry after parent merge" })
+            in
+            let orch = Orchestrator.mark_merged orch parent in
+            match child_start_action orch ~patches ~child with
+            | Some (Orchestrator.Start (_, retry_base) as retry) ->
+                let orch = Orchestrator.fire orch retry in
+                let child_agent = Orchestrator.agent orch child in
+                Branch.equal retry_base main
+                && (not (Branch.equal original_base retry_base))
+                && Option.equal Branch.equal
+                     child_agent.Patch_agent.branch_rebased_onto
+                     (Some original_base)
+            | Some (Orchestrator.Respond _ | Orchestrator.Rebase _) | None ->
+                false)
+        | Some (Orchestrator.Respond _ | Orchestrator.Rebase _) | None -> false
+      with _ -> false)
+
 let () =
   let runner = QCheck_base_runner.run_tests_main in
   ignore
@@ -333,4 +368,5 @@ let () =
          prop_materialized_retry_dependency_invariance;
          prop_materialized_state_is_sticky;
          prop_materialization_is_the_gate_cutover;
+         prop_materialized_retry_preserves_rebase_anchor;
        ])

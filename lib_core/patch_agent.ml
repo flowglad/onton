@@ -772,6 +772,11 @@ let mark_pr_missing t =
 let start t ~base_branch =
   if has_pr t then invalid_arg "Patch_agent.start: patch already has a PR";
   if t.busy then invalid_arg "Patch_agent.start: patch is already busy";
+  let branch_rebased_onto =
+    match worktree_state t with
+    | Unmaterialized -> Some base_branch
+    | Materialized _ -> t.branch_rebased_onto
+  in
   {
     t with
     has_session = true;
@@ -782,10 +787,10 @@ let start t ~base_branch =
     satisfies = true;
     base_branch = Some base_branch;
     notified_base_branch = Some base_branch;
-    (* The initial Start plants the branch on [base_branch]; the local branch
-       tip is literally this base's HEAD until the agent commits. Record it
-       so the drift detector knows the branch is on the right base. *)
-    branch_rebased_onto = Some base_branch;
+    (* The initial Start plants the branch on [base_branch]. A retry in an
+       existing checkout only changes the structural base supplied to the
+       session; it does not physically rebase that checkout. *)
+    branch_rebased_onto;
     ci_checks = [];
   }
 
