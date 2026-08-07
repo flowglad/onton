@@ -163,23 +163,21 @@ let prop_unmaterialized_gate_safety =
     ~count:500 gen_dependency_ops (fun ops ->
       try
         let patches, parent, child, orch = bootstrap () in
-        let rec loop orch = function
-          | ops -> (
-              let child_agent = Orchestrator.agent orch child in
-              let invariant =
-                Patch_agent.equal_worktree_state
-                  (Patch_agent.worktree_state child_agent)
-                  Patch_agent.Unmaterialized
-                && (dependency_materialization_ready orch parent
-                   || not (child_start_planned orch ~patches ~child))
-              in
-              invariant
-              &&
-              match ops with
-              | [] -> true
-              | op :: rest -> loop (apply_dependency_op orch parent op) rest)
+        let invariant orch =
+          let child_agent = Orchestrator.agent orch child in
+          Patch_agent.equal_worktree_state
+            (Patch_agent.worktree_state child_agent)
+            Patch_agent.Unmaterialized
+          && (dependency_materialization_ready orch parent
+             || not (child_start_planned orch ~patches ~child))
         in
-        loop orch ops
+        let rec loop orch = function
+          | [] -> true
+          | op :: rest ->
+              let orch = apply_dependency_op orch parent op in
+              invariant orch && loop orch rest
+        in
+        invariant orch && loop orch ops
       with _ -> false)
 
 (** WSI-2: once the cut exists, every dependency-state prefix still plans the
