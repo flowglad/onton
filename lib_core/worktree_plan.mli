@@ -54,13 +54,15 @@ val for_merge_conflict : base:Types.Branch.t -> t
 (** Plan for the merge-conflict resolution path (post rebase-in-progress check):
     ensure the worktree, fetch, then rebase onto [origin/<base>]. *)
 
-val for_start : base:Types.Branch.t -> t
+val for_start : base:Types.Branch.t -> materialized:bool -> t
 (** Plan executed by the runner Start path BEFORE the LLM session begins: ensure
-    worktree, fetch, capture [origin/<base>]'s tip into slot 0, then record an
-    anchor referencing that SHA. Records the initial anchor for a
-    freshly-branched-off-dep patch — closing the production bug blind spot where
-    Start never wrote an anchor and the first rebase (post-squash) had nothing
-    safe to fall back to. *)
+    the worktree and, when [materialized = false], fetch, capture
+    [origin/<base>]'s tip into slot 0, then record an anchor referencing that
+    SHA. This records the initial anchor for a freshly-branched-off-dep patch —
+    closing the production bug blind spot where Start never wrote an anchor and
+    the first rebase (post-squash) had nothing safe to fall back to. A
+    materialized retry emits no anchor operations because it does not physically
+    rebase the existing checkout. *)
 
 val ensures_worktree_before_fs : t -> bool
 (** Returns [true] iff every non-{!Ensure_worktree} op is preceded by an

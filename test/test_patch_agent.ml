@@ -1328,6 +1328,7 @@ let () =
           ignore bump_generation;
           ignore clear_automerge_deadline;
           ignore clear_branch_blocked;
+          ignore clear_worktree_path;
           ignore clear_pr;
           ignore clear_session_fallback;
           ignore highest_priority;

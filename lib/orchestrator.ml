@@ -416,14 +416,14 @@ let runnable_messages t =
   |> List.filter ~f:(fun msg ->
       match msg.status with
       | Pending -> (
-          (* Gate both [Start] and [Rebase] on base freshness. A [Rebase] of a
-             dependent must not run while its base is itself stale or mid-rebase
-             — otherwise it lands on a stale branch and needs a second rebase.
-             Gating it makes a fan-in/chain cascade block on its dependency
-             layers and converge bottom-up (main is always fresh), one rebase
-             per branch. The launching patch's [base_contains_merged_siblings]
-             cache supplies the sibling-containment input. [Respond] operates on
-             a worktree that already exists and is not freshness-sensitive. *)
+          (* Gate a [Start] on base freshness only when it will materialize the
+             worktree. A retry reuses an existing checkout and is no longer
+             sensitive to later base-branch state. [Rebase] always remains
+             gated: it must not run while its base is stale or mid-rebase, or it
+             would land on a stale branch and need a second rebase. The
+             launching patch's [base_contains_merged_siblings] cache supplies
+             the sibling-containment input. [Respond] also operates on an
+             existing worktree and is not freshness-sensitive. *)
           let eligibility patch_id base =
             let base_contains_merged_siblings =
               (agent t patch_id).Patch_agent.base_contains_merged_siblings
@@ -433,7 +433,10 @@ let runnable_messages t =
             | Start_eligibility.Defer _ -> false
           in
           match msg.action with
-          | Start (patch_id, base) -> eligibility patch_id base
+          | Start (patch_id, base) -> (
+              match Patch_agent.worktree_state (agent t patch_id) with
+              | Patch_agent.Unmaterialized -> eligibility patch_id base
+              | Patch_agent.Materialized _ -> true)
           | Rebase (patch_id, base) -> eligibility patch_id base
           | Respond _ -> true)
       | Acked ->
@@ -1100,6 +1103,7 @@ let apply_session_result t patch_id result =
       complete_failed t patch_id
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
+      let t = update_agent t patch_id ~f:Patch_agent.clear_worktree_path in
       complete_failed t patch_id
   | Session_push_failed reason -> (
       (* The LLM session itself ran cleanly — clear its fallback state so we

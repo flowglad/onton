@@ -89,14 +89,16 @@ let () =
         gen_branch (fun base ->
           ensures_worktree_before_fs (for_merge_conflict ~base));
       Test.make ~name:"for_start: ensures worktree before any fs op" gen_branch
-        (fun base -> ensures_worktree_before_fs (for_start ~base));
+        (fun base ->
+          ensures_worktree_before_fs (for_start ~base ~materialized:false));
       Test.make ~name:"for_rebase: first op is Ensure_worktree" gen_branch
         (fun new_base -> first_op_is_ensure_worktree (for_rebase ~new_base));
       Test.make ~name:"for_merge_conflict: first op is Ensure_worktree"
         gen_branch (fun base ->
           first_op_is_ensure_worktree (for_merge_conflict ~base));
       Test.make ~name:"for_start: first op is Ensure_worktree" gen_branch
-        (fun base -> first_op_is_ensure_worktree (for_start ~base));
+        (fun base ->
+          first_op_is_ensure_worktree (for_start ~base ~materialized:false));
       Test.make ~name:"for_rebase: rebase target is origin/<new_base>"
         gen_branch (fun new_base ->
           let target =
@@ -110,7 +112,7 @@ let () =
       (* for_start has no Rebase_onto — it just captures and records. *)
       Test.make ~name:"for_start: no Rebase_onto op" gen_branch (fun base ->
           not
-            (List.exists (for_start ~base) ~f:(function
+            (List.exists (for_start ~base ~materialized:false) ~f:(function
               | Rebase_onto _ -> true
               | Ensure_worktree | Fetch_origin | Capture_anchor _
               | Record_anchor_on_success _ ->
@@ -118,11 +120,16 @@ let () =
       Test.make
         ~name:"for_start: includes Capture_anchor for origin/<base> in slot 0"
         gen_branch (fun base ->
-          plan_has_capture_for_slot (for_start ~base)
+          plan_has_capture_for_slot
+            (for_start ~base ~materialized:false)
             ("origin/" ^ Branch.to_string base)
             0);
       Test.make ~name:"for_start: includes Record_anchor_on_success for base"
-        gen_branch (fun base -> plan_has_record_for (for_start ~base) base);
+        gen_branch (fun base ->
+          plan_has_record_for (for_start ~base ~materialized:false) base);
+      Test.make ~name:"for_start: materialized retry emits no anchor operations"
+        gen_branch (fun base ->
+          equal (for_start ~base ~materialized:true) [ Ensure_worktree ]);
       Test.make ~name:"ensures_worktree_before_fs: agrees with reference"
         gen_plan (fun plan ->
           Bool.equal

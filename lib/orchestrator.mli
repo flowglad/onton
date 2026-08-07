@@ -265,7 +265,8 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [Session_no_resume] -> on_session_failure (not fresh) + clear llm_session_id
     \+ complete_failed. [Session_give_up] -> set_session_failed +
     set_tried_fresh + clear llm_session_id + complete_failed.
-    [Session_worktree_missing] -> on_pre_session_failure + complete_failed.
+    [Session_worktree_missing] -> on_pre_session_failure + clear_worktree_path
+    + complete_failed.
 
     {b Deferred completion}: [Session_push_failed] and [Session_no_commits] do
     NOT complete the agent — they only adjust state ([clear_session_fallback] in
@@ -483,7 +484,8 @@ val apply_anchor_events :
 (** Fold {!Worktree_plan.anchor_event} observations into the agent without any
     other transition. Called by the runner Start path after executing
     {!Worktree_plan.for_start} to record the initial anchor for a
-    freshly-branched-off-dep patch, before the LLM session begins. *)
+    freshly-branched-off-dep patch, before the LLM session begins. Materialized
+    retries do not emit anchor events. *)
 
 type conflict_resolution =
   | Conflict_done

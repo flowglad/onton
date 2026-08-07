@@ -895,7 +895,16 @@ struct
                                             ~fail_label:"start anchor capture"
                                             ~ancestor_ids
                                             (Worktree_plan.for_start
-                                               ~base:base_branch)
+                                               ~base:base_branch
+                                               ~materialized:
+                                                 (match
+                                                    Patch_agent.worktree_state
+                                                      agent
+                                                  with
+                                                 | Patch_agent.Materialized _ ->
+                                                     true
+                                                 | Patch_agent.Unmaterialized ->
+                                                     false))
                                         in
                                         (match start_anchor_events with
                                         | [] -> ()

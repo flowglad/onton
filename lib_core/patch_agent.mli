@@ -15,6 +15,9 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 type op_state = Queued | Running
 [@@deriving show, eq, sexp_of, compare, yojson]
 
+type worktree_state = Unmaterialized | Materialized of string
+[@@deriving show, eq, sexp_of, compare]
+
 type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
@@ -277,7 +280,9 @@ val start : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Start] — begin work on a patch. Preconditions (checked):
     [~has_pr], [~busy]. Caller must verify [in_gameplan] and [deps_satisfied]
     externally. Postconditions: [has_session], [busy], [satisfies],
-    [base_branch = Some base_branch]. *)
+    [base_branch = Some base_branch]. An unmaterialized start records
+    [branch_rebased_onto = Some base_branch]; a materialized retry preserves the
+    existing physical rebase anchor. *)
 
 val rebase : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:
@@ -497,6 +502,16 @@ val set_checks_passing : t -> bool -> t
 
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
+
+val clear_worktree_path : t -> t
+(** Clear a worktree path that recovery has proven is no longer live. The next
+    Start is consequently treated as first materialization. *)
+
+val worktree_state : t -> worktree_state
+(** The worktree lifecycle, independent of whether the patch session is queued
+    or running. Dependency readiness gates only [Unmaterialized]; a retry in
+    [Materialized _] operates on its existing checkout and must not be re-gated
+    on later dependency state changes. *)
 
 val is_approved_modulo_merge_ready : t -> main_branch:Types.Branch.t -> bool
 (** Every approval precondition except [merge_ready]. A patch satisfying this
