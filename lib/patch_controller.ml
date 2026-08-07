@@ -461,14 +461,21 @@ let plan_action_for_patch t ~branch_map patch_id =
        is_pr_present rather than has_pr (which is true for [Missing] too). *)
     Patch_agent.is_pr_present (Orchestrator.agent t pid)
   in
+  let open_deps =
+    Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged
+  in
   let dependencies_allow_start =
+    List.length open_deps <= 1
+    &&
     match Patch_agent.worktree_state agent with
     | Patch_agent.Materialized _ ->
         (* Review-readiness protects the point where a dependency branch is
            cloned into a new worktree. Once that worktree exists, a failed or
            timed-out no-PR session retries in the same checkout; later CI,
            conflict, or PR-state changes on the dependency cannot make that
-           already-materialized checkout less safe to reuse. *)
+           already-materialized checkout less safe to reuse. The structural
+           cardinality guard remains because [Graph.initial_base] requires at
+           most one open dependency. *)
         true
     | Patch_agent.Unmaterialized ->
         Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
@@ -476,9 +483,7 @@ let plan_action_for_patch t ~branch_map patch_id =
            dependency is review-ready: PR body delivered, no conflict, CI
            green. Merged deps are exempt because [open_pr_deps] filters them
            out. *)
-        && List.for_all
-             (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
-             ~f:(fun dep -> open_dep_review_ready t dep)
+        && List.for_all open_deps ~f:(fun dep -> open_dep_review_ready t dep)
   in
   if
     (not (Patch_agent.has_pr agent))
@@ -1338,6 +1343,43 @@ let%test "plan_actions retries a materialized child without dependency gates" =
     Orchestrator.set_worktree_path t child_id "/tmp/materialized-child-worktree"
   in
   plans_child_start ~child_id ~patches t
+
+let%test "plan_actions defers a materialized child with multiple open deps" =
+  let parent_id, child_id, patches, _ = make_notes_gate_fixture () in
+  let parent_patch =
+    List.find_exn patches ~f:(fun patch ->
+        Patch_id.equal patch.Patch.id parent_id)
+  in
+  let child_patch =
+    List.find_exn patches ~f:(fun patch ->
+        Patch_id.equal patch.Patch.id child_id)
+  in
+  let sibling_id = Patch_id.of_string "sibling" in
+  let sibling_patch =
+    {
+      parent_patch with
+      id = sibling_id;
+      branch = Branch.of_string "sibling-branch";
+    }
+  in
+  let child_patch =
+    { child_patch with dependencies = [ parent_id; sibling_id ] }
+  in
+  let patches = [ parent_patch; sibling_patch; child_patch ] in
+  let start_with_pr t patch_id pr_number =
+    let t = Orchestrator.fire t (Orchestrator.Start (patch_id, main)) in
+    let t =
+      Orchestrator.set_pr_number t patch_id (Pr_number.of_int pr_number)
+    in
+    Orchestrator.complete t patch_id
+  in
+  let t = Orchestrator.create ~patches ~main_branch:main in
+  let t = start_with_pr t parent_id 41 in
+  let t = start_with_pr t sibling_id 42 in
+  let t =
+    Orchestrator.set_worktree_path t child_id "/tmp/materialized-fan-in"
+  in
+  not (plans_child_start ~child_id ~patches t)
 
 let%test "plan_actions does not gate child Start on a merged dep" =
   let parent_id, child_id, patches, t = make_notes_gate_fixture () in

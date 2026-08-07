@@ -110,8 +110,13 @@ let () =
   let orch = Orchestrator.create ~patches ~main_branch:main in
   (* Drive the agent to busy without a PR (start path). *)
   let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+  let orch = Orchestrator.set_worktree_path orch pid "/tmp/deleted-worktree" in
   let agent_before = Orchestrator.agent orch pid in
   assert_true "agent_before busy" agent_before.Patch_agent.busy;
+  assert_true "agent_before materialized"
+    (Patch_agent.equal_worktree_state
+       (Patch_agent.worktree_state agent_before)
+       (Patch_agent.Materialized "/tmp/deleted-worktree"));
   let attempts_before = agent_before.Patch_agent.start_attempts_without_pr in
   let orch =
     Orchestrator.apply_session_result orch pid
@@ -119,6 +124,10 @@ let () =
   in
   let agent_after = Orchestrator.agent orch pid in
   assert_true "agent_after not busy" (not agent_after.Patch_agent.busy);
+  assert_true "agent_after unmaterialized"
+    (Patch_agent.equal_worktree_state
+       (Patch_agent.worktree_state agent_after)
+       Patch_agent.Unmaterialized);
   let attempts_after = agent_after.Patch_agent.start_attempts_without_pr in
   if not (Int.equal attempts_after (attempts_before + 1)) then
     failwith

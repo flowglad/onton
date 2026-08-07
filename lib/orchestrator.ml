@@ -1103,6 +1103,7 @@ let apply_session_result t patch_id result =
       complete_failed t patch_id
   | Session_worktree_missing ->
       let t = update_agent t patch_id ~f:Patch_agent.on_pre_session_failure in
+      let t = update_agent t patch_id ~f:Patch_agent.clear_worktree_path in
       complete_failed t patch_id
   | Session_push_failed reason -> (
       (* The LLM session itself ran cleanly — clear its fallback state so we

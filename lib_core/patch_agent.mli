@@ -503,6 +503,10 @@ val set_checks_passing : t -> bool -> t
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
 
+val clear_worktree_path : t -> t
+(** Clear a worktree path that recovery has proven is no longer live. The next
+    Start is consequently treated as first materialization. *)
+
 val worktree_state : t -> worktree_state
 (** The worktree lifecycle, independent of whether the patch session is queued
     or running. Dependency readiness gates only [Unmaterialized]; a retry in

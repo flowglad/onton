@@ -484,6 +484,7 @@ let on_pre_session_failure t =
 
 let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
+let clear_worktree_path t = { t with worktree_path = None }
 
 let worktree_state t =
   match t.worktree_path with
