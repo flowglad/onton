@@ -137,34 +137,15 @@ let rm_rf path =
          (Printf.sprintf "rm -rf %s" (Stdlib.Filename.quote path)))
   with _ -> ()
 
-let default_data_root () =
-  match Stdlib.Sys.getenv_opt "XDG_DATA_HOME" with
-  | Some xdg -> Stdlib.Filename.concat xdg "onton"
-  | None ->
-      Stdlib.Filename.concat
-        (Stdlib.Filename.concat (Stdlib.Sys.getenv "HOME") ".local/share")
-        "onton"
-
 let with_temp_data_dir f =
   let old = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
-  let restore_path_when_unset =
-    match old with Some _ -> None | None -> Some (default_data_root ())
-  in
   let dir = Stdlib.Filename.temp_dir "onton-session-artifacts-" "" in
   Unix.putenv "ONTON_DATA_DIR" dir;
   Stdlib.Fun.protect
     ~finally:(fun () ->
       (match old with
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
-      | None -> (
-          match restore_path_when_unset with
-          | None -> ()
-          | Some path ->
-              (* Tests do not have an unsetenv binding. Restore the resolved
-                 default data root so later tests never inherit a deleted temp
-                 directory through ONTON_DATA_DIR. *)
-              Project_store.ensure_dir path;
-              Unix.putenv "ONTON_DATA_DIR" path));
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
       rm_rf dir)
     (fun () -> f ())
 
@@ -193,6 +174,33 @@ let spawn_finalized_event ~patch_id ~session_uuid =
   in
   Telemetry.Event.Spawn_finalized
     { patch_id; session_uuid; meta = Session_meta.yojson_of_t meta }
+
+let%test "with_temp_data_dir restores an absent environment variable" =
+  let original = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      match original with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR")
+    (fun () ->
+      Unix.unsetenv "ONTON_DATA_DIR";
+      with_temp_data_dir (fun () -> ());
+      Option.is_none (Stdlib.Sys.getenv_opt "ONTON_DATA_DIR"))
+
+let%test "with_temp_data_dir restores an existing environment variable" =
+  let original = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      match original with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR")
+    (fun () ->
+      Unix.putenv "ONTON_DATA_DIR" "onton-session-artifacts-original";
+      with_temp_data_dir (fun () -> ());
+      Option.value_map
+        (Stdlib.Sys.getenv_opt "ONTON_DATA_DIR")
+        ~default:false
+        ~f:(String.equal "onton-session-artifacts-original"))
 
 let%test "create+finalize writes meta.json with schema_version=1" =
   with_temp_data_dir @@ fun () ->

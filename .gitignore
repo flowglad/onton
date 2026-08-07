@@ -1,5 +1,6 @@
 _build/
 _opam/
+/compile_commands.json
 /tags
 /worktrees/
 .claude

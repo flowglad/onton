@@ -378,7 +378,7 @@ let with_temp_data_dir f =
     ~finally:(fun () ->
       (match old with
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
-      | None -> Unix.putenv "ONTON_DATA_DIR" "");
+      | None -> Unix.unsetenv "ONTON_DATA_DIR");
       try
         ignore
           (Stdlib.Sys.command
@@ -402,6 +402,33 @@ let dir_entries_for_test path =
 let json_field_for_test name = function
   | `Assoc fields -> List.Assoc.find fields name ~equal:String.equal
   | _ -> None
+
+let%test "with_temp_data_dir restores an absent environment variable" =
+  let original = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      match original with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR")
+    (fun () ->
+      Unix.unsetenv "ONTON_DATA_DIR";
+      with_temp_data_dir (fun () -> ());
+      Option.is_none (Stdlib.Sys.getenv_opt "ONTON_DATA_DIR"))
+
+let%test "with_temp_data_dir restores an existing environment variable" =
+  let original = Stdlib.Sys.getenv_opt "ONTON_DATA_DIR" in
+  Stdlib.Fun.protect
+    ~finally:(fun () ->
+      match original with
+      | Some value -> Unix.putenv "ONTON_DATA_DIR" value
+      | None -> Unix.unsetenv "ONTON_DATA_DIR")
+    (fun () ->
+      Unix.putenv "ONTON_DATA_DIR" "onton-project-store-original";
+      with_temp_data_dir (fun () -> ());
+      Option.value_map
+        (Stdlib.Sys.getenv_opt "ONTON_DATA_DIR")
+        ~default:false
+        ~f:(String.equal "onton-project-store-original"))
 
 let%test "ci_check_key uses run id for CheckRuns and slug for id-less checks" =
   let run_check = ci_check_for_test ~id:123 ~name:"CI / Test Suite" () in

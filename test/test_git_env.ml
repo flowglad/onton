@@ -4,8 +4,6 @@
 open Onton
 open Onton_core
 
-external unsetenv_stub : string -> unit = "caml_onton_unsetenv"
-
 let env_list () = Git_env.clean_env () |> Array.to_list
 
 let binding name s =
@@ -29,7 +27,7 @@ let count name env = List.length (List.filter (binding name) env)
 let restore_env name old_value =
   match old_value with
   | Some value -> Unix.putenv name value
-  | None -> unsetenv_stub name
+  | None -> Unix.unsetenv name
 
 let assert_true label cond = if not cond then failwith label
 

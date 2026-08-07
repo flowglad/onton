@@ -36,5 +36,5 @@ let remove_stale_for_scope t ~backend_name ~owner ~repo ~pr_number ~keep_keys =
         t.table;
       List.iter (fun key -> Hashtbl.remove t.table key) !stale)
 
-let find t ~key = with_lock t (fun () -> Hashtbl.find_opt t.table key)
+let take t ~key = with_lock t (fun () -> Hashtbl.find_and_remove t.table key)
 let forget t ~key = with_lock t (fun () -> Hashtbl.remove t.table key)

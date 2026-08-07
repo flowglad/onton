@@ -84,7 +84,7 @@ x86_64).
 ### Option C: From source
 
 Only needed if you want to modify onton or are on a platform without prebuilt
-binaries. Requires OCaml 5.5.0, dune 3.21, and opam:
+binaries. Requires OCaml 5.5.0, dune 3.24.2, and opam:
 
 ```sh
 git clone https://github.com/flowglad/onton.git
@@ -269,7 +269,7 @@ worth knowing about:
 
 In addition to the runtime dependencies above, building from source needs the
 OCaml toolchain listed under [Option C](#option-c-from-source): OCaml 5.5.0,
-dune 3.21, and opam. `opam install . --deps-only` installs the rest
+dune 3.24.2, and opam. `opam install . --deps-only` installs the rest
 (`base`, `eio`, `cmarkit`, `re`, `cmdliner`, `qcheck`, etc.).
 
 ## Usage
