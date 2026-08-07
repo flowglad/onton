@@ -24,7 +24,7 @@ jobs:
     env:
       # Single source for the compiler version: setup-ocaml's switch and the
       # self-heal rebuild in Install dependencies must agree.
-      OCAML_COMPILER: '5.4.1'
+      OCAML_COMPILER: '5.5.0'
     steps:
       - uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b # v4 (Blacksmith fork)
 
@@ -166,7 +166,7 @@ jobs:
       # the speed win.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
-          ocaml-compiler: '5.4.1'
+          ocaml-compiler: '5.5.0'
           dune-cache: true
 
       - name: Use opam.ocaml.org archive cache

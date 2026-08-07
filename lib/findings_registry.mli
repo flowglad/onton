@@ -57,8 +57,11 @@ val remove_stale_for_scope :
     backend's current unresolved findings instead of accumulating stale routes.
 *)
 
-val find : t -> key:string -> entry option
+val take : t -> key:string -> entry option
+(** Atomically return and remove the entry for [key], if present. Use this
+    before an effectful resolve operation so a later cleanup cannot remove an
+    entry concurrently refreshed by the poller. *)
 
 val forget : t -> key:string -> unit
-(** Drop the entry. Called after a resolve POST so the table doesn't grow
-    unbounded across the lifetime of the process. *)
+(** Drop the entry without returning it. Used on terminal paths that cannot or
+    should not issue a resolve request. *)

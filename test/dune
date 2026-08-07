@@ -9,6 +9,13 @@
  (libraries onton unix))
 
 (test
+ (name test_findings_resolver)
+ (modules test_findings_resolver)
+ (libraries onton onton_core eio_main unix)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_automerge_deadline_properties)
  (modules test_automerge_deadline_properties)
  (libraries onton onton_core onton_test_support qcheck-core qcheck-core.runner)

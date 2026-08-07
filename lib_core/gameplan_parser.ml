@@ -772,6 +772,9 @@ let parse_file path =
   | Error e -> Error e
   | Ok contents -> parse_json_string contents
 
+(* OCaml 5.5 reports ppx_inline_test's generated local module [M] as unused. *)
+[@@@warning "-60"]
+
 let%test_module "Gameplan_parser" =
   (module struct
     let%test "slugify lowercase and strip" =
@@ -1456,3 +1459,5 @@ let%test_module "Gameplan_parser" =
       | Ok _ -> false
       | Error msg -> String.is_substring msg ~substring:"openQuestions[0]"
   end)
+
+[@@@warning "+60"]

@@ -21,15 +21,7 @@ let string_field field json : (string, string) Result.t =
   | None -> Error (Printf.sprintf "missing required field %S" field)
   | Some _ -> Error (Printf.sprintf "%S must be a string" field)
 
-let strip_trailing_slashes s =
-  let len = String.length s in
-  let rec last i =
-    if i <= 0 then i
-    else if Char.equal (String.get s (i - 1)) '/' then last (i - 1)
-    else i
-  in
-  let l = last len in
-  if l = len then s else String.sub s ~pos:0 ~len:l
+let strip_trailing_slashes = Stdlib.String.drop_last_while (Char.equal '/')
 
 let has_authority base_url =
   match String.substr_index base_url ~pattern:"://" with

@@ -72,6 +72,9 @@ let extract_pr_number_from_text ?(at_end_of_stream = false) ~owner ~repo text =
   in
   scan 0
 
+(* OCaml 5.5 reports ppx_inline_test's generated local module [M] as unused. *)
+[@@@warning "-60"]
+
 let%test_module "extract_pr_number_from_text" =
   (module struct
     let pr n = Some (Types.Pr_number.of_int n)
@@ -127,6 +130,8 @@ let%test_module "extract_pr_number_from_text" =
             github.com/foo/bar/pull/1234")
         (pr 12)
   end)
+
+[@@@warning "+60"]
 
 module type ENV = sig
   include Run_env.S

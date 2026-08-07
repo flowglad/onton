@@ -180,6 +180,6 @@ sequences are covered by `test/test_rebase_state_machine.ml` (SM-1, SM-2
 - Reference specification: `../orchestrate-gameplan/spec/anton.pant`
 
 ## Stack
-- OCaml 5.4.1, dune 3.21, local opam switch
+- OCaml 5.5.0, dune 3.24.2, local opam switch
 - `open Base` in lib modules for Jane Street ppx compatibility
 - PPX: ppx_deriving (show/eq/ord), ppx_sexp_conv, ppx_compare, ppx_hash, ppx_expect, ppx_inline_test, ppx_assert

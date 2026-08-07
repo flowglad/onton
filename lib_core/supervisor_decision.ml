@@ -46,6 +46,9 @@ let exit_after_fatal = function
   | Cleanup_pending -> Defer_exit_until_cleanup
   | Cleanup_done -> Exit_now
 
+(* OCaml 5.5 reports ppx_inline_test's generated local module [M] as unused. *)
+[@@@warning "-60"]
+
 let%test_module "supervisor decision" =
   (module struct
     let%test "normal return is fatal" =
@@ -63,3 +66,5 @@ let%test_module "supervisor decision" =
            ~return_policy:Return_is_fatal Cancelled)
         Propagate_cancel
   end)
+
+[@@@warning "+60"]
