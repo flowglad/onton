@@ -329,14 +329,21 @@ let base_is_fresh m base =
           | [ d ], Some b -> Branch.equal b (branch_of_patches m.patches d)
           | _ -> false)
 
-(** SBI: every [Start (_, base)] surfaced by [runnable_messages] has a fresh
-    [base] per [base_is_fresh]. [Enqueue_start] seeds the outbox with real
-    Pending Starts whose base varies, so this is non-vacuous. *)
-let sbi_runnable_starts_are_fresh m =
+(** SBI: every [Start (_, base)] that will materialize a worktree has a fresh
+    [base] per [base_is_fresh]. A retry with an existing worktree deliberately
+    bypasses dependency freshness because its checkout has already been cut.
+    [Enqueue_start] seeds the outbox with real Pending Starts whose base varies,
+    so this is non-vacuous. *)
+let sbi_materializing_starts_are_fresh m =
   let runnable = Orchestrator.runnable_messages m.orch in
   List.for_all runnable ~f:(fun msg ->
       match Orchestrator.message_action msg with
-      | Orchestrator.Start (_, base) -> base_is_fresh m base
+      | Orchestrator.Start (patch_id, base) -> (
+          match
+            Patch_agent.worktree_state (Orchestrator.agent m.orch patch_id)
+          with
+          | Patch_agent.Unmaterialized -> base_is_fresh m base
+          | Patch_agent.Materialized _ -> true)
       | Orchestrator.Rebase _ | Orchestrator.Respond _ -> true)
 
 (** SBI-2 (liveness): any patch deferred by the freshness gate is making
@@ -474,7 +481,9 @@ let gen_command_seq ~n_patches =
 
 let prop_sbi_holds =
   QCheck2.Test.make ~count:300
-    ~name:"SBI: every Start in runnable_messages is freshness-eligible (Allow)"
+    ~name:
+      "SBI: every materializing Start in runnable_messages is \
+       freshness-eligible"
     Gen.(
       let* n_patches = int_range 2 4 in
       let* cmds = gen_command_seq ~n_patches in
@@ -484,7 +493,7 @@ let prop_sbi_holds =
       let _final, ok =
         List.fold cmds ~init:(m, true) ~f:(fun (m, ok) cmd ->
             let m = apply_command m cmd in
-            (m, ok && sbi_runnable_starts_are_fresh m))
+            (m, ok && sbi_materializing_starts_are_fresh m))
       in
       ok)
 

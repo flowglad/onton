@@ -15,6 +15,9 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 type op_state = Queued | Running
 [@@deriving show, eq, sexp_of, compare, yojson]
 
+type worktree_state = Unmaterialized | Materialized of string
+[@@deriving show, eq, sexp_of, compare]
+
 type t = private {
   patch_id : Types.Patch_id.t;
   branch : Types.Branch.t;
@@ -497,6 +500,12 @@ val set_checks_passing : t -> bool -> t
 
 val set_worktree_path : t -> string -> t
 (** Store the resolved worktree path for this patch. *)
+
+val worktree_state : t -> worktree_state
+(** The worktree lifecycle, independent of whether the patch session is queued
+    or running. Dependency readiness gates only [Unmaterialized]; a retry in
+    [Materialized _] operates on its existing checkout and must not be re-gated
+    on later dependency state changes. *)
 
 val is_approved_modulo_merge_ready : t -> main_branch:Types.Branch.t -> bool
 (** Every approval precondition except [merge_ready]. A patch satisfying this

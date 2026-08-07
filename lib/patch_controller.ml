@@ -461,21 +461,31 @@ let plan_action_for_patch t ~branch_map patch_id =
        is_pr_present rather than has_pr (which is true for [Missing] too). *)
     Patch_agent.is_pr_present (Orchestrator.agent t pid)
   in
+  let dependencies_allow_start =
+    match Patch_agent.worktree_state agent with
+    | Patch_agent.Materialized _ ->
+        (* Review-readiness protects the point where a dependency branch is
+           cloned into a new worktree. Once that worktree exists, a failed or
+           timed-out no-PR session retries in the same checkout; later CI,
+           conflict, or PR-state changes on the dependency cannot make that
+           already-materialized checkout less safe to reuse. *)
+        true
+    | Patch_agent.Unmaterialized ->
+        Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
+        (* A child may materialize its worktree only once its sole open-PR
+           dependency is review-ready: PR body delivered, no conflict, CI
+           green. Merged deps are exempt because [open_pr_deps] filters them
+           out. *)
+        && List.for_all
+             (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
+             ~f:(fun dep -> open_dep_review_ready t dep)
+  in
   if
     (not (Patch_agent.has_pr agent))
     && (not agent.Patch_agent.busy)
     && (not agent.Patch_agent.merged)
     && (not (Patch_agent.needs_intervention agent))
-    && Graph.deps_satisfied (Orchestrator.graph t) patch_id ~has_merged ~has_pr
-    (* A child may only Start once its sole open-PR dependency is itself
-       review-ready ([open_dep_review_ready]): PR body delivered, no conflict,
-       CI green. This subsumes the older deps-notes-ready gate
-       ([pr_body_delivered] is one of its conjuncts). Merged deps are exempt:
-       [open_pr_deps] filters them out, so a human-merged parent that never
-       delivered notes can never strand its child. *)
-    && List.for_all
-         (Graph.open_pr_deps (Orchestrator.graph t) patch_id ~has_merged)
-         ~f:(fun dep -> open_dep_review_ready t dep)
+    && dependencies_allow_start
   then
     let branch_of pid =
       match Map.find branch_map pid with
@@ -1314,6 +1324,19 @@ let%test
   &&
   let t = Orchestrator.set_pr_body_delivered t parent_id true in
   let t = Orchestrator.set_checks_passing t parent_id true in
+  plans_child_start ~child_id ~patches t
+
+let%test "plan_actions retries a materialized child without dependency gates" =
+  let parent_id, child_id, patches, t = make_notes_gate_fixture () in
+  (* Exercise every dependency gate that applies to first materialization: the
+     parent has no PR, is not review-ready, and is resolving a conflict. The
+     child's existing worktree makes all of that irrelevant to retrying the
+     no-PR session in place. *)
+  let t = Orchestrator.clear_pr t parent_id in
+  let t = Orchestrator.set_has_conflict t parent_id in
+  let t =
+    Orchestrator.set_worktree_path t child_id "/tmp/materialized-child-worktree"
+  in
   plans_child_start ~child_id ~patches t
 
 let%test "plan_actions does not gate child Start on a merged dep" =

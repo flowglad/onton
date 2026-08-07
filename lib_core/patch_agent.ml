@@ -11,6 +11,9 @@ type session_fallback = Fresh_available | Tried_fresh | Given_up
 type op_state = Queued | Running
 [@@deriving show, eq, sexp_of, compare, yojson]
 
+type worktree_state = Unmaterialized | Materialized of string
+[@@deriving show, eq, sexp_of, compare]
+
 type t = {
   patch_id : Patch_id.t;
   branch : Branch.t;
@@ -481,6 +484,11 @@ let on_pre_session_failure t =
 
 let set_checks_passing t v = { t with checks_passing = v }
 let set_worktree_path t path = { t with worktree_path = Some path }
+
+let worktree_state t =
+  match t.worktree_path with
+  | None -> Unmaterialized
+  | Some path -> Materialized path
 
 (* Every approval precondition *except* [merge_ready] (the component-derived
    readiness, [Pr_state.merge_ready_of]). Factored out so [reconcile_automerge]
