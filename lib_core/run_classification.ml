@@ -63,6 +63,9 @@ let classify ~is_resume result =
       in
       Session_failed { exit_code = r.exit_code; detail = truncate detail 500 }
 
+(* OCaml 5.5 reports ppx_inline_test's generated local module [M] as unused. *)
+[@@@warning "-60"]
+
 let%test_module "context exhaustion classification" =
   (module struct
     let outcome ?(exit_code = 0) ?(saw_final_result = false)
@@ -128,3 +131,5 @@ let%test_module "context exhaustion classification" =
     let%test "is_context_exhausted negative on empty" =
       not (is_context_exhausted "")
   end)
+
+[@@@warning "+60"]

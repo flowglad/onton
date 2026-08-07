@@ -50,6 +50,9 @@ let highest_priority (q : t) (k : Ok.t) : bool =
   | None -> false
   | Some top -> priority k <= priority top
 
+(* OCaml 5.5 reports ppx_inline_test's generated local module [M] as unused. *)
+[@@@warning "-60"]
+
 let%test_module "Priority" =
   (module struct
     let%test "priority ordering" =
@@ -115,3 +118,5 @@ let%test_module "Priority" =
       let l = to_list q in
       List.equal Ok.equal l [ Ok.Rebase; Ok.Ci; Ok.Review_comments ]
   end)
+
+[@@@warning "+60"]

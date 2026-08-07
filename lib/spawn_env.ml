@@ -3,8 +3,6 @@
 
 open Base
 
-external unsetenv_stub : string -> unit = "caml_onton_unsetenv"
-
 let patch_root ~project_dir ~patch_id =
   Stdlib.Filename.concat project_dir
     (Stdlib.Filename.concat "spawn-envs" (Types.Patch_id.to_string patch_id))
@@ -405,7 +403,7 @@ let%test "resolve_user_config_dir absolutizes relative env and HOME paths" =
   let restore_home () =
     match old_home with
     | Some home -> Unix.putenv "HOME" home
-    | None -> unsetenv_stub "HOME"
+    | None -> Unix.unsetenv "HOME"
   in
   Unix.putenv "HOME" "relative-home";
   Stdlib.Fun.protect ~finally:restore_home @@ fun () ->
