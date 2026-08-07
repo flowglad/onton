@@ -41,13 +41,15 @@ let for_merge_conflict ~base =
     Record_anchor_on_success { slot = 0; base };
   ]
 
-let for_start ~base =
-  [
-    Ensure_worktree;
-    Fetch_origin;
-    Capture_anchor { ref_name = ref_string_of base; slot = 0 };
-    Record_anchor_on_success { slot = 0; base };
-  ]
+let for_start ~base ~materialized =
+  if materialized then [ Ensure_worktree ]
+  else
+    [
+      Ensure_worktree;
+      Fetch_origin;
+      Capture_anchor { ref_name = ref_string_of base; slot = 0 };
+      Record_anchor_on_success { slot = 0; base };
+    ]
 
 let ensures_worktree_before_fs (plan : t) =
   let rec loop ensured = function

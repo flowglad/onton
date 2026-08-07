@@ -484,7 +484,8 @@ val apply_anchor_events :
 (** Fold {!Worktree_plan.anchor_event} observations into the agent without any
     other transition. Called by the runner Start path after executing
     {!Worktree_plan.for_start} to record the initial anchor for a
-    freshly-branched-off-dep patch, before the LLM session begins. *)
+    freshly-branched-off-dep patch, before the LLM session begins. Materialized
+    retries do not emit anchor events. *)
 
 type conflict_resolution =
   | Conflict_done
