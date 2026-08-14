@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain failure-subkind *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 type error =
   | Key_read_error of string

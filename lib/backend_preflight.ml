@@ -1,5 +1,5 @@
 (* @archlint.module shell
-   @archlint.domain priority *)
+   @archlint.domain backend-routing *)
 
 open Base
 

@@ -67,7 +67,10 @@ let normalize rr =
       Stdlib.Filename.concat (Stdlib.Sys.getcwd ()) rr
     else rr
   in
-  let normalized = Worktree.normalize_path absolute in
+  let normalize_path path =
+    Worktree_parser.normalize_path ~cwd:(Stdlib.Sys.getcwd ()) path
+  in
+  let normalized = normalize_path absolute in
   match resolve_main_working_tree normalized with
-  | Some main -> Worktree.normalize_path main
+  | Some main -> normalize_path main
   | None -> normalized

@@ -1,5 +1,5 @@
 (* @archlint.module shell
-   @archlint.domain orchestrator *)
+   @archlint.domain github-target *)
 
 open Onton_core
 
