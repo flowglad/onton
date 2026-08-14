@@ -772,6 +772,10 @@ let parse_file path =
   | Error e -> Error e
   | Ok contents -> parse_json_string contents
 
+(* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
+   Keep warning 60 disabled only for this generated structure item. *)
+[@@@warning "-60"]
+
 let%test_module "Gameplan_parser" =
   (module struct
     let%test "slugify lowercase and strip" =
@@ -1456,3 +1460,5 @@ let%test_module "Gameplan_parser" =
       | Ok _ -> false
       | Error msg -> String.is_substring msg ~substring:"openQuestions[0]"
   end)
+
+[@@@warning "+60"]

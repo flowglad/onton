@@ -308,9 +308,22 @@ let test_patch_5_merge_queue_badge () =
   let lines = plain_lines frame in
   assert (line_contains lines "mq-awaiting-checks #3")
 
+let test_merged_patch_hides_automerge_badge () =
+  let pv =
+    {
+      (make_view ~id:"1" ~title:"merged patch") with
+      Tui.status = Tui.Merged;
+      Tui.automerge_enabled = true;
+    }
+  in
+  let lines = render [ pv ] |> plain_lines in
+  assert (line_contains lines "merged patch");
+  assert (not (line_contains lines "AM"))
+
 let () =
   test_help_overlay_includes_version ();
   test_patch_5_merge_queue_badge ();
+  test_merged_patch_hides_automerge_badge ();
   test_header_has_project_and_backend ();
   test_header_truncates_when_too_narrow ();
   test_no_summary_row ();
