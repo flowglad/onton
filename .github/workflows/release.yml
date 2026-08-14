@@ -45,7 +45,7 @@ jobs:
       # plus the opam.ocaml.org archive mirror keep `opam install` fast without it.
       - uses: ocaml/setup-ocaml@e32b06a3e831ff2fbc6f08cf35be2085e3918014 # v3.6.1
         with:
-          ocaml-compiler: '5.4.1'
+          ocaml-compiler: '5.5.0'
           dune-cache: true
 
       - name: Use opam.ocaml.org archive cache

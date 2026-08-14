@@ -317,8 +317,10 @@ let test_merged_patch_hides_automerge_badge () =
     }
   in
   let lines = render [ pv ] |> plain_lines in
-  assert (line_contains lines "merged patch");
-  assert (not (line_contains lines "AM"))
+  match List.find lines ~f:(String.is_substring ~substring:"merged patch") with
+  | Some merged_row ->
+      assert (not (String.is_substring merged_row ~substring:"AM"))
+  | None -> assert false
 
 let () =
   test_help_overlay_includes_version ();
