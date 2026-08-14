@@ -72,6 +72,10 @@ let extract_pr_number_from_text ?(at_end_of_stream = false) ~owner ~repo text =
   in
   scan 0
 
+(* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
+   Keep warning 60 disabled only for this generated structure item. *)
+[@@@warning "-60"]
+
 let%test_module "extract_pr_number_from_text" =
   (module struct
     let pr n = Some (Types.Pr_number.of_int n)
@@ -127,6 +131,8 @@ let%test_module "extract_pr_number_from_text" =
             github.com/foo/bar/pull/1234")
         (pr 12)
   end)
+
+[@@@warning "+60"]
 
 module type ENV = sig
   include Run_env.S

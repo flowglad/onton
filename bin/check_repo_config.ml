@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain priority *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 (** One-off: load and pretty-print the per-repo onton config. Useful to verify a
     [reviewBackends] block parses before kicking off a real session.

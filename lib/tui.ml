@@ -612,11 +612,11 @@ let pv_queued (pv : patch_view) =
   is_running_status pv.status
   && Patch_agent.equal_op_state pv.current_op_state Patch_agent.Queued
 
-(** Compact automerge indicator for the overview row. Empty when automerge is
-    disabled; otherwise a short colored badge describing the wait state. The
-    longer-form prose lives in [detail_info_rows]. *)
+(** Compact automerge indicator for the overview row. Empty when the patch is
+    merged or automerge is disabled; otherwise a short colored badge describing
+    the wait state. The longer-form prose lives in [detail_info_rows]. *)
 let automerge_inline_info ~now (pv : patch_view) =
-  if not pv.automerge_enabled then ""
+  if equal_display_status pv.status Merged || not pv.automerge_enabled then ""
   else if pv.automerge_failure_count >= Patch_controller.automerge_max_failures
   then Term.styled [ Term.Sgr.fg_red ] " AM✗"
   else

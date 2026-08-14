@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain session-meta *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 open Base
 

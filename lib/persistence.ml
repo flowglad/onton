@@ -837,6 +837,10 @@ let record_session_id ~snapshot_path ~patch_id ~session_id =
       ~content:session_id
   with exn -> Error (Stdlib.Printexc.to_string exn)
 
+(* ppx_inline_test v0.17 emits an unused local module binding under OCaml 5.5.
+   Keep warning 60 disabled only for this generated structure item. *)
+[@@@warning "-60"]
+
 let%test_module "session_id_sidecars" =
   (module struct
     let patch_id = Patch_id.of_string "5"
@@ -999,3 +1003,5 @@ let%test_module "session_id_sidecars" =
       && Result.is_ok (save ~path:snapshot_path (snapshot ~busy:true ()))
       && Stdlib.Sys.file_exists path
   end)
+
+[@@@warning "+60"]

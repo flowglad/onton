@@ -1,5 +1,5 @@
 (* @archlint.module shell
-   @archlint.domain pi-event-parser *)
+   @archlint.domain gemini-event-parser *)
 
 open Base
 

@@ -1,5 +1,5 @@
-(* @archlint.module shell
-   @archlint.domain priority *)
+(* @archlint.module exempt
+   @archlint.exempt-reason effect-boundary *)
 
 open Base
 open Types
