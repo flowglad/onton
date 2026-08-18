@@ -1057,14 +1057,16 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
       (Persistence.save ~path:(Project_store.snapshot_path project_name) snap)
   in
   let fatal_message = ref None in
+  let fatal_reported = ref false in
   let log_fatal message =
     log_event setup.runtime message;
     if Base.Option.is_none !fatal_message then fatal_message := Some message
   in
   let report_fatal () =
-    Base.Option.iter !fatal_message ~f:(fun message ->
-        fatal_message := None;
-        Printf.eprintf "onton: %s\n%!" message)
+    if not !fatal_reported then
+      Base.Option.iter !fatal_message ~f:(fun message ->
+          fatal_reported := true;
+          Printf.eprintf "onton: %s\n%!" message)
   in
   let guard_fiber ?(quit_is_normal = false) ?(return_is_normal = false) name f
       () =
