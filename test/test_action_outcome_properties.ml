@@ -814,6 +814,7 @@ let () =
          let orch = Orchestrator.set_branch_blocked orch pid in
          let orch = Orchestrator.clear_branch_blocked orch pid in
          let orch = Orchestrator.clear_has_conflict orch pid in
+         let orch = Orchestrator.complete_start_after_pr_discovery orch pid in
          let orch = Orchestrator.clear_pr orch pid in
          let orch = Orchestrator.clear_session_fallback orch pid in
          let orch = Orchestrator.mark_running orch pid in
