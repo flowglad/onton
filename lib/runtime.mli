@@ -30,6 +30,10 @@ val create :
     is stamped onto the orchestrator (and every agent) in both the fresh and the
     restore path, so config always wins over persisted values. *)
 
+val resume_repairs : t -> Resume_gameplan.repair list
+(** Patches preserved or reconstructed while reconciling a resume snapshot with
+    the freshly loaded source gameplan. Empty for a fresh runtime. *)
+
 (** {2 Atomic read access} *)
 
 val read : t -> (snapshot -> 'a) -> 'a
