@@ -71,6 +71,13 @@
  (ocamlc_flags (:standard -w -40-42)))
 
 (test
+ (name test_resume_gameplan_properties)
+ (modules test_resume_gameplan_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner base)
+ (ocamlopt_flags (:standard -w -40-42))
+ (ocamlc_flags (:standard -w -40-42)))
+
+(test
  (name test_patch_agent)
  (modules test_patch_agent)
  (libraries onton onton_core qcheck-core))

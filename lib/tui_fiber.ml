@@ -467,18 +467,8 @@ struct
                         input_mode := Tui_input.Normal;
                         dep_select_chosen := Set.empty (module Patch_id);
                         dep_select_cursor := 0;
-                        let deps_str =
-                          match patch.Patch.dependencies with
-                          | [] -> "no dependencies"
-                          | ds ->
-                              "depends on "
-                              ^ (List.map ds ~f:Patch_id.to_string
-                                |> String.concat ~sep:", ")
-                        in
                         log_event Env.runtime ~patch_id:patch.Patch.id
-                          (Printf.sprintf "Added patch %s (%s) — %s"
-                             (Patch_id.to_string patch.Patch.id)
-                             deps_str title)))
+                          (Resume_gameplan.added_patch_event_message patch)))
             | Term.Key.Char _ | Term.Key.Tab | Term.Key.Paste _
             | Term.Key.Backspace | Term.Key.Left | Term.Key.Right
             | Term.Key.Home | Term.Key.End | Term.Key.Page_up

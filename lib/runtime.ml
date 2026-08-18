@@ -10,27 +10,48 @@ type snapshot = {
   transcripts : (Patch_id.t, string) Base.Hashtbl.t;
 }
 
-type t = { mutex : Eio.Mutex.t; mutable snap : snapshot }
+type t = {
+  mutex : Eio.Mutex.t;
+  mutable snap : snapshot;
+  resume_repairs : Resume_gameplan.repair list;
+}
 
 let create ~gameplan ~(main_branch : Branch.t)
     ?(max_ci_failures = Patch_agent.default_max_ci_failures) ?snapshot () =
-  let snap =
+  let snap, resume_repairs =
     match snapshot with
     | Some s ->
+        let graph = Orchestrator.graph s.orchestrator in
+        let missing_patches =
+          Orchestrator.all_agents s.orchestrator
+          |> Base.List.map ~f:(fun (agent : Patch_agent.t) ->
+              Resume_gameplan.
+                {
+                  patch_id = agent.patch_id;
+                  branch = agent.branch;
+                  dependencies = Graph.deps graph agent.patch_id;
+                })
+        in
+        let reconciled =
+          Resume_gameplan.reconcile ~loaded:gameplan ~persisted:s.gameplan
+            ~missing_patches ~activity_log:s.activity_log
+        in
         let orchestrator =
           Orchestrator.set_main_branch s.orchestrator main_branch
         in
-        { s with orchestrator; gameplan }
+        ( { s with orchestrator; gameplan = reconciled.gameplan },
+          reconciled.repairs )
     | None ->
         let orchestrator =
           Orchestrator.create ~patches:gameplan.Gameplan.patches ~main_branch
         in
-        {
-          orchestrator;
-          activity_log = Activity_log.empty;
-          gameplan;
-          transcripts = Base.Hashtbl.create (module Patch_id);
-        }
+        ( {
+            orchestrator;
+            activity_log = Activity_log.empty;
+            gameplan;
+            transcripts = Base.Hashtbl.create (module Patch_id);
+          },
+          [] )
   in
   (* Config wins over whatever the snapshot (or the constructor default)
      carried: the cap is a per-project setting resolved from the CLI flag and
@@ -42,7 +63,9 @@ let create ~gameplan ~(main_branch : Branch.t)
         Orchestrator.set_max_ci_failures snap.orchestrator ~max_ci_failures;
     }
   in
-  { mutex = Eio.Mutex.create (); snap }
+  { mutex = Eio.Mutex.create (); snap; resume_repairs }
+
+let resume_repairs t = t.resume_repairs
 
 let read t f =
   Eio.Mutex.lock t.mutex;

@@ -768,6 +768,17 @@ let setup_runtime env ~config ~gameplan ~existing_snapshot ~auto_merge =
         Printf.eprintf "Starting new project %S.\n%!" project_name;
         Runtime.create ~gameplan ~main_branch ~max_ci_failures ()
   in
+  Base.List.iter (Runtime.resume_repairs runtime) ~f:(function
+    | Resume_gameplan.Preserved_snapshot_patch patch_id ->
+        Printf.eprintf
+          "onton: restored runtime-added patch %s from snapshot.\n%!"
+          (Patch_id.to_string patch_id)
+    | Resume_gameplan.Reconstructed_missing_patch patch_id ->
+        Printf.eprintf
+          "onton: repaired runtime-added patch %s from legacy saved state; its \
+           original full description was unavailable.\n\
+           %!"
+          (Patch_id.to_string patch_id));
   (* [--auto-merge] only seeds the initial state of a fresh project. On resume,
      each patch's persisted [automerge_enabled] wins so per-patch user toggles
      are not silently re-enabled across restarts. *)
@@ -1045,9 +1056,17 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
     ignore
       (Persistence.save ~path:(Project_store.snapshot_path project_name) snap)
   in
+  let fatal_message = ref None in
+  let fatal_reported = ref false in
   let log_fatal message =
     log_event setup.runtime message;
-    Printf.eprintf "onton: %s\n%!" message
+    if Base.Option.is_none !fatal_message then fatal_message := Some message
+  in
+  let report_fatal () =
+    if not !fatal_reported then
+      Base.Option.iter !fatal_message ~f:(fun message ->
+          fatal_reported := true;
+          Printf.eprintf "onton: %s\n%!" message)
   in
   let guard_fiber ?(quit_is_normal = false) ?(return_is_normal = false) name f
       () =
@@ -1068,9 +1087,11 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
       Eio.Fiber.all
         (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
         :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
-        :: common_fibers)
+        :: common_fibers);
+      report_fatal ()
     with Supervisor_guard.Fatal_supervisor_error _ ->
       save_snapshot ();
+      report_fatal ();
       Stdlib.exit 1)
   else
     let raw_state = Term.Raw.enter () in
@@ -1080,7 +1101,8 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
           Term.Raw.clear_suspend_handlers ();
           Term.Raw.leave raw_state;
           Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
-          save_snapshot ())
+          save_snapshot ();
+          report_fatal ())
         (fun () ->
           Term.Raw.install_suspend_handlers raw_state;
           try
@@ -1096,6 +1118,7 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
     with Supervisor_guard.Fatal_supervisor_error _ ->
       (* Fun.protect's [finally] has already restored the terminal and saved the
          runtime snapshot. *)
+      report_fatal ();
       Stdlib.exit 1
 
 (** Trailing-positional PR operations parsed from the command line. *)
