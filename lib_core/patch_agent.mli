@@ -282,7 +282,10 @@ val start : t -> base_branch:Types.Branch.t -> t
     externally. Postconditions: [has_session], [busy], [satisfies],
     [base_branch = Some base_branch]. An unmaterialized start records
     [branch_rebased_onto = Some base_branch]; a materialized retry preserves the
-    existing physical rebase anchor. *)
+    existing physical rebase anchor. When [Human] is queued, Start dequeues it,
+    moves [human_messages] to [inflight_human_messages], and sets
+    [current_op = Some Human], allowing a no-PR patch to deliver human guidance
+    with the same accept/restore lifecycle as [respond Human]. *)
 
 val rebase : t -> base_branch:Types.Branch.t -> t
 (** [PatchCtx ~> Rebase] — orchestrator-executed rebase. Preconditions:

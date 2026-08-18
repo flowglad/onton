@@ -85,6 +85,20 @@ let should_clear_conflict (a : Patch_agent.t) : bool =
     || Option.equal Operation_kind.equal a.current_op
          (Some Operation_kind.Merge_conflict))
 
+(** {2 Start delivery — pre-session decision for the runner} *)
+
+type start_delivery =
+  | Start_initial
+  | Start_with_human of { messages : string list }
+[@@deriving show, eq, sexp_of, compare]
+
+let start_delivery (agent : Patch_agent.t) : start_delivery =
+  if
+    Option.equal Operation_kind.equal agent.current_op
+      (Some Operation_kind.Human)
+  then Start_with_human { messages = List.rev agent.inflight_human_messages }
+  else Start_initial
+
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
 let failure_conclusions = Ci_check.failure_conclusions

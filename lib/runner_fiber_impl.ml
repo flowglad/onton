@@ -919,7 +919,7 @@ struct
                                             (Stdlib.Filename.concat _wt_path
                                                "AGENTS.md")
                                         in
-                                        let prompt =
+                                        let initial_prompt =
                                           Prompt.render_patch_prompt
                                             ~project_name ?agents_md
                                             ?pr_number:
@@ -927,6 +927,20 @@ struct
                                             patch gameplan
                                             ~base_branch:
                                               (Branch.to_string base_branch)
+                                        in
+                                        let prompt, kind =
+                                          match
+                                            Patch_decision.start_delivery agent
+                                          with
+                                          | Patch_decision.Start_initial ->
+                                              (initial_prompt, None)
+                                          | Patch_decision.Start_with_human
+                                              { messages } ->
+                                              ( initial_prompt ^ "\n\n"
+                                                ^ Prompt
+                                                  .render_human_message_prompt
+                                                    ~project_name messages,
+                                                Some Operation_kind.Human )
                                         in
                                         (* PR detection from stream text is a hint
                                      only — always confirmed via the GitHub
@@ -951,7 +965,7 @@ struct
                                         in
                                         let r, _tool_failures =
                                           run_llm_session ~sw ~gameplan_prompt
-                                            ~patch_prompt ~kind:None ~patch_id
+                                            ~patch_prompt ~kind ~patch_id
                                             ~prompt ~agent ~on_pr_detected
                                             ~complexity
                                         in

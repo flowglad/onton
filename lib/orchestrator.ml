@@ -1194,7 +1194,13 @@ let apply_start_outcome t patch_id outcome =
       (* Caller must complete explicitly after PR discovery finishes,
          so busy=true is held throughout the network call. *)
       t
-  | Start_failed -> complete t patch_id
+  | Start_failed ->
+      (* A no-PR Start may be carrying queued Human guidance. If the backend
+         never accepted the turn (for example worktree setup was refused),
+         restore that still-inflight guidance instead of clearing it. Once the
+         backend accepts the turn, Session_driver clears inflight and this is
+         equivalent to plain [complete]. *)
+      complete_failed t patch_id
 
 type respond_outcome =
   | Respond_ok

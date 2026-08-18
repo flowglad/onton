@@ -317,8 +317,9 @@ type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
 
 val apply_start_outcome : t -> Patch_id.t -> start_outcome -> t
-(** Apply the outcome of a Start action fiber. [Start_failed] -> complete.
-    [Start_ok] -> identity (caller must [complete] after PR discovery).
+(** Apply the outcome of a Start action fiber. [Start_failed] ->
+    [complete_failed], restoring any Human guidance that the backend did not
+    accept. [Start_ok] -> identity (caller must [complete] after PR discovery).
     [Start_stale] -> identity. *)
 
 type respond_outcome =

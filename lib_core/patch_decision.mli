@@ -77,6 +77,18 @@ val should_clear_conflict : Patch_agent.t -> bool
     Merge_conflict operation is queued or in-flight, since clearing would race
     with the active resolution. *)
 
+(** {2 Start delivery — pre-session decision for the runner} *)
+
+type start_delivery =
+  | Start_initial
+  | Start_with_human of { messages : string list }
+[@@deriving show, eq, sexp_of, compare]
+
+val start_delivery : Patch_agent.t -> start_delivery
+(** Classify a fired Start action's turn payload. A Start that consumed queued
+    human guidance returns it in chronological order; an ordinary Start returns
+    [Start_initial]. Total for restored or partially-migrated agent states. *)
+
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
 val failure_conclusions : string list

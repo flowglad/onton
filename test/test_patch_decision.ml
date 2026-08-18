@@ -65,6 +65,24 @@ let () =
       Test.make ~name:"disposition: no PR -> Ready_start" gen_pid (fun pid ->
           let a = create ~branch:(Branch.of_string "b") pid in
           equal_disposition (disposition a) Ready_start);
+      Test.make
+        ~name:"start_delivery: queued human guidance survives Start firing"
+        Gen.(
+          triple gen_pid gen_branch
+            (list_size (int_range 1 5)
+               (string_size ~gen:printable (int_range 1 40))))
+        (fun (pid, branch, messages) ->
+          try
+            let a = create ~branch pid in
+            let a =
+              List.fold messages ~init:a ~f:(fun a message ->
+                  add_human_message a message)
+            in
+            let a = enqueue a Operation_kind.Human in
+            let a = start a ~base_branch:branch in
+            equal_start_delivery (start_delivery a)
+              (Start_with_human { messages })
+          with _ -> false);
       (* ---- disposition: idle (has_pr, empty queue) -> Idle ---- *)
       Test.make ~name:"disposition: has_pr, empty queue -> Idle"
         Gen.(pair gen_pid gen_branch)
