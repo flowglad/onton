@@ -160,6 +160,23 @@ let prop_reconstructs_corrupted_runtime_patch =
                [ Resume_gameplan.Reconstructed_missing_patch patch_id ]
       | None -> false)
 
+let prop_added_patch_event_message_encodes_patch_metadata =
+  QCheck2.Test.make
+    ~name:"added patch event encoding preserves id, dependencies, and title"
+    ~count:200
+    QCheck2.Gen.(pair string (list string))
+    (fun (title, dependency_names) ->
+      let dependencies = List.map dependency_names ~f:pid in
+      let added = runtime_patch ~dependencies "add1" title in
+      let encoded_dependencies =
+        match dependency_names with
+        | [] -> "no dependencies"
+        | names -> "depends on " ^ String.concat names ~sep:", "
+      in
+      String.equal
+        (Resume_gameplan.added_patch_event_message added)
+        (Printf.sprintf "Added patch add1 (%s) — %s" encoded_dependencies title))
+
 let prop_does_not_heal_adhoc_or_noncanonical_patch =
   QCheck2.Test.make
     ~name:"numeric ad-hoc and noncanonical addN agents are not synthesized"
@@ -278,6 +295,7 @@ let () =
       prop_preserves_snapshot_runtime_patch_exactly;
       prop_loaded_patch_wins_on_collision;
       prop_reconstructs_corrupted_runtime_patch;
+      prop_added_patch_event_message_encodes_patch_metadata;
       prop_does_not_heal_adhoc_or_noncanonical_patch;
       prop_reconstructed_patches_can_depend_on_each_other;
       prop_sanitizes_malformed_dependencies;
