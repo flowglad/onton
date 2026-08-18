@@ -208,7 +208,7 @@ let prop_added_patch_event_message_encodes_patch_metadata =
             [
               {
                 Resume_gameplan.patch_id;
-                branch = Gameplan.branch_of_id loaded patch_id;
+                branch = added.branch;
                 dependencies = [];
               };
             ]
