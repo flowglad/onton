@@ -145,6 +145,9 @@ let () =
     |> fun orchestrator ->
     Onton.Orchestrator.add_planned_patch orchestrator added_patch
       ~deps:[ base_id ]
+    |> fun orchestrator ->
+    Onton.Orchestrator.set_pr_number orchestrator added_id
+      (Pr_number.of_int 417)
   in
   let make_snapshot ~gameplan ~activity_log =
     {
@@ -170,10 +173,16 @@ let () =
           ~f:(fun patch -> Patch_id.equal patch.Patch.id added_id))
   in
   assert (Base.Option.equal Patch.equal intact_patch (Some added_patch));
+  assert (
+    Base.List.count
+      (Onton.Runtime.read intact_runtime (fun snapshot ->
+           snapshot.Onton.Runtime.gameplan.Gameplan.patches))
+      ~f:(fun patch -> Patch_id.equal patch.Patch.id added_id)
+    = 1);
   let activity_log =
     Activity_log.add_event Activity_log.empty
       (Activity_log.Event.create ~timestamp:1.0 ~patch_id:added_id
-         "Added patch add1 (depends on 1) — More expressive auth composition")
+         (Resume_gameplan.added_patch_event_message added_patch))
   in
   let repaired_runtime =
     Onton.Runtime.create ~gameplan:source_gameplan ~main_branch
@@ -185,7 +194,11 @@ let () =
     Base.List.find repaired_snapshot.Onton.Runtime.gameplan.Gameplan.patches
       ~f:(fun patch -> Patch_id.equal patch.Patch.id added_id)
   in
-  assert (Base.Option.is_some repaired_patch);
+  let expected_repaired_patch =
+    { added_patch with Patch.description = "More expressive auth composition" }
+  in
+  assert (
+    Base.Option.equal Patch.equal repaired_patch (Some expected_repaired_patch));
   assert (
     Base.List.equal Resume_gameplan.equal_repair
       (Onton.Runtime.resume_repairs repaired_runtime)

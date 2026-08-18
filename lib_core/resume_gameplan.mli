@@ -27,6 +27,10 @@ type repair =
 type result = { gameplan : Gameplan.t; repairs : repair list }
 [@@deriving show, eq]
 
+val added_patch_event_message : Patch.t -> string
+(** Stable activity-log encoding used by both the runtime patch producer and
+    legacy resume reconstruction. *)
+
 val reconcile :
   loaded:Gameplan.t ->
   persisted:Gameplan.t ->
@@ -42,7 +46,8 @@ val reconcile :
     {!Gameplan.branch_of_id}. The most recent matching "Added patch" activity
     event supplies its title and dependency list when available; otherwise a
     safe recovery description and the graph dependencies are used. Unknown and
-    duplicate dependencies are removed, so the returned gameplan is always
-    referentially valid.
+    duplicate, self-referential, and cyclic dependencies are removed, so the
+    returned gameplan is always referentially valid. Snapshot-only patches that
+    collide with an existing branch are skipped.
 
     The function is total and idempotent. *)

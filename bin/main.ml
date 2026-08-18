@@ -1063,6 +1063,7 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
   in
   let report_fatal () =
     Base.Option.iter !fatal_message ~f:(fun message ->
+        fatal_message := None;
         Printf.eprintf "onton: %s\n%!" message)
   in
   let guard_fiber ?(quit_is_normal = false) ?(return_is_normal = false) name f
@@ -1084,7 +1085,8 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
       Eio.Fiber.all
         (guard_fiber "headless" (fun () -> Fibers.Headless.run ())
         :: guard_fiber "runner" (fun () -> Fibers.Runner.run ())
-        :: common_fibers)
+        :: common_fibers);
+      report_fatal ()
     with Supervisor_guard.Fatal_supervisor_error _ ->
       save_snapshot ();
       report_fatal ();
@@ -1097,7 +1099,8 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
           Term.Raw.clear_suspend_handlers ();
           Term.Raw.leave raw_state;
           Eio.Flow.copy_string (Tui.exit_tui ()) setup.stdout;
-          save_snapshot ())
+          save_snapshot ();
+          report_fatal ())
         (fun () ->
           Term.Raw.install_suspend_handlers raw_state;
           try

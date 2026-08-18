@@ -213,6 +213,49 @@ let prop_reconstructed_patches_can_depend_on_each_other =
           List.equal Patch_id.equal recovered.Patch.dependencies [ add1 ]
       | None -> false)
 
+let prop_sanitizes_malformed_dependencies =
+  QCheck2.Test.make
+    ~name:"resume removes unknown, duplicate, self, and cyclic dependencies"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      let one = patch ~dependencies:[ pid "gone" ] "1" "one" in
+      let add1 =
+        runtime_patch
+          ~dependencies:[ pid "add1"; pid "1"; pid "1"; pid "add2" ]
+          "add1" "first"
+      in
+      let add2 = runtime_patch ~dependencies:[ pid "add1" ] "add2" "second" in
+      let result =
+        reconcile ~loaded:(gameplan [ one ])
+          ~persisted:(gameplan [ one; add1; add2 ])
+          ()
+      in
+      match
+        ( find_patch result.gameplan (pid "1"),
+          find_patch result.gameplan (pid "add1"),
+          find_patch result.gameplan (pid "add2") )
+      with
+      | Some one, Some add1, Some add2 ->
+          List.is_empty one.Patch.dependencies
+          && List.equal Patch_id.equal add1.dependencies [ pid "1" ]
+          && List.is_empty add2.dependencies
+      | _ -> false)
+
+let prop_rejects_duplicate_snapshot_branches =
+  QCheck2.Test.make
+    ~name:"resume rejects snapshot runtime patches with duplicate branches"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      let one = patch "1" "one" in
+      let duplicate =
+        { (runtime_patch "add1" "duplicate") with Patch.branch = one.branch }
+      in
+      let result =
+        reconcile ~loaded:(gameplan [ one ])
+          ~persisted:(gameplan [ one; duplicate ])
+          ()
+      in
+      Option.is_none (find_patch result.gameplan (pid "add1"))
+      && List.is_empty result.repairs)
+
 let prop_gameplan_reconciliation_is_idempotent =
   QCheck2.Test.make ~name:"resume gameplan reconciliation is idempotent"
     ~count:200 QCheck2.Gen.string (fun title ->
@@ -237,6 +280,8 @@ let () =
       prop_reconstructs_corrupted_runtime_patch;
       prop_does_not_heal_adhoc_or_noncanonical_patch;
       prop_reconstructed_patches_can_depend_on_each_other;
+      prop_sanitizes_malformed_dependencies;
+      prop_rejects_duplicate_snapshot_branches;
       prop_gameplan_reconciliation_is_idempotent;
     ]
   in

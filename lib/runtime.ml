@@ -24,16 +24,13 @@ let create ~gameplan ~(main_branch : Branch.t)
         let graph = Orchestrator.graph s.orchestrator in
         let missing_patches =
           Orchestrator.all_agents s.orchestrator
-          |> Base.List.filter_map ~f:(fun (agent : Patch_agent.t) ->
-              if Patch_agent.has_pr agent then None
-              else
-                Some
-                  Resume_gameplan.
-                    {
-                      patch_id = agent.patch_id;
-                      branch = agent.branch;
-                      dependencies = Graph.deps graph agent.patch_id;
-                    })
+          |> Base.List.map ~f:(fun (agent : Patch_agent.t) ->
+              Resume_gameplan.
+                {
+                  patch_id = agent.patch_id;
+                  branch = agent.branch;
+                  dependencies = Graph.deps graph agent.patch_id;
+                })
         in
         let reconciled =
           Resume_gameplan.reconcile ~loaded:gameplan ~persisted:s.gameplan
