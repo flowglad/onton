@@ -75,6 +75,22 @@ let () =
                  (List.mem t.queue Operation_kind.Human
                     ~equal:Operation_kind.equal)
           with _ -> false);
+      Test.make
+        ~name:"start merges newly queued guidance with restored inflight"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, branch) ->
+          try
+            let t = create ~branch pid in
+            let t = add_human_message t "older" in
+            let t = enqueue t Operation_kind.Human in
+            let t = start t ~base_branch:branch |> reset_busy in
+            let t = add_human_message t "newer" in
+            let t = enqueue t Operation_kind.Human in
+            let t = start t ~base_branch:branch in
+            List.is_empty t.human_messages
+            && List.equal String.equal t.inflight_human_messages
+                 [ "newer"; "older" ]
+          with _ -> false);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)

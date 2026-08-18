@@ -83,6 +83,33 @@ let () =
             equal_start_delivery (start_delivery a)
               (Start_with_human { messages })
           with _ -> false);
+      Test.make
+        ~name:"human delivery without backend acceptance must be restored"
+        Gen.bool (fun turn_accepted ->
+          Bool.equal
+            (human_delivery_unaccepted ~kind:(Some Operation_kind.Human)
+               ~turn_accepted)
+            (not turn_accepted)
+          && not
+               (human_delivery_unaccepted
+                  ~kind:(Some Operation_kind.Review_comments) ~turn_accepted));
+      Test.make ~name:"no-commit Human exemption requires an existing PR"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, branch) ->
+          try
+            let start_agent = create ~branch pid in
+            let start_agent = add_human_message start_agent "guidance" in
+            let start_agent = enqueue start_agent Operation_kind.Human in
+            let start_agent = start start_agent ~base_branch:branch in
+            let respond_agent =
+              set_pr_number start_agent (Pr_number.of_int 1)
+            in
+            (not
+               (session_no_commits_is_ok ~agent:start_agent
+                  ~kind:(Some Operation_kind.Human)))
+            && session_no_commits_is_ok ~agent:respond_agent
+                 ~kind:(Some Operation_kind.Human)
+          with _ -> false);
       (* ---- disposition: idle (has_pr, empty queue) -> Idle ---- *)
       Test.make ~name:"disposition: has_pr, empty queue -> Idle"
         Gen.(pair gen_pid gen_branch)

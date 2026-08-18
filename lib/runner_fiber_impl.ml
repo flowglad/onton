@@ -664,48 +664,65 @@ struct
     in
     let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~patch_id
         ~prompt ~agent ~on_pr_detected ~complexity =
-      match pick_backend ~complexity with
-      | Backend_registry.Ephemeral backend, _decision ->
-          Session_driver.run ~kind ~patch_id ~prompt ~agent ~on_pr_detected
-            ~backend ~complexity
-      | Backend_registry.Long_lived backend, decision -> (
-          let patch_agent_model_result =
-            match
-              Backend_registry.resolve_model
-                ~backend:decision.Backend_routing.backend
-                ~model:decision.Backend_routing.model ~complexity
-            with
-            | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
-                Ok (Base.String.strip m)
-            | Some _ | None ->
-                Error
-                  "patch-agent backend requires a concrete non-empty model \
-                   after routing"
-          in
-          match patch_agent_model_result with
-          | Error message ->
-              log_event runtime ~patch_id message;
-              (`Failed, [])
-          | Ok patch_agent_model ->
-              let session =
-                match Long_lived_sessions.find long_lived_sessions patch_id with
-                | Some session ->
-                    Session_driver.update_long_lived_session_prompts session
-                      ~gameplan_prompt ~patch_prompt;
-                    session
-                | None ->
-                    let session =
-                      Session_driver.create_long_lived_session ~backend
-                        ~provider:patch_agent_provider ~model:patch_agent_model
-                        ~effort:patch_agent_effort ~gameplan_prompt
-                        ~patch_prompt
-                    in
-                    Long_lived_sessions.register long_lived_sessions patch_id
-                      session;
-                    session
-              in
-              Session_driver.run_long_lived ~sw ~kind ~patch_id ~prompt ~agent
-                ~on_pr_detected ~session ~complexity)
+      let session_result =
+        match pick_backend ~complexity with
+        | Backend_registry.Ephemeral backend, _decision ->
+            Session_driver.run ~kind ~patch_id ~prompt ~agent ~on_pr_detected
+              ~backend ~complexity
+        | Backend_registry.Long_lived backend, decision -> (
+            let patch_agent_model_result =
+              match
+                Backend_registry.resolve_model
+                  ~backend:decision.Backend_routing.backend
+                  ~model:decision.Backend_routing.model ~complexity
+              with
+              | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
+                  Ok (Base.String.strip m)
+              | Some _ | None ->
+                  Error
+                    "patch-agent backend requires a concrete non-empty model \
+                     after routing"
+            in
+            match patch_agent_model_result with
+            | Error message ->
+                log_event runtime ~patch_id message;
+                ({
+                   disposition = `Failed;
+                   tool_failures = [];
+                   turn_accepted = false;
+                 }
+                  : Session_driver.run_result)
+            | Ok patch_agent_model ->
+                let session =
+                  match
+                    Long_lived_sessions.find long_lived_sessions patch_id
+                  with
+                  | Some session ->
+                      Session_driver.update_long_lived_session_prompts session
+                        ~gameplan_prompt ~patch_prompt;
+                      session
+                  | None ->
+                      let session =
+                        Session_driver.create_long_lived_session ~backend
+                          ~provider:patch_agent_provider
+                          ~model:patch_agent_model ~effort:patch_agent_effort
+                          ~gameplan_prompt ~patch_prompt
+                      in
+                      Long_lived_sessions.register long_lived_sessions patch_id
+                        session;
+                      session
+                in
+                Session_driver.run_long_lived ~sw ~kind ~patch_id ~prompt ~agent
+                  ~on_pr_detected ~session ~complexity)
+      in
+      let disposition =
+        if
+          Patch_decision.human_delivery_unaccepted ~kind
+            ~turn_accepted:session_result.turn_accepted
+        then `Failed
+        else session_result.disposition
+      in
+      (disposition, session_result.tool_failures)
     in
     let shutdown_finished_long_lived_sessions ~sw () =
       let finished =

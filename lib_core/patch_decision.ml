@@ -99,6 +99,31 @@ let start_delivery (agent : Patch_agent.t) : start_delivery =
   then Start_with_human { messages = List.rev agent.inflight_human_messages }
   else Start_initial
 
+(** A Human delivery is durable only after the backend emits evidence that it
+    accepted the turn. Other operation kinds do not use the human-message
+    inflight/restore protocol. *)
+let human_delivery_unaccepted ~(kind : Operation_kind.t option)
+    ~(turn_accepted : bool) : bool =
+  (not turn_accepted)
+  && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
+
+(** Human and Findings turns may legitimately produce no commit when they are
+    responding to an existing PR. A Human-carrying Start has no PR yet and must
+    retain the ordinary Start no-commit retry/intervention semantics. *)
+let session_no_commits_is_ok ~(agent : Patch_agent.t)
+    ~(kind : Operation_kind.t option) : bool =
+  Patch_agent.is_pr_present agent
+  &&
+  match kind with
+  | Some Operation_kind.Human | Some Operation_kind.Findings -> true
+  | Some Operation_kind.Ci
+  | Some Operation_kind.Review_comments
+  | Some Operation_kind.Pr_body
+  | Some Operation_kind.Merge_conflict
+  | Some Operation_kind.Rebase
+  | None ->
+      false
+
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
 let failure_conclusions = Ci_check.failure_conclusions

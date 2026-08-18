@@ -3,6 +3,14 @@
 
 open Base
 
+type disposition = [ `Ok | `Failed | `Retry_push | `No_commits ]
+
+type run_result = {
+  disposition : disposition;
+  tool_failures : (string * string) list;
+  turn_accepted : bool;
+}
+
 let truncate s n =
   if String.length s <= n then s else String.sub s ~pos:0 ~len:n ^ "..."
 
@@ -144,6 +152,8 @@ module type ENV = sig
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
+  type nonrec run_result = run_result
+
   let session_mode = session_mode
   let extract_pr_number_from_text = extract_pr_number_from_text
 
@@ -153,6 +163,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
       ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~backend_name ~run_backend
       ~complexity =
+    let make_run_result ?(turn_accepted = false) disposition tool_failures =
+      { disposition; tool_failures; turn_accepted }
+    in
     let runtime = Env.runtime in
     let fs = Env.fs in
     let project_name = Env.project_name in
@@ -169,7 +182,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         Runtime.update_orchestrator runtime (fun orch ->
             Orchestrator.apply_session_result orch patch_id
               Orchestrator.Session_give_up);
-        (`Failed, [])
+        make_run_result `Failed []
     | (`Resume _ | `Fresh) as mode -> (
         let resume_session, is_fresh =
           match mode with
@@ -181,8 +194,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             Runtime.update_orchestrator runtime (fun orch ->
                 Orchestrator.apply_session_result orch patch_id
                   Orchestrator.Session_worktree_missing);
-            (`Failed, [])
-        | Worktree_setup.Refused -> (`Failed, [])
+            make_run_result `Failed []
+        | Worktree_setup.Refused -> make_run_result `Failed []
         | Worktree_setup.Path worktree_path ->
             let cwd = Eio.Path.(fs / worktree_path) in
             let pre_session_branch_sha =
@@ -823,16 +836,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              Session_no_commits telemetry and keeps the noop gate armed
              for the truly-idle case where the verdict does not rescue. *)
                 let no_commits_is_ok =
-                  match kind with
-                  | Some Types.Operation_kind.Human -> true
-                  | Some Types.Operation_kind.Findings -> true
-                  | Some Types.Operation_kind.Ci
-                  | Some Types.Operation_kind.Review_comments
-                  | Some Types.Operation_kind.Pr_body
-                  | Some Types.Operation_kind.Merge_conflict
-                  | Some Types.Operation_kind.Rebase
-                  | None ->
-                      false
+                  Patch_decision.session_no_commits_is_ok ~agent ~kind
                 in
                 let final_session_result =
                   let combined =
@@ -877,7 +881,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   ~remote_tracking_sha:push_remote_tracking_sha
                   ~base_sha:push_base_sha ~agent_before:push_agent_before
                   ~agent_after:push_agent_after;
-                (final_user_result, List.rev !tool_failures)))
+                make_run_result ~turn_accepted:!backend_accepted_turn
+                  final_user_result (List.rev !tool_failures)))
 
   let run ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~backend ~complexity =

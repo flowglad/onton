@@ -89,6 +89,18 @@ val start_delivery : Patch_agent.t -> start_delivery
     human guidance returns it in chronological order; an ordinary Start returns
     [Start_initial]. Total for restored or partially-migrated agent states. *)
 
+val human_delivery_unaccepted :
+  kind:Types.Operation_kind.t option -> turn_accepted:bool -> bool
+(** Whether a Human delivery must be treated as failed so its still-inflight
+    guidance is restored. A backend turn is accepted only after a stream event
+    provides positive evidence that processing began. *)
+
+val session_no_commits_is_ok :
+  agent:Patch_agent.t -> kind:Types.Operation_kind.t option -> bool
+(** Whether a no-commit session is an accepted no-op. This exemption is limited
+    to Human and Findings responses on an existing PR; a Human-carrying Start
+    retains Start's no-commit retry/intervention behavior. *)
+
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
 val failure_conclusions : string list

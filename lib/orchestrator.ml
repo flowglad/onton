@@ -484,7 +484,9 @@ let resume_message t message_id =
           then
             let op =
               match msg.action with
-              | Start _ -> None
+              | Start _ ->
+                  if List.is_empty agent.inflight_human_messages then None
+                  else Some Operation_kind.Human
               | Respond (_, kind) -> Some kind
               | Rebase _ -> Some Operation_kind.Rebase
             in

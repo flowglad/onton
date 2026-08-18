@@ -803,7 +803,9 @@ let start t ~base_branch =
     queue;
     human_messages = (if is_human_queued then [] else t.human_messages);
     inflight_human_messages =
-      (if is_human_queued then t.human_messages else t.inflight_human_messages);
+      (if is_human_queued then
+         List.append t.human_messages t.inflight_human_messages
+       else t.inflight_human_messages);
     satisfies = true;
     base_branch = Some base_branch;
     notified_base_branch = Some base_branch;
