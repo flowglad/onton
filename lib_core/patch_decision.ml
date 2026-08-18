@@ -107,6 +107,14 @@ let human_delivery_unaccepted ~(kind : Operation_kind.t option)
   (not turn_accepted)
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
+(** Backend acceptance completes delivery for a PR-backed Human Respond. A
+    Human-carrying Start retains its inflight guidance until the runner has
+    successfully associated a PR and explicitly completes the Start. *)
+let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
+    ~(kind : Operation_kind.t option) : bool =
+  Patch_agent.is_pr_present agent
+  && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
+
 (** Human and Findings turns may legitimately produce no commit when they are
     responding to an existing PR. A Human-carrying Start has no PR yet and must
     retain the ordinary Start no-commit retry/intervention semantics. *)

@@ -105,8 +105,13 @@ let () =
               set_pr_number start_agent (Pr_number.of_int 1)
             in
             (not
-               (session_no_commits_is_ok ~agent:start_agent
+               (human_acceptance_delivers_messages ~agent:start_agent
                   ~kind:(Some Operation_kind.Human)))
+            && human_acceptance_delivers_messages ~agent:respond_agent
+                 ~kind:(Some Operation_kind.Human)
+            && (not
+                  (session_no_commits_is_ok ~agent:start_agent
+                     ~kind:(Some Operation_kind.Human)))
             && session_no_commits_is_ok ~agent:respond_agent
                  ~kind:(Some Operation_kind.Human)
           with _ -> false);

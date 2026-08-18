@@ -1142,7 +1142,9 @@ struct
                                             Orchestrator.on_pr_discovery_failure
                                               orch patch_id)));
                                 Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.complete orch patch_id)
+                                    Orchestrator
+                                    .complete_start_after_pr_discovery orch
+                                      patch_id)
                             | Orchestrator.Start_stale -> ())))
             | Orchestrator.Rebase (patch_id, new_base) ->
                 Some

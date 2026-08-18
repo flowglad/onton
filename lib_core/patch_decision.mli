@@ -93,7 +93,16 @@ val human_delivery_unaccepted :
   kind:Types.Operation_kind.t option -> turn_accepted:bool -> bool
 (** Whether a Human delivery must be treated as failed so its still-inflight
     guidance is restored. A backend turn is accepted only after a stream event
-    provides positive evidence that processing began. *)
+    provides positive evidence that processing began. Human-carrying Starts
+    remain inflight even after acceptance; this predicate prevents an unaccepted
+    Start from reaching successful completion at all. *)
+
+val human_acceptance_delivers_messages :
+  agent:Patch_agent.t -> kind:Types.Operation_kind.t option -> bool
+(** Whether backend acceptance is sufficient to consume inflight Human guidance.
+    True only for PR-backed Human Respond operations. A Human-carrying Start
+    remains recoverable until its successful explicit completion after PR
+    association. *)
 
 val session_no_commits_is_ok :
   agent:Patch_agent.t -> kind:Types.Operation_kind.t option -> bool

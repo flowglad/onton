@@ -318,19 +318,14 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 let mark_backend_accepted_turn () =
                   if not !backend_accepted_turn then (
                     backend_accepted_turn := true;
-                    match kind with
-                    | Some Types.Operation_kind.Human ->
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.mark_inflight_human_messages_delivered
-                              orch patch_id)
-                    | Some Types.Operation_kind.Ci
-                    | Some Types.Operation_kind.Review_comments
-                    | Some Types.Operation_kind.Findings
-                    | Some Types.Operation_kind.Pr_body
-                    | Some Types.Operation_kind.Merge_conflict
-                    | Some Types.Operation_kind.Rebase
-                    | None ->
-                        ())
+                    if
+                      Patch_decision.human_acceptance_delivers_messages ~agent
+                        ~kind
+                    then
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_inflight_human_messages_delivered
+                            orch patch_id)
+                    else ())
                 in
                 let on_event (event : Types.Stream_event.t) =
                   let () =

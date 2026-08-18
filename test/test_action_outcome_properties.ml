@@ -82,6 +82,64 @@ let () =
   assert (not (Orchestrator.agent orch pid).Patch_agent.busy);
   Stdlib.print_endline "AO-1b passed"
 
+(* ========== AO-1c: accepted Human Start remains recoverable until successful
+   post-PR completion ========== *)
+
+let () =
+  let patches = mk_patches 1 in
+  let pid = pid_of_idx patches 0 in
+  let start_human () =
+    let orch = Orchestrator.create ~patches ~main_branch:main in
+    let orch = Orchestrator.send_human_message orch pid "keep this guidance" in
+    Orchestrator.fire orch (Orchestrator.Start (pid, main))
+  in
+  let failed = start_human () in
+  let before_failure = Orchestrator.agent failed pid in
+  assert (not (List.is_empty before_failure.Patch_agent.inflight_human_messages));
+  (* Backend acceptance no longer clears Human Start guidance. A clean session
+     that made no commit is still a failed Start and must restore it. *)
+  let failed =
+    Orchestrator.apply_session_result failed pid Orchestrator.Session_no_commits
+  in
+  let failed =
+    Orchestrator.apply_start_outcome failed pid Orchestrator.Start_failed
+  in
+  let after_failure = Orchestrator.agent failed pid in
+  assert (List.is_empty after_failure.Patch_agent.inflight_human_messages);
+  assert (not (List.is_empty after_failure.Patch_agent.human_messages));
+  assert (
+    List.mem after_failure.Patch_agent.queue Operation_kind.Human
+      ~equal:Operation_kind.equal);
+  (* Even a healthy backend session is not a successful Start when PR
+     association fails. The post-discovery transition restores guidance. *)
+  let discovery_failed = start_human () in
+  let discovery_failed =
+    Orchestrator.apply_session_result discovery_failed pid
+      Orchestrator.Session_ok
+  in
+  let discovery_failed =
+    Orchestrator.complete_start_after_pr_discovery discovery_failed pid
+  in
+  let after_discovery_failure = Orchestrator.agent discovery_failed pid in
+  assert (not (List.is_empty after_discovery_failure.Patch_agent.human_messages));
+  (* PR association followed by explicit completion is the only Start success
+     path that consumes the retained guidance. *)
+  let succeeded = start_human () in
+  let succeeded =
+    Orchestrator.apply_session_result succeeded pid Orchestrator.Session_ok
+  in
+  let succeeded =
+    Orchestrator.set_pr_number succeeded pid (Pr_number.of_int 1)
+  in
+  let succeeded =
+    Orchestrator.complete_start_after_pr_discovery succeeded pid
+  in
+  let after_success = Orchestrator.agent succeeded pid in
+  assert (List.is_empty after_success.Patch_agent.human_messages);
+  assert (List.is_empty after_success.Patch_agent.inflight_human_messages);
+  assert (not after_success.Patch_agent.busy);
+  Stdlib.print_endline "AO-1c passed"
+
 (* ========== AO-2: Non-stale respond outcomes produce busy=false ========== *)
 
 let () =
