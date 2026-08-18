@@ -3,6 +3,14 @@
 
 open Base
 
+type disposition = [ `Ok | `Failed | `Retry_push | `No_commits ]
+
+type run_result = {
+  disposition : disposition;
+  tool_failures : (string * string) list;
+  turn_accepted : bool;
+}
+
 let truncate s n =
   if String.length s <= n then s else String.sub s ~pos:0 ~len:n ^ "..."
 
@@ -144,15 +152,21 @@ module type ENV = sig
 end
 
 module Make (W : Worktree.S) (Env : ENV) = struct
+  type nonrec run_result = run_result
+
   let session_mode = session_mode
   let extract_pr_number_from_text = extract_pr_number_from_text
 
   module WS = Worktree_setup.Make (W) (Env)
 
   let run_with_backend ~session_mode_for_agent
-      ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
+      ~(kind : Types.Operation_kind.t option)
+      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~backend_name ~run_backend
       ~complexity =
+    let make_run_result ?(turn_accepted = false) disposition tool_failures =
+      { disposition; tool_failures; turn_accepted }
+    in
     let runtime = Env.runtime in
     let fs = Env.fs in
     let project_name = Env.project_name in
@@ -169,7 +183,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         Runtime.update_orchestrator runtime (fun orch ->
             Orchestrator.apply_session_result orch patch_id
               Orchestrator.Session_give_up);
-        (`Failed, [])
+        make_run_result `Failed []
     | (`Resume _ | `Fresh) as mode -> (
         let resume_session, is_fresh =
           match mode with
@@ -181,8 +195,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
             Runtime.update_orchestrator runtime (fun orch ->
                 Orchestrator.apply_session_result orch patch_id
                   Orchestrator.Session_worktree_missing);
-            (`Failed, [])
-        | Worktree_setup.Refused -> (`Failed, [])
+            make_run_result `Failed []
+        | Worktree_setup.Refused -> make_run_result `Failed []
         | Worktree_setup.Path worktree_path ->
             let cwd = Eio.Path.(fs / worktree_path) in
             let pre_session_branch_sha =
@@ -305,19 +319,14 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 let mark_backend_accepted_turn () =
                   if not !backend_accepted_turn then (
                     backend_accepted_turn := true;
-                    match kind with
-                    | Some Types.Operation_kind.Human ->
-                        Runtime.update_orchestrator runtime (fun orch ->
-                            Orchestrator.mark_inflight_human_messages_delivered
-                              orch patch_id)
-                    | Some Types.Operation_kind.Ci
-                    | Some Types.Operation_kind.Review_comments
-                    | Some Types.Operation_kind.Findings
-                    | Some Types.Operation_kind.Pr_body
-                    | Some Types.Operation_kind.Merge_conflict
-                    | Some Types.Operation_kind.Rebase
-                    | None ->
-                        ())
+                    if
+                      Patch_decision.human_acceptance_delivers_messages ~agent
+                        ~delivery_mode ~kind
+                    then
+                      Runtime.update_orchestrator runtime (fun orch ->
+                          Orchestrator.mark_inflight_human_messages_delivered
+                            orch patch_id)
+                    else ())
                 in
                 let on_event (event : Types.Stream_event.t) =
                   let () =
@@ -823,16 +832,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              Session_no_commits telemetry and keeps the noop gate armed
              for the truly-idle case where the verdict does not rescue. *)
                 let no_commits_is_ok =
-                  match kind with
-                  | Some Types.Operation_kind.Human -> true
-                  | Some Types.Operation_kind.Findings -> true
-                  | Some Types.Operation_kind.Ci
-                  | Some Types.Operation_kind.Review_comments
-                  | Some Types.Operation_kind.Pr_body
-                  | Some Types.Operation_kind.Merge_conflict
-                  | Some Types.Operation_kind.Rebase
-                  | None ->
-                      false
+                  Patch_decision.session_no_commits_is_ok ~agent ~delivery_mode
+                    ~kind
                 in
                 let final_session_result =
                   let combined =
@@ -877,12 +878,14 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                   ~remote_tracking_sha:push_remote_tracking_sha
                   ~base_sha:push_base_sha ~agent_before:push_agent_before
                   ~agent_after:push_agent_after;
-                (final_user_result, List.rev !tool_failures)))
+                make_run_result ~turn_accepted:!backend_accepted_turn
+                  final_user_result (List.rev !tool_failures)))
 
-  let run ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
+  let run ~(kind : Types.Operation_kind.t option)
+      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~backend ~complexity =
-    run_with_backend ~kind ~patch_id ~prompt ~agent ~on_pr_detected
-      ~session_mode_for_agent:session_mode
+    run_with_backend ~kind ~delivery_mode ~patch_id ~prompt ~agent
+      ~on_pr_detected ~session_mode_for_agent:session_mode
       ~backend_name:backend.Llm_backend.name
       ~run_backend:backend.Llm_backend.run_streaming ~complexity
 
@@ -965,8 +968,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         | Some handle -> session.shutdown handle);
         match handle with None -> () | Some handle -> session.shutdown handle)
 
-  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~patch_id
-      ~prompt ~(agent : Patch_agent.t) ~on_pr_detected ~session ~complexity =
+  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option)
+      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
+      ~(agent : Patch_agent.t) ~on_pr_detected ~session ~complexity =
     let (Long_lived_session session) = session in
     let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
         ~session_uuid:_ ~complexity:_ ~on_event =
@@ -1054,7 +1058,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 session.failure_reason <- Some message;
                 failed_result message)
     in
-    run_with_backend ~kind ~patch_id ~prompt ~agent ~on_pr_detected
+    run_with_backend ~kind ~delivery_mode ~patch_id ~prompt ~agent
+      ~on_pr_detected
       ~session_mode_for_agent:(fun _ -> `Fresh)
       ~backend_name:session.name ~run_backend ~complexity
 end

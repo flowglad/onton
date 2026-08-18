@@ -132,26 +132,28 @@ module SD = Session_driver.Make (Fake_worktree) (Fake_sd_env)
    and mutexes are gone from the call surface — they live in Fake_sd_env now. *)
 let _check_narrowed_run :
     kind:Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
     on_pr_detected:(Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list =
+    Session_driver.run_result =
   SD.run
 
 (* Compile-time assertion: run_long_lived accepts only per-session inputs. *)
 let _check_narrowed_run_long_lived :
     sw:Eio.Switch.t ->
     kind:Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
     on_pr_detected:(Pr_number.t -> unit) ->
     session:SD.long_lived_session ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list =
+    Session_driver.run_result =
   SD.run_long_lived
 
 let () =
@@ -230,13 +232,14 @@ let () =
      and mutexes are gone from the call surface — they live in SD_Env now. *)
   let check_narrowed_run :
       kind:Operation_kind.t option ->
+      delivery_mode:Patch_decision.delivery_mode ->
       patch_id:Patch_id.t ->
       prompt:string ->
       agent:Patch_agent.t ->
       on_pr_detected:(Pr_number.t -> unit) ->
       backend:Llm_backend.t ->
       complexity:int option ->
-      [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list =
+      Session_driver.run_result =
     SD.run
   in
   ignore check_narrowed_run;
@@ -295,6 +298,7 @@ let () =
   ignore
     (SD3.run
       : kind:_ ->
+        delivery_mode:_ ->
         patch_id:_ ->
         prompt:_ ->
         agent:_ ->
@@ -306,6 +310,7 @@ let () =
     (SD3.run_long_lived
       : sw:_ ->
         kind:_ ->
+        delivery_mode:_ ->
         patch_id:_ ->
         prompt:_ ->
         agent:_ ->

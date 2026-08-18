@@ -85,6 +85,57 @@ let should_clear_conflict (a : Patch_agent.t) : bool =
     || Option.equal Operation_kind.equal a.current_op
          (Some Operation_kind.Merge_conflict))
 
+(** {2 Start delivery — pre-session decision for the runner} *)
+
+type start_delivery =
+  | Start_initial
+  | Start_with_human of { messages : string list }
+[@@deriving show, eq, sexp_of, compare]
+
+type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
+
+let start_delivery (agent : Patch_agent.t) : start_delivery =
+  if
+    Option.equal Operation_kind.equal agent.current_op
+      (Some Operation_kind.Human)
+  then Start_with_human { messages = List.rev agent.inflight_human_messages }
+  else Start_initial
+
+(** A Human delivery is durable only after the backend emits evidence that it
+    accepted the turn. Other operation kinds do not use the human-message
+    inflight/restore protocol. *)
+let human_delivery_unaccepted ~(kind : Operation_kind.t option)
+    ~(turn_accepted : bool) : bool =
+  (not turn_accepted)
+  && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
+
+(** Backend acceptance completes delivery only for a PR-backed Human Respond.
+    The explicit delivery mode prevents a Human-carrying Start from being
+    reclassified if it associates a PR while its session is still running. *)
+let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
+    ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
+  Patch_agent.is_pr_present agent
+  && equal_delivery_mode delivery_mode Respond
+  && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
+
+(** Human and Findings turns may legitimately produce no commit when they are
+    responding to an existing PR. A Human-carrying Start retains the ordinary
+    Start no-commit retry/intervention semantics even after PR association. *)
+let session_no_commits_is_ok ~(agent : Patch_agent.t)
+    ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
+  Patch_agent.is_pr_present agent
+  && equal_delivery_mode delivery_mode Respond
+  &&
+  match kind with
+  | Some Operation_kind.Human | Some Operation_kind.Findings -> true
+  | Some Operation_kind.Ci
+  | Some Operation_kind.Review_comments
+  | Some Operation_kind.Pr_body
+  | Some Operation_kind.Merge_conflict
+  | Some Operation_kind.Rebase
+  | None ->
+      false
+
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
 let failure_conclusions = Ci_check.failure_conclusions

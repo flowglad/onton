@@ -126,6 +126,52 @@ let () =
         with _ -> false
         end)
   in
+  let prop_resumed_human_start_preserves_delivery_kind =
+    Test.make
+      ~name:
+        "patch_controller_state_machine: resumed Human-carrying Start keeps \
+         Human delivery kind"
+      ~count:300
+      Gen.(pair gen_patch_id gen_branch)
+      (fun (pid, branch) ->
+        begin try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          let orch = Orchestrator.send_human_message orch pid "guidance" in
+          let orch, _effects, messages =
+            Patch_controller.plan_tick_messages orch
+              ~project_name:"test-project" ~gameplan
+          in
+          match List.hd messages with
+          | None -> false
+          | Some msg -> (
+              let orch, action =
+                Orchestrator.accept_message orch (Orchestrator.message_id msg)
+              in
+              let is_start =
+                match action with
+                | Some (Orchestrator.Start _) -> true
+                | Some (Orchestrator.Respond _ | Orchestrator.Rebase _) | None
+                  ->
+                    false
+              in
+              let orch = Orchestrator.reset_busy orch pid in
+              let orch, resumed =
+                Orchestrator.resume_message orch (Orchestrator.message_id msg)
+              in
+              let agent = Orchestrator.agent orch pid in
+              is_start && Option.is_some resumed
+              && Option.equal Operation_kind.equal agent.current_op
+                   (Some Operation_kind.Human)
+              &&
+              match Patch_decision.start_delivery agent with
+              | Patch_decision.Start_with_human { messages } ->
+                  List.equal String.equal messages [ "guidance" ]
+              | Patch_decision.Start_initial -> false)
+        with _ -> false
+        end)
+  in
   let prop_human_after_review_completes =
     Test.make
       ~name:
@@ -522,6 +568,7 @@ let () =
     [
       prop_replay_deterministic;
       prop_resume_keeps_same_message_id;
+      prop_resumed_human_start_preserves_delivery_kind;
       prop_human_after_review_completes;
       prop_second_human_after_review;
       prop_human_messages_survive_session_failure;

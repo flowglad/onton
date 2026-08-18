@@ -65,6 +65,65 @@ let () =
       Test.make ~name:"disposition: no PR -> Ready_start" gen_pid (fun pid ->
           let a = create ~branch:(Branch.of_string "b") pid in
           equal_disposition (disposition a) Ready_start);
+      Test.make
+        ~name:"start_delivery: queued human guidance survives Start firing"
+        Gen.(
+          triple gen_pid gen_branch
+            (list_size (int_range 1 5)
+               (string_size ~gen:printable (int_range 1 40))))
+        (fun (pid, branch, messages) ->
+          try
+            let a = create ~branch pid in
+            let a =
+              List.fold messages ~init:a ~f:(fun a message ->
+                  add_human_message a message)
+            in
+            let a = enqueue a Operation_kind.Human in
+            let a = start a ~base_branch:branch in
+            equal_start_delivery (start_delivery a)
+              (Start_with_human { messages })
+          with _ -> false);
+      Test.make
+        ~name:"human delivery without backend acceptance must be restored"
+        Gen.bool (fun turn_accepted ->
+          Bool.equal
+            (human_delivery_unaccepted ~kind:(Some Operation_kind.Human)
+               ~turn_accepted)
+            (not turn_accepted)
+          && not
+               (human_delivery_unaccepted
+                  ~kind:(Some Operation_kind.Review_comments) ~turn_accepted));
+      Test.make
+        ~name:"Human delivery completion requires an explicit Respond mode"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, branch) ->
+          try
+            let start_agent = create ~branch pid in
+            let start_agent = add_human_message start_agent "guidance" in
+            let start_agent = enqueue start_agent Operation_kind.Human in
+            let start_agent = start start_agent ~base_branch:branch in
+            let pr_associated_start_agent =
+              set_pr_number start_agent (Pr_number.of_int 1)
+            in
+            (not
+               (human_acceptance_delivers_messages ~agent:start_agent
+                  ~delivery_mode:Start ~kind:(Some Operation_kind.Human)))
+            && (not
+                  (human_acceptance_delivers_messages
+                     ~agent:pr_associated_start_agent ~delivery_mode:Start
+                     ~kind:(Some Operation_kind.Human)))
+            && human_acceptance_delivers_messages
+                 ~agent:pr_associated_start_agent ~delivery_mode:Respond
+                 ~kind:(Some Operation_kind.Human)
+            && (not
+                  (session_no_commits_is_ok ~agent:start_agent
+                     ~delivery_mode:Start ~kind:(Some Operation_kind.Human)))
+            && (not
+                  (session_no_commits_is_ok ~agent:pr_associated_start_agent
+                     ~delivery_mode:Start ~kind:(Some Operation_kind.Human)))
+            && session_no_commits_is_ok ~agent:pr_associated_start_agent
+                 ~delivery_mode:Respond ~kind:(Some Operation_kind.Human)
+          with _ -> false);
       (* ---- disposition: idle (has_pr, empty queue) -> Idle ---- *)
       Test.make ~name:"disposition: has_pr, empty queue -> Idle"
         Gen.(pair gen_pid gen_branch)

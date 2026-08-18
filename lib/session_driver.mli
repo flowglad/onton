@@ -13,6 +13,17 @@
     several modules. The backend below is already abstracted; this is the single
     place where "run a session for this patch" lives. *)
 
+type disposition = [ `Ok | `Failed | `Retry_push | `No_commits ]
+
+type run_result = {
+  disposition : disposition;
+  tool_failures : (string * string) list;
+  turn_accepted : bool;
+      (** Whether the backend emitted positive evidence that it accepted the
+          turn. Callers use this to restore Human guidance when an otherwise
+          successful process exits without processing the prompt. *)
+}
+
 (** Construction-time environment for session driving. Values here are fixed for
     the lifetime of the module instance and never vary per call. *)
 module type ENV = sig
@@ -25,21 +36,24 @@ module type ENV = sig
 end
 
 module Make (_ : Worktree.S) (_ : ENV) : sig
+  type nonrec run_result = run_result
+
   val run :
     kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     backend:Llm_backend.t ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list
-  (** Returns the supervisor disposition and the list of [(tool_name, status)]
-      pairs for any tool calls that did not reach a [completed] state (used by
-      the Pr_body classifier to disambiguate "agent chose not to write" from
-      "Write was blocked"). Callers may also produce a [`Stale] variant from
-      pre-flight checks before invoking this function — the polymorphic-variant
-      union widens at the call site. *)
+    run_result
+  (** Returns the supervisor disposition, backend-acceptance evidence, and the
+      list of [(tool_name, status)] pairs for tool calls that did not reach a
+      [completed] state. [delivery_mode] records whether Start or Respond
+      initiated the turn and must remain stable across in-session PR discovery.
+      Callers may also produce a [`Stale] variant from pre-flight checks before
+      invoking this function. *)
 
   type long_lived_session
   (** Mutable per-patch long-lived backend session state. The backend's
@@ -63,13 +77,14 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
   val run_long_lived :
     sw:Eio.Switch.t ->
     kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
     on_pr_detected:(Types.Pr_number.t -> unit) ->
     session:long_lived_session ->
     complexity:int option ->
-    [ `Ok | `Failed | `Retry_push | `No_commits ] * (string * string) list
+    run_result
   (** Long-lived backend counterpart to {!run}. It shares the same supervisor
       bookkeeping and delivers the rendered turn over [backend.prompt] instead
       of spawning a fresh backend process. *)

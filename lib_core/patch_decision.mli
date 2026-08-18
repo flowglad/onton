@@ -77,6 +77,50 @@ val should_clear_conflict : Patch_agent.t -> bool
     Merge_conflict operation is queued or in-flight, since clearing would race
     with the active resolution. *)
 
+(** {2 Start delivery — pre-session decision for the runner} *)
+
+type start_delivery =
+  | Start_initial
+  | Start_with_human of { messages : string list }
+[@@deriving show, eq, sexp_of, compare]
+
+(** The action that initiated a backend turn. Unlike PR presence, this remains
+    stable when a Start discovers and associates its PR during the session. *)
+type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
+
+val start_delivery : Patch_agent.t -> start_delivery
+(** Classify a fired Start action's turn payload. A Start that consumed queued
+    human guidance returns it in chronological order; an ordinary Start returns
+    [Start_initial]. Total for restored or partially-migrated agent states. *)
+
+val human_delivery_unaccepted :
+  kind:Types.Operation_kind.t option -> turn_accepted:bool -> bool
+(** Whether a Human delivery must be treated as failed so its still-inflight
+    guidance is restored. A backend turn is accepted only after a stream event
+    provides positive evidence that processing began. Human-carrying Starts
+    remain inflight even after acceptance; this predicate prevents an unaccepted
+    Start from reaching successful completion at all. *)
+
+val human_acceptance_delivers_messages :
+  agent:Patch_agent.t ->
+  delivery_mode:delivery_mode ->
+  kind:Types.Operation_kind.t option ->
+  bool
+(** Whether backend acceptance is sufficient to consume inflight Human guidance.
+    True only when the initiating delivery mode is [Respond] for a PR-backed
+    Human operation. A Human-carrying [Start] remains recoverable until its
+    successful explicit completion, even if it associates a PR mid-session. *)
+
+val session_no_commits_is_ok :
+  agent:Patch_agent.t ->
+  delivery_mode:delivery_mode ->
+  kind:Types.Operation_kind.t option ->
+  bool
+(** Whether a no-commit session is an accepted no-op. This exemption is limited
+    to [Respond] deliveries for Human and Findings operations on an existing PR;
+    a Human-carrying [Start] retains Start's no-commit retry/intervention
+    behavior even if it associates a PR mid-session. *)
+
 (** {2 Respond delivery — pre-session decisions for the runner} *)
 
 val failure_conclusions : string list

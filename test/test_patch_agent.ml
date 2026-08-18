@@ -52,6 +52,45 @@ let () =
           && List.is_empty t.human_messages
           && List.is_empty t.ci_checks && (not t.merge_ready)
           && not t.checks_passing);
+      Test.make ~name:"start consumes queued human messages into inflight"
+        Gen.(
+          triple gen_pid gen_branch
+            (list_size (int_range 1 5)
+               (string_size ~gen:printable (int_range 1 40))))
+        (fun (pid, branch, messages) ->
+          try
+            let t = create ~branch pid in
+            let t =
+              List.fold messages ~init:t ~f:(fun a message ->
+                  add_human_message a message)
+            in
+            let t = enqueue t Operation_kind.Human in
+            let t = start t ~base_branch:branch in
+            Option.equal Operation_kind.equal t.current_op
+              (Some Operation_kind.Human)
+            && List.is_empty t.human_messages
+            && List.equal String.equal t.inflight_human_messages
+                 (List.rev messages)
+            && not
+                 (List.mem t.queue Operation_kind.Human
+                    ~equal:Operation_kind.equal)
+          with _ -> false);
+      Test.make
+        ~name:"start merges newly queued guidance with restored inflight"
+        Gen.(pair gen_pid gen_branch)
+        (fun (pid, branch) ->
+          try
+            let t = create ~branch pid in
+            let t = add_human_message t "older" in
+            let t = enqueue t Operation_kind.Human in
+            let t = start t ~base_branch:branch |> reset_busy in
+            let t = add_human_message t "newer" in
+            let t = enqueue t Operation_kind.Human in
+            let t = start t ~base_branch:branch in
+            List.is_empty t.human_messages
+            && List.equal String.equal t.inflight_human_messages
+                 [ "newer"; "older" ]
+          with _ -> false);
       (* -- enqueue is idempotent -- *)
       Test.make ~name:"enqueue is idempotent"
         Gen.(triple gen_pid gen_branch gen_op)

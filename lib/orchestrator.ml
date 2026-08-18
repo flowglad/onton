@@ -484,7 +484,9 @@ let resume_message t message_id =
           then
             let op =
               match msg.action with
-              | Start _ -> None
+              | Start _ ->
+                  if List.is_empty agent.inflight_human_messages then None
+                  else Some Operation_kind.Human
               | Respond (_, kind) -> Some kind
               | Rebase _ -> Some Operation_kind.Rebase
             in
@@ -1007,10 +1009,10 @@ type session_result =
           surfaces for intervention. *)
 [@@deriving show, eq, sexp_of]
 
-(** Complete a failed session, restoring only still-inflight human messages to
-    the inbox. Human messages are cleared from the inflight slot as soon as the
-    backend accepts the turn, so anything remaining here was not delivered and
-    should be retried. *)
+(** Complete a failed session, restoring still-inflight human messages to the
+    inbox. PR-backed Human Respond messages leave the slot at backend
+    acceptance. Human-carrying Start messages deliberately remain until
+    successful post-PR completion, so every earlier failure restores them. *)
 let complete_failed t patch_id =
   let a = agent t patch_id in
   let inflight = a.Patch_agent.inflight_human_messages in
@@ -1025,6 +1027,10 @@ let complete_failed t patch_id =
     not (List.is_empty (agent t patch_id).Patch_agent.human_messages)
   in
   if has_messages then enqueue t patch_id Operation_kind.Human else t
+
+let complete_start_after_pr_discovery t patch_id =
+  if Patch_agent.is_pr_present (agent t patch_id) then complete t patch_id
+  else complete_failed t patch_id
 
 type force_complete_reason = Cancelled | Unexpected_exception
 [@@deriving show, eq, sexp_of]
@@ -1108,16 +1114,16 @@ let apply_session_result t patch_id result =
   | Session_push_failed reason -> (
       (* The LLM session itself ran cleanly — clear its fallback state so we
          resume the same session next iteration. The push failure does NOT
-         use [complete_failed]: the session succeeded, so any inflight human
-         messages were already delivered to the LLM and must not be restored
-         to the inbox.  Completion is deferred to [apply_respond_outcome]
-         which calls plain [complete] via [Respond_retry_push].  Using
-         [complete_failed] here caused an infinite loop: messages were
-         re-enqueued, the Human operation re-dispatched, the session
-         re-delivered the same messages, the push failed again, ad
-         infinitum — with [clear_session_fallback] preventing escalation
-         and the Human-in-queue exemption in [needs_intervention]
-         preventing the circuit breaker from firing.
+         use [complete_failed] directly. For a PR-backed Human Respond,
+         acceptance already consumed inflight messages and completion is
+         deferred to [apply_respond_outcome] via [Respond_retry_push]. For a
+         Human-carrying Start, inflight remains and the caller's
+         [Start_failed] follow-up restores it. Calling [complete_failed] here
+         caused an infinite Respond loop: messages were re-enqueued, the Human
+         operation re-dispatched, the session re-delivered the same messages,
+         the push failed again, ad infinitum — with [clear_session_fallback]
+         preventing escalation and the Human-in-queue exemption in
+         [needs_intervention] preventing the circuit breaker from firing.
 
          The [push_failure_count] counter (added in P0-B) feeds
          [needs_intervention] once it reaches 3, breaking the tight retry
@@ -1139,10 +1145,10 @@ let apply_session_result t patch_id result =
       (* The LLM session ran cleanly but left no commits on the branch (HEAD
          == base), so the supervisor skipped the push. Clear session fallback
          (the LLM itself was healthy), bump the no-commits counter (which
-         feeds [needs_intervention] at >= 2).  Like [Session_push_failed],
-         do NOT call [complete_failed] — the session succeeded and any
-         inflight human messages were delivered.  Completion is handled by
-         [apply_respond_outcome] via [Respond_retry_push]. *)
+         feeds [needs_intervention] at >= 2). Like [Session_push_failed], do NOT
+         complete here: a Respond caller uses its normal outcome transition,
+         while a Start caller uses [Start_failed], which restores retained
+         Human Start guidance. *)
       let t = clear_session_fallback t patch_id in
       update_agent t patch_id ~f:Patch_agent.increment_no_commits_push_count
   | Session_context_exhausted ->
@@ -1194,7 +1200,12 @@ let apply_start_outcome t patch_id outcome =
       (* Caller must complete explicitly after PR discovery finishes,
          so busy=true is held throughout the network call. *)
       t
-  | Start_failed -> complete t patch_id
+  | Start_failed ->
+      (* A no-PR Start may be carrying queued Human guidance. Keep it
+         recoverable across every failure before successful PR association and
+         explicit completion, including accepted no-commit and push-failure
+         sessions. *)
+      complete_failed t patch_id
 
 type respond_outcome =
   | Respond_ok

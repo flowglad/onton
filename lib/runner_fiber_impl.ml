@@ -662,50 +662,67 @@ struct
     let patch_agent_effort =
       Base.Option.value Env.patch_agent_effort ~default:"medium"
     in
-    let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~patch_id
-        ~prompt ~agent ~on_pr_detected ~complexity =
-      match pick_backend ~complexity with
-      | Backend_registry.Ephemeral backend, _decision ->
-          Session_driver.run ~kind ~patch_id ~prompt ~agent ~on_pr_detected
-            ~backend ~complexity
-      | Backend_registry.Long_lived backend, decision -> (
-          let patch_agent_model_result =
-            match
-              Backend_registry.resolve_model
-                ~backend:decision.Backend_routing.backend
-                ~model:decision.Backend_routing.model ~complexity
-            with
-            | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
-                Ok (Base.String.strip m)
-            | Some _ | None ->
-                Error
-                  "patch-agent backend requires a concrete non-empty model \
-                   after routing"
-          in
-          match patch_agent_model_result with
-          | Error message ->
-              log_event runtime ~patch_id message;
-              (`Failed, [])
-          | Ok patch_agent_model ->
-              let session =
-                match Long_lived_sessions.find long_lived_sessions patch_id with
-                | Some session ->
-                    Session_driver.update_long_lived_session_prompts session
-                      ~gameplan_prompt ~patch_prompt;
-                    session
-                | None ->
-                    let session =
-                      Session_driver.create_long_lived_session ~backend
-                        ~provider:patch_agent_provider ~model:patch_agent_model
-                        ~effort:patch_agent_effort ~gameplan_prompt
-                        ~patch_prompt
-                    in
-                    Long_lived_sessions.register long_lived_sessions patch_id
-                      session;
-                    session
-              in
-              Session_driver.run_long_lived ~sw ~kind ~patch_id ~prompt ~agent
-                ~on_pr_detected ~session ~complexity)
+    let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~delivery_mode
+        ~patch_id ~prompt ~agent ~on_pr_detected ~complexity =
+      let session_result =
+        match pick_backend ~complexity with
+        | Backend_registry.Ephemeral backend, _decision ->
+            Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
+              ~on_pr_detected ~backend ~complexity
+        | Backend_registry.Long_lived backend, decision -> (
+            let patch_agent_model_result =
+              match
+                Backend_registry.resolve_model
+                  ~backend:decision.Backend_routing.backend
+                  ~model:decision.Backend_routing.model ~complexity
+              with
+              | Some m when not (Base.String.is_empty (Base.String.strip m)) ->
+                  Ok (Base.String.strip m)
+              | Some _ | None ->
+                  Error
+                    "patch-agent backend requires a concrete non-empty model \
+                     after routing"
+            in
+            match patch_agent_model_result with
+            | Error message ->
+                log_event runtime ~patch_id message;
+                ({
+                   disposition = `Failed;
+                   tool_failures = [];
+                   turn_accepted = false;
+                 }
+                  : Session_driver.run_result)
+            | Ok patch_agent_model ->
+                let session =
+                  match
+                    Long_lived_sessions.find long_lived_sessions patch_id
+                  with
+                  | Some session ->
+                      Session_driver.update_long_lived_session_prompts session
+                        ~gameplan_prompt ~patch_prompt;
+                      session
+                  | None ->
+                      let session =
+                        Session_driver.create_long_lived_session ~backend
+                          ~provider:patch_agent_provider
+                          ~model:patch_agent_model ~effort:patch_agent_effort
+                          ~gameplan_prompt ~patch_prompt
+                      in
+                      Long_lived_sessions.register long_lived_sessions patch_id
+                        session;
+                      session
+                in
+                Session_driver.run_long_lived ~sw ~kind ~delivery_mode ~patch_id
+                  ~prompt ~agent ~on_pr_detected ~session ~complexity)
+      in
+      let disposition =
+        if
+          Patch_decision.human_delivery_unaccepted ~kind
+            ~turn_accepted:session_result.turn_accepted
+        then `Failed
+        else session_result.disposition
+      in
+      (disposition, session_result.tool_failures)
     in
     let shutdown_finished_long_lived_sessions ~sw () =
       let finished =
@@ -919,7 +936,7 @@ struct
                                             (Stdlib.Filename.concat _wt_path
                                                "AGENTS.md")
                                         in
-                                        let prompt =
+                                        let initial_prompt =
                                           Prompt.render_patch_prompt
                                             ~project_name ?agents_md
                                             ?pr_number:
@@ -927,6 +944,20 @@ struct
                                             patch gameplan
                                             ~base_branch:
                                               (Branch.to_string base_branch)
+                                        in
+                                        let prompt, kind =
+                                          match
+                                            Patch_decision.start_delivery agent
+                                          with
+                                          | Patch_decision.Start_initial ->
+                                              (initial_prompt, None)
+                                          | Patch_decision.Start_with_human
+                                              { messages } ->
+                                              ( initial_prompt ^ "\n\n"
+                                                ^ Prompt
+                                                  .render_human_message_prompt
+                                                    ~project_name messages,
+                                                Some Operation_kind.Human )
                                         in
                                         (* PR detection from stream text is a hint
                                      only — always confirmed via the GitHub
@@ -951,9 +982,10 @@ struct
                                         in
                                         let r, _tool_failures =
                                           run_llm_session ~sw ~gameplan_prompt
-                                            ~patch_prompt ~kind:None ~patch_id
-                                            ~prompt ~agent ~on_pr_detected
-                                            ~complexity
+                                            ~patch_prompt ~kind
+                                            ~delivery_mode:Patch_decision.Start
+                                            ~patch_id ~prompt ~agent
+                                            ~on_pr_detected ~complexity
                                         in
                                         (r
                                           :> [ `Failed
@@ -1111,7 +1143,9 @@ struct
                                             Orchestrator.on_pr_discovery_failure
                                               orch patch_id)));
                                 Runtime.update_orchestrator runtime (fun orch ->
-                                    Orchestrator.complete orch patch_id)
+                                    Orchestrator
+                                    .complete_start_after_pr_discovery orch
+                                      patch_id)
                             | Orchestrator.Start_stale -> ())))
             | Orchestrator.Rebase (patch_id, new_base) ->
                 Some
@@ -1617,8 +1651,10 @@ struct
                                             ~kind:
                                               (Some
                                                  Operation_kind.Merge_conflict)
-                                            ~patch_id ~prompt ~agent
-                                            ~on_pr_detected ~complexity
+                                            ~delivery_mode:
+                                              Patch_decision.Respond ~patch_id
+                                            ~prompt ~agent ~on_pr_detected
+                                            ~complexity
                                         in
                                         (match result with
                                         | `Ok
@@ -2340,8 +2376,10 @@ struct
                                         let result, tool_failures =
                                           run_llm_session ~sw ~gameplan_prompt
                                             ~patch_prompt ~kind:(Some kind)
-                                            ~patch_id ~prompt ~agent
-                                            ~on_pr_detected ~complexity
+                                            ~delivery_mode:
+                                              Patch_decision.Respond ~patch_id
+                                            ~prompt ~agent ~on_pr_detected
+                                            ~complexity
                                         in
                                         let result =
                                           (result

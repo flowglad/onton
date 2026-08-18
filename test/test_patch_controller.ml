@@ -513,6 +513,93 @@ let () =
                | Orchestrator.Start _ | Orchestrator.Rebase _ -> false)))
   in
 
+  let prop_starting_patch_delivers_human_guidance =
+    Test.make
+      ~name:
+        "patch_controller: needs-help no-PR patch delivers Human on next Start"
+      ~count:200
+      Gen.(
+        triple gen_patch_id gen_branch
+          (string_size ~gen:printable (int_range 1 80)))
+      (fun (pid, branch, message) ->
+        try
+          let patch = make_patch pid branch in
+          let gameplan = make_gameplan patch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          let fail_start_without_commits orch =
+            let orch =
+              Orchestrator.fire orch (Orchestrator.Start (pid, main))
+            in
+            let orch =
+              Orchestrator.apply_session_result orch pid
+                Orchestrator.Session_no_commits
+            in
+            Orchestrator.apply_start_outcome orch pid Orchestrator.Start_failed
+          in
+          let orch =
+            fail_start_without_commits orch |> fail_start_without_commits
+          in
+          let stuck = Orchestrator.agent orch pid in
+          if not (Patch_agent.needs_intervention stuck) then false
+          else
+            let orch = Orchestrator.send_human_message orch pid message in
+            let actions =
+              Patch_controller.plan_actions orch ~patches:gameplan.patches
+            in
+            match
+              List.find actions ~f:(function
+                | Orchestrator.Start (action_pid, _) ->
+                    Patch_id.equal action_pid pid
+                | Orchestrator.Respond _ | Orchestrator.Rebase _ -> false)
+            with
+            | None -> false
+            | Some action -> (
+                let orch = Orchestrator.fire orch action in
+                let agent = Orchestrator.agent orch pid in
+                match Patch_decision.start_delivery agent with
+                | Patch_decision.Start_with_human { messages } ->
+                    List.equal String.equal messages [ message ]
+                    && Option.equal Operation_kind.equal agent.current_op
+                         (Some Operation_kind.Human)
+                    && not
+                         (List.mem agent.queue Operation_kind.Human
+                            ~equal:Operation_kind.equal)
+                | Patch_decision.Start_initial -> false)
+        with _ -> false)
+  in
+
+  let prop_failed_start_restores_undelivered_human_guidance =
+    Test.make
+      ~name:
+        "patch_controller: failed no-PR Human Start restores undelivered \
+         guidance"
+      ~count:200
+      Gen.(
+        triple gen_patch_id gen_branch
+          (string_size ~gen:printable (int_range 1 80)))
+      (fun (pid, branch, message) ->
+        try
+          let patch = make_patch pid branch in
+          let orch = Orchestrator.create ~patches:[ patch ] ~main_branch:main in
+          let orch = Orchestrator.send_human_message orch pid message in
+          let orch = Orchestrator.fire orch (Orchestrator.Start (pid, main)) in
+          let inflight = Orchestrator.agent orch pid in
+          if List.is_empty inflight.Patch_agent.inflight_human_messages then
+            false
+          else
+            let orch =
+              Orchestrator.apply_start_outcome orch pid
+                Orchestrator.Start_failed
+            in
+            let restored = Orchestrator.agent orch pid in
+            (not restored.Patch_agent.busy)
+            && List.mem restored.human_messages message ~equal:String.equal
+            && List.is_empty restored.inflight_human_messages
+            && List.mem restored.queue Operation_kind.Human
+                 ~equal:Operation_kind.equal
+        with _ -> false)
+  in
+
   let prop_reconcile_all_converges_after_acknowledged_effects =
     Test.make
       ~name:
@@ -2066,6 +2153,8 @@ let () =
       prop_reconcile_all_blocks_restart_after_intervention;
       prop_rebase_not_blocked_by_needs_intervention;
       prop_respond_still_blocked_by_needs_intervention;
+      prop_starting_patch_delivers_human_guidance;
+      prop_failed_start_restores_undelivered_human_guidance;
       prop_reconcile_all_converges_after_acknowledged_effects;
       prop_poll_to_controller_promotes_ready_after_pr_body;
       prop_poll_ci_failure_never_erases_pr_body_followup;

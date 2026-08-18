@@ -773,6 +773,21 @@ let mark_pr_missing t =
 let start t ~base_branch =
   if has_pr t then invalid_arg "Patch_agent.start: patch already has a PR";
   if t.busy then invalid_arg "Patch_agent.start: patch is already busy";
+  (* A no-PR patch is always dispatched through the Start action, even when a
+     human message is queued. Treat that Start as the delivery vehicle for the
+     queued Human turn: otherwise the runner renders the initial patch prompt
+     again and the Human operation can never reach [respond], whose contract
+     requires a PR. Moving the inbox to inflight gives this path the same
+     accept/restore semantics as [respond Human]. *)
+  let is_human_queued =
+    List.mem t.queue Operation_kind.Human ~equal:Operation_kind.equal
+  in
+  let queue =
+    if is_human_queued then
+      List.filter t.queue ~f:(fun k ->
+          not (Operation_kind.equal k Operation_kind.Human))
+    else t.queue
+  in
   let branch_rebased_onto =
     match worktree_state t with
     | Unmaterialized -> Some base_branch
@@ -782,9 +797,15 @@ let start t ~base_branch =
     t with
     has_session = true;
     busy = true;
-    current_op = None;
+    current_op = (if is_human_queued then Some Operation_kind.Human else None);
     current_op_state = Queued;
     current_message_id = None;
+    queue;
+    human_messages = (if is_human_queued then [] else t.human_messages);
+    inflight_human_messages =
+      (if is_human_queued then
+         List.append t.human_messages t.inflight_human_messages
+       else t.inflight_human_messages);
     satisfies = true;
     base_branch = Some base_branch;
     notified_base_branch = Some base_branch;

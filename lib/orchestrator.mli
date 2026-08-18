@@ -69,6 +69,13 @@ val message_status : patch_agent_message -> message_status
 (** {2 External event application} *)
 
 val complete : t -> Patch_id.t -> t
+
+val complete_start_after_pr_discovery : t -> Patch_id.t -> t
+(** Finish a Start after its supervisor-owned PR creation/discovery step. When a
+    PR is present, completes normally and consumes any Human guidance carried by
+    the Start. When no PR was established, restores that guidance through the
+    failed-completion path before retry/intervention. *)
+
 val enqueue : t -> Patch_id.t -> Operation_kind.t -> t
 val mark_merged : t -> Patch_id.t -> t
 val remove_agent : t -> Patch_id.t -> t
@@ -158,7 +165,9 @@ val set_worktree_path : t -> Patch_id.t -> string -> t
 val set_llm_session_id : t -> Patch_id.t -> string option -> t
 
 val mark_inflight_human_messages_delivered : t -> Patch_id.t -> t
-(** Clear inflight Human messages after backend turn acceptance. See
+(** Clear inflight Human messages after backend acceptance of a PR-backed Human
+    Respond. Human-carrying Starts deliberately retain guidance until
+    {!complete_start_after_pr_discovery}. See
     {!Patch_agent.mark_inflight_human_messages_delivered}. *)
 
 val set_automerge_enabled : t -> Patch_id.t -> bool -> t
@@ -279,13 +288,13 @@ val apply_session_result : t -> Patch_id.t -> session_result -> t
     [apply_respond_outcome _ _ Respond_retry_push] (Respond path) to clear
     [busy]. This two-phase design is deliberate: the LLM session itself
     succeeded (messages were delivered; commits were made locally), so any
-    inflight human payload must be consumed by plain [complete] rather than
-    restored by [complete_failed] — the latter would re-enqueue Human and cause
-    an infinite re-delivery loop. After 2 consecutive [Session_no_commits]
-    outcomes, [needs_intervention] fires via [no_commits_push_count >= 2]. After
-    3 consecutive [Session_push_failed] outcomes (or a single one carrying a
-    permanent rejection), [needs_intervention] fires via
-    [push_failure_count >= 3] or [Given_up]. *)
+    inflight payload from a PR-backed Human Respond has already been consumed at
+    acceptance and uses plain [complete]. A Human-carrying Start deliberately
+    retains its payload and its [Start_failed] follow-up restores it. After 2
+    consecutive [Session_no_commits] outcomes, [needs_intervention] fires via
+    [no_commits_push_count >= 2]. After 3 consecutive [Session_push_failed]
+    outcomes (or a single one carrying a permanent rejection),
+    [needs_intervention] fires via [push_failure_count >= 3] or [Given_up]. *)
 
 val combine_session_and_push :
   branch_changed:bool ->
@@ -317,9 +326,11 @@ type start_outcome = Start_ok | Start_failed | Start_stale
 [@@deriving show, eq, sexp_of]
 
 val apply_start_outcome : t -> Patch_id.t -> start_outcome -> t
-(** Apply the outcome of a Start action fiber. [Start_failed] -> complete.
-    [Start_ok] -> identity (caller must [complete] after PR discovery).
-    [Start_stale] -> identity. *)
+(** Apply the outcome of a Start action fiber. [Start_failed] ->
+    [complete_failed], restoring any Human guidance whose Start did not
+    successfully complete. [Start_ok] -> identity (caller must use
+    {!complete_start_after_pr_discovery} after PR discovery). [Start_stale] ->
+    identity. *)
 
 type respond_outcome =
   | Respond_ok
