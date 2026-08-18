@@ -161,21 +161,66 @@ let prop_reconstructs_corrupted_runtime_patch =
       | None -> false)
 
 let prop_added_patch_event_message_encodes_patch_metadata =
+  let title_part =
+    QCheck2.Gen.string_size
+      ~gen:(QCheck2.Gen.char_range 'a' 'z')
+      (QCheck2.Gen.int_range 1 32)
+  in
+  let title =
+    QCheck2.Gen.oneof
+      [
+        title_part;
+        QCheck2.Gen.map2
+          (fun left right -> left ^ ") — " ^ right)
+          title_part title_part;
+      ]
+  in
   QCheck2.Test.make
-    ~name:"added patch event encoding preserves id, dependencies, and title"
+    ~name:"added patch event encoding round-trips through resume reconstruction"
     ~count:200
-    QCheck2.Gen.(pair string (list string))
-    (fun (title, dependency_names) ->
-      let dependencies = List.map dependency_names ~f:pid in
-      let added = runtime_patch ~dependencies "add1" title in
-      let encoded_dependencies =
-        match dependency_names with
-        | [] -> "no dependencies"
-        | names -> "depends on " ^ String.concat names ~sep:", "
+    QCheck2.Gen.(pair title (list_size (int_range 0 8) (int_range 1 6)))
+    (fun (title, dependency_numbers) ->
+      let dependencies =
+        List.map dependency_numbers ~f:(fun number ->
+            pid (Int.to_string number))
       in
-      String.equal
-        (Resume_gameplan.added_patch_event_message added)
-        (Printf.sprintf "Added patch add1 (%s) — %s" encoded_dependencies title))
+      let expected_dependencies =
+        List.fold dependencies ~init:[] ~f:(fun unique dependency ->
+            if List.mem unique dependency ~equal:Patch_id.equal then unique
+            else unique @ [ dependency ])
+      in
+      let loaded =
+        gameplan
+          (List.init 6 ~f:(fun index ->
+               let id = Int.to_string (index + 1) in
+               patch id ("patch " ^ id)))
+      in
+      let patch_id = pid "add1" in
+      let added = runtime_patch ~dependencies "add1" title in
+      let activity_log =
+        Activity_log.add_event Activity_log.empty
+          (Activity_log.Event.create ~timestamp:1.0 ~patch_id
+             (Resume_gameplan.added_patch_event_message added))
+      in
+      let result =
+        reconcile ~loaded ~persisted:loaded ~activity_log
+          ~missing_patches:
+            [
+              {
+                Resume_gameplan.patch_id;
+                branch = Gameplan.branch_of_id loaded patch_id;
+                dependencies = [];
+              };
+            ]
+          ()
+      in
+      match find_patch result.gameplan patch_id with
+      | Some recovered ->
+          String.equal recovered.Patch.title title
+          && String.equal recovered.description title
+          && List.equal Patch_id.equal recovered.dependencies
+               expected_dependencies
+      | None -> false)
 
 let prop_does_not_heal_adhoc_or_noncanonical_patch =
   QCheck2.Test.make
