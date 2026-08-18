@@ -5,8 +5,6 @@ open Base
 open Onton
 open Onton_core
 
-external unsetenv : string -> unit = "caml_onton_unsetenv"
-
 let failures = ref 0
 
 let fail name msg =
@@ -62,7 +60,7 @@ let with_data_dir root f =
   Exn.protect ~f ~finally:(fun () ->
       match previous with
       | Some value -> Unix.putenv "ONTON_DATA_DIR" value
-      | None -> unsetenv "ONTON_DATA_DIR")
+      | None -> Unix.unsetenv "ONTON_DATA_DIR")
 
 let run_case ~name ~subkind ~exit_code =
   let root = temp_root () in

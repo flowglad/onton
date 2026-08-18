@@ -1,5 +1,6 @@
-(lang dune 3.21)
+(lang dune 3.24)
 (env
  (dev
+  (bin_annot true)
   (flags (:standard -w +a-44-70 -warn-error +A-44-70))
   (ocamlopt_flags (:standard -O2))))

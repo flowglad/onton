@@ -117,7 +117,7 @@ let resolve_after_session ~review_clients ~log ~findings_registry ~artifact_dir
                    f.id why);
               Findings_registry.forget findings_registry ~key:f.id
           | (Some (Wontfix _) | None) as verdict -> (
-              match Findings_registry.find findings_registry ~key:f.id with
+              match Findings_registry.take findings_registry ~key:f.id with
               | None ->
                   log
                     (Printf.sprintf
@@ -140,8 +140,7 @@ let resolve_after_session ~review_clients ~log ~findings_registry ~artifact_dir
                         (Printf.sprintf
                            "Skipping resolve for finding %s — review backend \
                             %s is no longer configured"
-                           f.id backend_name);
-                      Findings_registry.forget findings_registry ~key:f.id
+                           f.id backend_name)
                   | Some
                       (module R : Review_service_client.S
                         with type error = Review_service_client.error) -> (
@@ -160,12 +159,9 @@ let resolve_after_session ~review_clients ~log ~findings_registry ~artifact_dir
                                   kind)
                                (Onton_core.Review_service.outcome_kind_to_string
                                   response.Onton_core.Review_service.outcome
-                                    .kind));
-                          Findings_registry.forget findings_registry ~key:f.id
+                                    .kind))
                       | Error err ->
                           log
                             (Printf.sprintf "Failed to resolve finding %s — %s"
-                               f.id (R.show_error err));
-                          Findings_registry.forget findings_registry ~key:f.id))
-              ))
+                               f.id (R.show_error err))))))
         delivered
