@@ -40,6 +40,7 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
 
   val run :
     kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
@@ -49,8 +50,10 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
     run_result
   (** Returns the supervisor disposition, backend-acceptance evidence, and the
       list of [(tool_name, status)] pairs for tool calls that did not reach a
-      [completed] state. Callers may also produce a [`Stale] variant from
-      pre-flight checks before invoking this function. *)
+      [completed] state. [delivery_mode] records whether Start or Respond
+      initiated the turn and must remain stable across in-session PR discovery.
+      Callers may also produce a [`Stale] variant from pre-flight checks before
+      invoking this function. *)
 
   type long_lived_session
   (** Mutable per-patch long-lived backend session state. The backend's
@@ -74,6 +77,7 @@ module Make (_ : Worktree.S) (_ : ENV) : sig
   val run_long_lived :
     sw:Eio.Switch.t ->
     kind:Types.Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Types.Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->

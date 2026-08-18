@@ -132,6 +132,7 @@ module SD = Session_driver.Make (Fake_worktree) (Fake_sd_env)
    and mutexes are gone from the call surface — they live in Fake_sd_env now. *)
 let _check_narrowed_run :
     kind:Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
@@ -145,6 +146,7 @@ let _check_narrowed_run :
 let _check_narrowed_run_long_lived :
     sw:Eio.Switch.t ->
     kind:Operation_kind.t option ->
+    delivery_mode:Patch_decision.delivery_mode ->
     patch_id:Patch_id.t ->
     prompt:string ->
     agent:Patch_agent.t ->
@@ -230,6 +232,7 @@ let () =
      and mutexes are gone from the call surface — they live in SD_Env now. *)
   let check_narrowed_run :
       kind:Operation_kind.t option ->
+      delivery_mode:Patch_decision.delivery_mode ->
       patch_id:Patch_id.t ->
       prompt:string ->
       agent:Patch_agent.t ->
@@ -295,6 +298,7 @@ let () =
   ignore
     (SD3.run
       : kind:_ ->
+        delivery_mode:_ ->
         patch_id:_ ->
         prompt:_ ->
         agent:_ ->
@@ -306,6 +310,7 @@ let () =
     (SD3.run_long_lived
       : sw:_ ->
         kind:_ ->
+        delivery_mode:_ ->
         patch_id:_ ->
         prompt:_ ->
         agent:_ ->

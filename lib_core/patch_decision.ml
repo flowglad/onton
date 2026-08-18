@@ -92,6 +92,8 @@ type start_delivery =
   | Start_with_human of { messages : string list }
 [@@deriving show, eq, sexp_of, compare]
 
+type delivery_mode = Start | Respond [@@deriving show, eq, sexp_of, compare]
+
 let start_delivery (agent : Patch_agent.t) : start_delivery =
   if
     Option.equal Operation_kind.equal agent.current_op
@@ -107,20 +109,22 @@ let human_delivery_unaccepted ~(kind : Operation_kind.t option)
   (not turn_accepted)
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
-(** Backend acceptance completes delivery for a PR-backed Human Respond. A
-    Human-carrying Start retains its inflight guidance until the runner has
-    successfully associated a PR and explicitly completes the Start. *)
+(** Backend acceptance completes delivery only for a PR-backed Human Respond.
+    The explicit delivery mode prevents a Human-carrying Start from being
+    reclassified if it associates a PR while its session is still running. *)
 let human_acceptance_delivers_messages ~(agent : Patch_agent.t)
-    ~(kind : Operation_kind.t option) : bool =
+    ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   Patch_agent.is_pr_present agent
+  && equal_delivery_mode delivery_mode Respond
   && Option.equal Operation_kind.equal kind (Some Operation_kind.Human)
 
 (** Human and Findings turns may legitimately produce no commit when they are
-    responding to an existing PR. A Human-carrying Start has no PR yet and must
-    retain the ordinary Start no-commit retry/intervention semantics. *)
+    responding to an existing PR. A Human-carrying Start retains the ordinary
+    Start no-commit retry/intervention semantics even after PR association. *)
 let session_no_commits_is_ok ~(agent : Patch_agent.t)
-    ~(kind : Operation_kind.t option) : bool =
+    ~(delivery_mode : delivery_mode) ~(kind : Operation_kind.t option) : bool =
   Patch_agent.is_pr_present agent
+  && equal_delivery_mode delivery_mode Respond
   &&
   match kind with
   | Some Operation_kind.Human | Some Operation_kind.Findings -> true

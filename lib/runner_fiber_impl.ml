@@ -662,13 +662,13 @@ struct
     let patch_agent_effort =
       Base.Option.value Env.patch_agent_effort ~default:"medium"
     in
-    let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~patch_id
-        ~prompt ~agent ~on_pr_detected ~complexity =
+    let run_llm_session ~sw ~gameplan_prompt ~patch_prompt ~kind ~delivery_mode
+        ~patch_id ~prompt ~agent ~on_pr_detected ~complexity =
       let session_result =
         match pick_backend ~complexity with
         | Backend_registry.Ephemeral backend, _decision ->
-            Session_driver.run ~kind ~patch_id ~prompt ~agent ~on_pr_detected
-              ~backend ~complexity
+            Session_driver.run ~kind ~delivery_mode ~patch_id ~prompt ~agent
+              ~on_pr_detected ~backend ~complexity
         | Backend_registry.Long_lived backend, decision -> (
             let patch_agent_model_result =
               match
@@ -712,8 +712,8 @@ struct
                         session;
                       session
                 in
-                Session_driver.run_long_lived ~sw ~kind ~patch_id ~prompt ~agent
-                  ~on_pr_detected ~session ~complexity)
+                Session_driver.run_long_lived ~sw ~kind ~delivery_mode ~patch_id
+                  ~prompt ~agent ~on_pr_detected ~session ~complexity)
       in
       let disposition =
         if
@@ -982,9 +982,10 @@ struct
                                         in
                                         let r, _tool_failures =
                                           run_llm_session ~sw ~gameplan_prompt
-                                            ~patch_prompt ~kind ~patch_id
-                                            ~prompt ~agent ~on_pr_detected
-                                            ~complexity
+                                            ~patch_prompt ~kind
+                                            ~delivery_mode:Patch_decision.Start
+                                            ~patch_id ~prompt ~agent
+                                            ~on_pr_detected ~complexity
                                         in
                                         (r
                                           :> [ `Failed
@@ -1650,8 +1651,10 @@ struct
                                             ~kind:
                                               (Some
                                                  Operation_kind.Merge_conflict)
-                                            ~patch_id ~prompt ~agent
-                                            ~on_pr_detected ~complexity
+                                            ~delivery_mode:
+                                              Patch_decision.Respond ~patch_id
+                                            ~prompt ~agent ~on_pr_detected
+                                            ~complexity
                                         in
                                         (match result with
                                         | `Ok
@@ -2373,8 +2376,10 @@ struct
                                         let result, tool_failures =
                                           run_llm_session ~sw ~gameplan_prompt
                                             ~patch_prompt ~kind:(Some kind)
-                                            ~patch_id ~prompt ~agent
-                                            ~on_pr_detected ~complexity
+                                            ~delivery_mode:
+                                              Patch_decision.Respond ~patch_id
+                                            ~prompt ~agent ~on_pr_detected
+                                            ~complexity
                                         in
                                         let result =
                                           (result

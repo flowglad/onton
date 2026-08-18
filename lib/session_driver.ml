@@ -160,7 +160,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
   module WS = Worktree_setup.Make (W) (Env)
 
   let run_with_backend ~session_mode_for_agent
-      ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
+      ~(kind : Types.Operation_kind.t option)
+      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~backend_name ~run_backend
       ~complexity =
     let make_run_result ?(turn_accepted = false) disposition tool_failures =
@@ -320,7 +321,7 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                     backend_accepted_turn := true;
                     if
                       Patch_decision.human_acceptance_delivers_messages ~agent
-                        ~kind
+                        ~delivery_mode ~kind
                     then
                       Runtime.update_orchestrator runtime (fun orch ->
                           Orchestrator.mark_inflight_human_messages_delivered
@@ -831,7 +832,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
              Session_no_commits telemetry and keeps the noop gate armed
              for the truly-idle case where the verdict does not rescue. *)
                 let no_commits_is_ok =
-                  Patch_decision.session_no_commits_is_ok ~agent ~kind
+                  Patch_decision.session_no_commits_is_ok ~agent ~delivery_mode
+                    ~kind
                 in
                 let final_session_result =
                   let combined =
@@ -879,10 +881,11 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 make_run_result ~turn_accepted:!backend_accepted_turn
                   final_user_result (List.rev !tool_failures)))
 
-  let run ~(kind : Types.Operation_kind.t option) ~patch_id ~prompt
+  let run ~(kind : Types.Operation_kind.t option)
+      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
       ~(agent : Patch_agent.t) ~on_pr_detected ~backend ~complexity =
-    run_with_backend ~kind ~patch_id ~prompt ~agent ~on_pr_detected
-      ~session_mode_for_agent:session_mode
+    run_with_backend ~kind ~delivery_mode ~patch_id ~prompt ~agent
+      ~on_pr_detected ~session_mode_for_agent:session_mode
       ~backend_name:backend.Llm_backend.name
       ~run_backend:backend.Llm_backend.run_streaming ~complexity
 
@@ -965,8 +968,9 @@ module Make (W : Worktree.S) (Env : ENV) = struct
         | Some handle -> session.shutdown handle);
         match handle with None -> () | Some handle -> session.shutdown handle)
 
-  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option) ~patch_id
-      ~prompt ~(agent : Patch_agent.t) ~on_pr_detected ~session ~complexity =
+  let run_long_lived ~sw ~(kind : Types.Operation_kind.t option)
+      ~(delivery_mode : Patch_decision.delivery_mode) ~patch_id ~prompt
+      ~(agent : Patch_agent.t) ~on_pr_detected ~session ~complexity =
     let (Long_lived_session session) = session in
     let run_backend ~project_name ~cwd ~patch_id ~prompt ~resume_session:_
         ~session_uuid:_ ~complexity:_ ~on_event =
@@ -1054,7 +1058,8 @@ module Make (W : Worktree.S) (Env : ENV) = struct
                 session.failure_reason <- Some message;
                 failed_result message)
     in
-    run_with_backend ~kind ~patch_id ~prompt ~agent ~on_pr_detected
+    run_with_backend ~kind ~delivery_mode ~patch_id ~prompt ~agent
+      ~on_pr_detected
       ~session_mode_for_agent:(fun _ -> `Fresh)
       ~backend_name:session.name ~run_backend ~complexity
 end

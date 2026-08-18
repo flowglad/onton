@@ -93,7 +93,8 @@ let () =
           && not
                (human_delivery_unaccepted
                   ~kind:(Some Operation_kind.Review_comments) ~turn_accepted));
-      Test.make ~name:"no-commit Human exemption requires an existing PR"
+      Test.make
+        ~name:"Human delivery completion requires an explicit Respond mode"
         Gen.(pair gen_pid gen_branch)
         (fun (pid, branch) ->
           try
@@ -101,19 +102,27 @@ let () =
             let start_agent = add_human_message start_agent "guidance" in
             let start_agent = enqueue start_agent Operation_kind.Human in
             let start_agent = start start_agent ~base_branch:branch in
-            let respond_agent =
+            let pr_associated_start_agent =
               set_pr_number start_agent (Pr_number.of_int 1)
             in
             (not
                (human_acceptance_delivers_messages ~agent:start_agent
-                  ~kind:(Some Operation_kind.Human)))
-            && human_acceptance_delivers_messages ~agent:respond_agent
+                  ~delivery_mode:Start ~kind:(Some Operation_kind.Human)))
+            && (not
+                  (human_acceptance_delivers_messages
+                     ~agent:pr_associated_start_agent ~delivery_mode:Start
+                     ~kind:(Some Operation_kind.Human)))
+            && human_acceptance_delivers_messages
+                 ~agent:pr_associated_start_agent ~delivery_mode:Respond
                  ~kind:(Some Operation_kind.Human)
             && (not
                   (session_no_commits_is_ok ~agent:start_agent
-                     ~kind:(Some Operation_kind.Human)))
-            && session_no_commits_is_ok ~agent:respond_agent
-                 ~kind:(Some Operation_kind.Human)
+                     ~delivery_mode:Start ~kind:(Some Operation_kind.Human)))
+            && (not
+                  (session_no_commits_is_ok ~agent:pr_associated_start_agent
+                     ~delivery_mode:Start ~kind:(Some Operation_kind.Human)))
+            && session_no_commits_is_ok ~agent:pr_associated_start_agent
+                 ~delivery_mode:Respond ~kind:(Some Operation_kind.Human)
           with _ -> false);
       (* ---- disposition: idle (has_pr, empty queue) -> Idle ---- *)
       Test.make ~name:"disposition: has_pr, empty queue -> Idle"
