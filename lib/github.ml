@@ -1061,20 +1061,7 @@ let parse_actions_jobs_response body =
           |> List.filter ~f:Types.Ci_check.is_failure
           |> Result.return)
 
-let parse_actions_run_id_from_url url =
-  let marker = "/actions/runs/" in
-  match String.substr_index url ~pattern:marker with
-  | None -> None
-  | Some pos ->
-      let start = pos + String.length marker in
-      let rest = String.drop_prefix url start in
-      let len =
-        match String.findi rest ~f:(fun _ ch -> not (Char.is_digit ch)) with
-        | None -> String.length rest
-        | Some (idx, _) -> idx
-      in
-      let id = String.prefix rest len in
-      if String.is_empty id then None else Int.of_string_opt id
+let parse_actions_run_id_from_url = Ci_rerun_decision.workflow_run_id_from_url
 
 let digest_annotation_of_check_annotation (a : check_annotation) :
     Ci_log_digest.annotation =
@@ -1119,6 +1106,12 @@ let job_log_timeout = 60.0
     Without a timeout, a TCP connect stuck in SYN_SENT can block the calling
     fiber indefinitely — which is how the poll loop wedged in production. *)
 let default_timeout = 30.0
+
+(** Overall budget for waiting for an in-progress Actions run to finish before
+    requesting its failed-job rerun. This is deliberately separate from the
+    per-request timeout: workflows commonly run for several minutes, while an
+    individual GitHub API request should still fail quickly if it is wedged. *)
+let workflow_completion_poll_timeout = 30.0 *. 60.0
 
 (** Internal: execute an HTTP request against api.github.com. Returns the raw
     response body on 2xx, [Http_error] otherwise. *)
@@ -1330,13 +1323,62 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
               "check %S has no GitHub Actions workflow run URL; refusing full \
                rerun"
               check.name))
-  | Some run_id ->
-      let path =
+  | Some run_id -> (
+      let run_path =
+        Printf.sprintf "/repos/%s/%s/actions/runs/%d" t.owner t.repo run_id
+      in
+      let rerun_path =
         Printf.sprintf "/repos/%s/%s/actions/runs/%d/rerun-failed-jobs" t.owner
           t.repo run_id
       in
-      Result.map (request ~net ~clock ?timeout t ~meth:`POST ~path ())
-        ~f:(fun _ -> ())
+      let rec wait_until_complete () =
+        match request ~net ~clock ?timeout t ~meth:`GET ~path:run_path () with
+        | Error _ as error -> error
+        | Ok body -> (
+            match Ci_rerun_decision.workflow_status_of_response body with
+            | Ci_rerun_decision.Completed -> Ok ()
+            | Ci_rerun_decision.Pending ->
+                Eio.Time.sleep clock 10.0;
+                wait_until_complete ()
+            | Ci_rerun_decision.Malformed ->
+                Error
+                  (Json_parse_error
+                     (Printf.sprintf
+                        "workflow run %d response has no valid status" run_id)))
+      and request_rerun () =
+        match
+          request ~net ~clock ?timeout t ~meth:`POST ~path:rerun_path ()
+        with
+        | Ok _ -> Ok ()
+        | Error (Http_error ({ status = 403; body; _ } as http_error)) ->
+            if
+              response_error_message_contains body
+                ~substring:"workflow is already running"
+            then
+              (* Another actor won the small race between our completed-status
+                 GET and POST. The desired rerun is already in progress. *)
+              Ok ()
+            else Error (Http_error http_error)
+        | Error (Http_error _ as error) -> Error error
+        | Error
+            (( Json_parse_error _ | Graphql_error _ | Timeout _
+             | Transport_error _ ) as error) ->
+            Error error
+      in
+      match
+        Eio.Time.with_timeout clock workflow_completion_poll_timeout (fun () ->
+            Ok (wait_until_complete ()))
+      with
+      | Ok (Ok ()) -> request_rerun ()
+      | Ok (Error _ as error) -> error
+      | Error `Timeout ->
+          Error
+            (Timeout
+               {
+                 meth = "GET";
+                 path = run_path;
+                 seconds = workflow_completion_poll_timeout;
+               }))
 
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in

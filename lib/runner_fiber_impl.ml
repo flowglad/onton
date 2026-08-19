@@ -2613,6 +2613,11 @@ struct
                                           | Patch_decision.Ci_payload
                                               { failed_checks } ->
                                               if session_no_commits then
+                                                let failed_checks =
+                                                  Ci_rerun_decision
+                                                  .unique_workflow_checks
+                                                    failed_checks
+                                                in
                                                 let rerun_results =
                                                   Base.List.map failed_checks
                                                     ~f:(fun check ->

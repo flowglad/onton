@@ -59,6 +59,11 @@
  (libraries onton onton_core base yojson))
 
 (test
+ (name test_ci_rerun_decision_properties)
+ (modules test_ci_rerun_decision_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner base))
+
+(test
  (name test_json)
  (modules test_json)
  (libraries onton_core base yojson ppx_yojson_conv_lib))
