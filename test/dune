@@ -61,9 +61,7 @@
 (test
  (name test_ci_rerun_decision_properties)
  (modules test_ci_rerun_decision_properties)
- (libraries onton_core qcheck-core qcheck-core.runner base)
- (ocamlopt_flags (:standard -w -40-42))
- (ocamlc_flags (:standard -w -40-42)))
+ (libraries onton_core qcheck-core qcheck-core.runner base))
 
 (test
  (name test_json)

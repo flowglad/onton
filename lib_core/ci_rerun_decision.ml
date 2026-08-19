@@ -12,13 +12,14 @@ let workflow_run_id_from_url url =
   | Some pos ->
       let start = pos + String.length marker in
       let rest = String.drop_prefix url start in
-      let len =
+      let id =
         match String.findi rest ~f:(fun _ ch -> not (Char.is_digit ch)) with
-        | None -> String.length rest
-        | Some (idx, _) -> idx
+        | None -> Some rest
+        | Some (idx, ('/' | '?' | '#')) -> Some (String.prefix rest idx)
+        | Some _ -> None
       in
-      let id = String.prefix rest len in
-      if String.is_empty id then None else Int.of_string_opt id
+      Option.bind id ~f:(fun id ->
+          if String.is_empty id then None else Int.of_string_opt id)
 
 let unique_workflow_checks checks =
   let _, rev_checks =

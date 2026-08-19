@@ -1317,7 +1317,7 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
               "check %S has no GitHub Actions workflow run URL; refusing full \
                rerun"
               check.name))
-  | Some run_id ->
+  | Some run_id -> (
       let run_path =
         Printf.sprintf "/repos/%s/%s/actions/runs/%d" t.owner t.repo run_id
       in
@@ -1325,16 +1325,17 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
         Printf.sprintf "/repos/%s/%s/actions/runs/%d/rerun-failed-jobs" t.owner
           t.repo run_id
       in
+      let polling_timeout = Option.value timeout ~default:default_timeout in
       let rec wait_until_complete () =
         match request ~net ~clock ?timeout t ~meth:`GET ~path:run_path () with
         | Error _ as error -> error
         | Ok body -> (
             match Ci_rerun_decision.workflow_status_of_response body with
-            | Completed -> request_rerun ()
-            | Pending ->
+            | Ci_rerun_decision.Completed -> Ok ()
+            | Ci_rerun_decision.Pending ->
                 Eio.Time.sleep clock 10.0;
                 wait_until_complete ()
-            | Malformed ->
+            | Ci_rerun_decision.Malformed ->
                 Error
                   (Json_parse_error
                      (Printf.sprintf
@@ -1359,7 +1360,16 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
              | Transport_error _ ) as error) ->
             Error error
       in
-      wait_until_complete ()
+      match
+        Eio.Time.with_timeout clock polling_timeout (fun () ->
+            Ok (wait_until_complete ()))
+      with
+      | Ok (Ok ()) -> request_rerun ()
+      | Ok (Error _ as error) -> error
+      | Error `Timeout ->
+          Error
+            (Timeout
+               { meth = "GET"; path = run_path; seconds = polling_timeout }))
 
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
