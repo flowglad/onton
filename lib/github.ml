@@ -1107,6 +1107,12 @@ let job_log_timeout = 60.0
     fiber indefinitely — which is how the poll loop wedged in production. *)
 let default_timeout = 30.0
 
+(** Overall budget for waiting for an in-progress Actions run to finish before
+    requesting its failed-job rerun. This is deliberately separate from the
+    per-request timeout: workflows commonly run for several minutes, while an
+    individual GitHub API request should still fail quickly if it is wedged. *)
+let workflow_completion_poll_timeout = 30.0 *. 60.0
+
 (** Internal: execute an HTTP request against api.github.com. Returns the raw
     response body on 2xx, [Http_error] otherwise. *)
 let meth_to_string = function
@@ -1325,7 +1331,6 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
         Printf.sprintf "/repos/%s/%s/actions/runs/%d/rerun-failed-jobs" t.owner
           t.repo run_id
       in
-      let polling_timeout = Option.value timeout ~default:default_timeout in
       let rec wait_until_complete () =
         match request ~net ~clock ?timeout t ~meth:`GET ~path:run_path () with
         | Error _ as error -> error
@@ -1361,7 +1366,7 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
             Error error
       in
       match
-        Eio.Time.with_timeout clock polling_timeout (fun () ->
+        Eio.Time.with_timeout clock workflow_completion_poll_timeout (fun () ->
             Ok (wait_until_complete ()))
       with
       | Ok (Ok ()) -> request_rerun ()
@@ -1369,7 +1374,11 @@ let rerun_failed_jobs_for_check ~net ~clock ?timeout t
       | Error `Timeout ->
           Error
             (Timeout
-               { meth = "GET"; path = run_path; seconds = polling_timeout }))
+               {
+                 meth = "GET";
+                 path = run_path;
+                 seconds = workflow_completion_poll_timeout;
+               }))
 
 let check_repo_access_internal ~net ~clock ?timeout t =
   let path = Printf.sprintf "/repos/%s/%s" t.owner t.repo in
