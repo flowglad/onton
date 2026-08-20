@@ -19,6 +19,7 @@ module type S = sig
   val is_merge_queue_required_error : error -> bool
   val supports_reviews : bool
   val owner : string
+  val change_url : Types.Pr_number.t -> string option
 
   type merge_result =
     | Merge_succeeded

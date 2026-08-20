@@ -30,6 +30,11 @@ val response_error_message_contains : string -> substring:string -> bool
     distinct 422 cases (e.g. "pull request already exists" vs "no commits
     between"). Pure; safe on malformed input. *)
 
+val is_permanent_error : error -> bool
+(** Classify errors that should not be retried. HTTP 429 and GitHub's
+    rate-limit/abuse-detection 403 responses are transient; other 4xx responses
+    and JSON parse failures are permanent. *)
+
 val extract_github_message : string -> string
 (** Summarize an HTTP error response body for activity-log display. When the
     body is a GitHub JSON error, returns the [message] field (and any

@@ -869,7 +869,8 @@ let construct_capabilities ~net (setup : runtime_setup) =
         Runtime.read setup.runtime (fun snapshot ->
             Orchestrator.all_agents snapshot.Runtime.orchestrator
             |> Base.List.map ~f:(fun (agent : Patch_agent.t) ->
-                ( agent.branch,
+                ( Patch_agent.pr_number agent,
+                  agent.branch,
                   Base.Option.value agent.base_branch ~default:main_branch )))
       in
       let module S =
@@ -1538,7 +1539,13 @@ let gameplan_path_arg =
 let forge_arg =
   let open Cmdliner in
   Arg.(
-    value & opt string "auto"
+    value
+    & opt
+        (enum
+           [
+             ("auto", "auto"); ("github", "github"); ("sourcehut", "sourcehut");
+           ])
+        "auto"
     & info [ "forge" ] ~docv:"FORGE"
         ~doc:
           "Git forge: [github], [sourcehut], or [auto]. Auto detects the local \
@@ -1761,9 +1768,7 @@ let main_cmd ~pr_ops =
         Base.Option.map main_branch ~f:(fun s ->
             Branch.of_string (Base.String.strip s))
       in
-      run ~project ~gameplan_path
-        ~forge:(Base.String.lowercase (Base.String.strip forge))
-        ~github_token
+      run ~project ~gameplan_path ~forge ~github_token
         ~backend:(Base.String.strip backend)
         ~model:(Base.String.strip model) ~main_branch ~poll_interval ~repo_root
         ~max_concurrency ~max_ci_failures ~automerge_timeout ~headless ~no_lock

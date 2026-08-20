@@ -21,5 +21,5 @@ val make :
   repo:string ->
   repo_root:string ->
   main_branch:Types.Branch.t ->
-  changes:(Types.Branch.t * Types.Branch.t) list ->
+  changes:(Types.Pr_number.t option * Types.Branch.t * Types.Branch.t) list ->
   (module Forge.S with type error = error)

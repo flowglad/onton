@@ -68,7 +68,7 @@ let refresh_agents_from_forge
        repo:string ->
        repo_root:string ->
        main_branch:Branch.t ->
-       changes:(Branch.t * Branch.t) list ->
+       changes:(Pr_number.t option * Branch.t * Branch.t) list ->
        (module Forge.S) option) ~(cfg : Project_store.stored_config)
     ~(agents : Patch_agent.t Map.M(Patch_id).t) =
   let candidates = refresh_candidates agents in
@@ -91,7 +91,8 @@ let refresh_agents_from_forge
           (let main_branch = Types.Branch.of_string cfg.main_branch in
            Map.data agents
            |> List.map ~f:(fun (agent : Patch_agent.t) ->
-               ( agent.branch,
+               ( Patch_agent.pr_number agent,
+                 agent.branch,
                  Option.value agent.base_branch ~default:main_branch )))
     with
     | None ->

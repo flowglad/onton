@@ -24,6 +24,10 @@ module type S = sig
   val supports_reviews : bool
   val owner : string
 
+  val change_url : Types.Pr_number.t -> string option
+  (** Browser URL for a forge change. Reviewless forges may return [None] when
+      the local identifier is no longer registered. *)
+
   type merge_result =
     | Merge_succeeded
     | Merge_queued of string

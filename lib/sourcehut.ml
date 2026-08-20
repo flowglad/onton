@@ -145,7 +145,28 @@ let git_stdout ~repo_root args =
     when process_succeeded capture.status
          && not (String.is_empty capture.stdout) ->
       Ok capture.stdout
-  | Ok capture ->
+  | Ok
+      ({ status = Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _; _ } as
+       capture) ->
+      Error
+        (Git_error
+           (String.concat ~sep:"\n" [ capture.stderr; capture.stdout ]
+           |> String.strip))
+  | Error message -> Error (Git_error message)
+
+type merge_tree_result = Clean of string | Conflicting
+
+let merge_tree ~repo_root ~base_sha ~head_sha =
+  match
+    run_git ~repo_root [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
+  with
+  | Ok { status = Unix.WEXITED 0; stdout; _ } when not (String.is_empty stdout)
+    ->
+      Ok (Clean stdout)
+  | Ok { status = Unix.WEXITED 1; _ } -> Ok Conflicting
+  | Ok
+      ({ status = Unix.WEXITED _ | Unix.WSIGNALED _ | Unix.WSTOPPED _; _ } as
+       capture) ->
       Error
         (Git_error
            (String.concat ~sep:"\n" [ capture.stderr; capture.stdout ]
@@ -175,7 +196,7 @@ let job_query =
       }
     }|}
 
-let fetch_jobs ~net ~clock ~token ~owner ~repo ~branch ~sha =
+let fetch_jobs ~net ~clock ~token =
   let rec loop cursor pages acc =
     if pages = 0 then Ok acc
     else
@@ -193,15 +214,10 @@ let fetch_jobs ~net ~clock ~token ~owner ~repo ~branch ~sha =
           | Error message -> Error (Api_error message)
           | Ok (jobs, next) -> (
               let acc = acc @ jobs in
-              let checks =
-                Sourcehut_builds.checks_for_commit ~owner ~repo ~branch ~sha acc
-              in
-              if not (List.is_empty checks) then Ok acc
-              else
-                match next with
-                | None -> Ok acc
-                | Some _ when List.is_empty jobs -> Ok acc
-                | Some next -> loop (Some next) (pages - 1) acc))
+              match next with
+              | None -> Ok acc
+              | Some _ when List.is_empty jobs -> Ok acc
+              | Some next -> loop (Some next) (pages - 1) acc))
   in
   loop None 8 []
 
@@ -224,17 +240,28 @@ let submit_query =
 
 let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
     ~changes:initial_changes : (module Forge.S with type error = error) =
-  let changes : (Pr_number.t, Branch.t * Branch.t) Hashtbl.t =
-    Hashtbl.create (module Pr_number)
+  let changes = ref Sourcehut_target.empty_registry in
+  let initialization_error = ref None in
+  let record_change ~preferred_id ~branch ~base =
+    match
+      Sourcehut_target.register_change !changes ~preferred_id ~branch ~base
+    with
+    | Error message -> Error (Api_error message)
+    | Ok (updated, id) ->
+        changes := updated;
+        Ok id
   in
-  List.iter initial_changes ~f:(fun (branch, base) ->
-      Hashtbl.set changes
-        ~key:(Sourcehut_target.change_id branch)
-        ~data:(branch, base));
+  List.iter initial_changes ~f:(fun (preferred_id, branch, base) ->
+      match record_change ~preferred_id ~branch ~base with
+      | Ok _ -> ()
+      | Error error -> initialization_error := Some error);
   let find_change pr_number =
-    match Hashtbl.find changes pr_number with
-    | Some change -> Ok change
-    | None -> Error (Api_error "unknown local SourceHut change identifier")
+    match !initialization_error with
+    | Some error -> Error error
+    | None -> (
+        match Sourcehut_target.find_change !changes pr_number with
+        | Some change -> Ok change
+        | None -> Error (Api_error "unknown local SourceHut change identifier"))
   in
   let unsupported operation = Error (Unsupported operation) in
   let module M = struct
@@ -248,7 +275,8 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
       | Transport_error msg | Git_error msg ->
           Poll_outcome.Transport_failed { msg }
       | Http_error { status; body } ->
-          Poll_outcome.Http_failed { status; msg = body }
+          Poll_outcome.Http_failed
+            { status; msg = String.prefix (String.strip body) 500 }
       | Api_error msg | Unsupported msg -> Poll_outcome.Json_parse_failed msg
 
     let is_duplicate_change_error _ = false
@@ -261,6 +289,11 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
     let is_merge_queue_required_error _ = false
     let supports_reviews = false
     let owner = owner
+
+    let change_url pr_number =
+      Result.ok (find_change pr_number)
+      |> Option.map ~f:(fun (branch, _) ->
+          Sourcehut_target.branch_url ~owner ~repo branch)
 
     type merge_result =
       | Merge_succeeded
@@ -276,30 +309,7 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
       | Error _ as error -> error
       | Ok (head, base) -> (
           match (resolve_ref ~repo_root head, resolve_ref ~repo_root base) with
-          | Error _, _ ->
-              Ok
-                {
-                  Pr_state.status = Closed;
-                  is_draft = false;
-                  merge_state = Unknown;
-                  merge_ready = false;
-                  merge_ready_divergence = None;
-                  review_decision = None;
-                  check_status = Pending;
-                  ci_checks = [];
-                  ci_checks_truncated = false;
-                  comments = [];
-                  unresolved_comment_count = 0;
-                  findings = [];
-                  node_id = None;
-                  merge_queue_required = false;
-                  merge_queue_entry = None;
-                  head_branch = Some head;
-                  head_oid = None;
-                  merge_commit_sha = None;
-                  base_branch = Some base;
-                  is_fork = false;
-                }
+          | Error error, _ -> Error error
           | Ok _, Error error -> Error error
           | Ok head_sha, Ok base_sha -> (
               let merged =
@@ -307,52 +317,54 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
                   [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
               in
               let merge_state =
-                if merged then Pr_state.Mergeable
-                else if
-                  git_success ~repo_root
-                    [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
-                then Mergeable
-                else Conflicting
+                if merged then Ok Pr_state.Mergeable
+                else
+                  Result.map (merge_tree ~repo_root ~base_sha ~head_sha)
+                    ~f:(function
+                    | Clean _ -> Pr_state.Mergeable
+                    | Conflicting -> Pr_state.Conflicting)
               in
-              match
-                fetch_jobs ~net ~clock ~token ~owner ~repo ~branch:head
-                  ~sha:head_sha
-              with
+              match merge_state with
               | Error _ as error -> error
-              | Ok jobs ->
-                  let ci_checks =
-                    Sourcehut_builds.checks_for_commit ~owner ~repo ~branch:head
-                      ~sha:head_sha jobs
-                  in
-                  let check_status = Pr_state.derive_check_status ci_checks in
-                  let merge_ready =
-                    Pr_state.merge_ready_of ~merge_state ~check_status
-                      ~review_decision:None
-                  in
-                  Ok
-                    {
-                      Pr_state.status = (if merged then Merged else Open);
-                      is_draft = false;
-                      merge_state;
-                      merge_ready;
-                      merge_ready_divergence = None;
-                      review_decision = None;
-                      check_status;
-                      ci_checks;
-                      ci_checks_truncated = false;
-                      comments = [];
-                      unresolved_comment_count = 0;
-                      findings = [];
-                      node_id = None;
-                      merge_queue_required = false;
-                      merge_queue_entry = None;
-                      head_branch = Some head;
-                      head_oid = Some head_sha;
-                      merge_commit_sha =
-                        (if merged then Some base_sha else None);
-                      base_branch = Some base;
-                      is_fork = false;
-                    }))
+              | Ok merge_state -> (
+                  match fetch_jobs ~net ~clock ~token with
+                  | Error _ as error -> error
+                  | Ok jobs ->
+                      let ci_checks =
+                        Sourcehut_builds.checks_for_commit ~owner ~repo
+                          ~branch:head ~sha:head_sha jobs
+                      in
+                      let check_status =
+                        Pr_state.derive_check_status ci_checks
+                      in
+                      let merge_ready =
+                        Pr_state.merge_ready_of ~merge_state ~check_status
+                          ~review_decision:None
+                      in
+                      Ok
+                        {
+                          Pr_state.status = (if merged then Merged else Open);
+                          is_draft = false;
+                          merge_state;
+                          merge_ready;
+                          merge_ready_divergence = None;
+                          review_decision = None;
+                          check_status;
+                          ci_checks;
+                          ci_checks_truncated = false;
+                          comments = [];
+                          unresolved_comment_count = 0;
+                          findings = [];
+                          node_id = None;
+                          merge_queue_required = false;
+                          merge_queue_entry = None;
+                          head_branch = Some head;
+                          head_oid = Some head_sha;
+                          merge_commit_sha =
+                            (if merged then Some base_sha else None);
+                          base_branch = Some base;
+                          is_fork = false;
+                        })))
 
     let merge_queue_removal_checks ~pr_number:_ = Ok []
 
@@ -394,26 +406,27 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
                   |> Result.map ~f:(fun _ -> ())))
 
     let list_prs ~branch ?base ~state () =
-      let id = Sourcehut_target.change_id branch in
       let base =
-        match (base, Hashtbl.find changes id) with
+        match (base, Sourcehut_target.find_branch !changes branch) with
         | Some base, _ -> base
         | None, Some (_, base) -> base
         | None, None -> main_branch
       in
-      Hashtbl.set changes ~key:id ~data:(branch, base);
-      match resolve_ref ~repo_root branch with
-      | Error _ -> Ok []
-      | Ok head_sha ->
-          let merged =
-            match resolve_ref ~repo_root base with
-            | Error _ -> false
-            | Ok base_sha ->
-                git_success ~repo_root
-                  [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
-          in
-          if Poly.equal state `Open && merged then Ok []
-          else Ok [ (id, base, merged) ]
+      match record_change ~preferred_id:None ~branch ~base with
+      | Error _ as error -> error
+      | Ok id -> (
+          match resolve_ref ~repo_root branch with
+          | Error _ -> Ok []
+          | Ok head_sha ->
+              let merged =
+                match resolve_ref ~repo_root base with
+                | Error _ -> false
+                | Ok base_sha ->
+                    git_success ~repo_root
+                      [ "merge-base"; "--is-ancestor"; head_sha; base_sha ]
+              in
+              if Poly.equal state `Open && merged then Ok []
+              else Ok [ (id, base, merged) ])
 
     let update_pr_body ~pr_number:_ ~body:_ = Ok ()
 
@@ -424,16 +437,15 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
     let viewer_login () = None
 
     let create_pull_request ~title:_ ~head ~base ~body:_ ~draft:_ =
-      let id = Sourcehut_target.change_id head in
-      Hashtbl.set changes ~key:id ~data:(head, base);
-      Ok id
+      record_change ~preferred_id:None ~branch:head ~base
 
     let update_pr_base ~pr_number ~base =
       match find_change pr_number with
       | Error _ as error -> error
       | Ok (head, _) ->
-          Hashtbl.set changes ~key:pr_number ~data:(head, base);
-          Ok ()
+          Result.map
+            (record_change ~preferred_id:(Some pr_number) ~branch:head ~base)
+            ~f:(fun _ -> ())
 
     let request_review ~pr_number:_ ~team_slug:_ = unsupported "code review"
     let set_draft ~pr_number:_ ~draft:_ = Ok ()
@@ -451,14 +463,20 @@ let make ~net ~clock ~token ~owner ~repo ~repo_root ~main_branch
                     [ "merge-base"; "--is-ancestor"; base_sha; head_sha ]
                 then Ok head_sha
                 else
-                  match
-                    git_stdout ~repo_root
-                      [ "merge-tree"; "--write-tree"; base_sha; head_sha ]
-                  with
+                  match merge_tree ~repo_root ~base_sha ~head_sha with
                   | Error _ as error -> error
-                  | Ok tree ->
+                  | Ok Conflicting ->
+                      Error
+                        (Git_error
+                           (Printf.sprintf "%s does not merge cleanly into %s"
+                              (Branch.to_string head) (Branch.to_string base)))
+                  | Ok (Clean tree) ->
                       git_stdout ~repo_root
                         [
+                          "-c";
+                          "user.name=onton";
+                          "-c";
+                          "user.email=onton@localhost";
                           "commit-tree";
                           tree;
                           "-p";

@@ -228,9 +228,9 @@ access token with `JOBS:RW`, `LOGS:RO`, and `PROFILE:RO`. `JOBS:RW` permits
 polling and reruns, `LOGS:RO` lets onton include failed task logs in CI
 feedback, and `PROFILE:RO` is required to construct canonical build URLs. Add
 `SECRETS:RO` when rerun manifests reference SourceHut secrets. The token must
-belong to the account whose SSH identity pushes the patch branches, because
-the builds API lists that account's jobs. Git pushes and merges use the
-repository's SSH remote and therefore use your ssh-agent.
+belong to the account that pushes the patch branches, because the builds API
+lists that account's jobs. Managed clones auto-detect SSH with HTTPS fallback;
+`--clone-scheme ssh|https` selects the transport explicitly.
 
 SourceHut has no pull-request review surface. Onton consequently treats each
 patch branch as a reviewless change: draft/review metadata is absent, review

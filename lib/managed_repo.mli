@@ -18,7 +18,7 @@ val ensure_managed_repo :
 
     [?clone_scheme] is the explicit override (e.g. a [--clone-scheme] CLI flag
     or a previously-persisted [url_scheme] from [config.json]). If [None], SSH
-    reachability to [git@github.com:owner/repo.git] is probed (with
+    reachability to the selected forge's repository is probed (with
     [BatchMode=yes] and a short [ConnectTimeout]); SSH is chosen if the probe
     succeeds, otherwise the fallback is HTTPS. When the managed clone already
     exists on disk, its existing [origin] URL is authoritative — we don't flip

@@ -979,37 +979,45 @@ module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
                 | Some patch_id -> (
                     match Env.find_pr_number ~patch_id with
                     | Some pr_number -> (
-                        let url =
-                          Printf.sprintf "https://github.com/%s/%s/pull/%d"
-                            Env.owner Env.repo
-                            (Pr_number.to_int pr_number)
-                        in
-                        let open_cmd =
-                          if Stdlib.Sys.file_exists "/usr/bin/open" then "open"
-                          else "xdg-open"
-                        in
-                        match
-                          Eio.Process.run Env.process_mgr [ open_cmd; url ]
-                        with
-                        | () -> (
-                            match !status_msg with
-                            | Some
-                                {
-                                  Tui.text =
-                                    "No PR to open" | "Could not open browser";
-                                  _;
-                                } ->
-                                status_msg := None
-                            | Some _ | None -> ())
-                        | exception (Eio.Cancel.Cancelled _ as exn) -> raise exn
-                        | exception _ ->
+                        match Forge.change_url pr_number with
+                        | None ->
                             status_msg :=
                               Some
                                 {
-                                  Tui.level = Tui.Error;
-                                  text = "Could not open browser";
+                                  Tui.level = Tui.Info;
+                                  text = "No change to open";
                                   expires_at = None;
-                                })
+                                }
+                        | Some url -> (
+                            let open_cmd =
+                              if Stdlib.Sys.file_exists "/usr/bin/open" then
+                                "open"
+                              else "xdg-open"
+                            in
+                            match
+                              Eio.Process.run Env.process_mgr [ open_cmd; url ]
+                            with
+                            | () -> (
+                                match !status_msg with
+                                | Some
+                                    {
+                                      Tui.text =
+                                        ( "No PR to open" | "No change to open"
+                                        | "Could not open browser" );
+                                      _;
+                                    } ->
+                                    status_msg := None
+                                | Some _ | None -> ())
+                            | exception (Eio.Cancel.Cancelled _ as exn) ->
+                                raise exn
+                            | exception _ ->
+                                status_msg :=
+                                  Some
+                                    {
+                                      Tui.level = Tui.Error;
+                                      text = "Could not open browser";
+                                      expires_at = None;
+                                    }))
                     | None ->
                         status_msg :=
                           Some
