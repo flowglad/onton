@@ -40,7 +40,7 @@ type input_mode =
 
 let prompt_prefix = function
   | Normal -> ""
-  | Prompt_pr -> "PR #: "
+  | Prompt_pr -> "PR # or branch: "
   | Prompt_worktree -> "Worktree: "
   | Prompt_message -> "> "
   | Prompt_broadcast -> "broadcast> "

@@ -3,11 +3,20 @@
 
 open Base
 
-let configured_github_token = ref None
+type configured_credentials = Github of string | Sourcehut of string * string
+
+let configured_credentials = ref None
 
 let set_github_token token =
   let token = String.strip token in
-  if not (String.is_empty token) then configured_github_token := Some token
+  if not (String.is_empty token) then
+    configured_credentials := Some (Github token)
+
+let set_sourcehut_token ~username token =
+  let username = String.strip username in
+  let token = String.strip token in
+  if not (String.is_empty username || String.is_empty token) then
+    configured_credentials := Some (Sourcehut (username, token))
 
 let askpass_script =
   Stdlib.Lazy.from_fun (fun () ->
@@ -19,6 +28,19 @@ let askpass_script =
       let body =
         {|#!/bin/sh
 case "$1" in
+  *https://git.sr.ht\'*|*https://git.sr.ht/*|*https://*@git.sr.ht\'*|*https://*@git.sr.ht/*)
+    case "$1" in
+      *Username*)
+        printf '%s\n' "${SRHT_USERNAME:-oauth2}"
+        ;;
+      *Password*)
+        printf '%s\n' "$SRHT_TOKEN"
+        ;;
+      *)
+        printf '\n'
+        ;;
+    esac
+    ;;
   *Username*)
     printf '%s\n' 'x-access-token'
     ;;
@@ -45,15 +67,22 @@ esac
 
 let is_env_binding name s = String.is_prefix s ~prefix:(name ^ "=")
 
-let with_configured_token env =
-  match !configured_github_token with
+let with_configured_tokens env =
+  match !configured_credentials with
   | None -> env
-  | Some token ->
+  | Some credentials -> (
       let env =
         List.filter env ~f:(fun s ->
-            not (is_env_binding "GITHUB_TOKEN" s || is_env_binding "GH_TOKEN" s))
+            not
+              (is_env_binding "GITHUB_TOKEN" s
+              || is_env_binding "GH_TOKEN" s
+              || is_env_binding "SRHT_USERNAME" s
+              || is_env_binding "SRHT_TOKEN" s))
       in
-      ("GITHUB_TOKEN=" ^ token) :: env
+      match credentials with
+      | Github token -> ("GITHUB_TOKEN=" ^ token) :: env
+      | Sourcehut (username, token) ->
+          ("SRHT_USERNAME=" ^ username) :: ("SRHT_TOKEN=" ^ token) :: env)
 
 let clean_env () =
   let askpass = Stdlib.Lazy.force askpass_script in
@@ -69,7 +98,7 @@ let clean_env () =
   |> List.filter ~f:(fun s -> not (String.is_prefix s ~prefix:"GIT_"))
   |> List.filter ~f:(fun s ->
       not (List.exists fixed_env_names ~f:(fun name -> is_env_binding name s)))
-  |> with_configured_token
+  |> with_configured_tokens
   (* These fixed bindings are installed after the broad GIT_* scrub so the git
      subprocess receives only the noninteractive Git variables we install. *)
   |> List.append

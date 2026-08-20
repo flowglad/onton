@@ -97,8 +97,9 @@ dune build
 
 ## Dependencies
 
-Onton shells out to several external tools and talks to the GitHub API. All
-of these must be installed and configured before onton can run.
+Onton shells out to several external tools and talks to the configured forge
+API (GitHub or SourceHut). Install and configure the tools applicable to the
+selected forge and coding backend before onton can run.
 
 ### Runtime dependencies
 
@@ -219,6 +220,35 @@ hand and your interactive shell isn't authenticated for HTTPS pushes, run
 global git config and subsequent git invocations transparently reuse the
 token.
 
+### SourceHut
+
+Use `--forge sourcehut` for a git.sr.ht repository (ad-hoc mode also detects a
+`git.sr.ht` origin automatically). Set `SRHT_TOKEN` to a SourceHut personal
+access token with `JOBS:RW`, `LOGS:RO`, and `PROFILE:RO`. `JOBS:RW` permits
+polling and reruns, `LOGS:RO` lets onton include failed task logs in CI
+feedback, and `PROFILE:RO` is required to construct canonical build URLs. Add
+`SECRETS:RO` when rerun manifests reference SourceHut secrets. The token must
+belong to the account that pushes the patch branches, because the builds API
+lists that account's jobs. Managed clones auto-detect SSH with HTTPS fallback;
+`--clone-scheme ssh|https` selects the transport explicitly. For HTTPS,
+onton's noninteractive Git credential helper also uses `SRHT_TOKEN`; grant the
+token `REPOSITORIES:RW` so private clone/fetch and automerge pushes are
+authorized.
+
+The `gh` CLI is GitHub-only and is not required in SourceHut mode.
+
+SourceHut has no pull-request review surface. Onton consequently treats each
+patch branch as a reviewless change: draft/review metadata is absent, review
+operations are disabled, and [builds.sr.ht jobs](https://docs.sourcehut.org/builds.sr.ht/)
+for the branch's exact head SHA become ordinary CI checks. At least one
+SourceHut build manifest must run for a change to become CI-passing. Automerge
+updates the configured base branch with a guarded git merge and push.
+
+In ad-hoc mode, add an existing SourceHut branch with `+BRANCH` on the command
+line (for example, `onton +feature/login`) or press `+` in the TUI and enter the
+branch name. Numeric branch names use the explicit `branch:` prefix, such as
+`+branch:123`.
+
 ### Coding-agent authentication
 
 Onton spawns each patch in an isolated config dir (`spawn-envs/<patch_id>/{claude,codex,opencode}`)
@@ -284,12 +314,13 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 |------|---------|-------------|
 | `PROJECT` | (derived from gameplan) | Project name (positional). Required to resume, optional with `--gameplan` |
 | `--gameplan` | — | Path to the gameplan markdown file |
-| `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
-| `--token` | `$GITHUB_TOKEN` or `gh auth token` | GitHub API token |
+| `--repo` | `.` | Path to the git repository. Forge owner/repo are inferred from `git remote` |
+| `--forge` | `auto` | Forge: `github`, `sourcehut`, or local-origin auto-detection. Gameplan projects default to GitHub unless specified. |
+| `--token` | forge-specific | API token. Defaults to `$GITHUB_TOKEN` / `gh auth token` for GitHub or `$SRHT_TOKEN` for SourceHut. |
 | `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
 | `--model` | (backend CLI's own default) | Model name passed to the backend CLI |
 | `--main-branch` | (auto-detected) | Main branch name (inferred from remote HEAD if omitted) |
-| `--poll-interval` | `30.0` | GitHub polling interval in seconds |
+| `--poll-interval` | `30.0` | Forge polling interval in seconds |
 | `--max-concurrency` | `5` / `$ONTON_MAX_CONCURRENCY` | Maximum concurrent Claude processes |
 | `--auto-merge` | off | Enable automerge for every patch when starting a fresh `--gameplan` project; ignored on resume so per-patch TUI toggles persist |
 | `--headless` | off | Run without TUI (plain log output to stdout) |
@@ -301,7 +332,8 @@ message ledger, so accepted but incomplete work can resume after restart.
 
 ### User configuration
 
-Per-repo configuration lives at `~/.config/onton/<github-owner>/<github-repo>/`.
+Per-repo configuration lives at `~/.config/onton/<github-owner>/<github-repo>/`
+for GitHub and `~/.config/onton/sourcehut/<owner>/<repo>/` for SourceHut.
 
 | File | Description |
 |------|-------------|
@@ -334,9 +366,11 @@ found for a patch's branch, one is created at
 ### Ad-hoc mode
 
 When launched without `PROJECT` or `--gameplan`, onton starts with an empty
-patch list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each
-`+N` creates a new agent that polls and responds to the given PR. Branch, base,
-and worktree are auto-discovered from GitHub and local git.
+patch list. GitHub accepts PR targets (`+123`); SourceHut accepts existing remote
+branches (`+feature/login`). Targets can be supplied as trailing command-line
+arguments or by pressing `+` in the TUI and entering the PR number or branch.
+Each target creates an agent that polls CI and responds to failures. Branch,
+base, and worktree state are discovered from the forge and local git.
 
 State is persisted across restarts — ad-hoc agents survive session restarts and
 resume where they left off.
@@ -446,7 +480,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `event_log` | Structured event log for persistence and replay |
 | `pr_state` | Pull request state tracking and derived status |
 | `run_classification` | Classify agent run outcomes (success, failure, needs intervention) |
-| `forge` | Git forge (GitHub) abstraction |
+| `forge` | Git forge abstraction with explicit review capabilities |
 | `invariants` | Pure spec invariant checker over `State.t` — used by property tests and ad-hoc snapshot inspection (no production call site) |
 | `persistence` | JSON snapshot save/load for the current durable schema, including transcripts and the message ledger |
 | `project_store` | Project config and gameplan storage at `~/.local/share/onton/` |
@@ -454,6 +488,7 @@ waiting for running sessions to finish. Backpressure is provided by a
 | `prompt` | Agent prompt rendering with per-project template override support |
 | `worktree` | Git worktree CRUD, branch detection, orchestrator-executed `git rebase` |
 | `github` | GitHub GraphQL API client (HTTPS via Eio) |
+| `sourcehut` | Reviewless git.sr.ht branch lifecycle plus builds.sr.ht CI client |
 | `term` | ANSI terminal primitives (raw mode, key input, size, SIGTSTP/SIGCONT) |
 | `tui_input` | Keyboard -> command translation, text-mode parsing, history buffer |
 | `tui` | Terminal UI: list/detail/timeline views, status derivation, frame rendering, gameplan-ordered display |
@@ -603,7 +638,7 @@ Text mode (Enter in detail view, or `:` in list):
 - Type a message and press Enter — sent as human message to the currently
   viewed patch (clears `needs_intervention`)
 - `N> message` — send human message to patch N
-- `+123` — register ad-hoc PR #123 for the selected patch
+- `+` — prompt for an ad-hoc PR number or remote branch
 - `w /path` — register existing worktree directory
 - `-` — remove the selected patch from orchestration
 

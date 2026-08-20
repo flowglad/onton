@@ -15,11 +15,7 @@ module Persistence_env = struct
   end
 end
 
-module Make
-    (_ : Forge.S with type error = Github.error)
-    (_ : Worktree.S)
-    (Env : Persistence_env.S) =
-struct
+module Make (_ : Forge.S) (_ : Worktree.S) (Env : Persistence_env.S) = struct
   let run () =
     let path = Project_store.snapshot_path Env.project_name in
     Project_store.ensure_dir (Stdlib.Filename.dirname path);

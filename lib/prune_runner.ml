@@ -63,11 +63,13 @@ let refresh_candidates (agents : Patch_agent.t Map.M(Patch_id).t) =
     tolerated — the corresponding agent is left untouched and non-terminal. *)
 let refresh_agents_from_forge
     ~(make_forge :
+       forge:string ->
        owner:string ->
        repo:string ->
+       repo_root:string ->
        main_branch:Branch.t ->
-       (module Forge.S with type error = Github.error) option)
-    ~(cfg : Project_store.stored_config)
+       changes:(Pr_number.t option * Branch.t * Branch.t) list ->
+       (module Forge.S) option) ~(cfg : Project_store.stored_config)
     ~(agents : Patch_agent.t Map.M(Patch_id).t) =
   let candidates = refresh_candidates agents in
   if List.is_empty candidates then
@@ -82,8 +84,18 @@ let refresh_agents_from_forge
       } )
   else
     match
-      make_forge ~owner:cfg.github_owner ~repo:cfg.github_repo
+      make_forge ~forge:cfg.forge ~owner:cfg.github_owner ~repo:cfg.github_repo
+        ~repo_root:cfg.repo_root
         ~main_branch:(Types.Branch.of_string cfg.main_branch)
+        ~changes:
+          (let main_branch = Types.Branch.of_string cfg.main_branch in
+           Map.data agents
+           |> List.filter_map ~f:(fun (agent : Patch_agent.t) ->
+               Patch_agent.pr_number agent
+               |> Option.map ~f:(fun pr_number ->
+                   ( Some pr_number,
+                     agent.branch,
+                     Option.value agent.base_branch ~default:main_branch ))))
     with
     | None ->
         ( agents,
@@ -95,8 +107,8 @@ let refresh_agents_from_forge
             errors = 0;
             skipped_reason =
               Some
-                "no GitHub token available (pass --token, set GITHUB_TOKEN, or \
-                 log in with `gh`)";
+                "no forge token available (pass --token, set GITHUB_TOKEN or \
+                 SRHT_TOKEN, or log in with `gh`)";
           } )
     | Some forge ->
         let module Forge = (val forge) in
@@ -239,7 +251,7 @@ let kept_reason ~base ~refresh_summary =
   | None -> base
   | Some note -> Stdlib.Printf.sprintf "%s (%s)" base note
 
-let run_prune ~net ~clock ~github_token ~refresh () =
+let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
   let slugs = Project_store.list_projects () in
   if List.is_empty slugs then (
     Stdlib.Printf.printf "No stored projects to consider.\n";
@@ -252,16 +264,27 @@ let run_prune ~net ~clock ~github_token ~refresh () =
        [token] so per-project classification only supplies the
        owner/repo/branch that actually vary, and yields [None] when no token is
        available so the refresh is reported as skipped rather than failing. *)
-    let token =
-      if not refresh then ""
-      else
-        let explicit = String.strip github_token in
-        if String.is_empty explicit then Managed_repo.infer_github_token ()
-        else explicit
-    in
-    let make_forge ~owner ~repo ~main_branch =
+    let make_forge ~forge ~owner ~repo ~repo_root ~main_branch ~changes =
+      let explicit = String.strip github_token in
+      let token =
+        if not (String.is_empty explicit) then explicit
+        else if String.equal forge "sourcehut" then
+          Managed_repo.infer_sourcehut_token ()
+        else Managed_repo.infer_github_token ()
+      in
       if String.is_empty token then None
-      else Some (Github.make ~net ~clock ~token ~owner ~repo ~main_branch)
+      else if String.equal forge "sourcehut" then
+        let () = Git_env.set_sourcehut_token ~username:owner token in
+        let module S =
+          (val Sourcehut.make ~net ~clock ~process_mgr ~token ~owner ~repo
+                 ~repo_root ~main_branch ~changes)
+        in
+        Some (module S : Forge.S)
+      else
+        let module G =
+          (val Github.make ~net ~clock ~token ~owner ~repo ~main_branch)
+        in
+        Some (module G : Forge.S)
     in
     let removed = ref [] in
     let kept = ref [] in

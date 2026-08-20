@@ -7,7 +7,9 @@ let owner_re = Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9-]{0,38}$|} |> Re.compile
 let repo_re = Re.Pcre.re {|^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$|} |> Re.compile
 
 let remote_url_re =
-  Re.Pcre.re {|github\.com[:/]([^/]+)/([^/\s]+?)(?:\.git)?/?$|} |> Re.compile
+  Re.Pcre.re
+    {|^(?:https?://github\.com/|(?:ssh://)?git@github\.com[:/])([^/]+)/([^/\s]+?)(?:\.git)?/?$|}
+  |> Re.compile
 
 let validate_owner s =
   let s = String.strip s in
@@ -153,3 +155,8 @@ let%test "infer_owner_repo_from_url parses ssh" =
 let%test "infer_owner_repo_from_url returns None for non-github" =
   Option.is_none
     (infer_owner_repo_from_url "https://gitlab.com/flowglad/onton.git")
+
+let%test "infer_owner_repo_from_url rejects github.com in another host's path" =
+  Option.is_none
+    (infer_owner_repo_from_url
+       "https://attacker.example/github.com/flowglad/onton.git")

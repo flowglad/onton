@@ -4,6 +4,7 @@
 val run_prune :
   net:_ Eio.Net.t ->
   clock:_ Eio.Time.clock ->
+  process_mgr:_ Eio.Process.mgr ->
   github_token:string ->
   refresh:bool ->
   unit ->
@@ -20,8 +21,9 @@ val run_prune :
     leaves the stored [merged] flag untouched so the project is kept, not
     accidentally deleted.
 
-    [github_token] is the explicit CLI/env token value. When it is empty, prune
-    falls back to inferring a token from the environment or [gh auth token].
+    [github_token] is the legacy name of the explicit forge-token CLI value.
+    When it is empty, prune falls back to [GITHUB_TOKEN] / [gh auth token] or
+    [SRHT_TOKEN], according to each stored project's forge.
 
     Returns [0] on success and [1] when one or more projects report prune errors
     (for example lock, snapshot-load, or prune-time filesystem errors).

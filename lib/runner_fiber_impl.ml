@@ -40,11 +40,7 @@ module Runner_env = struct
   end
 end
 
-module Make
-    (Forge : Forge.S with type error = Github.error)
-    (W : Worktree.S)
-    (Env : Runner_env.S) =
-struct
+module Make (Forge : Forge.S) (W : Worktree.S) (Env : Runner_env.S) = struct
   module WS_Env : Worktree_setup.ENV = struct
     let runtime = Env.runtime
     let clock = Env.clock
@@ -352,7 +348,7 @@ struct
                               poll"
                              label)
                     | Error err ->
-                        if Github.is_merge_queue_required_error err then (
+                        if Forge.is_merge_queue_required_error err then (
                           log_event runtime ~patch_id
                             (Printf.sprintf
                                "Automerge direct merge rejected by GitHub \
@@ -373,11 +369,7 @@ struct
                        (Printexc.to_string exn))))
       decisions
 
-  let request_review_permanent_error = function
-    | Github.Http_error { status; _ } -> status >= 400 && status < 500
-    | Github.Json_parse_error _ -> true
-    | Github.Timeout _ | Github.Transport_error _ | Github.Graphql_error _ ->
-        false
+  let request_review_permanent_error = Forge.is_permanent_error
 
   let reconcile_and_execute_review_requests ~runtime ~team_slug =
     let decisions =
@@ -1070,78 +1062,74 @@ struct
                                  with
                                 | Ok pr_number ->
                                     log_event runtime ~patch_id
-                                      (Printf.sprintf "PR #%d created"
-                                         (Pr_number.to_int pr_number));
+                                      (if Forge.supports_reviews then
+                                         Printf.sprintf "PR #%d created"
+                                           (Pr_number.to_int pr_number)
+                                       else
+                                         Printf.sprintf
+                                           "%s change for branch %s registered"
+                                           Forge.name
+                                           (Branch.to_string patch.Patch.branch));
                                     Env.register_pr ~patch_id ~pr_number;
                                     Runtime.update_orchestrator runtime
                                       (fun orch ->
                                         Orchestrator.set_pr_number orch patch_id
                                           pr_number)
-                                | Error e -> (
-                                    match e with
-                                    | Github.Http_error
-                                        { status = 422; body; _ }
-                                      when Github
-                                           .response_error_message_contains body
-                                             ~substring:
-                                               "pull request already exists"
-                                      -> (
-                                        (* PR already exists — discover it rather
+                                | Error e ->
+                                    if Forge.is_duplicate_change_error e then (
+                                      (* PR already exists — discover it rather
                                          than treating this as failure. We
                                          only fall back on this specific 422;
                                          other 422s (no commits, head missing,
                                          etc.) propagate with the original
                                          error message. *)
-                                        match
-                                          Forge.list_prs
-                                            ~branch:patch.Patch.branch
-                                            ~state:`Open ()
-                                        with
-                                        | Ok ((pr_number, _, _) :: _) ->
-                                            log_event runtime ~patch_id
-                                              (Printf.sprintf
-                                                 "PR #%d already existed, \
-                                                  associated"
-                                                 (Pr_number.to_int pr_number));
-                                            Env.register_pr ~patch_id ~pr_number;
-                                            Runtime.update_orchestrator runtime
-                                              (fun orch ->
-                                                Orchestrator.set_pr_number orch
-                                                  patch_id pr_number)
-                                        | Ok [] ->
-                                            log_event runtime ~patch_id
-                                              "PR creation failed (422 \
-                                               already-exists) and discovery \
-                                               found no open PRs";
-                                            Runtime.update_orchestrator runtime
-                                              (fun orch ->
-                                                Orchestrator
-                                                .on_pr_discovery_failure orch
-                                                  patch_id)
-                                        | Error disc_err ->
-                                            log_event runtime ~patch_id
-                                              (Printf.sprintf
-                                                 "PR creation failed (422 \
-                                                  already-exists) and \
-                                                  discovery also failed — %s"
-                                                 (Forge.show_error disc_err));
-                                            Runtime.update_orchestrator runtime
-                                              (fun orch ->
-                                                Orchestrator
-                                                .on_pr_discovery_failure orch
-                                                  patch_id))
-                                    | Github.Http_error _
-                                    | Github.Json_parse_error _
-                                    | Github.Graphql_error _ | Github.Timeout _
-                                    | Github.Transport_error _ ->
-                                        log_event runtime ~patch_id
-                                          (Printf.sprintf
-                                             "PR creation failed — %s"
-                                             (Forge.show_error e));
-                                        Runtime.update_orchestrator runtime
-                                          (fun orch ->
-                                            Orchestrator.on_pr_discovery_failure
-                                              orch patch_id)));
+                                      match
+                                        Forge.list_prs
+                                          ~branch:patch.Patch.branch
+                                          ~state:`Open ()
+                                      with
+                                      | Ok ((pr_number, _, _) :: _) ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "PR #%d already existed, \
+                                                associated"
+                                               (Pr_number.to_int pr_number));
+                                          Env.register_pr ~patch_id ~pr_number;
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator.set_pr_number orch
+                                                patch_id pr_number)
+                                      | Ok [] ->
+                                          log_event runtime ~patch_id
+                                            "PR creation failed (422 \
+                                             already-exists) and discovery \
+                                             found no open PRs";
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .on_pr_discovery_failure orch
+                                                patch_id)
+                                      | Error disc_err ->
+                                          log_event runtime ~patch_id
+                                            (Printf.sprintf
+                                               "PR creation failed (422 \
+                                                already-exists) and discovery \
+                                                also failed — %s"
+                                               (Forge.show_error disc_err));
+                                          Runtime.update_orchestrator runtime
+                                            (fun orch ->
+                                              Orchestrator
+                                              .on_pr_discovery_failure orch
+                                                patch_id))
+                                    else (
+                                      log_event runtime ~patch_id
+                                        (Printf.sprintf
+                                           "PR creation failed — %s"
+                                           (Forge.show_error e));
+                                      Runtime.update_orchestrator runtime
+                                        (fun orch ->
+                                          Orchestrator.on_pr_discovery_failure
+                                            orch patch_id)));
                                 Runtime.update_orchestrator runtime (fun orch ->
                                     Orchestrator
                                     .complete_start_after_pr_discovery orch

@@ -133,6 +133,7 @@ let reset_artifact_dir path =
 
 type stored_config = {
   project_name : string;
+  forge : string; [@yojson.default "github"]
   github_owner : string;
   github_repo : string;
   backend : string;
@@ -157,14 +158,16 @@ type stored_config = {
 }
 [@@deriving yojson]
 
-let save_config ~project_name ~github_owner ~github_repo ~backend ~model
-    ~main_branch ~poll_interval ~repo_root ~max_concurrency ~max_ci_failures
-    ~automerge_timeout ?(url_scheme : string option = None) () =
+let save_config ~project_name ?(forge = "github") ~github_owner ~github_repo
+    ~backend ~model ~main_branch ~poll_interval ~repo_root ~max_concurrency
+    ~max_ci_failures ~automerge_timeout ?(url_scheme : string option = None) ()
+    =
   let dir = project_dir project_name in
   ensure_dir dir;
   let config =
     {
       project_name;
+      forge;
       github_owner;
       github_repo;
       backend;
@@ -633,4 +636,16 @@ let%test "save_config persists no github_token and round-trips" =
           && Int.equal cfg.max_ci_failures Patch_agent.default_max_ci_failures
           && Option.equal Float.equal cfg.automerge_timeout
                (Some Patch_controller.default_automerge_timeout)
+      | Error _ -> false)
+
+let%test "save_config round-trips the SourceHut forge" =
+  with_temp_data_dir (fun () ->
+      let project_name = "sourcehut-config" in
+      save_config ~project_name ~forge:"sourcehut" ~github_owner:"alice"
+        ~github_repo:"repo" ~backend:"claude" ~model:"" ~main_branch:"main"
+        ~poll_interval:5.0 ~repo_root:"/tmp/repo" ~max_concurrency:2
+        ~max_ci_failures:Patch_agent.default_max_ci_failures
+        ~automerge_timeout:Patch_controller.default_automerge_timeout ();
+      match load_config ~project_name with
+      | Ok config -> String.equal config.forge "sourcehut"
       | Error _ -> false)

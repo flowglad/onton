@@ -64,6 +64,7 @@ let format_git_failure { stdout; stderr; _ } =
 
 module type S = sig
   val infer_owner_repo : unit -> (string * string) option
+  val infer_sourcehut_owner_repo : unit -> (string * string) option
   val fetch_managed_repo : unit -> (unit, string) Result.t
   val infer_default_branch : unit -> Types.Branch.t
 
@@ -84,6 +85,18 @@ let make ~repo_root =
         match run_git_capture ~repo_root [ "remote"; "get-url"; "origin" ] with
         | Some { status = Unix.WEXITED 0; stdout; _ } ->
             Github_target.infer_owner_repo_from_url stdout
+        | Some { status = Unix.WEXITED _; _ }
+        | Some { status = Unix.WSIGNALED _; _ }
+        | Some { status = Unix.WSTOPPED _; _ }
+        | None ->
+            None
+      with _ -> None
+
+    let infer_sourcehut_owner_repo () =
+      try
+        match run_git_capture ~repo_root [ "remote"; "get-url"; "origin" ] with
+        | Some { status = Unix.WEXITED 0; stdout; _ } ->
+            Sourcehut_target.infer_owner_repo_from_url stdout
         | Some { status = Unix.WEXITED _; _ }
         | Some { status = Unix.WSIGNALED _; _ }
         | Some { status = Unix.WSTOPPED _; _ }

@@ -66,6 +66,42 @@ let response_error_message_contains body ~substring =
   |> List.exists ~f:(fun msg ->
       String.is_substring (String.lowercase msg) ~substring:needle)
 
+let is_permanent_error = function
+  | Http_error { status = 429; _ } -> false
+  | Http_error { status = 403; body; _ } ->
+      not
+        (response_error_message_contains body ~substring:"rate limit"
+        || response_error_message_contains body ~substring:"abuse detection")
+  | Http_error { status; _ } -> status >= 400 && status < 500
+  | Json_parse_error _ -> true
+  | Graphql_error _ | Timeout _ | Transport_error _ -> false
+
+let%test "is_permanent_error treats HTTP 429 as transient" =
+  not
+    (is_permanent_error
+       (Http_error { meth = "GET"; path = "/"; status = 429; body = "" }))
+
+let%test "is_permanent_error treats rate-limit HTTP 403 as transient" =
+  not
+    (is_permanent_error
+       (Http_error
+          {
+            meth = "GET";
+            path = "/";
+            status = 403;
+            body = {|{"message":"API rate limit exceeded"}|};
+          }))
+
+let%test "is_permanent_error keeps ordinary HTTP 403 permanent" =
+  is_permanent_error
+    (Http_error
+       {
+         meth = "GET";
+         path = "/";
+         status = 403;
+         body = {|{"message":"Resource not accessible"}|};
+       })
+
 let%test "response_error_message_contains: empty body returns false" =
   not (response_error_message_contains "" ~substring:"already exists")
 
@@ -2435,8 +2471,36 @@ let make ~net ~clock ~token ~owner ~repo ~main_branch :
   let module M = struct
     type nonrec error = error
 
+    let name = "GitHub"
     let show_error = show_error
+
+    let poll_error = function
+      | Timeout { seconds; _ } -> Poll_outcome.Timed_out { seconds }
+      | Transport_error { msg; _ } -> Poll_outcome.Transport_failed { msg }
+      | Http_error { status; body; _ } ->
+          Poll_outcome.Http_failed { status; msg = extract_github_message body }
+      | Graphql_error msgs -> Poll_outcome.Graphql_failed msgs
+      | Json_parse_error msg -> Poll_outcome.Json_parse_failed msg
+
+    let is_duplicate_change_error = function
+      | Http_error { status = 422; body; _ } ->
+          response_error_message_contains body
+            ~substring:"pull request already exists"
+      | Http_error _ | Json_parse_error _ | Graphql_error _ | Timeout _
+      | Transport_error _ ->
+          false
+
+    let is_permanent_error = is_permanent_error
+    let is_merge_queue_required_error = is_merge_queue_required_error
+    let supports_reviews = true
+    let supports_pull_request_changes = true
+    let supports_branch_changes = false
     let owner = owner
+
+    let change_url pr_number =
+      Some
+        (Printf.sprintf "https://github.com/%s/%s/pull/%d" owner repo
+           (Types.Pr_number.to_int pr_number))
 
     type nonrec merge_result = merge_result =
       | Merge_succeeded

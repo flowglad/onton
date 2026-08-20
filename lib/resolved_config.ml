@@ -5,6 +5,7 @@ open Onton_core.Types
 
 type config = {
   project : string option;
+  forge : string;
   backend : string;
   model : string;
   github_token : string;
@@ -25,6 +26,7 @@ type config = {
 
 type t = {
   project_name : string;
+  forge : string;
   backend : string;
   model : string;
   github_token : string;
@@ -49,20 +51,25 @@ let known_backends =
 let known_patch_agent_providers = [ "anthropic"; "openai" ]
 let known_patch_agent_efforts = [ "low"; "medium"; "high" ]
 
-let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
-    ~github_repo ~main_branch ~poll_interval ~max_concurrency ~max_ci_failures
-    ~automerge_timeout ~patch_agent_provider ~patch_agent_effort =
+let validate_resolved_config ~project_name ~forge ~backend ~github_token
+    ~github_owner ~github_repo ~main_branch ~poll_interval ~max_concurrency
+    ~max_ci_failures ~automerge_timeout ~patch_agent_provider
+    ~patch_agent_effort =
   let errors =
     Base.List.filter_map
       [
         ( Base.String.is_empty (Base.String.strip project_name),
           "project name is required" );
+        ( not (Base.List.mem [ "github"; "sourcehut" ] forge ~equal:String.equal),
+          Printf.sprintf "--forge must be github or sourcehut (got %S)" forge );
         ( not (Base.List.mem known_backends backend ~equal:String.equal),
           Printf.sprintf "--backend must be one of: %s (got %S)"
             (String.concat ", " known_backends)
             backend );
         ( Base.String.is_empty (Base.String.strip github_token),
-          "--token / GITHUB_TOKEN is required" );
+          if String.equal forge "sourcehut" then
+            "--token / SRHT_TOKEN is required"
+          else "--token / GITHUB_TOKEN is required" );
         ( Base.String.is_empty (Base.String.strip github_owner),
           "--owner / GITHUB_OWNER is required" );
         ( Base.String.is_empty (Base.String.strip github_repo),
@@ -110,10 +117,10 @@ let validate_resolved_config ~project_name ~backend ~github_token ~github_owner
 let of_config (config : config) =
   let project_name = Option.value config.project ~default:"" in
   match
-    validate_resolved_config ~project_name ~backend:config.backend
-      ~github_token:config.github_token ~github_owner:config.github_owner
-      ~github_repo:config.github_repo ~main_branch:config.main_branch
-      ~poll_interval:config.poll_interval
+    validate_resolved_config ~project_name ~forge:config.forge
+      ~backend:config.backend ~github_token:config.github_token
+      ~github_owner:config.github_owner ~github_repo:config.github_repo
+      ~main_branch:config.main_branch ~poll_interval:config.poll_interval
       ~max_concurrency:config.max_concurrency
       ~max_ci_failures:config.max_ci_failures
       ~automerge_timeout:config.automerge_timeout
@@ -125,6 +132,7 @@ let of_config (config : config) =
       Ok
         {
           project_name;
+          forge = config.forge;
           backend = config.backend;
           model = config.model;
           github_token = config.github_token;

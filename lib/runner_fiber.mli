@@ -32,9 +32,6 @@ module Runner_env : sig
   end
 end
 
-module Make
-    (_ : Forge.S with type error = Github.error)
-    (_ : Worktree.S)
-    (_ : Runner_env.S) : sig
+module Make (_ : Forge.S) (_ : Worktree.S) (_ : Runner_env.S) : sig
   val run : ?status_msg:Tui.status_msg option ref -> unit -> unit
 end

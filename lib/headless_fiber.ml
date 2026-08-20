@@ -43,11 +43,7 @@ module Headless_env = struct
   end
 end
 
-module Make
-    (_ : Forge.S with type error = Github.error)
-    (_ : Worktree.S)
-    (Env : Headless_env.S) =
-struct
+module Make (_ : Forge.S) (_ : Worktree.S) (Env : Headless_env.S) = struct
   let run () =
     let seen = Stdlib.Hashtbl.create 256 in
     let rec loop () =

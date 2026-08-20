@@ -5,6 +5,7 @@ open Onton_core.Types
 
 type config = {
   project : string option;
+  forge : string;
   backend : string;
   model : string;
   github_token : string;
@@ -36,6 +37,7 @@ type config = {
 
 type t = {
   project_name : string;
+  forge : string;
   backend : string;
   model : string;
   github_token : string;

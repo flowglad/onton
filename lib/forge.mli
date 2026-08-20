@@ -3,15 +3,37 @@
 
 (** Forge interface: consumer-facing abstraction over forge operations.
 
-    Each forge implementation (GitHub, GitLab, etc.) satisfies this signature.
-    Implementations capture any runtime capabilities they need at construction
-    time; for GitHub, {!Github.make} is the canonical constructor. *)
+    Each forge implementation (GitHub, SourceHut, etc.) satisfies this
+    signature. Review operations and the two ad-hoc change identity models are
+    represented as independent capabilities. Implementations capture any runtime
+    capabilities they need at construction time; for GitHub, {!Github.make} is
+    the canonical constructor. *)
 
 module type S = sig
   type error
 
+  val name : string
   val show_error : error -> string
+  val poll_error : error -> Poll_outcome.t
+  val is_duplicate_change_error : error -> bool
+  val is_permanent_error : error -> bool
+  val is_merge_queue_required_error : error -> bool
+
+  (* Whether review comments, threads, and review requests are meaningful for
+     this forge. Callers must not invoke those operations when [false]. *)
+  val supports_reviews : bool
+  val supports_pull_request_changes : bool
+
+  val supports_branch_changes : bool
+  (** Whether ad-hoc additions may identify changes by forge pull-request number
+      or by complete remote branch identity, respectively. These capabilities
+      are independent of review support and of each other. *)
+
   val owner : string
+
+  val change_url : Types.Pr_number.t -> string option
+  (** Browser URL for a forge change. Reviewless forges may return [None] when
+      the local identifier is no longer registered. *)
 
   type merge_result =
     | Merge_succeeded

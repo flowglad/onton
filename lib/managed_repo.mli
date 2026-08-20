@@ -3,6 +3,7 @@
 
 val ensure_managed_repo :
   ?clone_scheme:Onton_core.Github_target.url_scheme option ->
+  ?forge:string ->
   project_name:string ->
   token:string ->
   owner:string ->
@@ -17,11 +18,14 @@ val ensure_managed_repo :
 
     [?clone_scheme] is the explicit override (e.g. a [--clone-scheme] CLI flag
     or a previously-persisted [url_scheme] from [config.json]). If [None], SSH
-    reachability to [git@github.com:owner/repo.git] is probed (with
+    reachability to the selected forge's repository is probed (with
     [BatchMode=yes] and a short [ConnectTimeout]); SSH is chosen if the probe
     succeeds, otherwise the fallback is HTTPS. When the managed clone already
     exists on disk, its existing [origin] URL is authoritative — we don't flip
-    transports mid-life. *)
+    transports mid-life, and reject an origin that does not match the requested
+    forge and repository. [token] is installed as the selected forge's
+    noninteractive HTTPS Git credential only after that check and before clone
+    or fetch. *)
 
 val url_scheme_of_string : string -> Onton_core.Github_target.url_scheme option
 (** Parse the persisted ["https"] / ["ssh"] form. Returns [None] for anything
@@ -32,3 +36,6 @@ val string_of_url_scheme : Onton_core.Github_target.url_scheme -> string
 
 val infer_github_token : unit -> string
 (** Resolve a GitHub token from [GITHUB_TOKEN] or [gh auth token]. *)
+
+val infer_sourcehut_token : unit -> string
+(** Resolve a SourceHut token from [SRHT_TOKEN]. *)

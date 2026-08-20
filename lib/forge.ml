@@ -3,15 +3,25 @@
 
 (** Forge interface: consumer-facing abstraction over forge operations.
 
-    Each forge implementation (GitHub, GitLab, etc.) satisfies this signature.
-    Implementations capture any runtime capabilities they need at construction
-    time; for GitHub, {!Github.make} is the canonical constructor. *)
+    Each forge implementation (GitHub, SourceHut, etc.) satisfies this
+    signature. Implementations capture any runtime capabilities they need at
+    construction time; for GitHub, {!Github.make} is the canonical constructor.
+*)
 
 module type S = sig
   type error
 
+  val name : string
   val show_error : error -> string
+  val poll_error : error -> Poll_outcome.t
+  val is_duplicate_change_error : error -> bool
+  val is_permanent_error : error -> bool
+  val is_merge_queue_required_error : error -> bool
+  val supports_reviews : bool
+  val supports_pull_request_changes : bool
+  val supports_branch_changes : bool
   val owner : string
+  val change_url : Types.Pr_number.t -> string option
 
   type merge_result =
     | Merge_succeeded
