@@ -90,10 +90,12 @@ let refresh_agents_from_forge
         ~changes:
           (let main_branch = Types.Branch.of_string cfg.main_branch in
            Map.data agents
-           |> List.map ~f:(fun (agent : Patch_agent.t) ->
-               ( Patch_agent.pr_number agent,
-                 agent.branch,
-                 Option.value agent.base_branch ~default:main_branch )))
+           |> List.filter_map ~f:(fun (agent : Patch_agent.t) ->
+               Patch_agent.pr_number agent
+               |> Option.map ~f:(fun pr_number ->
+                   ( Some pr_number,
+                     agent.branch,
+                     Option.value agent.base_branch ~default:main_branch ))))
     with
     | None ->
         ( agents,
@@ -272,6 +274,7 @@ let run_prune ~net ~clock ~process_mgr ~github_token ~refresh () =
       in
       if String.is_empty token then None
       else if String.equal forge "sourcehut" then
+        let () = Git_env.set_sourcehut_token ~username:owner token in
         let module S =
           (val Sourcehut.make ~net ~clock ~process_mgr ~token ~owner ~repo
                  ~repo_root ~main_branch ~changes)

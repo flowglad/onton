@@ -32,6 +32,14 @@ val register_change :
     by probing for a free local id. Re-registering the same branch preserves its
     id and updates its base. *)
 
+val restore_changes :
+  (Types.Pr_number.t option * Types.Branch.t * Types.Branch.t) list ->
+  (registry, string) Result.t
+(** Restore a complete registry from persisted changes. Duplicate branches and
+    colliding persisted ids are rejected. Persisted ids are reserved before ids
+    are generated for changes without one, so input order cannot manufacture a
+    collision with a later snapshot identity. *)
+
 val find_change :
   registry -> Types.Pr_number.t -> (Types.Branch.t * Types.Branch.t) option
 (** Resolve a local change id to exactly the registered head/base pair. *)

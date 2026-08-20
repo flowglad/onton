@@ -203,8 +203,8 @@ let probe_ssh_available ~forge ~owner ~repo =
 (** Clone [owner/repo] from the selected forge into [target_dir] (which must not
     exist yet). Authentication piggybacks on [Git_env.clean_env]'s [GIT_ASKPASS]
     helper (HTTPS) or the user's ssh-agent (SSH). For private repos with HTTPS,
-    [Git_env.set_github_token] must have been called first. Uses
-    [--filter=blob:none] for a partial clone — only fetched objects are
+    the selected forge's token must have been configured in [Git_env] first.
+    Uses [--filter=blob:none] for a partial clone — only fetched objects are
     downloaded lazily, which is the right tradeoff for onton's worktree-per-
     patch usage pattern. *)
 let clone_managed_repo ~forge ~scheme ~owner ~repo ~target_dir =
@@ -277,7 +277,9 @@ let url_scheme_of_string = function
     runs. *)
 let ensure_managed_repo ?(clone_scheme = None) ?(forge = "github") ~project_name
     ~token ~owner ~repo () =
-  if String.equal forge "github" then Git_env.set_github_token token;
+  if String.equal forge "sourcehut" then
+    Git_env.set_sourcehut_token ~username:owner token
+  else Git_env.set_github_token token;
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
   let repo_root_exists = Stdlib.Sys.file_exists repo_root in

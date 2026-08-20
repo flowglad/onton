@@ -1364,7 +1364,9 @@ let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
   } =
     resolved
   in
-  if String.equal forge "github" then Git_env.set_github_token github_token;
+  if String.equal forge "sourcehut" then
+    Git_env.set_sourcehut_token ~username:resolved.github_owner github_token
+  else Git_env.set_github_token github_token;
   let module Repo = (val Repo_git.make ~repo_root) in
   (match Repo.validate_branch_resolves ~main_branch with
   | Ok () -> ()

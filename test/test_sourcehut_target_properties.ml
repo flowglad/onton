@@ -12,6 +12,9 @@ let totality =
     (fun (owner, repo) ->
       ignore (Sourcehut_target.validate_target ~owner ~repo);
       ignore (Sourcehut_target.infer_owner_repo_from_url owner);
+      ignore
+        (Sourcehut_target.branch_url ~owner ~repo
+           (Types.Branch.of_string owner));
       true)
 
 let remote_round_trip =
@@ -124,11 +127,72 @@ let registry_interleavings_remain_injective =
 
 let branch_url_uses_full_identity =
   QCheck2.Test.make ~name:"sourcehut branch URLs retain the full branch name"
-    ~count:500 gen_string (fun raw ->
+    ~count:500
+    QCheck2.Gen.(string_size ~gen:component_char (0 -- 200))
+    (fun raw ->
       let branch = Types.Branch.of_string ("feature/" ^ raw) in
       String.equal
         (Sourcehut_target.branch_url ~owner:"alice" ~repo:"demo" branch)
         ("https://git.sr.ht/~alice/demo/tree/feature/" ^ raw))
+
+let branch_url_encodes_reserved_characters =
+  QCheck2.Test.make
+    ~name:"sourcehut branch URLs encode reserved bytes and preserve slashes"
+    ~count:500
+    QCheck2.Gen.(
+      triple
+        (string_size ~gen:component_char (0 -- 40))
+        (oneof_list [ '#'; '?'; '%'; '&'; '+'; ':' ])
+        (string_size ~gen:component_char (0 -- 40)))
+    (fun (left, reserved, right) ->
+      let branch =
+        Types.Branch.of_string
+          ("feature/" ^ left ^ String.of_char reserved ^ "/" ^ right)
+      in
+      String.equal
+        (Sourcehut_target.branch_url ~owner:"alice" ~repo:"demo" branch)
+        (Printf.sprintf "https://git.sr.ht/~alice/demo/tree/feature/%s%%%02X/%s"
+           left (Char.code reserved) right))
+
+let restoration_rejects_duplicate_branches =
+  QCheck2.Test.make
+    ~name:"sourcehut snapshot restoration rejects duplicate branches" ~count:500
+    gen_string (fun raw ->
+      let branch = Types.Branch.of_string ("branch/" ^ raw) in
+      let first_base = Types.Branch.of_string "main" in
+      let second_base = Types.Branch.of_string "next" in
+      match
+        Sourcehut_target.restore_changes
+          [
+            (Some (Types.Pr_number.of_int 1), branch, first_base);
+            (Some (Types.Pr_number.of_int 2), branch, second_base);
+          ]
+      with
+      | Error _ -> true
+      | Ok _ -> false)
+
+let restoration_reserves_persisted_ids_first =
+  QCheck2.Test.make
+    ~name:"sourcehut restoration reserves persisted ids before generated ids"
+    ~count:1 QCheck2.Gen.unit (fun () ->
+      let generated = Types.Branch.of_string "collision/fuVefpP80ZGF" in
+      let persisted = Types.Branch.of_string "collision/gRJIw8wGHQJs" in
+      let base = Types.Branch.of_string "main" in
+      let persisted_id = Types.Pr_number.of_int 1054795941 in
+      match
+        Sourcehut_target.restore_changes
+          [ (None, generated, base); (Some persisted_id, persisted, base) ]
+      with
+      | Error _ -> false
+      | Ok registry -> (
+          match
+            ( Sourcehut_target.find_branch registry generated,
+              Sourcehut_target.find_branch registry persisted )
+          with
+          | Some (generated_id, _), Some (actual_persisted_id, _) ->
+              (not (Types.Pr_number.equal generated_id persisted_id))
+              && Types.Pr_number.equal actual_persisted_id persisted_id
+          | (Some _ | None), (Some _ | None) -> false))
 
 let supported_remote_forms =
   QCheck2.Test.make ~name:"sourcehut remote URL forms parse consistently"
@@ -157,5 +221,8 @@ let () =
       persisted_collision_is_rejected;
       registry_interleavings_remain_injective;
       branch_url_uses_full_identity;
+      branch_url_encodes_reserved_characters;
+      restoration_rejects_duplicate_branches;
+      restoration_reserves_persisted_ids_first;
       supported_remote_forms;
     ]

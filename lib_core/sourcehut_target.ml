@@ -48,9 +48,19 @@ let scheme_of_url url =
   else if Re.execp https_url_re url then Some Github_target.Https
   else None
 
+let encode_branch_path branch =
+  let encoded = Buffer.create (String.length branch) in
+  String.iter branch ~f:(fun c ->
+      if
+        Char.is_alphanum c || Char.equal c '-' || Char.equal c '.'
+        || Char.equal c '_' || Char.equal c '~' || Char.equal c '/'
+      then Buffer.add_char encoded c
+      else Buffer.add_string encoded (Printf.sprintf "%%%02X" (Char.to_int c)));
+  Buffer.contents encoded
+
 let branch_url ~owner ~repo branch =
   Printf.sprintf "https://git.sr.ht/~%s/%s/tree/%s" owner repo
-    (Types.Branch.to_string branch)
+    (Types.Branch.to_string branch |> encode_branch_path)
 
 (* FNV-1a, reduced to a positive 30-bit OCaml integer so the compatibility id
    stays readable in the TUI. Zero is reserved by [Pr_number], so map it to
@@ -125,3 +135,29 @@ let register_change registry ~preferred_id ~branch ~base =
             | None -> Ok id)
         | None -> find_available_id registry (candidate_change_id branch))
       |> Result.map ~f:(fun id -> ({ id; branch; base } :: registry, id))
+
+let restore_changes changes =
+  let rec reject_duplicate_branches seen = function
+    | [] -> Ok ()
+    | (_, branch, _) :: rest ->
+        if List.exists seen ~f:(Types.Branch.equal branch) then
+          Error
+            (Printf.sprintf
+               "duplicate SourceHut branch %s in restored change registry"
+               (Types.Branch.to_string branch))
+        else reject_duplicate_branches (branch :: seen) rest
+  in
+  let preferred, generated =
+    List.partition_tf changes ~f:(fun (preferred_id, _, _) ->
+        Option.exists preferred_id ~f:(fun id -> Types.Pr_number.to_int id > 0))
+  in
+  let rec register_all registry = function
+    | [] -> Ok registry
+    | (preferred_id, branch, base) :: rest -> (
+        match register_change registry ~preferred_id ~branch ~base with
+        | Error _ as error -> error
+        | Ok (registry, _) -> register_all registry rest)
+  in
+  match reject_duplicate_branches [] changes with
+  | Error _ as error -> error
+  | Ok () -> register_all empty_registry (preferred @ generated)

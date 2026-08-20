@@ -230,11 +230,12 @@ feedback, and `PROFILE:RO` is required to construct canonical build URLs. Add
 `SECRETS:RO` when rerun manifests reference SourceHut secrets. The token must
 belong to the account that pushes the patch branches, because the builds API
 lists that account's jobs. Managed clones auto-detect SSH with HTTPS fallback;
-`--clone-scheme ssh|https` selects the transport explicitly.
+`--clone-scheme ssh|https` selects the transport explicitly. For HTTPS,
+onton's noninteractive Git credential helper also uses `SRHT_TOKEN`; grant the
+token `REPOSITORIES:RW` so private clone/fetch and automerge pushes are
+authorized.
 
-The `gh` CLI is GitHub-only and is not required in SourceHut mode. SourceHut
-uses `SRHT_TOKEN` for its API and the configured Git remote transport for Git
-operations.
+The `gh` CLI is GitHub-only and is not required in SourceHut mode.
 
 SourceHut has no pull-request review surface. Onton consequently treats each
 patch branch as a reviewless change: draft/review metadata is absent, review

@@ -300,8 +300,14 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
   let git_stdout = git_stdout ~clock ~process_mgr in
   let merge_tree = merge_tree ~clock ~process_mgr in
   let resolve_ref = resolve_ref ~clock ~process_mgr in
-  let changes = ref Sourcehut_target.empty_registry in
-  let initialization_error = ref None in
+  let initial_registry, initial_error =
+    match Sourcehut_target.restore_changes initial_changes with
+    | Ok registry -> (registry, None)
+    | Error message ->
+        (Sourcehut_target.empty_registry, Some (Api_error message))
+  in
+  let changes = ref initial_registry in
+  let initialization_error = ref initial_error in
   let record_change ~preferred_id ~branch ~base =
     match
       Sourcehut_target.register_change !changes ~preferred_id ~branch ~base
@@ -311,10 +317,6 @@ let make ~net ~clock ~process_mgr ~token ~owner ~repo ~repo_root ~main_branch
         changes := updated;
         Ok id
   in
-  List.iter initial_changes ~f:(fun (preferred_id, branch, base) ->
-      match record_change ~preferred_id ~branch ~base with
-      | Ok _ -> ()
-      | Error error -> initialization_error := Some error);
   let find_change pr_number =
     match !initialization_error with
     | Some error -> Error error
