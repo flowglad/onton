@@ -239,6 +239,11 @@ for the branch's exact head SHA become ordinary CI checks. At least one
 SourceHut build manifest must run for a change to become CI-passing. Automerge
 updates the configured base branch with a guarded git merge and push.
 
+In ad-hoc mode, add an existing SourceHut branch with `+BRANCH` on the command
+line (for example, `onton +feature/login`) or press `+` in the TUI and enter the
+branch name. Numeric branch names use the explicit `branch:` prefix, such as
+`+branch:123`.
+
 ### Coding-agent authentication
 
 Onton spawns each patch in an isolated config dir (`spawn-envs/<patch_id>/{claude,codex,opencode}`)
@@ -304,7 +309,7 @@ onton --repo ../my-repo [OPTIONS]        # Ad-hoc mode (no gameplan)
 |------|---------|-------------|
 | `PROJECT` | (derived from gameplan) | Project name (positional). Required to resume, optional with `--gameplan` |
 | `--gameplan` | — | Path to the gameplan markdown file |
-| `--repo` | `.` | Path to the git repository. GitHub owner/repo are inferred from `git remote` |
+| `--repo` | `.` | Path to the git repository. Forge owner/repo are inferred from `git remote` |
 | `--forge` | `auto` | Forge: `github`, `sourcehut`, or local-origin auto-detection. Gameplan projects default to GitHub unless specified. |
 | `--token` | forge-specific | API token. Defaults to `$GITHUB_TOKEN` / `gh auth token` for GitHub or `$SRHT_TOKEN` for SourceHut. |
 | `--backend` | `claude` | LLM backend: `claude`, `codex`, `opencode`, `pi`, `gemini`. See [Backend & model](#backend--model) |
@@ -356,9 +361,11 @@ found for a patch's branch, one is created at
 ### Ad-hoc mode
 
 When launched without `PROJECT` or `--gameplan`, onton starts with an empty
-patch list. Add PRs at runtime with `+N` in text mode (`:` then `+123`). Each
-`+N` creates a new agent that polls and responds to the given PR. Branch, base,
-and worktree are auto-discovered from GitHub and local git.
+patch list. GitHub accepts PR targets (`+123`); SourceHut accepts existing remote
+branches (`+feature/login`). Targets can be supplied as trailing command-line
+arguments or by pressing `+` in the TUI and entering the PR number or branch.
+Each target creates an agent that polls CI and responds to failures. Branch,
+base, and worktree state are discovered from the forge and local git.
 
 State is persisted across restarts — ad-hoc agents survive session restarts and
 resume where they left off.
@@ -626,7 +633,7 @@ Text mode (Enter in detail view, or `:` in list):
 - Type a message and press Enter — sent as human message to the currently
   viewed patch (clears `needs_intervention`)
 - `N> message` — send human message to patch N
-- `+123` — register ad-hoc PR #123 for the selected patch
+- `+` — prompt for an ad-hoc PR number or remote branch
 - `w /path` — register existing worktree directory
 - `-` — remove the selected patch from orchestration
 

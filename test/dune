@@ -679,3 +679,13 @@
  (name test_sourcehut_builds_properties)
  (modules test_sourcehut_builds_properties)
  (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_adhoc_target_properties)
+ (modules test_adhoc_target_properties)
+ (libraries onton_core qcheck-core qcheck-core.runner))
+
+(test
+ (name test_adhoc_branch)
+ (modules test_adhoc_branch)
+ (libraries onton onton_core eio_main))

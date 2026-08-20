@@ -29,7 +29,7 @@ type command =
 (** Input mode for the TUI prompt. *)
 type input_mode =
   | Normal
-  | Prompt_pr  (** Buffer holds digits for PR number *)
+  | Prompt_pr  (** Buffer holds a PR number or remote branch name *)
   | Prompt_worktree  (** Buffer holds path string *)
   | Prompt_message  (** Buffer holds message text, detail view only *)
   | Prompt_broadcast  (** Buffer holds message to send to all active patches *)
@@ -41,8 +41,8 @@ type input_mode =
 [@@deriving show, eq]
 
 val prompt_prefix : input_mode -> string
-(** Returns the prompt prefix for each mode, for example ["PR #: "] or ["> "].
-*)
+(** Returns the prompt prefix for each mode, for example ["PR # or branch: "] or
+    ["> "]. *)
 
 val of_key : Term_key.t -> command
 (** Translate a key press into a TUI command. *)

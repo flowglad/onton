@@ -84,8 +84,56 @@ module Tui_env = struct
   end
 end
 
-module Make (Forge : Forge.S) (_ : Worktree.S) (Env : Tui_env.S) = struct
+module Make (Forge : Forge.S) (W : Worktree.S) (Env : Tui_env.S) = struct
+  module Add_branch = Adhoc_branch.Make (Forge) (W)
+
   exception Quit
+
+  let add_remote_branch ~status_msg branch =
+    let branch_name = Branch.to_string branch in
+    status_msg :=
+      Some
+        {
+          Tui.level = Tui.Info;
+          text = Printf.sprintf "Fetching remote branch %s…" branch_name;
+          expires_at = None;
+        };
+    let outcome =
+      Add_branch.add ~runtime:Env.runtime ~fetch_mutex:Env.fetch_mutex
+        ~register_change:Env.register_pr_number ~branch
+    in
+    status_msg := None;
+    match outcome with
+    | Adhoc_branch.Added { patch_id; _ } ->
+        log_event Env.runtime ~patch_id
+          (Printf.sprintf "Ad-hoc remote branch %s added" branch_name)
+    | Adhoc_branch.Already_registered patch_id ->
+        log_event Env.runtime ~patch_id
+          (Printf.sprintf "Remote branch %s is already registered" branch_name)
+    | Adhoc_branch.Unsupported_forge forge ->
+        log_event Env.runtime
+          (Printf.sprintf
+             "Cannot add remote branch %s — %s accepts PR-number targets"
+             branch_name forge)
+    | Adhoc_branch.Remote_not_found ->
+        log_event Env.runtime
+          (Printf.sprintf "Remote branch %s was not found on origin" branch_name)
+    | Adhoc_branch.Fetch_failed message ->
+        log_event Env.runtime
+          (Printf.sprintf "Could not fetch remote branch %s — %s" branch_name
+             message)
+    | Adhoc_branch.No_open_change ->
+        log_event Env.runtime
+          (Printf.sprintf
+             "Remote branch %s is already merged into the configured base"
+             branch_name)
+    | Adhoc_branch.Handle_collision patch_id ->
+        log_event Env.runtime ~patch_id
+          (Printf.sprintf "Remote branch %s maps to an existing patch id"
+             branch_name)
+    | Adhoc_branch.Forge_failed message ->
+        log_event Env.runtime
+          (Printf.sprintf "Cannot add remote branch %s — %s" branch_name message)
 
   let run () =
     let {
@@ -553,9 +601,18 @@ module Make (Forge : Forge.S) (_ : Worktree.S) (Env : Tui_env.S) = struct
                            line)
                     end
                 | Tui_input.Prompt_pr -> (
-                    match Int.of_string_opt line with
-                    | Some n when n > 0 ->
-                        let pr_number = Pr_number.of_int n in
+                    match Adhoc_target.parse_add_value line with
+                    | Ok (Adhoc_target.Remote_branch branch) ->
+                        add_remote_branch ~status_msg branch
+                    | Ok (Adhoc_target.Pull_request _)
+                      when not Forge.supports_reviews ->
+                        log_event Env.runtime
+                          (Printf.sprintf
+                             "%s accepts remote branches, not PR numbers; use \
+                              branch:%s for a numeric branch name"
+                             Forge.name line)
+                    | Ok (Adhoc_target.Pull_request pr_number) ->
+                        let n = Pr_number.to_int pr_number in
                         let patch_id = Patch_id.of_string (Int.to_string n) in
                         let already_exists =
                           Runtime.read Env.runtime (fun snap ->
@@ -611,10 +668,9 @@ module Make (Forge : Forge.S) (_ : Worktree.S) (Env : Tui_env.S) = struct
                                   log_event Env.runtime ~patch_id
                                     (Printf.sprintf "Ad-hoc PR #%d added (%s)" n
                                        (Branch.to_string branch))))
-                    | _ ->
+                    | Error message ->
                         if not (String.is_empty line) then
-                          log_event Env.runtime
-                            (Printf.sprintf "Invalid PR number — %s" line))
+                          log_event Env.runtime message)
                 | Tui_input.Prompt_worktree -> (
                     if not (String.is_empty line) then
                       let path = line in

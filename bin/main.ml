@@ -1189,12 +1189,16 @@ let run_main_loop (setup : runtime_setup) (cap : constructed_capabilities)
       report_fatal ();
       Stdlib.exit 1
 
-(** Trailing-positional PR operations parsed from the command line. *)
-type pr_op = Add_pr of Pr_number.t | Remove_pr of Pr_number.t
+(* Trailing-positional ad-hoc operations parsed from the command line. *)
+type pr_op = Adhoc_target.operation
 
 let report setup ~patch_id msg =
   Printf.eprintf "onton: %s\n%!" msg;
   log_event setup.runtime ~patch_id msg
+
+let report_global setup msg =
+  Printf.eprintf "onton: %s\n%!" msg;
+  log_event setup.runtime msg
 
 (** Add a single GitHub PR as an ad-hoc patch. Mirrors [Tui_input.Prompt_pr] in
     [tui_fiber.ml]: fetch PR state, skip forks/missing head branches, no-op when
@@ -1275,21 +1279,74 @@ let apply_remove_pr ~(setup : runtime_setup) ~(cap : constructed_capabilities)
       cap.unregister_pr_number ~patch_id;
       report setup ~patch_id (Printf.sprintf "Removed ad-hoc PR #%d" n)
 
-(** Apply trailing-positional PR ops in command-line order, so [+5 -5 +5] leaves
-    PR #5 registered. *)
+let apply_add_branch ~(setup : runtime_setup) ~(cap : constructed_capabilities)
+    branch =
+  let module Forge = (val cap.forge) in
+  let module WorktreeClient = (val cap.worktree_client) in
+  let module Add_branch = Adhoc_branch.Make (Forge) (WorktreeClient) in
+  let branch_name = Branch.to_string branch in
+  match
+    Add_branch.add ~runtime:setup.runtime ~fetch_mutex:cap.fetch_mutex
+      ~register_change:cap.register_pr_number ~branch
+  with
+  | Adhoc_branch.Added { patch_id; _ } ->
+      report setup ~patch_id
+        (Printf.sprintf "Ad-hoc remote branch %s added" branch_name)
+  | Adhoc_branch.Already_registered patch_id ->
+      report setup ~patch_id
+        (Printf.sprintf "Remote branch %s is already registered" branch_name)
+  | Adhoc_branch.Unsupported_forge forge ->
+      report_global setup
+        (Printf.sprintf
+           "Remote branch adoption is not supported by %s; add a PR number \
+            instead"
+           forge)
+  | Adhoc_branch.Remote_not_found ->
+      report_global setup
+        (Printf.sprintf "Remote branch %s was not found on origin" branch_name)
+  | Adhoc_branch.Fetch_failed message ->
+      report_global setup
+        (Printf.sprintf "Could not fetch remote branch %s — %s" branch_name
+           message)
+  | Adhoc_branch.No_open_change ->
+      report_global setup
+        (Printf.sprintf
+           "Remote branch %s is already merged into the configured base"
+           branch_name)
+  | Adhoc_branch.Handle_collision patch_id ->
+      report_global setup
+        (Printf.sprintf "Remote branch %s maps to an existing patch id %s"
+           branch_name
+           (Patch_id.to_string patch_id))
+  | Adhoc_branch.Forge_failed message ->
+      report_global setup
+        (Printf.sprintf "Cannot add remote branch %s — %s" branch_name message)
+
+(** Apply trailing-positional ad-hoc operations in command-line order, so
+    [+5 -5 +5] leaves PR #5 registered. *)
 let apply_pr_ops ~(setup : runtime_setup) ~(cap : constructed_capabilities)
     (ops : pr_op list) =
   let module Forge = (val cap.forge) in
-  if (not Forge.supports_reviews) && not (List.is_empty ops) then (
-    Printf.eprintf
-      "Error: +N/-N review-change arguments are not supported by %s.\n%!"
-      Forge.name;
+  let incompatible =
+    Base.List.exists ops ~f:(function
+      | Adhoc_target.Add (Adhoc_target.Pull_request _)
+      | Adhoc_target.Remove_pr _ ->
+          not Forge.supports_reviews
+      | Adhoc_target.Add (Adhoc_target.Remote_branch _) ->
+          Forge.supports_reviews)
+  in
+  if incompatible then (
+    Printf.eprintf "Error: %s accepts %s ad-hoc targets.\n%!" Forge.name
+      (if Forge.supports_reviews then "PR-number" else "remote-branch");
     Stdlib.exit 1)
   else
     List.iter
       (function
-        | Add_pr n -> apply_add_pr ~setup ~cap n
-        | Remove_pr n -> apply_remove_pr ~setup ~cap n)
+        | Adhoc_target.Add (Adhoc_target.Pull_request n) ->
+            apply_add_pr ~setup ~cap n
+        | Adhoc_target.Add (Adhoc_target.Remote_branch branch) ->
+            apply_add_branch ~setup ~cap branch
+        | Adhoc_target.Remove_pr n -> apply_remove_pr ~setup ~cap n)
       ops
 
 let run_with_config ~no_lock ~auto_merge ~pr_ops (config : config) gameplan
@@ -1404,36 +1461,11 @@ let project_arg =
           "Project name to resume. If omitted, derived from --gameplan's \
            project name.")
 
-(** A token is a PR op iff it matches [^[+-][0-9]+$]. We classify before
-    cmdliner sees argv because cmdliner would otherwise reject [-N] as an
-    unknown short option. False positives are vanishingly rare: no current onton
-    flag uses [-<digits>] form, and project names of the same shape are
-    pathological. *)
-let looks_like_pr_op (s : string) : bool =
-  let len = String.length s in
-  len >= 2
-  && (Char.equal s.[0] '+' || Char.equal s.[0] '-')
-  && String.for_all
-       (function '0' .. '9' -> true | _ -> false)
-       (String.sub s 1 (len - 1))
+(** Classify ad-hoc [+PR], [+BRANCH], and [-PR] tokens before cmdliner sees
+    argv. Cmdliner would otherwise reject [-PR] as an unknown short option. *)
+let looks_like_pr_op = Adhoc_target.looks_like_operation
 
-let parse_pr_op_token (s : string) : (pr_op, string) result =
-  if not (looks_like_pr_op s) then
-    Error
-      (Printf.sprintf
-         "unrecognized PR op token %S — expected +N or -N (e.g. +123, -123)" s)
-  else
-    let rest = String.sub s 1 (String.length s - 1) in
-    match int_of_string_opt rest with
-    | Some n when n > 0 ->
-        let pr = Pr_number.of_int n in
-        if Char.equal s.[0] '+' then Ok (Add_pr pr) else Ok (Remove_pr pr)
-    | _ ->
-        Error
-          (Printf.sprintf
-             "invalid PR number in %S — expected a positive integer after the \
-              sign"
-             s)
+let parse_pr_op_token = Adhoc_target.parse_operation
 
 let cli_option_takes_value (s : string) : bool =
   match String.index_opt s '=' with
@@ -1453,8 +1485,9 @@ let cli_option_takes_value (s : string) : bool =
 let is_flag_like_token (s : string) : bool =
   String.length s > 0 && Char.equal s.[0] '-'
 
-(** Strip [+N]/[-N] tokens out of [argv] before cmdliner parses it. Returns the
-    list of ops in left-to-right order alongside the filtered argv. *)
+(** Strip [+PR]/[+BRANCH]/[-PR] tokens out of [argv] before cmdliner parses it.
+    Returns the operations in left-to-right order alongside the filtered argv.
+*)
 let extract_pr_ops_from_argv (argv : string array) :
     (pr_op list * string array, string) result =
   let n = Array.length argv in
@@ -1484,8 +1517,8 @@ let extract_pr_ops_from_argv (argv : string array) :
       err :=
         Some
           (Printf.sprintf
-             "unrecognized positional argument %S — expected +N or -N (e.g. \
-              +123, -123)"
+             "unrecognized positional argument %S — expected +PR, +BRANCH, or \
+              -PR (e.g. +123, +feature/login, -123)"
              tok);
     incr i
   done;
@@ -1752,8 +1785,8 @@ let main_cmd ~pr_ops =
         \  onton [PROJECT] --gameplan GAMEPLAN [OPTIONS]   Start a new project\n\
         \  onton PROJECT [OPTIONS]                         Resume a saved \
          project\n\
-        \  onton PROJECT (+N|-N) ... [OPTIONS]             Resume and \
-         add/remove PR #N as an ad-hoc patch"
+        \  onton PROJECT (+TARGET|-PR) ... [OPTIONS]       Resume and add a \
+         PR/remote branch or remove PR #N"
   in
   Cmd.v info term
 

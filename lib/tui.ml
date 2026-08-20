@@ -699,7 +699,7 @@ let render_patches ~width ~selected ~max_visible ~now (views : patch_view list)
         Term.styled [ Term.Sgr.dim ]
           (Term.fit_width
              (Int.max 1 (width - 2))
-             "  No patches. Press : then +N to add a PR (e.g. +123)");
+             "  No patches. Press + to add a PR number or remote branch");
       ],
       0,
       0,
@@ -1096,7 +1096,7 @@ let render_footer ~width ~view_mode ?prompt_line () =
         match view_mode with
         | List_view ->
             Term.styled [ Term.Sgr.dim ]
-              " q:quit  ↑/↓:navigate  enter:detail  +:add PR  w:worktree  \
+              " q:quit  ↑/↓:navigate  enter:detail  +:add change  w:worktree  \
                -:remove  m:manage  o:open browser  h:help"
         | Detail_view _ ->
             Term.styled [ Term.Sgr.dim ]
@@ -1129,11 +1129,11 @@ let render_help_overlay ~width ~height ~version =
           "PgUp      Page up";
           "PgDn      Page down";
           "Enter     Open detail";
-          "+         Add PR (enter number)";
+          "+         Add PR number or remote branch";
           "w         Register worktree (enter path)";
           "-/x       Remove selected patch";
           "m         Manage patch";
-          "o         Open PR in browser";
+          "o         Open review in browser";
           "t         Toggle timeline";
           "q         Quit";
         ] );
