@@ -28,7 +28,7 @@ let askpass_script =
       let body =
         {|#!/bin/sh
 case "$1" in
-  *git.sr.ht*)
+  *https://git.sr.ht\'*|*https://git.sr.ht/*|*https://*@git.sr.ht\'*|*https://*@git.sr.ht/*)
     case "$1" in
       *Username*)
         printf '%s\n' "${SRHT_USERNAME:-oauth2}"

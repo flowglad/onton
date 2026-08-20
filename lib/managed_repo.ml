@@ -277,9 +277,11 @@ let url_scheme_of_string = function
     runs. *)
 let ensure_managed_repo ?(clone_scheme = None) ?(forge = "github") ~project_name
     ~token ~owner ~repo () =
-  if String.equal forge "sourcehut" then
-    Git_env.set_sourcehut_token ~username:owner token
-  else Git_env.set_github_token token;
+  let configure_git_credentials () =
+    if String.equal forge "sourcehut" then
+      Git_env.set_sourcehut_token ~username:owner token
+    else Git_env.set_github_token token
+  in
   let repo_root = Project_store.managed_repo_dir project_name in
   let git_dir = Stdlib.Filename.concat repo_root ".git" in
   let repo_root_exists = Stdlib.Sys.file_exists repo_root in
@@ -306,6 +308,7 @@ let ensure_managed_repo ?(clone_scheme = None) ?(forge = "github") ~project_name
      immediately discard — and the accompanying "cloning managed repo via X"
      log line would be a lie. *)
   let clone_with_probe ~target_dir =
+    configure_git_credentials ();
     let scheme =
       resolve_clone_scheme ~override:clone_scheme ~forge ~owner ~repo ()
     in
@@ -313,31 +316,53 @@ let ensure_managed_repo ?(clone_scheme = None) ?(forge = "github") ~project_name
     | Ok () -> Ok (repo_root, scheme)
     | Error msg -> Error msg
   in
-  if repo_root_exists && has_git_dir then (
+  if repo_root_exists && has_git_dir then
     let module Repo = (val Repo_git.make ~repo_root) in
+    let existing_target =
+      if String.equal forge "sourcehut" then Repo.infer_sourcehut_owner_repo ()
+      else Repo.infer_owner_repo ()
+    in
     (* If the managed clone already exists, the existing [origin] URL is
        authoritative — we don't change transport mid-life. Reflect that in
        the returned scheme so callers persist the matching value. The
        fallback when no parseable URL is found prefers the caller's override
        (a [--clone-scheme] flag or persisted scheme), defaulting to HTTPS. *)
-    let existing_scheme =
-      match read_remote_urls ~path:repo_root with
-      | urls ->
-          List.find_map urls ~f:(fun url ->
-              match Github_target.scheme_of_url url with
-              | Some _ as scheme -> scheme
-              | None -> Sourcehut_target.scheme_of_url url)
-          |> Option.value
-               ~default:(Option.value clone_scheme ~default:Github_target.Https)
-    in
-    match Repo.fetch_managed_repo () with
-    | Ok () -> Ok (repo_root, existing_scheme)
-    | Error msg ->
-        (* Log to stderr but don't abort — the user may be offline and the
-           local clone may already have everything they need. *)
-        Stdlib.Printf.eprintf
-          "onton: warning: %s (continuing with existing local clone)\n%!" msg;
-        Ok (repo_root, existing_scheme))
+    match existing_target with
+    | None ->
+        Error
+          (Printf.sprintf
+             "Managed checkout origin does not match selected %s forge target \
+              %s/%s"
+             forge owner repo)
+    | Some (actual_owner, actual_repo)
+      when not (String.equal actual_owner owner && String.equal actual_repo repo)
+      ->
+        Error
+          (Printf.sprintf
+             "Managed checkout origin targets %s/%s, not requested %s/%s"
+             actual_owner actual_repo owner repo)
+    | Some _ -> (
+        configure_git_credentials ();
+        let existing_scheme =
+          match read_remote_urls ~path:repo_root with
+          | urls ->
+              List.find_map urls ~f:(fun url ->
+                  match Github_target.scheme_of_url url with
+                  | Some _ as scheme -> scheme
+                  | None -> Sourcehut_target.scheme_of_url url)
+              |> Option.value
+                   ~default:
+                     (Option.value clone_scheme ~default:Github_target.Https)
+        in
+        match Repo.fetch_managed_repo () with
+        | Ok () -> Ok (repo_root, existing_scheme)
+        | Error msg ->
+            (* Log to stderr but don't abort — the user may be offline and the
+               local clone may already have everything they need. *)
+            Stdlib.Printf.eprintf
+              "onton: warning: %s (continuing with existing local clone)\n%!"
+              msg;
+            Ok (repo_root, existing_scheme))
   else if repo_root_exists && not repo_root_is_dir then
     Error
       (Printf.sprintf

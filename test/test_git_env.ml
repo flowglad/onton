@@ -115,7 +115,17 @@ let test_clean_env_scrubs_git_and_installs_auth () =
         (String.equal
            (askpass_response sourcehut_env
               "Password for 'https://alice@git.sr.ht':")
-           "sourcehut-token"))
+           "sourcehut-token");
+      assert_true "SourceHut text in a GitHub path does not change the host"
+        (String.equal
+           (askpass_response sourcehut_env
+              "Username for 'https://github.com/alice/git.sr.ht-demo':")
+           "x-access-token");
+      assert_true "SourceHut hostname prefixes do not match"
+        (String.equal
+           (askpass_response sourcehut_env
+              "Username for 'https://git.sr.ht.example/alice/demo':")
+           "x-access-token"))
 
 module Operation_kind = Types.Operation_kind
 

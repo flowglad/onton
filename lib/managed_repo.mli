@@ -22,8 +22,10 @@ val ensure_managed_repo :
     [BatchMode=yes] and a short [ConnectTimeout]); SSH is chosen if the probe
     succeeds, otherwise the fallback is HTTPS. When the managed clone already
     exists on disk, its existing [origin] URL is authoritative — we don't flip
-    transports mid-life. [token] is installed as the selected forge's
-    noninteractive HTTPS Git credential before clone or fetch. *)
+    transports mid-life, and reject an origin that does not match the requested
+    forge and repository. [token] is installed as the selected forge's
+    noninteractive HTTPS Git credential only after that check and before clone
+    or fetch. *)
 
 val url_scheme_of_string : string -> Onton_core.Github_target.url_scheme option
 (** Parse the persisted ["https"] / ["ssh"] form. Returns [None] for anything
