@@ -319,6 +319,10 @@ let prop_infer_non_github_rejected =
           Printf.sprintf "https://gitlab.com/%s/%s.git" owner repo;
           Printf.sprintf "https://bitbucket.org/%s/%s.git" owner repo;
           Printf.sprintf "https://example.com/%s/%s" owner repo;
+          Printf.sprintf "https://attacker.example/github.com/%s/%s.git" owner
+            repo;
+          Printf.sprintf "https://github.com.attacker.example/%s/%s.git" owner
+            repo;
         ]
       in
       List.for_all bad_hosts ~f:(fun u ->
