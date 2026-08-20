@@ -23,7 +23,8 @@ let validate_remote_branch raw =
     if String.is_empty branch then Some "branch name is empty"
     else if not (String.equal branch raw) then
       Some "branch name must not have surrounding whitespace"
-    else if String.equal branch "@" then Some "branch name must not be @"
+    else if String.equal branch "@" || String.equal branch "HEAD" then
+      Some "branch name must not be @ or HEAD"
     else if String.is_prefix branch ~prefix:"-" then
       Some "branch name must not begin with '-'"
     else if String.is_prefix branch ~prefix:"refs/" then

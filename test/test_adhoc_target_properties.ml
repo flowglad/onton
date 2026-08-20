@@ -42,10 +42,12 @@ let remote_branch_forms =
 let ref_boundaries =
   QCheck2.Test.make ~name:"remote branch validation enforces git ref boundaries"
     ~count:1 QCheck2.Gen.unit (fun () ->
-      let valid = [ "feature/login"; "release-1.2"; "123" ] in
+      let valid = [ "feature/login"; "release-1.2"; "123"; "head" ] in
       let invalid =
         [
           "";
+          "@";
+          "HEAD";
           "-flag";
           "refs/heads/main";
           ".hidden";
